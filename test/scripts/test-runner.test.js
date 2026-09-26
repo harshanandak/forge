@@ -104,6 +104,31 @@ describe('scripts/test pre-push runner', () => {
     ]);
   });
 
+  test('internal runtime packaging changes stay on their focused test lane', () => {
+    const changedFiles = [
+      'lib/_internal/contracts.js',
+      'lib/_internal/flow.js',
+      'lib/_internal/load-internal.js',
+      'lib/_internal/memory.js',
+      'scripts/vendor-internal-packages.js',
+    ];
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: `${changedFiles.join('\n')}\n`,
+    }));
+
+    expect(plan.mode).toBe('targeted');
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual(expect.arrayContaining([
+      'test/_internal/contracts.test.js',
+      'test/_internal/flow.test.js',
+      'test/_internal/load-internal.test.js',
+      'test/_internal/memory.test.js',
+      'test/integration/standalone-package-smoke.test.js',
+      'test/scripts/vendor-internal-packages.test.js',
+      'test/structural/registry-safe-internals.test.js',
+    ]));
+  });
+
   test('stripGitHookEnv removes git hook environment variables', () => {
     const env = stripGitHookEnv({
       GIT_DIR: '.git',

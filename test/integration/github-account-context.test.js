@@ -88,7 +88,7 @@ function installTestProduct() {
   fs.mkdirSync(nativeDir);
   fs.writeFileSync(globalConfig, '', 'utf8');
 
-  const packed = parsePackMetadata(npmOutput(['pack', '--ignore-scripts', '--pack-destination', root, '--json'], {
+  const packed = parsePackMetadata(npmOutput(['pack', '--pack-destination', root, '--json'], {
     cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 30000,
   }));
   const archive = path.join(root, packed[0].filename);

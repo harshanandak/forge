@@ -59,6 +59,10 @@ const KNOWN_TARGETABLE_FILES = new Set([
   '.coderabbit.yaml',
   'CODING_STANDARDS.md',
   '.claude-plugin/marketplace.json',
+  'lib/_internal/contracts.js',
+  'lib/_internal/flow.js',
+  'lib/_internal/load-internal.js',
+  'lib/_internal/memory.js',
   'lib/kernel/schema.js',
   'lib/kernel/migrations.js',
   'lib/kernel/sqlite-driver.js',
@@ -92,6 +96,7 @@ const KNOWN_TARGETABLE_FILES = new Set([
   'lib/pr-monitor/watch-lifecycle.js',
   'lib/pr-monitor/shepherd-lease.js',
   'lib/pr-monitor/monitor.js',
+  'scripts/vendor-internal-packages.js',
 ]);
 
 const ALWAYS_RUN_RISK_TEST_TARGETS = [
