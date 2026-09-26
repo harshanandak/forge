@@ -230,6 +230,7 @@ function stripGitHookEnv(sourceEnv = process.env) {
   for (const key of Object.keys(env)) {
     const normalizedKey = key.toUpperCase();
     if (normalizedKey === 'GIT_DIR' || normalizedKey === 'GIT_WORK_TREE'
+      || normalizedKey === 'GIT_COMMON_DIR'
       || normalizedKey === 'GIT_INDEX_FILE' || normalizedKey === 'GIT_OBJECT_DIRECTORY'
       || normalizedKey === 'GIT_ALTERNATE_OBJECT_DIRECTORIES'
       || normalizedKey === 'GIT_QUARANTINE_PATH') {

@@ -240,7 +240,7 @@ describe('createEvalWorktree from inside a linked worktree', () => {
   let previousCwd = null;
 
   function git(cwd, ...args) {
-    return execFileSync('git', ['-C', cwd, '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' });
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
   }
 
   afterEach(() => {
@@ -251,15 +251,18 @@ describe('createEvalWorktree from inside a linked worktree', () => {
   test('creates the eval worktree under the main root .worktrees at the linked HEAD', async () => {
     const mainRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-eval-root-')));
     tempDirs.push(mainRoot);
-    git(mainRoot, 'init', '-q', '-b', 'main');
+    // Same fixture shape as worktree-base.test.js: init, local identity, commits.
+    git(mainRoot, 'init', '-b', 'main');
+    git(mainRoot, 'config', 'user.email', 'test@example.com');
+    git(mainRoot, 'config', 'user.name', 'Test');
     fs.writeFileSync(path.join(mainRoot, 'README.md'), 'seed\n');
-    git(mainRoot, 'add', 'README.md');
-    git(mainRoot, 'commit', '-q', '-m', 'seed');
+    git(mainRoot, 'add', '.');
+    git(mainRoot, 'commit', '-m', 'seed');
     const linkedPath = path.join(mainRoot, '.worktrees', 'linked');
-    git(mainRoot, 'worktree', 'add', '-q', linkedPath, '-b', 'feat/linked');
+    git(mainRoot, 'worktree', 'add', linkedPath, '-b', 'feat/linked');
     fs.writeFileSync(path.join(linkedPath, 'linked.txt'), 'linked\n');
     git(linkedPath, 'add', 'linked.txt');
-    git(linkedPath, 'commit', '-q', '-m', 'linked-only');
+    git(linkedPath, 'commit', '-m', 'linked-only');
     const linkedHead = git(linkedPath, 'rev-parse', 'HEAD').trim();
 
     previousCwd = process.cwd();

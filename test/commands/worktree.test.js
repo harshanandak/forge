@@ -387,19 +387,47 @@ describe('forge worktree command', () => {
 // .worktrees/, never nested under <linked-worktree>/.worktrees/ (which blew the
 // Windows path limit on removal: "Filename too long").
 // ---------------------------------------------------------------------------
-describe('forge worktree create from inside a linked worktree', () => {
+describe('forge worktree create/remove resolve the main worktree', () => {
   const fs = require('node:fs');
   const os = require('node:os');
   const path = require('node:path');
   const { execFileSync } = require('node:child_process');
   const { afterEach } = require('bun:test');
   const tempDirs = [];
+  let previousCwd = null;
 
   function git(cwd, ...args) {
-    return execFileSync('git', ['-C', cwd, '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' });
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
   }
 
+  function tempDir(prefix) {
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  // Same fixture shape as worktree-base.test.js: init, local identity, one commit.
+  function seedRepo(dir, initArgs = []) {
+    fs.mkdirSync(dir, { recursive: true });
+    git(dir, 'init', '-b', 'main', ...initArgs);
+    git(dir, 'config', 'user.email', 'test@example.com');
+    git(dir, 'config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(dir, 'README.md'), 'seed\n');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-m', 'seed');
+    return dir;
+  }
+
+  const stubOpts = () => ({
+    _spawn: () => ({ status: 0 }),
+    _platform: process.platform,
+    _kernelDriver: { listWorktrees: () => [], getWorktree: () => null, upsertWorktree: () => {} },
+    _kernelBroker: {},
+    _ensureBackingIssue: async () => null,
+  });
+
   afterEach(() => {
+    if (previousCwd) { process.chdir(previousCwd); previousCwd = null; }
     while (tempDirs.length > 0) {
       fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
     }
@@ -407,30 +435,82 @@ describe('forge worktree create from inside a linked worktree', () => {
 
   test('creates the new worktree under the main root .worktrees, not the linked worktree', async () => {
     const mod = require('../../lib/commands/worktree');
-    const mainRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-root-')));
-    tempDirs.push(mainRoot);
-    git(mainRoot, 'init', '-q', '-b', 'main');
-    fs.writeFileSync(path.join(mainRoot, 'README.md'), 'seed\n');
-    git(mainRoot, 'add', 'README.md');
-    git(mainRoot, 'commit', '-q', '-m', 'seed');
+    const mainRoot = seedRepo(tempDir('forge-wt-root-'));
     const linkedPath = path.join(mainRoot, '.worktrees', 'linked');
-    git(mainRoot, 'worktree', 'add', '-q', linkedPath, '-b', 'feat/linked');
+    git(mainRoot, 'worktree', 'add', linkedPath, '-b', 'feat/linked');
 
-    const result = await mod.handler(
-      ['create', 'nested', '--base', 'main'], {}, linkedPath,
-      {
-        _spawn: () => ({ status: 0 }),
-        _platform: process.platform,
-        _kernelDriver: { listWorktrees: () => [], getWorktree: () => null, upsertWorktree: () => {} },
-        _kernelBroker: {},
-        _ensureBackingIssue: async () => null,
-      }
-    );
+    const result = await mod.handler(['create', 'nested', '--base', 'main'], {}, linkedPath, stubOpts());
 
     expect(result.success).toBe(true);
     const expected = path.join(mainRoot, '.worktrees', 'nested');
     expect(path.resolve(result.worktreePath)).toBe(path.resolve(expected));
     expect(fs.existsSync(path.join(expected, 'README.md'))).toBe(true);
     expect(fs.existsSync(path.join(linkedPath, '.worktrees', 'nested'))).toBe(false);
+  }, 30000);
+
+  test('separate-git-dir layout: creates under the checkout, not beside the external git dir', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const base = tempDir('forge-wt-sepgit-');
+    const checkout = path.join(base, 'src', 'app');
+    fs.mkdirSync(path.join(base, 'gitdirs'), { recursive: true });
+    seedRepo(checkout, ['--separate-git-dir', path.join(base, 'gitdirs', 'app.git')]);
+
+    const result = await mod.handler(['create', 'sep', '--base', 'main'], {}, checkout, stubOpts());
+
+    expect(result.success).toBe(true);
+    expect(path.resolve(result.worktreePath)).toBe(path.resolve(checkout, '.worktrees', 'sep'));
+    expect(fs.existsSync(path.join(base, 'gitdirs', '.worktrees'))).toBe(false);
+  }, 30000);
+
+  test('separate-git-dir layout from a linked worktree: fails clearly instead of guessing', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const base = tempDir('forge-wt-sepgit-linked-');
+    const checkout = path.join(base, 'src', 'app');
+    fs.mkdirSync(path.join(base, 'gitdirs'), { recursive: true });
+    seedRepo(checkout, ['--separate-git-dir', path.join(base, 'gitdirs', 'app.git')]);
+    const linkedPath = path.join(base, 'wt-linked');
+    git(checkout, 'worktree', 'add', linkedPath, '-b', 'feat/linked');
+
+    const result = await mod.handler(['create', 'lost', '--base', 'main'], {}, linkedPath, stubOpts());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('main worktree location unknown');
+    expect(fs.existsSync(path.join(base, 'gitdirs', '.worktrees'))).toBe(false);
+    expect(fs.existsSync(path.join(base, 'gitdirs', 'app.git', '.worktrees'))).toBe(false);
+  }, 30000);
+
+  test('bare main worktree: create and remove fail clearly instead of guessing a root', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const base = tempDir('forge-wt-bare-');
+    const src = seedRepo(path.join(base, 'src'));
+    const bare = path.join(base, 'app.git');
+    git(base, 'clone', '--bare', src, bare);
+    const linkedPath = path.join(base, 'wt-linked');
+    git(bare, 'worktree', 'add', linkedPath, '-b', 'feat/linked', 'main');
+
+    const created = await mod.handler(['create', 'guess', '--base', 'main'], {}, linkedPath, stubOpts());
+    expect(created).toEqual({ success: false, error: 'bare repo detected' });
+    expect(fs.existsSync(path.join(base, '.worktrees'))).toBe(false);
+
+    const removed = await mod.handler(['remove', 'guess'], {}, linkedPath, {});
+    expect(removed).toEqual({ success: false, error: 'bare repo detected' });
+  }, 30000);
+
+  test('remove falls back to a single registered legacy nested worktree with the slug', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const mainRoot = seedRepo(tempDir('forge-wt-legacy-'));
+    const linkedPath = path.join(mainRoot, '.worktrees', 'linked');
+    git(mainRoot, 'worktree', 'add', linkedPath, '-b', 'feat/linked');
+    // Legacy layout from the old bug: <linked>/.worktrees/<slug>.
+    const nestedPath = path.join(linkedPath, '.worktrees', 'old');
+    git(linkedPath, 'worktree', 'add', nestedPath, '-b', 'feat/old');
+
+    previousCwd = process.cwd();
+    process.chdir(linkedPath);
+    const result = await mod.handler(['remove', 'old'], {}, linkedPath, {});
+
+    expect(result.success).toBe(true);
+    expect(path.resolve(result.removed)).toBe(path.resolve(nestedPath));
+    expect(fs.existsSync(nestedPath)).toBe(false);
   }, 30000);
 });

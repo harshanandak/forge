@@ -1121,7 +1121,7 @@ describe('forge clean — close linked issues on merge', () => {
 
 // Regression (issue 7910146e): `forge clean` run from INSIDE a linked worktree must
 // scan the MAIN repository root's .worktrees/, not <linked-worktree>/.worktrees/.
-describe('forge clean from inside a linked worktree', () => {
+describe('forge clean resolves the main worktree', () => {
   const os = require('node:os');
   const realFs = require('node:fs');
   const { execFileSync } = require('node:child_process');
@@ -1129,7 +1129,32 @@ describe('forge clean from inside a linked worktree', () => {
   const tempDirs = [];
 
   function git(cwd, ...args) {
-    return execFileSync('git', ['-C', cwd, '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' });
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+  }
+
+  function tempDir(prefix) {
+    const dir = realFs.realpathSync.native(realFs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  // Same fixture shape as worktree-base.test.js: init, local identity, one commit.
+  function seedRepo(dir) {
+    realFs.mkdirSync(dir, { recursive: true });
+    git(dir, 'init', '-b', 'main');
+    git(dir, 'config', 'user.email', 'test@example.com');
+    git(dir, 'config', 'user.name', 'Test');
+    realFs.writeFileSync(path.join(dir, 'README.md'), 'seed\n');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-m', 'seed');
+    return dir;
+  }
+
+  function spyFs(readdirPaths) {
+    return {
+      existsSync: (p) => realFs.existsSync(p),
+      readdirSync: (p, _opts) => { readdirPaths.push(path.resolve(p)); return []; },
+    };
   }
 
   afterEach(() => {
@@ -1138,28 +1163,38 @@ describe('forge clean from inside a linked worktree', () => {
 
   test('scans the main root .worktrees, not the linked worktree', async () => {
     const mod = require('../../lib/commands/clean');
-    const mainRoot = realFs.realpathSync.native(realFs.mkdtempSync(path.join(os.tmpdir(), 'forge-clean-root-')));
-    tempDirs.push(mainRoot);
-    git(mainRoot, 'init', '-q', '-b', 'main');
-    realFs.writeFileSync(path.join(mainRoot, 'README.md'), 'seed\n');
-    git(mainRoot, 'add', 'README.md');
-    git(mainRoot, 'commit', '-q', '-m', 'seed');
+    const mainRoot = seedRepo(tempDir('forge-clean-root-'));
     const linkedPath = path.join(mainRoot, '.worktrees', 'linked');
-    git(mainRoot, 'worktree', 'add', '-q', linkedPath, '-b', 'feat/linked');
+    git(mainRoot, 'worktree', 'add', linkedPath, '-b', 'feat/linked');
     // A nested .worktrees under the linked checkout must NOT be what clean scans.
     realFs.mkdirSync(path.join(linkedPath, '.worktrees'), { recursive: true });
 
     const readdirPaths = [];
-    const spyFs = {
-      existsSync: (p) => realFs.existsSync(p),
-      readdirSync: (p, _opts) => { readdirPaths.push(path.resolve(p)); return []; },
-    };
-
     await mod.handler([], { '--dry-run': true }, linkedPath, {
-      _fs: spyFs,
+      _fs: spyFs(readdirPaths),
       _syncMaster: async () => ({ attempted: false }),
     });
 
     expect(readdirPaths).toEqual([path.resolve(mainRoot, '.worktrees')]);
+  }, 30000);
+
+  test('bare main worktree: fails clearly and scans nothing', async () => {
+    const mod = require('../../lib/commands/clean');
+    const base = tempDir('forge-clean-bare-');
+    const src = seedRepo(path.join(base, 'src'));
+    const bare = path.join(base, 'app.git');
+    git(base, 'clone', '--bare', src, bare);
+    const linkedPath = path.join(base, 'wt-linked');
+    git(bare, 'worktree', 'add', linkedPath, '-b', 'feat/linked', 'main');
+
+    const readdirPaths = [];
+    const result = await mod.handler([], { '--dry-run': true }, linkedPath, {
+      _fs: spyFs(readdirPaths),
+      _syncMaster: async () => ({ attempted: false }),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('bare repo detected');
+    expect(readdirPaths).toEqual([]);
   }, 30000);
 });
