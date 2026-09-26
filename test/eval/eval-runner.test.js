@@ -227,3 +227,49 @@ describe('eval-runner', () => {
     });
   });
 });
+
+// Regression (issue 7910146e): eval worktrees created from INSIDE a linked worktree
+// must live under the MAIN repository root's .worktrees/, not nested under
+// <linked-worktree>/.worktrees/ (nesting broke Windows removal: "Filename too long").
+// The eval worktree still forks from the CURRENT checkout's HEAD (source under test).
+describe('createEvalWorktree from inside a linked worktree', () => {
+  const os = require('node:os');
+  const { execFileSync } = require('node:child_process');
+  const { afterEach } = require('bun:test');
+  const tempDirs = [];
+  let previousCwd = null;
+
+  function git(cwd, ...args) {
+    return execFileSync('git', ['-C', cwd, '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' });
+  }
+
+  afterEach(() => {
+    if (previousCwd) { process.chdir(previousCwd); previousCwd = null; }
+    while (tempDirs.length > 0) fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+  });
+
+  test('creates the eval worktree under the main root .worktrees at the linked HEAD', async () => {
+    const mainRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-eval-root-')));
+    tempDirs.push(mainRoot);
+    git(mainRoot, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(mainRoot, 'README.md'), 'seed\n');
+    git(mainRoot, 'add', 'README.md');
+    git(mainRoot, 'commit', '-q', '-m', 'seed');
+    const linkedPath = path.join(mainRoot, '.worktrees', 'linked');
+    git(mainRoot, 'worktree', 'add', '-q', linkedPath, '-b', 'feat/linked');
+    fs.writeFileSync(path.join(linkedPath, 'linked.txt'), 'linked\n');
+    git(linkedPath, 'add', 'linked.txt');
+    git(linkedPath, 'commit', '-q', '-m', 'linked-only');
+    const linkedHead = git(linkedPath, 'rev-parse', 'HEAD').trim();
+
+    previousCwd = process.cwd();
+    process.chdir(linkedPath);
+    const wt = await createEvalWorktree();
+    try {
+      expect(path.resolve(path.dirname(wt.path))).toBe(path.resolve(mainRoot, '.worktrees'));
+      expect(git(wt.path, 'rev-parse', 'HEAD').trim()).toBe(linkedHead);
+    } finally {
+      await destroyEvalWorktree(wt.path);
+    }
+  }, 30000);
+});

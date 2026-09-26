@@ -1118,3 +1118,48 @@ describe('forge clean — close linked issues on merge', () => {
     expect(closed).toBe(0);
   });
 });
+
+// Regression (issue 7910146e): `forge clean` run from INSIDE a linked worktree must
+// scan the MAIN repository root's .worktrees/, not <linked-worktree>/.worktrees/.
+describe('forge clean from inside a linked worktree', () => {
+  const os = require('node:os');
+  const realFs = require('node:fs');
+  const { execFileSync } = require('node:child_process');
+  const { afterEach } = require('bun:test');
+  const tempDirs = [];
+
+  function git(cwd, ...args) {
+    return execFileSync('git', ['-C', cwd, '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' });
+  }
+
+  afterEach(() => {
+    while (tempDirs.length > 0) realFs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+  });
+
+  test('scans the main root .worktrees, not the linked worktree', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = realFs.realpathSync.native(realFs.mkdtempSync(path.join(os.tmpdir(), 'forge-clean-root-')));
+    tempDirs.push(mainRoot);
+    git(mainRoot, 'init', '-q', '-b', 'main');
+    realFs.writeFileSync(path.join(mainRoot, 'README.md'), 'seed\n');
+    git(mainRoot, 'add', 'README.md');
+    git(mainRoot, 'commit', '-q', '-m', 'seed');
+    const linkedPath = path.join(mainRoot, '.worktrees', 'linked');
+    git(mainRoot, 'worktree', 'add', '-q', linkedPath, '-b', 'feat/linked');
+    // A nested .worktrees under the linked checkout must NOT be what clean scans.
+    realFs.mkdirSync(path.join(linkedPath, '.worktrees'), { recursive: true });
+
+    const readdirPaths = [];
+    const spyFs = {
+      existsSync: (p) => realFs.existsSync(p),
+      readdirSync: (p, _opts) => { readdirPaths.push(path.resolve(p)); return []; },
+    };
+
+    await mod.handler([], { '--dry-run': true }, linkedPath, {
+      _fs: spyFs,
+      _syncMaster: async () => ({ attempted: false }),
+    });
+
+    expect(readdirPaths).toEqual([path.resolve(mainRoot, '.worktrees')]);
+  }, 30000);
+});
