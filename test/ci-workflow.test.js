@@ -436,35 +436,94 @@ describe('CI Workflow Configuration', () => {
       expect(classify).toContain('echo "tests_relevant=false" >> "$GITHUB_OUTPUT"');
     });
 
-    test('tests_relevant covers every path the old trigger filter did, plus bun.lock and classifier surfaces', () => {
-      const classify = jobs.changes.steps.find((step) => step.name === 'Classify diff').run;
-      const match = /tests_relevant_pattern='([^']+)'/.exec(classify);
+    // tests_relevant is decided by EXCLUSION: a PR is test-irrelevant only when
+    // every changed path is documentation (docs/**, a root-level *.md, LICENSE).
+    // Any other path, including ones no allowlist anticipated, runs the tests.
+    const classifyScript = () => jobs.changes.steps.find((step) => step.name === 'Classify diff').run;
+    const isDocsOnlyPath = (file) => file.startsWith('docs/')
+      || (!file.includes('/') && file.endsWith('.md'))
+      || file === 'LICENSE';
+
+    function docsOnlyPattern() {
+      const match = /docs_only_pattern='([^']+)'/.exec(classifyScript());
       expect(match).not.toBeNull();
-      const pattern = new RegExp(match[1]);
-      for (const file of [
-        'bin/forge.js',
-        'lib/x.js',
-        'scripts/x.js',
-        'test/x.test.js',
-        'test-env/x.test.js',
-        'skills/plan/SKILL.md',
-        'packages/x/index.js',
-        'package.json',
-        'bunfig.toml',
-        'bun.lock',
-        '.github/workflows/eslint.yml',
-        '.github/agentic-workflows/x.md',
-        'plugin/hooks/x.js',
-        'install.sh',
-        'lefthook.yml',
-        'eslint.config.js',
-        '.claude/scripts/x.js',
-        '.forge/hooks/pre-commit',
-      ]) {
-        expect({ file, relevant: pattern.test(file) }).toEqual({ file, relevant: true });
+      return new RegExp(match[1]);
+    }
+
+    function runClassifier(changedFiles, { gitFails = false } = {}) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-classify-'));
+      try {
+        const binDir = path.join(root, 'bin');
+        fs.mkdirSync(binDir);
+        const listing = path.join(root, 'changed.txt');
+        fs.writeFileSync(listing, changedFiles.map((file) => `${file}\n`).join(''));
+        const toPosix = (value) => value.replace(/\\/g, '/');
+        const stub = gitFails
+          ? '#!/usr/bin/env bash\nexit 128\n'
+          : `#!/usr/bin/env bash\nwhile IFS= read -r line; do printf '%s\\n' "$line"; done < '${toPosix(listing)}'\n`;
+        fs.writeFileSync(path.join(binDir, 'git'), stub);
+        fs.chmodSync(path.join(binDir, 'git'), 0o755);
+        const output = path.join(root, 'out.txt');
+        fs.writeFileSync(output, '');
+        const prelude = `export PATH="$(cygpath -u '${toPosix(binDir)}' 2>/dev/null || printf '%s' '${toPosix(binDir)}'):$PATH"`;
+        const child = spawnSync(bashExecutable, ['-c', `${prelude}\n${classifyScript()}`], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            EVENT_NAME: 'pull_request',
+            BASE_SHA: 'base',
+            HEAD_SHA: 'head',
+            GITHUB_OUTPUT: output,
+          },
+        });
+        expect(child.status).toBe(0);
+        return Object.fromEntries(fs.readFileSync(output, 'utf8').trim().split('\n').map((line) => line.split('=')));
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
       }
-      for (const file of ['README.md', 'docs/INDEX.md', 'AGENTS.md', '.claude/rules/review-process.md']) {
-        expect({ file, relevant: pattern.test(file) }).toEqual({ file, relevant: false });
+    }
+
+    test('tests_relevant is false only for docs-only diffs and fails safe to true', () => {
+      expect(runClassifier(['docs/INDEX.md', 'README.md', 'LICENSE']).tests_relevant).toBe('false');
+      expect(runClassifier(['docs/INDEX.md', 'plugin/.claude-plugin/plugin.json']).tests_relevant).toBe('true');
+      expect(runClassifier(['skills/plan/SKILL.md']).tests_relevant).toBe('true');
+      expect(runClassifier([], { gitFails: true }).tests_relevant).toBe('true');
+    }, 30_000);
+
+    test('every tracked file outside the docs set is test-relevant', () => {
+      const pattern = docsOnlyPattern();
+      const tracked = spawnSync('git', ['ls-files'], { cwd: path.join(__dirname, '..'), encoding: 'utf8' })
+        .stdout.split('\n').filter(Boolean);
+      expect(tracked.length).toBeGreaterThan(100);
+      const mismatches = tracked.filter((file) => pattern.test(file) !== isDocsOnlyPath(file));
+      expect(mismatches).toEqual([]);
+      // One representative per top-level directory and root file type is relevant.
+      const representatives = new Map();
+      for (const file of tracked.filter((entry) => !isDocsOnlyPath(entry))) {
+        const key = file.includes('/') ? file.split('/')[0] : path.extname(file) || file;
+        if (!representatives.has(key)) representatives.set(key, file);
+      }
+      for (const file of representatives.values()) {
+        expect({ file, relevant: !pattern.test(file) }).toEqual({ file, relevant: true });
+      }
+    });
+
+    test('every path in the Required Checks Bypass code list is test-relevant', () => {
+      const pattern = docsOnlyPattern();
+      const bypassPath = path.join(__dirname, '..', '.github', 'workflows', 'required-checks-bypass.yml');
+      const bypass = yaml.load(fs.readFileSync(bypassPath, 'utf8'));
+      const globs = bypass.on.pull_request['paths-ignore'];
+      expect(globs.length).toBeGreaterThan(0);
+      for (const glob of globs) {
+        const sample = glob.replace(/\*\*/g, 'x/y').replace(/\*/g, 'x');
+        expect({ glob, sample, relevant: !pattern.test(sample) }).toEqual({ glob, sample, relevant: true });
+      }
+    });
+
+    test('paths outside every old allowlist are test-relevant', () => {
+      const pattern = docsOnlyPattern();
+      for (const file of ['plugin/.claude-plugin/plugin.json', '.forge/protected-paths.yaml', 'web/dashboard/app.js']) {
+        expect({ file, relevant: !pattern.test(file) }).toEqual({ file, relevant: true });
       }
     });
 

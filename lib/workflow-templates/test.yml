@@ -75,11 +75,13 @@ jobs:
           fi
           echo "Changed files:"
           printf '%s\n' "$changed"
-          # Everything the former pull_request `paths:` trigger covered, plus the
-          # build/runtime surfaces it missed: bun.lock, plugin hooks, installer,
-          # lefthook, root-level and .claude/ JavaScript, and .forge/hooks.
-          tests_relevant_pattern='^(bin/|lib/|scripts/|test/|test-env/|skills/|packages/|plugin/hooks/|\.github/workflows/|\.github/agentic-workflows/|\.forge/hooks/|\.claude/.*\.js$|[^/]+\.js$|package\.json$|bun\.lock$|bunfig\.toml$|lefthook\.yml$|install\.sh$)'
-          if printf '%s\n' "$changed" | grep -Eq "$tests_relevant_pattern"; then
+          # Classified by EXCLUSION: the PR is test-irrelevant only when EVERY
+          # changed path is documentation (docs/**, a root-level *.md, LICENSE).
+          # Any other path — including new top-level trees nobody listed — runs the
+          # tests. The doc-asserting suites for docs-only PRs run in Doc Assertion
+          # Tests below.
+          docs_only_pattern='^(docs/.*|[^/]+\.md|LICENSE)$'
+          if printf '%s\n' "$changed" | grep -Evq "$docs_only_pattern"; then
             echo "Test-relevant paths changed: running the test lanes."
             echo "tests_relevant=true" >> "$GITHUB_OUTPUT"
           else
