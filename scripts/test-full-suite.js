@@ -187,14 +187,46 @@ function strongestResourceLane(left, right) {
   return RESOURCE_LANE_RANK.get(left) >= RESOURCE_LANE_RANK.get(right) ? left : right;
 }
 
+const WHITESPACE_RUN = /\s+/y;
+const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/y;
+
+// Reads a quoted literal starting after its opening quote. A backslash drops
+// itself and keeps the next character verbatim. Values are built from slices
+// rather than per-character concatenation: this runs over ~10 MB of suite
+// sources at every full-suite start (issue 6c09647c).
+function readQuotedLiteral(source, start, quote, detectInterpolation) {
+  let value = '';
+  let chunkStart = start;
+  let dynamic = false;
+  let index = start;
+  while (index < source.length && source[index] !== quote) {
+    const current = source[index];
+    if (current === '\\' && index + 1 < source.length) {
+      value += source.slice(chunkStart, index);
+      index += 1;
+      chunkStart = index;
+    } else if (detectInterpolation && current === '$' && source[index + 1] === '{') {
+      dynamic = true;
+    }
+    index += 1;
+  }
+  value += source.slice(chunkStart, index);
+  return { dynamic, end: index + 1, value };
+}
+
 function tokenizeResourceSyntax(source) {
   const tokens = [];
   let index = 0;
   while (index < source.length) {
     const current = source[index];
-    if (/\s/.test(current)) {
-      index += 1;
-      continue;
+    const code = source.charCodeAt(index);
+    // Every \s code point is <= 0x20, 0xA0, or >= 0x1680; skip the regex call otherwise.
+    if (code <= 0x20 || code === 0xa0 || code >= 0x1680) {
+      WHITESPACE_RUN.lastIndex = index;
+      if (WHITESPACE_RUN.test(source)) {
+        index = WHITESPACE_RUN.lastIndex;
+        continue;
+      }
     }
     if (current === '/' && source[index + 1] === '/') {
       index = source.indexOf('\n', index + 2);
@@ -206,41 +238,18 @@ function tokenizeResourceSyntax(source) {
       index = end === -1 ? source.length : end + 2;
       continue;
     }
-    if (current === '"' || current === "'") {
-      const quote = current;
-      let value = '';
-      index += 1;
-      while (index < source.length && source[index] !== quote) {
-        if (source[index] === '\\' && index + 1 < source.length) index += 1;
-        value += source[index];
-        index += 1;
-      }
-      index += 1;
-      tokens.push({ type: 'string', value });
+    if (current === '"' || current === "'" || current === '`') {
+      const literal = readQuotedLiteral(source, index + 1, current, current === '`');
+      index = literal.end;
+      tokens.push({ type: literal.dynamic ? 'dynamic-string' : 'string', value: literal.value });
       continue;
     }
-    if (current === '`') {
-      let dynamic = false;
-      let value = '';
-      index += 1;
-      while (index < source.length && source[index] !== '`') {
-        if (source[index] === '\\' && index + 1 < source.length) {
-          index += 1;
-        } else if (source[index] === '$' && source[index + 1] === '{') {
-          dynamic = true;
-        }
-        value += source[index];
-        index += 1;
-      }
-      index += 1;
-      tokens.push({ type: dynamic ? 'dynamic-string' : 'string', value });
-      continue;
-    }
-    if (/[A-Za-z_$]/.test(current)) {
-      const start = index;
-      index += 1;
-      while (index < source.length && /[A-Za-z0-9_$]/.test(source[index])) index += 1;
-      tokens.push({ type: 'identifier', value: source.slice(start, index) });
+    const lower = code | 0x20;
+    if ((lower >= 0x61 && lower <= 0x7a) || code === 0x5f || code === 0x24) {
+      IDENTIFIER.lastIndex = index;
+      IDENTIFIER.test(source);
+      tokens.push({ type: 'identifier', value: source.slice(index, IDENTIFIER.lastIndex) });
+      index = IDENTIFIER.lastIndex;
       continue;
     }
     tokens.push({ type: 'punctuator', value: current });
@@ -324,6 +333,13 @@ function createTestResourceClassifier(options = {}) {
   const moduleCache = new Map();
   const resolutionCache = new Map();
   const resultCache = new Map();
+  // Many importers resolve to the same helper; realpath is the costliest
+  // resolution step on Windows, so resolve each candidate once.
+  const realpathCache = new Map();
+  const cachedRealpath = (candidate) => {
+    if (!realpathCache.has(candidate)) realpathCache.set(candidate, fs.realpathSync(candidate));
+    return realpathCache.get(candidate);
+  };
 
   const resolveLocalImport = (fromFile, specifier) => {
     const cacheKey = `${fromFile}\0${specifier}`;
@@ -346,7 +362,7 @@ function createTestResourceClassifier(options = {}) {
         continue;
       }
       if (!stats.isFile()) continue;
-      const resolved = fs.realpathSync(candidate);
+      const resolved = cachedRealpath(candidate);
       if (!isWithinRoot(realRoot, resolved)) {
         resolutionCache.set(cacheKey, null);
         return null;
@@ -358,11 +374,11 @@ function createTestResourceClassifier(options = {}) {
     return null;
   };
 
-  const inspectModule = (absoluteFile) => {
+  const inspectModule = (absoluteFile, preloadedSource) => {
     if (moduleCache.has(absoluteFile)) return moduleCache.get(absoluteFile);
     let inspected;
     try {
-      const source = readFile(absoluteFile);
+      const source = preloadedSource === undefined ? readFile(absoluteFile) : preloadedSource;
       if (typeof source !== 'string') throw new TypeError('resource source reader must return a string');
       inspected = inspectTestResourceSource(source, path.relative(root, absoluteFile), options.classifySource);
     } catch (error) {
@@ -404,27 +420,99 @@ function createTestResourceClassifier(options = {}) {
     return { complete, resource };
   };
 
-  return (file) => {
+  const resolveTestFile = (file) => {
     const absoluteFile = path.resolve(root, file);
-    if (!isWithinRoot(root, absoluteFile)) return 'subprocess';
+    if (!isWithinRoot(root, absoluteFile)) return null;
     let realFile;
     try {
       realFile = fs.realpathSync(absoluteFile);
     } catch {
-      return 'subprocess';
+      return null;
     }
-    if (!isWithinRoot(realRoot, realFile)) return 'subprocess';
+    return isWithinRoot(realRoot, realFile) ? realFile : null;
+  };
+
+  const classify = (file) => {
+    const realFile = resolveTestFile(file);
+    if (!realFile) return 'subprocess';
     return classifyModule(realFile, new Set()).resource;
   };
+
+  // Reads the test files and their transitive local imports with a bounded
+  // pool and seeds the module cache, so the synchronous classification pass
+  // below does no I/O for them. Anything that fails here (read error, unknown
+  // lane marker) is left unseeded; the synchronous pass then re-reads it and
+  // applies its usual policy, so preloading never changes a classification.
+  classify.preload = async (files, readFileAsync, concurrency) => {
+    const queue = [];
+    const queued = new Set();
+    const enqueue = (absoluteFile) => {
+      if (queued.has(absoluteFile) || moduleCache.has(absoluteFile)) return;
+      queued.add(absoluteFile);
+      queue.push(absoluteFile);
+    };
+    for (const file of files) {
+      const realFile = resolveTestFile(file);
+      if (realFile) enqueue(realFile);
+    }
+    let active = 0;
+    await new Promise((resolve, reject) => {
+      const pump = () => {
+        if (queue.length === 0 && active === 0) {
+          resolve();
+          return;
+        }
+        while (active < concurrency && queue.length > 0) {
+          const absoluteFile = queue.shift();
+          active += 1;
+          Promise.resolve()
+            .then(() => readFileAsync(absoluteFile))
+            .then((source) => {
+              let inspected;
+              try {
+                inspected = inspectModule(absoluteFile, source);
+              } catch {
+                return;
+              }
+              if (inspected.resource === 'exclusive') return;
+              for (const specifier of inspected.imports) {
+                const resolved = resolveLocalImport(absoluteFile, specifier);
+                if (resolved) enqueue(resolved);
+              }
+            }, () => {})
+            .then(() => {
+              active -= 1;
+              pump();
+            })
+            .catch(reject);
+        }
+      };
+      pump();
+    });
+  };
+
+  return classify;
 }
 
 function classifyTestResource(file, options = {}) {
   return createTestResourceClassifier(options)(file);
 }
 
+// Bounded read parallelism for resource preloading. Sequential reads of the
+// ~960 suite sources cost 0.7-3.1 s on a loaded Windows host; 16 concurrent
+// reads cost 0.2-0.45 s (measured for issue 6c09647c).
+const RESOURCE_READ_CONCURRENCY = 16;
+
 async function loadTestResourceMap(allTests, options = {}) {
   const classify = createTestResourceClassifier(options);
   const uniqueFiles = [...new Set(allTests)];
+  // An injected synchronous reader is a test double: keep it authoritative
+  // unless an async reader is injected alongside it.
+  const readFileAsync = options.readFileAsync
+    || (options.readFile ? null : (target) => fs.promises.readFile(target, 'utf8'));
+  if (readFileAsync) {
+    await classify.preload(uniqueFiles, readFileAsync, options.readConcurrency || RESOURCE_READ_CONCURRENCY);
+  }
   const entries = uniqueFiles.map((file) => [file, classify(file)]);
   return new Map(entries);
 }

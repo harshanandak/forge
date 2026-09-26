@@ -281,6 +281,79 @@ describe('scripts/test-full-suite.js', () => {
     }
   });
 
+  test('preloads test sources and transitive helpers once each with bounded concurrent reads', async () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-preload-'));
+    const asyncReads = new Map();
+    const syncReads = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const write = (name, source) => {
+      const target = path.join(fixtureRoot, name);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, source);
+    };
+
+    try {
+      const tests = [];
+      for (let index = 0; index < 40; index += 1) {
+        write(`t${index}.test.js`, index % 2 === 0 ? "require('./helpers/spawn');\n" : "require('./helpers/plain');\n");
+        tests.push(`t${index}.test.js`);
+      }
+      write('helpers/spawn.js', "module.exports = require('node:child_process');\n");
+      write('helpers/plain.js', "module.exports = 1;\n");
+
+      const resources = await loadTestResourceMap(tests, {
+        readFile(target) {
+          syncReads.push(target);
+          return fs.readFileSync(target, 'utf8');
+        },
+        async readFileAsync(target) {
+          const resolved = path.resolve(target);
+          asyncReads.set(resolved, (asyncReads.get(resolved) || 0) + 1);
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((resolve) => setImmediate(resolve));
+          inFlight -= 1;
+          return fs.readFileSync(resolved, 'utf8');
+        },
+        root: fixtureRoot,
+        readConcurrency: 4,
+      });
+
+      expect(resources.size).toBe(40);
+      expect(resources.get('t0.test.js')).toBe('subprocess');
+      expect(resources.get('t1.test.js')).toBe('unit');
+      expect(asyncReads.size).toBe(42);
+      expect([...asyncReads.values()].every((count) => count === 1)).toBe(true);
+      expect(maxInFlight).toBeGreaterThan(1);
+      expect(maxInFlight).toBeLessThanOrEqual(4);
+      expect(syncReads).toEqual([]);
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('tokenizes escaped strings and template literals when collecting imports', async () => {
+    const sources = new Map([
+      ['entry.test.js', [
+        "const a = 'it\\'s \\\\ fine';",
+        'const b = "say \\"hi\\"";',
+        'const c = `plain \\${not} template`;',
+        "require('./helper');",
+      ].join('\n')],
+      ['helper.js', 'const d = `${1}`; const e = /x/; require("./leaf");\n'],
+      ['leaf.js', '// forge-test-resource: exclusive\n'],
+    ]);
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-tokens-'));
+    try {
+      for (const [name, source] of sources) fs.writeFileSync(path.join(fixtureRoot, name), source);
+      const resources = await loadTestResourceMap(['entry.test.js'], { root: fixtureRoot });
+      expect(resources.get('entry.test.js')).toBe('exclusive');
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   test('resolves transitive imports through a canonicalized root alias', async () => {
     const fixtureParent = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-realpath-'));
     const physicalRoot = path.join(fixtureParent, 'physical');
@@ -644,7 +717,11 @@ describe('scripts/test-full-suite.js', () => {
     }
     expect(lanes.find((lane) => lane.name === 'subprocess').shards.flatMap((shard) => shard.files))
       .toContain('test/scripts/dep-guard.check-ripple.analyzer.test.js');
-  });
+  // Real-repo discovery plus classification tokenizes every suite source
+  // (~960 files, ~10 MB). Measured 3.3-4.4 s on a loaded Windows host after the
+  // issue 6c09647c speedup, above what bun's 5 s default safely covers; 15 s
+  // gives ~3.4x margin over the worst measured run.
+  }, 15000);
 
   test('runFullSuiteInParallel spawns one process per shard and succeeds when all shards pass', async () => {
     const calls = [];
