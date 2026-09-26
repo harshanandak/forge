@@ -738,7 +738,24 @@ EOF
 # Returns: 0 if the fixture tree is complete, 1 otherwise
 fixtures_complete() {
   local fixture
-  for fixture in fresh-project existing-forge-v1 partial-install conflicting-configs     read-only-dirs no-git dirty-git detached-head merge-conflict monorepo     nextjs-project nestjs-project unicode-paths large-agents-md missing-prerequisites; do
+  local expected_fixtures=(
+    fresh-project
+    existing-forge-v1
+    partial-install
+    conflicting-configs
+    read-only-dirs
+    no-git
+    dirty-git
+    detached-head
+    merge-conflict
+    monorepo
+    nextjs-project
+    nestjs-project
+    unicode-paths
+    large-agents-md
+    missing-prerequisites
+  )
+  for fixture in "${expected_fixtures[@]}"; do
     [ -d "$FIXTURES_DIR/$fixture" ] || return 1
   done
   [ -f "$FIXTURES_DIR/monorepo/pnpm-workspace.yaml" ] || return 1

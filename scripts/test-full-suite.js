@@ -946,6 +946,10 @@ function spawnShard(shard, options = {}) {
   });
 }
 
+function prepareTestFixtures() {
+  require('../test-env/helpers/fixtures.js').ensureTestFixtures();
+}
+
 async function runFullSuiteInParallel(args = {}, deps = {}) {
   const env = deps.env || process.env;
   const platform = deps.platform || process.platform;
@@ -1001,6 +1005,19 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
       console.log('Full suite exit: ' + exitCode);
       completed = true;
+      return exitCode;
+    }
+
+    // Build the shared test-env fixtures once, before any shard can race to
+    // repair them (CI does the same with `setup-fixtures.sh --force`). This is
+    // a no-op when the fixture completion marker already exists.
+    try {
+      (deps.prepareFixtures || prepareTestFixtures)();
+    } catch (error) {
+      console.error(`Full suite fixture preparation failed: ${error.message}`);
+      const exitCode = signal ? signalExitCode(signal) : 1;
+      console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+      console.log('Full suite exit: ' + exitCode);
       return exitCode;
     }
 

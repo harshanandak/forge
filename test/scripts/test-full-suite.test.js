@@ -43,6 +43,8 @@ function fakeShardChild(code, pid, args = []) {
   return child;
 }
 
+function skipFixturePreparation() {}
+
 function fakeProcessTree() {
   return {
     reserveChild: () => ({ id: 'test-child' }),
@@ -662,6 +664,7 @@ describe('scripts/test-full-suite.js', () => {
         ['test/a.test.js', 2000],
         ['packages/skills/test/a.test.js', 1000],
       ]),
+      prepareFixtures: skipFixturePreparation,
       processTree: fakeProcessTree(),
       spawn,
     });
@@ -684,6 +687,7 @@ describe('scripts/test-full-suite.js', () => {
       allTests: ['test/a.test.js'],
       classify: () => 'unit',
       durationMap: new Map([['test/a.test.js', 1000]]),
+      prepareFixtures: skipFixturePreparation,
       processTree: fakeProcessTree(),
       spawn: (_command, args) => fakeShardChild(0, 9070, args),
       writeDurationProfile: writeProfile,
@@ -730,6 +734,7 @@ describe('scripts/test-full-suite.js', () => {
       durationMap: new Map(),
       cpuCount: 8,
       platform: 'linux',
+      prepareFixtures: skipFixturePreparation,
       processTree: fakeProcessTree(),
       spawn,
     });
@@ -776,6 +781,7 @@ describe('scripts/test-full-suite.js', () => {
       durationMap: new Map(),
       cpuCount: 4,
       platform: 'linux',
+      prepareFixtures: skipFixturePreparation,
       processTree: fakeProcessTree(),
       spawn,
     });
@@ -825,6 +831,7 @@ describe('scripts/test-full-suite.js', () => {
       durationMap: new Map(),
       cpuCount: 4,
       platform: 'win32',
+      prepareFixtures: skipFixturePreparation,
       processTree: fakeProcessTree(),
       spawn,
     });
@@ -850,6 +857,7 @@ describe('scripts/test-full-suite.js', () => {
           cpuCount: 1,
           durationMap: new Map(),
           platform: 'win32',
+          prepareFixtures: skipFixturePreparation,
           processTree: fakeProcessTree(),
           spawn: (_command, args) => {
             spawned += 1;
@@ -878,6 +886,7 @@ describe('scripts/test-full-suite.js', () => {
         classify: () => 'subprocess',
         durationMap: new Map(),
         platform: 'win32',
+        prepareFixtures: skipFixturePreparation,
         processTree: fakeProcessTree(),
         spawn: () => {
           spawned += 1;
@@ -890,6 +899,59 @@ describe('scripts/test-full-suite.js', () => {
 
     expect(spawned).toBe(0);
     expect(logged).toContain('Full suite resource budget: requested=1 minimum=2 outcome=rejected');
+  });
+
+  test('prepares test fixtures exactly once before the first shard executes', async () => {
+    const events = [];
+    const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 2 }, {
+      allTests: ['test/a.test.js', 'test/b.test.js'],
+      classify: () => 'unit',
+      durationMap: new Map(),
+      prepareFixtures: () => {
+        events.push('prepare');
+      },
+      processTree: fakeProcessTree(),
+      spawn: (_command, args) => {
+        events.push('spawn');
+        return fakeShardChild(0, 9950 + events.length, args);
+      },
+    });
+
+    expect(status).toBe(0);
+    expect(events.filter((event) => event === 'prepare')).toHaveLength(1);
+    expect(events[0]).toBe('prepare');
+    expect(events.filter((event) => event === 'spawn')).toHaveLength(2);
+  });
+
+  test('fails before any shard executes when fixture preparation throws', async () => {
+    const errors = [];
+    let spawned = 0;
+    const errorSpy = spyOn(console, 'error').mockImplementation((...parts) => {
+      errors.push(parts.map(String).join(' '));
+    });
+    let status;
+    try {
+      status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
+        allTests: ['test/a.test.js'],
+        classify: () => 'unit',
+        durationMap: new Map(),
+        prepareFixtures: () => {
+          throw new Error('Fixture repair did not restore expected test fixture state');
+        },
+        processTree: fakeProcessTree(),
+        spawn: () => {
+          spawned += 1;
+          throw new Error('spawn must not run');
+        },
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(status).toBe(1);
+    expect(spawned).toBe(0);
+    expect(errors.some((line) => line.includes('Full suite fixture preparation failed')
+      && line.includes('Fixture repair did not restore expected test fixture state'))).toBe(true);
   });
 
   test('resource lane plan output reports granted concurrency and budget', async () => {
@@ -909,6 +971,7 @@ describe('scripts/test-full-suite.js', () => {
         durationMap: new Map(),
         cpuCount: 4,
         platform: 'win32',
+        prepareFixtures: skipFixturePreparation,
         processTree: fakeProcessTree(),
         spawn: (_command, args) => fakeShardChild(0, 9900, args),
       });
@@ -970,6 +1033,7 @@ describe('scripts/test-full-suite.js', () => {
           allTests: ['test/a.test.js'],
           classify: () => 'unit',
           durationMap: new Map(),
+          prepareFixtures: skipFixturePreparation,
           processTree: fakeProcessTree(),
           spawn,
         }),
@@ -977,6 +1041,7 @@ describe('scripts/test-full-suite.js', () => {
           allTests: ['test/a.test.js'],
           classify: () => 'unit',
           durationMap: new Map(),
+          prepareFixtures: skipFixturePreparation,
           processTree: fakeProcessTree(),
           spawn,
         }),
@@ -1023,6 +1088,7 @@ describe('scripts/test-full-suite.js', () => {
         Forge_Worktree_Id: 'worktree-owner',
         forge_lease_ttl_ms: '60000',
       },
+      prepareFixtures: skipFixturePreparation,
       processTree,
       spawn,
     });
@@ -1236,6 +1302,7 @@ describe('scripts/test-full-suite.js', () => {
         ['test/a.test.js', 2000],
         ['test/b.test.js', 1000],
       ]),
+      prepareFixtures: skipFixturePreparation,
       processTree,
       platform: 'linux',
       spawn,
@@ -1280,6 +1347,7 @@ describe('scripts/test-full-suite.js', () => {
         allTests: ['test/a.test.js'],
         classify: () => 'unit',
         durationMap: new Map([['test/a.test.js', 1000]]),
+        prepareFixtures: skipFixturePreparation,
         processTree,
         platform: 'linux',
         spawn,
@@ -1320,6 +1388,7 @@ describe('scripts/test-full-suite.js', () => {
         ['test/b.test.js', 1000],
       ]),
       spawn,
+      prepareFixtures: skipFixturePreparation,
       processTree: fakeProcessTree(),
     });
 
@@ -1353,6 +1422,7 @@ describe('scripts/test-full-suite.js', () => {
         allTests: ['test/a.test.js'],
         classify: () => 'unit',
         durationMap: new Map(),
+        prepareFixtures: skipFixturePreparation,
         processTree: fakeProcessTree(),
         spawn,
         stderrStream: { write: () => {} },
@@ -1396,6 +1466,7 @@ describe('scripts/test-full-suite.js', () => {
         classify: (file) => resourceByFile.get(file),
         durationMap: new Map(),
         platform: 'linux',
+        prepareFixtures: skipFixturePreparation,
         processTree,
         spawn,
       });
@@ -1428,6 +1499,7 @@ describe('scripts/test-full-suite.js', () => {
     const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
       allTests: ['test/a.test.js'],
       classify: () => 'unit',
+      prepareFixtures: skipFixturePreparation,
       processTree: fakeProcessTree(),
       durationMap: new Map([['test/a.test.js', 1000]]),
       spawn,
@@ -1466,6 +1538,7 @@ describe('scripts/test-full-suite.js', () => {
           allTests: ['test/a.test.js', 'test/b.test.js'],
           classify: () => 'unit',
           durationMap: new Map(),
+          prepareFixtures: skipFixturePreparation,
           processTree,
           spawn: () => {
             const child = new EventEmitter();
@@ -1517,6 +1590,7 @@ describe('scripts/test-full-suite.js', () => {
         allTests: ['test/a.test.js'],
         classify: () => 'unit',
         durationMap: new Map([['test/a.test.js', 1000]]),
+        prepareFixtures: skipFixturePreparation,
         processTree,
         spawn: (_command, args) => {
           receiptPath = args[args.indexOf('--reporter-outfile') + 1];
@@ -1542,6 +1616,7 @@ describe('scripts/test-full-suite.js', () => {
         allTests: [],
         cpuCount: 5,
         durationMap: new Map(),
+        prepareFixtures: skipFixturePreparation,
         processTree: fakeProcessTree(),
       })).toBe(1);
     } finally {
@@ -1565,6 +1640,7 @@ describe('scripts/test-full-suite.js', () => {
         classify: () => 'unit',
         durationMap: new Map(),
         nodeExecutable: 'node',
+        prepareFixtures: skipFixturePreparation,
         processTree: fakeProcessTree(),
         spawn: () => {
           spawned = true;
@@ -1598,6 +1674,7 @@ describe('scripts/test-full-suite.js', () => {
         expect(await runFullSuiteInParallel({}, {
           allTests: [],
           durationMap: new Map(),
+          prepareFixtures: skipFixturePreparation,
           processTree,
         })).toBe(expectedExit);
       } finally {
