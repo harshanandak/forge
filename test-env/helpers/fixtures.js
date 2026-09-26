@@ -7,6 +7,9 @@ const { resolveBashCommand } = require('../../test/helpers/bash.js');
 const TEST_ENV_DIR = path.join(__dirname, '..');
 const FIXTURES_DIR = path.join(TEST_ENV_DIR, 'fixtures');
 const SETUP_SCRIPT = path.join(TEST_ENV_DIR, 'automation', 'setup-fixtures.sh');
+// Written by setup-fixtures.sh only after every fixture was created and verified.
+// The early sentinels below cannot detect a repair that died partway through.
+const FIXTURES_COMPLETE_MARKER = '.fixtures-complete';
 
 // Wall-clock ceiling for the synchronous fixture-setup spawn. Generous enough
 // for a cold Windows checkout, but bounded so a hung git/bash aborts fast.
@@ -20,7 +23,8 @@ function sleep(ms) {
 }
 
 function fixturesNeedRepair(fixturesDir) {
-	return !fs.existsSync(path.join(fixturesDir, 'fresh-project', '.git'))
+	return !fs.existsSync(path.join(fixturesDir, FIXTURES_COMPLETE_MARKER))
+		|| !fs.existsSync(path.join(fixturesDir, 'fresh-project', '.git'))
 		|| !fs.existsSync(path.join(fixturesDir, 'dirty-git', 'uncommitted.txt'))
 		|| !fs.existsSync(path.join(fixturesDir, 'detached-head', '.git'))
 		|| !fs.existsSync(path.join(fixturesDir, 'merge-conflict', '.git', 'MERGE_HEAD'))
@@ -92,5 +96,6 @@ function ensureTestFixtures(options = {}) {
 
 module.exports = {
 	ensureTestFixtures,
+	FIXTURES_COMPLETE_MARKER,
 	FIXTURES_DIR,
 };

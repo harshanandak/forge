@@ -25,6 +25,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_ENV_DIR="$(dirname "$SCRIPT_DIR")"
 FIXTURES_DIR="$TEST_ENV_DIR/fixtures"
 VALIDATION_DIR="$TEST_ENV_DIR/validation"
+# Written only after every fixture exists; test-env/helpers/fixtures.js repairs
+# whenever it is absent, so a partial (killed or failed) run is never trusted.
+FIXTURES_COMPLETE_MARKER="$FIXTURES_DIR/.fixtures-complete"
 
 # CLI flags
 FORCE_RECREATE=false
@@ -731,6 +734,18 @@ EOF
   log_success "Created: $fixture_name"
 }
 
+# Verify every fixture directory plus the late outputs exist
+# Returns: 0 if the fixture tree is complete, 1 otherwise
+fixtures_complete() {
+  local fixture
+  for fixture in fresh-project existing-forge-v1 partial-install conflicting-configs     read-only-dirs no-git dirty-git detached-head merge-conflict monorepo     nextjs-project nestjs-project unicode-paths large-agents-md missing-prerequisites; do
+    [ -d "$FIXTURES_DIR/$fixture" ] || return 1
+  done
+  [ -f "$FIXTURES_DIR/monorepo/pnpm-workspace.yaml" ] || return 1
+  [ -f "$FIXTURES_DIR/large-agents-md/AGENTS.md" ] || return 1
+  return 0
+}
+
 # =============================================================================
 # MAIN ORCHESTRATION
 # =============================================================================
@@ -741,6 +756,11 @@ main() {
 
   # Ensure fixtures directory exists
   mkdir -p "$FIXTURES_DIR"
+
+  # Invalidate the completion marker before any fixture is deleted
+  if [ "$FORCE_RECREATE" = true ]; then
+    rm -f "$FIXTURES_COMPLETE_MARKER"
+  fi
 
   # Create all fixtures
   create_fresh_project
@@ -794,6 +814,13 @@ main() {
 
   echo ""
   log_info "========================================="
+
+  # Publish the completion marker only after a fully successful run
+  if [ ${#FAILED_FIXTURES[@]} -eq 0 ] && fixtures_complete; then
+    touch "$FIXTURES_COMPLETE_MARKER"
+  else
+    log_warning "Fixture tree incomplete; not writing $(basename "$FIXTURES_COMPLETE_MARKER")"
+  fi
 
   # Exit with appropriate code
   if [ ${#FAILED_FIXTURES[@]} -gt 0 ]; then
