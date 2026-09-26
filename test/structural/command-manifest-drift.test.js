@@ -1,8 +1,10 @@
 /**
  * Drift guard for the static command manifest.
  *
- * `lib/commands/_manifest.js` is a GENERATED file that statically `require`s
- * every command module so `bun build --compile` can bundle the command graph.
+ * `lib/commands/_manifest.js` is a GENERATED file listing every command's static
+ * metadata plus a lazy loader with a static `require`, so `bun build --compile`
+ * can bundle the command graph. Metadata is read from the module exports, so a
+ * changed description/usage/flags export also counts as drift.
  * It must stay in lockstep with the actual command files in `lib/commands/`:
  * every non-underscore `.js` command file must appear in the manifest, and the
  * manifest must not list files that no longer exist.
@@ -55,9 +57,11 @@ describe('static command manifest drift', () => {
   test('every manifest entry resolves to a valid command module', () => {
     for (const entry of manifest.commands) {
       expect(typeof entry.file).toBe('string');
-      expect(entry.module).toBeTruthy();
-      expect(typeof entry.module.name).toBe('string');
-      expect(typeof entry.module.handler).toBe('function');
+      const mod = entry.load();
+      expect(mod).toBeTruthy();
+      expect(typeof mod.name).toBe('string');
+      expect(mod.name).toBe(entry.name);
+      expect(typeof mod.handler).toBe('function');
     }
   });
 

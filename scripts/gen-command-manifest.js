@@ -7,10 +7,12 @@
  * Static bundlers (`bun build --compile`) need a static require graph, but the
  * command registry discovers commands at runtime via `fs.readdirSync` +
  * `require(filePath)`. This generator walks `lib/commands/*.js` and emits
- * `lib/commands/_manifest.js`, a checked-in module that `require`s every command
- * module by a *static* relative path. The registry loads the manifest as its
- * fast, bundleable path and keeps readdir auto-discovery as a dev/extension
- * fallback (see lib/commands/_registry.js).
+ * `lib/commands/_manifest.js`, a checked-in module that lists every command with
+ * its static metadata (read from the module's exports at generation time) and a
+ * lazy loader holding a *static* relative `require`. The registry serves
+ * discovery and help from the metadata, loads a module only when its command is
+ * dispatched, and keeps readdir auto-discovery as a dev/extension fallback (see
+ * lib/commands/_registry.js).
  *
  * The output is deterministic (sorted by filename) and timestamp-free, and the
  * file is only rewritten when its content actually changes, so no-op
@@ -47,12 +49,44 @@ function listCommandFiles(commandsDir = COMMANDS_DIR) {
 }
 
 /**
+ * Command exports the registry and help read BEFORE a handler runs. They are
+ * snapshotted into the manifest so discovery and help never load a command
+ * module; everything else (handler, githubAuth, mutating, helpers) is read
+ * through the lazy loader at dispatch time.
+ */
+const METADATA_FIELDS = ['name', 'description', 'usage', 'flags', 'hidden'];
+
+/**
+ * Read one command module's static metadata from its exports.
+ *
+ * @param {string} commandsDir - Directory holding the command file
+ * @param {string} file - Command filename
+ * @returns {Object<string, *>} Metadata fields the module defines
+ */
+function readCommandMetadata(commandsDir, file) {
+  // Lazy: the registry pulls in workflow/activation helpers the CLI entry of
+  // this script does not otherwise need.
+  const { validateCommand } = require('../lib/commands/_registry');
+  const mod = require(path.join(commandsDir, file));
+  const validation = validateCommand(mod);
+  if (!validation.valid) {
+    throw new Error(`[gen-command-manifest] ${file}: ${validation.reason}`);
+  }
+  const metadata = {};
+  for (const field of METADATA_FIELDS) {
+    if (mod[field] !== undefined) metadata[field] = mod[field];
+  }
+  return metadata;
+}
+
+/**
  * Render the manifest source from a list of command filenames.
  *
  * @param {string[]} files - Sorted command filenames
+ * @param {string} [commandsDir] - Directory the files live in (defaults to lib/commands)
  * @returns {string} Full source text for lib/commands/_manifest.js
  */
-function renderManifest(files) {
+function renderManifest(files, commandsDir = COMMANDS_DIR) {
   const header = [
     '/**',
     ' * Static Command Manifest — GENERATED FILE, DO NOT EDIT.',
@@ -60,10 +94,12 @@ function renderManifest(files) {
     ' * Regenerate with: node scripts/gen-command-manifest.js',
     ' * Drift is enforced by test/structural/command-manifest-drift.test.js.',
     ' *',
-    ' * This module `require`s every command by a static relative path so',
-    ' * `bun build --compile` can statically bundle the command graph. The registry',
-    ' * (lib/commands/_registry.js) consumes `commands` as its fast, bundleable path',
-    ' * and falls back to `fs.readdirSync` auto-discovery for dev/extension commands.',
+    ' * Each entry carries the static metadata discovery and help need, snapshotted',
+    ' * from the command module\'s exports, plus a `load` closure with a static',
+    ' * relative `require` so `bun build --compile` can still bundle the command',
+    ' * graph. The registry (lib/commands/_registry.js) calls `load` only when a',
+    ' * command is dispatched, and falls back to `fs.readdirSync` auto-discovery for',
+    ' * dev/extension commands.',
     ' *',
     ' * @module commands/_manifest',
     ' */',
@@ -73,7 +109,12 @@ function renderManifest(files) {
     '/**',
     ' * @typedef {Object} ManifestEntry',
     ' * @property {string} file - Command filename (e.g. `status.js`)',
-    ' * @property {import("./_registry").CommandModule} module - The required command module',
+    ' * @property {string} name - Command name used for routing',
+    ' * @property {string} description - Human-readable description',
+    ' * @property {string} [usage] - Usage string',
+    ' * @property {Object<string, string>} [flags] - Flag descriptions',
+    ' * @property {boolean} [hidden] - Omitted from the global help listing',
+    ' * @property {function(): import("./_registry").CommandModule} load - Requires the command module',
     ' */',
     '',
     '/** @type {ManifestEntry[]} */',
@@ -82,7 +123,14 @@ function renderManifest(files) {
 
   const entries = files.map(file => {
     const modPath = `./${file.replace(/\.js$/, '')}`;
-    return `  { file: ${JSON.stringify(file)}, module: require(${JSON.stringify(modPath)}) },`;
+    const metadata = readCommandMetadata(commandsDir, file);
+    return [
+      '  {',
+      `    file: ${JSON.stringify(file)},`,
+      ...Object.entries(metadata).map(([key, value]) => `    ${key}: ${JSON.stringify(value)},`),
+      `    load: () => require(${JSON.stringify(modPath)}),`,
+      '  },',
+    ].join('\n');
   });
 
   const footer = [
@@ -110,7 +158,7 @@ function generate(opts = {}) {
   const commandsDir = opts.commandsDir ?? COMMANDS_DIR;
   const manifestPath = opts.manifestPath ?? MANIFEST_PATH;
   const files = listCommandFiles(commandsDir);
-  const next = renderManifest(files);
+  const next = renderManifest(files, commandsDir);
 
   const current = fs.existsSync(manifestPath)
     ? fs.readFileSync(manifestPath, 'utf8')
@@ -125,7 +173,15 @@ function generate(opts = {}) {
   return { changed, files, path: manifestPath };
 }
 
-module.exports = { listCommandFiles, renderManifest, generate, COMMANDS_DIR, MANIFEST_PATH };
+module.exports = {
+  listCommandFiles,
+  readCommandMetadata,
+  renderManifest,
+  generate,
+  METADATA_FIELDS,
+  COMMANDS_DIR,
+  MANIFEST_PATH,
+};
 
 // CLI entry point
 if (require.main === module) {
