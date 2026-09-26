@@ -15,7 +15,7 @@ const {
 	executeValidate,
 	executeDebugMode,
 } = require('../../lib/commands/validate.js');
-const { resolveReceiptPath } = require('../../lib/validation-receipt.js');
+const { resolveReceiptPath, validationIsComplete } = require('../../lib/validation-receipt.js');
 
 setDefaultTimeout(30000);
 
@@ -1320,6 +1320,102 @@ describe('Validate Command - Validation Orchestration', () => {
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}
+		});
+	});
+
+	describe('Gate integrity', () => {
+		const noReceipt = {
+			beginValidation: () => ({ head: 'gate-integrity-snapshot' }),
+			completeValidation: (_rootDir, _snapshot, result) => validationIsComplete(result),
+		};
+
+		test('runs every gate in rootDir, not process.cwd()', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-gate-root-'));
+			const calls = [];
+			try {
+				expect(path.resolve(rootDir)).not.toBe(path.resolve(process.cwd()));
+				expect(fs.existsSync(path.join(process.cwd(), 'tsconfig.json'))).toBe(false);
+				fs.writeFileSync(path.join(rootDir, 'tsconfig.json'), '{}');
+				const result = await executeValidate({
+					rootDir,
+					validationReceipt: noReceipt,
+					exec: (command, args, options) => {
+						calls.push({ command, args, cwd: options?.cwd });
+						if (command === 'bun' && args[0] === 'test') return '1 pass\n0 fail\nRan 1 tests across 1 file.';
+						return '';
+					},
+				});
+
+				const commands = calls.map(call => call.command);
+				expect(commands).toEqual(expect.arrayContaining(['git', 'tsc', 'eslint', 'bun']));
+				expect(calls.find(call => call.command === 'bun' && call.args[0] === 'audit')).toBeDefined();
+				expect(calls.find(call => call.command === 'bun' && call.args[0] === 'test')).toBeDefined();
+				for (const call of calls) expect(call.cwd).toBe(rootDir);
+				// tsconfig lookup honoured rootDir: tsc actually ran instead of "not configured"
+				expect(result.checks.typeCheck.notConfigured).not.toBe(true);
+				expect(result.checks.typeCheck.success).toBe(true);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('passes --max-warnings 0 to eslint', async () => {
+			let lintArgs;
+			await runLint((_command, args) => { lintArgs = args; return ''; });
+			expect(lintArgs).toEqual(expect.arrayContaining(['--max-warnings', '0']));
+			expect(lintArgs[lintArgs.indexOf('--max-warnings') + 1]).toBe('0');
+		});
+
+		test.each([
+			['non-zero exit', () => {
+				throw Object.assign(new Error('ESLint found too many warnings'), {
+					status: 1,
+					stdout: '✖ 2 problems (0 errors, 2 warnings)\n\nESLint found too many warnings (maximum: 0).',
+				});
+			}],
+			['exit 0', () => '✖ 2 problems (0 errors, 2 warnings)\n'],
+			['clean (control)', () => ''],
+		])('warning-only lint output fails and mints no receipt (%s)', async (name, lintExec) => {
+			const clean = name === 'clean (control)';
+			const lint = await runLint(lintExec);
+			expect(lint).toMatchObject(clean
+				? { success: true, errors: 0, warnings: 0 }
+				: { success: false, errors: 0, warnings: 2 });
+
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-lint-warn-'));
+			try {
+				const result = await executeValidate({
+					rootDir,
+					validationReceipt: noReceipt,
+					runAllTests: async () => ({
+						success: true, testsFound: true, fullSuite: true, passed: 1, failed: 0, total: 1,
+					}),
+					exec: (command, args, options) => {
+						if (command === 'eslint') return lintExec(command, args, options);
+						if (command === 'bun' && args[0] === 'audit') return 'No vulnerabilities found';
+						return '';
+					},
+				});
+				expect(result.checks.lint.success).toBe(clean);
+				expect(result.success).toBe(clean);
+				expect(result.validationReceipt).toBe(clean);
+				if (!clean) expect(result.failedChecks).toContain('lint');
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('receipt refuses a skipped lint gate', () => {
+			expect(validationIsComplete({
+				success: true,
+				checks: {
+					conflictMarkers: { success: true },
+					typeCheck: { success: true, skipped: true, notConfigured: true },
+					lint: { success: true, skipped: true },
+					security: { success: true },
+					tests: { success: true, fullSuite: true, testsFound: true, total: 1, failed: 0 },
+				},
+			})).toBe(false);
 		});
 	});
 });
