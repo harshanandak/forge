@@ -185,10 +185,27 @@ describe('markdown changes select doc-asserting suites in the push lane', () => 
 });
 
 describe('CI: markdown-only PRs must still run doc-asserting suites', () => {
-	// A markdown-only PR does not match `paths:` in .github/workflows/test.yml, so
-	// the matrix never runs and Required Checks Bypass reports "Test Suite" green.
-	// That bypass must run the doc-asserting selection instead of echoing success,
+	// A markdown-only PR is classified test-irrelevant by the Tests workflow, so
+	// every expensive lane is skipped. The Tests workflow must still run the
+	// doc-asserting selection for that PR instead of passing on skips alone,
 	// otherwise the two failures above recur.
+	const workflowPath = path.join(REPO_ROOT, '.github', 'workflows', 'test.yml');
+	const workflow = fs.readFileSync(workflowPath, 'utf8').replace(/\r\n/g, '\n');
+	const start = workflow.indexOf('\n  doc-assertions:\n');
+	const end = workflow.indexOf('\n  ci-gate:\n');
+	const docJob = start === -1 ? '' : workflow.slice(start, end === -1 ? undefined : end);
+
+	test('the Tests workflow runs the doc-asserting selection for test-irrelevant PRs', () => {
+		expect(docJob).toContain('node scripts/doc-asserting-tests.js');
+		expect(docJob).toContain("needs.changes.outputs.tests_relevant == 'false'");
+	});
+
+	test('the doc-assertion job checks out the repo so it can run those tests', () => {
+		expect(docJob).toContain('actions/checkout');
+	});
+
+	// Required Checks Bypass still runs on markdown-only PRs until it is retired,
+	// so its Test Suite job must keep running the same selection.
 	const bypassPath = path.join(REPO_ROOT, '.github', 'workflows', 'required-checks-bypass.yml');
 	const bypass = fs.readFileSync(bypassPath, 'utf8');
 

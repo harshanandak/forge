@@ -12,22 +12,14 @@ on:
       - 'skills/**'
       - 'packages/**'
       - 'package.json'
+      - 'bun.lock'
       - 'bunfig.toml'
       - '.github/workflows/**'
       - '.github/agentic-workflows/**'
+  # No paths filter: Tests runs on every PR so CI Gate is always produced by this
+  # one workflow. The `changes` job decides whether the PR is test-relevant and the
+  # expensive lanes skip themselves when it is not.
   pull_request:
-    paths:
-      - 'bin/**'
-      - 'lib/**'
-      - 'scripts/**'
-      - 'test/**'
-      - 'test-env/**'
-      - 'skills/**'
-      - 'packages/**'
-      - 'package.json'
-      - 'bunfig.toml'
-      - '.github/workflows/**'
-      - '.github/agentic-workflows/**'
   merge_group:
   workflow_dispatch:
   schedule:
@@ -44,13 +36,17 @@ jobs:
   changes:
     # Classifies the PR diff so the expensive 3-OS x 2-Node Full Matrix only runs
     # when the change can plausibly behave differently per operating system.
-    # Anything that is not a pull_request (push to master, merge_group, schedule,
-    # workflow_dispatch) is always treated as OS-sensitive.
+    # It also decides whether the PR is test-relevant at all: when it is not (for
+    # example a docs-only PR), every expensive lane skips and only the
+    # doc-asserting suites run. Anything that is not a pull_request (push to master,
+    # merge_group, schedule, workflow_dispatch) is always treated as test-relevant
+    # and OS-sensitive.
     name: Classify Changed Paths
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       os_sensitive: ${{ steps.filter.outputs.os_sensitive }}
+      tests_relevant: ${{ steps.filter.outputs.tests_relevant }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -67,12 +63,29 @@ jobs:
           set -uo pipefail
           if [ "$EVENT_NAME" != "pull_request" ]; then
             echo "Non-PR event ($EVENT_NAME): full matrix always runs."
+            echo "tests_relevant=true" >> "$GITHUB_OUTPUT"
             echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
             echo "::warning::Could not resolve the PR diff; failing safe to the full matrix."
+            echo "tests_relevant=true" >> "$GITHUB_OUTPUT"
             echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Changed files:"
+          printf '%s\n' "$changed"
+          # Everything the former pull_request `paths:` trigger covered, plus the
+          # build/runtime surfaces it missed: bun.lock, plugin hooks, installer,
+          # lefthook, root-level and .claude/ JavaScript, and .forge/hooks.
+          tests_relevant_pattern='^(bin/|lib/|scripts/|test/|test-env/|skills/|packages/|plugin/hooks/|\.github/workflows/|\.github/agentic-workflows/|\.forge/hooks/|\.claude/.*\.js$|[^/]+\.js$|package\.json$|bun\.lock$|bunfig\.toml$|lefthook\.yml$|install\.sh$)'
+          if printf '%s\n' "$changed" | grep -Eq "$tests_relevant_pattern"; then
+            echo "Test-relevant paths changed: running the test lanes."
+            echo "tests_relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No test-relevant paths changed: test lanes skipped; doc-asserting suites still run."
+            echo "tests_relevant=false" >> "$GITHUB_OUTPUT"
+            echo "os_sensitive=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Surfaces where Windows/macOS genuinely diverge from Linux:
@@ -80,8 +93,6 @@ jobs:
           # helpers, git-hook + installer plumbing, the SQLite kernel (Windows file
           # handle/EBUSY history), and this workflow itself.
           os_sensitive_pattern='^(bin/|packages/|test-env/|plugin/hooks/|lib/core/|lib/kernel/|lib/activation/|lib/preflight/|lib/commands/(worktree|setup|init|install)|lib/(shell-utils|symlink-utils|file-utils|file-hash|package-root|forge-lock|detect-worktree|protected-path-manifest|hook-global-installer|hook-renderer|lefthook-check|lefthook-wiring|husky-migration|setup|setup-utils|reset)\.js$|install\.sh$|scripts/install\.|lefthook\.yml$|bunfig\.toml$|package\.json$|bun\.lock$|\.github/workflows/test\.yml$)'
-          echo "Changed files:"
-          printf '%s\n' "$changed"
           if printf '%s\n' "$changed" | grep -Eq "$os_sensitive_pattern"; then
             echo "OS-sensitive paths changed: running the full matrix."
             echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
@@ -96,7 +107,7 @@ jobs:
   full-matrix:
     name: Full Matrix (${{ matrix.os }} / Node ${{ matrix.node-version }})
     needs: [changes]
-    if: ${{ needs.changes.outputs.os_sensitive == 'true' }}
+    if: ${{ needs.changes.outputs.tests_relevant == 'true' && needs.changes.outputs.os_sensitive == 'true' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -112,9 +123,19 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - name: Setup Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Resolve Bun cache directory
+        id: bun-cache-dir
+        shell: bash
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - name: Cache Bun downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.bun-cache-dir.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
@@ -140,7 +161,8 @@ jobs:
 
   unit-shard:
     name: Unit Shard ${{ matrix.shard-index }}
-    if: github.event_name == 'pull_request'
+    needs: [changes]
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -156,9 +178,19 @@ jobs:
         with:
           node-version: 24
       - name: Setup Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Resolve Bun cache directory
+        id: bun-cache-dir
+        shell: bash
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - name: Cache Bun downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.bun-cache-dir.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
@@ -187,7 +219,8 @@ jobs:
 
   windows-smoke:
     name: Windows Smoke
-    if: github.event_name == 'pull_request'
+    needs: [changes]
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -198,9 +231,19 @@ jobs:
         with:
           node-version: 24
       - name: Setup Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Resolve Bun cache directory
+        id: bun-cache-dir
+        shell: bash
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - name: Cache Bun downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.bun-cache-dir.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
@@ -227,7 +270,8 @@ jobs:
 
   macos-smoke:
     name: macOS Smoke
-    if: github.event_name == 'pull_request'
+    needs: [changes]
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}
     runs-on: macos-latest
     timeout-minutes: 25
     steps:
@@ -238,9 +282,19 @@ jobs:
         with:
           node-version: 24
       - name: Setup Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Resolve Bun cache directory
+        id: bun-cache-dir
+        shell: bash
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - name: Cache Bun downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.bun-cache-dir.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
@@ -266,34 +320,42 @@ jobs:
           retention-days: 7
 
   cross-os-gate:
-    # Stable, single required status check that enforces the cross-OS smoke lanes.
-    # Runs even when a smoke lane fails (if: always) and fails the PR unless BOTH
-    # Windows and macOS smoke succeeded (or were legitimately skipped). This is the
-    # context to mark Required in branch protection so a red Windows/macOS run
-    # cannot merge. For doc-only PRs the real smoke lanes are path-filtered out and
-    # the Cross-OS Gate no-op in required-checks-bypass.yml satisfies the check.
+    # Single aggregate for the cross-OS smoke lanes. Runs even when a smoke lane
+    # fails (if: always) and fails unless BOTH Windows and macOS smoke succeeded.
+    # A skipped smoke lane passes only when the classifier explicitly marked the PR
+    # test-irrelevant; a skip for any other reason (for example a failed
+    # classifier) fails. CI Gate needs this job, so the smoke lanes stay under the
+    # required CI Gate transitively.
     name: Cross-OS Gate
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [windows-smoke, macos-smoke]
+    needs: [changes, windows-smoke, macos-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Require Windows + macOS smoke to pass
+        shell: bash
+        env:
+          WINDOWS_SMOKE: ${{ needs.windows-smoke.result }}
+          MACOS_SMOKE: ${{ needs.macos-smoke.result }}
+          TESTS_RELEVANT: ${{ needs.changes.outputs.tests_relevant }}
         run: |
-          w='${{ needs.windows-smoke.result }}'
-          m='${{ needs.macos-smoke.result }}'
-          echo "windows-smoke=$w  macos-smoke=$m"
-          for r in "$w" "$m"; do
-            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
-              echo "::error::Cross-OS smoke did not pass (windows=$w macos=$m)"
-              exit 1
+          echo "windows-smoke=$WINDOWS_SMOKE  macos-smoke=$MACOS_SMOKE  tests_relevant=$TESTS_RELEVANT"
+          for r in "$WINDOWS_SMOKE" "$MACOS_SMOKE"; do
+            if [ "$r" = "success" ]; then
+              continue
             fi
+            if [ "$r" = "skipped" ] && [ "$TESTS_RELEVANT" = "false" ]; then
+              continue
+            fi
+            echo "::error::Cross-OS smoke did not pass (windows=$WINDOWS_SMOKE macos=$MACOS_SMOKE tests_relevant=$TESTS_RELEVANT)"
+            exit 1
           done
-          echo "Cross-OS smoke OK (success or skipped on both)."
+          echo "Cross-OS smoke OK (both succeeded, or both skipped for a test-irrelevant PR)."
 
   followup-tests:
     name: Targeted PR Tests (${{ matrix.label }})
-    if: github.event_name == 'pull_request'
+    needs: [changes]
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -316,9 +378,19 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - name: Setup Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Resolve Bun cache directory
+        id: bun-cache-dir
+        shell: bash
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - name: Cache Bun downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.bun-cache-dir.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
@@ -362,7 +434,6 @@ jobs:
             `mode=${effectiveMode}`,
             `reason=${plan.reason}`,
             `run_test_env=${plan.runTestEnv}`,
-            `run_e2e=${plan.runE2E}`,
             `run_workflow_tests=${plan.runWorkflowTests}`,
           ];
 
@@ -386,13 +457,13 @@ jobs:
       # runner the full matrix uses. A raw `bun test test/` runs every
       # subprocess-heavy file inside one long-lived bun process with no
       # resource-lane separation, which is where the Windows lane's spawns start
-      # failing outright.
+      # failing outright. When the classifier already demands the Full Matrix, that
+      # matrix runs the same full suite on this lane's OS/Node pairs, so the
+      # fallback is skipped rather than repeated. test/e2e/ is covered by the
+      # dedicated E2E Tests job, not here.
       - name: Run single-platform unit suite fallback
-        if: steps.affected.outputs.mode == 'full'
+        if: steps.affected.outputs.mode == 'full' && needs.changes.outputs.os_sensitive != 'true'
         run: node scripts/test-full-suite.js --timeout 15000 --label-prefix followup-full-${{ matrix.label }}
-      - name: Run affected e2e tests
-        if: steps.affected.outputs.run_e2e == 'true'
-        run: bun test --timeout 15000 test/e2e/ --reporter=junit --reporter-outfile test-results/followup-e2e.xml
       - name: Run affected edge-case tests
         if: steps.affected.outputs.run_test_env == 'true'
         run: bun test --timeout 15000 test-env/
@@ -415,6 +486,8 @@ jobs:
 
   coverage:
     name: Code Coverage
+    needs: [changes]
+    if: ${{ needs.changes.outputs.tests_relevant == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -425,9 +498,19 @@ jobs:
         with:
           node-version: 24
       - name: Setup Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Resolve Bun cache directory
+        id: bun-cache-dir
+        shell: bash
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - name: Cache Bun downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.bun-cache-dir.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
@@ -471,6 +554,8 @@ jobs:
 
   e2e:
     name: E2E Tests
+    needs: [changes]
+    if: ${{ needs.changes.outputs.tests_relevant == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -481,9 +566,19 @@ jobs:
         with:
           node-version: 24
       - name: Setup Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Resolve Bun cache directory
+        id: bun-cache-dir
+        shell: bash
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - name: Cache Bun downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.bun-cache-dir.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
@@ -521,9 +616,19 @@ jobs:
         with:
           node-version: 24
       - name: Setup Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Resolve Bun cache directory
+        id: bun-cache-dir
+        shell: bash
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - name: Cache Bun downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.bun-cache-dir.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
       - name: Install dependencies
         run: bun install
       - name: Setup test fixtures
@@ -540,10 +645,12 @@ jobs:
           retention-days: 30
 
   dashboard-pr:
+    # Reads every test-artifacts-* bundle, so it waits for every lane that uploads
+    # one and still runs when a lane failed.
     name: Test Dashboard (PR)
-    if: github.event_name == 'pull_request'
+    if: ${{ always() && github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}
     runs-on: ubuntu-latest
-    needs: [unit-shard, windows-smoke, macos-smoke, coverage, e2e]
+    needs: [changes, full-matrix, unit-shard, windows-smoke, macos-smoke, followup-tests, coverage, e2e]
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -571,24 +678,63 @@ jobs:
             cat test-dashboard.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Tests: {d[\"testCount\"]}'); print(f'Suite duration: {d[\"suiteDurationMs\"]}ms'); print(f'Integration skipped: {d[\"integrationSkipped\"]}'); print('Slowest files:'); [print(f'- {item[\"file\"]}: {item[\"durationMs\"]}ms') for item in d.get(\"slowestFiles\", [])[:5]]" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Dashboard generated" >> $GITHUB_STEP_SUMMARY
           fi
 
+  doc-assertions:
+    # A test-irrelevant PR (for example docs-only) skips every expensive lane, but
+    # several suites assert on markdown CONTENT. Run exactly those suites so such a
+    # PR cannot merge green and then break master (kernel issue 63556816). The
+    # selection is shared with the local push lane via lib/doc-assertions.js.
+    name: Doc Assertion Tests
+    needs: [changes]
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Bun
+        id: setup-bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          # packageManager in package.json: the same exact pin the other jobs render.
+          bun-version-file: package.json
+      - name: Resolve Bun cache directory
+        id: bun-cache-dir
+        shell: bash
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - name: Cache Bun downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.bun-cache-dir.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+      - name: Install dependencies
+        run: bun install
+      - name: Run doc-asserting suites for changed markdown
+        run: node scripts/doc-asserting-tests.js --base ${{ github.event.pull_request.base.sha }}
+
   ci-gate:
-    # Single aggregate status for the whole Tests workflow. Mark THIS Required in
-    # branch protection instead of the individual lanes: it stays green when a lane
-    # is legitimately skipped by the path gate above, and red the moment any lane
-    # fails or is cancelled. Adding a lane to `needs` is all that is required to
-    # bring it under the gate.
+    # Single aggregate status for the whole Tests workflow and the one Tests
+    # context required in branch protection. Tests runs on every PR, so this job
+    # always reports. A lane passes on success; a skipped lane passes only when its
+    # skip reason (the value after ':' in RESULTS) is true — the PR is
+    # test-irrelevant, the full matrix is not needed, or the lane is PR-only on a
+    # non-PR event. A skip for any other reason, such as a failed classifier,
+    # fails the gate. The smoke lanes are enforced through cross-os-gate. Adding a
+    # lane to `needs` and RESULTS is all that is required to bring it under the
+    # gate.
     name: CI Gate
     if: ${{ always() }}
     needs:
       - changes
       - full-matrix
       - unit-shard
-      - windows-smoke
-      - macos-smoke
       - cross-os-gate
       - followup-tests
       - coverage
       - e2e
+      - doc-assertions
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -596,36 +742,43 @@ jobs:
         shell: bash
         env:
           RESULTS: |
-            changes=${{ needs.changes.result }}
-            full-matrix=${{ needs.full-matrix.result }}
-            unit-shard=${{ needs.unit-shard.result }}
-            windows-smoke=${{ needs.windows-smoke.result }}
-            macos-smoke=${{ needs.macos-smoke.result }}
-            cross-os-gate=${{ needs.cross-os-gate.result }}
-            followup-tests=${{ needs.followup-tests.result }}
-            coverage=${{ needs.coverage.result }}
-            e2e=${{ needs.e2e.result }}
+            changes=${{ needs.changes.result }}:false
+            full-matrix=${{ needs.full-matrix.result }}:${{ needs.changes.outputs.tests_relevant == 'false' || needs.changes.outputs.os_sensitive == 'false' }}
+            unit-shard=${{ needs.unit-shard.result }}:${{ github.event_name != 'pull_request' || needs.changes.outputs.tests_relevant == 'false' }}
+            cross-os-gate=${{ needs.cross-os-gate.result }}:${{ github.event_name != 'pull_request' }}
+            followup-tests=${{ needs.followup-tests.result }}:${{ github.event_name != 'pull_request' || needs.changes.outputs.tests_relevant == 'false' }}
+            coverage=${{ needs.coverage.result }}:${{ needs.changes.outputs.tests_relevant == 'false' }}
+            e2e=${{ needs.e2e.result }}:${{ needs.changes.outputs.tests_relevant == 'false' }}
+            doc-assertions=${{ needs.doc-assertions.result }}:${{ github.event_name != 'pull_request' || needs.changes.outputs.tests_relevant == 'true' }}
         run: |
           set -uo pipefail
           echo "$RESULTS"
           failed=0
-          while IFS='=' read -r lane result; do
+          while IFS='=' read -r lane value; do
             [ -n "$lane" ] || continue
+            result="${value%%:*}"
+            skip_ok="${value#*:}"
             case "$result" in
-              success|skipped) ;;
+              success) ;;
+              skipped)
+                if [ "$skip_ok" != "true" ]; then
+                  echo "::error::Lane '$lane' was skipped without a legitimate reason"
+                  failed=1
+                fi
+                ;;
               *) echo "::error::Lane '$lane' finished as '$result'"; failed=1 ;;
             esac
           done <<< "$RESULTS"
           if [ "$failed" -ne 0 ]; then
             exit 1
           fi
-          echo "All test lanes passed or were skipped by the path gate."
+          echo "All test lanes passed or were skipped for a legitimate reason."
 
   dashboard-confidence:
     name: Test Dashboard (Confidence Lane)
-    if: github.event_name != 'pull_request'
+    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}
     runs-on: ubuntu-latest
-    needs: [full-matrix, coverage, e2e]
+    needs: [changes, full-matrix, coverage, e2e]
     timeout-minutes: 15
     steps:
       - name: Checkout code

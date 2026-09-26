@@ -3,6 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { describe, test, expect } = require('bun:test');
+const yaml = require('js-yaml');
 
 const bashExecutable = process.platform === 'win32'
   ? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe')
@@ -13,6 +14,8 @@ describe('CI Workflow Configuration', () => {
   const workflowContent = fs.readFileSync(workflowPath, 'utf-8').replace(/\r\n/g, '\n');
   const synchronizeSkipCondition = "github.event_name != 'pull_request' || github.event.action != 'synchronize'";
   const prNonSynchronizeCondition = "github.event_name == 'pull_request' && github.event.action != 'synchronize'";
+
+  const { jobs, on: triggers } = yaml.load(workflowContent);
 
   function expectSection(sectionName) {
     expect(workflowContent.includes(`${sectionName}:`)).toBe(true);
@@ -29,7 +32,8 @@ describe('CI Workflow Configuration', () => {
   describe('Follow-up PR Pushes', () => {
     test('followup-tests job exists for all pull request events', () => {
       expectSection('followup-tests');
-      expect(workflowContent.includes("if: github.event_name == 'pull_request'")).toBe(true);
+      expect(jobs['followup-tests'].if)
+        .toBe("${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}");
     });
 
     test('followup-tests covers the Windows Node 22 lane before merge', () => {
@@ -64,11 +68,32 @@ describe('CI Workflow Configuration', () => {
       expect(/bun test[^\n]*[ '"]test\//.test(stepBody)).toBe(false);
     });
 
-    test('followup-tests still runs targeted, fallback, e2e, and edge-case steps', () => {
+    test('followup-tests still runs targeted, fallback, and edge-case steps', () => {
       expect(workflowContent.includes('name: Run targeted unit tests')).toBe(true);
       expect(workflowContent.includes('name: Run single-platform unit suite fallback')).toBe(true);
-      expect(workflowContent.includes('name: Run affected e2e tests')).toBe(true);
       expect(workflowContent.includes('name: Run affected edge-case tests')).toBe(true);
+    });
+
+    // The dedicated E2E job already runs test/e2e/ on every relevant PR and is a
+    // CI Gate dependency, so a second affected-e2e run inside followup-tests only
+    // duplicated work.
+    test('followup-tests no longer duplicates the dedicated E2E job', () => {
+      const steps = jobs['followup-tests'].steps.map((step) => step.name);
+      expect(steps).not.toContain('Run affected e2e tests');
+      expect(jobs.e2e.name).toBe('E2E Tests');
+      expect(jobs['ci-gate'].needs).toContain('e2e');
+    });
+
+    // When the classifier demands the full matrix, the same full suite already runs
+    // on the identical ubuntu/Node 24 and windows/Node 22 environments, so the
+    // single-platform fallback would only repeat it.
+    test('single-platform fallback runs only when the full matrix does not', () => {
+      const followup = jobs['followup-tests'];
+      expect(followup.needs).toEqual(['changes']);
+      const fallback = followup.steps.find((step) => step.name === 'Run single-platform unit suite fallback');
+      expect(fallback.if).toBe("steps.affected.outputs.mode == 'full' && needs.changes.outputs.os_sensitive != 'true'");
+      const edgeCases = followup.steps.find((step) => step.name === 'Run affected edge-case tests');
+      expect(edgeCases.if).toBe("steps.affected.outputs.run_test_env == 'true'");
     });
 
     test('affected edge-case failures reach the required CI Gate', () => {
@@ -162,8 +187,9 @@ describe('CI Workflow Configuration', () => {
       // `changes` classifier, which returns true for every non-pull_request event —
       // so push to master, merge_group, schedule and workflow_dispatch still run the
       // full 3-OS x 2-Node matrix unconditionally.
-      expect(workflowContent.includes('needs: [changes]')).toBe(true);
-      expect(workflowContent.includes("if: ${{ needs.changes.outputs.os_sensitive == 'true' }}")).toBe(true);
+      expect(jobs['full-matrix'].needs).toEqual(['changes']);
+      expect(jobs['full-matrix'].if)
+        .toBe("${{ needs.changes.outputs.tests_relevant == 'true' && needs.changes.outputs.os_sensitive == 'true' }}");
       expect(workflowContent.includes('os: [ubuntu-latest, macos-latest, windows-latest]')).toBe(true);
       expect(workflowContent.includes('node-version: [22, 24]')).toBe(true);
     });
@@ -187,8 +213,9 @@ describe('CI Workflow Configuration', () => {
 
     test('cross-OS smoke still covers every pull request', () => {
       // The lanes that keep Windows/macOS signal on PRs where the matrix is skipped.
-      expect(workflowContent.includes("windows-smoke:\n    name: Windows Smoke\n    if: github.event_name == 'pull_request'")).toBe(true);
-      expect(workflowContent.includes("macos-smoke:\n    name: macOS Smoke\n    if: github.event_name == 'pull_request'")).toBe(true);
+      for (const lane of ['windows-smoke', 'macos-smoke']) {
+        expect(jobs[lane].if).toBe("${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}");
+      }
       expect(workflowContent.includes('label: windows-node22')).toBe(true);
     });
 
@@ -217,11 +244,23 @@ describe('CI Workflow Configuration', () => {
       expect(workflowContent.includes('uses: actions/upload-artifact@v7')).toBe(true);
     });
 
+    // The PR dashboard reads every uploaded test-artifacts-* bundle, so it must wait
+    // for every lane that uploads one, and it must still run when a lane failed —
+    // that is exactly when the dashboard is most useful.
     test('dashboard jobs depend on the appropriate upstream jobs', () => {
-      expectSection('dashboard-pr');
-      expect(workflowContent.includes('needs: [unit-shard, windows-smoke, macos-smoke, coverage, e2e]')).toBe(true);
-      expectSection('dashboard-confidence');
-      expect(workflowContent.includes('needs: [full-matrix, coverage, e2e]')).toBe(true);
+      expect(jobs['dashboard-pr'].needs).toEqual([
+        'changes',
+        'full-matrix',
+        'unit-shard',
+        'windows-smoke',
+        'macos-smoke',
+        'followup-tests',
+        'coverage',
+        'e2e',
+      ]);
+      expect(jobs['dashboard-pr'].if)
+        .toBe("${{ always() && github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}");
+      expect(jobs['dashboard-confidence'].needs).toEqual(['changes', 'full-matrix', 'coverage', 'e2e']);
     });
 
     test('dashboard jobs aggregate artifacts into test-dashboard.json', () => {
@@ -257,26 +296,219 @@ describe('CI Workflow Configuration', () => {
   });
 
   describe('Aggregate Gate', () => {
-    test('ci-gate aggregates every real lane and tolerates path-gated skips', () => {
-      expectSection('ci-gate');
-      expect(workflowContent.includes('name: CI Gate')).toBe(true);
-      expect(workflowContent.includes('if: ${{ always() }}')).toBe(true);
-      for (const lane of [
-        'changes',
-        'full-matrix',
-        'unit-shard',
-        'windows-smoke',
-        'macos-smoke',
-        'cross-os-gate',
-        'followup-tests',
-        'coverage',
-        'e2e',
-      ]) {
-        expect(workflowContent.includes(`      - ${lane}\n`)).toBe(true);
-        expect(workflowContent.includes(`${lane}=\${{ needs.${lane}.result }}`)).toBe(true);
+    const gatedLanes = [
+      'changes',
+      'full-matrix',
+      'unit-shard',
+      'cross-os-gate',
+      'followup-tests',
+      'coverage',
+      'e2e',
+      'doc-assertions',
+    ];
+
+    function extractRunScript(jobName, stepName) {
+      const lines = workflowContent.split('\n');
+      const jobIndex = lines.indexOf(`  ${jobName}:`);
+      const stepIndex = lines.findIndex((line, index) => index > jobIndex && line.includes(`name: ${stepName}`));
+      const runIndex = lines.findIndex((line, index) => index > stepIndex && line.trim() === 'run: |');
+      expect(jobIndex).toBeGreaterThan(-1);
+      expect(stepIndex).toBeGreaterThan(jobIndex);
+      expect(runIndex).toBeGreaterThan(stepIndex);
+      const indent = lines[runIndex].indexOf('run:') + 2;
+      let end = runIndex + 1;
+      while (end < lines.length && (lines[end].startsWith(' '.repeat(indent)) || lines[end] === '')) end += 1;
+      return lines.slice(runIndex + 1, end).map((line) => line.slice(indent)).join('\n');
+    }
+
+    function runGate(results) {
+      const script = extractRunScript('ci-gate', 'Aggregate lane results');
+      const RESULTS = `${Object.entries(results).map(([lane, value]) => `${lane}=${value}`).join('\n')}\n`;
+      return spawnSync(bashExecutable, ['-c', script], { encoding: 'utf8', env: { ...process.env, RESULTS } });
+    }
+
+    const irrelevantPr = {
+      changes: 'success:false',
+      'full-matrix': 'skipped:true',
+      'unit-shard': 'skipped:true',
+      'cross-os-gate': 'success:false',
+      'followup-tests': 'skipped:true',
+      coverage: 'skipped:true',
+      e2e: 'skipped:true',
+      'doc-assertions': 'success:false',
+    };
+
+    test('ci-gate aggregates every real lane and keeps its required context name', () => {
+      expect(jobs['ci-gate'].name).toBe('CI Gate');
+      expect(jobs['ci-gate'].if).toBe('${{ always() }}');
+      expect(jobs['ci-gate'].needs).toEqual(gatedLanes);
+      for (const lane of gatedLanes) {
+        expect(workflowContent.includes(`${lane}=\${{ needs.${lane}.result }}:`)).toBe(true);
       }
-      expect(workflowContent.includes('success|skipped) ;;')).toBe(true);
     });
+
+    // Cross-OS Gate already needs and evaluates both smoke lanes with the same
+    // skip rule, so CI Gate enforces them transitively through cross-os-gate.
+    test('smoke lanes reach CI Gate transitively through Cross-OS Gate', () => {
+      expect(jobs['ci-gate'].needs).not.toContain('windows-smoke');
+      expect(jobs['ci-gate'].needs).not.toContain('macos-smoke');
+      expect(jobs['cross-os-gate'].needs).toEqual(['changes', 'windows-smoke', 'macos-smoke']);
+      expect(jobs['cross-os-gate'].if).toBe("${{ always() && github.event_name == 'pull_request' }}");
+    });
+
+    test('a lane skipped because the change is test-irrelevant passes the gate', () => {
+      const gate = runGate(irrelevantPr);
+      expect(`${gate.stdout}${gate.stderr}`).not.toContain('::error::');
+      expect(gate.status).toBe(0);
+    });
+
+    test('a lane skipped without a legitimate reason fails the gate', () => {
+      const gate = runGate({ ...irrelevantPr, changes: 'success:false', coverage: 'skipped:false' });
+      expect(gate.status).toBe(1);
+      expect(`${gate.stdout}${gate.stderr}`).toContain("Lane 'coverage' was skipped without a legitimate reason");
+    });
+
+    test('lanes skipped because the classifier failed still fail the gate', () => {
+      // A failed classifier leaves its outputs empty; every downstream lane is then
+      // skipped by GitHub, and none of those skips is justified.
+      const gate = runGate({
+        changes: 'failure:false',
+        'full-matrix': 'skipped:false',
+        'unit-shard': 'skipped:false',
+        'cross-os-gate': 'failure:false',
+        'followup-tests': 'skipped:false',
+        coverage: 'skipped:false',
+        e2e: 'skipped:false',
+        'doc-assertions': 'skipped:false',
+      });
+      expect(gate.status).toBe(1);
+      expect(`${gate.stdout}${gate.stderr}`).toContain("Lane 'changes' finished as 'failure'");
+      expect(`${gate.stdout}${gate.stderr}`).toContain("Lane 'coverage' was skipped without a legitimate reason");
+    });
+
+    test('ci-gate computes each skip justification from the classifier, failing closed', () => {
+      const gate = jobs['ci-gate'].steps.find((step) => step.name === 'Aggregate lane results');
+      const results = gate.env.RESULTS;
+      expect(results).toContain("changes=${{ needs.changes.result }}:false");
+      expect(results).toContain("full-matrix=${{ needs.full-matrix.result }}:${{ needs.changes.outputs.tests_relevant == 'false' || needs.changes.outputs.os_sensitive == 'false' }}");
+      expect(results).toContain("coverage=${{ needs.coverage.result }}:${{ needs.changes.outputs.tests_relevant == 'false' }}");
+      expect(results).toContain("doc-assertions=${{ needs.doc-assertions.result }}:${{ github.event_name != 'pull_request' || needs.changes.outputs.tests_relevant == 'true' }}");
+    });
+
+    test('Cross-OS Gate tolerates skipped smoke lanes only for test-irrelevant changes', () => {
+      const script = extractRunScript('cross-os-gate', 'Require Windows + macOS smoke to pass');
+      expect(jobs['cross-os-gate'].steps[0].env).toEqual({
+        WINDOWS_SMOKE: '${{ needs.windows-smoke.result }}',
+        MACOS_SMOKE: '${{ needs.macos-smoke.result }}',
+        TESTS_RELEVANT: '${{ needs.changes.outputs.tests_relevant }}',
+      });
+      const run = (env) => spawnSync(bashExecutable, ['-c', script], { encoding: 'utf8', env: { ...process.env, ...env } });
+      expect(run({ WINDOWS_SMOKE: 'skipped', MACOS_SMOKE: 'skipped', TESTS_RELEVANT: 'false' }).status).toBe(0);
+      expect(run({ WINDOWS_SMOKE: 'success', MACOS_SMOKE: 'success', TESTS_RELEVANT: 'true' }).status).toBe(0);
+      expect(run({ WINDOWS_SMOKE: 'skipped', MACOS_SMOKE: 'skipped', TESTS_RELEVANT: '' }).status).toBe(1);
+      expect(run({ WINDOWS_SMOKE: 'skipped', MACOS_SMOKE: 'success', TESTS_RELEVANT: 'true' }).status).toBe(1);
+      expect(run({ WINDOWS_SMOKE: 'failure', MACOS_SMOKE: 'success', TESTS_RELEVANT: 'true' }).status).toBe(1);
+    });
+  });
+
+  describe('Single authoritative workflow', () => {
+    const expensiveLanes = [
+      'full-matrix',
+      'unit-shard',
+      'windows-smoke',
+      'macos-smoke',
+      'followup-tests',
+      'coverage',
+      'e2e',
+      'dashboard-pr',
+      'dashboard-confidence',
+    ];
+
+    test('Tests runs on every pull request: no top-level PR paths filter', () => {
+      expect(triggers).toHaveProperty('pull_request');
+      expect(triggers.pull_request).toBeNull();
+    });
+
+    test('the classifier publishes tests_relevant and fails safe to true', () => {
+      expect(jobs.changes.outputs.tests_relevant).toBe('${{ steps.filter.outputs.tests_relevant }}');
+      const classify = jobs.changes.steps.find((step) => step.name === 'Classify diff').run;
+      expect(classify.split('echo "tests_relevant=true" >> "$GITHUB_OUTPUT"').length - 1).toBeGreaterThanOrEqual(3);
+      expect(classify).toContain('echo "tests_relevant=false" >> "$GITHUB_OUTPUT"');
+    });
+
+    test('tests_relevant covers every path the old trigger filter did, plus bun.lock and classifier surfaces', () => {
+      const classify = jobs.changes.steps.find((step) => step.name === 'Classify diff').run;
+      const match = /tests_relevant_pattern='([^']+)'/.exec(classify);
+      expect(match).not.toBeNull();
+      const pattern = new RegExp(match[1]);
+      for (const file of [
+        'bin/forge.js',
+        'lib/x.js',
+        'scripts/x.js',
+        'test/x.test.js',
+        'test-env/x.test.js',
+        'skills/plan/SKILL.md',
+        'packages/x/index.js',
+        'package.json',
+        'bunfig.toml',
+        'bun.lock',
+        '.github/workflows/eslint.yml',
+        '.github/agentic-workflows/x.md',
+        'plugin/hooks/x.js',
+        'install.sh',
+        'lefthook.yml',
+        'eslint.config.js',
+        '.claude/scripts/x.js',
+        '.forge/hooks/pre-commit',
+      ]) {
+        expect({ file, relevant: pattern.test(file) }).toEqual({ file, relevant: true });
+      }
+      for (const file of ['README.md', 'docs/INDEX.md', 'AGENTS.md', '.claude/rules/review-process.md']) {
+        expect({ file, relevant: pattern.test(file) }).toEqual({ file, relevant: false });
+      }
+    });
+
+    test('expensive lanes are gated on tests_relevant', () => {
+      for (const lane of expensiveLanes) {
+        const job = jobs[lane];
+        expect({ lane, needsChanges: [].concat(job.needs || []).includes('changes') }).toEqual({ lane, needsChanges: true });
+        expect({ lane, gated: String(job.if).includes("needs.changes.outputs.tests_relevant == 'true'") })
+          .toEqual({ lane, gated: true });
+      }
+    });
+
+    test('test-irrelevant PRs still run the doc-asserting suites under the Tests workflow', () => {
+      const docs = jobs['doc-assertions'];
+      expect(docs.needs).toEqual(['changes']);
+      expect(docs.if).toBe("${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'false' }}");
+      const commands = docs.steps.map((step) => step.run || '').join('\n');
+      expect(commands).toContain('node scripts/doc-asserting-tests.js --base ${{ github.event.pull_request.base.sha }}');
+    });
+
+    test('every job that installs dependencies restores the Bun download cache', () => {
+      const installJobs = Object.entries(jobs)
+        .filter(([, job]) => (job.steps || []).some((step) => step.run === 'bun install'));
+      expect(installJobs.length).toBeGreaterThanOrEqual(9);
+      for (const [name, job] of installJobs) {
+        const names = job.steps.map((step) => step.name);
+        const setupIndex = job.steps.findIndex((step) => String(step.uses).startsWith('oven-sh/setup-bun@'));
+        const dirIndex = names.indexOf('Resolve Bun cache directory');
+        const cacheIndex = names.indexOf('Cache Bun downloads');
+        const installIndex = job.steps.findIndex((step) => step.run === 'bun install');
+        expect({ name, ordered: setupIndex >= 0 && setupIndex < dirIndex && dirIndex < cacheIndex && cacheIndex < installIndex })
+          .toEqual({ name, ordered: true });
+        expect(job.steps[setupIndex].id).toBe('setup-bun');
+        expect(job.steps[dirIndex].run).toBe('echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"');
+        const cache = job.steps[cacheIndex];
+        expect(cache.uses).toBe('actions/cache@v6');
+        expect(cache.with.path).toBe('${{ steps.bun-cache-dir.outputs.dir }}');
+        expect(cache.with.key).toBe("bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}");
+        expect(JSON.stringify(cache.with)).not.toContain('node_modules');
+      }
+    });
+  });
+
+  describe('Job timeouts', () => {
 
     test('every job declares a timeout so a hung runner cannot poison the queue', () => {
       const lines = workflowContent.split('\n');
