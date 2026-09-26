@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.8] - 2026-09-26
+
 ### Added
 
 - **Deterministic full generation for the test workflow.** `forge release generate-test-workflow --expect-head <sha>` renders `.github/workflows/test.yml` from its canonical staged template and Bun pin under an exact actor, worktree, source-HEAD, path, operation, and content-bound authorization. Bun pin updates delegate this workflow to the same renderer, preventing partial pin replacement from authorizing unrelated CI changes. (PR #567; issue `a541c8ca-579d-4b8e-9bfd-7980b7547302`)
@@ -16,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The npm package installs with Bun.** `@forge/flow`, `@forge/memory`, and `@forge/contracts` are now only bundled in `forge-workflow`, not also declared as registry `dependencies`; Bun resolved those entries from the registry, where the unpublished workspaces return 404, so `bun add forge-workflow@0.1.0-beta.7` failed. The workspaces stay linked for development as `devDependencies`, and npm installs are unchanged. The packed-install smoke now also installs the tarball with `bun add` and runs `forge --version` and `forge setup --quick --yes`. (issue `95ed8d5f-0578-48de-bc44-17b5afa48161`)
 - **Canonical validation exposes an honest full-suite resource budget.** `forge validate --shards N` forwards a positive integer budget to the Forge scheduler. Windows budgets that cannot fund a required worker fail before test workers start; automatic defaults normalize visibly. Requested/effective or rejection evidence is retained and displayed by the CLI without changing required tests, deadlines, or receipt identity. (#574, issue `e0cb0671-735c-4980-944b-286d6f78fe48`)
 - **Standalone package smoke installs identify packed packages before npm builds the install tree.** The fixture now carries each package name from the same successful `npm pack --json` result into its local tarball specification, avoiding npm's redundant add-request name discovery while preserving tarball extraction, bundled workspaces, installed identity checks, CLI version/setup coverage, and the existing deadlines. (issue `6b432d06-5ab3-4188-8814-0ae056430cac`)
 - **Exact version queries avoid loading the command graph.** Direct `forge --version` and `forge -V` print the packaged version before loading command modules, reducing cold startup during standalone installation checks. Imported helpers and mixed command arguments keep their existing behavior. (issue `6b432d06-5ab3-4188-8814-0ae056430cac`)

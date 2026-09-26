@@ -55,6 +55,7 @@ function pack(packageDirectory, destination, invocation) {
   return {
     name: packed.name,
     version: packed.version,
+    tarball,
     installSpec: `${packed.name}@file:${tarball}`,
   };
 }
@@ -110,7 +111,11 @@ function isolatedEnvironment(root, platformNode) {
 
 function runInstalledForge(packageRoot, args, cwd, platformNode, env, label) {
   const shim = path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "forge.cmd" : "forge");
-  if (process.platform !== "win32") return runOperation(label, shim, args, { cwd, encoding: "utf8", env });
+  if (process.platform !== "win32" || !fs.existsSync(shim)) {
+    // Bun links a native forge.exe on Windows instead of npm's forge.cmd.
+    const executable = process.platform === "win32" ? shim.replace(/\.cmd$/, ".exe") : shim;
+    return runOperation(label, executable, args, { cwd, encoding: "utf8", env });
+  }
   const command = `""${shim}" ${args.join(" ")}"`;
   return runOperation(label, process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], {
     cwd,
@@ -233,6 +238,49 @@ Module._load = function (request, parent, isMain) {
     expect(init.status, init.stderr).toBe(0);
     const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project, platformNode, env, "cli:setup");
     expect(setup.status, `${setup.stdout}\n${setup.stderr}`).toBe(0);
+  }, 60000);
+
+  test("packs the root CLI and installs it with Bun using only the bundled runtime workspaces", () => {
+    const platformNode = resolvePlatformNode();
+    const npmInvocation = resolveNpmInvocation(platformNode);
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge bun-root-"));
+    created.push(temporary);
+    fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
+    const env = isolatedEnvironment(path.join(temporary, "home"), platformNode);
+    const declaredManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    const bundled = declaredManifest.bundledDependencies;
+    expect(bundled.length).toBeGreaterThan(0);
+    // Bun resolves every `dependencies` entry from the registry; bundled workspaces are unpublished.
+    for (const name of bundled) expect(Object.keys(declaredManifest.dependencies)).not.toContain(name);
+    const rootPackage = pack(ROOT, temporary, npmInvocation);
+
+    const install = runOperation("install:bun-root", process.execPath, ["add", "--ignore-scripts", rootPackage.tarball], {
+      cwd: temporary,
+      encoding: "utf8",
+    });
+    expect(install.status, `${install.stdout}
+${install.stderr}`).toBe(0);
+    const installedRoot = path.join(temporary, "node_modules", rootPackage.name);
+    const installedManifest = JSON.parse(fs.readFileSync(path.join(installedRoot, "package.json"), "utf8"));
+    expect({ name: installedManifest.name, version: installedManifest.version }).toEqual({
+      name: declaredManifest.name,
+      version: declaredManifest.version,
+    });
+    for (const name of bundled) {
+      expect(fs.existsSync(path.join(installedRoot, "node_modules", ...name.split("/"), "package.json"))).toBeTrue();
+    }
+
+    const version = runInstalledForge(temporary, ["--version"], temporary, platformNode, env, "cli:bun-version");
+    expect(version.status, version.stderr).toBe(0);
+    expect(version.stdout).toContain(`Forge v${declaredManifest.version}`);
+
+    const project = path.join(temporary, "project");
+    fs.mkdirSync(project);
+    const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" });
+    expect(init.status, init.stderr).toBe(0);
+    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project, platformNode, env, "cli:bun-setup");
+    expect(setup.status, `${setup.stdout}
+${setup.stderr}`).toBe(0);
   }, 60000);
 
   test("packs and installs Flow with public Forge contracts in a fresh package", () => {
