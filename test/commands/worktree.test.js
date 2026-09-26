@@ -380,3 +380,57 @@ describe('forge worktree command', () => {
     expect(installCall.opts.cwd).toContain('install-test');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression (issue 7910146e): `forge worktree create` run from INSIDE a linked
+// worktree must place the new worktree under the MAIN repository root's
+// .worktrees/, never nested under <linked-worktree>/.worktrees/ (which blew the
+// Windows path limit on removal: "Filename too long").
+// ---------------------------------------------------------------------------
+describe('forge worktree create from inside a linked worktree', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { execFileSync } = require('node:child_process');
+  const { afterEach } = require('bun:test');
+  const tempDirs = [];
+
+  function git(cwd, ...args) {
+    return execFileSync('git', ['-C', cwd, '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' });
+  }
+
+  afterEach(() => {
+    while (tempDirs.length > 0) {
+      fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+    }
+  });
+
+  test('creates the new worktree under the main root .worktrees, not the linked worktree', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const mainRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-root-')));
+    tempDirs.push(mainRoot);
+    git(mainRoot, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(mainRoot, 'README.md'), 'seed\n');
+    git(mainRoot, 'add', 'README.md');
+    git(mainRoot, 'commit', '-q', '-m', 'seed');
+    const linkedPath = path.join(mainRoot, '.worktrees', 'linked');
+    git(mainRoot, 'worktree', 'add', '-q', linkedPath, '-b', 'feat/linked');
+
+    const result = await mod.handler(
+      ['create', 'nested', '--base', 'main'], {}, linkedPath,
+      {
+        _spawn: () => ({ status: 0 }),
+        _platform: process.platform,
+        _kernelDriver: { listWorktrees: () => [], getWorktree: () => null, upsertWorktree: () => {} },
+        _kernelBroker: {},
+        _ensureBackingIssue: async () => null,
+      }
+    );
+
+    expect(result.success).toBe(true);
+    const expected = path.join(mainRoot, '.worktrees', 'nested');
+    expect(path.resolve(result.worktreePath)).toBe(path.resolve(expected));
+    expect(fs.existsSync(path.join(expected, 'README.md'))).toBe(true);
+    expect(fs.existsSync(path.join(linkedPath, '.worktrees', 'nested'))).toBe(false);
+  }, 30000);
+});
