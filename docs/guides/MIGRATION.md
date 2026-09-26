@@ -1,6 +1,6 @@
 # Migration Guide
 
-Use this guide when moving older Forge docs, habits, or installed scaffolding toward the v0.1.0-beta.8 public framing.
+Use this guide when moving older Forge docs, habits, or installed scaffolding toward the v0.1.0-beta.9 public framing.
 
 ## What Changed
 
@@ -39,8 +39,9 @@ forge setup --agents claude,cursor
 
 ## Version Labels
 
-- `0.1.0-beta.8` is the current prerelease package version.
-- `0.1.0-beta.7` is the previous prerelease package version; npm installs it, but Bun cannot, because it also declares the bundled runtime workspaces as registry dependencies. Upgrade directly to beta.8.
+- `0.1.0-beta.9` is the current prerelease package version and installs with npm or Bun without registry dependencies on unpublished `@forge/*` workspaces.
+- `0.1.0-beta.8` installs with npm, but Bun registry installs fail because npm publish normalizes bundled workspace names back into registry dependencies. Its local-tarball smoke did not cover that registry transformation; upgrade directly to beta.9.
+- `0.1.0-beta.7` installs with npm, but Bun cannot resolve its unpublished runtime workspaces. Upgrade directly to beta.9.
 - `0.1.0-beta.6` omits required runtime workspaces from its npm tarball; do not install it.
 - Internal labels such as `0.0.19` or `v3` describe roadmap slices or historical codenames. Do not present them as current package versions.
 

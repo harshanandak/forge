@@ -2,9 +2,9 @@
 
 This page documents release readiness. Package publishing still requires the explicit publish step after merge.
 
-## v0.1.0-beta.8 Boundary
+## v0.1.0-beta.9 Boundary
 
-v0.1.0-beta.8 is the current prerelease boundary. The release branch declares `0.1.0-beta.8`; publish only after the release PR is merged, tagged, and validated on that exact SHA.
+v0.1.0-beta.9 is the current prerelease boundary. The release branch declares `0.1.0-beta.9`; publish only after the release PR is merged, tagged, and validated on that exact SHA.
 
 Keep these release steps explicit:
 
@@ -31,7 +31,7 @@ For docs-heavy changes, also run a Markdown link check if available. If no docs 
 
 ## Packaging Check
 
-`npm pack --dry-run` should show the package contents without publishing. Confirm new canonical docs that should ship are included and generated junk is not.
+`npm pack --dry-run` should show the package contents without publishing. Confirm new canonical docs and generated internal runtime files that should ship are included, no `@forge/*` name appears in any dependency field of the packed manifest, and generated vendor files are cleaned from the worktree afterward.
 
 ## Release Notes
 
@@ -45,7 +45,7 @@ Release notes should include:
 - adapter compatibility
 - DeepWiki refresh checklist
 
-The v0.1.0-beta.8 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
+The v0.1.0-beta.9 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
 
 ## Rollback
 
