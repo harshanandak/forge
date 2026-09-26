@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { describe, test, expect } = require('bun:test');
 const { spawnSync } = require('node:child_process');
 
@@ -174,7 +175,7 @@ describe('scripts/branch-protection.js', () => {
     });
 
     test('should allow push on feature branch via git exec path (no LEFTHOOK_GIT_BRANCH)', () => {
-      const mockDir = path.join(__dirname, '..', 'test-env', 'mock-git-branch');
+      const mockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-mock-git-branch-'));
       try {
         createMockGit(mockDir, { diffOutput: '', branchName: 'feat/some-feature' });
         const mockJs = path.join(mockDir, 'mock-git.js');
@@ -195,7 +196,7 @@ describe('scripts/branch-protection.js', () => {
     });
 
     test('should block push to master with non-beads files', () => {
-      const mockDir = path.join(__dirname, '..', 'test-env', 'mock-git-code');
+      const mockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-mock-git-code-'));
       try {
         createMockGit(mockDir, { diffOutput: 'src/index.js' });
         const result = runWithMockGit(scriptPath, mockDir, 'master');
@@ -206,7 +207,7 @@ describe('scripts/branch-protection.js', () => {
     });
 
     test('should block push to master with beads-only files', () => {
-      const mockDir = path.join(__dirname, '..', 'test-env', 'mock-git-beads');
+      const mockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-mock-git-beads-'));
       try {
         createMockGit(mockDir, { diffOutput: '.beads/issues.jsonl' });
         const result = runWithMockGit(scriptPath, mockDir, 'master');
@@ -219,7 +220,7 @@ describe('scripts/branch-protection.js', () => {
     });
 
     test('should block push to master with mixed beads + code files', () => {
-      const mockDir = path.join(__dirname, '..', 'test-env', 'mock-git-mixed');
+      const mockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-mock-git-mixed-'));
       try {
         createMockGit(mockDir, { diffOutput: '.beads/issues.jsonl\nsrc/index.js' });
         const result = runWithMockGit(scriptPath, mockDir, 'master');
@@ -230,7 +231,7 @@ describe('scripts/branch-protection.js', () => {
     });
 
     test('should warn and block when git diff fails', () => {
-      const mockDir = path.join(__dirname, '..', 'test-env', 'mock-git-fail');
+      const mockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-mock-git-fail-'));
       try {
         createMockGit(mockDir, { diffExitCode: 1, upstreamExitCode: 1 });
         const result = runWithMockGit(scriptPath, mockDir, 'master');
