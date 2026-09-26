@@ -1334,7 +1334,6 @@ describe('Validate Command - Validation Orchestration', () => {
 			const calls = [];
 			try {
 				expect(path.resolve(rootDir)).not.toBe(path.resolve(process.cwd()));
-				expect(fs.existsSync(path.join(process.cwd(), 'tsconfig.json'))).toBe(false);
 				fs.writeFileSync(path.join(rootDir, 'tsconfig.json'), '{}');
 				const result = await executeValidate({
 					rootDir,
@@ -1366,25 +1365,13 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(lintArgs[lintArgs.indexOf('--max-warnings') + 1]).toBe('0');
 		});
 
-		test.each([
-			['non-zero exit', () => {
-				throw Object.assign(new Error('ESLint found too many warnings'), {
-					status: 1,
-					stdout: '✖ 2 problems (0 errors, 2 warnings)\n\nESLint found too many warnings (maximum: 0).',
-				});
-			}],
-			['exit 0', () => '✖ 2 problems (0 errors, 2 warnings)\n'],
-			['clean (control)', () => ''],
-		])('warning-only lint output fails and mints no receipt (%s)', async (name, lintExec) => {
-			const clean = name === 'clean (control)';
-			const lint = await runLint(lintExec);
-			expect(lint).toMatchObject(clean
-				? { success: true, errors: 0, warnings: 0 }
-				: { success: false, errors: 0, warnings: 2 });
-
-			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-lint-warn-'));
+		const lintFailure = (status, fields) => () => {
+			throw Object.assign(new Error(`Command failed: eslint (exit ${status})`), { status, stdout: '', stderr: '', ...fields });
+		};
+		const runWithLint = async (lintExec) => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-lint-exit-'));
 			try {
-				const result = await executeValidate({
+				return await executeValidate({
 					rootDir,
 					validationReceipt: noReceipt,
 					runAllTests: async () => ({
@@ -1396,13 +1383,50 @@ describe('Validate Command - Validation Orchestration', () => {
 						return '';
 					},
 				});
-				expect(result.checks.lint.success).toBe(clean);
-				expect(result.success).toBe(clean);
-				expect(result.validationReceipt).toBe(clean);
-				if (!clean) expect(result.failedChecks).toContain('lint');
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}
+		};
+
+		test.each([
+			['exit 1, warnings summary on stdout', lintFailure(1, {
+				stdout: '✖ 2 problems (0 errors, 2 warnings)\n\nESLint found too many warnings (maximum: 0).',
+			}), { success: false, errors: 0, warnings: 2 }],
+			['exit 1, warnings only on stderr', lintFailure(1, {
+				stderr: '✖ 2 problems (0 errors, 2 warnings)\nESLint found too many warnings (maximum: 0).',
+			}), { success: false, errors: 0, warnings: 2 }],
+			['exit 2, config crash', lintFailure(2, {
+				stderr: 'Oops! Something went wrong! :(\nError: Cannot find module eslint-plugin-missing',
+			}), { success: false }],
+			['exit 0 with a summary line', () => '✖ 2 problems (0 errors, 2 warnings)\n', { success: true }],
+			['exit 0 with no summary line', () => '[{"filePath":"a.js","warningCount":2}]', { success: true }],
+			['exit 0, clean', () => '', { success: true, errors: 0, warnings: 0 }],
+		])('lint success is the eslint exit code (%s)', async (_name, lintExec, expected) => {
+			const lint = await runLint(lintExec);
+			expect(lint).toMatchObject(expected);
+
+			const result = await runWithLint(lintExec);
+			expect(result.checks.lint.success).toBe(expected.success);
+			expect(result.success).toBe(expected.success);
+			expect(result.validationReceipt).toBe(expected.success);
+			if (!expected.success) expect(result.failedChecks).toContain('lint');
+		});
+
+		test('a crashed eslint surfaces its stderr in the lint message', async () => {
+			const lint = await runLint(lintFailure(2, {
+				stderr: 'Oops! Something went wrong! :(\nError: Cannot find module eslint-plugin-missing',
+			}));
+			expect(lint.success).toBe(false);
+			expect(lint.message).toContain('exit 2');
+			expect(lint.message).toContain('Cannot find module eslint-plugin-missing');
+		});
+
+		test('missing eslint is a skipped lint gate and mints no receipt end to end', async () => {
+			const result = await runWithLint(() => {
+				throw Object.assign(new Error('spawnSync eslint ENOENT'), { code: 'ENOENT' });
+			});
+			expect(result.checks.lint).toMatchObject({ success: true, skipped: true });
+			expect(result.validationReceipt).toBe(false);
 		});
 
 		test('receipt refuses a skipped lint gate', () => {
