@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The registry package installs with Bun without resolving unpublished `@forge/*` packages.** Pack-time generation vendors the Contracts, Memory, and Flow runtime files behind private `#forge/*` imports while repository development continues to load the workspaces. The published manifest declares no `@forge/*` dependency in any dependency field. The standalone smoke now runs the real `npm pack` lifecycle, inspects the extracted manifest that npm publish normalizes, and installs that same tarball with npm and Bun before exercising version, setup, and Flow-monitor imports. (issues `95ed8d5f-0578-48de-bc44-17b5afa48161`, `abd24451-7a8e-4f00-8eba-c0283c7ece81`, `351118da-5d87-404d-bb18-bdd3c784f93d`)
+- **The registry package installs with Bun without resolving unpublished `@forge/*` packages.** Pack-time generation vendors the Contracts, Memory, and Flow runtime files behind private `#forge/*` imports while repository development continues to load the workspaces. The published manifest declares no `@forge/*` dependency in any dependency field. The standalone smoke now runs the real `npm pack` lifecycle, inspects the extracted manifest that npm publish normalizes, and installs that same tarball with npm and Bun before exercising version, setup, and Flow-monitor imports. (PR #577; issues `95ed8d5f-0578-48de-bc44-17b5afa48161`, `abd24451-7a8e-4f00-8eba-c0283c7ece81`, `351118da-5d87-404d-bb18-bdd3c784f93d`)
 
 ## [0.1.0-beta.8] - 2026-09-26
 
