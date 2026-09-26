@@ -138,3 +138,22 @@ describe('detectWorktree', () => {
     }
   });
 });
+
+describe('parseWorktreePorcelain (NUL-delimited, git worktree list --porcelain -z)', () => {
+  const { parseWorktreePorcelain } = require('../lib/detect-worktree');
+
+  test('keeps a path with an embedded newline intact and flags a bare record', () => {
+    const main = path.resolve('/repo/app.git');
+    const odd = path.resolve('/repo/.worktrees/odd\nname');
+    const sample = [
+      `worktree ${main}`, 'bare', '',
+      `worktree ${odd}`, 'HEAD 0123456789abcdef0123456789abcdef01234567', 'branch refs/heads/feat/odd', '',
+      '',
+    ].join('\0');
+
+    expect(parseWorktreePorcelain(sample)).toEqual([
+      { path: main, bare: true },
+      { path: odd, bare: false },
+    ]);
+  });
+});
