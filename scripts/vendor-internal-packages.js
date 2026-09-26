@@ -66,10 +66,15 @@ function copyEntry(source, target) {
 
 function prepare() {
   cleanup();
-  for (const [name, files] of Object.entries(PACKAGE_FILES)) {
-    const sourceRoot = path.join(ROOT, 'packages', name);
-    const targetRoot = path.join(VENDOR_ROOT, name);
-    for (const file of files) copyEntry(path.join(sourceRoot, file), path.join(targetRoot, file));
+  try {
+    for (const [name, files] of Object.entries(PACKAGE_FILES)) {
+      const sourceRoot = path.join(ROOT, 'packages', name);
+      const targetRoot = path.join(VENDOR_ROOT, name);
+      for (const file of files) copyEntry(path.join(sourceRoot, file), path.join(targetRoot, file));
+    }
+  } catch (error) {
+    cleanup();
+    throw error;
   }
 }
 

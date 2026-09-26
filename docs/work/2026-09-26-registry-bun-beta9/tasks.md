@@ -29,4 +29,3 @@ Commit after RED, GREEN, focused smoke, and self-review evidence.
 ## Task 3 — Prepare beta.9 release metadata
 
 Bump the root package to `0.1.0-beta.9`; update the structural version assertion, `CHANGELOG.md`, `docs/reference/RELEASE.md`, and `docs/guides/MIGRATION.md`. Correct the beta.8 claim without rewriting unrelated history. Run the focused release/package assertions and commit.
-

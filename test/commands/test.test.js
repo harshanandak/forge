@@ -293,6 +293,31 @@ describe('forge test command', () => {
 		});
 
 		test.each([
+			['lib/_internal/contracts.js', [
+				'test/_internal/contracts.test.js',
+				'test/integration/standalone-package-smoke.test.js',
+				'test/structural/registry-safe-internals.test.js',
+			]],
+			['lib/_internal/flow.js', [
+				'test/_internal/flow.test.js',
+				'test/integration/standalone-package-smoke.test.js',
+				'test/structural/registry-safe-internals.test.js',
+			]],
+			['lib/_internal/load-internal.js', [
+				'test/_internal/load-internal.test.js',
+				'test/integration/standalone-package-smoke.test.js',
+				'test/structural/registry-safe-internals.test.js',
+			]],
+			['lib/_internal/memory.js', [
+				'test/_internal/memory.test.js',
+				'test/integration/standalone-package-smoke.test.js',
+				'test/structural/registry-safe-internals.test.js',
+			]],
+			['scripts/vendor-internal-packages.js', [
+				'test/integration/standalone-package-smoke.test.js',
+				'test/scripts/vendor-internal-packages.test.js',
+				'test/structural/registry-safe-internals.test.js',
+			]],
 			['lib/commands/shepherd.js', [
 				'test/commands/shepherd.test.js',
 				'test/pr-monitor/arm-on-push.test.js',
@@ -343,7 +368,7 @@ describe('forge test command', () => {
 				'test/pr-monitor/monitor-owner-signal.test.js',
 				'test/pr-monitor/monitor.test.js',
 			]],
-		])('maps %s to all direct owner-authority tests', (source, targets) => {
+		])('maps %s to its complete direct test set', (source, targets) => {
 			const existingPaths = targets.map(target => `/fake/root/${target}`);
 			const affected = testCommand.getAffectedTestFiles(
 				'/fake/root',

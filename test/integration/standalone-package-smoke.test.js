@@ -2,7 +2,7 @@
 
 // forge-test-resource: exclusive
 
-const { afterEach, describe, expect, test } = require("bun:test");
+const { afterAll, afterEach, describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -11,7 +11,6 @@ const { spawnSync } = require("node:child_process");
 const ROOT = path.resolve(__dirname, "../..");
 const created = [];
 const OUTPUT_LIMIT = 2000;
-const CHILD_OPERATION_TIMEOUT = 120000;
 const DEPENDENCY_FIELDS = [
   "dependencies",
   "devDependencies",
@@ -23,7 +22,7 @@ const DEPENDENCY_FIELDS = [
 function runOperation(label, command, args, options) {
   console.error(`[standalone-package] ${label}: start`);
   const started = Date.now();
-  const result = spawnSync(command, args, { timeout: CHILD_OPERATION_TIMEOUT, ...options });
+  const result = spawnSync(command, args, options);
   const diagnostic = {
     label,
     elapsedMs: Date.now() - started,
@@ -88,7 +87,7 @@ function resolvePlatformNode() {
     process.platform === "win32" ? "node.exe" : "node",
   ].filter(Boolean);
   for (const executable of candidates) {
-    const probe = spawnSync(executable, ["--version"], { encoding: "utf8", timeout: CHILD_OPERATION_TIMEOUT });
+    const probe = spawnSync(executable, ["--version"], { encoding: "utf8" });
     const match = probe.status === 0 && probe.stdout.trim().match(/^v(\d+)\.(\d+)\.(\d+)$/);
     if (!match) continue;
     const version = { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
@@ -96,7 +95,7 @@ function resolvePlatformNode() {
       const locator = process.platform === "win32" ? "where.exe" : "which";
       const located = path.isAbsolute(executable)
         ? executable
-        : spawnSync(locator, [executable], { encoding: "utf8", timeout: CHILD_OPERATION_TIMEOUT }).stdout.trim().split(/\r?\n/)[0];
+        : spawnSync(locator, [executable], { encoding: "utf8" }).stdout.trim().split(/\r?\n/)[0];
       return { executable: fs.realpathSync.native(located), version };
     }
   }
@@ -105,7 +104,7 @@ function resolvePlatformNode() {
 
 function resolveNpmInvocation(platformNode) {
   if (process.platform !== "win32") return { command: "npm", prefix: [] };
-  const located = spawnSync("where.exe", ["npm.cmd"], { encoding: "utf8", timeout: CHILD_OPERATION_TIMEOUT });
+  const located = spawnSync("where.exe", ["npm.cmd"], { encoding: "utf8" });
   for (const shim of located.status === 0 ? located.stdout.trim().split(/\r?\n/) : []) {
     const cli = path.join(path.dirname(shim), "node_modules", "npm", "bin", "npm-cli.js");
     if (fs.existsSync(cli)) return { command: platformNode.executable, prefix: [cli] };
@@ -161,7 +160,7 @@ function assertInstalledJourney(packageRoot, manager, declaredManifest, platform
 
   const project = path.join(packageRoot, "project");
   fs.mkdirSync(project);
-  const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8", timeout: CHILD_OPERATION_TIMEOUT });
+  const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" });
   expect(init.status, init.stderr).toBe(0);
   const setup = runInstalledForge(packageRoot, ["setup", "--quick", "--yes"], project, platformNode, env, `cli:${manager}:setup`);
   expect(setup.status, `${setup.stdout}\n${setup.stderr}`).toBe(0);
@@ -173,9 +172,31 @@ function assertInstalledJourney(packageRoot, manager, declaredManifest, platform
   expect(importMonitor.status, importMonitor.stderr).toBe(0);
 }
 
+let sharedRootFixture;
+
+function rootFixture(platformNode) {
+  if (sharedRootFixture) return sharedRootFixture;
+  const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge root-pack-"));
+  const npmInvocation = resolveNpmInvocation(platformNode);
+  const rootPackage = pack(ROOT, temporary, npmInvocation);
+  const extractedRoot = extractTarball(rootPackage.tarball, path.join(temporary, "extracted"));
+  sharedRootFixture = {
+    declaredManifest: JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")),
+    npmInvocation,
+    packedManifest: JSON.parse(fs.readFileSync(path.join(extractedRoot, "package.json"), "utf8")),
+    rootPackage,
+    temporary,
+  };
+  return sharedRootFixture;
+}
+
 afterEach(() => {
   for (const directory of created.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
-}, 60000);
+});
+
+afterAll(() => {
+  if (sharedRootFixture) fs.rmSync(sharedRootFixture.temporary, { recursive: true, force: true });
+});
 
 describe("standalone product packages", () => {
   test("bounds child operations before the test deadline and preserves diagnostics", () => {
@@ -215,7 +236,6 @@ describe("standalone product packages", () => {
       cwd: ROOT,
       encoding: "utf8",
       shell: true,
-      timeout: CHILD_OPERATION_TIMEOUT,
       env: {
         ...process.env,
         [pathKey]: [temporary, process.env[pathKey]].filter(Boolean).join(path.delimiter),
@@ -253,45 +273,50 @@ Module._load = function (request, parent, isMain) {
       const result = spawnSync(platformNode.executable, ["--require", guard, path.join(ROOT, "bin", "forge.js"), alias], {
         cwd: ROOT,
         encoding: "utf8",
-        timeout: CHILD_OPERATION_TIMEOUT,
       });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toBe(expected);
     }
   });
 
-  test("packs the registry manifest once and runs npm and Bun install journeys", () => {
+  test("packs and inspects the registry-normalized manifest", () => {
     const platformNode = resolvePlatformNode();
-    const npmInvocation = resolveNpmInvocation(platformNode);
-    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge root-"));
-    created.push(temporary);
-    const declaredManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
-    const rootPackage = pack(ROOT, temporary, npmInvocation);
-    const extractedRoot = extractTarball(rootPackage.tarball, path.join(temporary, "extracted"));
-    const packedManifest = JSON.parse(fs.readFileSync(path.join(extractedRoot, "package.json"), "utf8"));
+    const { packedManifest } = rootFixture(platformNode);
 
     // npm publish normalizes this packed manifest; beta.8 only checked the source manifest/local layout.
     for (const field of DEPENDENCY_FIELDS) {
       expect(dependencyNames(packedManifest[field]).filter((name) => name.startsWith("@forge/")))
         .toEqual([]);
     }
+  }, 60000);
 
-    for (const manager of ["npm", "bun"]) {
-      const packageRoot = path.join(temporary, manager);
-      fs.mkdirSync(packageRoot);
-      fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ private: true }));
-      const env = isolatedEnvironment(path.join(packageRoot, "home"), platformNode);
-      const install = manager === "npm"
-        ? npm(["install", "--ignore-scripts", rootPackage.installSpec], packageRoot, npmInvocation, "install:npm-root")
-        : runOperation("install:bun-root", process.execPath, ["add", "--ignore-scripts", rootPackage.tarball], {
-          cwd: packageRoot,
-          encoding: "utf8",
-          env,
-        });
-      expect(install.status, `${install.stdout}\n${install.stderr}`).toBe(0);
-      assertInstalledJourney(packageRoot, manager, declaredManifest, platformNode, env);
-    }
-  }, 360000);
+  test("installs the same registry tarball with npm", () => {
+    const platformNode = resolvePlatformNode();
+    const { declaredManifest, npmInvocation, rootPackage } = rootFixture(platformNode);
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge npm-root-"));
+    created.push(temporary);
+    fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
+    const env = isolatedEnvironment(path.join(temporary, "home"), platformNode);
+    const install = npm(["install", "--ignore-scripts", rootPackage.installSpec], temporary, npmInvocation, "install:npm-root");
+    expect(install.status, `${install.stdout}\n${install.stderr}`).toBe(0);
+    assertInstalledJourney(temporary, "npm", declaredManifest, platformNode, env);
+  }, 60000);
+
+  test("installs the same registry tarball with Bun", () => {
+    const platformNode = resolvePlatformNode();
+    const { declaredManifest, rootPackage } = rootFixture(platformNode);
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge bun-root-"));
+    created.push(temporary);
+    fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
+    const env = isolatedEnvironment(path.join(temporary, "home"), platformNode);
+    const install = runOperation("install:bun-root", process.execPath, ["add", "--ignore-scripts", rootPackage.tarball], {
+      cwd: temporary,
+      encoding: "utf8",
+      env,
+    });
+    expect(install.status, `${install.stdout}\n${install.stderr}`).toBe(0);
+    assertInstalledJourney(temporary, "bun", declaredManifest, platformNode, env);
+  }, 60000);
 
   test("packs and installs Flow with public Forge contracts in a fresh package", () => {
     const platformNode = resolvePlatformNode();
@@ -324,7 +349,6 @@ Module._load = function (request, parent, isMain) {
     const probe = spawnSync(platformNode.executable, ["-e", "require('@forge/contracts'); require('@forge/memory'); require('@forge/flow')"], {
       cwd: temporary,
       encoding: "utf8",
-      timeout: CHILD_OPERATION_TIMEOUT,
     });
     expect(probe.status, probe.stderr).toBe(0);
   }, 30000);
