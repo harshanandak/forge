@@ -243,45 +243,72 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(result.validationReceipt).toBe(false);
 		});
 
-		test('composes captured timeout budget evidence through runAllTests and the public handler', async () => {
+		const timeoutStdout = [
+			'Full suite resource budget: requested=2 effective=2',
+			'Resource lane exclusive: files=17 shards=17 concurrency=1',
+			'3 pass',
+			'1 fail',
+			'Ran 4 tests across 1 file.',
+		].join('\n');
+		const timeoutStderr = 'shard exclusive-2 still running';
+		const timeoutBudgetLine = 'Full suite resource budget: requested=2 effective=2';
+		test.each([
+			['ETIMEDOUT', { code: 'ETIMEDOUT' }],
+			['killed SIGTERM', { killed: true, signal: 'SIGTERM' }],
+		].flatMap(([terminal, terminalState]) => [
+			[terminal, 'stdout and stderr', terminalState, { stdout: timeoutStdout, stderr: timeoutStderr }, `${timeoutStdout}\n${timeoutStderr}`],
+			[terminal, 'stdout only', terminalState, { stdout: timeoutStdout }, timeoutStdout],
+			[terminal, 'stderr only', terminalState, { stderr: timeoutStderr }, timeoutStderr],
+			[terminal, 'empty capture', terminalState, { stdout: '', stderr: '' }, undefined],
+		]))('renders captured timeout evidence through the public handler (%s, %s)', async (_terminal, _capture, terminalState, streams, captured) => {
 			const rootDir = path.resolve(__dirname, '..', '..');
+			const receiptResults = [];
 			const result = await validateHandler(['--shards', '2'], {}, rootDir, {
 				executeValidate: (options) => executeValidate({
 					...options,
 					skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
 					runAllTests: (_exec, testRoot, budget) => runAllTests(() => {
-						throw Object.assign(new Error('full suite timed out'), {
-							code: 'ETIMEDOUT',
-							stdout: [
-								'Full suite resource budget: requested=2 effective=2',
-								'3 pass',
-								'1 fail',
-								'Ran 4 tests across 1 file.',
-							].join('\n'),
-						});
+						throw Object.assign(new Error('spawnSync node ETIMEDOUT'), terminalState, streams);
 					}, testRoot, budget),
 					validationReceipt: {
 						beginValidation: () => ({ head: 'timeout-snapshot' }),
-						completeValidation: () => false,
+						completeValidation: (_root, _snapshot, validation) => {
+							receiptResults.push(validationIsComplete(validation));
+							return false;
+						},
 					},
 				}),
 			});
 
+			const budgetEvidence = streams.stdout ? { resourceBudget: { requested: 2, effective: 2 } } : {};
 			expect(result).toMatchObject({
 				success: false,
 				error: 'Test execution timed out after 25 minutes',
-				output: 'Full suite resource budget: requested=2 effective=2',
-				checks: {
-					tests: {
-						success: false,
-						resourceBudget: { requested: 2, effective: 2 },
-						passed: 0,
-						failed: 0,
-						total: 0,
-					},
-				},
+				checks: { tests: { success: false, timedOut: true, ...budgetEvidence, passed: 0, failed: 0, total: 0 } },
 				failedChecks: ['tests'],
+				validationReceipt: false,
 			});
+			expect(result.checks.tests.skipped).toBeUndefined();
+			expect(result.checks.tests.output).toBe(captured);
+			expect(result.output).toBe(
+				[streams.stdout ? timeoutBudgetLine : null, captured].filter(Boolean).join('\n') || undefined,
+			);
+			expect(receiptResults).toEqual([false]);
+		});
+
+		test('keeps ordinary test-failure output out of the public handler render', async () => {
+			const tests = { success: false, message: '1/4 tests failed', output: '3 pass\n1 fail' };
+			const result = await validateHandler([], {}, 'C:/repo', {
+				executeValidate: async () => ({
+					success: false,
+					summary: 'Checks failed: tests',
+					checks: { tests },
+					failedChecks: ['tests'],
+				}),
+			});
+
+			expect(result.error).toBe('1/4 tests failed');
+			expect(result.output).toBeUndefined();
 		});
 	});
 	describe('Type checking', () => {
