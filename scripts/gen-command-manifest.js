@@ -80,6 +80,21 @@ function readCommandMetadata(commandsDir, file) {
 }
 
 /**
+ * Serialize a value as a JavaScript literal safe to splice into generated source.
+ * JSON.stringify leaves `<`, `>`, `/`, U+2028 and U+2029 unescaped; escape them
+ * as unicode escapes so no value can close a script context or break a line.
+ *
+ * @param {*} value - JSON-serializable value
+ * @returns {string} Literal that evaluates back to `value`
+ */
+function toJsLiteral(value) {
+  return JSON.stringify(value).replace(
+    /[<>\/\u2028\u2029]/g,
+    c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')
+  );
+}
+
+/**
  * Render the manifest source from a list of command filenames.
  *
  * @param {string[]} files - Sorted command filenames
@@ -126,9 +141,9 @@ function renderManifest(files, commandsDir = COMMANDS_DIR) {
     const metadata = readCommandMetadata(commandsDir, file);
     return [
       '  {',
-      `    file: ${JSON.stringify(file)},`,
-      ...Object.entries(metadata).map(([key, value]) => `    ${key}: ${JSON.stringify(value)},`),
-      `    load: () => require(${JSON.stringify(modPath)}),`,
+      `    file: ${toJsLiteral(file)},`,
+      ...Object.entries(metadata).map(([key, value]) => `    ${key}: ${toJsLiteral(value)},`),
+      `    load: () => require(${toJsLiteral(modPath)}),`,
       '  },',
     ].join('\n');
   });
@@ -177,6 +192,7 @@ module.exports = {
   listCommandFiles,
   readCommandMetadata,
   renderManifest,
+  toJsLiteral,
   generate,
   METADATA_FIELDS,
   COMMANDS_DIR,

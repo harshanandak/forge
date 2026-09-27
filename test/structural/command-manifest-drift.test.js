@@ -71,3 +71,29 @@ describe('static command manifest drift', () => {
     expect(actual).toBe(expected);
   });
 });
+
+describe('generated manifest literals are escaped', () => {
+  const { toJsLiteral } = require('../../scripts/gen-command-manifest');
+  const hostile = {
+    usage: 'forge show <id> </script><script>alert(1)</script>',
+    description: 'line\u2028separator\u2029paragraph',
+    flags: { '--path <dir>': 'a/b </script>' },
+  };
+
+  test('toJsLiteral round-trips hostile values exactly', () => {
+    expect(typeof toJsLiteral).toBe('function');
+    for (const value of [...Object.values(hostile), hostile, './status', 'status.js']) {
+      const literal = toJsLiteral(value);
+      expect(new Function(`return (${literal});`)()).toEqual(value);
+      expect(/[<>\u2028\u2029]/.test(literal)).toBe(false);
+    }
+  });
+
+  test('committed manifest contains no raw <, > or line/paragraph separators', () => {
+    const source = fs.readFileSync(MANIFEST_PATH, 'utf8');
+    // The only generated syntax that uses `>` is the loader arrow; every spliced
+    // value must be escaped.
+    const body = source.slice(source.indexOf('const commands = [')).split('load: () => require(').join('');
+    expect(/[<>\u2028\u2029]/.test(body)).toBe(false);
+  });
+});
