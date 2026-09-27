@@ -18,8 +18,9 @@
 # Only a successful --force run publishes .fixtures-complete, after every
 # fixture passes the FIXTURE_CHECKS table below.
 #
-# FORGE_FIXTURES_DIR (tests only) must be an absolute path inside the OS temp
-# dir; anything else is refused before any deletion.
+# FORGE_FIXTURES_DIR (tests only) is honoured only when it names an existing
+# directory that already contains a .forge-fixtures-sandbox file; anything else
+# is refused before any deletion. The default fixtures dir needs no sentinel.
 
 set +e  # Don't exit on errors - we track per-fixture failures
 
@@ -819,39 +820,16 @@ fixtures_complete() {
   return 0
 }
 
-# Canonical physical path of an existing directory, or empty.
-canonical_dir() {
-  (cd "$1" 2>/dev/null && pwd -P)
-}
-
-# FORGE_FIXTURES_DIR may only point inside the OS temp dir so a mistyped or
-# inherited value can never make --force delete a real directory.
+# FORGE_FIXTURES_DIR is an explicit opt-in: the directory must already exist and
+# contain a .forge-fixtures-sandbox file, so a mistyped, stale, or inherited
+# value can never make --force delete a real directory.
 # Exits 1 before anything is touched otherwise.
-require_fixtures_dir_in_temp() {
+require_fixtures_sandbox() {
   [ -n "${FORGE_FIXTURES_DIR:-}" ] || return 0
-  local requested="$FORGE_FIXTURES_DIR"
-  local refuse="FORGE_FIXTURES_DIR must be an absolute path inside the OS temp dir: $requested"
-  case "$requested" in
-    /*|[A-Za-z]:[\\/]*) ;;
-    *) log_error "$refuse"; exit 1 ;;
-  esac
-  local target
-  target="$(canonical_dir "$requested")"
-  if [ -z "$target" ]; then
-    local parent
-    parent="$(canonical_dir "$(dirname "$requested")")"
-    [ -n "$parent" ] && target="$parent/$(basename "$requested")"
+  if [ ! -d "$FORGE_FIXTURES_DIR" ] || [ ! -f "$FORGE_FIXTURES_DIR/.forge-fixtures-sandbox" ]; then
+    log_error "FORGE_FIXTURES_DIR must be an existing directory containing .forge-fixtures-sandbox: $FORGE_FIXTURES_DIR"
+    exit 1
   fi
-  local root candidate
-  for root in "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}" /tmp; do
-    [ -n "$root" ] || continue
-    candidate="$(canonical_dir "$root")"
-    if [ -n "$candidate" ] && [ -n "$target" ] && [ "${target#"$candidate"/}" != "$target" ]; then
-      return 0
-    fi
-  done
-  log_error "$refuse"
-  exit 1
 }
 
 # =============================================================================
@@ -859,7 +837,7 @@ require_fixtures_dir_in_temp() {
 # =============================================================================
 
 main() {
-  require_fixtures_dir_in_temp
+  require_fixtures_sandbox
 
   if [ "$CHECK_ONLY" = true ]; then
     if fixtures_complete; then

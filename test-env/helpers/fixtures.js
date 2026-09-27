@@ -54,8 +54,9 @@ function fixturesPreparedByRunner(env) {
 }
 
 // The script builds its default tree unless FORGE_FIXTURES_DIR names another
-// one, which it only accepts inside the OS temp dir (test trees). Never pass
-// the default tree explicitly, and drop any inherited override.
+// one, which it only accepts when that directory holds a .forge-fixtures-sandbox
+// file (test trees). Never pass the default tree explicitly, and drop any
+// inherited override.
 function setupScriptEnv(fixturesDir) {
 	const env = { ...process.env };
 	delete env.FORGE_FIXTURES_DIR;

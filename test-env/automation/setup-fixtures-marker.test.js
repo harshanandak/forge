@@ -38,8 +38,13 @@ function track(dir) {
   return dir;
 }
 
-function createTempFixturesDir() {
-  return track(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-fixtures-')));
+// The script only honours FORGE_FIXTURES_DIR when it holds this opt-in file.
+const SANDBOX_SENTINEL = '.forge-fixtures-sandbox';
+
+function createTempFixturesDir({ sandbox = true } = {}) {
+  const dir = track(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-fixtures-')));
+  if (sandbox) fs.writeFileSync(path.join(dir, SANDBOX_SENTINEL), '');
+  return dir;
 }
 
 // Every fixture directory exists and the two late outputs the old check looked
@@ -145,25 +150,29 @@ describe('setup-fixtures.sh completion marker', () => {
 });
 
 describe('setup-fixtures.sh FORGE_FIXTURES_DIR guard', () => {
-  test('refuses a fixtures dir outside the OS temp dir before deleting anything', () => {
-    const outside = track(fs.mkdtempSync(path.join(__dirname, '.outside-temp-')));
-    fs.mkdirSync(path.join(outside, 'fresh-project'));
-    fs.writeFileSync(path.join(outside, 'fresh-project', 'keep.txt'), 'keep');
+  const REFUSAL = `FORGE_FIXTURES_DIR must be an existing directory containing ${SANDBOX_SENTINEL}`;
 
-    const result = runSetup(outside, ['--force', '--no-validate'], { fakeGit: true });
+  test('refuses a fixtures dir without the sandbox sentinel before touching anything', () => {
+    const unmarked = createTempFixturesDir({ sandbox: false });
+    fs.mkdirSync(path.join(unmarked, 'fresh-project'));
+    fs.writeFileSync(path.join(unmarked, 'fresh-project', 'keep.txt'), 'keep');
+
+    const result = runSetup(unmarked, ['--force', '--no-validate'], { fakeGit: true });
 
     expect(result.status).toBe(1);
-    expect(result.output).toContain('FORGE_FIXTURES_DIR must be an absolute path inside the OS temp dir');
-    expect(fs.existsSync(path.join(outside, 'fresh-project', 'keep.txt'))).toBe(true);
-    expect(fs.readdirSync(outside)).toEqual(['fresh-project']);
+    expect(result.output).toContain(REFUSAL);
+    expect(fs.existsSync(path.join(unmarked, 'fresh-project', 'keep.txt'))).toBe(true);
+    expect(fs.readdirSync(unmarked)).toEqual(['fresh-project']);
   }, SCRIPT_TEST_TIMEOUT_MS);
 
-  test('refuses a relative fixtures dir', () => {
-    track(path.join(__dirname, 'relative'));
-    const result = runSetup('relative/fixtures', ['--force', '--no-validate'], { fakeGit: true });
+  test('refuses a fixtures dir that does not exist', () => {
+    const parent = createTempFixturesDir({ sandbox: false });
+    const missing = path.join(parent, 'missing');
+
+    const result = runSetup(missing, ['--force', '--no-validate'], { fakeGit: true });
 
     expect(result.status).toBe(1);
-    expect(result.output).toContain('FORGE_FIXTURES_DIR must be an absolute path inside the OS temp dir');
-    expect(fs.existsSync(path.join(__dirname, 'relative'))).toBe(false);
+    expect(result.output).toContain(REFUSAL);
+    expect(fs.existsSync(missing)).toBe(false);
   }, SCRIPT_TEST_TIMEOUT_MS);
 });
