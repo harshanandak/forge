@@ -1197,4 +1197,53 @@ describe('forge clean resolves the main worktree', () => {
     expect(result.error).toBe('bare repo detected');
     expect(readdirPaths).toEqual([]);
   }, 30000);
+
+  test('never removes the worktree clean is running from, but still cleans merged siblings', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = seedRepo(tempDir('forge-clean-self-'));
+    const selfPath = path.join(mainRoot, '.worktrees', 'self');
+    const siblingPath = path.join(mainRoot, '.worktrees', 'sibling');
+    // Each branch gets its own commit, then is squash-merged into main (the
+    // merge shape clean's git-only detection recognizes as merged).
+    for (const [wtPath, branch, file] of [[selfPath, 'feat/self', 'self.txt'], [siblingPath, 'feat/sibling', 'sibling.txt']]) {
+      git(mainRoot, 'worktree', 'add', wtPath, '-b', branch);
+      realFs.writeFileSync(path.join(wtPath, file), `${branch}\n`);
+      git(wtPath, 'add', '.');
+      git(wtPath, 'commit', '-m', `work on ${branch}`);
+      git(mainRoot, 'merge', '--squash', branch);
+      git(mainRoot, 'commit', '-m', `squash ${branch}`);
+    }
+
+    // clean's git calls run in process.cwd(); run it the way a user would, from A.
+    const previousCwd = process.cwd();
+    const logs = [];
+    const originalLog = console.log;
+    let result;
+    try {
+      process.chdir(selfPath);
+      console.log = (...args) => { logs.push(args.join(' ')); };
+      result = await mod.handler([], {}, selfPath, {
+        // Real git; no network gh lookup from the temp repo.
+        _exec: (cmd, args, options) => {
+          if (cmd === 'gh') throw new Error('gh not available in test');
+          return execFileSync(cmd, args, options);
+        },
+        _syncMaster: async () => ({ attempted: false }),
+        _reconcileClaims: async () => ({ reconciled: 0 }),
+        _closeLinkedIssue: async () => ({ closed: false }),
+      });
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+    }
+
+    expect(result.success).toBe(true);
+    expect(realFs.existsSync(selfPath)).toBe(true);
+    expect(realFs.existsSync(siblingPath)).toBe(false);
+    expect(result.cleaned).toBe(1);
+    // No removal was even attempted on A (on Windows a cwd removal "survives").
+    expect(result.survivors).toEqual([]);
+    expect(git(mainRoot, 'worktree', 'list', '--porcelain')).toContain(selfPath.replace(/\\/g, '/'));
+    expect(logs.some((line) => line.includes('Skipped the current worktree'))).toBe(true);
+  }, 60000);
 });
