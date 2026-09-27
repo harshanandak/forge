@@ -475,6 +475,7 @@ describe('direct issue-comment evidence', () => {
     // Verdict evidence ids are bounded by the same cap (verdict still counts all 25).
     expect(payload.evidence.botComments).toHaveLength(20);
     expect(payload.evidence.botComments).toEqual(direct.map((b) => b.commentId));
+    expect(renderPullSummary(payload)).toContain('(20 of 25 direct comments shown; run with --json for the full count)');
   });
 
   test('under the cap: no direct-comment truncation reported', async () => {
@@ -486,6 +487,7 @@ describe('direct issue-comment evidence', () => {
     });
     expect(payload.directCommentTotal).toBe(1);
     expect(payload.truncated.directComments).toBe(false);
+    expect(renderPullSummary(payload)).not.toContain('direct comments shown');
   });
 
   test('a bot comment created before the head push but edited after it is a fresh blocker', async () => {
