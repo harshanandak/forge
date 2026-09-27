@@ -67,7 +67,9 @@ jobs:
             echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
+          # --no-renames lists both the deleted source and the added destination
+          # of a rename; a scripts/ -> docs/ move must not look docs-only.
+          if ! changed="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA")"; then
             echo "::warning::Could not resolve the PR diff; failing safe to the full matrix."
             echo "tests_relevant=true" >> "$GITHUB_OUTPUT"
             echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
@@ -414,7 +416,7 @@ jobs:
           const baseSha = process.env.BASE_SHA;
           const headSha = process.env.HEAD_SHA;
           const outputPath = process.env.GITHUB_OUTPUT;
-          const diffOutput = execFileSync('git', ['diff', '--name-only', `${baseSha}...${headSha}`], {
+          const diffOutput = execFileSync('git', ['diff', '--no-renames', '--name-only', `${baseSha}...${headSha}`], {
             encoding: 'utf8',
           });
 

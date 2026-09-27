@@ -488,7 +488,60 @@ describe('CI Workflow Configuration', () => {
       expect(runClassifier(['docs/INDEX.md', 'plugin/.claude-plugin/plugin.json']).tests_relevant).toBe('true');
       expect(runClassifier(['skills/plan/SKILL.md']).tests_relevant).toBe('true');
       expect(runClassifier([], { gitFails: true }).tests_relevant).toBe('true');
+      // A successful diff that lists no paths is not proof of a docs-only PR.
+      expect(runClassifier([]).tests_relevant).toBe('true');
     }, 30_000);
+
+    // `git diff` reports only the destination of a detected rename, so a
+    // scripts/ -> docs/ move would otherwise look docs-only. Run the real step
+    // script against a real repository so rename detection is exercised.
+    test('a source-to-docs rename is test-relevant', () => {
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-rename-'));
+      try {
+        const git = (...args) => {
+          const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+          expect(result.status).toBe(0);
+          return result.stdout.trim();
+        };
+        git('init', '-q');
+        git('config', 'user.email', 'ci@example.invalid');
+        git('config', 'user.name', 'CI');
+        git('config', 'commit.gpgsign', 'false');
+        fs.mkdirSync(path.join(repo, 'scripts'));
+        fs.writeFileSync(path.join(repo, 'scripts', 'tool.js'), 'module.exports = () => "a stable body long enough to be detected as a rename";\n');
+        git('add', '.');
+        git('commit', '-q', '-m', 'base');
+        const base = git('rev-parse', 'HEAD');
+        fs.mkdirSync(path.join(repo, 'docs'));
+        git('mv', 'scripts/tool.js', 'docs/tool.js');
+        git('commit', '-q', '-m', 'move');
+        const head = git('rev-parse', 'HEAD');
+        expect(git('diff', '--name-only', `${base}...${head}`)).toBe('docs/tool.js');
+
+        const output = path.join(repo, '.out');
+        fs.writeFileSync(output, '');
+        const child = spawnSync(bashExecutable, ['-c', classifyScript()], {
+          cwd: repo,
+          encoding: 'utf8',
+          env: { ...process.env, EVENT_NAME: 'pull_request', BASE_SHA: base, HEAD_SHA: head, GITHUB_OUTPUT: output },
+        });
+        expect(child.status).toBe(0);
+        const outputs = Object.fromEntries(fs.readFileSync(output, 'utf8').trim().split('\n').map((line) => line.split('=')));
+        expect(outputs.tests_relevant).toBe('true');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    test('every workflow diff lists both sides of a rename', () => {
+      const classify = classifyScript();
+      expect(classify).toContain('git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA"');
+      const resolve = jobs['followup-tests'].steps.find((step) => step.name === 'Resolve affected test targets').run;
+      expect(resolve).toContain("execFileSync('git', ['diff', '--no-renames', '--name-only', `${baseSha}...${headSha}`]");
+      const diffCalls = workflowContent.match(/git diff[^\n]*|\['diff'[^\n]*/g) || [];
+      expect(diffCalls.length).toBeGreaterThan(0);
+      for (const call of diffCalls) expect({ call, noRenames: call.includes('--no-renames') }).toEqual({ call, noRenames: true });
+    });
 
     test('every tracked file outside the docs set is test-relevant', () => {
       const pattern = docsOnlyPattern();
