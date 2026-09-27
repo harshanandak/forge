@@ -63,7 +63,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] scripts/conflict-detect.sh (2)
   - lines: 56 (.beads), 60 (.beads)
 - [ ] scripts/dep-guard.sh (22)
-  - lines: 70 (bd), 91 (bd), 92 (bd), 95 (bd), 103 (bd), 116 (bd), 135 (bd), 152 (bd), 158 (bd), 160 (bd), 165 (bd), 328 (bd), 332 (bd), 333 (bd), 335 (bd), 414 (bd), 415 (bd), 454 (bd), 460 (bd), 466 (bd), 473 (bd), 520 (bd)
+  - lines: 70 (bd), 91 (bd), 92 (bd), 95 (bd), 103 (bd), 116 (bd), 135 (bd), 152 (bd), 158 (bd), 160 (bd), 165 (bd), 333 (bd), 337 (bd), 338 (bd), 340 (bd), 419 (bd), 420 (bd), 459 (bd), 465 (bd), 471 (bd), 478 (bd), 525 (bd)
 - [ ] scripts/file-index.sh (2)
   - lines: 4 (.beads), 38 (.beads)
 - [ ] scripts/pr-coordinator.sh (14)
