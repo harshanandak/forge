@@ -1,8 +1,10 @@
 /**
  * Drift guard for the static command manifest.
  *
- * `lib/commands/_manifest.js` is a GENERATED file that statically `require`s
- * every command module so `bun build --compile` can bundle the command graph.
+ * `lib/commands/_manifest.js` is a GENERATED file listing every command's static
+ * metadata plus a lazy loader with a static `require`, so `bun build --compile`
+ * can bundle the command graph. Metadata is read from the module exports, so a
+ * changed description/usage/flags export also counts as drift.
  * It must stay in lockstep with the actual command files in `lib/commands/`:
  * every non-underscore `.js` command file must appear in the manifest, and the
  * manifest must not list files that no longer exist.
@@ -55,9 +57,11 @@ describe('static command manifest drift', () => {
   test('every manifest entry resolves to a valid command module', () => {
     for (const entry of manifest.commands) {
       expect(typeof entry.file).toBe('string');
-      expect(entry.module).toBeTruthy();
-      expect(typeof entry.module.name).toBe('string');
-      expect(typeof entry.module.handler).toBe('function');
+      const mod = entry.load();
+      expect(mod).toBeTruthy();
+      expect(typeof mod.name).toBe('string');
+      expect(mod.name).toBe(entry.name);
+      expect(typeof mod.handler).toBe('function');
     }
   });
 
@@ -65,5 +69,31 @@ describe('static command manifest drift', () => {
     const expected = renderManifest(listCommandFiles());
     const actual = fs.readFileSync(MANIFEST_PATH, 'utf8');
     expect(actual).toBe(expected);
+  });
+});
+
+describe('generated manifest literals are escaped', () => {
+  const { toJsLiteral } = require('../../scripts/gen-command-manifest');
+  const hostile = {
+    usage: 'forge show <id> </script><script>alert(1)</script>',
+    description: 'line\u2028separator\u2029paragraph',
+    flags: { '--path <dir>': 'a/b </script>' },
+  };
+
+  test('toJsLiteral round-trips hostile values exactly', () => {
+    expect(typeof toJsLiteral).toBe('function');
+    for (const value of [...Object.values(hostile), hostile, './status', 'status.js']) {
+      const literal = toJsLiteral(value);
+      expect(new Function(`return (${literal});`)()).toEqual(value);
+      expect(/[<>\u2028\u2029]/.test(literal)).toBe(false);
+    }
+  });
+
+  test('committed manifest contains no raw <, > or line/paragraph separators', () => {
+    const source = fs.readFileSync(MANIFEST_PATH, 'utf8');
+    // The only generated syntax that uses `>` is the loader arrow; every spliced
+    // value must be escaped.
+    const body = source.slice(source.indexOf('const commands = [')).split('load: () => require(').join('');
+    expect(/[<>\u2028\u2029]/.test(body)).toBe(false);
   });
 });
