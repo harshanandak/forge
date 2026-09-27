@@ -1246,4 +1246,46 @@ describe('forge clean resolves the main worktree', () => {
     expect(git(mainRoot, 'worktree', 'list', '--porcelain')).toContain(selfPath.replace(/\\/g, '/'));
     expect(logs.some((line) => line.includes('Skipped the current worktree'))).toBe(true);
   }, 60000);
+
+  test('run from a SUBDIRECTORY of a merged linked worktree, clean still leaves that worktree intact', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = seedRepo(tempDir('forge-clean-self-sub-'));
+    const selfPath = path.join(mainRoot, '.worktrees', 'self');
+    git(mainRoot, 'worktree', 'add', selfPath, '-b', 'feat/self');
+    realFs.writeFileSync(path.join(selfPath, 'self.txt'), 'feat/self\n');
+    git(selfPath, 'add', '.');
+    git(selfPath, 'commit', '-m', 'work on feat/self');
+    git(mainRoot, 'merge', '--squash', 'feat/self');
+    git(mainRoot, 'commit', '-m', 'squash feat/self');
+    // bin/forge.js passes the invocation cwd, which may be below the toplevel.
+    const subdir = path.join(selfPath, 'sub');
+    realFs.mkdirSync(subdir, { recursive: true });
+
+    const previousCwd = process.cwd();
+    const logs = [];
+    const originalLog = console.log;
+    let result;
+    try {
+      process.chdir(subdir);
+      console.log = (...args) => { logs.push(args.join(' ')); };
+      result = await mod.handler([], {}, subdir, {
+        _exec: (cmd, args, options) => {
+          if (cmd === 'gh') throw new Error('gh not available in test');
+          return execFileSync(cmd, args, options);
+        },
+        _syncMaster: async () => ({ attempted: false }),
+        _reconcileClaims: async () => ({ reconciled: 0 }),
+        _closeLinkedIssue: async () => ({ closed: false }),
+      });
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+    }
+
+    expect(result.success).toBe(true);
+    expect(realFs.existsSync(selfPath)).toBe(true);
+    expect(result.survivors).toEqual([]);
+    expect(result.cleaned).toBe(0);
+    expect(logs.some((line) => line.includes('Skipped the current worktree'))).toBe(true);
+  }, 60000);
 });

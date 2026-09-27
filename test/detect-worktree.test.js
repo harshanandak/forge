@@ -157,3 +157,58 @@ describe('parseWorktreePorcelain (NUL-delimited, git worktree list --porcelain -
     ]);
   });
 });
+
+describe('resolveMainWorktree / resolveInvokingWorktreeRoot (PR #582 review)', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { resolveMainWorktree, resolveInvokingWorktreeRoot } = require('../lib/detect-worktree');
+  const toPorcelain = (p) => p.replace(/\\/g, '/');
+
+  test('does not need --path-format (git < 2.31): relative rev-parse output resolves against projectRoot', () => {
+    const root = path.resolve('/fake/app');
+    const calls = [];
+    const runFile = (cmd, args) => {
+      calls.push(args.join(' '));
+      if (args.includes('list')) return [`worktree ${toPorcelain(root)}`, 'HEAD 0123', 'branch refs/heads/main', '', ''].join('\0');
+      if (args.includes('--git-common-dir')) return `.git\n.git\n${root}\n`;
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+
+    const main = resolveMainWorktree(root, runFile);
+
+    expect(main.error).toBeUndefined();
+    expect(main.root).toBe(root);
+    expect(calls.some((c) => c.includes('--path-format'))).toBe(false);
+  });
+
+  test('fails closed (error, no projectRoot guess) when git fails inside a linked worktree', () => {
+    const linked = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-detect-linked-'));
+    try {
+      // A linked worktree's toplevel has a `.git` FILE pointing at the common dir.
+      fs.writeFileSync(path.join(linked, '.git'), 'gitdir: /elsewhere/.git/worktrees/linked\n');
+      const sub = path.join(linked, 'sub');
+      fs.mkdirSync(sub);
+      const failingGit = () => { throw new Error('git exploded'); };
+
+      const main = resolveMainWorktree(sub, failingGit);
+
+      expect(main.error).toContain('main worktree');
+    } finally {
+      fs.rmSync(linked, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the documented projectRoot fallback only for a non-git (or mocked) root', () => {
+    const main = resolveMainWorktree(path.resolve('/fake/not-a-repo'), () => '');
+    expect(main.error).toBeUndefined();
+    expect(main.root).toBe(path.resolve('/fake/not-a-repo'));
+    expect(main.worktrees).toBeNull();
+  });
+
+  test('resolveInvokingWorktreeRoot returns the checkout toplevel for a subdirectory cwd', () => {
+    const top = path.resolve('/fake/app/.worktrees/foo');
+    const runFile = (cmd, args) => (args.includes('--show-toplevel') ? `${toPorcelain(top)}\n` : '');
+    expect(resolveInvokingWorktreeRoot(path.join(top, 'sub', 'deeper'), runFile)).toBe(top);
+  });
+});

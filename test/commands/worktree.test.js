@@ -513,4 +513,27 @@ describe('forge worktree create/remove resolve the main worktree', () => {
     expect(path.resolve(result.removed)).toBe(path.resolve(nestedPath));
     expect(fs.existsSync(nestedPath)).toBe(false);
   }, 30000);
+
+  test('remove refuses to remove the checkout it is invoked from (even from a subdirectory)', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const mainRoot = seedRepo(tempDir('forge-wt-self-remove-'));
+    const targetPath = path.join(mainRoot, '.worktrees', 'foo');
+    git(mainRoot, 'worktree', 'add', targetPath, '-b', 'feat/foo');
+    const subdir = path.join(targetPath, 'sub');
+    fs.mkdirSync(subdir, { recursive: true });
+
+    previousCwd = process.cwd();
+    process.chdir(subdir);
+    let result;
+    try {
+      result = await mod.handler(['remove', 'foo'], {}, subdir, {});
+    } catch (error) {
+      result = { success: 'threw', error: error.message };
+    }
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('run remove from another checkout');
+    expect(fs.existsSync(targetPath)).toBe(true);
+    expect(git(mainRoot, 'worktree', 'list', '--porcelain')).toContain(targetPath.replace(/\\/g, '/'));
+  }, 30000);
 });

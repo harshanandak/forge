@@ -914,3 +914,68 @@ describe('forge worktree create — real filesystem link', () => {
     }
   }, 20000);
 });
+
+// Regression (issue 7910146e, PR #582 review): creating B from inside linked
+// checkout A places B under the MAIN root, so B's node_modules must link to the
+// MAIN root's shared install. Linking to A's would dangle once A is removed.
+describe('forge worktree create from a linked checkout — deps link from the main root', () => {
+  const mainRoot = path.resolve('/fake/main');
+  const linkedRoot = path.join(mainRoot, '.worktrees', 'linked');
+  const toPorcelain = (p) => p.replace(/\\/g, '/');
+
+  function linkedGitStub() {
+    return (cmd, args) => {
+      if (cmd !== 'git') return Buffer.from('');
+      if (args.includes('worktree') && args.includes('list')) {
+        return Buffer.from([
+          `worktree ${toPorcelain(mainRoot)}`, 'HEAD 0123456789abcdef0123456789abcdef01234567', 'branch refs/heads/main', '',
+          `worktree ${toPorcelain(linkedRoot)}`, 'HEAD 0123456789abcdef0123456789abcdef01234567', 'branch refs/heads/feat/linked', '',
+          '',
+        ].join('\0'));
+      }
+      if (args.includes('--git-common-dir')) {
+        return Buffer.from(`${path.join(mainRoot, '.git', 'worktrees', 'linked')}\n${path.join(mainRoot, '.git')}\n${linkedRoot}\n`);
+      }
+      if (args.includes('config') && args.includes('core.worktree')) throw new Error('unset');
+      if (args.includes('--show-toplevel')) return Buffer.from(`${linkedRoot}\n`);
+      return Buffer.from('');
+    };
+  }
+
+  function scenario(existingWorktree) {
+    const worktreePath = path.join(mainRoot, '.worktrees', 'b');
+    const symlinkCalls = [];
+    const mockFs = {
+      mkdirSync: () => {},
+      // BOTH the main root and linked checkout A have a node_modules install.
+      existsSync: (p) => p === path.join(mainRoot, 'node_modules')
+        || p === path.join(linkedRoot, 'node_modules')
+        || (existingWorktree && p === worktreePath),
+      lstatSync: missingLstat,
+      symlinkSync: (target, dest, type) => { symlinkCalls.push({ target, dest, type }); },
+      readdirSync: () => [],
+      cpSync: () => {},
+    };
+    return { worktreePath, symlinkCalls, mockFs };
+  }
+
+  for (const existing of [false, true]) {
+    test(`links B's node_modules to the main root install (${existing ? 'reused' : 'new'} worktree)`, async () => {
+      const s = scenario(existing);
+      const result = await mod.handler(
+        ['create', 'b'], {}, linkedRoot,
+        {
+          _exec: linkedGitStub(), _spawn: () => ({ status: 0 }), _fs: s.mockFs, _platform: 'linux',
+          _kernelDriver: { listWorktrees: () => [], getWorktree: () => null, upsertWorktree: () => {} },
+          _kernelBroker: {}, _ensureBackingIssue: async () => null,
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(path.resolve(result.worktreePath)).toBe(path.resolve(s.worktreePath));
+      expect(s.symlinkCalls).toHaveLength(1);
+      expect(s.symlinkCalls[0].target).toBe(path.join(mainRoot, 'node_modules'));
+      expect(s.symlinkCalls[0].dest).toBe(path.join(s.worktreePath, 'node_modules'));
+    });
+  }
+});
