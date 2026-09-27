@@ -417,30 +417,22 @@ describe('merge command — mandatory release authority', () => {
     expect(merges).toBe(1);
   });
 
-  test('prefers the exact linked open row over a legacy unlinked duplicate', async () => {
-    let fetches = 0;
+  test('fails closed on a linked open row plus a legacy unlinked duplicate', async () => {
     let merges = 0;
     const linked = {
       id: 'pr-linked', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
-      git_common_dir: '/repo/.git/.', head_sha: HEAD, iterations: [],
-    };
-    const legacy = {
-      id: 'pr-legacy', repo: 'acme/forge', number: 42, issue_id: null, state: 'open',
       git_common_dir: '/repo/.git', head_sha: HEAD, iterations: [],
     };
+    const legacy = { ...linked, id: 'pr-legacy', issue_id: null };
     const injected = deps({
-      fetchPrContext: async () => { fetches += 1; return context(); },
+      fetchPrContext: async () => context(),
       mergePr: async () => { merges += 1; return { merged: true }; },
       resolveLocalRepository: () => 'acme/forge',
       buildPrBindingBroker: async () => ({
         gitCommonDir: '/repo/.git',
         broker: {
           readTrace: async () => ({
-            gaps: [
-              'pull_requests:pr-legacy:unlinked_issue',
-              'iterations:pr-linked:missing',
-              'iterations:pr-legacy:missing',
-            ],
+            gaps: ['pull_requests:pr-legacy:unlinked_issue'],
             pull_requests: [linked, legacy],
           }),
           listOpenPrs: async () => [linked, legacy],
@@ -452,116 +444,34 @@ describe('merge command — mandatory release authority', () => {
 
     const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
 
-    expect(out).toMatchObject({ success: true, merged: true });
-    expect(fetches).toBe(2);
-    expect(merges).toBe(1);
+    expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
   });
 
-  test('selects the canonical current common-dir row from same-issue separator duplicates', async () => {
-    let fetches = 0;
-    let merges = 0;
-    const canonicalCommonDir = path.resolve('/repo/.git');
-    const legacyCommonDir = process.platform === 'win32'
-      ? canonicalCommonDir.replace(/\\/g, '/')
-      : `${canonicalCommonDir}${path.sep}.`;
-    const canonical = {
-      id: 'pr-canonical', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
-      git_common_dir: canonicalCommonDir, branch: 'feat/exact-head', head_sha: HEAD, iterations: [],
-    };
-    const legacySpelling = {
-      ...canonical,
-      id: 'pr-legacy-spelling',
-      git_common_dir: legacyCommonDir,
-    };
-    const injected = deps({
-      fetchPrContext: async () => { fetches += 1; return context(); },
-      mergePr: async () => { merges += 1; return { merged: true }; },
-      resolveLocalRepository: () => 'acme/forge',
-      buildPrBindingBroker: async () => ({
-        gitCommonDir: canonicalCommonDir,
+  test('fails closed on same-issue duplicate rows even when their identity agrees', async () => {
+    const duplicate = id => ({
+      id, repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
+      git_common_dir: '/repo/.git', branch: 'feat/exact-head', head_sha: HEAD, iterations: [],
+    });
+    const rows = [duplicate('pr-a'), duplicate('pr-b')];
+    const verify = allowRetired => mergeCmd.defaultVerifyPrIssueBinding({
+      issueId: ISSUE,
+      pr: '42',
+      projectRoot: process.cwd(),
+      prContext: context(),
+      allowRetired,
+      buildBroker: async () => ({
+        gitCommonDir: '/repo/.git',
         broker: {
-          readTrace: async () => ({
-            gaps: [
-              'iterations:pr-canonical:missing',
-              'iterations:pr-legacy-spelling:missing',
-            ],
-            pull_requests: [legacySpelling, canonical],
-          }),
-          listOpenPrs: async () => [legacySpelling, canonical],
+          readTrace: async () => ({ gaps: [], pull_requests: rows }),
+          listOpenPrs: async () => rows,
         },
-        driver: { close() {} },
-      }),
-    });
-    delete injected.verifyPrIssueBinding;
-
-    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
-
-    expect(out).toMatchObject({ success: true, merged: true });
-    expect(fetches).toBe(2);
-    expect(merges).toBe(1);
-  });
-
-  test('fails closed when same-issue separator duplicates disagree on head identity', async () => {
-    const canonicalCommonDir = path.resolve('/repo/.git');
-    const legacyCommonDir = process.platform === 'win32'
-      ? canonicalCommonDir.replace(/\\/g, '/')
-      : `${canonicalCommonDir}${path.sep}.`;
-    const out = await mergeCmd.defaultVerifyPrIssueBinding({
-      issueId: ISSUE,
-      pr: '42',
-      projectRoot: process.cwd(),
-      prContext: context(),
-      allowRetired: true,
-      buildBroker: async () => ({
-        gitCommonDir: canonicalCommonDir,
-        broker: { readTrace: async () => ({
-          gaps: [],
-          pull_requests: [{
-            id: 'pr-canonical', repo: 'acme/forge', number: 42, issue_id: ISSUE,
-            git_common_dir: canonicalCommonDir, branch: 'feat/exact-head', head_sha: HEAD,
-            state: 'open', iterations: [],
-          }, {
-            id: 'pr-conflicting-head', repo: 'acme/forge', number: 42, issue_id: ISSUE,
-            git_common_dir: legacyCommonDir, branch: 'feat/exact-head', head_sha: 'b'.repeat(40),
-            state: 'open', iterations: [],
-          }],
-        }) },
       }),
     });
 
-    expect(out).toMatchObject({ bound: false, error: 'Kernel PR linkage is ambiguous.' });
-  });
-
-  test('fails closed when same-issue duplicates have no unique canonical common-dir row', async () => {
-    const canonicalCommonDir = path.resolve('/repo/.git');
-    const nonCanonical = process.platform === 'win32'
-      ? [canonicalCommonDir.replace(/\\/g, '/').replace('/.git', '/./.git'),
-        `${canonicalCommonDir.replace(/\\/g, '/')}/.`]
-      : ['/repo/./.git', '/repo/.git/.'];
-    const duplicate = (id, gitCommonDir) => ({
-      id, repo: 'acme/forge', number: 42, issue_id: ISSUE,
-      git_common_dir: gitCommonDir, branch: 'feat/exact-head', head_sha: HEAD,
-      state: 'open', iterations: [],
-    });
-    const out = await mergeCmd.defaultVerifyPrIssueBinding({
-      issueId: ISSUE,
-      pr: '42',
-      projectRoot: process.cwd(),
-      prContext: context(),
-      allowRetired: true,
-      buildBroker: async () => ({
-        gitCommonDir: canonicalCommonDir,
-        broker: { readTrace: async () => ({
-          gaps: [],
-          pull_requests: [
-            duplicate('pr-noncanonical-1', nonCanonical[0]),
-            duplicate('pr-noncanonical-2', nonCanonical[1]),
-          ],
-        }) },
-      }),
-    });
-
-    expect(out).toMatchObject({ bound: false, error: 'Kernel PR linkage is ambiguous.' });
+    for (const allowRetired of [false, true]) {
+      expect(await verify(allowRetired)).toMatchObject({ bound: false, error: 'Kernel PR linkage is ambiguous.' });
+    }
   });
 
   test('fails closed when a duplicate PR row has a conflicting non-null issue link', async () => {
