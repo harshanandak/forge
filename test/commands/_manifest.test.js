@@ -13,6 +13,7 @@ const path = require('node:path');
 
 const manifest = require('../../lib/commands/_manifest');
 const { validateCommand } = require('../../lib/commands/_registry');
+const { METADATA_FIELDS } = require('../../scripts/gen-command-manifest');
 
 describe('lib/commands/_manifest', () => {
   test('exports { dir, commands } with dir pointing at lib/commands', () => {
@@ -22,12 +23,29 @@ describe('lib/commands/_manifest', () => {
     expect(manifest.commands.length).toBeGreaterThan(0);
   });
 
-  test('every entry has a filename and a valid command module', () => {
+  test('every entry has a filename and a loader for a valid command module', () => {
     for (const entry of manifest.commands) {
       expect(typeof entry.file).toBe('string');
       expect(entry.file.endsWith('.js')).toBe(true);
-      const validation = validateCommand(entry.module);
+      expect(typeof entry.load).toBe('function');
+      const validation = validateCommand(entry.load());
       expect(validation.valid).toBe(true);
+    }
+  });
+
+  test('entry metadata matches the loaded module exports', () => {
+    for (const entry of manifest.commands) {
+      const mod = entry.load();
+      for (const field of METADATA_FIELDS) {
+        expect({ file: entry.file, field, value: entry[field] })
+          .toEqual({ file: entry.file, field, value: mod[field] });
+      }
+    }
+  });
+
+  test('each loader requires its own command file', () => {
+    for (const entry of manifest.commands) {
+      expect(entry.load()).toBe(require(path.join(manifest.dir, entry.file)));
     }
   });
 
@@ -38,7 +56,7 @@ describe('lib/commands/_manifest', () => {
   });
 
   test('command names are unique across entries', () => {
-    const names = manifest.commands.map(e => e.module.name);
+    const names = manifest.commands.map(e => e.name);
     expect(new Set(names).size).toBe(names.length);
   });
 });
