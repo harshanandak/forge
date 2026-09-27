@@ -456,6 +456,48 @@ describe('direct issue-comment evidence', () => {
     expect(unidentified.verdict).toBe('BLOCKED-THREADS');
     expect(unidentified.blockers[0].detail).toContain('author and comment id unavailable');
   });
+
+  test('direct-comment blockers are capped at maxThreads with total + truncation reported, verdict still blocked', async () => {
+    const createdAt = new Date(NOW - 100 * 1000).toISOString();
+    const total = 25; // > DEFAULT_MAX_THREADS (20)
+    const payload = await gather({
+      mergeStateStatus: 'BLOCKED', required: ['ci'], checks: greenCi,
+      headPushTimeMs: NOW - 300 * 1000,
+      issueComments: Array.from({ length: total }, (_, i) => ({
+        id: `c${i}`, author: 'chatty[bot]', authorTypename: 'Bot', body: `note ${i}`, createdAt,
+      })),
+    });
+    const direct = payload.blockers.filter((b) => b.type === 'direct-comment');
+    expect(direct).toHaveLength(20);
+    expect(payload.directCommentTotal).toBe(total);
+    expect(payload.truncated.directComments).toBe(true);
+    expect(payload.verdict).toBe('BLOCKED-THREADS');
+  });
+
+  test('under the cap: no direct-comment truncation reported', async () => {
+    const createdAt = new Date(NOW - 100 * 1000).toISOString();
+    const payload = await gather({
+      mergeStateStatus: 'BLOCKED', required: ['ci'], checks: greenCi,
+      headPushTimeMs: NOW - 300 * 1000,
+      issueComments: [{ id: 'c1', author: 'chatty[bot]', authorTypename: 'Bot', body: 'x', createdAt }],
+    });
+    expect(payload.directCommentTotal).toBe(1);
+    expect(payload.truncated.directComments).toBe(false);
+  });
+
+  test('a bot comment created before the head push but edited after it is a fresh blocker', async () => {
+    const payload = await gather({
+      mergeStateStatus: 'BLOCKED', required: ['ci'], checks: greenCi,
+      headPushTimeMs: NOW - 300 * 1000,
+      issueComments: [{
+        id: 'edited-1', author: 'review-agent[bot]', authorTypename: 'Bot', body: 'now failing',
+        createdAt: new Date(NOW - 600 * 1000).toISOString(),
+        updatedAt: new Date(NOW - 100 * 1000).toISOString(),
+      }],
+    });
+    expect(payload.blockers).toContainEqual(expect.objectContaining({ type: 'direct-comment', commentId: 'edited-1' }));
+    expect(payload.verdict).toBe('BLOCKED-THREADS');
+  });
 });
 
 describe('(g) output contract: --pull --json serializes the verdict to result.output', () => {
