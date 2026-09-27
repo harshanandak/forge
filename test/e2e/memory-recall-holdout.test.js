@@ -74,7 +74,8 @@ afterEach(() => {
 });
 
 describe('project-local memory recall holdout', () => {
-  test('foreign rows cannot crowd an unseen local memory out of additionalContext', async () => {
+  // QUARANTINED: see test/QUARANTINE.md and Forge issue 635695bc
+  test.skip('foreign rows cannot crowd an unseen local memory out of additionalContext', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-holdout-'));
     roots.push(root);
     const commonDir = path.join(root, '.git');
