@@ -24,8 +24,10 @@ const {
   runLaneSchedule,
   runFullSuiteInParallel,
   spawnShard,
+  tokenizeResourceSyntax,
   writeDurationProfile,
 } = require('../../scripts/test-full-suite');
+const { tokenizeResourceSyntax: referenceTokenize } = require('../helpers/reference-tokenizer');
 const passingShardReceipt = '<testsuites tests="1" assertions="1" failures="0" skipped="0"></testsuites>';
 const unitLabelPrefix = 'unit-full-suite';
 
@@ -332,6 +334,69 @@ describe('scripts/test-full-suite.js', () => {
       fs.rmSync(fixtureRoot, { recursive: true, force: true });
     }
   });
+
+  test('preload results equal the sync path when the async reader returns Buffers or non-strings', async () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-buffer-'));
+    const write = (name, source) => {
+      const target = path.join(fixtureRoot, name);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, source);
+      return name;
+    };
+
+    try {
+      const tests = [
+        write('plain.test.js', "require('./helpers/plain');\n"),
+        write('spawn.test.js', "require('./helpers/spawn');\n"),
+        write('marked.test.js', '// forge-test-resource: exclusive\n'),
+      ];
+      write('helpers/plain.js', 'module.exports = 1;\n');
+      write('helpers/spawn.js', "module.exports = require('node:child_process');\n");
+
+      const syncOnly = await loadTestResourceMap(tests, {
+        readFile: (target) => fs.readFileSync(target, 'utf8'),
+        root: fixtureRoot,
+      });
+      expect(syncOnly.get('plain.test.js')).toBe('unit');
+
+      const viaBuffers = await loadTestResourceMap(tests, {
+        readFileAsync: (target) => fs.promises.readFile(target),
+        root: fixtureRoot,
+      });
+      const viaNonStrings = await loadTestResourceMap(tests, {
+        readFileAsync: async () => 42,
+        root: fixtureRoot,
+      });
+
+      expect(viaBuffers).toEqual(syncOnly);
+      expect(viaNonStrings).toEqual(syncOnly);
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('the optimized tokenizer emits the same tokens as the origin/master reference', () => {
+    const edgeCases = [
+      '', "'unterminated", '`a${b', '"x\\', "'\\'", 'a/*', '//x', '`\\${x}`',
+      '  id$1 　b', 'x y', "import x from './a'; export * from \"./b\";",
+      "Bun.spawn(['x']); require(`./t${n}`); import('./c');",
+    ];
+    const files = listAllFullSuiteTests();
+    for (const source of edgeCases) {
+      expect(tokenizeResourceSyntax(source)).toEqual(referenceTokenize(source));
+    }
+    let compared = 0;
+    for (const file of files) {
+      const source = fs.readFileSync(path.join(__dirname, '..', '..', file), 'utf8');
+      const actual = tokenizeResourceSyntax(source);
+      const expected = referenceTokenize(source);
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+        throw new Error(`Tokenizer mismatch for ${file}`);
+      }
+      compared += 1;
+    }
+    expect(compared).toBe(files.length);
+  }, 30000);
 
   test('tokenizes escaped strings and template literals when collecting imports', async () => {
     const sources = new Map([

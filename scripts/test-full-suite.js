@@ -467,7 +467,11 @@ function createTestResourceClassifier(options = {}) {
           active += 1;
           Promise.resolve()
             .then(() => readFileAsync(absoluteFile))
-            .then((source) => {
+            .then((raw) => {
+              // Match the sync reader's utf8 contract: decode Buffers, and leave
+              // any other non-string for the sync pass instead of caching it.
+              const source = Buffer.isBuffer(raw) ? raw.toString('utf8') : raw;
+              if (typeof source !== 'string') return;
               let inspected;
               try {
                 inspected = inspectModule(absoluteFile, source);
@@ -1238,6 +1242,7 @@ module.exports = {
   runLaneSchedule,
   runFullSuiteInParallel,
   spawnShard,
+  tokenizeResourceSyntax,
   walkAllTests,
   writeDurationProfile,
 };
