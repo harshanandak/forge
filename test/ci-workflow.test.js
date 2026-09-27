@@ -74,13 +74,23 @@ describe('CI Workflow Configuration', () => {
       expect(workflowContent.includes('name: Run affected edge-case tests')).toBe(true);
     });
 
-    // The dedicated E2E job already runs test/e2e/ on every relevant PR and is a
-    // CI Gate dependency, so a second affected-e2e run inside followup-tests only
-    // duplicated work.
-    test('followup-tests no longer duplicates the dedicated E2E job', () => {
-      const steps = jobs['followup-tests'].steps.map((step) => step.name);
-      expect(steps).not.toContain('Run affected e2e tests');
+    // The dedicated E2E job runs test/e2e/ on ubuntu only. A PR touching only
+    // test/e2e/** is not OS-sensitive, so the Full Matrix skips and the Windows
+    // follow-up lane is the only Windows e2e coverage. The ubuntu follow-up lane
+    // must not repeat the dedicated job.
+    test('affected e2e runs on the Windows follow-up lane only', () => {
+      const followup = jobs['followup-tests'];
+      const e2eSteps = followup.steps.filter((step) => step.name === 'Run affected e2e tests');
+      expect(e2eSteps).toHaveLength(1);
+      expect(e2eSteps[0].if).toBe("matrix.os == 'windows-latest' && steps.affected.outputs.run_e2e == 'true'");
+      expect(e2eSteps[0].run).toBe('bun test --timeout 15000 test/e2e/ --reporter=junit --reporter-outfile test-results/followup-e2e.xml');
+      const windowsEntries = followup.strategy.matrix.include.filter((entry) => entry.os === 'windows-latest');
+      expect(windowsEntries.map((entry) => entry.label)).toEqual(['windows-node22']);
+      expect(followup.strategy.matrix.include.some((entry) => entry.os === 'ubuntu-latest')).toBe(true);
+      const resolve = followup.steps.find((step) => step.name === 'Resolve affected test targets').run;
+      expect(resolve).toContain('`run_e2e=${plan.runE2E}`,');
       expect(jobs.e2e.name).toBe('E2E Tests');
+      expect(jobs.e2e['runs-on']).toBe('ubuntu-latest');
       expect(jobs['ci-gate'].needs).toContain('e2e');
     });
 
