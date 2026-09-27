@@ -854,9 +854,14 @@ main() {
   # Ensure fixtures directory exists
   mkdir -p "$FIXTURES_DIR"
 
-  # Invalidate the completion marker before any fixture is deleted
+  # Invalidate the completion marker before any fixture is deleted. If it cannot
+  # be removed, stop: rebuilding under a marker that may survive would let a
+  # partial tree look certified.
   if [ "$FORCE_RECREATE" = true ]; then
-    rm -f "$FIXTURES_COMPLETE_MARKER"
+    if ! rm -f "$FIXTURES_COMPLETE_MARKER"; then
+      log_error "Failed to remove fixture completion marker: $FIXTURES_COMPLETE_MARKER"
+      exit 1
+    fi
   fi
 
   # Create all fixtures
@@ -877,15 +882,26 @@ main() {
   create_missing_prerequisites
 
   # Only a fully successful --force run publishes the completion marker. A
-  # non-force run may have skipped fixtures a killed run left half-built, so it
-  # never writes (or deletes) the marker. A forced tree that fails the checks
-  # is a failure: it is listed below and the run exits non-zero.
+  # forced tree that fails the checks, or a marker that cannot be written, is a
+  # failure: it is listed below and the run exits non-zero.
+  # A non-force run may have skipped fixtures a killed run left half-built, so it
+  # never writes the marker. It does revoke one whose tree no longer passes the
+  # checks (e.g. a late artifact was deleted after certification).
   if [ "$FORCE_RECREATE" = true ]; then
     if [ ${#FAILED_FIXTURES[@]} -eq 0 ] && fixtures_complete; then
-      touch "$FIXTURES_COMPLETE_MARKER"
+      if ! touch "$FIXTURES_COMPLETE_MARKER"; then
+        log_error "Failed to publish fixture completion marker: $FIXTURES_COMPLETE_MARKER"
+        FAILED_FIXTURES+=("completion marker")
+      fi
     elif [ ${#FAILED_FIXTURES[@]} -eq 0 ]; then
       log_error "Fixture tree incomplete: $FIXTURES_INCOMPLETE_REASON"
       FAILED_FIXTURES+=("completeness check ($FIXTURES_INCOMPLETE_REASON)")
+    fi
+  elif [ -e "$FIXTURES_COMPLETE_MARKER" ] && ! fixtures_complete; then
+    log_warning "Removing stale fixture completion marker: $FIXTURES_INCOMPLETE_REASON"
+    if ! rm -f "$FIXTURES_COMPLETE_MARKER"; then
+      log_error "Failed to remove stale fixture completion marker: $FIXTURES_COMPLETE_MARKER"
+      FAILED_FIXTURES+=("stale completion marker")
     fi
   fi
 

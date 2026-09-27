@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { resolveBashCommand } = require('../../test/helpers/bash.js');
-const { FIXTURES_COMPLETE_MARKER } = require('../helpers/fixtures.js');
+const { ensureTestFixtures, FIXTURES_COMPLETE_MARKER, FIXTURES_DIR } = require('../helpers/fixtures.js');
 
 const SETUP_SCRIPT = path.join(__dirname, 'setup-fixtures.sh');
 const SCRIPT_TEST_TIMEOUT_MS = 30000;
@@ -76,23 +76,25 @@ function createFakeGitDir() {
 }
 
 // Git for Windows' bash.exe wrapper puts its own bin dirs first on PATH, so the
-// fake git is prepended inside bash, right before exec'ing the script.
+// fake git is prepended inside bash, right before exec'ing the script. The
+// command text is fixed; the fake-git dir and the script arrive as positional
+// arguments, so no path is ever spliced into the shell string.
 const WITH_FAKE_GIT = [
-  'dir="$FAKE_GIT_DIR"',
+  'dir="$1"',
+  'shift',
   'if command -v cygpath > /dev/null 2>&1; then dir="$(cygpath -u "$dir")"; fi',
   'PATH="$dir:$PATH"',
-  'exec bash "$0" "$@"',
+  'export PATH',
+  'exec bash "$@"',
 ].join('\n');
 
 function runSetup(fixturesDir, args, { fakeGit = false, timeoutMs = 20000 } = {}) {
   const env = { ...process.env, FORGE_FIXTURES_DIR: fixturesDir };
   // These runs build fixtures; never let the runner's reader-only flag leak in.
   delete env.FORGE_FIXTURES_PREPARED;
-  let bashArgs = [SETUP_SCRIPT, ...args];
-  if (fakeGit) {
-    env.FAKE_GIT_DIR = createFakeGitDir();
-    bashArgs = ['-c', WITH_FAKE_GIT, SETUP_SCRIPT, ...args];
-  }
+  const bashArgs = fakeGit
+    ? ['-c', WITH_FAKE_GIT, '_', createFakeGitDir(), SETUP_SCRIPT, ...args]
+    : [SETUP_SCRIPT, ...args];
   const result = spawnSync(resolveBashCommand(), bashArgs, {
     cwd: __dirname,
     encoding: 'utf8',
@@ -105,6 +107,16 @@ function runSetup(fixturesDir, args, { fakeGit = false, timeoutMs = 20000 } = {}
 
 const markerPath = (fixturesDir) => path.join(fixturesDir, FIXTURES_COMPLETE_MARKER);
 
+// A certified tree to mutate: a sandboxed copy of the real fixture tree, which
+// ensureTestFixtures guarantees is complete and carries the marker.
+function createCertifiedSandbox() {
+  ensureTestFixtures();
+  const sandbox = createTempFixturesDir();
+  fs.cpSync(FIXTURES_DIR, sandbox, { recursive: true });
+  fs.rmSync(path.join(sandbox, '.setup-lock'), { recursive: true, force: true });
+  return sandbox;
+}
+
 describe('setup-fixtures.sh completion marker', () => {
   test('a non-force run over a partial tree never publishes the marker', () => {
     const fixturesDir = createTempFixturesDir();
@@ -115,14 +127,51 @@ describe('setup-fixtures.sh completion marker', () => {
     expect(fs.existsSync(markerPath(fixturesDir))).toBe(false);
   }, SCRIPT_TEST_TIMEOUT_MS);
 
-  test('a non-force run never deletes an existing marker', () => {
+  test('a non-force run removes a marker whose tree no longer passes the checks', () => {
     const fixturesDir = createTempFixturesDir();
     materializePartialTree(fixturesDir);
     fs.writeFileSync(markerPath(fixturesDir), '');
 
-    runSetup(fixturesDir, ['--no-validate']);
+    const result = runSetup(fixturesDir, ['--no-validate']);
 
+    expect(result.output).toContain('Removing stale fixture completion marker: fresh-project: repo');
+    expect(fs.existsSync(markerPath(fixturesDir))).toBe(false);
+  }, SCRIPT_TEST_TIMEOUT_MS);
+
+  test('a non-force run invalidates a certified tree that lost a late artifact', () => {
+    const fixturesDir = createCertifiedSandbox();
     expect(fs.existsSync(markerPath(fixturesDir))).toBe(true);
+    expect(runSetup(fixturesDir, ['--check']).status).toBe(0);
+    fs.rmSync(path.join(fixturesDir, 'monorepo', 'pnpm-workspace.yaml'));
+
+    const result = runSetup(fixturesDir, ['--no-validate']);
+
+    expect(result.output).toContain('Removing stale fixture completion marker: monorepo: pnpm-workspace.yaml');
+    expect(fs.existsSync(markerPath(fixturesDir))).toBe(false);
+  }, SCRIPT_TEST_TIMEOUT_MS);
+
+  test('a non-force run keeps the marker on a certified tree that still passes', () => {
+    const fixturesDir = createCertifiedSandbox();
+
+    const result = runSetup(fixturesDir, ['--no-validate']);
+
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(markerPath(fixturesDir))).toBe(true);
+  }, SCRIPT_TEST_TIMEOUT_MS);
+
+  test('a --force run that cannot remove the old marker stops before touching any fixture', () => {
+    const fixturesDir = createTempFixturesDir();
+    materializePartialTree(fixturesDir);
+    fs.writeFileSync(path.join(fixturesDir, 'fresh-project', 'keep.txt'), 'keep');
+    // A directory in the marker's place makes `rm -f` fail deterministically.
+    fs.mkdirSync(markerPath(fixturesDir));
+    fs.writeFileSync(path.join(markerPath(fixturesDir), 'blocker'), '');
+
+    const result = runSetup(fixturesDir, ['--force', '--no-validate'], { fakeGit: true });
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('Failed to remove fixture completion marker');
+    expect(fs.existsSync(path.join(fixturesDir, 'fresh-project', 'keep.txt'))).toBe(true);
   }, SCRIPT_TEST_TIMEOUT_MS);
 
   test('--check rejects a tree whose fixtures lack their key artifacts', () => {
