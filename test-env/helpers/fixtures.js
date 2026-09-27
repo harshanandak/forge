@@ -60,6 +60,8 @@ function fixturesPreparedByRunner(env) {
 function setupScriptEnv(fixturesDir) {
 	const env = { ...process.env };
 	delete env.FORGE_FIXTURES_DIR;
+	// The script is the builder; the runner's reader-only flag must not reach it.
+	delete env.FORGE_FIXTURES_PREPARED;
 	if (path.resolve(fixturesDir) !== path.resolve(FIXTURES_DIR)) {
 		env.FORGE_FIXTURES_DIR = fixturesDir;
 	}

@@ -86,6 +86,8 @@ const WITH_FAKE_GIT = [
 
 function runSetup(fixturesDir, args, { fakeGit = false, timeoutMs = 20000 } = {}) {
   const env = { ...process.env, FORGE_FIXTURES_DIR: fixturesDir };
+  // These runs build fixtures; never let the runner's reader-only flag leak in.
+  delete env.FORGE_FIXTURES_PREPARED;
   let bashArgs = [SETUP_SCRIPT, ...args];
   if (fakeGit) {
     env.FAKE_GIT_DIR = createFakeGitDir();

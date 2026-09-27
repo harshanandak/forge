@@ -7,6 +7,10 @@ const { ensureTestFixtures, FIXTURES_COMPLETE_MARKER } = require('./fixtures.js'
 
 const tempDirs = [];
 
+// Repair-path tests must not see the full-suite runner's FORGE_FIXTURES_PREPARED=1
+// (every shard inherits it), or ensureTestFixtures takes the verify-only branch.
+const REPAIR_ENV = {};
+
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) {
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -42,6 +46,7 @@ describe('test-env/helpers/fixtures.js', () => {
 		let repairCount = 0;
 
 		ensureTestFixtures({
+			env: REPAIR_ENV,
 			fixturesDir,
 			lockDir,
 			repairFixtures: () => {
@@ -63,6 +68,7 @@ describe('test-env/helpers/fixtures.js', () => {
 
 		materializeFixtureState(fixturesDir);
 		ensureTestFixtures({
+			env: REPAIR_ENV,
 			fixturesDir,
 			lockDir,
 			repairFixtures: () => {
@@ -80,6 +86,7 @@ describe('test-env/helpers/fixtures.js', () => {
 
 		materializeSentinels(fixturesDir);
 		ensureTestFixtures({
+			env: REPAIR_ENV,
 			fixturesDir,
 			lockDir,
 			repairFixtures: () => {
@@ -140,18 +147,20 @@ describe('test-env/helpers/fixtures.js', () => {
 		// the complete state so ensureTestFixtures accepts the repair.
 		fs.writeFileSync(setupScript, [
 			'#!/usr/bin/env bash',
-			`printf '%s\\n%s\\n%s\\n' "$FORGE_FIXTURE_LOCK_HELD" "$FORGE_FIXTURES_DIR" "$*" > '${envReport.replace(/\\/g, '/')}'`,
+			`printf '%s\\n%s\\n%s\\n%s\\n' "$FORGE_FIXTURE_LOCK_HELD" "$FORGE_FIXTURES_PREPARED" "$FORGE_FIXTURES_DIR" "$*" > '${envReport.replace(/\\/g, '/')}'`,
 			'd="$FORGE_FIXTURES_DIR"',
 			'mkdir -p "$d/fresh-project/.git" "$d/dirty-git" "$d/detached-head/.git" "$d/merge-conflict/.git" "$d/read-only-dirs/.claude"',
 			'touch "$d/dirty-git/uncommitted.txt" "$d/merge-conflict/.git/MERGE_HEAD" "$d/.fixtures-complete"',
 			'',
 		].join('\n'), 'utf8');
 
-		ensureTestFixtures({ fixturesDir, setupScript });
+		ensureTestFixtures({ env: REPAIR_ENV, fixturesDir, setupScript });
 
-		const [lockHeld, reportedDir, args] = fs.readFileSync(envReport, 'utf8').split('\n');
+		const [lockHeld, prepared, reportedDir, args] = fs.readFileSync(envReport, 'utf8').split('\n');
 		// The script no longer has its own lock, so the helper sends no lock flag.
 		expect(lockHeld).toBe('');
+		// The script is the builder here, so it never inherits the runner's reader flag.
+		expect(prepared).toBe('');
 		expect(path.resolve(reportedDir)).toBe(path.resolve(fixturesDir));
 		expect(args).toBe('--force --no-validate');
 		expect(fs.existsSync(path.join(fixturesDir, '.setup-lock'))).toBe(false);
@@ -164,6 +173,7 @@ describe('test-env/helpers/fixtures.js', () => {
 
 		materializeSentinels(fixturesDir);
 		expect(() => ensureTestFixtures({
+			env: REPAIR_ENV,
 			fixturesDir,
 			lockDir,
 			repairFixtures: () => {
