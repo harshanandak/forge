@@ -15,7 +15,7 @@ const {
 	executeValidate,
 	executeDebugMode,
 } = require('../../lib/commands/validate.js');
-const { resolveReceiptPath } = require('../../lib/validation-receipt.js');
+const { resolveReceiptPath, validationIsComplete } = require('../../lib/validation-receipt.js');
 
 setDefaultTimeout(30000);
 
@@ -1320,6 +1320,126 @@ describe('Validate Command - Validation Orchestration', () => {
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}
+		});
+	});
+
+	describe('Gate integrity', () => {
+		const noReceipt = {
+			beginValidation: () => ({ head: 'gate-integrity-snapshot' }),
+			completeValidation: (_rootDir, _snapshot, result) => validationIsComplete(result),
+		};
+
+		test('runs every gate in rootDir, not process.cwd()', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-gate-root-'));
+			const calls = [];
+			try {
+				expect(path.resolve(rootDir)).not.toBe(path.resolve(process.cwd()));
+				fs.writeFileSync(path.join(rootDir, 'tsconfig.json'), '{}');
+				const result = await executeValidate({
+					rootDir,
+					validationReceipt: noReceipt,
+					exec: (command, args, options) => {
+						calls.push({ command, args, cwd: options?.cwd });
+						if (command === 'bun' && args[0] === 'test') return '1 pass\n0 fail\nRan 1 tests across 1 file.';
+						return '';
+					},
+				});
+
+				const commands = calls.map(call => call.command);
+				expect(commands).toEqual(expect.arrayContaining(['git', 'tsc', 'eslint', 'bun']));
+				expect(calls.find(call => call.command === 'bun' && call.args[0] === 'audit')).toBeDefined();
+				expect(calls.find(call => call.command === 'bun' && call.args[0] === 'test')).toBeDefined();
+				for (const call of calls) expect(call.cwd).toBe(rootDir);
+				// tsconfig lookup honoured rootDir: tsc actually ran instead of "not configured"
+				expect(result.checks.typeCheck.notConfigured).not.toBe(true);
+				expect(result.checks.typeCheck.success).toBe(true);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('passes --max-warnings 0 to eslint', async () => {
+			let lintArgs;
+			await runLint((_command, args) => { lintArgs = args; return ''; });
+			expect(lintArgs).toEqual(expect.arrayContaining(['--max-warnings', '0']));
+			expect(lintArgs[lintArgs.indexOf('--max-warnings') + 1]).toBe('0');
+		});
+
+		const lintFailure = (status, fields) => () => {
+			throw Object.assign(new Error(`Command failed: eslint (exit ${status})`), { status, stdout: '', stderr: '', ...fields });
+		};
+		const runWithLint = async (lintExec) => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-lint-exit-'));
+			try {
+				return await executeValidate({
+					rootDir,
+					validationReceipt: noReceipt,
+					runAllTests: async () => ({
+						success: true, testsFound: true, fullSuite: true, passed: 1, failed: 0, total: 1,
+					}),
+					exec: (command, args, options) => {
+						if (command === 'eslint') return lintExec(command, args, options);
+						if (command === 'bun' && args[0] === 'audit') return 'No vulnerabilities found';
+						return '';
+					},
+				});
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		};
+
+		test.each([
+			['exit 1, warnings summary on stdout', lintFailure(1, {
+				stdout: '✖ 2 problems (0 errors, 2 warnings)\n\nESLint found too many warnings (maximum: 0).',
+			}), { success: false, errors: 0, warnings: 2 }],
+			['exit 1, warnings only on stderr', lintFailure(1, {
+				stderr: '✖ 2 problems (0 errors, 2 warnings)\nESLint found too many warnings (maximum: 0).',
+			}), { success: false, errors: 0, warnings: 2 }],
+			['exit 2, config crash', lintFailure(2, {
+				stderr: 'Oops! Something went wrong! :(\nError: Cannot find module eslint-plugin-missing',
+			}), { success: false }],
+			['exit 0 with a summary line', () => '✖ 2 problems (0 errors, 2 warnings)\n', { success: true }],
+			['exit 0 with no summary line', () => '[{"filePath":"a.js","warningCount":2}]', { success: true }],
+			['exit 0, clean', () => '', { success: true, errors: 0, warnings: 0 }],
+		])('lint success is the eslint exit code (%s)', async (_name, lintExec, expected) => {
+			const lint = await runLint(lintExec);
+			expect(lint).toMatchObject(expected);
+
+			const result = await runWithLint(lintExec);
+			expect(result.checks.lint.success).toBe(expected.success);
+			expect(result.success).toBe(expected.success);
+			expect(result.validationReceipt).toBe(expected.success);
+			if (!expected.success) expect(result.failedChecks).toContain('lint');
+		});
+
+		test('a crashed eslint surfaces its stderr in the lint message', async () => {
+			const lint = await runLint(lintFailure(2, {
+				stderr: 'Oops! Something went wrong! :(\nError: Cannot find module eslint-plugin-missing',
+			}));
+			expect(lint.success).toBe(false);
+			expect(lint.message).toContain('exit 2');
+			expect(lint.message).toContain('Cannot find module eslint-plugin-missing');
+		});
+
+		test('missing eslint is a skipped lint gate and mints no receipt end to end', async () => {
+			const result = await runWithLint(() => {
+				throw Object.assign(new Error('spawnSync eslint ENOENT'), { code: 'ENOENT' });
+			});
+			expect(result.checks.lint).toMatchObject({ success: true, skipped: true });
+			expect(result.validationReceipt).toBe(false);
+		});
+
+		test('receipt refuses a skipped lint gate', () => {
+			expect(validationIsComplete({
+				success: true,
+				checks: {
+					conflictMarkers: { success: true },
+					typeCheck: { success: true, skipped: true, notConfigured: true },
+					lint: { success: true, skipped: true },
+					security: { success: true },
+					tests: { success: true, fullSuite: true, testsFound: true, total: 1, failed: 0 },
+				},
+			})).toBe(false);
 		});
 	});
 });
