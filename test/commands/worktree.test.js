@@ -514,6 +514,35 @@ describe('forge worktree create/remove resolve the main worktree', () => {
     expect(fs.existsSync(nestedPath)).toBe(false);
   }, 30000);
 
+  function toplevelFailsStub(mainRoot, calls) {
+    const target = path.join(mainRoot, '.worktrees', 'foo');
+    return (cmd, args) => {
+      calls.push(args.join(' '));
+      if (cmd !== 'git') throw new Error(`unexpected ${cmd}`);
+      if (args.includes('list')) {
+        return [`worktree ${mainRoot.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/main', '',
+          `worktree ${target.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/feat/foo', '', ''].join('\0');
+      }
+      if (args.includes('--show-toplevel')) throw new Error('ETIMEDOUT');
+      const answers = { '--git-dir': path.join(mainRoot, '.git', 'worktrees', 'foo'), '--git-common-dir': path.join(mainRoot, '.git') };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+  }
+
+  test('remove refuses when the invoking checkout cannot be resolved (show-toplevel fails)', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const mainRoot = path.resolve('/fake/main');
+    const calls = [];
+    const result = await mod.handler(['remove', 'foo'], {}, path.join(mainRoot, '.worktrees', 'foo', 'sub'),
+      { _exec: toplevelFailsStub(mainRoot, calls) });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('invoking checkout');
+    expect(calls.some((c) => c.includes('worktree remove'))).toBe(false);
+  });
+
   test('remove refuses to remove the checkout it is invoked from (even from a subdirectory)', async () => {
     const mod = require('../../lib/commands/worktree');
     const mainRoot = seedRepo(tempDir('forge-wt-self-remove-'));

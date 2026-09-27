@@ -933,8 +933,13 @@ describe('forge worktree create from a linked checkout — deps link from the ma
           '',
         ].join('\0'));
       }
-      if (args.includes('--git-common-dir')) {
-        return Buffer.from(`${path.join(mainRoot, '.git', 'worktrees', 'linked')}\n${path.join(mainRoot, '.git')}\n${linkedRoot}\n`);
+      const answers = {
+        '--git-dir': path.join(mainRoot, '.git', 'worktrees', 'linked'),
+        '--git-common-dir': path.join(mainRoot, '.git'),
+        '--show-toplevel': linkedRoot,
+      };
+      if (args.includes('rev-parse')) {
+        return Buffer.from(args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join(''));
       }
       if (args.includes('config') && args.includes('core.worktree')) throw new Error('unset');
       if (args.includes('--show-toplevel')) return Buffer.from(`${linkedRoot}\n`);

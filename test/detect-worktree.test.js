@@ -170,7 +170,8 @@ describe('resolveMainWorktree / resolveInvokingWorktreeRoot (PR #582 review)', (
     const runFile = (cmd, args) => {
       calls.push(args.join(' '));
       if (args.includes('list')) return [`worktree ${toPorcelain(root)}`, 'HEAD 0123', 'branch refs/heads/main', '', ''].join('\0');
-      if (args.includes('--git-common-dir')) return `.git\n.git\n${root}\n`;
+      const answers = { '--git-dir': '.git', '--git-common-dir': '.git', '--show-toplevel': root };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
       if (args.includes('core.worktree')) throw new Error('unset');
       return '';
     };
@@ -206,9 +207,40 @@ describe('resolveMainWorktree / resolveInvokingWorktreeRoot (PR #582 review)', (
     expect(main.worktrees).toBeNull();
   });
 
+  test('a repository path containing a newline comes back exact (each path queried alone)', () => {
+    const root = path.resolve('/fake/new\nline-repo');
+    const linked = path.join(root, '.worktrees', 'a');
+    const runFile = (cmd, args) => {
+      if (args.includes('list')) {
+        return [`worktree ${toPorcelain(root)}`, 'HEAD 0123', 'branch refs/heads/main', '',
+          `worktree ${toPorcelain(linked)}`, 'HEAD 0123', 'branch refs/heads/a', '', ''].join('\0');
+      }
+      const answers = {
+        '--git-dir': path.join(root, '.git', 'worktrees', 'a'),
+        '--git-common-dir': path.join(root, '.git'),
+        '--show-toplevel': linked,
+      };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+
+    const main = resolveMainWorktree(linked, runFile);
+    expect(main.error).toBeUndefined();
+    expect(main.root).toBe(root);
+    expect(resolveInvokingWorktreeRoot(linked, runFile, main)).toEqual({ root: linked });
+  });
+
+  test('resolveInvokingWorktreeRoot fails closed when git lists worktrees but show-toplevel fails', () => {
+    const main = { root: path.resolve('/fake/app'), bare: false, worktrees: [{ path: path.resolve('/fake/app'), bare: false }] };
+    const failing = () => { throw new Error('ETIMEDOUT'); };
+    expect(resolveInvokingWorktreeRoot(path.resolve('/fake/app/.worktrees/foo/sub'), failing, main).error)
+      .toContain('invoking checkout');
+  });
+
   test('resolveInvokingWorktreeRoot returns the checkout toplevel for a subdirectory cwd', () => {
     const top = path.resolve('/fake/app/.worktrees/foo');
     const runFile = (cmd, args) => (args.includes('--show-toplevel') ? `${toPorcelain(top)}\n` : '');
-    expect(resolveInvokingWorktreeRoot(path.join(top, 'sub', 'deeper'), runFile)).toBe(top);
+    expect(resolveInvokingWorktreeRoot(path.join(top, 'sub', 'deeper'), runFile)).toEqual({ root: top });
   });
 });

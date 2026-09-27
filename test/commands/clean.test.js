@@ -1247,6 +1247,42 @@ describe('forge clean resolves the main worktree', () => {
     expect(logs.some((line) => line.includes('Skipped the current worktree'))).toBe(true);
   }, 60000);
 
+  function toplevelFailsStub(mainRoot, calls) {
+    const target = path.join(mainRoot, '.worktrees', 'foo');
+    return (cmd, args) => {
+      calls.push(args.join(' '));
+      if (cmd !== 'git') throw new Error(`unexpected ${cmd}`);
+      if (args.includes('list')) {
+        return [`worktree ${mainRoot.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/main', '',
+          `worktree ${target.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/feat/foo', '', ''].join('\0');
+      }
+      if (args.includes('--show-toplevel')) throw new Error('ETIMEDOUT');
+      const answers = { '--git-dir': path.join(mainRoot, '.git', 'worktrees', 'foo'), '--git-common-dir': path.join(mainRoot, '.git') };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+  }
+
+  test('clean removes nothing and errors when the invoking checkout cannot be resolved', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = path.resolve('/fake/main');
+    const calls = [];
+    const readdirPaths = [];
+    const result = await mod.handler([], {}, path.join(mainRoot, '.worktrees', 'foo', 'sub'), {
+      _exec: toplevelFailsStub(mainRoot, calls),
+      _fs: { existsSync: () => true, readdirSync: (p) => { readdirPaths.push(p); return [{ name: 'foo', isDirectory: () => true }]; } },
+      _syncMaster: async () => ({ attempted: false }),
+      _reconcileClaims: async () => ({ reconciled: 0 }),
+      _closeLinkedIssue: async () => ({ closed: false }),
+      _isMerged: () => true,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('invoking checkout');
+    expect(calls.some((c) => c.includes('worktree remove'))).toBe(false);
+  });
+
   test('run from a SUBDIRECTORY of a merged linked worktree, clean still leaves that worktree intact', async () => {
     const mod = require('../../lib/commands/clean');
     const mainRoot = seedRepo(tempDir('forge-clean-self-sub-'));
