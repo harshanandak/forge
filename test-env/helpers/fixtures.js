@@ -32,7 +32,7 @@ function fixturesNeedRepair(fixturesDir) {
 		|| !fs.existsSync(path.join(fixturesDir, 'read-only-dirs', '.claude'));
 }
 
-function repairFixtures(setupScript) {
+function repairFixtures(setupScript, fixturesDir = FIXTURES_DIR) {
 	try {
 		fs.chmodSync(setupScript, 0o755);
 	} catch (_error) {
@@ -41,6 +41,9 @@ function repairFixtures(setupScript) {
 
 	execFileSync(resolveBashCommand(), [setupScript, '--force', '--no-validate'], {
 		cwd: path.dirname(setupScript),
+		// ensureTestFixtures already holds the shared .setup-lock; tell the script
+		// so it does not fail fast on its own lock check. Also pin the tree it builds.
+		env: { ...process.env, FORGE_FIXTURE_LOCK_HELD: '1', FORGE_FIXTURES_DIR: fixturesDir },
 		stdio: 'pipe',
 		// Bound this synchronous spawn: bun's per-test `--timeout` cannot preempt a
 		// blocking execFileSync, so a hung git/bash here would hang the whole push
@@ -54,7 +57,7 @@ function ensureTestFixtures(options = {}) {
 	const fixturesDir = options.fixturesDir ?? FIXTURES_DIR;
 	const setupScript = options.setupScript ?? SETUP_SCRIPT;
 	const lockDir = options.lockDir ?? path.join(fixturesDir, '.setup-lock');
-	const repair = options.repairFixtures ?? (() => repairFixtures(setupScript));
+	const repair = options.repairFixtures ?? (() => repairFixtures(setupScript, fixturesDir));
 	const needsRepair = () => fixturesNeedRepair(fixturesDir);
 
 	if (!needsRepair()) {

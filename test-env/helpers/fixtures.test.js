@@ -91,6 +91,31 @@ describe('test-env/helpers/fixtures.js', () => {
 		expect(repairCount).toBe(1);
 	});
 
+	test('default repair tells the setup script it already holds the lock and which tree to build', () => {
+		const fixturesDir = createTempFixturesDir();
+		const scriptDir = createTempFixturesDir();
+		const setupScript = path.join(scriptDir, 'fake-setup.sh');
+		const envReport = path.join(scriptDir, 'env.txt');
+		// Stands in for setup-fixtures.sh: records what it was told, then publishes
+		// the complete state so ensureTestFixtures accepts the repair.
+		fs.writeFileSync(setupScript, [
+			'#!/usr/bin/env bash',
+			`printf '%s\\n%s\\n%s\\n' "$FORGE_FIXTURE_LOCK_HELD" "$FORGE_FIXTURES_DIR" "$*" > '${envReport.replace(/\\/g, '/')}'`,
+			'd="$FORGE_FIXTURES_DIR"',
+			'mkdir -p "$d/fresh-project/.git" "$d/dirty-git" "$d/detached-head/.git" "$d/merge-conflict/.git" "$d/read-only-dirs/.claude"',
+			'touch "$d/dirty-git/uncommitted.txt" "$d/merge-conflict/.git/MERGE_HEAD" "$d/.fixtures-complete"',
+			'',
+		].join('\n'), 'utf8');
+
+		ensureTestFixtures({ fixturesDir, setupScript });
+
+		const [lockHeld, reportedDir, args] = fs.readFileSync(envReport, 'utf8').split('\n');
+		expect(lockHeld).toBe('1');
+		expect(path.resolve(reportedDir)).toBe(path.resolve(fixturesDir));
+		expect(args).toBe('--force --no-validate');
+		expect(fs.existsSync(path.join(fixturesDir, '.setup-lock'))).toBe(false);
+	}, 30000);
+
 	test('throws when repair leaves sentinels but never publishes the completion marker', () => {
 		const fixturesDir = createTempFixturesDir();
 		const lockDir = path.join(fixturesDir, '.setup-lock');

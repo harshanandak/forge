@@ -42,6 +42,15 @@ describe('setup-fixtures.sh', () => {
     expect(fs.existsSync(path.join(FIXTURES_DIR, FIXTURES_COMPLETE_MARKER))).toBe(true);
   });
 
+  // The marker's artifact table must accept exactly the tree these tests accept.
+  test('should pass the script artifact check (--check)', () => {
+    const result = execFileSync(resolveBashCommand(), [SETUP_SCRIPT, '--check'], {
+      cwd: __dirname, stdio: 'pipe', encoding: 'utf8',
+      timeout: SETUP_SPAWN_TIMEOUT_MS, killSignal: 'SIGKILL'
+    });
+    expect(result).toContain('Fixture tree complete');
+  }, SETUP_SPAWN_TIMEOUT_MS);
+
   describe('Fixture: fresh-project', () => {
     const fixturePath = path.join(FIXTURES_DIR, 'fresh-project');
     test('should have .git directory', () => {
