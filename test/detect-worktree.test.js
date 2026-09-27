@@ -244,3 +244,58 @@ describe('resolveMainWorktree / resolveInvokingWorktreeRoot (PR #582 review)', (
     expect(resolveInvokingWorktreeRoot(path.join(top, 'sub', 'deeper'), runFile)).toEqual({ root: top });
   });
 });
+
+describe('git discovery ignores inherited repository-location env (PR #582 round 5)', () => {
+  const { resolveMainWorktree, resolveInvokingWorktreeRoot } = require('../lib/detect-worktree');
+  const LOCATION_VARS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY'];
+
+  test('GIT_DIR from a hook pointing at another repo does not redirect resolution', () => {
+    const root = path.resolve('/fake/real-repo');
+    const linked = path.join(root, '.worktrees', 'a');
+    const other = path.resolve('/fake/other-repo');
+    const saved = {};
+    for (const key of LOCATION_VARS) saved[key] = process.env[key];
+    process.env.GIT_DIR = path.join(other, '.git');
+    process.env.GIT_WORK_TREE = other;
+    process.env.GIT_COMMON_DIR = path.join(other, '.git');
+    process.env.GIT_INDEX_FILE = path.join(other, '.git', 'index');
+    process.env.GIT_OBJECT_DIRECTORY = path.join(other, '.git', 'objects');
+    const envs = [];
+    // A git that honors inherited GIT_DIR: answers for the OTHER repo when it is set.
+    const runFile = (cmd, args, opts) => {
+      const env = (opts && opts.env) || process.env;
+      envs.push(env);
+      const redirected = Boolean(env.GIT_DIR);
+      const top = redirected ? other : root;
+      const self = redirected ? other : linked;
+      if (args.includes('list')) {
+        return [`worktree ${top.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/main', '',
+          ...(redirected ? [] : [`worktree ${linked.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/a', '']), ''].join('\0');
+      }
+      const answers = {
+        '--git-dir': redirected ? path.join(other, '.git') : path.join(root, '.git', 'worktrees', 'a'),
+        '--git-common-dir': path.join(top, '.git'),
+        '--show-toplevel': self,
+      };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+
+    try {
+      const main = resolveMainWorktree(linked, runFile);
+      expect(main.error).toBeUndefined();
+      expect(main.root).toBe(root);
+      expect(resolveInvokingWorktreeRoot(linked, runFile, main)).toEqual({ root: linked });
+      expect(envs.length).toBeGreaterThan(0);
+      for (const env of envs) {
+        for (const key of LOCATION_VARS) expect(env[key]).toBeUndefined();
+      }
+    } finally {
+      for (const key of LOCATION_VARS) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
+});

@@ -196,10 +196,11 @@ describe('forge worktree command', () => {
     const mockFs = {
       mkdirSync: () => {},
       existsSync: (p) => {
-        // worktree path already exists
-        if (p.includes('.worktrees') && !p.endsWith('.worktrees')) return true;
+        // worktree path already exists (the dir only: no manifests inside it)
+        if (p.endsWith(`${require('node:path').sep}already-exists`)) return true;
         return false;
       },
+      lstatSync: missingLstat,
       symlinkSync: () => {},
       readdirSync: () => [],
       cpSync: () => {},

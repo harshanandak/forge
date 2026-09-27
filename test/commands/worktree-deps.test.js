@@ -147,6 +147,8 @@ describe('forge worktree create — verifies the install and self-heals a stale 
     fs.mkdirSync(worktreePath, { recursive: true });
     fs.writeFileSync(path.join(projectRoot, 'package.json'), JSON.stringify({ name: 'main' }));
     fs.writeFileSync(path.join(projectRoot, lockfile), '');
+    // A checkout carries its branch's tracked lockfile; detection reads the worktree's.
+    fs.writeFileSync(path.join(worktreePath, lockfile), '');
     fs.writeFileSync(path.join(worktreePath, 'package.json'), JSON.stringify({ name: 'wt', dependencies: { 'left-pad': '^1.0.0' } }));
     return { tmp, projectRoot, worktreePath };
   }
@@ -170,6 +172,7 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       fs.writeFileSync(path.join(root, 'packages', 'skills', 'package.json'), workspacePackage);
     }
     fs.writeFileSync(path.join(projectRoot, lockfile), '');
+    fs.writeFileSync(path.join(worktreePath, lockfile), '');
     fs.mkdirSync(path.join(projectRoot, 'node_modules', '.bun'), { recursive: true });
 
     const fsApi = {
@@ -983,4 +986,40 @@ describe('forge worktree create from a linked checkout — deps link from the ma
       expect(s.symlinkCalls[0].dest).toBe(path.join(s.worktreePath, 'node_modules'));
     });
   }
+});
+
+// Regression (PR #582 round 5): main.root is only the node_modules LINK source.
+// Package-manager detection and install must read the TARGET worktree's own
+// manifests: an existing branch may add package.json / pnpm-lock.yaml that main lacks.
+describe('forge worktree create — detects deps from the target worktree, not the main root', () => {
+  test('target has package.json + pnpm-lock.yaml, main has neither: pnpm install runs in the target', async () => {
+    const root = path.resolve('/fake/plain-main');
+    const worktreePath = path.join(root, '.worktrees', 'pnpm-branch');
+    const spawnCalls = [];
+    const mockFs = {
+      mkdirSync: () => {},
+      existsSync: (p) => p === path.join(worktreePath, 'package.json') || p === path.join(worktreePath, 'pnpm-lock.yaml'),
+      lstatSync: missingLstat,
+      symlinkSync: () => { throw new Error('no shared install to link'); },
+      readdirSync: () => [],
+      readFileSync: () => '{}',
+      cpSync: () => {},
+    };
+    const result = await mod.handler(
+      ['create', 'pnpm-branch'], {}, root,
+      {
+        _exec: gitStub(), _fs: mockFs, _platform: 'linux',
+        _spawn: (cmd, args, opts) => { spawnCalls.push({ cmd, args, opts }); return { status: 0 }; },
+        _kernelDriver: { listWorktrees: () => [], getWorktree: () => null, upsertWorktree: () => {} },
+        _kernelBroker: {}, _ensureBackingIssue: async () => null,
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.depsInstalled).toBe(true);
+    const install = spawnCalls.find((c) => c.args && c.args[0] === 'install');
+    expect(install).toBeTruthy();
+    expect(install.cmd).toContain('pnpm');
+    expect(path.resolve(install.opts.cwd)).toBe(path.resolve(worktreePath));
+  });
 });
