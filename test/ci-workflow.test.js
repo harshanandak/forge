@@ -506,7 +506,6 @@ describe('CI Workflow Configuration', () => {
         git('init', '-q');
         git('config', 'user.email', 'ci@example.invalid');
         git('config', 'user.name', 'CI');
-        git('config', 'commit.gpgsign', 'false');
         fs.mkdirSync(path.join(repo, 'scripts'));
         fs.writeFileSync(path.join(repo, 'scripts', 'tool.js'), 'module.exports = () => "a stable body long enough to be detected as a rename";\n');
         git('add', '.');
