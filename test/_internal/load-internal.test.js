@@ -3,6 +3,6 @@
 const { expect, test } = require('bun:test');
 const { loadInternal } = require('../../lib/_internal/load-internal');
 
-test('missing workspace targets fall through to the generated vendor path', () => {
-  expect(() => loadInternal('not-present')).toThrow('vendor');
+test('unknown internal package names fail closed', () => {
+  expect(() => loadInternal('not-present')).toThrow('Unknown internal package: not-present');
 });
