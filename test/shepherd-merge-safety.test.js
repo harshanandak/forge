@@ -472,6 +472,9 @@ describe('direct issue-comment evidence', () => {
     expect(payload.directCommentTotal).toBe(total);
     expect(payload.truncated.directComments).toBe(true);
     expect(payload.verdict).toBe('BLOCKED-THREADS');
+    // Verdict evidence ids are bounded by the same cap (verdict still counts all 25).
+    expect(payload.evidence.botComments).toHaveLength(20);
+    expect(payload.evidence.botComments).toEqual(direct.map((b) => b.commentId));
   });
 
   test('under the cap: no direct-comment truncation reported', async () => {
