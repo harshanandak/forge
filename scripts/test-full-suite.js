@@ -1126,6 +1126,9 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const childEnv = stripFullSuiteChildEnv(
       typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
     );
+    // Fixtures were prepared above; shards verify them and never repair, so the
+    // runner stays the single fixture writer.
+    childEnv.FORGE_FIXTURES_PREPARED = '1';
     let results;
     try {
       const nodeExecutable = deps.nodeExecutable ?? (

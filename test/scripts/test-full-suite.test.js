@@ -783,10 +783,9 @@ describe('scripts/test-full-suite.js', () => {
     expect(lanes.find((lane) => lane.name === 'subprocess').shards.flatMap((shard) => shard.files))
       .toContain('test/scripts/dep-guard.check-ripple.analyzer.test.js');
   // Real-repo discovery plus classification tokenizes every suite source
-  // (~960 files, ~10 MB). Measured 3.3-4.4 s on a loaded Windows host after the
-  // issue 6c09647c speedup, above what bun's 5 s default safely covers; 15 s
-  // gives ~3.4x margin over the worst measured run.
-  }, 15000);
+  // (~960 files, ~10 MB). After the issue 6c09647c speedup it measured
+  // 0.98-1.48 s on a loaded Windows host, inside bun's 5 s default timeout.
+  });
 
   test('runFullSuiteInParallel spawns one process per shard and succeeds when all shards pass', async () => {
     const calls = [];
@@ -1065,6 +1064,26 @@ describe('scripts/test-full-suite.js', () => {
     expect(events.filter((event) => event === 'spawn')).toHaveLength(2);
   });
 
+  test('tells every shard child that fixtures were prepared by the runner', async () => {
+    const shardEnvs = [];
+    const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 2 }, {
+      allTests: ['test/a.test.js', 'test/b.test.js'],
+      classify: () => 'unit',
+      durationMap: new Map(),
+      env: { ...process.env, FORGE_FIXTURES_PREPARED: undefined },
+      prepareFixtures: skipFixturePreparation,
+      processTree: fakeProcessTree(),
+      spawn: (_command, args, options) => {
+        shardEnvs.push(options.env);
+        return fakeShardChild(0, 9960 + shardEnvs.length, args);
+      },
+    });
+
+    expect(status).toBe(0);
+    expect(shardEnvs).toHaveLength(2);
+    expect(shardEnvs.every((env) => env.FORGE_FIXTURES_PREPARED === '1')).toBe(true);
+  });
+
   test('fails before any shard executes when fixture preparation throws', async () => {
     const errors = [];
     let spawned = 0;
@@ -1237,6 +1256,7 @@ describe('scripts/test-full-suite.js', () => {
 
     expect(status).toBe(0);
     expect(spawnedEnv).toEqual({
+      FORGE_FIXTURES_PREPARED: '1',
       FORGE_TEST_NODE_EXECUTABLE: nodeExecutable,
       KEEP_ME: 'yes',
     });

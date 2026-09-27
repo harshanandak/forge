@@ -22,14 +22,47 @@ function sleep(ms) {
 	}
 }
 
+// The marker plus the early sentinels; each entry names what is wrong.
+const FIXTURE_STATE_CHECKS = [
+	{ path: [FIXTURES_COMPLETE_MARKER], present: true },
+	{ path: ['fresh-project', '.git'], present: true },
+	{ path: ['dirty-git', 'uncommitted.txt'], present: true },
+	{ path: ['detached-head', '.git'], present: true },
+	{ path: ['merge-conflict', '.git', 'MERGE_HEAD'], present: true },
+	{ path: ['no-git', '.git'], present: false },
+	{ path: ['read-only-dirs', '.claude'], present: true },
+];
+
+// Returns a description of the first failed check, or null when fixtures hold.
+function describeIncompleteFixtures(fixturesDir) {
+	for (const check of FIXTURE_STATE_CHECKS) {
+		if (fs.existsSync(path.join(fixturesDir, ...check.path)) !== check.present) {
+			return `${check.present ? 'missing' : 'unexpected'} ${check.path.join('/')}`;
+		}
+	}
+	return null;
+}
+
 function fixturesNeedRepair(fixturesDir) {
-	return !fs.existsSync(path.join(fixturesDir, FIXTURES_COMPLETE_MARKER))
-		|| !fs.existsSync(path.join(fixturesDir, 'fresh-project', '.git'))
-		|| !fs.existsSync(path.join(fixturesDir, 'dirty-git', 'uncommitted.txt'))
-		|| !fs.existsSync(path.join(fixturesDir, 'detached-head', '.git'))
-		|| !fs.existsSync(path.join(fixturesDir, 'merge-conflict', '.git', 'MERGE_HEAD'))
-		|| fs.existsSync(path.join(fixturesDir, 'no-git', '.git'))
-		|| !fs.existsSync(path.join(fixturesDir, 'read-only-dirs', '.claude'));
+	return describeIncompleteFixtures(fixturesDir) !== null;
+}
+
+// The full-suite runner prepares fixtures once, then sets this for every shard.
+// Such shards are readers only: repairing here would race the other shards.
+function fixturesPreparedByRunner(env) {
+	return env.FORGE_FIXTURES_PREPARED === '1';
+}
+
+// The script builds its default tree unless FORGE_FIXTURES_DIR names another
+// one, which it only accepts inside the OS temp dir (test trees). Never pass
+// the default tree explicitly, and drop any inherited override.
+function setupScriptEnv(fixturesDir) {
+	const env = { ...process.env };
+	delete env.FORGE_FIXTURES_DIR;
+	if (path.resolve(fixturesDir) !== path.resolve(FIXTURES_DIR)) {
+		env.FORGE_FIXTURES_DIR = fixturesDir;
+	}
+	return env;
 }
 
 function repairFixtures(setupScript, fixturesDir = FIXTURES_DIR) {
@@ -41,9 +74,7 @@ function repairFixtures(setupScript, fixturesDir = FIXTURES_DIR) {
 
 	execFileSync(resolveBashCommand(), [setupScript, '--force', '--no-validate'], {
 		cwd: path.dirname(setupScript),
-		// ensureTestFixtures already holds the shared .setup-lock; tell the script
-		// so it does not fail fast on its own lock check. Also pin the tree it builds.
-		env: { ...process.env, FORGE_FIXTURE_LOCK_HELD: '1', FORGE_FIXTURES_DIR: fixturesDir },
+		env: setupScriptEnv(fixturesDir),
 		stdio: 'pipe',
 		// Bound this synchronous spawn: bun's per-test `--timeout` cannot preempt a
 		// blocking execFileSync, so a hung git/bash here would hang the whole push
@@ -60,9 +91,19 @@ function ensureTestFixtures(options = {}) {
 	const repair = options.repairFixtures ?? (() => repairFixtures(setupScript, fixturesDir));
 	const needsRepair = () => fixturesNeedRepair(fixturesDir);
 
+	if (fixturesPreparedByRunner(options.env ?? process.env)) {
+		const problem = describeIncompleteFixtures(fixturesDir);
+		if (problem) {
+			throw new Error(`fixtures were prepared by the runner but are incomplete: ${problem}`);
+		}
+		return;
+	}
+
 	if (!needsRepair()) {
 		return;
 	}
+
+	// Standalone runs (`bun test <file>`) repair under this helper lock.
 
 	fs.mkdirSync(fixturesDir, { recursive: true });
 	const deadline = Date.now() + 30000;

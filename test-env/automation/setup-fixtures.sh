@@ -6,6 +6,20 @@
 #   ./setup-fixtures.sh              # Create all fixtures (skip existing)
 #   ./setup-fixtures.sh --force      # Recreate all fixtures
 #   ./setup-fixtures.sh --no-validate # Skip validation after creation
+#   ./setup-fixtures.sh --check      # Verify the tree; change nothing
+#
+# Concurrency: direct runs are NOT concurrency-safe. Two runs against the same
+# tree can interleave deletes and creates. There is exactly one writer by
+# construction: the full-suite runner (scripts/test-full-suite.js prepares the
+# fixtures once before any shard starts) or the CI setup step. Shards told the
+# fixtures were prepared never write; standalone `bun test <file>` repairs go
+# through test-env/helpers/fixtures.js and its lock.
+#
+# Only a successful --force run publishes .fixtures-complete, after every
+# fixture passes the FIXTURE_CHECKS table below.
+#
+# FORGE_FIXTURES_DIR (tests only) must be an absolute path inside the OS temp
+# dir; anything else is refused before any deletion.
 
 set +e  # Don't exit on errors - we track per-fixture failures
 
@@ -30,7 +44,6 @@ VALIDATION_DIR="$TEST_ENV_DIR/validation"
 # test-env/helpers/fixtures.js repairs whenever it is absent, so a partial
 # (killed or failed) run is never trusted.
 FIXTURES_COMPLETE_MARKER="$FIXTURES_DIR/.fixtures-complete"
-SETUP_LOCK_DIR="$FIXTURES_DIR/.setup-lock"
 
 # CLI flags
 FORCE_RECREATE=false
@@ -806,29 +819,39 @@ fixtures_complete() {
   return 0
 }
 
-# True if any fixture directory is missing (a non-force run would create it)
-fixtures_missing() {
-  local row name
-  for row in "${FIXTURE_CHECKS[@]}"; do
-    name="${row%% *}"
-    [ -d "$FIXTURES_DIR/$name" ] || return 0
-  done
-  return 1
+# Canonical physical path of an existing directory, or empty.
+canonical_dir() {
+  (cd "$1" 2>/dev/null && pwd -P)
 }
 
-# Take the setup lock shared with test-env/helpers/fixtures.js (the same
-# mkdir-based directory). FORGE_FIXTURE_LOCK_HELD=1 means the caller already
-# holds it. Fails fast instead of waiting so two writers never interleave.
-acquire_setup_lock() {
-  if [ "${FORGE_FIXTURE_LOCK_HELD:-}" = "1" ]; then
-    return 0
+# FORGE_FIXTURES_DIR may only point inside the OS temp dir so a mistyped or
+# inherited value can never make --force delete a real directory.
+# Exits 1 before anything is touched otherwise.
+require_fixtures_dir_in_temp() {
+  [ -n "${FORGE_FIXTURES_DIR:-}" ] || return 0
+  local requested="$FORGE_FIXTURES_DIR"
+  local refuse="FORGE_FIXTURES_DIR must be an absolute path inside the OS temp dir: $requested"
+  case "$requested" in
+    /*|[A-Za-z]:[\\/]*) ;;
+    *) log_error "$refuse"; exit 1 ;;
+  esac
+  local target
+  target="$(canonical_dir "$requested")"
+  if [ -z "$target" ]; then
+    local parent
+    parent="$(canonical_dir "$(dirname "$requested")")"
+    [ -n "$parent" ] && target="$parent/$(basename "$requested")"
   fi
-  if ! mkdir "$SETUP_LOCK_DIR" 2>/dev/null; then
-    log_error "Fixture setup lock is held: $SETUP_LOCK_DIR"
-    log_error "Another fixture setup is running; retry when it finishes."
-    exit 1
-  fi
-  trap 'rm -rf "$SETUP_LOCK_DIR"' EXIT
+  local root candidate
+  for root in "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}" /tmp; do
+    [ -n "$root" ] || continue
+    candidate="$(canonical_dir "$root")"
+    if [ -n "$candidate" ] && [ -n "$target" ] && [ "${target#"$candidate"/}" != "$target" ]; then
+      return 0
+    fi
+  done
+  log_error "$refuse"
+  exit 1
 }
 
 # =============================================================================
@@ -836,6 +859,8 @@ acquire_setup_lock() {
 # =============================================================================
 
 main() {
+  require_fixtures_dir_in_temp
+
   if [ "$CHECK_ONLY" = true ]; then
     if fixtures_complete; then
       log_success "Fixture tree complete: $FIXTURES_DIR"
@@ -850,12 +875,6 @@ main() {
 
   # Ensure fixtures directory exists
   mkdir -p "$FIXTURES_DIR"
-
-  # --force deletes and recreates fixtures, so it always takes the setup lock.
-  # A non-force run only creates missing fixtures, so it locks only then.
-  if [ "$FORCE_RECREATE" = true ] || fixtures_missing; then
-    acquire_setup_lock
-  fi
 
   # Invalidate the completion marker before any fixture is deleted
   if [ "$FORCE_RECREATE" = true ]; then
@@ -878,6 +897,19 @@ main() {
   create_unicode_paths
   create_large_agents_md
   create_missing_prerequisites
+
+  # Only a fully successful --force run publishes the completion marker. A
+  # non-force run may have skipped fixtures a killed run left half-built, so it
+  # never writes (or deletes) the marker. A forced tree that fails the checks
+  # is a failure: it is listed below and the run exits non-zero.
+  if [ "$FORCE_RECREATE" = true ]; then
+    if [ ${#FAILED_FIXTURES[@]} -eq 0 ] && fixtures_complete; then
+      touch "$FIXTURES_COMPLETE_MARKER"
+    elif [ ${#FAILED_FIXTURES[@]} -eq 0 ]; then
+      log_error "Fixture tree incomplete: $FIXTURES_INCOMPLETE_REASON"
+      FAILED_FIXTURES+=("completeness check ($FIXTURES_INCOMPLETE_REASON)")
+    fi
+  fi
 
   # =============================================================================
   # SUMMARY REPORTING
@@ -914,17 +946,6 @@ main() {
 
   echo ""
   log_info "========================================="
-
-  # Only a fully successful --force run publishes the completion marker. A
-  # non-force run may have skipped fixtures a killed run left half-built, so it
-  # never writes (or deletes) the marker.
-  if [ "$FORCE_RECREATE" = true ]; then
-    if [ ${#FAILED_FIXTURES[@]} -eq 0 ] && fixtures_complete; then
-      touch "$FIXTURES_COMPLETE_MARKER"
-    else
-      log_warning "Fixture tree incomplete (${FIXTURES_INCOMPLETE_REASON:-failed fixtures}); not writing $(basename "$FIXTURES_COMPLETE_MARKER")"
-    fi
-  fi
 
   # Exit with appropriate code
   if [ ${#FAILED_FIXTURES[@]} -gt 0 ]; then

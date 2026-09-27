@@ -91,7 +91,47 @@ describe('test-env/helpers/fixtures.js', () => {
 		expect(repairCount).toBe(1);
 	});
 
-	test('default repair tells the setup script it already holds the lock and which tree to build', () => {
+	test('runner-prepared fixtures that are incomplete throw without repairing or locking', () => {
+		const fixturesDir = createTempFixturesDir();
+		const lockDir = path.join(fixturesDir, '.setup-lock');
+		let repairCount = 0;
+
+		materializeSentinels(fixturesDir);
+		expect(() => ensureTestFixtures({
+			env: { FORGE_FIXTURES_PREPARED: '1' },
+			fixturesDir,
+			lockDir,
+			repairFixtures: () => {
+				repairCount += 1;
+				materializeFixtureState(fixturesDir);
+			},
+		})).toThrow(`fixtures were prepared by the runner but are incomplete: missing ${FIXTURES_COMPLETE_MARKER}`);
+
+		expect(repairCount).toBe(0);
+		expect(fs.existsSync(lockDir)).toBe(false);
+		expect(fs.existsSync(path.join(fixturesDir, FIXTURES_COMPLETE_MARKER))).toBe(false);
+	});
+
+	test('runner-prepared fixtures that are complete are accepted without repairing or locking', () => {
+		const fixturesDir = createTempFixturesDir();
+		const lockDir = path.join(fixturesDir, '.setup-lock');
+		let repairCount = 0;
+
+		materializeFixtureState(fixturesDir);
+		fs.mkdirSync(lockDir);
+		ensureTestFixtures({
+			env: { FORGE_FIXTURES_PREPARED: '1' },
+			fixturesDir,
+			lockDir,
+			repairFixtures: () => {
+				repairCount += 1;
+			},
+		});
+
+		expect(repairCount).toBe(0);
+	});
+
+	test('default repair tells the setup script which tree to build', () => {
 		const fixturesDir = createTempFixturesDir();
 		const scriptDir = createTempFixturesDir();
 		const setupScript = path.join(scriptDir, 'fake-setup.sh');
@@ -110,7 +150,8 @@ describe('test-env/helpers/fixtures.js', () => {
 		ensureTestFixtures({ fixturesDir, setupScript });
 
 		const [lockHeld, reportedDir, args] = fs.readFileSync(envReport, 'utf8').split('\n');
-		expect(lockHeld).toBe('1');
+		// The script no longer has its own lock, so the helper sends no lock flag.
+		expect(lockHeld).toBe('');
 		expect(path.resolve(reportedDir)).toBe(path.resolve(fixturesDir));
 		expect(args).toBe('--force --no-validate');
 		expect(fs.existsSync(path.join(fixturesDir, '.setup-lock'))).toBe(false);
