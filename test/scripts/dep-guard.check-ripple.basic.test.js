@@ -46,8 +46,21 @@ ENDJSON
         echo "Unknown command: $*" >&2
         exit 1
       `),
+      countedShow: createMockBd(`
+        if [[ "$1" == "show" && "$2" == "forge-abc" ]]; then
+          printf 'show\\n' >> "$0.calls"
+          echo '{"id":"forge-abc","title":"Pre-change dependency guard for plan workflow","status":"in_progress"}'
+          exit 0
+        fi
+        if [[ "$1" == "list" ]]; then
+          echo "- forge-abc [P2] [feature] - Pre-change dependency guard for plan workflow"
+          exit 0
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `),
     };
-    mockFiles.push(...Object.values(scenarios));
+    mockFiles.push(...Object.values(scenarios), `${scenarios.countedShow}.calls`);
   });
 
   afterAll(() => {
@@ -85,5 +98,14 @@ ENDJSON
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('No conflicts detected');
     expect(result.stdout).toContain('forge-abc');
+  });
+
+  test('keyword fallback reuses the source issue instead of showing it again', () => {
+    const result = runDepGuard(['check-ripple', 'forge-abc'], { BD_CMD: scenarios.countedShow });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('falling back to keyword-only ripple check');
+    expect(result.stdout).toContain('No conflicts detected');
+    const showCalls = fs.readFileSync(`${scenarios.countedShow}.calls`, 'utf8').trim().split('\n');
+    expect(showCalls).toHaveLength(1);
   });
 });
