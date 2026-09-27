@@ -299,3 +299,33 @@ describe('git discovery ignores inherited repository-location env (PR #582 round
     }
   });
 });
+
+describe('isSameOrAncestor (never remove a checkout containing the invoking one)', () => {
+  const { isSameOrAncestor } = require('../lib/detect-worktree');
+  const base = path.resolve('/fake/repo/.worktrees');
+
+  test('same path', () => {
+    expect(isSameOrAncestor(path.join(base, 'foo'), path.join(base, 'foo'))).toBe(true);
+  });
+
+  test('ancestor: target contains the invoking checkout (legacy nested layout)', () => {
+    expect(isSameOrAncestor(path.join(base, 'A'), path.join(base, 'A', '.worktrees', 'B'))).toBe(true);
+  });
+
+  test('sibling sharing a name prefix is NOT an ancestor (foo vs foobar)', () => {
+    expect(isSameOrAncestor(path.join(base, 'foo'), path.join(base, 'foobar'))).toBe(false);
+    expect(isSameOrAncestor(path.join(base, 'foo'), path.join(base, 'foobar', 'sub'))).toBe(false);
+  });
+
+  test('unrelated paths, and a descendant target, are not protected', () => {
+    expect(isSameOrAncestor(path.resolve('/fake/other'), path.join(base, 'foo'))).toBe(false);
+    expect(isSameOrAncestor(path.join(base, 'foo', 'child'), path.join(base, 'foo'))).toBe(false);
+  });
+
+  test('case differences match on win32 only', () => {
+    const target = path.join(base, 'Foo');
+    const invoking = path.join(base, 'foo', 'sub');
+    expect(isSameOrAncestor(target, invoking, 'win32')).toBe(true);
+    expect(isSameOrAncestor(target, invoking, 'linux')).toBe(false);
+  });
+});

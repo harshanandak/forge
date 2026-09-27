@@ -1283,6 +1283,53 @@ describe('forge clean resolves the main worktree', () => {
     expect(calls.some((c) => c.includes('worktree remove'))).toBe(false);
   });
 
+  test('clean from inside nested B skips merged A that contains it (legacy A/.worktrees/B)', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = seedRepo(tempDir('forge-clean-ancestor-'));
+    realFs.writeFileSync(path.join(mainRoot, '.gitignore'), '.worktrees/\n');
+    git(mainRoot, 'add', '.gitignore');
+    git(mainRoot, 'commit', '-m', 'ignore worktrees');
+    const aPath = path.join(mainRoot, '.worktrees', 'A');
+    git(mainRoot, 'worktree', 'add', aPath, '-b', 'feat/a');
+    realFs.writeFileSync(path.join(aPath, 'a.txt'), 'feat/a\n');
+    git(aPath, 'add', 'a.txt');
+    git(aPath, 'commit', '-m', 'work on feat/a');
+    git(mainRoot, 'merge', '--squash', 'feat/a');
+    git(mainRoot, 'commit', '-m', 'squash feat/a');
+    const bPath = path.join(aPath, '.worktrees', 'B');
+    git(aPath, 'worktree', 'add', bPath, '-b', 'feat/b');
+    const bWip = path.join(bPath, 'wip.txt');
+    realFs.writeFileSync(bWip, 'uncommitted work\n');
+
+    const previousCwd = process.cwd();
+    const logs = [];
+    const originalLog = console.log;
+    let result;
+    try {
+      process.chdir(bPath);
+      console.log = (...args) => { logs.push(args.join(' ')); };
+      result = await mod.handler([], {}, bPath, {
+        _exec: (cmd, args, options) => {
+          if (cmd === 'gh') throw new Error('gh not available in test');
+          return execFileSync(cmd, args, options);
+        },
+        _syncMaster: async () => ({ attempted: false }),
+        _reconcileClaims: async () => ({ reconciled: 0 }),
+        _closeLinkedIssue: async () => ({ closed: false }),
+      });
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+    }
+
+    expect(result.success).toBe(true);
+    expect(result.cleaned).toBe(0);
+    expect(result.survivors).toEqual([]);
+    expect(realFs.existsSync(aPath)).toBe(true);
+    expect(realFs.existsSync(bWip)).toBe(true);
+    expect(logs.some((line) => line.includes('Skipped the current worktree') && line.includes(aPath))).toBe(true);
+  }, 60000);
+
   test('run from a SUBDIRECTORY of a merged linked worktree, clean still leaves that worktree intact', async () => {
     const mod = require('../../lib/commands/clean');
     const mainRoot = seedRepo(tempDir('forge-clean-self-sub-'));

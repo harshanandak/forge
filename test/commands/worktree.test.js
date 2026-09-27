@@ -544,6 +544,36 @@ describe('forge worktree create/remove resolve the main worktree', () => {
     expect(calls.some((c) => c.includes('worktree remove'))).toBe(false);
   });
 
+  test('remove refuses a worktree that CONTAINS the invoking checkout (legacy nested A/.worktrees/B)', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const mainRoot = seedRepo(tempDir('forge-wt-ancestor-'));
+    // Like this repo: .worktrees/ is ignored, so git would not refuse on B's files.
+    fs.writeFileSync(path.join(mainRoot, '.gitignore'), '.worktrees/\n');
+    git(mainRoot, 'add', '.gitignore');
+    git(mainRoot, 'commit', '-m', 'ignore worktrees');
+    const aPath = path.join(mainRoot, '.worktrees', 'A');
+    git(mainRoot, 'worktree', 'add', aPath, '-b', 'feat/a');
+    const bPath = path.join(aPath, '.worktrees', 'B');
+    git(aPath, 'worktree', 'add', bPath, '-b', 'feat/b');
+    const bWip = path.join(bPath, 'wip.txt');
+    fs.writeFileSync(bWip, 'uncommitted work\n');
+
+    previousCwd = process.cwd();
+    process.chdir(bPath);
+    let result;
+    try {
+      result = await mod.handler(['remove', 'A'], {}, bPath, {});
+    } catch (error) {
+      result = { success: 'threw', error: error.message };
+    }
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('run remove from another checkout');
+    expect(fs.existsSync(aPath)).toBe(true);
+    expect(fs.existsSync(bPath)).toBe(true);
+    expect(fs.existsSync(bWip)).toBe(true);
+  }, 30000);
+
   test('remove refuses to remove the checkout it is invoked from (even from a subdirectory)', async () => {
     const mod = require('../../lib/commands/worktree');
     const mainRoot = seedRepo(tempDir('forge-wt-self-remove-'));
