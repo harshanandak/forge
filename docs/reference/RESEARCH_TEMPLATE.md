@@ -255,18 +255,14 @@
 
 ## Next Steps
 
-1. **Track the work in the Forge Kernel**:
-   - `forge issue create` for the feature (an epic plus child tasks if Strategic)
-   - Link to this research doc from the issue
-   - File every open decision and follow-up as its own Kernel issue
+1. **Proceed to /plan** with this research doc as input:
+   - `/plan` Phase 3 creates the feature's Kernel issue, branch and worktree, so don't create them by hand first; that would duplicate them
+   - It writes the plan to `docs/work/YYYY-MM-DD-<slug>/plan.md` and the task list to `docs/work/YYYY-MM-DD-<slug>/tasks.md`
+   - Link this research doc from the plan
 
-2. **Create a worktree**:
-   - `forge worktree create <feature-slug>`
+2. **File what the research surfaced but the feature won't cover**: each open decision or out-of-scope follow-up becomes its own Kernel issue (`forge issue create`), linked to the feature issue
 
-3. **Proceed to /plan**:
-   - Read this research doc
-   - Write the plan to `docs/work/YYYY-MM-DD-<slug>/plan.md` and the task list to `docs/work/YYYY-MM-DD-<slug>/tasks.md`
-   - Record stage-exit context as a Kernel issue comment
+3. **Record stage-exit context** as a Kernel issue comment on the feature issue
 
 ## Research Checklist
 
