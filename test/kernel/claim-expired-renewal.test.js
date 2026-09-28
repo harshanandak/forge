@@ -153,4 +153,94 @@ describe('claim renewal after lease expiry (55a6d3e6)', () => {
     expect(again.error.code).toBe('FORGE_ISSUE_CLAIM_CONFLICT');
     expect((await owns('other-3', 'bob', 'sess-B', '2026-09-28T00:02:10.000Z')).data.owned).toBe(true);
   });
+
+  // PR #589 review: the renewal key must be a deterministic function of the spent
+  // lease generation, caller keys must keep their original binding, and a pinned
+  // claim id must not be reused for a new lease row.
+  describe('renewal key generation (PR #589 review)', () => {
+    function claimWith(id, actor, sessionId, at, extra) {
+      return broker.runIssueOperation('claim', ['--issue', id], {
+        now: at, actor, sessionId, leaseTtlMs: TTL_MS, ...extra,
+      });
+    }
+
+    test('concurrent same-identity renewals of one expired lease share a key: the loser replays the winner', async () => {
+      await createIssue('race-1');
+      await claim('race-1', 'alice', 'sess-A', t0);
+      // Renewer B read the expired lease BEFORE renewer A committed (split read). Replay
+      // that deterministically: B's driver serves the pre-A active-claim snapshot and a
+      // miss on its first renewal-key lookup, then real reads.
+      const staleActive = await driver.loadActiveKernelClaim('race-1', {}, config);
+      let activeReads = 0;
+      let renewalKeyReads = 0;
+      const staleDriver = {
+        ...driver,
+        async loadActiveKernelClaim(...callArgs) {
+          activeReads += 1;
+          return activeReads === 1 ? staleActive : driver.loadActiveKernelClaim(...callArgs);
+        },
+        async loadKernelEventByIdempotencyKey(key, ...rest) {
+          if (/:(after|lease):/.test(key) && renewalKeyReads === 0) {
+            renewalKeyReads += 1;
+            return null;
+          }
+          return driver.loadKernelEventByIdempotencyKey(key, ...rest);
+        },
+      };
+      const brokerB = createLocalBroker({
+        projectRoot: tmpDir,
+        execFileSync: () => path.join(tmpDir, '.git'),
+        databasePath: config.databasePath,
+        driver: staleDriver,
+      });
+      await brokerB.initialize();
+
+      const a = await claim('race-1', 'alice', 'sess-A', tExpired);
+      expect(a.ok).toBe(true);
+      const b = await brokerB.runIssueOperation('claim', ['--issue', 'race-1'], {
+        now: '2026-09-28T00:02:01.000Z', actor: 'alice', sessionId: 'sess-A', leaseTtlMs: TTL_MS,
+      });
+      // B really took the split-read path (stale lease + missed renewal key).
+      expect(renewalKeyReads).toBe(1);
+      expect(b.ok).toBe(true);
+      expect(b.data.claim_id).toBe(a.data.claim_id);
+      expect((await owns('race-1', 'alice', 'sess-A', '2026-09-28T00:02:01.000Z')).data.owned).toBe(true);
+    });
+
+    test('a caller key bound to another issue is not rewritten into a new claim', async () => {
+      await createIssue('key-x');
+      await createIssue('key-y');
+      const x = await claimWith('key-x', 'alice', 'sess-A', t0, { idempotencyKey: 'caller-key-1' });
+      expect(x.ok).toBe(true);
+      const y = await claimWith('key-y', 'alice', 'sess-A', tLive, { idempotencyKey: 'caller-key-1' });
+      expect(y.ok).toBe(false);
+      expect(y.error.code).toBe('FORGE_ISSUE_IDEMPOTENCY_KEY_REUSED');
+      expect((await owns('key-y', 'alice', 'sess-A', tLive)).data.owned).toBe(false);
+      expect((await owns('key-x', 'alice', 'sess-A', tLive)).data.owned).toBe(true);
+    });
+
+    test('a caller key still dedupes a retry after it renewed an expired lease', async () => {
+      await createIssue('key-z');
+      const first = await claimWith('key-z', 'alice', 'sess-A', t0, { idempotencyKey: 'caller-key-2' });
+      const renewed = await claimWith('key-z', 'alice', 'sess-A', tExpired, { idempotencyKey: 'caller-key-2' });
+      expect(renewed.ok).toBe(true);
+      expect(renewed.data.claim_id).not.toBe(first.data.claim_id);
+      const retry = await claimWith('key-z', 'alice', 'sess-A', '2026-09-28T00:02:05.000Z', { idempotencyKey: 'caller-key-2' });
+      expect(retry.ok).toBe(true);
+      expect(retry.data.claim_id).toBe(renewed.data.claim_id);
+    });
+
+    test('a pinned claim id is not reused for the renewed lease row', async () => {
+      await createIssue('pin-1');
+      const first = await claimWith('pin-1', 'alice', 'sess-A', t0, { claimId: 'pinned-claim-1' });
+      expect(first.ok).toBe(true);
+      expect(first.data.claim_id).toBe('pinned-claim-1');
+      const renewed = await claimWith('pin-1', 'alice', 'sess-A', tExpired, { claimId: 'pinned-claim-1' });
+      expect(renewed.ok).toBe(true);
+      expect(renewed.data.claim_id).not.toBe('pinned-claim-1');
+      const own = await owns('pin-1', 'alice', 'sess-A', tExpired);
+      expect(own.data.owned).toBe(true);
+      expect(own.data.expired).toBe(false);
+    });
+  });
 });
