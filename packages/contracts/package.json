@@ -30,6 +30,6 @@
     "url": "https://github.com/harshanandak/forge/issues"
   },
   "engines": {
-    "node": ">=22.16.0"
+    "node": ">=24.0.0"
   }
 }

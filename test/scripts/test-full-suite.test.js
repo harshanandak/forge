@@ -878,7 +878,7 @@ describe('scripts/test-full-suite.js', () => {
     });
 
     const matrixStatus = await runFullSuiteInParallel({
-      labelPrefix: 'full-matrix-windows-latest-node22',
+      labelPrefix: 'full-matrix-windows-latest-node24',
       shards: 1,
     }, runOptions());
     const localStatus = await runFullSuiteInParallel({ shards: 1 }, runOptions());
@@ -887,8 +887,8 @@ describe('scripts/test-full-suite.js', () => {
     expect(localStatus).toBe(0);
     expect(writtenProfiles).toHaveLength(2);
     expect(writtenProfiles[0].outputPath.replace(/\\/g, '/'))
-      .toContain('test-results/full-matrix-windows-latest-node22.profile.json');
-    expect(writtenProfiles[0].label).toBe('full-matrix-windows-latest-node22');
+      .toContain('test-results/full-matrix-windows-latest-node24.profile.json');
+    expect(writtenProfiles[0].label).toBe('full-matrix-windows-latest-node24');
     expect(writtenProfiles[1].outputPath.replace(/\\/g, '/')).toContain('test-results/local-full.profile.json');
     expect(writtenProfiles[1].label).toBe('local-full');
   });
@@ -2041,14 +2041,14 @@ describe('scripts/test-full-suite.js', () => {
       ]);
       expect(JSON.parse(fs.readFileSync(outputPath, 'utf8')).label).toBe('local-full');
 
-      const prefixedPath = path.join(root, 'full-matrix-windows-latest-node22.profile.json');
+      const prefixedPath = path.join(root, 'full-matrix-windows-latest-node24.profile.json');
       expect(writeDurationProfile({
         allTests: ['test/a.test.js'],
-        label: 'full-matrix-windows-latest-node22',
+        label: 'full-matrix-windows-latest-node24',
         outputPath: prefixedPath,
         runReportDir: runDir,
       })).toBe(true);
-      expect(JSON.parse(fs.readFileSync(prefixedPath, 'utf8')).label).toBe('full-matrix-windows-latest-node22');
+      expect(JSON.parse(fs.readFileSync(prefixedPath, 'utf8')).label).toBe('full-matrix-windows-latest-node24');
 
       fs.rmSync(outputPath);
       expect(writeDurationProfile({
