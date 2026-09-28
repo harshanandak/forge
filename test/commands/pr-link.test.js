@@ -272,6 +272,40 @@ describe('forge pr link', () => {
     expect(harness.calls().upserts).toBe(0);
   });
 
+  test('resolves a short stored worktree issue id to the canonical full UUID', async () => {
+    const shortRow = (issueId) => [{
+      id: 'WT-1', path: ROOT, git_common_dir: COMMON, branch: BRANCH, issue_id: issueId, state: 'active',
+    }];
+    const withLookup = (harness, candidates) => {
+      harness.driver.findIssueIdsByPrefix = (prefix) => candidates.filter(row => row.id.startsWith(prefix));
+      return harness;
+    };
+
+    const unique = withLookup(buildHarness({ worktrees: shortRow(ISSUE.slice(0, 8)) }), [{ id: ISSUE }]);
+    expect((await link(unique)).success).toBe(true);
+    expect(unique.calls().persisted.issue_id).toBe(ISSUE);
+
+    const sibling = `${ISSUE.slice(0, 8)}-0000-4000-8000-000000000000`;
+    const ambiguous = withLookup(
+      buildHarness({ worktrees: shortRow(ISSUE.slice(0, 8)) }), [{ id: ISSUE }, { id: sibling }],
+    );
+    const ambiguousResult = await link(ambiguous);
+    expect(ambiguousResult.success).toBe(false);
+    expect(ambiguous.calls().upserts).toBe(0);
+
+    const unknown = withLookup(buildHarness({ worktrees: shortRow('deadbeef') }), [{ id: ISSUE }]);
+    expect((await link(unknown)).success).toBe(false);
+    expect(unknown.calls().upserts).toBe(0);
+
+    const different = withLookup(
+      buildHarness({ worktrees: shortRow(OTHER_ISSUE.slice(0, 8)) }), [{ id: ISSUE }, { id: OTHER_ISSUE }],
+    );
+    const differentResult = await link(different);
+    expect(differentResult.success).toBe(false);
+    expect(differentResult.error).toMatch(/different issue/i);
+    expect(different.calls().upserts).toBe(0);
+  }, 10_000);
+
   test('refuses without exact live actor and session ownership', async () => {
     const harness = buildHarness({ owned: false });
 
