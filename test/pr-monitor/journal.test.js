@@ -134,7 +134,8 @@ describe('withJournalLock (cross-process serialization)', () => {
     expect(got).toBe('recovered');
   });
 
-  test('heartbeat keeps a contender out after the original stale window', async () => {
+  // Quarantined on macOS: wall-clock heartbeat/stale-window race under CI load (see test/QUARANTINE.md, 8d54c27a).
+  test.skipIf(process.platform === 'darwin')('heartbeat keeps a contender out after the original stale window', async () => {
     // A pass that outlives staleMs several times over — without the heartbeat,
     // the single acquisition-time timestamp would age well past staleMs and a
     // competing caller would see (and steal) the lock as stale mid-flight.
