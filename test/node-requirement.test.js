@@ -31,4 +31,13 @@ describe('node-requirement', () => {
   test('unparseable versions fail closed', () => {
     expect(nodeVersionError('garbage')).toContain('Node.js 24+ required');
   });
+
+  test('malformed versions with a valid-looking prefix fail closed', () => {
+    for (const malformed of ['v24invalid', '24abc', 'v24.1.0junk', 'v24..1', ' v24.0.0x']) {
+      expect(Number.isNaN(parseNodeMajor(malformed))).toBe(true);
+      expect(nodeVersionError(malformed)).toContain('Node.js 24+ required');
+    }
+    expect(parseNodeMajor('v24.0.0-nightly20260101abc')).toBe(24);
+    expect(parseNodeMajor('24')).toBe(24);
+  });
 });
