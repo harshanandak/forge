@@ -216,14 +216,31 @@ describe('forge worktree command', () => {
     expect(result.message).toContain('already exists');
   });
 
+  // A readable repo for remove: main worktree only, invoked from its toplevel.
+  // remove fails closed without a worktree list, so mocks must supply one.
+  function mainOnlyRepoExec(root, onCall) {
+    const path = require('node:path');
+    const main = path.resolve(root);
+    return (cmd, args, opts) => {
+      const answer = onCall(cmd, args, opts);
+      if (answer !== undefined) return answer;
+      if (cmd !== 'git') return Buffer.from('');
+      if (args.includes('list')) return [`worktree ${main.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/main', '', ''].join('\0');
+      const answers = { '--git-dir': path.join(main, '.git'), '--git-common-dir': path.join(main, '.git'), '--show-toplevel': main };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return Buffer.from('');
+    };
+  }
+
   // (i) remove: calls git worktree remove with correct args
   test('remove calls git worktree remove with correct path', async () => {
     const mod = require('../../lib/commands/worktree');
     const calls = [];
-    const mockExec = (cmd, args, opts) => {
+    const mockExec = mainOnlyRepoExec('/fake/root', (cmd, args, opts) => {
       calls.push({ cmd, args, opts });
-      return Buffer.from('');
-    };
+      return undefined;
+    });
     const mockFs = { readFileSync: () => { throw new Error('ENOENT'); } };
 
     const result = await mod.handler(
@@ -241,7 +258,7 @@ describe('forge worktree command', () => {
   test('remove uses git worktree remove without stopping any server', async () => {
     const mod = require('../../lib/commands/worktree');
     const callOrder = [];
-    const mockExec = (cmd, args, _opts) => {
+    const mockExec = mainOnlyRepoExec('/fake/root', (cmd, args, _opts) => {
       if (cmd !== 'git') {
         throw new Error(`unexpected non-git command: ${cmd}`);
       }
@@ -249,8 +266,8 @@ describe('forge worktree command', () => {
         callOrder.push('worktreeRemove');
         return Buffer.from('');
       }
-      return Buffer.from('');
-    };
+      return undefined;
+    });
 
     await mod.handler(
       ['remove', 'done-feature'], {}, '/fake/root',
@@ -568,11 +585,84 @@ describe('forge worktree create/remove resolve the main worktree', () => {
     }
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('run remove from another checkout');
+    expect(result.error).toContain('nested inside it');
     expect(fs.existsSync(aPath)).toBe(true);
     expect(fs.existsSync(bPath)).toBe(true);
     expect(fs.existsSync(bWip)).toBe(true);
   }, 30000);
+
+  function nestedLayout(prefix) {
+    const mainRoot = seedRepo(tempDir(prefix));
+    // Like this repo: .worktrees/ is ignored, so git would not refuse on B's files.
+    fs.writeFileSync(path.join(mainRoot, '.gitignore'), '.worktrees/\n');
+    git(mainRoot, 'add', '.gitignore');
+    git(mainRoot, 'commit', '-m', 'ignore worktrees');
+    const aPath = path.join(mainRoot, '.worktrees', 'A');
+    git(mainRoot, 'worktree', 'add', aPath, '-b', 'feat/a');
+    const bPath = path.join(aPath, '.worktrees', 'B');
+    git(aPath, 'worktree', 'add', bPath, '-b', 'feat/b');
+    const bWip = path.join(bPath, 'wip.txt');
+    fs.writeFileSync(bWip, 'uncommitted work\n');
+    const cPath = path.join(mainRoot, '.worktrees', 'C');
+    git(mainRoot, 'worktree', 'add', cPath, '-b', 'feat/c');
+    return { mainRoot, aPath, bPath, bWip, cPath };
+  }
+
+  test('remove refuses A from sibling C while a registered worktree B is nested inside A', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const { mainRoot, aPath, bPath, bWip, cPath } = nestedLayout('forge-wt-nested-sibling-');
+
+    previousCwd = process.cwd();
+    process.chdir(cPath);
+    let result;
+    try {
+      result = await mod.handler(['remove', 'A'], {}, cPath, {});
+    } catch (error) {
+      result = { success: 'threw', error: error.message };
+    }
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('nested inside it');
+    expect(result.error).toContain(path.basename(bPath));
+    expect(fs.existsSync(aPath)).toBe(true);
+    expect(fs.existsSync(bWip)).toBe(true);
+    const list = git(mainRoot, 'worktree', 'list', '--porcelain');
+    expect(list).toContain(bPath.replace(/\\/g, '/'));
+    expect(list).not.toContain('prunable');
+  }, 30000);
+
+  test('remove A is NOT blocked by a sibling worktree AB sharing its name prefix', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const mainRoot = seedRepo(tempDir('forge-wt-prefix-'));
+    const aPath = path.join(mainRoot, '.worktrees', 'A');
+    const abPath = path.join(mainRoot, '.worktrees', 'AB');
+    git(mainRoot, 'worktree', 'add', aPath, '-b', 'feat/a');
+    git(mainRoot, 'worktree', 'add', abPath, '-b', 'feat/ab');
+
+    previousCwd = process.cwd();
+    process.chdir(mainRoot);
+    const result = await mod.handler(['remove', 'A'], {}, mainRoot, {});
+
+    expect(result.success).toBe(true);
+    expect(fs.existsSync(aPath)).toBe(false);
+    expect(fs.existsSync(abPath)).toBe(true);
+  }, 30000);
+
+  test('remove fails closed when the registered worktree list cannot be read', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const calls = [];
+    const result = await mod.handler(['remove', 'foo'], {}, path.resolve('/fake/root'), {
+      _exec: (cmd, args) => {
+        calls.push(args.join(' '));
+        if (args.includes('list')) throw new Error('git worktree list failed');
+        return '';
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('worktree list');
+    expect(calls.some((c) => c.includes('worktree remove'))).toBe(false);
+  });
 
   test('remove refuses to remove the checkout it is invoked from (even from a subdirectory)', async () => {
     const mod = require('../../lib/commands/worktree');

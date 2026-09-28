@@ -329,3 +329,43 @@ describe('isSameOrAncestor (never remove a checkout containing the invoking one)
     expect(isSameOrAncestor(target, invoking, 'linux')).toBe(false);
   });
 });
+
+describe('findNestedWorktrees (no registered worktree may sit inside a removal target)', () => {
+  const { findNestedWorktrees } = require('../lib/detect-worktree');
+  const base = path.resolve('/fake/repo/.worktrees');
+
+  test('returns every registered worktree strictly inside the target, excluding the target itself', () => {
+    const a = path.join(base, 'A');
+    const b = path.join(a, '.worktrees', 'B');
+    const deep = path.join(a, 'x', '.worktrees', 'D');
+    const registered = [path.resolve('/fake/repo'), a, b, path.join(base, 'C'), deep];
+    expect(findNestedWorktrees(a, registered)).toEqual([b, deep]);
+  });
+
+  test('segment prefix, not string prefix: sibling AB is not nested in A', () => {
+    const registered = [path.join(base, 'A'), path.join(base, 'AB'), path.join(base, 'AB', 'sub')];
+    expect(findNestedWorktrees(path.join(base, 'A'), registered)).toEqual([]);
+  });
+
+  test('the main worktree and unrelated siblings are never nested in a linked target', () => {
+    const registered = [path.resolve('/fake/repo'), path.join(base, 'C')];
+    expect(findNestedWorktrees(path.join(base, 'A'), registered)).toEqual([]);
+  });
+
+  test('win32: case-insensitive and separator-normalised (git porcelain emits C:/...)', () => {
+    const registered = ['C:/Repo/.worktrees/A', 'c:/repo/.worktrees/a/.worktrees/B', 'C:\\Repo\\.worktrees\\AB'];
+    expect(findNestedWorktrees('C:\\Repo\\.worktrees\\A', registered, 'win32'))
+      .toEqual(['c:/repo/.worktrees/a/.worktrees/B']);
+    expect(findNestedWorktrees('C:\\Repo\\.worktrees\\A\\', registered, 'win32'))
+      .toEqual(['c:/repo/.worktrees/a/.worktrees/B']);
+  });
+
+  test('posix: case differences are distinct paths', () => {
+    const registered = [path.join(base, 'a', '.worktrees', 'B')];
+    expect(findNestedWorktrees(path.join(base, 'A'), registered, 'linux')).toEqual([]);
+  });
+
+  test('empty registered list yields no nested worktrees', () => {
+    expect(findNestedWorktrees(path.join(base, 'A'), [])).toEqual([]);
+  });
+});
