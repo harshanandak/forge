@@ -460,7 +460,7 @@ describe('CI Workflow Configuration', () => {
       return new RegExp(match[1]);
     }
 
-    function runClassifier(changedFiles, { gitFails = false } = {}) {
+    function runClassifier(changedFiles, { gitFails = false, grepFails = false } = {}) {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-classify-'));
       try {
         const binDir = path.join(root, 'bin');
@@ -473,6 +473,11 @@ describe('CI Workflow Configuration', () => {
           : `#!/usr/bin/env bash\nwhile IFS= read -r line; do printf '%s\\n' "$line"; done < '${toPosix(listing)}'\n`;
         fs.writeFileSync(path.join(binDir, 'git'), stub);
         fs.chmodSync(path.join(binDir, 'git'), 0o755);
+        if (grepFails) {
+          // grep exit 2 = an error (bad pattern, I/O), not "no match".
+          fs.writeFileSync(path.join(binDir, 'grep'), '#!/usr/bin/env bash\nexit 2\n');
+          fs.chmodSync(path.join(binDir, 'grep'), 0o755);
+        }
         const output = path.join(root, 'out.txt');
         fs.writeFileSync(output, '');
         const prelude = `export PATH="$(cygpath -u '${toPosix(binDir)}' 2>/dev/null || printf '%s' '${toPosix(binDir)}'):$PATH"`;
@@ -500,6 +505,27 @@ describe('CI Workflow Configuration', () => {
       expect(runClassifier([], { gitFails: true }).tests_relevant).toBe('true');
       // A successful diff that lists no paths is not proof of a docs-only PR.
       expect(runClassifier([]).tests_relevant).toBe('true');
+    }, 30_000);
+
+    // Under `set -o pipefail`, `printf ... | grep -q` fails when grep exits on the
+    // first match and printf dies of SIGPIPE, turning a code PR into "docs-only".
+    // A code path first, then more than a 64 KiB pipe buffer of docs paths.
+    test('large diffs led by a code path stay test-relevant and OS-sensitive under pipefail', () => {
+      const docs = Array.from({ length: 5000 }, (_, index) => `docs/entry-${String(index).padStart(5, '0')}.md`);
+      expect(docs.join('\n').length).toBeGreaterThan(64 * 1024);
+      expect(runClassifier(['package.json', ...docs])).toEqual({ tests_relevant: 'true', os_sensitive: 'true' });
+    }, 60_000);
+
+    // Structural guard for the whole class: no producer may pipe into a consumer
+    // that can exit early (grep -q/-m, head), because pipefail turns that into a
+    // failed condition. Classify from a here-string instead.
+    test('the classifier pipes nothing into an early-exiting consumer', () => {
+      expect(classifyScript()).not.toMatch(/\|\s*(grep|head)\b/);
+    });
+
+    // A grep error (exit 2) is not "no match": both decisions fail closed.
+    test('a classifier grep error fails safe to the full matrix', () => {
+      expect(runClassifier(['docs/INDEX.md'], { grepFails: true })).toEqual({ tests_relevant: 'true', os_sensitive: 'true' });
     }, 30_000);
 
     // `git diff` reports only the destination of a detected rename, so a
