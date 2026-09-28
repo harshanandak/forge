@@ -9,7 +9,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | --- | ---: | ---: |
 | command | 29 | 6 |
 | runtime | 118 | 21 |
-| docs | 386 | 45 |
+| docs | 384 | 43 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
 
@@ -101,14 +101,10 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 12 (bd)
 - [ ] docs/reference/protected-state-surfaces.md (2)
   - lines: 11 (.beads), 20 (.beads)
-- [ ] docs/reference/RESEARCH_TEMPLATE.md (1)
-  - lines: 264 (bd)
 - [ ] docs/reference/ROADMAP.md (2)
   - lines: 299 (bd), 316 (.beads)
 - [ ] docs/reference/STATUS_BOARD.md (1)
   - lines: 76 (.beads)
-- [ ] docs/reference/superpowers-analysis.md (1)
-  - lines: 191 (bd)
 - [ ] docs/reference/test-environment.md (1)
   - lines: 483 (bd)
 - [ ] docs/reference/TOOLCHAIN.md (50)

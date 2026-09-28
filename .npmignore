@@ -47,6 +47,3 @@ packages/
 node_modules/
 .cursor/node_modules/
 .codex/node_modules/
-
-# Legacy
-openspec/

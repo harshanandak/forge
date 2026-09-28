@@ -230,7 +230,7 @@
 
 - **Type**: Tactical / Strategic
   - **Rationale**: [Why this classification]
-  - **OpenSpec needed**: Yes / No
+  - **Kernel issues needed**: [Epic + child tasks, or a single issue]
 
 - **Complexity**: Low / Medium / High
   - **Rationale**: [Number of files, systems involved, dependencies]
@@ -255,23 +255,18 @@
 
 ## Next Steps
 
-1. **If Strategic**: Create OpenSpec proposal
-   - `openspec proposal create <feature-slug>`
-   - Write proposal.md, tasks.md, plan.md
-   - Reference this research doc for evidence
+1. **Track the work in the Forge Kernel**:
+   - `forge issue create` for the feature (an epic plus child tasks if Strategic)
+   - Link to this research doc from the issue
+   - File every open decision and follow-up as its own Kernel issue
 
-2. **Create Beads issue**:
-   - `bd create "<feature-name>"`
-   - Link to this research doc
-   - Link to OpenSpec if strategic
+2. **Create a worktree**:
+   - `forge worktree create <feature-slug>`
 
-3. **Create branch**:
-   - `git checkout -b feat/<feature-slug>`
-
-4. **Proceed to /plan**:
+3. **Proceed to /plan**:
    - Read this research doc
-   - Create formal implementation plan
-   - Wait for OpenSpec approval if strategic
+   - Write the plan to `docs/work/YYYY-MM-DD-<slug>/plan.md` and the task list to `docs/work/YYYY-MM-DD-<slug>/tasks.md`
+   - Record stage-exit context as a Kernel issue comment
 
 ## Research Checklist
 
@@ -289,4 +284,4 @@
 
 ---
 
-**Note**: This research document serves as the single source of truth for all architectural and implementation decisions. Reference it throughout the development lifecycle (in OpenSpec proposals, PR descriptions, code reviews, and documentation).
+**Note**: This research document serves as the single source of truth for all architectural and implementation decisions. Reference it throughout the development lifecycle (in the `docs/work/YYYY-MM-DD-<slug>/plan.md` plan, Kernel issues, PR descriptions, code reviews, and documentation).
