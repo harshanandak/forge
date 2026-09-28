@@ -277,7 +277,8 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
 
   test('replays a same-key retry of the live winner as duplicate, from in-transaction reads', async () => {
     // No pre-transaction claim reads exist any more, so there is no split read: the
-    // key, its generation walk and the lease are all read inside BEGIN IMMEDIATE.
+    // key and the lease are both read inside BEGIN IMMEDIATE, and the key is never
+    // followed across generations: the lease row alone decides the replay.
     // The committed winner's live lease belongs to the caller, so it replays.
     const ops = [];
     const existingEvent = {
@@ -306,7 +307,6 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(ops).toEqual([
       'exec:BEGIN IMMEDIATE;',
       'loadKernelEventByIdempotencyKey:claim:issue-1:A',
-      'loadKernelEventByIdempotencyKey:claim:issue-1:A:after:claim-issue-1-A',
       'loadActiveKernelClaim',
       'exec:ROLLBACK;',
     ]);

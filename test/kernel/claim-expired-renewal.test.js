@@ -154,17 +154,18 @@ describe('claim renewal after lease expiry (55a6d3e6)', () => {
     expect((await owns('other-3', 'bob', 'sess-B', '2026-09-28T00:02:10.000Z')).data.owned).toBe(true);
   });
 
-  // PR #589 review: the renewal key must be a deterministic function of the spent
-  // lease generation, caller keys must keep their original binding, and a pinned
-  // claim id must not be reused for a new lease row.
-  describe('renewal key generation (PR #589 review)', () => {
+  // PR #589 review: concurrent renewers converge on one winner, caller keys keep
+  // deduping across generations, a key reused for another issue is refused, and a
+  // pinned claim id is not reused for a new lease row. The lease row is the only
+  // authority; idempotency keys are never followed across generations.
+  describe('claim renewal authority (PR #589 review)', () => {
     function claimWith(id, actor, sessionId, at, extra) {
       return broker.runIssueOperation('claim', ['--issue', id], {
         now: at, actor, sessionId, leaseTtlMs: TTL_MS, ...extra,
       });
     }
 
-    test('concurrent same-identity renewals of one expired lease share a key: the loser replays the winner', async () => {
+    test('concurrent same-identity renewals of one expired lease converge: the loser replays the winner', async () => {
       await createIssue('race-1');
       await claim('race-1', 'alice', 'sess-A', t0);
       // Renewer B read the expired lease BEFORE renewer A committed (split read). Replay
@@ -246,10 +247,10 @@ describe('claim renewal after lease expiry (55a6d3e6)', () => {
       return { staleBroker, view };
     }
 
-    test('a winner seen by the generation walk is replayed even when the lease snapshot predates it', async () => {
+    test('a committed winner is replayed even when the pre-transaction lease snapshot predates it', async () => {
       await createIssue('race-2');
       await claim('race-2', 'alice', 'sess-A', t0);
-      // B's lease snapshot predates A's renewal, but B's generation walk sees A's event.
+      // B's pre-transaction lease view predates A's renewal; B's key reads are real.
       const { staleBroker } = await brokerWithStaleView('race-2', { staleLease: true, staleKeys: false, winnerAt: tExpired });
       const a = await claim('race-2', 'alice', 'sess-A', tExpired);
       expect(a.ok).toBe(true);
@@ -274,6 +275,53 @@ describe('claim renewal after lease expiry (55a6d3e6)', () => {
       });
       expect(b.ok).toBe(true);
       expect(b.data.claim_id).toBe(a.data.claim_id);
+    });
+
+    // Round 4: the idempotency-key namespace is caller-writable, so claim decisions must
+    // never follow key-derived events. Plant a foreign issue event exactly where a
+    // generation walk would look (`<claim key>:after:<claim id>`) with the same entity
+    // id, forming a cycle. The renewal must not read it at all; the driver throws on
+    // the second read of the planted key so a walk fails fast instead of spinning
+    // inside BEGIN IMMEDIATE.
+    test('a foreign event planted under a derived renewal key is never followed', async () => {
+      await createIssue('foreign-1');
+      const baseKey = 'claim.create:foreign-1:alice:sess-A';
+      const first = await claimWith('foreign-1', 'alice', 'sess-A', t0, { claimId: 'pinned-foreign' });
+      expect(first.ok).toBe(true);
+      const plantedKey = `${baseKey}:after:pinned-foreign`;
+      const planted = await broker.runIssueOperation(
+        'create',
+        ['--id', 'pinned-foreign', '--title', 'planted', '--type', 'task'],
+        { now: tLive, actor: 'mallory', idempotencyKey: plantedKey },
+      );
+      expect(planted.ok).toBe(true);
+
+      let plantedReads = 0;
+      const guardedDriver = {
+        ...driver,
+        async loadKernelEventByIdempotencyKey(key, ...rest) {
+          if (key === plantedKey) {
+            plantedReads += 1;
+            if (plantedReads > 1) throw new Error('claim walked the planted foreign event more than once');
+          }
+          return driver.loadKernelEventByIdempotencyKey(key, ...rest);
+        },
+      };
+      const guardedBroker = createLocalBroker({
+        projectRoot: tmpDir,
+        execFileSync: () => path.join(tmpDir, '.git'),
+        databasePath: config.databasePath,
+        driver: guardedDriver,
+      });
+      await guardedBroker.initialize();
+
+      const renewed = await guardedBroker.runIssueOperation('claim', ['--issue', 'foreign-1'], {
+        now: tExpired, actor: 'alice', sessionId: 'sess-A', leaseTtlMs: TTL_MS, claimId: 'pinned-foreign',
+      });
+      expect(plantedReads).toBe(0);
+      expect(renewed.ok).toBe(true);
+      expect(renewed.data.claim_id).not.toBe('pinned-foreign');
+      expect((await owns('foreign-1', 'alice', 'sess-A', tExpired)).data.owned).toBe(true);
     });
 
     test('a stale snapshot never lets another identity\'s live renewal be replayed or superseded', async () => {
