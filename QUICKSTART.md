@@ -5,7 +5,7 @@ This guide gets Forge installed and visible to an AI coding agent without assumi
 ## Prerequisites
 
 - Git
-- Node.js and Bun
+- Node.js >= 24 and Bun
 - A GitHub repository if you want PR, sync, and branch-protection workflows
 - GitHub CLI for PR-oriented flows: `gh auth login`
 - Optional: Beads (`bd`) as an opt-out issue backend (issue commands use the built-in kernel backend by default)

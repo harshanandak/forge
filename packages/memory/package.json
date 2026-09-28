@@ -16,7 +16,7 @@
     "@forge/contracts": "0.1.0-beta.6"
   },
   "engines": {
-    "node": ">=22.16.0"
+    "node": ">=24.0.0"
   },
   "license": "MIT",
   "publishConfig": {

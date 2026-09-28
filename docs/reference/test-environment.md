@@ -56,7 +56,7 @@ Forge is a universal AI agent workflow tool supporting 11 agent plugins with com
 
 From code analysis, these edge cases exist but lack tests:
 
-1. **Prerequisites**: Missing git, gh, Node < 20, no package manager
+1. **Prerequisites**: Missing git, gh, Node < 24, no package manager
 2. **Permissions**: Read-only directories, locked files
 3. **Git states**: Detached HEAD, uncommitted changes, merge conflicts
 4. **Partial install**: Some files exist, others missing
@@ -357,7 +357,7 @@ const testDir = mkdtempSync(join(tmpdir(), 'forge-test-'));
 
 **Matrix**:
 - OS: Ubuntu, macOS, Windows
-- Node: 20.x, 22.x
+- Node: 24.x, 26.x
 - Package Manager: npm, yarn, pnpm
 
 **Rationale**:
@@ -501,7 +501,7 @@ const testDir = mkdtempSync(join(tmpdir(), 'forge-test-'));
 | Category | Scenario | Files Affected | Priority |
 |----------|----------|----------------|----------|
 | Prerequisites | Missing git | bin/forge.js:146-200 | P1 |
-| Prerequisites | Node < 20 | bin/forge.js:146-200 | P1 |
+| Prerequisites | Node < 24 | bin/forge.js:146-200 | P1 |
 | Prerequisites | No package manager | install.sh:114-138 | P1 |
 | Permissions | Read-only .claude/ | bin/forge.js (multiple) | P1 |
 | Git States | Detached HEAD | bin/forge.js (git ops) | P2 |

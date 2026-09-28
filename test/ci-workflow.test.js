@@ -51,11 +51,18 @@ describe('CI Workflow Configuration', () => {
         .toBe("${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}");
     });
 
-    test('followup-tests covers the Windows Node 22 lane before merge', () => {
+    test('followup-tests covers the Windows Node 24 lane before merge', () => {
       expect(workflowContent.includes('name: Targeted PR Tests (${{ matrix.label }})')).toBe(true);
       expect(workflowContent.includes('os: windows-latest')).toBe(true);
-      expect(workflowContent.includes('node-version: 22')).toBe(true);
-      expect(workflowContent.includes('label: windows-node22')).toBe(true);
+      const windowsLane = jobs['followup-tests'].strategy.matrix.include.find((entry) => entry.os === 'windows-latest');
+      expect(windowsLane).toEqual({ os: 'windows-latest', 'node-version': 24, label: 'windows-node24' });
+      expect(workflowContent.includes('label: windows-node24')).toBe(true);
+      expect(workflowContent.includes('windows-node22')).toBe(false);
+    });
+
+    test('no workflow lane pins Node 22', () => {
+      expect(workflowContent).not.toMatch(/node-version:[^\n]*\b22\b/);
+      expect(workflowContent).not.toMatch(/node22/);
     });
 
     test('followup-tests resolves affected targets through the shared execution planner', () => {
@@ -100,7 +107,7 @@ describe('CI Workflow Configuration', () => {
       expect(e2eSteps[0].if).toBe("matrix.os == 'windows-latest' && steps.affected.outputs.run_e2e == 'true' && needs.changes.outputs.os_sensitive != 'true'");
       expect(e2eSteps[0].run).toBe('bun test --timeout 15000 test/e2e/ --reporter=junit --reporter-outfile test-results/followup-e2e.xml');
       const windowsEntries = followup.strategy.matrix.include.filter((entry) => entry.os === 'windows-latest');
-      expect(windowsEntries.map((entry) => entry.label)).toEqual(['windows-node22']);
+      expect(windowsEntries.map((entry) => entry.label)).toEqual(['windows-node24']);
       expect(followup.strategy.matrix.include.some((entry) => entry.os === 'ubuntu-latest')).toBe(true);
       const resolve = followup.steps.find((step) => step.name === 'Resolve affected test targets').run;
       expect(resolve).toContain('`run_e2e=${plan.runE2E}`,');
@@ -127,7 +134,7 @@ describe('CI Workflow Configuration', () => {
     });
 
     // When the classifier demands the full matrix, the same full suite already runs
-    // on the identical ubuntu/Node 24 and windows/Node 22 environments, so the
+    // on the identical ubuntu/Node 24 and windows/Node 24 environments, so the
     // single-platform fallback would only repeat it.
     test('single-platform fallback runs only when the full matrix does not', () => {
       const followup = jobs['followup-tests'];
@@ -232,7 +239,9 @@ describe('CI Workflow Configuration', () => {
       expect(jobs['full-matrix'].if)
         .toBe("${{ needs.changes.outputs.tests_relevant == 'true' && needs.changes.outputs.os_sensitive == 'true' }}");
       expect(workflowContent.includes('os: [ubuntu-latest, macos-latest, windows-latest]')).toBe(true);
-      expect(workflowContent.includes('node-version: [22, 24]')).toBe(true);
+      expect(jobs['full-matrix'].strategy.matrix['node-version']).toEqual([24, 26]);
+      expect(workflowContent.includes('node-version: [24, 26]')).toBe(true);
+      expect(workflowContent.includes('node-version: [22, 24]')).toBe(false);
     });
 
     test('full matrix uses the resource-aware suite runner', () => {
@@ -257,7 +266,7 @@ describe('CI Workflow Configuration', () => {
       for (const lane of ['windows-smoke', 'macos-smoke']) {
         expect(jobs[lane].if).toBe("${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}");
       }
-      expect(workflowContent.includes('label: windows-node22')).toBe(true);
+      expect(workflowContent.includes('label: windows-node24')).toBe(true);
     });
 
     test('Bun test commands use the repo timeout in CI', () => {
