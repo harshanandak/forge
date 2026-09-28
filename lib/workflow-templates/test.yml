@@ -487,7 +487,7 @@ jobs:
       # lane runs affected e2e: an e2e-only PR is not OS-sensitive, so the Full
       # Matrix skips and this is its only Windows e2e coverage.
       - name: Run affected e2e tests
-        if: matrix.os == 'windows-latest' && steps.affected.outputs.run_e2e == 'true'
+        if: matrix.os == 'windows-latest' && steps.affected.outputs.run_e2e == 'true' && needs.changes.outputs.os_sensitive != 'true'
         run: bun test --timeout 15000 test/e2e/ --reporter=junit --reporter-outfile test-results/followup-e2e.xml
       - name: Run affected edge-case tests
         if: steps.affected.outputs.run_test_env == 'true'

@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const vm = require('node:vm');
 const { describe, test, expect } = require('bun:test');
 const yaml = require('js-yaml');
 
@@ -82,7 +83,7 @@ describe('CI Workflow Configuration', () => {
       const followup = jobs['followup-tests'];
       const e2eSteps = followup.steps.filter((step) => step.name === 'Run affected e2e tests');
       expect(e2eSteps).toHaveLength(1);
-      expect(e2eSteps[0].if).toBe("matrix.os == 'windows-latest' && steps.affected.outputs.run_e2e == 'true'");
+      expect(e2eSteps[0].if).toBe("matrix.os == 'windows-latest' && steps.affected.outputs.run_e2e == 'true' && needs.changes.outputs.os_sensitive != 'true'");
       expect(e2eSteps[0].run).toBe('bun test --timeout 15000 test/e2e/ --reporter=junit --reporter-outfile test-results/followup-e2e.xml');
       const windowsEntries = followup.strategy.matrix.include.filter((entry) => entry.os === 'windows-latest');
       expect(windowsEntries.map((entry) => entry.label)).toEqual(['windows-node22']);
@@ -92,6 +93,23 @@ describe('CI Workflow Configuration', () => {
       expect(jobs.e2e.name).toBe('E2E Tests');
       expect(jobs.e2e['runs-on']).toBe('ubuntu-latest');
       expect(jobs['ci-gate'].needs).toContain('e2e');
+    });
+
+    test('Windows follow-up e2e runs for e2e-only changes but not alongside the full matrix', () => {
+      const followup = jobs['followup-tests'];
+      const condition = followup.steps.find((step) => step.name === 'Run affected e2e tests').if;
+      for (const [osSensitive, runE2E, expected] of [
+        ['false', 'true', true],
+        ['true', 'true', false],
+        ['false', 'false', false],
+      ]) {
+        expect(vm.runInNewContext(condition, {
+          matrix: { os: 'windows-latest' },
+          steps: { affected: { outputs: { run_e2e: runE2E } } },
+          needs: { changes: { outputs: { os_sensitive: osSensitive } } },
+        })).toBe(expected);
+      }
+      expect(condition).toContain("needs.changes.outputs.os_sensitive != 'true'");
     });
 
     // When the classifier demands the full matrix, the same full suite already runs
