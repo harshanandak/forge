@@ -318,6 +318,60 @@ describe('forge pr link', () => {
     expect(different.calls().upserts).toBe(0);
   }, 10_000);
 
+  test('reads the live claim session through the real ownership verifier even when the caller omits one', async () => {
+    // Models the Kernel driver: `owns` falls back to actor-only ownership when the
+    // caller carries no session (sqlite-driver runIssueOwnsRead), and `claims`
+    // reports the live lease's real session.
+    const driverModel = (claim) => async (operation, _args, _root, { env }) => {
+      const actor = env.FORGE_ACTOR;
+      if (operation === 'owns') {
+        const callerSession = env.FORGE_SESSION_ID || null;
+        const mismatch = callerSession !== null && claim.session_id !== null
+          && callerSession !== claim.session_id;
+        return {
+          ok: true,
+          data: {
+            owned: claim.actor === actor && !mismatch, actor, claimed_by: claim.actor, expired: false,
+          },
+        };
+      }
+      if (operation === 'claims') return { ok: true, data: { claims: [{ issue_id: ISSUE, ...claim }] } };
+      throw new Error(`unexpected issue operation ${operation}`);
+    };
+    const run = async (claim, env) => {
+      const harness = buildHarness({ env });
+      harness.opts._verifyIssueOwnership = input => merge.defaultVerifyIssueOwnership({
+        ...input, runIssue: driverModel(claim),
+      });
+      return { result: await link(harness), upserts: harness.calls().upserts };
+    };
+    const sessionBound = { actor: 'release-actor', session_id: 'release-session' };
+    const sessionless = { actor: 'release-actor', session_id: null };
+
+    const omitted = await run(sessionBound, { FORGE_ACTOR: 'release-actor' });
+    expect(omitted.result.success).toBe(false);
+    expect(omitted.result.error).toMatch(/ownership|claim/i);
+    expect(omitted.upserts).toBe(0);
+
+    const mismatched = await run(sessionBound, { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'other' });
+    expect(mismatched.result.success).toBe(false);
+    expect(mismatched.upserts).toBe(0);
+
+    const exact = await run(sessionBound, { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' });
+    expect(exact.result.success).toBe(true);
+    expect(exact.upserts).toBe(1);
+
+    const genuinelySessionless = await run(sessionless, { FORGE_ACTOR: 'release-actor' });
+    expect(genuinelySessionless.result.success).toBe(true);
+    expect(genuinelySessionless.upserts).toBe(1);
+
+    const sessionOnSessionless = await run(sessionless, {
+      FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session',
+    });
+    expect(sessionOnSessionless.result.success).toBe(false);
+    expect(sessionOnSessionless.upserts).toBe(0);
+  }, 10_000);
+
   test('refuses without exact live actor and session ownership', async () => {
     const harness = buildHarness({ owned: false });
 
