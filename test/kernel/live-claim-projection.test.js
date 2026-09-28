@@ -179,18 +179,22 @@ describe('Kernel live claim authority projection', () => {
 			return result;
 		};
 		driver.loadKernelEntity = async (entityType, entityId, context, driverConfig) => {
-			if (entityType === 'issue' && entityId === 'terminal-race') {
-				issueReadCount += 1;
-				if (issueReadCount === 2) terminalReadInsideTransaction = transactionOpen;
+			if (entityType !== 'issue' || entityId !== 'terminal-race') {
+				return loadKernelEntity(entityType, entityId, context, driverConfig);
 			}
-			if (!transitioned && entityType === 'claim') {
+			issueReadCount += 1;
+			if (issueReadCount === 2) terminalReadInsideTransaction = transactionOpen;
+			const entity = await loadKernelEntity(entityType, entityId, context, driverConfig);
+			// The issue closes right after the pre-transaction eligibility read (claims make
+			// no other pre-transaction reads), so only the in-transaction recheck can see it.
+			if (!transitioned) {
 				transitioned = true;
 				await exec(
 					"UPDATE kernel_issues SET status = 'done' WHERE id = 'terminal-race';",
 					config,
 				);
 			}
-			return loadKernelEntity(entityType, entityId, context, driverConfig);
+			return entity;
 		};
 
 		const rejected = await claimIssue('terminal-race', 'late-worker');

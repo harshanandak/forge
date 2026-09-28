@@ -1,0 +1,3119 @@
+{
+  "version": 1,
+  "source": {
+    "date": "2026-09-28",
+    "runId": "36401362381"
+  },
+  "files": {
+    "packages/contracts/test/baseline.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 2
+    },
+    "packages/contracts/test/canonical.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "packages/contracts/test/contracts.test.js": {
+      "linux": 13,
+      "macos": 4,
+      "windows": 30
+    },
+    "packages/contracts/test/definitions.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "packages/contracts/test/identity.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "packages/contracts/test/quality-review.test.js": {
+      "linux": 9,
+      "macos": 4,
+      "windows": 14
+    },
+    "packages/contracts/test/schema.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "packages/contracts/test/spec-review.test.js": {
+      "linux": 26,
+      "macos": 12,
+      "windows": 55
+    },
+    "packages/contracts/test/validate.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "packages/flow/test/bounded-loop.test.js": {
+      "linux": 1614,
+      "macos": 1760,
+      "windows": 2216
+    },
+    "packages/flow/test/efficiency-supervisor.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "packages/flow/test/executor.test.js": {
+      "linux": 18,
+      "macos": 5,
+      "windows": 35
+    },
+    "packages/flow/test/monitor-durability.test.js": {
+      "linux": 183,
+      "macos": 87,
+      "windows": 265
+    },
+    "packages/flow/test/monitor-runtime.test.js": {
+      "linux": 146,
+      "macos": 65,
+      "windows": 265
+    },
+    "packages/flow/test/process-lifecycle.test.js": {
+      "linux": 1644,
+      "macos": 1778,
+      "windows": 2223
+    },
+    "packages/flow/test/skill-runtime.test.js": {
+      "linux": 3,
+      "macos": 2,
+      "windows": 8
+    },
+    "packages/memory/test/authority-provider.test.js": {
+      "linux": 0,
+      "macos": 1,
+      "windows": 1
+    },
+    "packages/memory/test/backend-registry.test.js": {
+      "linux": 3,
+      "macos": 2,
+      "windows": 10
+    },
+    "packages/memory/test/feedback-intake.test.js": {
+      "linux": 15,
+      "macos": 10,
+      "windows": 16
+    },
+    "packages/memory/test/pr-lifecycle-authority.test.js": {
+      "linux": 611,
+      "macos": 630,
+      "windows": 724
+    },
+    "packages/skills/test/agents.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 18
+    },
+    "packages/skills/test/cleanup/dropped-agent-code.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 2
+    },
+    "packages/skills/test/create.test.js": {
+      "linux": 8,
+      "macos": 9,
+      "windows": 25
+    },
+    "packages/skills/test/list.test.js": {
+      "linux": 2,
+      "macos": 6,
+      "windows": 25
+    },
+    "packages/skills/test/remove.test.js": {
+      "linux": 18,
+      "macos": 33,
+      "windows": 120
+    },
+    "packages/skills/test/sync.test.js": {
+      "linux": 45,
+      "macos": 47,
+      "windows": 188
+    },
+    "packages/skills/test/validate.test.js": {
+      "linux": 10,
+      "macos": 10,
+      "windows": 35
+    },
+    "packages/skills/test/validation.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "scripts/pr-verdict-label.test.js": {
+      "linux": 2,
+      "macos": 8,
+      "windows": 17
+    },
+    "scripts/release-asset.test.js": {
+      "linux": 30,
+      "macos": 35,
+      "windows": 604
+    },
+    "test-env/automation/setup-fixtures-marker-shell.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 2
+    },
+    "test-env/automation/setup-fixtures-marker.test.js": {
+      "linux": 457,
+      "macos": 1130,
+      "windows": 7713
+    },
+    "test-env/automation/setup-fixtures.test.js": {
+      "linux": 87,
+      "macos": 298,
+      "windows": 1603
+    },
+    "test-env/edge-cases/auth-security.test.js": {
+      "linux": 24,
+      "macos": 105,
+      "windows": 92
+    },
+    "test-env/edge-cases/crypto-security.test.js": {
+      "linux": 41,
+      "macos": 34,
+      "windows": 116
+    },
+    "test-env/edge-cases/env-preservation.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test-env/edge-cases/file-limits.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 2
+    },
+    "test-env/edge-cases/git-states.test.js": {
+      "linux": 154,
+      "macos": 160,
+      "windows": 822
+    },
+    "test-env/edge-cases/invalid-json.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test-env/edge-cases/network-failures.test.js": {
+      "linux": 1249,
+      "macos": 1506,
+      "windows": 1774
+    },
+    "test-env/edge-cases/permission-errors.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 7
+    },
+    "test-env/edge-cases/prerequisites.test.js": {
+      "linux": 0,
+      "macos": 1,
+      "windows": 1
+    },
+    "test-env/edge-cases/rollback-edge-cases.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test-env/edge-cases/rollback-user-sections.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 3
+    },
+    "test-env/edge-cases/rollback-validation.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test-env/edge-cases/security.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test-env/helpers/fixtures.test.js": {
+      "linux": 12,
+      "macos": 22,
+      "windows": 149
+    },
+    "test-env/validation/agent-validator.test.js": {
+      "linux": 2,
+      "macos": 3,
+      "windows": 27
+    },
+    "test-env/validation/env-validator.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 7
+    },
+    "test-env/validation/file-checker.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 19
+    },
+    "test-env/validation/git-state-checker.test.js": {
+      "linux": 391,
+      "macos": 1241,
+      "windows": 6496
+    },
+    "test/activation/ensure-forge-home.test.js": {
+      "linux": 32,
+      "macos": 19,
+      "windows": 98
+    },
+    "test/activation/plugin-scaffold.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/activation/registry-lazy-init.test.js": {
+      "linux": 18,
+      "macos": 13,
+      "windows": 40
+    },
+    "test/adapter-cli.test.js": {
+      "linux": 9,
+      "macos": 41,
+      "windows": 60
+    },
+    "test/adapters/beads-kernel-compat.test.js": {
+      "linux": 10,
+      "macos": 12,
+      "windows": 33
+    },
+    "test/adapters/kernel-issue-adapter.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/adoption-docs.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/adoption-profiles.test.js": {
+      "linux": 57,
+      "macos": 38,
+      "windows": 89
+    },
+    "test/agent-detection.test.js": {
+      "linux": 6,
+      "macos": 6,
+      "windows": 25
+    },
+    "test/agent-gaps.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/agents-md-convention.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/agents-md-generation.test.js": {
+      "linux": 4,
+      "macos": 7,
+      "windows": 16
+    },
+    "test/agents-md-onboarding-surface.test.js": {
+      "linux": 3218,
+      "macos": 1370,
+      "windows": 6738
+    },
+    "test/agents-skills-repo-discovery.test.js": {
+      "linux": 89,
+      "macos": 101,
+      "windows": 375
+    },
+    "test/audit-evidence.test.js": {
+      "linux": 5,
+      "macos": 3,
+      "windows": 26
+    },
+    "test/auto-backing-issue-script.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/base-remote.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/bash-bootstrap-source.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 4
+    },
+    "test/beads-detect.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 6
+    },
+    "test/beads-isolation.test.js": {
+      "linux": 42,
+      "macos": 45,
+      "windows": 95
+    },
+    "test/benchmarks.test.js": {
+      "linux": 11,
+      "macos": 9,
+      "windows": 31
+    },
+    "test/beta5-compatibility-evidence.test.js": {
+      "linux": 1227,
+      "macos": 314,
+      "windows": 4662
+    },
+    "test/bin/forge-gh-proxy.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/bin/forge-github-credential.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/bin/forge-preflight.test.js": {
+      "linux": 53,
+      "macos": 72,
+      "windows": 295
+    },
+    "test/bin/non-interactive-banner-stderr.test.js": {
+      "linux": 317,
+      "macos": 225,
+      "windows": 586
+    },
+    "test/bin/orientation-front-door.test.js": {
+      "linux": 425,
+      "macos": 382,
+      "windows": 1215
+    },
+    "test/binary-dep-bundling.test.js": {
+      "linux": 4,
+      "macos": 2,
+      "windows": 4
+    },
+    "test/branch-protection.test.js": {
+      "linux": 463,
+      "macos": 573,
+      "windows": 944
+    },
+    "test/bun-lockfile-proof.test.js": {
+      "linux": 4156,
+      "macos": 8631,
+      "windows": 22682
+    },
+    "test/bun-workflow-pins.test.js": {
+      "linux": 897,
+      "macos": 2545,
+      "windows": 14271
+    },
+    "test/capabilities/index.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 1
+    },
+    "test/capabilities/model.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/capabilities/probes.test.js": {
+      "linux": 6,
+      "macos": 1,
+      "windows": 33
+    },
+    "test/capability/harness-probes.test.js": {
+      "linux": 54,
+      "macos": 49,
+      "windows": 60
+    },
+    "test/capped-jsonl-log.test.js": {
+      "linux": 1620,
+      "macos": 569,
+      "windows": 584
+    },
+    "test/check-forge-token.test.js": {
+      "linux": 483,
+      "macos": 788,
+      "windows": 5467
+    },
+    "test/check-script.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/check-tdd-config.test.js": {
+      "linux": 31,
+      "macos": 31,
+      "windows": 53
+    },
+    "test/ci-workflow.test.js": {
+      "linux": 9,
+      "macos": 12,
+      "windows": 67
+    },
+    "test/cleanup/dropped-agent-cli.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/cleanup/dropped-agent-config.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/cleanup/dropped-agent-docs.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 4
+    },
+    "test/cleanup/dropped-agent-files.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/cleanup/plugin-catalog.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/cli-flags.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 6
+    },
+    "test/cli-lifecycle.test.js": {
+      "linux": 613,
+      "macos": 560,
+      "windows": 1608
+    },
+    "test/cli/forge-cmd.test.js": {
+      "linux": 260,
+      "macos": 207,
+      "windows": 455
+    },
+    "test/cli/forge.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/cli/pr-noun-dispatch.test.js": {
+      "linux": 2694,
+      "macos": 2373,
+      "windows": 7519
+    },
+    "test/cli/stage-enforcement.test.js": {
+      "linux": 30,
+      "macos": 21,
+      "windows": 52
+    },
+    "test/codeowners.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/coderabbit-config.test.js": {
+      "linux": 3,
+      "macos": 2,
+      "windows": 9
+    },
+    "test/codex-project-config-policy.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/codex-skills.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 7
+    },
+    "test/commands-convention-ref.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands-shepherd-bundle.test.js": {
+      "linux": 14,
+      "macos": 25,
+      "windows": 96
+    },
+    "test/commands-shepherd-pull.test.js": {
+      "linux": 4,
+      "macos": 2,
+      "windows": 3
+    },
+    "test/commands/_aliases.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/_issue.test.js": {
+      "linux": 21,
+      "macos": 41,
+      "windows": 84
+    },
+    "test/commands/_manifest.test.js": {
+      "linux": 114,
+      "macos": 67,
+      "windows": 128
+    },
+    "test/commands/_registry-github-context.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/commands/_registry-opts.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/commands/_registry.test.js": {
+      "linux": 11,
+      "macos": 10,
+      "windows": 31
+    },
+    "test/commands/_resolve-command-opts.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/commands/_serve-security.test.js": {
+      "linux": 3,
+      "macos": 7,
+      "windows": 50
+    },
+    "test/commands/add.test.js": {
+      "linux": 4,
+      "macos": 5,
+      "windows": 47
+    },
+    "test/commands/audit.test.js": {
+      "linux": 3,
+      "macos": 4,
+      "windows": 21
+    },
+    "test/commands/blocked.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/claim.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/claims.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 1
+    },
+    "test/commands/clean.test.js": {
+      "linux": 35,
+      "macos": 30,
+      "windows": 101
+    },
+    "test/commands/close.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/comment-stage-transition.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 2
+    },
+    "test/commands/comment.test.js": {
+      "linux": 0,
+      "macos": 1,
+      "windows": 0
+    },
+    "test/commands/control.test.js": {
+      "linux": 20,
+      "macos": 56,
+      "windows": 51
+    },
+    "test/commands/create.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/dev.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 2
+    },
+    "test/commands/doc-gate-init.test.js": {
+      "linux": 220,
+      "macos": 914,
+      "windows": 12700
+    },
+    "test/commands/doc-gate-okf.test.js": {
+      "linux": 123,
+      "macos": 1794,
+      "windows": 2299
+    },
+    "test/commands/doc-gate.test.js": {
+      "linux": 1324,
+      "macos": 2039,
+      "windows": 11036
+    },
+    "test/commands/doctor-memory.test.js": {
+      "linux": 11,
+      "macos": 12,
+      "windows": 32
+    },
+    "test/commands/doctor.test.js": {
+      "linux": 10,
+      "macos": 2,
+      "windows": 11
+    },
+    "test/commands/export-import-hydration.test.js": {
+      "linux": 268,
+      "macos": 91,
+      "windows": 527
+    },
+    "test/commands/export-real-dispatch.test.js": {
+      "linux": 28,
+      "macos": 27,
+      "windows": 2710
+    },
+    "test/commands/export.test.js": {
+      "linux": 6,
+      "macos": 7,
+      "windows": 300
+    },
+    "test/commands/gate-doc.test.js": {
+      "linux": 1,
+      "macos": 2,
+      "windows": 2
+    },
+    "test/commands/gate-events-cli.test.js": {
+      "linux": 3024,
+      "macos": 1202,
+      "windows": 3445
+    },
+    "test/commands/gate-events.test.js": {
+      "linux": 115,
+      "macos": 74,
+      "windows": 170
+    },
+    "test/commands/gate.test.js": {
+      "linux": 18,
+      "macos": 10,
+      "windows": 31
+    },
+    "test/commands/github-indirect-routes.test.js": {
+      "linux": 19,
+      "macos": 23,
+      "windows": 241
+    },
+    "test/commands/github-route-matrix.test.js": {
+      "linux": 31,
+      "macos": 41,
+      "windows": 296
+    },
+    "test/commands/github.test.js": {
+      "linux": 8,
+      "macos": 4,
+      "windows": 27
+    },
+    "test/commands/hooks.test.js": {
+      "linux": 9,
+      "macos": 9,
+      "windows": 27
+    },
+    "test/commands/inbox-command.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 1
+    },
+    "test/commands/init-hooks-onboarding.test.js": {
+      "linux": 243,
+      "macos": 280,
+      "windows": 1024
+    },
+    "test/commands/init.test.js": {
+      "linux": 1039,
+      "macos": 1133,
+      "windows": 6632
+    },
+    "test/commands/insights.test.js": {
+      "linux": 3,
+      "macos": 4,
+      "windows": 7
+    },
+    "test/commands/issue-human-output.test.js": {
+      "linux": 10,
+      "macos": 37,
+      "windows": 69
+    },
+    "test/commands/issue-response-contract-parity.test.js": {
+      "linux": 4,
+      "macos": 2,
+      "windows": 5
+    },
+    "test/commands/issue-verify.test.js": {
+      "linux": 21,
+      "macos": 50,
+      "windows": 104
+    },
+    "test/commands/issue.test.js": {
+      "linux": 13,
+      "macos": 13,
+      "windows": 105
+    },
+    "test/commands/issues.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/commands/lazy-command-manifest.test.js": {
+      "linux": 365,
+      "macos": 569,
+      "windows": 605
+    },
+    "test/commands/lefthook-user-config.test.js": {
+      "linux": 0,
+      "macos": 2,
+      "windows": 19
+    },
+    "test/commands/lint.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/list.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/memory.test.js": {
+      "linux": 392,
+      "macos": 112,
+      "windows": 3273
+    },
+    "test/commands/merge-authority-review-regressions.test.js": {
+      "linux": 13,
+      "macos": 13,
+      "windows": 27
+    },
+    "test/commands/merge-authority.test.js": {
+      "linux": 18,
+      "macos": 32,
+      "windows": 26
+    },
+    "test/commands/merge.test.js": {
+      "linux": 34,
+      "macos": 48,
+      "windows": 98
+    },
+    "test/commands/migrate.test.js": {
+      "linux": 64,
+      "macos": 44,
+      "windows": 250
+    },
+    "test/commands/options-locus-badge.test.js": {
+      "linux": 3,
+      "macos": 1,
+      "windows": 7
+    },
+    "test/commands/options.test.js": {
+      "linux": 4,
+      "macos": 2,
+      "windows": 9
+    },
+    "test/commands/orient.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/orphans.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/patch.test.js": {
+      "linux": 18,
+      "macos": 65,
+      "windows": 851
+    },
+    "test/commands/plan-branch-isolation.test.js": {
+      "linux": 168,
+      "macos": 662,
+      "windows": 1508
+    },
+    "test/commands/plan-link-issue.test.js": {
+      "linux": 315,
+      "macos": 450,
+      "windows": 2999
+    },
+    "test/commands/plan-phase-tracking.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/plan.phases.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/plan.test.js": {
+      "linux": 159,
+      "macos": 134,
+      "windows": 664
+    },
+    "test/commands/pr-link.test.js": {
+      "linux": 103,
+      "macos": 57,
+      "windows": 134
+    },
+    "test/commands/pr.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/preflight-lockfile.test.js": {
+      "linux": 32,
+      "macos": 130,
+      "windows": 317
+    },
+    "test/commands/preflight-rename.test.js": {
+      "linux": 0,
+      "macos": 1,
+      "windows": 0
+    },
+    "test/commands/preflight.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 2
+    },
+    "test/commands/prime.test.js": {
+      "linux": 4,
+      "macos": 3,
+      "windows": 7
+    },
+    "test/commands/push.test.js": {
+      "linux": 2123,
+      "macos": 2066,
+      "windows": 2116
+    },
+    "test/commands/read-first-claim.test.js": {
+      "linux": 44,
+      "macos": 30,
+      "windows": 138
+    },
+    "test/commands/ready.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/recall.test.js": {
+      "linux": 614,
+      "macos": 256,
+      "windows": 4794
+    },
+    "test/commands/recap.test.js": {
+      "linux": 80,
+      "macos": 89,
+      "windows": 456
+    },
+    "test/commands/recommend.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 5
+    },
+    "test/commands/release.test.js": {
+      "linux": 618,
+      "macos": 525,
+      "windows": 1109
+    },
+    "test/commands/remember.test.js": {
+      "linux": 310,
+      "macos": 84,
+      "windows": 2575
+    },
+    "test/commands/role.test.js": {
+      "linux": 5,
+      "macos": 7,
+      "windows": 27
+    },
+    "test/commands/runtime-no-auto-migrate.test.js": {
+      "linux": 76,
+      "macos": 52,
+      "windows": 178
+    },
+    "test/commands/serve.test.js": {
+      "linux": 39,
+      "macos": 38,
+      "windows": 63
+    },
+    "test/commands/setup-no-auto-migrate.test.js": {
+      "linux": 57,
+      "macos": 15,
+      "windows": 75
+    },
+    "test/commands/shepherd.test.js": {
+      "linux": 232,
+      "macos": 277,
+      "windows": 898
+    },
+    "test/commands/ship.test.js": {
+      "linux": 83,
+      "macos": 117,
+      "windows": 480
+    },
+    "test/commands/show.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/skill.test.js": {
+      "linux": 544,
+      "macos": 618,
+      "windows": 652
+    },
+    "test/commands/stage.test.js": {
+      "linux": 205,
+      "macos": 125,
+      "windows": 621
+    },
+    "test/commands/stale.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/status-smart.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/status.test.js": {
+      "linux": 56,
+      "macos": 86,
+      "windows": 568
+    },
+    "test/commands/sync.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/commands/team.test.js": {
+      "linux": 4,
+      "macos": 2,
+      "windows": 1
+    },
+    "test/commands/test.test.js": {
+      "linux": 0,
+      "macos": 4,
+      "windows": 5
+    },
+    "test/commands/update.test.js": {
+      "linux": 0,
+      "macos": 1,
+      "windows": 0
+    },
+    "test/commands/upgrade.test.js": {
+      "linux": 18,
+      "macos": 23,
+      "windows": 130
+    },
+    "test/commands/validate-disambiguation.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/validate.test.js": {
+      "linux": 842,
+      "macos": 2259,
+      "windows": 9039
+    },
+    "test/commands/verify-cleanup.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/commands/worktree-base.test.js": {
+      "linux": 307,
+      "macos": 766,
+      "windows": 3025
+    },
+    "test/commands/worktree-deps.test.js": {
+      "linux": 72,
+      "macos": 67,
+      "windows": 401
+    },
+    "test/commands/worktree-linkage.test.js": {
+      "linux": 212,
+      "macos": 163,
+      "windows": 5259
+    },
+    "test/commands/worktree.test.js": {
+      "linux": 14,
+      "macos": 6,
+      "windows": 19
+    },
+    "test/commitlint.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/config-writer.test.js": {
+      "linux": 6,
+      "macos": 5,
+      "windows": 22
+    },
+    "test/context-merge.test.js": {
+      "linux": 5,
+      "macos": 5,
+      "windows": 13
+    },
+    "test/control-plane.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/coverage-config.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/cross-platform-install.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/cursor-config-generation.test.js": {
+      "linux": 13,
+      "macos": 14,
+      "windows": 109
+    },
+    "test/dead-config-removal.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/dep-guard/analyzer.test.js": {
+      "linux": 1547,
+      "macos": 1427,
+      "windows": 3162
+    },
+    "test/dep-guard/behavior-detector.test.js": {
+      "linux": 1,
+      "macos": 2,
+      "windows": 8
+    },
+    "test/dep-guard/contract-detector.test.js": {
+      "linux": 4,
+      "macos": 5,
+      "windows": 27
+    },
+    "test/dep-guard/import-detector.test.js": {
+      "linux": 6,
+      "macos": 32,
+      "windows": 42
+    },
+    "test/dep-guard/keyword-ripple.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/dep-guard/rubric.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/dep-guard/task-parser.test.js": {
+      "linux": 2,
+      "macos": 2,
+      "windows": 17
+    },
+    "test/dependabot-config.test.js": {
+      "linux": 4,
+      "macos": 3,
+      "windows": 11
+    },
+    "test/deprecated-sync-cleanup.test.js": {
+      "linux": 15,
+      "macos": 14,
+      "windows": 98
+    },
+    "test/detect-agent.test.js": {
+      "linux": 7,
+      "macos": 8,
+      "windows": 64
+    },
+    "test/detect-project-status.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/detect-worktree.test.js": {
+      "linux": 27,
+      "macos": 127,
+      "windows": 504
+    },
+    "test/dev-commit-verify.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/doc-assertions.test.js": {
+      "linux": 217,
+      "macos": 279,
+      "windows": 495
+    },
+    "test/doc-gate/declaration.test.js": {
+      "linux": 1687,
+      "macos": 2792,
+      "windows": 13228
+    },
+    "test/doc-gate/detect.test.js": {
+      "linux": 598,
+      "macos": 1910,
+      "windows": 10098
+    },
+    "test/doc-gate/gate.test.js": {
+      "linux": 957,
+      "macos": 2668,
+      "windows": 16527
+    },
+    "test/doc-gate/okf-config.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 11
+    },
+    "test/doc-gate/okf.test.js": {
+      "linux": 304,
+      "macos": 820,
+      "windows": 3790
+    },
+    "test/docs-command.test.js": {
+      "linux": 814,
+      "macos": 560,
+      "windows": 1710
+    },
+    "test/docs-consistency.test.js": {
+      "linux": 3,
+      "macos": 7,
+      "windows": 32
+    },
+    "test/docs-shepherd.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/documentation-generation.test.js": {
+      "linux": 16,
+      "macos": 18,
+      "windows": 44
+    },
+    "test/dry-run.test.js": {
+      "linux": 596,
+      "macos": 456,
+      "windows": 1312
+    },
+    "test/e2e/fixtures.test.js": {
+      "linux": 2,
+      "macos": 5,
+      "windows": 22
+    },
+    "test/e2e/fixtures/large-project/tests/app.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/e2e/fresh-clone-no-beads.test.js": {
+      "linux": 2870,
+      "macos": 1709,
+      "windows": 6804
+    },
+    "test/e2e/kernel-default-cli.test.js": {
+      "linux": 6180,
+      "macos": 4330,
+      "windows": 9306
+    },
+    "test/e2e/kernel-issue-cli.test.js": {
+      "linux": 2223,
+      "macos": 1376,
+      "windows": 7377
+    },
+    "test/e2e/kernel-jsonl-roundtrip.test.js": {
+      "linux": 1068,
+      "macos": 771,
+      "windows": 9475
+    },
+    "test/e2e/kernel-memory.test.js": {
+      "linux": 117,
+      "macos": 98,
+      "windows": 461
+    },
+    "test/e2e/memory-recall-holdout.test.js": {
+      "linux": 1369,
+      "macos": 1937,
+      "windows": 3369
+    },
+    "test/e2e/scaffold-utilities.test.js": {
+      "linux": 1,
+      "macos": 2,
+      "windows": 5
+    },
+    "test/e2e/setup-workflow.test.js": {
+      "linux": 13,
+      "macos": 16,
+      "windows": 64
+    },
+    "test/e2e/skill-eval-cli.test.js": {
+      "linux": 92,
+      "macos": 87,
+      "windows": 251
+    },
+    "test/e2e/snapshot.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/e2e/status-kernel-default.test.js": {
+      "linux": 573,
+      "macos": 464,
+      "windows": 2111
+    },
+    "test/embedded-assets-drift.test.js": {
+      "linux": 18,
+      "macos": 26,
+      "windows": 84
+    },
+    "test/eval/behavioral-eval-runner.test.js": {
+      "linux": 5908,
+      "macos": 3530,
+      "windows": 6953
+    },
+    "test/eval/behavioral-eval-runtime.test.js": {
+      "linux": 54,
+      "macos": 31,
+      "windows": 122
+    },
+    "test/eval/eval-evidence.test.js": {
+      "linux": 29,
+      "macos": 19,
+      "windows": 48
+    },
+    "test/eval/eval-history.test.js": {
+      "linux": 4,
+      "macos": 5,
+      "windows": 20
+    },
+    "test/eval/eval-pipeline.test.js": {
+      "linux": 11,
+      "macos": 14,
+      "windows": 88
+    },
+    "test/eval/eval-runner.test.js": {
+      "linux": 1952,
+      "macos": 3228,
+      "windows": 6831
+    },
+    "test/eval/eval-schema.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/eval/eval-sets.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/eval/eval-storage.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 15
+    },
+    "test/eval/grader-agent.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/eval/grading.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/eval/immutable-corpus.test.js": {
+      "linux": 156,
+      "macos": 64,
+      "windows": 259
+    },
+    "test/eval/improve-command.test.js": {
+      "linux": 10,
+      "macos": 12,
+      "windows": 44
+    },
+    "test/eval/promotion-evidence-loader.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/eval/promotion-scorecard.test.js": {
+      "linux": 1305,
+      "macos": 1322,
+      "windows": 2870
+    },
+    "test/eval/transcript-parser.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/existing-tdd-gate.test.js": {
+      "linux": 75,
+      "macos": 109,
+      "windows": 563
+    },
+    "test/file-hash.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/forge-cli-registry.test.js": {
+      "linux": 1013,
+      "macos": 773,
+      "windows": 2275
+    },
+    "test/forge-cmd-shepherd.test.js": {
+      "linux": 596,
+      "macos": 492,
+      "windows": 990
+    },
+    "test/forge-commands.test.js": {
+      "linux": 4,
+      "macos": 3,
+      "windows": 10
+    },
+    "test/forge-context.test.js": {
+      "linux": 7,
+      "macos": 0,
+      "windows": 5
+    },
+    "test/forge-docs-command.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 4
+    },
+    "test/forge-issues-sync.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/forge-issues.test.js": {
+      "linux": 105,
+      "macos": 125,
+      "windows": 515
+    },
+    "test/forge-lock.test.js": {
+      "linux": 4,
+      "macos": 7,
+      "windows": 24
+    },
+    "test/forge-native-hook.test.js": {
+      "linux": 5,
+      "macos": 5,
+      "windows": 16
+    },
+    "test/forge-skills-pack.test.js": {
+      "linux": 227,
+      "macos": 131,
+      "windows": 232
+    },
+    "test/forge-uto/task1-antigravity-removal.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/forge-uto/task2-windsurf-removal.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/forge-uto/task3-aider-removal.test.js": {
+      "linux": 3,
+      "macos": 1,
+      "windows": 1
+    },
+    "test/forge-uto/task4-openspec-removal.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/forge-uto/task5-stage-count.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/forge-uto/task6-codex-plugin.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/forge-uto/task8-claude-symlink.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/forge-uto/task9-doc-cleanup.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/freshness-token.test.js": {
+      "linux": 640,
+      "macos": 1163,
+      "windows": 5770
+    },
+    "test/gate-events.test.js": {
+      "linux": 73,
+      "macos": 35,
+      "windows": 98
+    },
+    "test/gh-proxy.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 9
+    },
+    "test/git-defaults.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/gitattributes.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/github-context.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 10
+    },
+    "test/github-credential.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 9
+    },
+    "test/github-launcher.test.js": {
+      "linux": 415,
+      "macos": 331,
+      "windows": 1594
+    },
+    "test/github-router.test.js": {
+      "linux": 264,
+      "macos": 604,
+      "windows": 5450
+    },
+    "test/global-flags.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/greptile-match.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/greptile-review-adapter.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/grounding/context-events.test.js": {
+      "linux": 25,
+      "macos": 22,
+      "windows": 52
+    },
+    "test/grounding/kernel-lifecycle.test.js": {
+      "linux": 18,
+      "macos": 14,
+      "windows": 27
+    },
+    "test/grounding/read-first.test.js": {
+      "linux": 25,
+      "macos": 19,
+      "windows": 40
+    },
+    "test/harness-capability-matrix-shepherd.test.js": {
+      "linux": 0,
+      "macos": 1,
+      "windows": 0
+    },
+    "test/harness-capability-matrix.test.js": {
+      "linux": 13,
+      "macos": 11,
+      "windows": 29
+    },
+    "test/helpers/cli-subprocess.test.js": {
+      "linux": 10,
+      "macos": 15,
+      "windows": 169
+    },
+    "test/helpers/kernel-project-root.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 14
+    },
+    "test/helpers/phase-watchdog.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/helpers/skill-eval-fixture.test.js": {
+      "linux": 2,
+      "macos": 3,
+      "windows": 8
+    },
+    "test/hook-global-installer.test.js": {
+      "linux": 3,
+      "macos": 4,
+      "windows": 34
+    },
+    "test/hook-renderer-inbox.test.js": {
+      "linux": 1,
+      "macos": 9,
+      "windows": 1
+    },
+    "test/hook-renderer-read-attention.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/hook-renderer.test.js": {
+      "linux": 2,
+      "macos": 29,
+      "windows": 23
+    },
+    "test/hooks-capture.test.js": {
+      "linux": 40,
+      "macos": 9,
+      "windows": 592
+    },
+    "test/hooks-inbox-pickup.test.js": {
+      "linux": 5,
+      "macos": 11,
+      "windows": 26
+    },
+    "test/hooks-memory-recall.test.js": {
+      "linux": 132,
+      "macos": 121,
+      "windows": 178
+    },
+    "test/hooks-read-attention.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/hooks-session-start.test.js": {
+      "linux": 27,
+      "macos": 29,
+      "windows": 30
+    },
+    "test/husky-migration.test.js": {
+      "linux": 21,
+      "macos": 42,
+      "windows": 308
+    },
+    "test/inbox.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/incremental-setup.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 4
+    },
+    "test/init-command.test.js": {
+      "linux": 76,
+      "macos": 37,
+      "windows": 155
+    },
+    "test/insights.test.js": {
+      "linux": 2,
+      "macos": 2,
+      "windows": 15
+    },
+    "test/install-sh.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/integration/enhanced-onboarding.test.js": {
+      "linux": 11,
+      "macos": 13,
+      "windows": 47
+    },
+    "test/integration/github-account-context.test.js": {
+      "linux": 4523,
+      "macos": 4318,
+      "windows": 34752
+    },
+    "test/integration/package-distribution.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/integration/standalone-package-smoke.test.js": {
+      "linux": 5662,
+      "macos": 5620,
+      "windows": 38897
+    },
+    "test/issue-adapter.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/issue-backend.test.js": {
+      "linux": 8,
+      "macos": 10,
+      "windows": 40
+    },
+    "test/issue-render.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/issue-sync/authority.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/issue-sync/github-pull.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/issue-sync/import-primitives.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 4
+    },
+    "test/issue-sync/legacy-link-bridge.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 2
+    },
+    "test/issue-sync/link-store.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/issue-sync/reconcile.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 5
+    },
+    "test/issue-sync/schema.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/kernel-issue-command-contract-docs.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/kernel-schema-docs.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/kernel/backing-issue.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 1
+    },
+    "test/kernel/beads-compat-docs.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/kernel/broker-concurrency.test.js": {
+      "linux": 17,
+      "macos": 2,
+      "windows": 17
+    },
+    "test/kernel/broker-fs-gate-chokepoint.test.js": {
+      "linux": 6,
+      "macos": 0,
+      "windows": 7
+    },
+    "test/kernel/broker-fs-gate.test.js": {
+      "linux": 3,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/kernel/broker-guards.test.js": {
+      "linux": 4,
+      "macos": 0,
+      "windows": 5
+    },
+    "test/kernel/broker-migration-ledger.test.js": {
+      "linux": 375,
+      "macos": 123,
+      "windows": 644
+    },
+    "test/kernel/broker-multiprocess.test.js": {
+      "linux": 100,
+      "macos": 72,
+      "windows": 150
+    },
+    "test/kernel/broker-projection-outbox.test.js": {
+      "linux": 6,
+      "macos": 1,
+      "windows": 6
+    },
+    "test/kernel/broker.test.js": {
+      "linux": 4,
+      "macos": 0,
+      "windows": 5
+    },
+    "test/kernel/claim-expired-renewal.test.js": {
+      "linux": 276,
+      "macos": 156,
+      "windows": 3293
+    },
+    "test/kernel/claim-ownership.test.js": {
+      "linux": 221,
+      "macos": 58,
+      "windows": 369
+    },
+    "test/kernel/claim-reconciler.test.js": {
+      "linux": 37,
+      "macos": 12,
+      "windows": 191
+    },
+    "test/kernel/claim-session-identity.test.js": {
+      "linux": 106,
+      "macos": 62,
+      "windows": 414
+    },
+    "test/kernel/cli-broker-factory.test.js": {
+      "linux": 2,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/kernel/close-on-merge.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/kernel/composite-primary-key-schema.test.js": {
+      "linux": 3,
+      "macos": 2,
+      "windows": 11
+    },
+    "test/kernel/conflict-evaluator-docs.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/kernel/conflict-signal.test.js": {
+      "linux": 20,
+      "macos": 21,
+      "windows": 158
+    },
+    "test/kernel/driver-smoke.test.js": {
+      "linux": 95,
+      "macos": 61,
+      "windows": 424
+    },
+    "test/kernel/evaluator-fixtures.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/kernel/evaluators.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 5
+    },
+    "test/kernel/fs-class-warning-stream.test.js": {
+      "linux": 46,
+      "macos": 58,
+      "windows": 98
+    },
+    "test/kernel/fs-class.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/kernel/issue-command-contract.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 2
+    },
+    "test/kernel/issue-id-resolver.test.js": {
+      "linux": 221,
+      "macos": 143,
+      "windows": 736
+    },
+    "test/kernel/kernel-parity-bugs.test.js": {
+      "linux": 728,
+      "macos": 354,
+      "windows": 17055
+    },
+    "test/kernel/lease-enforcer.test.js": {
+      "linux": 6,
+      "macos": 2,
+      "windows": 10
+    },
+    "test/kernel/legacy-claim-repair.test.js": {
+      "linux": 2172,
+      "macos": 1070,
+      "windows": 21473
+    },
+    "test/kernel/live-claim-projection.test.js": {
+      "linux": 87,
+      "macos": 69,
+      "windows": 497
+    },
+    "test/kernel/migrate-events-interactions.test.js": {
+      "linux": 59,
+      "macos": 59,
+      "windows": 318
+    },
+    "test/kernel/migrations.test.js": {
+      "linux": 4,
+      "macos": 1,
+      "windows": 17
+    },
+    "test/kernel/owned-kernel.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/kernel/planning-buckets-schema.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/kernel/pr-linkage.test.js": {
+      "linux": 62,
+      "macos": 64,
+      "windows": 330
+    },
+    "test/kernel/pr-write.test.js": {
+      "linux": 263,
+      "macos": 139,
+      "windows": 1640
+    },
+    "test/kernel/projection-jsonl-writer.test.js": {
+      "linux": 10,
+      "macos": 15,
+      "windows": 103
+    },
+    "test/kernel/readiness-contract-policy.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/kernel/readiness-model.test.js": {
+      "linux": 0,
+      "macos": 35,
+      "windows": 2
+    },
+    "test/kernel/schema.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/kernel/sqlite-driver-children.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 4
+    },
+    "test/kernel/sqlite-driver-claims-read.test.js": {
+      "linux": 180,
+      "macos": 94,
+      "windows": 543
+    },
+    "test/kernel/sqlite-driver-deps-claims.test.js": {
+      "linux": 532,
+      "macos": 267,
+      "windows": 1827
+    },
+    "test/kernel/sqlite-driver-events.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/kernel/sqlite-driver-import.test.js": {
+      "linux": 256,
+      "macos": 82,
+      "windows": 997
+    },
+    "test/kernel/sqlite-driver-issue.test.js": {
+      "linux": 6,
+      "macos": 13,
+      "windows": 10
+    },
+    "test/kernel/sqlite-driver-memory.test.js": {
+      "linux": 539,
+      "macos": 574,
+      "windows": 5388
+    },
+    "test/kernel/sqlite-driver-mutations.test.js": {
+      "linux": 697,
+      "macos": 322,
+      "windows": 1867
+    },
+    "test/kernel/sqlite-driver-recent-events.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/kernel/sqlite-driver.test.js": {
+      "linux": 56,
+      "macos": 33,
+      "windows": 403
+    },
+    "test/kernel/sqlite-warning-suppression.test.js": {
+      "linux": 2,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/kernel/stage-runs.test.js": {
+      "linux": 310,
+      "macos": 172,
+      "windows": 1414
+    },
+    "test/kernel/taxonomy-validator.test.js": {
+      "linux": 69,
+      "macos": 56,
+      "windows": 76
+    },
+    "test/kernel/trace.test.js": {
+      "linux": 684,
+      "macos": 449,
+      "windows": 3015
+    },
+    "test/kernel/watch-owner-transaction.test.js": {
+      "linux": 2596,
+      "macos": 1020,
+      "windows": 7298
+    },
+    "test/kernel/windows-private-acl.test.js": {
+      "linux": 3,
+      "macos": 1,
+      "windows": 5
+    },
+    "test/lazy-dirs.test.js": {
+      "linux": 5,
+      "macos": 4,
+      "windows": 10
+    },
+    "test/lefthook-check.test.js": {
+      "linux": 1,
+      "macos": 4,
+      "windows": 28
+    },
+    "test/lefthook-wiring.test.js": {
+      "linux": 39,
+      "macos": 108,
+      "windows": 546
+    },
+    "test/lint-script.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/mcp-config-renderer.test.js": {
+      "linux": 6,
+      "macos": 5,
+      "windows": 24
+    },
+    "test/memory-digest-attention.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/memory-digest-inbox.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/memory-digest-session-nudge.test.js": {
+      "linux": 3,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/memory-digest.test.js": {
+      "linux": 23,
+      "macos": 44,
+      "windows": 204
+    },
+    "test/memory-recall-events.test.js": {
+      "linux": 135,
+      "macos": 79,
+      "windows": 606
+    },
+    "test/memory-recall.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/memory/graphiti-mcp.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/memory/hygiene.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 1
+    },
+    "test/memory/monitor-store.test.js": {
+      "linux": 1155,
+      "macos": 503,
+      "windows": 13529
+    },
+    "test/memory/router.test.js": {
+      "linux": 412,
+      "macos": 133,
+      "windows": 4495
+    },
+    "test/memory/usage-evidence.test.js": {
+      "linux": 33,
+      "macos": 6,
+      "windows": 204
+    },
+    "test/merge-rules.test.js": {
+      "linux": 0,
+      "macos": 1,
+      "windows": 2
+    },
+    "test/migrate-dry-run.test.js": {
+      "linux": 841,
+      "macos": 1166,
+      "windows": 13118
+    },
+    "test/mutation-config.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/native-gh.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/npm-publish-workflow.test.js": {
+      "linux": 1241,
+      "macos": 2084,
+      "windows": 9987
+    },
+    "test/options-command.test.js": {
+      "linux": 250,
+      "macos": 171,
+      "windows": 565
+    },
+    "test/orientation-memory.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 6
+    },
+    "test/orientation-prime-live-state.test.js": {
+      "linux": 5,
+      "macos": 2,
+      "windows": 13
+    },
+    "test/orientation.test.js": {
+      "linux": 36,
+      "macos": 37,
+      "windows": 204
+    },
+    "test/p2-integration.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/package-distribution.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/package-github-routing.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/package-manager-remediation.test.js": {
+      "linux": 0,
+      "macos": 4,
+      "windows": 14
+    },
+    "test/package-root.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 7
+    },
+    "test/patch-intent.test.js": {
+      "linux": 669,
+      "macos": 1835,
+      "windows": 11685
+    },
+    "test/plugin-catalog.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/plugin-detection.test.js": {
+      "linux": 9,
+      "macos": 10,
+      "windows": 35
+    },
+    "test/plugin-manager.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/plugin-recommend.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/plugin-recommender.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/plugins/hermes-plugin.test.js": {
+      "linux": 10,
+      "macos": 15,
+      "windows": 53
+    },
+    "test/plugins/plugin-manager.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/postinstall-guard.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/postinstall-removal.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/pr-bundle.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 1
+    },
+    "test/pr-monitor-snapshot.test.js": {
+      "linux": 2,
+      "macos": 2,
+      "windows": 4
+    },
+    "test/pr-monitor/arm-on-push.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 4
+    },
+    "test/pr-monitor/auto-actions.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/pr-monitor/auto-trigger-containment.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/pr-monitor/auto-trigger-wiring.test.js": {
+      "linux": 13,
+      "macos": 23,
+      "windows": 79
+    },
+    "test/pr-monitor/differ.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/pr-monitor/digest.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/pr-monitor/events.test.js": {
+      "linux": 9,
+      "macos": 3,
+      "windows": 10
+    },
+    "test/pr-monitor/flow-monitor.test.js": {
+      "linux": 5735,
+      "macos": 4509,
+      "windows": 9104
+    },
+    "test/pr-monitor/gather.test.js": {
+      "linux": 4,
+      "macos": 1,
+      "windows": 4
+    },
+    "test/pr-monitor/journal.test.js": {
+      "linux": 1189,
+      "macos": 1207,
+      "windows": 1237
+    },
+    "test/pr-monitor/monitor-owner-signal.test.js": {
+      "linux": 2,
+      "macos": 2,
+      "windows": 8
+    },
+    "test/pr-monitor/monitor.test.js": {
+      "linux": 233,
+      "macos": 173,
+      "windows": 460
+    },
+    "test/pr-monitor/process-identity.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/pr-monitor/reconcile-daemon-owner-authority.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/pr-monitor/reconcile-executor-owner-authority.test.js": {
+      "linux": 4,
+      "macos": 1,
+      "windows": 7
+    },
+    "test/pr-monitor/reconcile-executor.test.js": {
+      "linux": 8,
+      "macos": 3,
+      "windows": 11
+    },
+    "test/pr-monitor/reconcile-migration-gate.test.js": {
+      "linux": 86,
+      "macos": 51,
+      "windows": 374
+    },
+    "test/pr-monitor/reconcile-owner-authority.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/pr-monitor/reconcile-tick.test.js": {
+      "linux": 2,
+      "macos": 4,
+      "windows": 16
+    },
+    "test/pr-monitor/reconcile.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/pr-monitor/render-summary.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 5
+    },
+    "test/pr-monitor/review-preflight.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/pr-monitor/shepherd-lease-election-only.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 2
+    },
+    "test/pr-monitor/shepherd-lease.test.js": {
+      "linux": 1,
+      "macos": 9,
+      "windows": 30
+    },
+    "test/pr-monitor/shepherd-watch.test.js": {
+      "linux": 2,
+      "macos": 2,
+      "windows": 2
+    },
+    "test/pr-monitor/ship-auto-shepherd-rail.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/pr-monitor/verdict.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 5
+    },
+    "test/pr-monitor/watch-lifecycle.test.js": {
+      "linux": 2,
+      "macos": 3,
+      "windows": 5
+    },
+    "test/pr-monitor/watch-owner-cutover.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/pr-monitor/watch-owner-launch-contention.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 2
+    },
+    "test/pr-monitor/watch-owner-launch-gate.test.js": {
+      "linux": 3,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/pr-monitor/watch-owner.test.js": {
+      "linux": 1962,
+      "macos": 924,
+      "windows": 17249
+    },
+    "test/pr-monitor/watch.test.js": {
+      "linux": 18,
+      "macos": 15,
+      "windows": 65
+    },
+    "test/pr-monitor/workflow.test.js": {
+      "linux": 11,
+      "macos": 3,
+      "windows": 18
+    },
+    "test/pr-pull.test.js": {
+      "linux": 3,
+      "macos": 1,
+      "windows": 6
+    },
+    "test/pr-shepherd.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/pr-state-adapter.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 5
+    },
+    "test/pr-state-validator.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/preflight/gates.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/preflight/runner.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/project-discovery.test.js": {
+      "linux": 6,
+      "macos": 5,
+      "windows": 16
+    },
+    "test/project-memory.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 2
+    },
+    "test/protected-path-manifest.test.js": {
+      "linux": 113,
+      "macos": 65,
+      "windows": 132
+    },
+    "test/protected-state-authority.test.js": {
+      "linux": 1,
+      "macos": 2,
+      "windows": 6
+    },
+    "test/protected-state-docs.test.js": {
+      "linux": 6,
+      "macos": 10,
+      "windows": 11
+    },
+    "test/protected-state-surfaces.test.js": {
+      "linux": 7689,
+      "macos": 15619,
+      "windows": 65512
+    },
+    "test/push-backing-issue.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/reinstall.test.js": {
+      "linux": 5,
+      "macos": 7,
+      "windows": 20
+    },
+    "test/release-readiness-premerge-gate.test.js": {
+      "linux": 0,
+      "macos": 3,
+      "windows": 12
+    },
+    "test/release-readiness-tracked.test.js": {
+      "linux": 20,
+      "macos": 53,
+      "windows": 318
+    },
+    "test/release-readiness.test.js": {
+      "linux": 212,
+      "macos": 494,
+      "windows": 2999
+    },
+    "test/reset-hard.test.js": {
+      "linux": 8,
+      "macos": 11,
+      "windows": 47
+    },
+    "test/reset-inventory.test.js": {
+      "linux": 5,
+      "macos": 5,
+      "windows": 30
+    },
+    "test/reset-soft.test.js": {
+      "linux": 2,
+      "macos": 4,
+      "windows": 15
+    },
+    "test/reset.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/review-adapter.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/rules-sync.test.js": {
+      "linux": 3,
+      "macos": 13,
+      "windows": 35
+    },
+    "test/runtime-graph-config.test.js": {
+      "linux": 25,
+      "macos": 18,
+      "windows": 84
+    },
+    "test/runtime-graph.test.js": {
+      "linux": 1,
+      "macos": 1,
+      "windows": 3
+    },
+    "test/runtime-health.test.js": {
+      "linux": 33,
+      "macos": 36,
+      "windows": 314
+    },
+    "test/safety-config-renderer.test.js": {
+      "linux": 0,
+      "macos": 2,
+      "windows": 6
+    },
+    "test/scripts/behavioral-judge.test.js": {
+      "linux": 1340,
+      "macos": 1765,
+      "windows": 7206
+    },
+    "test/scripts/benchmark.test.js": {
+      "linux": 7,
+      "macos": 4,
+      "windows": 20
+    },
+    "test/scripts/check-agents.test.js": {
+      "linux": 19,
+      "macos": 43,
+      "windows": 119
+    },
+    "test/scripts/commitlint.test.js": {
+      "linux": 4000,
+      "macos": 3463,
+      "windows": 9567
+    },
+    "test/scripts/dep-guard-analyze.test.js": {
+      "linux": 99,
+      "macos": 113,
+      "windows": 201
+    },
+    "test/scripts/dep-guard.apply-decision.test.js": {
+      "linux": 157,
+      "macos": 303,
+      "windows": 4402
+    },
+    "test/scripts/dep-guard.check-ripple.analyzer.test.js": {
+      "linux": 260,
+      "macos": 282,
+      "windows": 2649
+    },
+    "test/scripts/dep-guard.check-ripple.basic.test.js": {
+      "linux": 249,
+      "macos": 318,
+      "windows": 4246
+    },
+    "test/scripts/dep-guard.contracts.test.js": {
+      "linux": 120,
+      "macos": 182,
+      "windows": 3855
+    },
+    "test/scripts/dep-guard.find-consumers.test.js": {
+      "linux": 85,
+      "macos": 297,
+      "windows": 2289
+    },
+    "test/scripts/dep-guard.plan.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/scripts/dep-guard.scaffold.test.js": {
+      "linux": 49,
+      "macos": 65,
+      "windows": 1904
+    },
+    "test/scripts/doc-asserting-tests.test.js": {
+      "linux": 9,
+      "macos": 38,
+      "windows": 156
+    },
+    "test/scripts/pin-agentic-workflow-images.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/scripts/pr-coordinator.test.js": {
+      "linux": 73,
+      "macos": 117,
+      "windows": 943
+    },
+    "test/scripts/preflight.test.js": {
+      "linux": 824,
+      "macos": 260,
+      "windows": 1703
+    },
+    "test/scripts/process-tree.test.js": {
+      "linux": 16,
+      "macos": 21,
+      "windows": 153
+    },
+    "test/scripts/smart-status.basics.test.js": {
+      "linux": 242,
+      "macos": 337,
+      "windows": 4069
+    },
+    "test/scripts/smart-status.conflicts.files.test.js": {
+      "linux": 417,
+      "macos": 719,
+      "windows": 6780
+    },
+    "test/scripts/smart-status.conflicts.merge-tree.test.js": {
+      "linux": 438,
+      "macos": 857,
+      "windows": 6788
+    },
+    "test/scripts/smart-status.scoring.edge-cases.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/scripts/smart-status.scoring.metrics.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/scripts/smart-status.scoring.output.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/scripts/smart-status.sessions.test.js": {
+      "linux": 199,
+      "macos": 318,
+      "windows": 3970
+    },
+    "test/scripts/test-ci-shard.test.js": {
+      "linux": 3,
+      "macos": 5,
+      "windows": 9
+    },
+    "test/scripts/test-dashboard.test.js": {
+      "linux": 46,
+      "macos": 103,
+      "windows": 99
+    },
+    "test/scripts/test-full-suite.test.js": {
+      "linux": 949,
+      "macos": 661,
+      "windows": 1396
+    },
+    "test/scripts/test-profile.test.js": {
+      "linux": 2,
+      "macos": 2,
+      "windows": 5
+    },
+    "test/scripts/test-runner.test.js": {
+      "linux": 796,
+      "macos": 823,
+      "windows": 1247
+    },
+    "test/security-policy.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/setup-action-log.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/setup-claude-pointer-head.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 8
+    },
+    "test/setup-cursor-mcp.test.js": {
+      "linux": 2,
+      "macos": 3,
+      "windows": 9
+    },
+    "test/setup-docs-copy.test.js": {
+      "linux": 3,
+      "macos": 7,
+      "windows": 32
+    },
+    "test/setup-enforcement-honesty.test.js": {
+      "linux": 15,
+      "macos": 16,
+      "windows": 42
+    },
+    "test/setup-graphiti-mcp.test.js": {
+      "linux": 6,
+      "macos": 6,
+      "windows": 19
+    },
+    "test/setup-hardening.test.js": {
+      "linux": 9,
+      "macos": 2,
+      "windows": 18
+    },
+    "test/setup-hook-verdict.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/setup-hooks-config.test.js": {
+      "linux": 6,
+      "macos": 6,
+      "windows": 76
+    },
+    "test/setup-lefthook-repair.test.js": {
+      "linux": 49,
+      "macos": 93,
+      "windows": 1134
+    },
+    "test/setup-legacy-cursorrules.test.js": {
+      "linux": 0,
+      "macos": 2,
+      "windows": 7
+    },
+    "test/setup-native-fallback-wiring.test.js": {
+      "linux": 1131,
+      "macos": 1395,
+      "windows": 4246
+    },
+    "test/setup-prerequisites-gh.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/setup-resumability.test.js": {
+      "linux": 31,
+      "macos": 30,
+      "windows": 76
+    },
+    "test/setup-runtime-assets.test.js": {
+      "linux": 2,
+      "macos": 1,
+      "windows": 2
+    },
+    "test/setup-runtime-flags.test.js": {
+      "linux": 150,
+      "macos": 299,
+      "windows": 2271
+    },
+    "test/setup-safety-defaults.test.js": {
+      "linux": 0,
+      "macos": 4,
+      "windows": 19
+    },
+    "test/setup-shared-helper.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/setup-skills-only.test.js": {
+      "linux": 2242,
+      "macos": 1771,
+      "windows": 5576
+    },
+    "test/setup-summary.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/setup-utils.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 10
+    },
+    "test/setup-workflow-removal.test.js": {
+      "linux": 11,
+      "macos": 10,
+      "windows": 37
+    },
+    "test/setup-yes-flag.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/shell-utils.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/shepherd-acceptance.test.js": {
+      "linux": 12,
+      "macos": 15,
+      "windows": 55
+    },
+    "test/shepherd-merge-safety.test.js": {
+      "linux": 12,
+      "macos": 4,
+      "windows": 12
+    },
+    "test/shepherd-skill-sync.test.js": {
+      "linux": 7,
+      "macos": 14,
+      "windows": 60
+    },
+    "test/skill-accuracy.test.js": {
+      "linux": 5,
+      "macos": 6,
+      "windows": 15
+    },
+    "test/skill-coverage.test.js": {
+      "linux": 17,
+      "macos": 3,
+      "windows": 9
+    },
+    "test/skill-dispatch-parity.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/skill-eval.test.js": {
+      "linux": 14,
+      "macos": 14,
+      "windows": 40
+    },
+    "test/skills-structure.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/skills/chain-integrity.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/skills/context-cost.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/skills/skills-sync.test.js": {
+      "linux": 45,
+      "macos": 127,
+      "windows": 655
+    },
+    "test/skills/stage-skills.test.js": {
+      "linux": 13,
+      "macos": 2,
+      "windows": 49
+    },
+    "test/skills/using-forge-skill.test.js": {
+      "linux": 7,
+      "macos": 14,
+      "windows": 51
+    },
+    "test/smart-merge.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/smart-status/conflicts.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/smart-status/scoring.test.js": {
+      "linux": 4,
+      "macos": 3,
+      "windows": 7
+    },
+    "test/spikes/w0-verification-spikes.test.js": {
+      "linux": 30,
+      "macos": 26,
+      "windows": 72
+    },
+    "test/stage-naming.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/status-command.test.js": {
+      "linux": 1227,
+      "macos": 778,
+      "windows": 5861
+    },
+    "test/status/identity.test.js": {
+      "linux": 41,
+      "macos": 82,
+      "windows": 649
+    },
+    "test/status/presenter.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/status/snapshot.test.js": {
+      "linux": 147,
+      "macos": 177,
+      "windows": 1420
+    },
+    "test/structural/agentic-workflow-sync.test.js": {
+      "linux": 0,
+      "macos": 5,
+      "windows": 0
+    },
+    "test/structural/agents-docs-bleed.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/structural/command-contracts.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/structural/command-files.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 3
+    },
+    "test/structural/command-manifest-drift.test.js": {
+      "linux": 22,
+      "macos": 18,
+      "windows": 43
+    },
+    "test/structural/github-account-public-surface.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/structural/pr2-root-integration.test.js": {
+      "linux": 6,
+      "macos": 3,
+      "windows": 11
+    },
+    "test/structural/product-package-boundaries.test.js": {
+      "linux": 90,
+      "macos": 46,
+      "windows": 150
+    },
+    "test/structural/skills-sync-drift.test.js": {
+      "linux": 107,
+      "macos": 191,
+      "windows": 792
+    },
+    "test/symlink-flag.test.js": {
+      "linux": 1,
+      "macos": 5,
+      "windows": 24
+    },
+    "test/sync-agent-skills-authority.test.js": {
+      "linux": 2625,
+      "macos": 8103,
+      "windows": 45206
+    },
+    "test/sync-backend.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/sync-d20-audit-script.test.js": {
+      "linux": 370,
+      "macos": 261,
+      "windows": 1077
+    },
+    "test/sync-utils.test.js": {
+      "linux": 88,
+      "macos": 139,
+      "windows": 1969
+    },
+    "test/task-ownership.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/test-dashboard.test.js": {
+      "linux": 74,
+      "macos": 92,
+      "windows": 298
+    },
+    "test/test-workflow.test.js": {
+      "linux": 1504,
+      "macos": 4478,
+      "windows": 29766
+    },
+    "test/typed-memory-api.test.js": {
+      "linux": 0,
+      "macos": 1,
+      "windows": 1
+    },
+    "test/unit/skills-sync.test.js": {
+      "linux": 0,
+      "macos": 1,
+      "windows": 5
+    },
+    "test/untrusted-content.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/untrusted-fencing-surfaces.test.js": {
+      "linux": 3,
+      "macos": 10,
+      "windows": 59
+    },
+    "test/upgrade-safety.test.js": {
+      "linux": 7,
+      "macos": 3,
+      "windows": 14
+    },
+    "test/using-forge.test.js": {
+      "linux": 7,
+      "macos": 7,
+      "windows": 11
+    },
+    "test/v2-fixture-corpus.test.js": {
+      "linux": 411,
+      "macos": 1083,
+      "windows": 6919
+    },
+    "test/validate-script.test.js": {
+      "linux": 1,
+      "macos": 0,
+      "windows": 1
+    },
+    "test/validation-receipt.test.js": {
+      "linux": 447,
+      "macos": 1774,
+      "windows": 10705
+    },
+    "test/validation/risk-manifest-generator.test.js": {
+      "linux": 45,
+      "macos": 22,
+      "windows": 94
+    },
+    "test/validation/risk-manifest.test.js": {
+      "linux": 36,
+      "macos": 6,
+      "windows": 39
+    },
+    "test/w0-harness-parity.test.js": {
+      "linux": 72,
+      "macos": 63,
+      "windows": 207
+    },
+    "test/windows-hide-background-spawns.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/workflow-profiles.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/workflow/b1-linkage-followups.test.js": {
+      "linux": 199,
+      "macos": 135,
+      "windows": 763
+    },
+    "test/workflow/enforce-stage-kernel.test.js": {
+      "linux": 428,
+      "macos": 276,
+      "windows": 1380
+    },
+    "test/workflow/enforce-stage.test.js": {
+      "linux": 36,
+      "macos": 5,
+      "windows": 24
+    },
+    "test/workflow/plan-authority.test.js": {
+      "linux": 186,
+      "macos": 168,
+      "windows": 661
+    },
+    "test/workflow/plan-first-reachability.test.js": {
+      "linux": 45,
+      "macos": 87,
+      "windows": 544
+    },
+    "test/workflow/stage-transition.test.js": {
+      "linux": 0,
+      "macos": 3,
+      "windows": 0
+    },
+    "test/workflow/stages.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    },
+    "test/workflow/state-manager.test.js": {
+      "linux": 9,
+      "macos": 8,
+      "windows": 123
+    },
+    "test/workflow/state.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 2
+    },
+    "test/workflows/size-check.test.js": {
+      "linux": 4,
+      "macos": 1,
+      "windows": 9
+    },
+    "test/worktree-backing-issue.test.js": {
+      "linux": 0,
+      "macos": 0,
+      "windows": 0
+    }
+  }
+}
