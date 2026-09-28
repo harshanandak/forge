@@ -232,6 +232,14 @@ Module._load = function (request, parent, isMain) {
     expect(version.status, version.stderr).toBe(0);
     expect(version.stdout).toContain("Forge v");
 
+    // The allow-listed tarball (package.json `files`) must still carry every
+    // module the help surfaces load.
+    for (const args of [["--help"], ["setup", "--help"]]) {
+      const help = runInstalledForge(temporary, args, temporary, platformNode, env, `cli:${args.join("-")}`);
+      expect(help.status, `${help.stdout}\n${help.stderr}`).toBe(0);
+      expect(help.stdout.length).toBeGreaterThan(0);
+    }
+
     const project = path.join(temporary, "project");
     fs.mkdirSync(project);
     const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" });
