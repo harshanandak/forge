@@ -381,6 +381,125 @@ describe('merge command — mandatory release authority', () => {
     }
   });
 
+  test('continues to exact-head provider evaluation for an authoritative open binding without terminal iterations', async () => {
+    let fetches = 0;
+    let merges = 0;
+    const openPr = {
+      id: 'pr-1', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
+      git_common_dir: '/repo/.git', iterations: [],
+    };
+    const injected = deps({
+      fetchPrContext: async () => { fetches += 1; return context(); },
+      mergePr: async ({ expectedHead }) => {
+        merges += 1;
+        expect(expectedHead).toBe(HEAD);
+        return { merged: true };
+      },
+      resolveLocalRepository: () => 'acme/forge',
+      buildPrBindingBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: {
+          readTrace: async () => ({
+            gaps: ['iterations:pr-1:missing'],
+            pull_requests: [openPr],
+          }),
+          listOpenPrs: async () => [openPr],
+        },
+        driver: { close() {} },
+      }),
+    });
+    delete injected.verifyPrIssueBinding;
+
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+    expect(out).toMatchObject({ success: true, merged: true });
+    expect(fetches).toBe(2);
+    expect(merges).toBe(1);
+  });
+
+  test('fails closed on a linked open row plus a legacy unlinked duplicate', async () => {
+    let merges = 0;
+    const linked = {
+      id: 'pr-linked', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
+      git_common_dir: '/repo/.git', head_sha: HEAD, iterations: [],
+    };
+    const legacy = { ...linked, id: 'pr-legacy', issue_id: null };
+    const injected = deps({
+      fetchPrContext: async () => context(),
+      mergePr: async () => { merges += 1; return { merged: true }; },
+      resolveLocalRepository: () => 'acme/forge',
+      buildPrBindingBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: {
+          readTrace: async () => ({
+            gaps: ['pull_requests:pr-legacy:unlinked_issue'],
+            pull_requests: [linked, legacy],
+          }),
+          listOpenPrs: async () => [linked, legacy],
+        },
+        driver: { close() {} },
+      }),
+    });
+    delete injected.verifyPrIssueBinding;
+
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+    expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
+  });
+
+  test('fails closed on same-issue duplicate rows even when their identity agrees', async () => {
+    const duplicate = id => ({
+      id, repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
+      git_common_dir: '/repo/.git', branch: 'feat/exact-head', head_sha: HEAD, iterations: [],
+    });
+    const rows = [duplicate('pr-a'), duplicate('pr-b')];
+    const verify = allowRetired => mergeCmd.defaultVerifyPrIssueBinding({
+      issueId: ISSUE,
+      pr: '42',
+      projectRoot: process.cwd(),
+      prContext: context(),
+      allowRetired,
+      buildBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: {
+          readTrace: async () => ({ gaps: [], pull_requests: rows }),
+          listOpenPrs: async () => rows,
+        },
+      }),
+    });
+
+    for (const allowRetired of [false, true]) {
+      expect(await verify(allowRetired)).toMatchObject({ bound: false, error: 'Kernel PR linkage is ambiguous.' });
+    }
+  });
+
+  test('fails closed when a duplicate PR row has a conflicting non-null issue link', async () => {
+    const out = await mergeCmd.defaultVerifyPrIssueBinding({
+      issueId: ISSUE,
+      pr: '42',
+      projectRoot: process.cwd(),
+      prContext: context(),
+      allowRetired: true,
+      buildBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: { readTrace: async () => ({
+          gaps: [],
+          pull_requests: [{
+            id: 'pr-linked', repo: 'acme/forge', number: 42, issue_id: ISSUE,
+            git_common_dir: '/repo/.git', state: 'open', iterations: [],
+          }, {
+            id: 'pr-conflict', repo: 'acme/forge', number: 42,
+            issue_id: '11111111-1111-4111-8111-111111111111',
+            git_common_dir: '/repo/.git', state: 'open', iterations: [],
+          }],
+        }) },
+      }),
+    });
+
+    expect(out).toMatchObject({ bound: false, error: 'Kernel PR linkage is ambiguous.' });
+  });
+
   test('does not treat missing retired rows as clean absence when trace gaps are unreadable', async () => {
     for (const gaps of [
       null,
