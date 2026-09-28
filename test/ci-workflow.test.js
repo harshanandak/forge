@@ -4,7 +4,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const vm = require('node:vm');
 const { describe, test, expect } = require('bun:test');
-const yaml = require('js-yaml');
+const YAML = require('yaml');
 
 const bashExecutable = process.platform === 'win32'
   ? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe')
@@ -30,7 +30,7 @@ describe('CI Workflow Configuration', () => {
   const synchronizeSkipCondition = "github.event_name != 'pull_request' || github.event.action != 'synchronize'";
   const prNonSynchronizeCondition = "github.event_name == 'pull_request' && github.event.action != 'synchronize'";
 
-  const { jobs, on: triggers } = yaml.load(workflowContent);
+  const { jobs, on: triggers } = YAML.parse(workflowContent);
 
   function expectSection(sectionName) {
     expect(workflowContent.includes(`${sectionName}:`)).toBe(true);
@@ -636,7 +636,7 @@ describe('CI Workflow Configuration', () => {
     test('every path in the Required Checks Bypass code list is test-relevant', () => {
       const pattern = docsOnlyPattern();
       const bypassPath = path.join(__dirname, '..', '.github', 'workflows', 'required-checks-bypass.yml');
-      const bypass = yaml.load(fs.readFileSync(bypassPath, 'utf8'));
+      const bypass = YAML.parse(fs.readFileSync(bypassPath, 'utf8'));
       const globs = bypass.on.pull_request['paths-ignore'];
       expect(globs.length).toBeGreaterThan(0);
       for (const glob of globs) {
@@ -722,7 +722,6 @@ describe('CI Workflow Configuration', () => {
   // while runner.temp lives on the runner's work drive (measured 21-25% faster
   // locally for the heaviest fixture files). Scope it to Windows test jobs only.
   describe('Windows Temp Directory', () => {
-    const YAML = require('yaml');
     const { renderTestWorkflow } = require('../lib/test-workflow');
     const templatePath = path.join(__dirname, '..', 'lib', 'workflow-templates', 'test.yml');
     const windowsTestJobs = ['full-matrix', 'windows-smoke', 'followup-tests'];

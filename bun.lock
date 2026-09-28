@@ -22,7 +22,6 @@
         "eslint": "^10.0.2",
         "eslint-plugin-sonarjs": "^4.1.0",
         "globals": "^17.3.0",
-        "js-yaml": "^5.2.3",
         "lefthook": "^2.1.4",
         "typescript": "7.0.2",
       },

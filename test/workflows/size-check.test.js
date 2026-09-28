@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, expect } = require('bun:test');
-const yaml = require('js-yaml');
+const { describe, test, expect } = require('bun:test');
+const YAML = require('yaml');
 
 describe('.github/workflows/size-check.yml', () => {
   const workflowPath = path.join(__dirname, '..', '..', '.github', 'workflows', 'size-check.yml');
@@ -14,7 +14,7 @@ describe('.github/workflows/size-check.yml', () => {
     test('should be valid YAML', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
       expect(() => {
-        yaml.load(content);
+        YAML.parse(content);
       }).not.toThrow();
     });
   });
@@ -24,20 +24,20 @@ describe('.github/workflows/size-check.yml', () => {
 
     test('should load workflow configuration', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = yaml.load(content);
+      workflow = YAML.parse(content);
       expect(workflow).toBeTruthy();
     });
 
     test('should have name', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = yaml.load(content);
+      workflow = YAML.parse(content);
       expect(workflow.name).toBeTruthy();
       expect(workflow.name.toLowerCase().includes('size') || workflow.name.toLowerCase().includes('bundle')).toBeTruthy();
     });
 
     test('should trigger on push and pull_request', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = yaml.load(content);
+      workflow = YAML.parse(content);
       expect(workflow.on).toBeTruthy();
 
       // Should trigger on push or pull_request
@@ -53,14 +53,14 @@ describe('.github/workflows/size-check.yml', () => {
 
     test('should have at least one job', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = yaml.load(content);
+      workflow = YAML.parse(content);
       expect(workflow.jobs).toBeTruthy();
       expect(Object.keys(workflow.jobs).length > 0).toBeTruthy();
     });
 
     test('should use ubuntu-latest runner', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = yaml.load(content);
+      workflow = YAML.parse(content);
 
       const jobs = Object.values(workflow.jobs);
       const hasUbuntu = jobs.some(job =>
@@ -73,7 +73,7 @@ describe('.github/workflows/size-check.yml', () => {
 
     test('should checkout code', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = yaml.load(content);
+      workflow = YAML.parse(content);
 
       const jobs = Object.values(workflow.jobs);
       const hasCheckout = jobs.some(job =>
@@ -91,7 +91,7 @@ describe('.github/workflows/size-check.yml', () => {
 
     test('should install dependencies', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = yaml.load(content);
+      workflow = YAML.parse(content);
 
       const jobs = Object.values(workflow.jobs);
       const hasInstall = jobs.some(job =>
@@ -110,7 +110,7 @@ describe('.github/workflows/size-check.yml', () => {
 
     test('should measure package size', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = yaml.load(content);
+      workflow = YAML.parse(content);
 
       const jobs = Object.values(workflow.jobs);
       const hasSizeCheck = jobs.some(job =>

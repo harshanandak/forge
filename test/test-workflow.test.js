@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const yaml = require('js-yaml');
+const YAML = require('yaml');
 const { hashProtectedContent } = require('../lib/protected-state-surfaces');
 const protectedStateAuthority = require('../lib/protected-state-authority');
 const {
@@ -92,7 +92,7 @@ describe('canonical test workflow renderer', () => {
 		const version = /^bun@(\d+\.\d+\.\d+)$/.exec(require('../package.json').packageManager)[1];
 
 		expect(template.toString('utf8').split(BUN_VERSION_PLACEHOLDER)).toHaveLength(9);
-		expect(() => yaml.load(template.toString('utf8'))).not.toThrow();
+		expect(() => YAML.parse(template.toString('utf8'))).not.toThrow();
 		expect(renderTestWorkflow(template, version)).toEqual(current);
 	});
 
