@@ -374,4 +374,67 @@ describe('claim renewal after lease expiry (55a6d3e6)', () => {
       expect(own.data.expired).toBe(false);
     });
   });
+
+  // PR #589 round 5: the full claim ownership matrix, pinned in one table so claim
+  // and owns() can never disagree again. Ownership is ONE predicate (the owns() rule):
+  // same actor, and sessions conflict only when BOTH are present and unequal. A
+  // session-less side falls back to actor-only ownership.
+  //
+  // Cells that differ from origin/master ON PURPOSE (master probed 2026-09-28):
+  // - live, default key, lease none x caller S (and lease S x caller none): master
+  //   returned CLAIM_CONFLICT while owns() said owned=true; now both agree: replay.
+  // - live, explicit key, lease S x caller S2: master replayed ok to a session that
+  //   does not own the lease (owns=false, the d71a824b phantom); now CLAIM_CONFLICT.
+  // - expired, any cell: master replayed a same-key claim as a phantom ok with no
+  //   live lease; now a new live lease.
+  describe('claim ownership matrix (PR #589 round 5)', () => {
+    const SESSIONS = { none: undefined, S: 'sess-S', S2: 'sess-S2' };
+    const cells = [];
+    for (const leaseSession of ['none', 'S']) {
+      for (const callerSession of ['none', 'S', 'S2']) {
+        for (const phase of ['live', 'expired']) {
+          for (const keyMode of ['default', 'explicit']) {
+            const sessionsConflict = leaseSession === 'S' && callerSession === 'S2';
+            const expected = phase === 'expired' ? 'renew' : (sessionsConflict ? 'conflict' : 'replay');
+            cells.push({ actor: 'alice', leaseSession, callerSession, phase, keyMode, expected });
+          }
+        }
+      }
+    }
+    // Another actor: blocked by a live lease, may take over an expired one.
+    for (const phase of ['live', 'expired']) {
+      cells.push({ actor: 'bob', leaseSession: 'S', callerSession: 'S', phase, keyMode: 'default', expected: phase === 'live' ? 'conflict' : 'renew' });
+    }
+
+    test.each(cells)('$actor lease=$leaseSession caller=$callerSession $phase $keyMode key -> $expected', async (cell) => {
+      const issueId = `matrix-${cell.actor}-${cell.leaseSession}-${cell.callerSession}-${cell.phase}-${cell.keyMode}`;
+      await createIssue(issueId);
+      const keyContext = cell.keyMode === 'explicit' ? { idempotencyKey: `explicit-${issueId}` } : {};
+      const first = await broker.runIssueOperation('claim', ['--issue', issueId], {
+        now: t0, actor: 'alice', sessionId: SESSIONS[cell.leaseSession], leaseTtlMs: TTL_MS, ...keyContext,
+      });
+      expect(first.ok).toBe(true);
+
+      const at = cell.phase === 'live' ? tLive : tExpired;
+      const again = await broker.runIssueOperation('claim', ['--issue', issueId], {
+        now: at, actor: cell.actor, sessionId: SESSIONS[cell.callerSession], leaseTtlMs: TTL_MS, ...keyContext,
+      });
+      const own = await owns(issueId, cell.actor, SESSIONS[cell.callerSession], at);
+
+      if (cell.expected === 'conflict') {
+        expect(again.ok).toBe(false);
+        expect(again.error.code).toBe('FORGE_ISSUE_CLAIM_CONFLICT');
+        expect(own.data.owned).toBe(false);
+        return;
+      }
+      expect(again.ok).toBe(true);
+      expect(own.data.owned).toBe(true);
+      if (cell.expected === 'replay') {
+        expect(again.data.claim_id).toBe(first.data.claim_id);
+      } else {
+        expect(again.data.claim_id).not.toBe(first.data.claim_id);
+        expect(own.data.expired).toBe(false);
+      }
+    });
+  });
 });
