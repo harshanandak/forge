@@ -169,7 +169,7 @@ Forge setup triggers:
 Checking prerequisites...
   ✓ git version 2.x
   ✓ gh version 2.x
-  ✓ node v22.x
+  ✓ node v24.x
   ✓ bun v1.x
 
   Created: AGENTS.md (universal standard)
@@ -261,7 +261,7 @@ But NOT for the tool installation steps (beads, openspec, lefthook).
 # Prerequisites (manual)
 # - git (https://git-scm.com)
 # - gh (https://cli.github.com) + gh auth login
-# - Node.js 20+ (https://nodejs.org)
+# - Node.js 24+ (https://nodejs.org)
 # - bun (https://bun.sh)
 
 # Install Forge (triggers postinstall → copies AGENTS.md baseline)
@@ -283,7 +283,7 @@ bd ready          # should show open issues
 # Prerequisites (manual)
 # - Git for Windows (https://git-scm.com) — includes bash
 # - gh CLI (https://cli.github.com) + gh auth login
-# - Node.js 20+ (https://nodejs.org)
+# - Node.js 24+ (https://nodejs.org)
 # - bun (https://bun.sh)
 
 # Install beads FIRST (before forge setup) — npm is broken on Windows
