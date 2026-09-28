@@ -717,4 +717,54 @@ describe('CI Workflow Configuration', () => {
       }
     });
   });
+
+  // Heavy fixture tests write to TEMP; the Windows image defaults it to C:,
+  // while runner.temp lives on the runner's work drive (measured 21-25% faster
+  // locally for the heaviest fixture files). Scope it to Windows test jobs only.
+  describe('Windows Temp Directory', () => {
+    const YAML = require('yaml');
+    const { renderTestWorkflow } = require('../lib/test-workflow');
+    const templatePath = path.join(__dirname, '..', 'lib', 'workflow-templates', 'test.yml');
+    const windowsTestJobs = ['full-matrix', 'windows-smoke', 'followup-tests'];
+    const tempEnvLine = (name) => `echo "${name}=\${{ runner.temp }}" >> "$GITHUB_ENV"`;
+
+    function tempSteps(job) {
+      return (job.steps || []).filter((step) => typeof step.run === 'string'
+        && (step.run.includes(tempEnvLine('TEMP')) || step.run.includes(tempEnvLine('TMP'))));
+    }
+
+    test('Windows test jobs point TEMP and TMP at runner.temp before tests run', () => {
+      const { jobs } = YAML.parse(workflowContent);
+      for (const name of windowsTestJobs) {
+        const steps = jobs[name].steps;
+        const matches = tempSteps(jobs[name]);
+        expect({ job: name, count: matches.length }).toEqual({ job: name, count: 1 });
+        const [step] = matches;
+        expect(step.if).toBe("runner.os == 'Windows'");
+        expect(step.shell).toBe('bash');
+        expect(step.run).toContain(tempEnvLine('TEMP'));
+        expect(step.run).toContain(tempEnvLine('TMP'));
+        const firstTestStep = steps.findIndex((candidate) => typeof candidate.run === 'string'
+          && /setup-fixtures|test-full-suite|test:ci:shard/.test(candidate.run));
+        expect(steps.indexOf(step)).toBeLessThan(firstTestStep);
+      }
+    });
+
+    test('no non-Windows job overrides TEMP or TMP', () => {
+      const { jobs } = YAML.parse(workflowContent);
+      for (const [name, job] of Object.entries(jobs)) {
+        if (windowsTestJobs.includes(name)) continue;
+        expect({ job: name, count: tempSteps(job).length }).toEqual({ job: name, count: 0 });
+        expect({ job: name, env: Object.keys(job.env || {}).filter((key) => /^(TEMP|TMP)$/.test(key)) })
+          .toEqual({ job: name, env: [] });
+      }
+    });
+
+    test('the rendered workflow matches its canonical template byte-for-byte', () => {
+      const template = fs.readFileSync(templatePath);
+      const rendered = fs.readFileSync(workflowPath);
+      const pinned = /bun-version: (\d+\.\d+\.\d+)/.exec(rendered.toString('utf8'))[1];
+      expect(renderTestWorkflow(template, pinned).equals(rendered)).toBe(true);
+    });
+  });
 });
