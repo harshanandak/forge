@@ -13,8 +13,9 @@
 // This test walks the runtime source (bin/ + lib/, excluding node_modules and
 // generated files) and asserts every production dependency in package.json is
 // required via at least one static string-literal `require('<dep>')`. That is
-// the invariant that keeps the dependency bundleable — it is what currently
-// keeps `fastest-levenshtein` (via lib/context-merge.js) inside the binary.
+// the invariant that keeps the dependency bundleable. (The dependency issue
+// 53770b23 originally flagged, fastest-levenshtein, has since been replaced by
+// the internal lib/text/levenshtein.js.)
 //
 // Fast + deterministic: pure filesystem scan, no compile step.
 
@@ -70,9 +71,4 @@ test('production dependencies are statically requireable (bundleable by bun --co
   // Any production dep reachable only via a dynamic require would land here and
   // is a compiled-binary "Cannot find module" crash waiting to happen.
   expect(missing).toEqual([]);
-});
-
-test('fastest-levenshtein (context-merge path) is statically bundleable', () => {
-  // Named explicitly because it is the dependency issue 53770b23 flagged.
-  expect(hasStaticImport('fastest-levenshtein')).toBe(true);
 });
