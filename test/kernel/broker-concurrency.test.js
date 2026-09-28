@@ -181,7 +181,10 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(ops).not.toContain('exec:ROLLBACK;');
   });
 
-  test('quarantines a claim against a live lease held by another actor without opening a transaction', async () => {
+  test('quarantines a claim against another actor\'s live lease, decided inside the transaction', async () => {
+    // Issue 55a6d3e6 / PR #589: the lease is read inside BEGIN IMMEDIATE so the
+    // decision never acts on a pre-commit snapshot; the conflict row is written
+    // only after the rollback.
     const ops = [];
     const broker = claimBrokerWith({
       async loadActiveKernelClaim() { ops.push('loadActiveKernelClaim'); return activeClaimRow(); },
@@ -192,8 +195,12 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(result.decision).toBe('quarantine');
     expect(result.reason).toBe('claim_conflict');
     expect(result.projection).toBe(false);
-    expect(ops).toContain('insertKernelConflict');
-    expect(ops).not.toContain('exec:BEGIN IMMEDIATE;');
+    expect(ops).toEqual([
+      'exec:BEGIN IMMEDIATE;',
+      'loadActiveKernelClaim',
+      'exec:ROLLBACK;',
+      'insertKernelConflict',
+    ]);
     expect(ops).not.toContain('insertKernelClaim');
   });
 
@@ -268,19 +275,31 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(ops).not.toContain('insertKernelConflict');
   });
 
-  test('replays a same-key retry as duplicate when the pre-write conflict path split-reads the winner', async () => {
-    // The parallel guard reads are not a consistent snapshot: the idempotency
-    // lookup can run pre-commit (null) while the active-claim lookup runs
-    // post-commit (sees the winner's live lease), driving planClaimAcquisition
-    // to 'conflict'. The pre-write path must re-check idempotency before quarantining.
+  test('replays a same-key retry of the live winner as duplicate, from in-transaction reads', async () => {
+    // No pre-transaction claim reads exist any more, so there is no split read: the
+    // key and the lease are both read inside BEGIN IMMEDIATE, and the key is never
+    // followed across generations: the lease row alone decides the replay.
+    // The committed winner's live lease belongs to the caller, so it replays.
     const ops = [];
-    const existingEvent = { id: 'event-existing', idempotency_key: 'claim:issue-1:A' };
-    let idemLookups = 0;
+    const existingEvent = {
+      id: 'event-existing', entity_type: 'claim', entity_id: 'claim-issue-1-A', event_type: 'claim.create',
+      idempotency_key: 'claim:issue-1:A', actor: 'agent-A', payload_json: JSON.stringify({ issue_id: 'issue-1' }),
+    };
     const broker = claimBrokerWith({
-      async loadActiveKernelClaim() { ops.push('loadActiveKernelClaim'); return activeClaimRow(); },
-      async loadKernelEventByIdempotencyKey() {
-        idemLookups += 1;
-        return idemLookups > 1 ? existingEvent : null;
+      async loadActiveKernelClaim() {
+        ops.push('loadActiveKernelClaim');
+        return activeClaimRow({ id: 'claim-issue-1-A', actor: 'agent-A' });
+      },
+      async loadKernelEventByIdempotencyKey(key) {
+        ops.push(`loadKernelEventByIdempotencyKey:${key}`);
+        return key === 'claim:issue-1:A' ? existingEvent : null;
+      },
+      async listKernelEvents(entityType, entityId) {
+        return entityType === 'claim' && entityId === 'claim-issue-1-A' ? [existingEvent] : [];
+      },
+      // Liveness uses the canonical isLiveClaim rule, which needs the (open) issue row.
+      async loadKernelEntity(entityType, entityId) {
+        return entityType === 'issue' && entityId === 'issue-1' ? { id: 'issue-1', status: 'open' } : null;
       },
     }, ops);
 
@@ -289,8 +308,12 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(result.decision).toBe('duplicate');
     expect(result.originalEvent).toEqual(existingEvent);
     expect(result.projection).toBe(false);
-    expect(ops).not.toContain('exec:BEGIN IMMEDIATE;');
-    expect(ops).not.toContain('insertKernelConflict');
+    expect(ops).toEqual([
+      'exec:BEGIN IMMEDIATE;',
+      'loadKernelEventByIdempotencyKey:claim:issue-1:A',
+      'loadActiveKernelClaim',
+      'exec:ROLLBACK;',
+    ]);
   });
 
   test('rethrows a non-lease UNIQUE violation (e.g. duplicate claim id) instead of quarantining', async () => {

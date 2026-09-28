@@ -226,7 +226,7 @@ Conflicts are resolved before projection, not inside Beads.
 Rules:
 
 1. Stale `expected_revision` rejects or quarantines the event.
-2. Duplicate idempotency keys return the original accepted result.
+2. Duplicate idempotency keys return the original accepted result, only when that result is still true for the same operation and entity. A claim key reused for a different issue fails with `FORGE_ISSUE_IDEMPOTENCY_KEY_REUSED`. For claims the lease row is the authority, read inside the write transaction: a claim replays only while the caller holds a live lease, and a claim whose lease expired gets a new lease (fresh claim id, key suffixed with it) rather than a replay. Keys are never followed across lease generations. A replay must never report a lease the caller does not hold.
 3. Unknown external fields are rejected.
 4. External webhook echoes are ignored by `origin_event_id` and provider delivery id.
 5. Projection failure does not roll back Forge authority.
