@@ -2,17 +2,35 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const vm = require('node:vm');
 const { describe, test, expect } = require('bun:test');
+const yaml = require('js-yaml');
 
 const bashExecutable = process.platform === 'win32'
   ? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe')
   : 'bash';
+
+// GitHub Actions runs every `shell: bash` step as
+// `bash --noprofile --norc -eo pipefail {0}`: errexit is ON even when the script
+// only says `set -uo pipefail`. Execute step scripts exactly that way.
+function runGithubBashStep(script, options = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-step-'));
+  try {
+    const file = path.join(dir, 'step.sh');
+    fs.writeFileSync(file, script);
+    return spawnSync(bashExecutable, ['--noprofile', '--norc', '-eo', 'pipefail', file.replace(/\\/g, '/')], { encoding: 'utf8', ...options });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 describe('CI Workflow Configuration', () => {
   const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'test.yml');
   const workflowContent = fs.readFileSync(workflowPath, 'utf-8').replace(/\r\n/g, '\n');
   const synchronizeSkipCondition = "github.event_name != 'pull_request' || github.event.action != 'synchronize'";
   const prNonSynchronizeCondition = "github.event_name == 'pull_request' && github.event.action != 'synchronize'";
+
+  const { jobs, on: triggers } = yaml.load(workflowContent);
 
   function expectSection(sectionName) {
     expect(workflowContent.includes(`${sectionName}:`)).toBe(true);
@@ -29,7 +47,8 @@ describe('CI Workflow Configuration', () => {
   describe('Follow-up PR Pushes', () => {
     test('followup-tests job exists for all pull request events', () => {
       expectSection('followup-tests');
-      expect(workflowContent.includes("if: github.event_name == 'pull_request'")).toBe(true);
+      expect(jobs['followup-tests'].if)
+        .toBe("${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}");
     });
 
     test('followup-tests covers the Windows Node 22 lane before merge', () => {
@@ -64,11 +83,59 @@ describe('CI Workflow Configuration', () => {
       expect(/bun test[^\n]*[ '"]test\//.test(stepBody)).toBe(false);
     });
 
-    test('followup-tests still runs targeted, fallback, e2e, and edge-case steps', () => {
+    test('followup-tests still runs targeted, fallback, and edge-case steps', () => {
       expect(workflowContent.includes('name: Run targeted unit tests')).toBe(true);
       expect(workflowContent.includes('name: Run single-platform unit suite fallback')).toBe(true);
-      expect(workflowContent.includes('name: Run affected e2e tests')).toBe(true);
       expect(workflowContent.includes('name: Run affected edge-case tests')).toBe(true);
+    });
+
+    // The dedicated E2E job runs test/e2e/ on ubuntu only. A PR touching only
+    // test/e2e/** is not OS-sensitive, so the Full Matrix skips and the Windows
+    // follow-up lane is the only Windows e2e coverage. The ubuntu follow-up lane
+    // must not repeat the dedicated job.
+    test('affected e2e runs on the Windows follow-up lane only', () => {
+      const followup = jobs['followup-tests'];
+      const e2eSteps = followup.steps.filter((step) => step.name === 'Run affected e2e tests');
+      expect(e2eSteps).toHaveLength(1);
+      expect(e2eSteps[0].if).toBe("matrix.os == 'windows-latest' && steps.affected.outputs.run_e2e == 'true' && needs.changes.outputs.os_sensitive != 'true'");
+      expect(e2eSteps[0].run).toBe('bun test --timeout 15000 test/e2e/ --reporter=junit --reporter-outfile test-results/followup-e2e.xml');
+      const windowsEntries = followup.strategy.matrix.include.filter((entry) => entry.os === 'windows-latest');
+      expect(windowsEntries.map((entry) => entry.label)).toEqual(['windows-node22']);
+      expect(followup.strategy.matrix.include.some((entry) => entry.os === 'ubuntu-latest')).toBe(true);
+      const resolve = followup.steps.find((step) => step.name === 'Resolve affected test targets').run;
+      expect(resolve).toContain('`run_e2e=${plan.runE2E}`,');
+      expect(jobs.e2e.name).toBe('E2E Tests');
+      expect(jobs.e2e['runs-on']).toBe('ubuntu-latest');
+      expect(jobs['ci-gate'].needs).toContain('e2e');
+    });
+
+    test('Windows follow-up e2e runs for e2e-only changes but not alongside the full matrix', () => {
+      const followup = jobs['followup-tests'];
+      const condition = followup.steps.find((step) => step.name === 'Run affected e2e tests').if;
+      for (const [osSensitive, runE2E, expected] of [
+        ['false', 'true', true],
+        ['true', 'true', false],
+        ['false', 'false', false],
+      ]) {
+        expect(vm.runInNewContext(condition, {
+          matrix: { os: 'windows-latest' },
+          steps: { affected: { outputs: { run_e2e: runE2E } } },
+          needs: { changes: { outputs: { os_sensitive: osSensitive } } },
+        })).toBe(expected);
+      }
+      expect(condition).toContain("needs.changes.outputs.os_sensitive != 'true'");
+    });
+
+    // When the classifier demands the full matrix, the same full suite already runs
+    // on the identical ubuntu/Node 24 and windows/Node 22 environments, so the
+    // single-platform fallback would only repeat it.
+    test('single-platform fallback runs only when the full matrix does not', () => {
+      const followup = jobs['followup-tests'];
+      expect(followup.needs).toEqual(['changes']);
+      const fallback = followup.steps.find((step) => step.name === 'Run single-platform unit suite fallback');
+      expect(fallback.if).toBe("steps.affected.outputs.mode == 'full' && needs.changes.outputs.os_sensitive != 'true'");
+      const edgeCases = followup.steps.find((step) => step.name === 'Run affected edge-case tests');
+      expect(edgeCases.if).toBe("steps.affected.outputs.run_test_env == 'true'");
     });
 
     test('affected edge-case failures reach the required CI Gate', () => {
@@ -119,8 +186,7 @@ describe('CI Workflow Configuration', () => {
       const aggregateScript = lines.slice(runIndex + 1, scriptEnd)
         .map((line) => line.slice(10))
         .join('\n');
-      const gate = spawnSync(bashExecutable, ['-c', aggregateScript], {
-        encoding: 'utf8',
+      const gate = runGithubBashStep(aggregateScript, {
         env: { ...process.env, RESULTS: 'followup-tests=failure\n' },
       });
 
@@ -162,8 +228,9 @@ describe('CI Workflow Configuration', () => {
       // `changes` classifier, which returns true for every non-pull_request event —
       // so push to master, merge_group, schedule and workflow_dispatch still run the
       // full 3-OS x 2-Node matrix unconditionally.
-      expect(workflowContent.includes('needs: [changes]')).toBe(true);
-      expect(workflowContent.includes("if: ${{ needs.changes.outputs.os_sensitive == 'true' }}")).toBe(true);
+      expect(jobs['full-matrix'].needs).toEqual(['changes']);
+      expect(jobs['full-matrix'].if)
+        .toBe("${{ needs.changes.outputs.tests_relevant == 'true' && needs.changes.outputs.os_sensitive == 'true' }}");
       expect(workflowContent.includes('os: [ubuntu-latest, macos-latest, windows-latest]')).toBe(true);
       expect(workflowContent.includes('node-version: [22, 24]')).toBe(true);
     });
@@ -187,8 +254,9 @@ describe('CI Workflow Configuration', () => {
 
     test('cross-OS smoke still covers every pull request', () => {
       // The lanes that keep Windows/macOS signal on PRs where the matrix is skipped.
-      expect(workflowContent.includes("windows-smoke:\n    name: Windows Smoke\n    if: github.event_name == 'pull_request'")).toBe(true);
-      expect(workflowContent.includes("macos-smoke:\n    name: macOS Smoke\n    if: github.event_name == 'pull_request'")).toBe(true);
+      for (const lane of ['windows-smoke', 'macos-smoke']) {
+        expect(jobs[lane].if).toBe("${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}");
+      }
       expect(workflowContent.includes('label: windows-node22')).toBe(true);
     });
 
@@ -217,11 +285,23 @@ describe('CI Workflow Configuration', () => {
       expect(workflowContent.includes('uses: actions/upload-artifact@v7')).toBe(true);
     });
 
+    // The PR dashboard reads every uploaded test-artifacts-* bundle, so it must wait
+    // for every lane that uploads one, and it must still run when a lane failed —
+    // that is exactly when the dashboard is most useful.
     test('dashboard jobs depend on the appropriate upstream jobs', () => {
-      expectSection('dashboard-pr');
-      expect(workflowContent.includes('needs: [unit-shard, windows-smoke, macos-smoke, coverage, e2e]')).toBe(true);
-      expectSection('dashboard-confidence');
-      expect(workflowContent.includes('needs: [full-matrix, coverage, e2e]')).toBe(true);
+      expect(jobs['dashboard-pr'].needs).toEqual([
+        'changes',
+        'full-matrix',
+        'unit-shard',
+        'windows-smoke',
+        'macos-smoke',
+        'followup-tests',
+        'coverage',
+        'e2e',
+      ]);
+      expect(jobs['dashboard-pr'].if)
+        .toBe("${{ always() && github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'true' }}");
+      expect(jobs['dashboard-confidence'].needs).toEqual(['changes', 'full-matrix', 'coverage', 'e2e']);
     });
 
     test('dashboard jobs aggregate artifacts into test-dashboard.json', () => {
@@ -257,26 +337,362 @@ describe('CI Workflow Configuration', () => {
   });
 
   describe('Aggregate Gate', () => {
-    test('ci-gate aggregates every real lane and tolerates path-gated skips', () => {
-      expectSection('ci-gate');
-      expect(workflowContent.includes('name: CI Gate')).toBe(true);
-      expect(workflowContent.includes('if: ${{ always() }}')).toBe(true);
-      for (const lane of [
-        'changes',
-        'full-matrix',
-        'unit-shard',
-        'windows-smoke',
-        'macos-smoke',
-        'cross-os-gate',
-        'followup-tests',
-        'coverage',
-        'e2e',
-      ]) {
-        expect(workflowContent.includes(`      - ${lane}\n`)).toBe(true);
-        expect(workflowContent.includes(`${lane}=\${{ needs.${lane}.result }}`)).toBe(true);
+    const gatedLanes = [
+      'changes',
+      'full-matrix',
+      'unit-shard',
+      'cross-os-gate',
+      'followup-tests',
+      'coverage',
+      'e2e',
+      'doc-assertions',
+    ];
+
+    function extractRunScript(jobName, stepName) {
+      const lines = workflowContent.split('\n');
+      const jobIndex = lines.indexOf(`  ${jobName}:`);
+      const stepIndex = lines.findIndex((line, index) => index > jobIndex && line.includes(`name: ${stepName}`));
+      const runIndex = lines.findIndex((line, index) => index > stepIndex && line.trim() === 'run: |');
+      expect(jobIndex).toBeGreaterThan(-1);
+      expect(stepIndex).toBeGreaterThan(jobIndex);
+      expect(runIndex).toBeGreaterThan(stepIndex);
+      const indent = lines[runIndex].indexOf('run:') + 2;
+      let end = runIndex + 1;
+      while (end < lines.length && (lines[end].startsWith(' '.repeat(indent)) || lines[end] === '')) end += 1;
+      return lines.slice(runIndex + 1, end).map((line) => line.slice(indent)).join('\n');
+    }
+
+    function runGate(results) {
+      const script = extractRunScript('ci-gate', 'Aggregate lane results');
+      const RESULTS = `${Object.entries(results).map(([lane, value]) => `${lane}=${value}`).join('\n')}\n`;
+      return runGithubBashStep(script, { env: { ...process.env, RESULTS } });
+    }
+
+    const irrelevantPr = {
+      changes: 'success:false',
+      'full-matrix': 'skipped:true',
+      'unit-shard': 'skipped:true',
+      'cross-os-gate': 'success:false',
+      'followup-tests': 'skipped:true',
+      coverage: 'skipped:true',
+      e2e: 'skipped:true',
+      'doc-assertions': 'success:false',
+    };
+
+    test('ci-gate aggregates every real lane and keeps its required context name', () => {
+      expect(jobs['ci-gate'].name).toBe('CI Gate');
+      expect(jobs['ci-gate'].if).toBe('${{ always() }}');
+      expect(jobs['ci-gate'].needs).toEqual(gatedLanes);
+      for (const lane of gatedLanes) {
+        expect(workflowContent.includes(`${lane}=\${{ needs.${lane}.result }}:`)).toBe(true);
       }
-      expect(workflowContent.includes('success|skipped) ;;')).toBe(true);
     });
+
+    // Cross-OS Gate already needs and evaluates both smoke lanes with the same
+    // skip rule, so CI Gate enforces them transitively through cross-os-gate.
+    test('smoke lanes reach CI Gate transitively through Cross-OS Gate', () => {
+      expect(jobs['ci-gate'].needs).not.toContain('windows-smoke');
+      expect(jobs['ci-gate'].needs).not.toContain('macos-smoke');
+      expect(jobs['cross-os-gate'].needs).toEqual(['changes', 'windows-smoke', 'macos-smoke']);
+      expect(jobs['cross-os-gate'].if).toBe("${{ always() && github.event_name == 'pull_request' }}");
+    });
+
+    test('a lane skipped because the change is test-irrelevant passes the gate', () => {
+      const gate = runGate(irrelevantPr);
+      expect(`${gate.stdout}${gate.stderr}`).not.toContain('::error::');
+      expect(gate.status).toBe(0);
+    });
+
+    test('a lane skipped without a legitimate reason fails the gate', () => {
+      const gate = runGate({ ...irrelevantPr, changes: 'success:false', coverage: 'skipped:false' });
+      expect(gate.status).toBe(1);
+      expect(`${gate.stdout}${gate.stderr}`).toContain("Lane 'coverage' was skipped without a legitimate reason");
+    });
+
+    test('lanes skipped because the classifier failed still fail the gate', () => {
+      // A failed classifier leaves its outputs empty; every downstream lane is then
+      // skipped by GitHub, and none of those skips is justified.
+      const gate = runGate({
+        changes: 'failure:false',
+        'full-matrix': 'skipped:false',
+        'unit-shard': 'skipped:false',
+        'cross-os-gate': 'failure:false',
+        'followup-tests': 'skipped:false',
+        coverage: 'skipped:false',
+        e2e: 'skipped:false',
+        'doc-assertions': 'skipped:false',
+      });
+      expect(gate.status).toBe(1);
+      expect(`${gate.stdout}${gate.stderr}`).toContain("Lane 'changes' finished as 'failure'");
+      expect(`${gate.stdout}${gate.stderr}`).toContain("Lane 'coverage' was skipped without a legitimate reason");
+    });
+
+    test('ci-gate computes each skip justification from the classifier, failing closed', () => {
+      const gate = jobs['ci-gate'].steps.find((step) => step.name === 'Aggregate lane results');
+      const results = gate.env.RESULTS;
+      expect(results).toContain("changes=${{ needs.changes.result }}:false");
+      expect(results).toContain("full-matrix=${{ needs.full-matrix.result }}:${{ needs.changes.outputs.tests_relevant == 'false' || needs.changes.outputs.os_sensitive == 'false' }}");
+      expect(results).toContain("coverage=${{ needs.coverage.result }}:${{ needs.changes.outputs.tests_relevant == 'false' }}");
+      expect(results).toContain("doc-assertions=${{ needs.doc-assertions.result }}:${{ github.event_name != 'pull_request' || needs.changes.outputs.tests_relevant == 'true' }}");
+    });
+
+    test('Cross-OS Gate tolerates skipped smoke lanes only for test-irrelevant changes', () => {
+      const script = extractRunScript('cross-os-gate', 'Require Windows + macOS smoke to pass');
+      expect(jobs['cross-os-gate'].steps[0].env).toEqual({
+        WINDOWS_SMOKE: '${{ needs.windows-smoke.result }}',
+        MACOS_SMOKE: '${{ needs.macos-smoke.result }}',
+        TESTS_RELEVANT: '${{ needs.changes.outputs.tests_relevant }}',
+      });
+      const run = (env) => runGithubBashStep(script, { env: { ...process.env, ...env } });
+      expect(run({ WINDOWS_SMOKE: 'skipped', MACOS_SMOKE: 'skipped', TESTS_RELEVANT: 'false' }).status).toBe(0);
+      expect(run({ WINDOWS_SMOKE: 'success', MACOS_SMOKE: 'success', TESTS_RELEVANT: 'true' }).status).toBe(0);
+      expect(run({ WINDOWS_SMOKE: 'skipped', MACOS_SMOKE: 'skipped', TESTS_RELEVANT: '' }).status).toBe(1);
+      expect(run({ WINDOWS_SMOKE: 'skipped', MACOS_SMOKE: 'success', TESTS_RELEVANT: 'true' }).status).toBe(1);
+      expect(run({ WINDOWS_SMOKE: 'failure', MACOS_SMOKE: 'success', TESTS_RELEVANT: 'true' }).status).toBe(1);
+    });
+  });
+
+  describe('Single authoritative workflow', () => {
+    const expensiveLanes = [
+      'full-matrix',
+      'unit-shard',
+      'windows-smoke',
+      'macos-smoke',
+      'followup-tests',
+      'coverage',
+      'e2e',
+      'dashboard-pr',
+      'dashboard-confidence',
+    ];
+
+    test('Tests runs on every pull request: no top-level PR paths filter', () => {
+      expect(triggers).toHaveProperty('pull_request');
+      expect(triggers.pull_request).toBeNull();
+    });
+
+    test('the classifier publishes tests_relevant and fails safe to true', () => {
+      expect(jobs.changes.outputs.tests_relevant).toBe('${{ steps.filter.outputs.tests_relevant }}');
+      const classify = jobs.changes.steps.find((step) => step.name === 'Classify diff').run;
+      expect(classify.split('echo "tests_relevant=true" >> "$GITHUB_OUTPUT"').length - 1).toBeGreaterThanOrEqual(3);
+      expect(classify).toContain('echo "tests_relevant=false" >> "$GITHUB_OUTPUT"');
+    });
+
+    // tests_relevant is decided by EXCLUSION: a PR is test-irrelevant only when
+    // every changed path is documentation (docs/**, a root-level *.md, LICENSE).
+    // Any other path, including ones no allowlist anticipated, runs the tests.
+    const classifyScript = () => jobs.changes.steps.find((step) => step.name === 'Classify diff').run;
+    const isDocsOnlyPath = (file) => file.startsWith('docs/')
+      || (!file.includes('/') && file.endsWith('.md'))
+      || file === 'LICENSE';
+
+    function docsOnlyPattern() {
+      const match = /docs_only_pattern='([^']+)'/.exec(classifyScript());
+      expect(match).not.toBeNull();
+      return new RegExp(match[1]);
+    }
+
+    function runClassifier(changedFiles, { gitFails = false, grepFails = false } = {}) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-classify-'));
+      try {
+        const binDir = path.join(root, 'bin');
+        fs.mkdirSync(binDir);
+        const listing = path.join(root, 'changed.txt');
+        fs.writeFileSync(listing, changedFiles.map((file) => `${file}\n`).join(''));
+        const toPosix = (value) => value.replace(/\\/g, '/');
+        const stub = gitFails
+          ? '#!/usr/bin/env bash\nexit 128\n'
+          : `#!/usr/bin/env bash\nwhile IFS= read -r line; do printf '%s\\n' "$line"; done < '${toPosix(listing)}'\n`;
+        fs.writeFileSync(path.join(binDir, 'git'), stub);
+        fs.chmodSync(path.join(binDir, 'git'), 0o755);
+        if (grepFails) {
+          // grep exit 2 = an error (bad pattern, I/O), not "no match".
+          fs.writeFileSync(path.join(binDir, 'grep'), '#!/usr/bin/env bash\nexit 2\n');
+          fs.chmodSync(path.join(binDir, 'grep'), 0o755);
+        }
+        const output = path.join(root, 'out.txt');
+        fs.writeFileSync(output, '');
+        const prelude = `export PATH="$(cygpath -u '${toPosix(binDir)}' 2>/dev/null || printf '%s' '${toPosix(binDir)}'):$PATH"`;
+        const child = runGithubBashStep(`${prelude}\n${classifyScript()}`, {
+          env: {
+            ...process.env,
+            EVENT_NAME: 'pull_request',
+            BASE_SHA: 'base',
+            HEAD_SHA: 'head',
+            GITHUB_OUTPUT: output,
+          },
+        });
+        expect(child.status).toBe(0);
+        return Object.fromEntries(fs.readFileSync(output, 'utf8').trim().split('\n').map((line) => line.split('=')));
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }
+
+    test('tests_relevant is false only for docs-only diffs and fails safe to true', () => {
+      expect(runClassifier(['docs/INDEX.md', 'README.md', 'LICENSE']).tests_relevant).toBe('false');
+      expect(runClassifier(['docs/INDEX.md', 'plugin/.claude-plugin/plugin.json']).tests_relevant).toBe('true');
+      expect(runClassifier(['skills/plan/SKILL.md']).tests_relevant).toBe('true');
+      expect(runClassifier([], { gitFails: true }).tests_relevant).toBe('true');
+      // A successful diff that lists no paths is not proof of a docs-only PR.
+      expect(runClassifier([]).tests_relevant).toBe('true');
+    }, 30_000);
+
+    // Each grep in the classifier returns 1 on an ordinary PR ("no match"), which
+    // errexit would turn into a failed step unless the status is captured safely.
+    test('the classifier handles every grep outcome under GitHub errexit bash', () => {
+      expect(runClassifier(['docs/INDEX.md', 'README.md'])).toEqual({ tests_relevant: 'false', os_sensitive: 'false' });
+      expect(runClassifier(['skills/plan/SKILL.md', 'lib/commands/status.js'])).toEqual({ tests_relevant: 'true', os_sensitive: 'false' });
+      expect(runClassifier(['docs/INDEX.md', 'bin/forge.js'])).toEqual({ tests_relevant: 'true', os_sensitive: 'true' });
+    }, 30_000);
+
+    // Under `set -o pipefail`, `printf ... | grep -q` fails when grep exits on the
+    // first match and printf dies of SIGPIPE, turning a code PR into "docs-only".
+    // A code path first, then more than a 64 KiB pipe buffer of docs paths.
+    test('large diffs led by a code path stay test-relevant and OS-sensitive under pipefail', () => {
+      const docs = Array.from({ length: 5000 }, (_, index) => `docs/entry-${String(index).padStart(5, '0')}.md`);
+      expect(docs.join('\n').length).toBeGreaterThan(64 * 1024);
+      expect(runClassifier(['package.json', ...docs])).toEqual({ tests_relevant: 'true', os_sensitive: 'true' });
+    }, 60_000);
+
+    // Structural guard for the whole class: no producer may pipe into a consumer
+    // that can exit early (grep -q/-m, head), because pipefail turns that into a
+    // failed condition. Classify from a here-string instead.
+    test('the classifier pipes nothing into an early-exiting consumer', () => {
+      expect(classifyScript()).not.toMatch(/\|\s*(grep|head)\b/);
+    });
+
+    // A grep error (exit 2) is not "no match": both decisions fail closed.
+    test('a classifier grep error fails safe to the full matrix', () => {
+      expect(runClassifier(['docs/INDEX.md'], { grepFails: true })).toEqual({ tests_relevant: 'true', os_sensitive: 'true' });
+    }, 30_000);
+
+    // `git diff` reports only the destination of a detected rename, so a
+    // scripts/ -> docs/ move would otherwise look docs-only. Run the real step
+    // script against a real repository so rename detection is exercised.
+    test('a source-to-docs rename is test-relevant', () => {
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-rename-'));
+      try {
+        const git = (...args) => {
+          const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+          expect(result.status).toBe(0);
+          return result.stdout.trim();
+        };
+        git('init', '-q');
+        git('config', 'user.email', 'ci@example.invalid');
+        git('config', 'user.name', 'CI');
+        fs.mkdirSync(path.join(repo, 'scripts'));
+        fs.writeFileSync(path.join(repo, 'scripts', 'tool.js'), 'module.exports = () => "a stable body long enough to be detected as a rename";\n');
+        git('add', '.');
+        git('commit', '-q', '-m', 'base');
+        const base = git('rev-parse', 'HEAD');
+        fs.mkdirSync(path.join(repo, 'docs'));
+        git('mv', 'scripts/tool.js', 'docs/tool.js');
+        git('commit', '-q', '-m', 'move');
+        const head = git('rev-parse', 'HEAD');
+        expect(git('diff', '--name-only', `${base}...${head}`)).toBe('docs/tool.js');
+
+        const output = path.join(repo, '.out');
+        fs.writeFileSync(output, '');
+        const child = runGithubBashStep(classifyScript(), {
+          cwd: repo,
+          env: { ...process.env, EVENT_NAME: 'pull_request', BASE_SHA: base, HEAD_SHA: head, GITHUB_OUTPUT: output },
+        });
+        expect(child.status).toBe(0);
+        const outputs = Object.fromEntries(fs.readFileSync(output, 'utf8').trim().split('\n').map((line) => line.split('=')));
+        expect(outputs.tests_relevant).toBe('true');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    test('every workflow diff lists both sides of a rename', () => {
+      const classify = classifyScript();
+      expect(classify).toContain('git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA"');
+      const resolve = jobs['followup-tests'].steps.find((step) => step.name === 'Resolve affected test targets').run;
+      expect(resolve).toContain("execFileSync('git', ['diff', '--no-renames', '--name-only', `${baseSha}...${headSha}`]");
+      const diffCalls = workflowContent.match(/git diff[^\n]*|\['diff'[^\n]*/g) || [];
+      expect(diffCalls.length).toBeGreaterThan(0);
+      for (const call of diffCalls) expect({ call, noRenames: call.includes('--no-renames') }).toEqual({ call, noRenames: true });
+    });
+
+    test('every tracked file outside the docs set is test-relevant', () => {
+      const pattern = docsOnlyPattern();
+      const tracked = spawnSync('git', ['ls-files'], { cwd: path.join(__dirname, '..'), encoding: 'utf8' })
+        .stdout.split('\n').filter(Boolean);
+      expect(tracked.length).toBeGreaterThan(100);
+      const mismatches = tracked.filter((file) => pattern.test(file) !== isDocsOnlyPath(file));
+      expect(mismatches).toEqual([]);
+      // One representative per top-level directory and root file type is relevant.
+      const representatives = new Map();
+      for (const file of tracked.filter((entry) => !isDocsOnlyPath(entry))) {
+        const key = file.includes('/') ? file.split('/')[0] : path.extname(file) || file;
+        if (!representatives.has(key)) representatives.set(key, file);
+      }
+      for (const file of representatives.values()) {
+        expect({ file, relevant: !pattern.test(file) }).toEqual({ file, relevant: true });
+      }
+    });
+
+    test('every path in the Required Checks Bypass code list is test-relevant', () => {
+      const pattern = docsOnlyPattern();
+      const bypassPath = path.join(__dirname, '..', '.github', 'workflows', 'required-checks-bypass.yml');
+      const bypass = yaml.load(fs.readFileSync(bypassPath, 'utf8'));
+      const globs = bypass.on.pull_request['paths-ignore'];
+      expect(globs.length).toBeGreaterThan(0);
+      for (const glob of globs) {
+        const sample = glob.replace(/\*\*/g, 'x/y').replace(/\*/g, 'x');
+        expect({ glob, sample, relevant: !pattern.test(sample) }).toEqual({ glob, sample, relevant: true });
+      }
+    });
+
+    test('paths outside every old allowlist are test-relevant', () => {
+      const pattern = docsOnlyPattern();
+      for (const file of ['plugin/.claude-plugin/plugin.json', '.forge/protected-paths.yaml', 'web/dashboard/app.js']) {
+        expect({ file, relevant: !pattern.test(file) }).toEqual({ file, relevant: true });
+      }
+    });
+
+    test('expensive lanes are gated on tests_relevant', () => {
+      for (const lane of expensiveLanes) {
+        const job = jobs[lane];
+        expect({ lane, needsChanges: [].concat(job.needs || []).includes('changes') }).toEqual({ lane, needsChanges: true });
+        expect({ lane, gated: String(job.if).includes("needs.changes.outputs.tests_relevant == 'true'") })
+          .toEqual({ lane, gated: true });
+      }
+    });
+
+    test('test-irrelevant PRs still run the doc-asserting suites under the Tests workflow', () => {
+      const docs = jobs['doc-assertions'];
+      expect(docs.needs).toEqual(['changes']);
+      expect(docs.if).toBe("${{ github.event_name == 'pull_request' && needs.changes.outputs.tests_relevant == 'false' }}");
+      const commands = docs.steps.map((step) => step.run || '').join('\n');
+      expect(commands).toContain('node scripts/doc-asserting-tests.js --base ${{ github.event.pull_request.base.sha }}');
+    });
+
+    test('every job that installs dependencies restores the Bun download cache', () => {
+      const installJobs = Object.entries(jobs)
+        .filter(([, job]) => (job.steps || []).some((step) => step.run === 'bun install'));
+      expect(installJobs.length).toBeGreaterThanOrEqual(9);
+      for (const [name, job] of installJobs) {
+        const names = job.steps.map((step) => step.name);
+        const setupIndex = job.steps.findIndex((step) => String(step.uses).startsWith('oven-sh/setup-bun@'));
+        const dirIndex = names.indexOf('Resolve Bun cache directory');
+        const cacheIndex = names.indexOf('Cache Bun downloads');
+        const installIndex = job.steps.findIndex((step) => step.run === 'bun install');
+        expect({ name, ordered: setupIndex >= 0 && setupIndex < dirIndex && dirIndex < cacheIndex && cacheIndex < installIndex })
+          .toEqual({ name, ordered: true });
+        expect(job.steps[setupIndex].id).toBe('setup-bun');
+        expect(job.steps[dirIndex].run).toBe('echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"');
+        const cache = job.steps[cacheIndex];
+        expect(cache.uses).toBe('actions/cache@v6');
+        expect(cache.with.path).toBe('${{ steps.bun-cache-dir.outputs.dir }}');
+        expect(cache.with.key).toBe("bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}");
+        expect(JSON.stringify(cache.with)).not.toContain('node_modules');
+      }
+    });
+  });
+
+  describe('Job timeouts', () => {
 
     test('every job declares a timeout so a hung runner cannot poison the queue', () => {
       const lines = workflowContent.split('\n');
