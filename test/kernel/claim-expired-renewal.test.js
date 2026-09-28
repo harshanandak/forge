@@ -207,6 +207,89 @@ describe('claim renewal after lease expiry (55a6d3e6)', () => {
       expect((await owns('race-1', 'alice', 'sess-A', '2026-09-28T00:02:01.000Z')).data.owned).toBe(true);
     });
 
+    // Round 3: every claim decision must use lease state read AFTER the generation walk,
+    // inside the write transaction. The stale driver models a winner that committed
+    // after B's pre-transaction reads: until B opens its transaction (BEGIN), the
+    // chosen reads serve the pre-winner view; from BEGIN on every read is real, which
+    // is what SQLite's BEGIN IMMEDIATE write lock guarantees.
+    //   staleLease: active-lease reads return the pre-winner snapshot
+    //   staleKeys:  idempotency reads hide events committed at/after winnerAt
+    async function brokerWithStaleView(issueId, { staleLease, staleKeys, winnerAt }) {
+      const staleActive = await driver.loadActiveKernelClaim(issueId, {}, config);
+      const view = { inTransaction: false, staleLeaseReads: 0 };
+      const staleDriver = {
+        ...driver,
+        async exec(sql, ...rest) {
+          if (/^BEGIN/i.test(sql)) view.inTransaction = true;
+          return driver.exec(sql, ...rest);
+        },
+        async loadActiveKernelClaim(...callArgs) {
+          if (staleLease && !view.inTransaction) {
+            view.staleLeaseReads += 1;
+            return staleActive;
+          }
+          return driver.loadActiveKernelClaim(...callArgs);
+        },
+        async loadKernelEventByIdempotencyKey(...callArgs) {
+          const found = await driver.loadKernelEventByIdempotencyKey(...callArgs);
+          if (staleKeys && !view.inTransaction && found && found.created_at >= winnerAt) return null;
+          return found;
+        },
+      };
+      const staleBroker = createLocalBroker({
+        projectRoot: tmpDir,
+        execFileSync: () => path.join(tmpDir, '.git'),
+        databasePath: config.databasePath,
+        driver: staleDriver,
+      });
+      await staleBroker.initialize();
+      return { staleBroker, view };
+    }
+
+    test('a winner seen by the generation walk is replayed even when the lease snapshot predates it', async () => {
+      await createIssue('race-2');
+      await claim('race-2', 'alice', 'sess-A', t0);
+      // B's lease snapshot predates A's renewal, but B's generation walk sees A's event.
+      const { staleBroker } = await brokerWithStaleView('race-2', { staleLease: true, staleKeys: false, winnerAt: tExpired });
+      const a = await claim('race-2', 'alice', 'sess-A', tExpired);
+      expect(a.ok).toBe(true);
+      const b = await staleBroker.runIssueOperation('claim', ['--issue', 'race-2'], {
+        now: '2026-09-28T00:02:01.000Z', actor: 'alice', sessionId: 'sess-A', leaseTtlMs: TTL_MS,
+      });
+      expect(b.ok).toBe(true);
+      expect(b.data.claim_id).toBe(a.data.claim_id);
+      expect((await owns('race-2', 'alice', 'sess-A', '2026-09-28T00:02:01.000Z')).data.owned).toBe(true);
+    });
+
+    test('a same-identity winner under a different key is replayed, decided on the in-transaction lease', async () => {
+      await createIssue('race-3');
+      await claim('race-3', 'alice', 'sess-A', t0);
+      // A renews under a caller key, so B's derived key never collides with A's event:
+      // only the lease read inside B's transaction can see that alice/sess-A already won.
+      const { staleBroker } = await brokerWithStaleView('race-3', { staleLease: true, staleKeys: true, winnerAt: tExpired });
+      const a = await claimWith('race-3', 'alice', 'sess-A', tExpired, { idempotencyKey: 'caller-race-3' });
+      expect(a.ok).toBe(true);
+      const b = await staleBroker.runIssueOperation('claim', ['--issue', 'race-3'], {
+        now: '2026-09-28T00:02:01.000Z', actor: 'alice', sessionId: 'sess-A', leaseTtlMs: TTL_MS,
+      });
+      expect(b.ok).toBe(true);
+      expect(b.data.claim_id).toBe(a.data.claim_id);
+    });
+
+    test('a stale snapshot never lets another identity\'s live renewal be replayed or superseded', async () => {
+      await createIssue('race-4');
+      await claim('race-4', 'alice', 'sess-A', t0);
+      const { staleBroker } = await brokerWithStaleView('race-4', { staleLease: true, staleKeys: true, winnerAt: tExpired });
+      const bob = await claim('race-4', 'bob', 'sess-B', tExpired);
+      expect(bob.ok).toBe(true);
+      const again = await staleBroker.runIssueOperation('claim', ['--issue', 'race-4'], {
+        now: '2026-09-28T00:02:01.000Z', actor: 'alice', sessionId: 'sess-A', leaseTtlMs: TTL_MS,
+      });
+      expect(again.ok).toBe(false);
+      expect(again.error.code).toBe('FORGE_ISSUE_CLAIM_CONFLICT');
+      expect((await owns('race-4', 'bob', 'sess-B', '2026-09-28T00:02:01.000Z')).data.owned).toBe(true);
+    });
+
     test('a caller key bound to another issue is not rewritten into a new claim', async () => {
       await createIssue('key-x');
       await createIssue('key-y');
