@@ -1160,8 +1160,11 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     console.log(`Full suite resource budget: requested=${requestedResourceBudget ?? 'default'} effective=${effectiveResourceBudget}`);
 
     if (shardSpecs.length === 0) {
-      const exitCode = signal ? signalExitCode(signal) : 1;
-      console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+      // A cross-runner slice may legitimately own no files (more shards than
+      // suite files); an empty unsharded inventory is still INCOMPLETE.
+      const emptyCrossRunnerShard = parseCrossRunnerShard(args) !== null;
+      const exitCode = signal ? signalExitCode(signal) : (emptyCrossRunnerShard ? 0 : 1);
+      console.log(`Full suite aggregate: status=${exitCode === 0 ? 'PASS' : 'INCOMPLETE'} tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0`);
       console.log('Full suite exit: ' + exitCode);
       completed = true;
       return exitCode;

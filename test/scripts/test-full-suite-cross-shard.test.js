@@ -137,6 +137,27 @@ describe('cross-runner shard flags', () => {
     expect(run.profiles).toEqual([INVENTORY]);
   }, TIMEOUT_MS);
 
+  test('an empty cross-runner shard passes without spawning', async () => {
+    const run = captureRun();
+    // 2 expensive files over 3 shards: shard 2 is legitimately empty.
+    const { lines, result } = await quietly(() => runFullSuiteInParallel({
+      shardIndex: 2,
+      shardTotal: 3,
+      shards: 1,
+      suite: 'expensive',
+    }, run.deps));
+    expect(result).toBe(0);
+    expect(run.spawnedFiles).toEqual([]);
+    expect(lines).toContain('Full suite aggregate: status=PASS tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+  }, TIMEOUT_MS);
+
+  test('an empty unsharded inventory is still INCOMPLETE', async () => {
+    const run = captureRun();
+    const { lines, result } = await quietly(() => runFullSuiteInParallel({ shards: 1 }, { ...run.deps, allTests: [] }));
+    expect(result).toBe(1);
+    expect(lines).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+  }, TIMEOUT_MS);
+
   test('a sharded run executes only its suite partition on this OS', async () => {
     const core = INVENTORY.filter((file) => !file.includes('e2e') && !file.includes('package-distribution'));
     const expected = partitionFiles({ files: core, os: 'linux', shardTotal: 2, weights: WEIGHTS });
