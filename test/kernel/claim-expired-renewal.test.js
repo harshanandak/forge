@@ -437,4 +437,41 @@ describe('claim renewal after lease expiry (55a6d3e6)', () => {
       }
     });
   });
+
+  // PR #589 round 6: claim and owns() must share the canonical live-lease rule
+  // (isLiveClaim), and a claim must never commit a lease that is already expired.
+  describe('lease validity at claim time (PR #589 round 6)', () => {
+    test('a malformed-expiry lease is never replayed as a held lease', async () => {
+      await createIssue('bad-expiry');
+      await driver.exec(
+        "INSERT INTO kernel_claims (id, issue_id, actor, state, session_id, worktree_id, claimed_at, expires_at) "
+        + "VALUES ('legacy-bad', 'bad-expiry', 'alice', 'active', 'sess-A', NULL, '2026-09-28T00:00:00.000Z', 'not-a-timestamp');",
+        config,
+      );
+      const again = await claim('bad-expiry', 'alice', 'sess-A', tLive);
+      const own = await owns('bad-expiry', 'alice', 'sess-A', tLive);
+      expect(own.data.owned).toBe(false);
+      // claim and owns() agree: no ok for a lease owns() does not count as live.
+      expect(again.ok).toBe(false);
+      expect(again.error.code).toBe('FORGE_ISSUE_CLAIM_CONFLICT');
+    });
+
+    test('an already-expired --expires is rejected before anything is written, on every retry', async () => {
+      await createIssue('past-expiry');
+      const countRows = async () => ({
+        claims: (await driver.queryAll("SELECT * FROM kernel_claims WHERE issue_id = 'past-expiry'", config)).length,
+        events: (await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'claim'", config)).length,
+      });
+      const before = await countRows();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = await broker.runIssueOperation(
+          'claim', ['--issue', 'past-expiry', '--expires', '2026-09-27T00:00:00.000Z'],
+          { now: tLive, actor: 'alice', sessionId: 'sess-A' },
+        );
+        expect(result.ok).toBe(false);
+        expect(result.error.code).toBe('FORGE_ISSUE_VALIDATION');
+      }
+      expect(await countRows()).toEqual(before);
+    });
+  });
 });

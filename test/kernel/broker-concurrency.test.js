@@ -297,6 +297,10 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
       async listKernelEvents(entityType, entityId) {
         return entityType === 'claim' && entityId === 'claim-issue-1-A' ? [existingEvent] : [];
       },
+      // Liveness uses the canonical isLiveClaim rule, which needs the (open) issue row.
+      async loadKernelEntity(entityType, entityId) {
+        return entityType === 'issue' && entityId === 'issue-1' ? { id: 'issue-1', status: 'open' } : null;
+      },
     }, ops);
 
     const result = await broker.runGuardedEvent(claimEvent(), { now: CLAIM_NOW });
