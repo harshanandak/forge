@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`forge release retire-workflow` deletes a workflow file through a supported writer.** The pre-commit protected-state hook previously had no Forge-owned authority for deleting `.github/workflows/*`. The new command issues a delete-only Kernel capability bound to the file's exact HEAD bytes, HEAD, actor, and worktree, and records the `--reason`. It refuses when branch protection is unreadable, when the file produces a required status context, or when another workflow depends on it through `workflow_run` or a reusable `uses:` call. (issue `10f4670b`)
+
 ### Changed
 
 - **The default Windows full-suite budget is sized from real cores.** Windows budgets are charged per OS process (subprocess and exclusive workers cost 2), so the default Windows budget is now the machine's core count (`os.availableParallelism()`, capped at 6) instead of cores minus one. A 4-vCPU Windows runner now runs two subprocess workers (4 processes) instead of one; a 2-vCPU runner still runs one, non-Windows defaults are unchanged, and an explicit `--shards N` budget still wins. (issue `42376a6c`)
