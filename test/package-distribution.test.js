@@ -43,11 +43,10 @@ describe('package distribution (npm pack --dry-run)', () => {
     expect(packFiles).toContain('lib/kernel/windows-private-acl.js');
   });
 
-  describe('scripts/ directory — hook scripts', () => {
+  describe('scripts/ directory — runtime scripts', () => {
+    // Repo-only hook scripts (commitlint/branch-protection/lint) no longer ship:
+    // setup writes a user lefthook.yml that never references them (lib/lefthook-wiring.js).
     const requiredScripts = [
-      'scripts/commitlint.js',
-      'scripts/branch-protection.js',
-      'scripts/lint.js',
       'scripts/test.js',
       'scripts/sync-utils.sh',
       'scripts/file-index.sh',
@@ -89,8 +88,10 @@ describe('package distribution (npm pack --dry-run)', () => {
   });
 
   describe('.forge/ protected state manifest', () => {
-    it('includes the canonical protected-path manifest used by runtime defaults', () => {
-      expect(packFiles).toContain('.forge/protected-paths.yaml');
+    // Its only reader (lib/protected-path-manifest.js) is unreachable from the CLI;
+    // forge init renders a project manifest itself (lib/commands/init.js).
+    it('does NOT ship the repo protected-path manifest', () => {
+      expect(packFiles).not.toContain('.forge/protected-paths.yaml');
     });
   });
 
