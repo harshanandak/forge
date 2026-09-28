@@ -113,6 +113,32 @@ describe('forge pr link', () => {
     expect(new Set(execOptions.map(call => call.options.timeout))).toEqual(new Set([120_000]));
   });
 
+  test('routes both GitHub probes through the bound GitHub account runner', async () => {
+    const execOptions = [];
+    const harness = buildHarness({ execOptions });
+    const raw = harness.opts._execFileSync;
+    harness.opts._execFileSync = (bin, args, options) => {
+      if (bin === 'gh') throw new Error('raw gh must not run under a bound GitHub account');
+      return raw(bin, args, options);
+    };
+    const bound = [];
+    harness.opts.githubContext = {
+      bound: true,
+      runGh: (args, options) => {
+        bound.push({ args, options });
+        return raw('gh', args, options);
+      },
+    };
+
+    const result = await link(harness);
+
+    expect(result.success).toBe(true);
+    expect(bound.map(call => call.args.slice(0, 2))).toEqual([['repo', 'view'], ['pr', 'view']]);
+    expect(new Set(bound.map(call => call.options.timeout))).toEqual(new Set([120_000]));
+    expect(bound.every(call => call.options.cwd === ROOT)).toBe(true);
+    expect(pr.githubAuth(['link', '42', '--issue', ISSUE, '--expect-head', HEAD])).toBe(true);
+  }, 10_000);
+
   test('is registered on the real public CLI surface', () => {
     const result = spawnSync(process.execPath, [
       path.resolve(__dirname, '../../bin/forge.js'), 'pr', '--help',
