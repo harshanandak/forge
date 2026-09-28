@@ -9,7 +9,7 @@
     "forge-preflight": "bin/forge-preflight.js"
   },
   "workspaces": [
-    "packages/*"
+    "packages/skills"
   ],
   "scripts": {
     "test": "bun test --timeout 15000",
@@ -52,9 +52,6 @@
     "@commitlint/cli": "^21.0.0",
     "@commitlint/config-conventional": "^21.0.0",
     "@eslint/js": "^10.0.1",
-    "@forge/contracts": "0.1.0-beta.6",
-    "@forge/flow": "0.1.0-beta.6",
-    "@forge/memory": "0.1.0-beta.6",
     "@microsoft/eslint-formatter-sarif": "^3.1.0",
     "@stryker-mutator/core": "^9.6.0",
     "c8": "^12.0.0",
@@ -163,11 +160,6 @@
     "fastest-levenshtein": "^1.0.16",
     "yaml": "^2.8.3"
   },
-  "bundledDependencies": [
-    "@forge/flow",
-    "@forge/memory",
-    "@forge/contracts"
-  ],
   "overrides": {
     "eslint": "^10.0.2",
     "fast-uri": "^3.1.4",
