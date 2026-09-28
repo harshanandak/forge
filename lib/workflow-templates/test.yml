@@ -22,6 +22,11 @@ on:
   pull_request:
   merge_group:
   workflow_dispatch:
+    inputs:
+      bump_bun:
+        description: 'Pin Bun to the latest stable release (opens a PR when it is newer than the pin)'
+        type: boolean
+        default: false
   schedule:
     - cron: '0 3 * * 0'
 
@@ -688,6 +693,90 @@ jobs:
           name: mutation-report
           path: stryker-report/
           retention-days: 30
+
+  bun-pin-update:
+    # Weekly: when a newer stable Bun exists, pin every surface to it through the
+    # protected writer (`forge release update-bun-pins --to`), commit through the
+    # normal Git hooks, and open a `chore(deps): pin Bun <version>` PR. An open PR
+    # for the same version makes the run a no-op. PRs opened with GITHUB_TOKEN do
+    # not trigger workflows, so the job dispatches Tests on the new branch.
+    name: Bun Pin Auto-Update
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.bump_bun) }}
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Setup Bun
+        # The exact pin from package.json packageManager, the source this job updates.
+        id: setup-bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - name: Resolve Bun cache directory
+        id: bun-cache-dir
+        shell: bash
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - name: Cache Bun downloads
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.bun-cache-dir.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+      - name: Install dependencies
+        run: bun install
+      - name: Install Git hooks
+        # The protected-state pre-commit hook must run on the bump commit; fail
+        # closed rather than commit without it.
+        shell: bash
+        run: |
+          node_modules/.bin/lefthook install
+          test -s .git/hooks/pre-commit
+          grep -q lefthook .git/hooks/pre-commit
+      - name: Resolve latest stable Bun
+        id: bun-release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node lib/bun-release.js >> "$GITHUB_OUTPUT"
+      - name: Open Bun pin PR
+        if: steps.bun-release.outputs.newer == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bun-release.outputs.latest }}
+          RELEASE_URL: ${{ steps.bun-release.outputs.release_url }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          branch="bun/bump-${VERSION}"
+          open_prs="$(gh pr list --head "$branch" --state open --json number --jq length)"
+          if [ "$open_prs" != "0" ]; then
+            echo "An open PR already pins Bun ${VERSION} (${branch}); nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          node bin/forge.js release update-bun-pins --to "$VERSION" --expect-head "$(git rev-parse HEAD)"
+          git add -- package.json .github/workflows
+          git commit -m "chore(deps): pin Bun ${VERSION}"
+          node bin/forge.js push --quick -- -u origin "$branch"
+          body="Pins Bun to ${VERSION}, the latest stable release. Release notes: ${RELEASE_URL}
+
+          Opened by the weekly Bun Pin Auto-Update job through \`forge release update-bun-pins --to ${VERSION}\`. PRs opened with GITHUB_TOKEN do not trigger workflows, so the job dispatched the Tests workflow on this branch."
+          gh pr create --base "$BASE_BRANCH" --head "$branch" --title "chore(deps): pin Bun ${VERSION}" --body "$body"
+          gh workflow run test.yml --ref "$branch"
 
   dashboard-pr:
     # Reads every test-artifacts-* bundle, so it waits for every lane that uploads
