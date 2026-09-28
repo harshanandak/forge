@@ -21,12 +21,24 @@ const {
   parseJUnitTestcases,
   walk: walkProfileFiles,
 } = require('./test-profile');
+const {
+  PARTITION_OSES,
+  assertExactShardAssignment,
+  assertSuite,
+  describePartitionViolation,
+  parseCrossRunnerShard,
+  partitionFiles,
+  resolvePartitionOs,
+  selectSuite,
+  verifyPartition,
+} = require('./lib/ci-shard-partition');
 const { createProcessTree, signalExitCode } = require('./process-tree');
 const { stripGitHookEnv } = require('./test');
 const { redact } = require('../lib/audit-evidence');
 
 const rootDir = path.join(__dirname, '..');
 const reportDir = path.join(rootDir, 'test-results');
+const DEFAULT_WEIGHTS_PATH = path.join(__dirname, 'test-weights.json');
 const RESOURCE_LANES = new Set(['unit', 'subprocess', 'exclusive']);
 const RESOURCE_LANE_RANK = new Map([
   ['unit', 0],
@@ -55,19 +67,41 @@ function stripFullSuiteChildEnv(env) {
 function parseArgs(argv) {
   const args = {
     labelPrefix: 'local-full',
+    shardIndex: null,
+    shardTotal: null,
     shards: null,
+    suite: 'all',
     timeoutMs: DEFAULT_SHARD_TIMEOUT_MS,
+    verifyPartition: false,
   };
+  let rawShardIndex = null;
+  let rawShardTotal = null;
 
   for (let index = 0; index < argv.length; index += 1) {
     const current = argv[index];
     const next = argv[index + 1];
 
     if (current === '--label-prefix') args.labelPrefix = next;
+    // --shards is the per-runner worker budget; --shard-index/--shard-total
+    // pick this runner's slice of the cross-runner partition.
     if (current === '--shards') args.shards = parseResourceBudget(next);
+    if (current === '--shard-index') rawShardIndex = next ?? '';
+    if (current === '--shard-total') rawShardTotal = next ?? '';
+    if (current === '--suite') args.suite = assertSuite(next);
     if (current === '--timeout') args.timeoutMs = parseTimeoutMs(next);
+    if (current === '--verify-partition') args.verifyPartition = true;
   }
 
+  if (args.verifyPartition) {
+    if (rawShardIndex !== null) throw new Error('--verify-partition takes --shard-total only; it checks every shard');
+    if (rawShardTotal !== null) args.shardTotal = parseCrossRunnerShard({ shardIndex: '0', shardTotal: rawShardTotal }).total;
+    return args;
+  }
+  const shard = parseCrossRunnerShard({ shardIndex: rawShardIndex, shardTotal: rawShardTotal });
+  if (shard) {
+    args.shardIndex = shard.index;
+    args.shardTotal = shard.total;
+  }
   return args;
 }
 
@@ -149,27 +183,60 @@ function walkAllTests(dir) {
   return results;
 }
 
-function assertExactShardAssignment(allTests, shardSpecs) {
-  const expectedFiles = new Set(allTests);
-  const assignedFiles = new Set();
-
-  for (const shard of shardSpecs) {
-    for (const file of shard.files) {
-      if (!expectedFiles.has(file)) {
-        throw new Error(`Test file ${file} is not part of the full suite`);
-      }
-      if (assignedFiles.has(file)) {
-        throw new Error(`Test file ${file} belongs to more than exactly one shard`);
-      }
-      assignedFiles.add(file);
-    }
+function loadTestWeights(weightsPath = DEFAULT_WEIGHTS_PATH) {
+  const table = JSON.parse(fs.readFileSync(weightsPath, 'utf8'));
+  if (table?.version !== 1 || typeof table.files !== 'object' || table.files === null) {
+    throw new Error(`${path.relative(rootDir, weightsPath)} is not a version 1 test weight table`);
   }
+  return table.files;
+}
 
-  for (const file of expectedFiles) {
-    if (!assignedFiles.has(file)) {
-      throw new Error(`Test file ${file} was omitted from the shard assignment`);
-    }
+// Cross-runner selection. With neither shard flags nor a suite, returns the
+// discovered list itself so a plain local run is unchanged.
+function resolveRunFiles(allTests, args = {}, deps = {}) {
+  const suite = assertSuite(args.suite ?? 'all');
+  const shard = parseCrossRunnerShard(args);
+  if (!shard) return selectSuite(allTests, suite);
+  const partitionOs = resolvePartitionOs(deps.platform || process.platform);
+  const suiteFiles = selectSuite(allTests, suite);
+  const shards = (deps.partitionFiles || partitionFiles)({
+    files: suiteFiles,
+    os: partitionOs,
+    shardTotal: shard.total,
+    weights: deps.weights || loadTestWeights(),
+  });
+  assertExactShardAssignment(suiteFiles, shards);
+  const selected = shards[shard.index];
+  console.log(`Cross-runner shard: suite=${suite} os=${partitionOs} index=${shard.index} total=${shard.total} files=${selected.files.length}/${suiteFiles.length} estimatedMs=${selected.totalMs}`);
+  return selected.files;
+}
+
+// Stage-0 proof: for every OS, the requested suite's shards (core and
+// expensive separately when suite=all) cover the inventory exactly.
+function verifyPartitionCommand(args = {}, deps = {}) {
+  const allTests = deps.allTests || listAllFullSuiteTests();
+  const weights = deps.weights || loadTestWeights();
+  const partition = deps.partitionFiles || partitionFiles;
+  const shardTotal = args.shardTotal ?? 1;
+  const suite = args.suite ?? 'all';
+  const inventory = selectSuite(allTests, suite);
+  const suites = suite === 'all' ? ['core', 'expensive'] : [suite];
+  let ok = true;
+  for (const partitionOs of PARTITION_OSES) {
+    const shards = suites.flatMap((name) => partition({
+      files: selectSuite(allTests, name),
+      os: partitionOs,
+      shardTotal,
+      weights,
+    }));
+    const result = verifyPartition(inventory, shards);
+    const heaviestMs = Math.max(0, ...shards.map((shard) => shard.totalMs || 0));
+    const violation = result.ok ? '' : ` ${describePartitionViolation(result)}`;
+    console.log(`Partition ${partitionOs}: suite=${suite} shards=${shards.length} files=${inventory.length} heaviestMs=${heaviestMs} status=${result.ok ? 'OK' : 'FAIL'}${violation}`);
+    ok = ok && result.ok;
   }
+  console.log(`Partition verification: ${ok ? 'PASS' : 'FAIL'}`);
+  return ok ? 0 : 1;
 }
 
 function buildShardSpecs(allTests, shardTotal, durationMap = new Map()) {
@@ -1066,7 +1133,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
   });
 
   try {
-    const allTests = deps.allTests || listAllFullSuiteTests();
+    const allTests = resolveRunFiles(deps.allTests || listAllFullSuiteTests(), args, deps);
     const requestedResourceBudget = args.shards === null || args.shards === undefined
       ? null
       : parseResourceBudget(args.shards);
@@ -1106,8 +1173,11 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     console.log(`Full suite resource budget: requested=${requestedResourceBudget ?? 'default'} effective=${effectiveResourceBudget}`);
 
     if (shardSpecs.length === 0) {
-      const exitCode = signal ? signalExitCode(signal) : 1;
-      console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+      // A cross-runner slice may legitimately own no files (more shards than
+      // suite files); an empty unsharded inventory is still INCOMPLETE.
+      const emptyCrossRunnerShard = parseCrossRunnerShard(args) !== null;
+      const exitCode = signal ? signalExitCode(signal) : (emptyCrossRunnerShard ? 0 : 1);
+      console.log(`Full suite aggregate: status=${exitCode === 0 ? 'PASS' : 'INCOMPLETE'} tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0`);
       console.log('Full suite exit: ' + exitCode);
       completed = true;
       return exitCode;
@@ -1226,6 +1296,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
 
 async function main(argv = process.argv.slice(2), deps = {}) {
   const args = parseArgs(argv);
+  if (args.verifyPartition) return verifyPartitionCommand(args, deps);
   const status = await runFullSuiteInParallel(args, deps);
   return status;
 }
@@ -1253,12 +1324,15 @@ module.exports = {
   getDefaultShardCount,
   listAllFullSuiteTests,
   loadTestResourceMap,
+  loadTestWeights,
   main,
   parseArgs,
+  resolveRunFiles,
   runLaneSchedule,
   runFullSuiteInParallel,
   spawnShard,
   tokenizeResourceSyntax,
+  verifyPartitionCommand,
   walkAllTests,
   writeDurationProfile,
 };

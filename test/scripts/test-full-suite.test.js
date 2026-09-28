@@ -112,8 +112,12 @@ describe('scripts/test-full-suite.js', () => {
   test('parseArgs reads shard count and label prefix', () => {
     expect(parseArgs(['--shards', '3', '--label-prefix', 'bench', '--timeout', '15000'])).toEqual({
       labelPrefix: 'bench',
+      shardIndex: null,
+      shardTotal: null,
       shards: 3,
+      suite: 'all',
       timeoutMs: 15000,
+      verifyPartition: false,
     });
   });
 
