@@ -55,6 +55,22 @@ describe('decideUpdateBranch — the otherwise-clean-behind gate', () => {
     expect(d.reason).toContain('unresolved-threads');
   });
 
+  test('BEHIND + fresh actionable direct comment blocks the update', () => {
+    const d = decideUpdateBranch(behindPayload({
+      evidence: { unreadable: [], tornRead: false, behind: 2, botComments: ['902'] },
+      blockers: [
+        { type: 'behind', detail: 'behind' },
+        {
+          type: 'direct-comment', commentId: '902', author: 'review-agent[bot]',
+          url: 'https://github.com/o/r/pull/1#issuecomment-902',
+          detail: 'Direct PR comment requires inspection and action',
+        },
+      ],
+    }));
+    expect(d.should).toBe(false);
+    expect(d.reason).toContain('direct-comment');
+  });
+
   test('BEHIND + changes-requested → NO update', () => {
     const d = decideUpdateBranch(behindPayload({
       blockers: [
