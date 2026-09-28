@@ -6,9 +6,9 @@ Issue: 46d25e0a. Base: origin/master 3bc4eb44. Method and evidence rules are at 
 
 | Class | Files | Bytes (unpacked) |
 |---|---:|---:|
-| KEEP-RUNTIME | 437 | 4,602,041 (4494.2 KB) |
-| MOVE-OUT | 116 | 1,005,410 (981.8 KB) |
-| DELETE | 33 | 177,859 (173.7 KB) |
+| KEEP-RUNTIME | 452 | 4,724,444 (4613.7 KB) |
+| MOVE-OUT | 107 | 908,103 (886.8 KB) |
+| DELETE | 27 | 152,763 (149.2 KB) |
 | DUPLICATE | 82 | 200,042 (195.4 KB) |
 | **Total** | **668** | **5,985,352** |
 
@@ -20,9 +20,9 @@ KEEP-RUNTIME includes the 57 bundled `node_modules/@forge/*` files (288,949 byte
 | | Tarball | Unpacked | Files |
 |---|---:|---:|---:|
 | origin/master 3bc4eb44 | 1.61 MB | 5.99 MB | 668 |
-| allow-list (this PR) | 1.27 MB | 4.80 MB | 519 |
+| allow-list (this PR) | 1.31 MB | 4.93 MB | 534 |
 
-The new `files` ships exactly KEEP-RUNTIME + DUPLICATE (437 + 82 = 519).
+The new `files` ships exactly KEEP-RUNTIME + DUPLICATE (452 + 82 = 534).
 MOVE-OUT and DELETE paths stay in the repo but no longer ship. Nothing is deleted in this PR.
 
 ## DELETE candidates (PR 2 input)
@@ -36,14 +36,53 @@ MOVE-OUT and DELETE paths stay in the repo but no longer ship. Nothing is delete
 | lib/task-ownership.js | test/task-ownership.test.js |
 | lib/frontmatter.js | none |
 | lib/validation-utils.js | none |
-| lib/kernel/planning-buckets-schema.js | test/kernel/planning-buckets-schema.test.js (+ prose in docs/reference/KERNEL_TAXONOMY_VALIDATION.md:117) |
-| lib/issue-sync/{github-pull,import-primitives,legacy-link-bridge,link-store,reconcile,schema}.js | test/issue-sync/{github-pull,import-primitives,legacy-link-bridge,link-store,reconcile,schema}.test.js |
+| lib/issue-sync/legacy-link-bridge.js | test/issue-sync/legacy-link-bridge.test.js |
 | lib/setup.js | test/e2e/setup-workflow.test.js, test/setup-resumability.test.js (+ assertion removed from test/integration/package-distribution.test.js in this PR) |
 | scripts/migrate-to-bun-test.js | none |
 | scripts/run-command-eval.js, scripts/improve-command.js, scripts/lib/{eval-schema,eval-storage,grading}.js | test/eval/{eval-pipeline,improve-command,eval-history,eval-schema,eval-sets,eval-storage,grading}.test.js |
 
-Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table below.
+Total: 27 shipped files, 152,763 bytes. Per-file sizes are in the DELETE table below.
 `scripts/test-weights.json` lists several of these tests and needs regenerating when they go.
+
+## Documented building-block APIs (KEEP-RUNTIME)
+
+Rule: any lib/ or scripts/ path that the consumer-facing docs point at is KEEP-RUNTIME until a PR retires it
+deliberately and removes the doc line in the same change. "Consumer-facing docs" means README.md, QUICKSTART.md,
+AGENTS.md, CODING_STANDARDS.md, docs/*.md, docs/guides, docs/reference, docs/forge, docs/architecture, skills, rules
+and .claude/rules; docs/work planning notes are excluded. `test/package-runtime-allowlist.test.js` scans these docs and
+fails when a referenced path that exists is missing from the pack.
+
+Restored after the first version of this audit (they had been MOVE-OUT or DELETE):
+
+| Path | Doc evidence |
+|---|---|
+| `lib/issue-sync/import-primitives.js` | docs/reference/ADAPTERS.md:38 |
+| `lib/issue-sync/{github-pull,link-store,reconcile,schema}.js` | required by import-primitives.js:3-5, reconcile.js:3 |
+| `lib/kernel/planning-buckets-schema.js` | docs/reference/KERNEL_TAXONOMY_VALIDATION.md:117 |
+| `lib/harness-capability-matrix.js` | docs/reference/AGENT_SKILL_PARITY.md:16, :35 |
+| `scripts/spikes/harness-capability-matrix.js` | docs/reference/AGENT_SKILL_PARITY.md:39, :145 |
+| `scripts/spikes/skill-auto-invoke-parity.js` | docs/reference/AGENT_SKILL_PARITY.md:130 |
+| `scripts/spikes/protected-path-manifest.js` | docs/reference/PROTECTED_PATH_MANIFEST.md:22 |
+| `lib/protected-path-manifest.js` | required by scripts/spikes/protected-path-manifest.js:8 |
+| `.forge/protected-paths.yaml` | default manifest read via __dirname, lib/protected-path-manifest.js:37 |
+| `scripts/protected-state-check.js` | docs/guides/SUPPORT.md:47, docs/reference/protected-state-surfaces.md:3, :24 |
+| `lib/bun-lockfile-proof.js` | required by scripts/protected-state-check.js:14 |
+| `lib/workflow-profiles.js` | docs/guides/WORKFLOW_TEMPLATES.md:55 |
+
+Referenced but not shipped (they point at the Forge repo or a URL, not at the installed package). Each is listed in
+`DOC_REFERENCE_EXCEPTIONS` in the test with its reason:
+
+| Path | Doc line | Why it is not a consumer API |
+|---|---|---|
+| `scripts/install.sh`, `scripts/install.ps1` | README.md:213, :218; docs/reference/INSTALL.md:20, :37 | fetched from raw.githubusercontent.com before the package exists |
+| `scripts/validate.js` | QUICKSTART.md:124, skills/validate/SKILL.md:23, docs/reference/VALIDATION.md:13 | `bun run check` for Forge contributors, in the Forge repo |
+| `scripts/sync-agent-skills.js`, `scripts/gen-command-manifest.js` | CODING_STANDARDS.md:44, :49 | Forge repo change standards |
+| `scripts/check-agents.js` | docs/reference/SKILLS.md:9 | Forge repo test tooling |
+| `scripts/eval_win.py` | skills/*/evals/README.md:3 | skill-author eval format note |
+| `lib/workflow-templates/test.yml` | docs/reference/RELEASE.md:28 | Forge release source, read from projectRoot (lib/test-workflow.js:25) |
+
+Paths named only inside `lib/workflow-templates/test.yml` (the test-* runners and doc-asserting-tests) follow that
+template: repo CI.
 
 ## Unsure (kept, flagged)
 
@@ -98,7 +137,7 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
   (copied all WORKFLOW_RUNTIME_ASSETS, .forge/hooks, .claude/scripts, 25 skills, 6 Cursor rules), `forge team --help`,
   `forge skill coverage`, `forge skill for`. All exit 0.
 
-## KEEP-RUNTIME (437 files, 4,602,041 bytes)
+## KEEP-RUNTIME (452 files, 4,724,444 bytes)
 
 | Path | Bytes | Evidence |
 |---|---:|---|
@@ -106,6 +145,7 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `.claude/scripts/review-resolve.sh` | 20,332 | setup-copied WORKFLOW_RUNTIME_ASSETS lib/commands/setup.js:287 (copy loop :664); invoked by lib/adapters/pr-state-adapter.js:418 |
 | `.forge/hooks/check-tdd.js` | 10,817 | copied into projects: lib/commands/setup.js:2835 (`for (const name of ['check-tdd.js', 'forge-native-hook.js'])`), bin/forge.js:2816; executed by generated lefthook.yml (lib/lefthook-wiring.js FORGE_USER_LEFTHOOK_YML) |
 | `.forge/hooks/forge-native-hook.js` | 18,310 | copied into projects: lib/commands/setup.js:2835 (`for (const name of ['check-tdd.js', 'forge-native-hook.js'])`), bin/forge.js:2816; executed by generated lefthook.yml (lib/lefthook-wiring.js FORGE_USER_LEFTHOOK_YML) |
+| `.forge/protected-paths.yaml` | 4,536 | default manifest of the documented lib/protected-path-manifest.js, read via __dirname at lib/protected-path-manifest.js:37 |
 | `AGENTS.md` | 23,680 | copied into projects: lib/commands/setup.js:1798, :2526, :3618, :3710, :4156 (`path.join(getPackageRoot(packageDir), 'AGENTS.md')`) |
 | `bin/forge-cmd.js` | 14,947 | read as data by `forge skill` coverage lint: lib/skill-eval.js:472 (`path.join(getPackageRoot(), 'bin')`) + :486 extractor for forge-cmd.js |
 | `bin/forge-gh-proxy.js` | 609 | required by bin/forge.js:3663 |
@@ -133,6 +173,7 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `lib/audit-evidence.js` | 6,837 | required by lib/commands/dev.js:14 |
 | `lib/base-remote.js` | 4,403 | required by lib/commands/ship.js:17 |
 | `lib/beads-detect.js` | 2,163 | required by lib/upgrade-safety.js:10 |
+| `lib/bun-lockfile-proof.js` | 16,005 | required by the documented scripts/protected-state-check.js:14 (docs/guides/SUPPORT.md:47) |
 | `lib/bun-workflow-pins.js` | 22,315 | required by lib/commands/release.js:13 |
 | `lib/capped-jsonl-log.js` | 8,143 | required by lib/audit-evidence.js:3 |
 | `lib/codex-skills.js` | 5,451 | required by lib/commands/setup.js:86 |
@@ -243,6 +284,7 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `lib/greptile-match.js` | 1,069 | required by shipped .claude/scripts/review-resolve.sh:379-382 via `$(dirname "$0")/../../lib/greptile-match.js` (package-relative layout) |
 | `lib/grounding/context-events.js` | 9,460 | required by lib/commands/recap.js:7 |
 | `lib/grounding/read-first.js` | 4,420 | required by lib/commands/_issue.js:15 |
+| `lib/harness-capability-matrix.js` | 28,858 | documented API: docs/reference/AGENT_SKILL_PARITY.md:16, :35 ("machine-readable contract in `lib/harness-capability-matrix.js`") |
 | `lib/hook-global-installer.js` | 13,368 | required by lib/commands/hooks.js:29 |
 | `lib/hook-renderer.js` | 33,601 | required by lib/commands/hooks.js:32 |
 | `lib/husky-migration.js` | 16,723 | required by bin/forge.js:105 |
@@ -252,7 +294,12 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `lib/issue-backend.js` | 6,245 | required by lib/commands/plan.js:14 |
 | `lib/issue-render.js` | 9,587 | required by lib/commands/_issue.js:13 |
 | `lib/issue-sync/authority.js` | 2,202 | required by lib/issue-sync/project-github.js:3 |
+| `lib/issue-sync/github-pull.js` | 3,841 | required by the documented lib/issue-sync/import-primitives.js (docs/reference/ADAPTERS.md:38): import-primitives.js:3-5 -> github-pull, reconcile, link-store; reconcile.js:3 -> schema |
+| `lib/issue-sync/import-primitives.js` | 2,466 | documented API: docs/reference/ADAPTERS.md:38 ("GitHub issue import must use the existing `lib/issue-sync/import-primitives.js`") |
+| `lib/issue-sync/link-store.js` | 7,065 | required by the documented lib/issue-sync/import-primitives.js (docs/reference/ADAPTERS.md:38): import-primitives.js:3-5 -> github-pull, reconcile, link-store; reconcile.js:3 -> schema |
 | `lib/issue-sync/project-github.js` | 2,859 | required by lib/forge-issues.js:5 |
+| `lib/issue-sync/reconcile.js` | 5,037 | required by the documented lib/issue-sync/import-primitives.js (docs/reference/ADAPTERS.md:38): import-primitives.js:3-5 -> github-pull, reconcile, link-store; reconcile.js:3 -> schema |
+| `lib/issue-sync/schema.js` | 2,592 | required by the documented lib/issue-sync/import-primitives.js (docs/reference/ADAPTERS.md:38): import-primitives.js:3-5 -> github-pull, reconcile, link-store; reconcile.js:3 -> schema |
 | `lib/kernel/backing-issue.js` | 13,506 | required by lib/commands/push.js:127 |
 | `lib/kernel/broker.js` | 98,371 | required by lib/commands/doctor.js:11 |
 | `lib/kernel/claim-reconciler.js` | 7,270 | required by lib/commands/clean.js:650 |
@@ -268,6 +315,7 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `lib/kernel/live-claim-projection.js` | 932 | required by lib/kernel/broker.js:12 |
 | `lib/kernel/migrations.js` | 19,956 | required by lib/kernel/broker.js:10 |
 | `lib/kernel/owned-kernel.js` | 1,979 | required by lib/commands/pr.js:11 |
+| `lib/kernel/planning-buckets-schema.js` | 4,095 | documented API: docs/reference/KERNEL_TAXONOMY_VALIDATION.md:117 (section "Planning bucket entities — `lib/kernel/planning-buckets-schema.js`") |
 | `lib/kernel/projection-jsonl-writer.js` | 15,697 | required by lib/commands/export.js:10 |
 | `lib/kernel/readiness-model.js` | 19,047 | required by lib/kernel/close-on-merge.js:37 |
 | `lib/kernel/schema.js` | 17,977 | required by lib/kernel/migrations.js:1 |
@@ -321,6 +369,7 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `lib/preflight/runner.js` | 3,883 | required by lib/commands/preflight.js:21 |
 | `lib/project-discovery.js` | 15,613 | required by bin/forge.js:86 |
 | `lib/project-memory.js` | 13,513 | required by lib/commands/hooks.js:37 |
+| `lib/protected-path-manifest.js` | 10,082 | required by the documented scripts/spikes/protected-path-manifest.js:8 (docs/reference/PROTECTED_PATH_MANIFEST.md:22) |
 | `lib/protected-state-authority.js` | 53,297 | required by lib/commands/setup.js:97 |
 | `lib/protected-state-surfaces.js` | 19,888 | required by lib/commands/worktree.js:12 |
 | `lib/release-readiness.js` | 65,561 | required by lib/commands/release.js:8 |
@@ -349,6 +398,7 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `lib/upgrade-safety.js` | 9,575 | required by lib/commands/upgrade.js:7 |
 | `lib/using-forge.js` | 17,167 | required by lib/commands/hooks.js:36 |
 | `lib/validation-receipt.js` | 10,787 | required by lib/commands/push.js:22 |
+| `lib/workflow-profiles.js` | 6,784 | documented source of truth: docs/guides/WORKFLOW_TEMPLATES.md:55 ("Profile docs must be checked against `lib/workflow-profiles.js`") |
 | `lib/workflow/enforce-stage.js` | 19,910 | required by bin/forge.js:80 |
 | `lib/workflow/plan-authority.js` | 8,716 | required by lib/commands/plan.js:19 |
 | `lib/workflow/stage-transition.js` | 4,608 | required by lib/commands/_issue.js:14 |
@@ -453,9 +503,13 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `scripts/pr-coordinator.sh` | 23,297 | setup-copied WORKFLOW_RUNTIME_ASSETS lib/commands/setup.js:267-275 (copy loop :664) |
 | `scripts/preflight-sonar.eslint.config.mjs` | 1,745 | UNSURE: `forge preflight` sonar gate passes it to eslint, lib/preflight/gates.js:167 — but resolves it under projectRoot, not the package root |
 | `scripts/process-tree.js` | 26,516 | required by lib/commands/push.js:20 |
+| `scripts/protected-state-check.js` | 20,652 | documented for consumers to wire into hooks/CI: docs/guides/SUPPORT.md:47, docs/reference/protected-state-surfaces.md:3, :24 |
 | `scripts/smart-status-score.js` | 747 | run by scripts/smart-status.sh:204 (setup-copied runtime script) |
 | `scripts/smart-status-sessions.js` | 1,122 | run by scripts/smart-status.sh:229 (setup-copied runtime script) |
 | `scripts/smart-status.sh` | 30,033 | setup-copied WORKFLOW_RUNTIME_ASSETS lib/commands/setup.js:267-275 (copy loop :664) |
+| `scripts/spikes/harness-capability-matrix.js` | 294 | documented command: docs/reference/AGENT_SKILL_PARITY.md:39, :145 (`node scripts/spikes/harness-capability-matrix.js`) |
+| `scripts/spikes/protected-path-manifest.js` | 704 | documented command: docs/reference/PROTECTED_PATH_MANIFEST.md:22 (`node scripts/spikes/protected-path-manifest.js`) |
+| `scripts/spikes/skill-auto-invoke-parity.js` | 9,392 | documented command: docs/reference/AGENT_SKILL_PARITY.md:130 (`node scripts/spikes/skill-auto-invoke-parity.js --json`) |
 | `scripts/sync-utils.sh` | 16,419 | setup-copied WORKFLOW_RUNTIME_ASSETS lib/commands/setup.js:267-275 (copy loop :664) |
 | `scripts/test.js` | 24,466 | required by lib/commands/push.js:14 |
 | `scripts/validate.sh` | 3,122 | setup-copied WORKFLOW_RUNTIME_ASSETS lib/commands/setup.js:267-275 (copy loop :664) |
@@ -540,13 +594,12 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `skills/worktree/evals/scorecard.json` | 959 | canonical skills tree copied recursively into each harness by lib/skills-sync.js:230-271 (populateAgentSkills, listFilesRecursive); evals/scorecard/coverage JSON read by lib/skill-eval.js:215, :368, :426 |
 | `skills/worktree/SKILL.md` | 5,044 | canonical skills tree copied recursively into each harness by lib/skills-sync.js:230-271 (populateAgentSkills, listFilesRecursive); evals/scorecard/coverage JSON read by lib/skill-eval.js:215, :368, :426 |
 
-## MOVE-OUT (116 files, 1,005,410 bytes)
+## MOVE-OUT (107 files, 908,103 bytes)
 
 | Path | Bytes | Evidence |
 |---|---:|---|
 | `.claude/rules/review-process.md` | 9,108 | not copied by setup (claude.plugin.json has no rules dir, lib/release-readiness.js:19-20); lib/reset.js:26 only removes the project path; skills reference the project-relative path |
 | `.cursor/rules/permissions-guidance.mdc` | 1,452 | no runtime reader; Cursor rules are generated from rules/ by lib/rules-sync.js; only test/release-readiness.test.js:211 fixture |
-| `.forge/protected-paths.yaml` | 4,536 | only reader is lib/protected-path-manifest.js:37, which is unreachable from the CLI; `forge init` renders its own (lib/commands/init.js:312, :393) |
 | `.github/PLUGIN_TEMPLATE.json` | 809 | contributor template referenced from lib/agents/README.md:117 (prose); lib/protected-state-surfaces.js:111 only classifies the repo path |
 | `.mcp.json.example` | 224 | no runtime reader; setup renders MCP config via lib/mcp-config-renderer.js; referenced only by .gitignore:83 and tests |
 | `CHANGELOG.md` | 88,654 | no package read: lib/docs-command.js:93 lists it but validateDocs is called with projectRoot (bin/forge.js:3977); skills/ship/SKILL.md:217 edits the project CHANGELOG |
@@ -601,13 +654,9 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `install.sh` | 1,067 | bootstrapper fetched before the package exists (install.sh:4-5); nothing inside the installed package runs it |
 | `lefthook.yml` | 2,936 | repo dev hooks; setup writes FORGE_USER_LEFTHOOK_YML instead (lib/lefthook-wiring.js:36-50, lib/commands/setup.js:3063-3081) because this file references repo-only scripts |
 | `lib/agents/README.md` | 7,998 | contributor doc; plugin-manager reads only *.plugin.json (lib/plugin-manager.js:239-240) |
-| `lib/bun-lockfile-proof.js` | 16,005 | unreachable from CLI; required by scripts/protected-state-check.js:14 (repo lefthook pre-commit, lefthook.yml:33) |
-| `lib/harness-capability-matrix.js` | 28,858 | unreachable from CLI; required by scripts/spikes/harness-capability-matrix.js:4 and tests; lib/release-readiness.js:1943 scans the repo path |
 | `lib/pr-monitor/auto-actions.js` | 13,410 | CI-only: auto-actions.js is required by scripts/pr-auto-actions.js:24, run by .github/workflows/pr-monitor.yml:318; render-summary.js is required inline by .github/workflows/pr-monitor.yml:225 |
 | `lib/pr-monitor/render-summary.js` | 12,092 | CI-only: auto-actions.js is required by scripts/pr-auto-actions.js:24, run by .github/workflows/pr-monitor.yml:318; render-summary.js is required inline by .github/workflows/pr-monitor.yml:225 |
-| `lib/protected-path-manifest.js` | 10,082 | unreachable from CLI; required by scripts/spikes/protected-path-manifest.js:8 and test/protected-path-manifest.test.js |
 | `lib/validation/risk-manifest.js` | 15,266 | unreachable from CLI; required by scripts/generate-risk-manifest.js:8 (repo tooling) and tests |
-| `lib/workflow-profiles.js` | 6,784 | unreachable from CLI; only a path string scanned in the repo by lib/release-readiness.js:1938 and tests (test/workflow-profiles.test.js) |
 | `lib/workflow-templates/test.yml` | 26,982 | read from projectRoot by `forge release generate-test-workflow` (lib/test-workflow.js:25, :200) — the Forge repo CI source, not a consumer template |
 | `QUICKSTART.md` | 6,814 | no runtime reader; only doc-lane mapping strings in lib/commands/test.js:373 (repo test routing) |
 | `scripts/auto-backing-issue.js` | 1,955 | repo lefthook.yml job (lefthook.yml:11/47/55/20/29/33/79); push.js:207 runs projectRoot/scripts/branch-protection.js, never the package copy |
@@ -645,12 +694,8 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `scripts/pr-auto-actions.js` | 3,439 | repo CI / maintainer tooling (.github/workflows or package.json `check`); any lib mention resolves it under projectRoot (e.g. lib/preflight/gates.js:116, lib/npm-publish-workflow.js:252) |
 | `scripts/pr-verdict-label.js` | 1,727 | repo CI / maintainer tooling (.github/workflows or package.json `check`); any lib mention resolves it under projectRoot (e.g. lib/preflight/gates.js:116, lib/npm-publish-workflow.js:252) |
 | `scripts/preflight.sh` | 2,421 | repo CI / eval tooling (.github/workflows/behavioral-test.md:57; preflight.sh only listed as a scan path in lib/release-readiness.js:98; eval_win.py only named in skills/*/evals/README.md) |
-| `scripts/protected-state-check.js` | 20,652 | repo lefthook.yml job (lefthook.yml:11/47/55/20/29/33/79); push.js:207 runs projectRoot/scripts/branch-protection.js, never the package copy |
 | `scripts/spikes/config-race-bench.js` | 3,431 | spike/evidence scripts; only referenced by tests under test/ and docs/work |
-| `scripts/spikes/harness-capability-matrix.js` | 294 | spike/evidence scripts; only referenced by tests under test/ and docs/work |
 | `scripts/spikes/patch-anchor-stability-bench.js` | 3,585 | spike/evidence scripts; only referenced by tests under test/ and docs/work |
-| `scripts/spikes/protected-path-manifest.js` | 704 | spike/evidence scripts; only referenced by tests under test/ and docs/work |
-| `scripts/spikes/skill-auto-invoke-parity.js` | 9,392 | spike/evidence scripts; only referenced by tests under test/ and docs/work |
 | `scripts/sync-agent-skills.js` | 15,328 | repo lefthook.yml job (lefthook.yml:11/47/55/20/29/33/79); push.js:207 runs projectRoot/scripts/branch-protection.js, never the package copy |
 | `scripts/sync-agentic-workflow.js` | 1,585 | repo CI / maintainer tooling (.github/workflows or package.json `check`); any lib mention resolves it under projectRoot (e.g. lib/preflight/gates.js:116, lib/npm-publish-workflow.js:252) |
 | `scripts/sync-d20-audit.js` | 6,612 | repo lefthook.yml job (lefthook.yml:11/47/55/20/29/33/79); push.js:207 runs projectRoot/scripts/branch-protection.js, never the package copy |
@@ -661,7 +706,7 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `scripts/test-weights.json` | 67,693 | repo test/CI runner tooling (package.json scripts, .github/workflows/test.yml); lib/commands/push.js:49-50 and validate.js:651-652 only use a projectRoot copy when the project itself has it |
 | `scripts/validate.js` | 4,525 | repo CI / maintainer tooling (.github/workflows or package.json `check`); any lib mention resolves it under projectRoot (e.g. lib/preflight/gates.js:116, lib/npm-publish-workflow.js:252) |
 
-## DELETE (33 files, 177,859 bytes)
+## DELETE (27 files, 152,763 bytes)
 
 | Path | Bytes | Evidence |
 |---|---:|---|
@@ -682,13 +727,7 @@ Total: 33 shipped files, 177,859 bytes. Per-file sizes are in the DELETE table b
 | `lib/forge-context.js` | 1,690 | only reference: its own test (test/<name>.test.js); no CLI/CI/hook caller |
 | `lib/freshness-token.js` | 5,097 | only reference: its own test (test/<name>.test.js); no CLI/CI/hook caller |
 | `lib/frontmatter.js` | 2,379 | zero references anywhere (`git grep lib/frontmatter` and basename: 0 hits outside itself) |
-| `lib/issue-sync/github-pull.js` | 3,841 | closed cluster: these 6 require only each other; outside callers are only test/issue-sync/<name>.test.js |
-| `lib/issue-sync/import-primitives.js` | 2,466 | closed cluster: these 6 require only each other; outside callers are only test/issue-sync/<name>.test.js |
-| `lib/issue-sync/legacy-link-bridge.js` | 11,827 | closed cluster: these 6 require only each other; outside callers are only test/issue-sync/<name>.test.js |
-| `lib/issue-sync/link-store.js` | 7,065 | closed cluster: these 6 require only each other; outside callers are only test/issue-sync/<name>.test.js |
-| `lib/issue-sync/reconcile.js` | 5,037 | closed cluster: these 6 require only each other; outside callers are only test/issue-sync/<name>.test.js |
-| `lib/issue-sync/schema.js` | 2,592 | closed cluster: these 6 require only each other; outside callers are only test/issue-sync/<name>.test.js |
-| `lib/kernel/planning-buckets-schema.js` | 4,095 | only reference: test/kernel/planning-buckets-schema.test.js:12 (+ prose in docs/reference/KERNEL_TAXONOMY_VALIDATION.md:117) |
+| `lib/issue-sync/legacy-link-bridge.js` | 11,827 | only reference: test/issue-sync/legacy-link-bridge.test.js:8; not required by the documented import-primitives.js (its siblings are KEEP-RUNTIME) |
 | `lib/setup.js` | 4,765 | no runtime caller (init.js:564 requires ./setup = lib/commands/setup.js); only test/e2e/setup-workflow.test.js, test/setup-resumability.test.js and a package-distribution assertion |
 | `lib/task-ownership.js` | 3,927 | only reference: its own test (test/<name>.test.js); no CLI/CI/hook caller |
 | `lib/validation-utils.js` | 5,413 | zero code references (`git grep validation-utils`: only a historical docs/work note) |

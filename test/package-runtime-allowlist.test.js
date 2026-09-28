@@ -88,7 +88,46 @@ const BY_NAME_RUNTIME = [
   'scripts/smart-status-sessions.js',
   'scripts/preflight-sonar.eslint.config.mjs',
   'scripts/legacy-claim-repair.js',
+  // Default manifest read via __dirname by lib/protected-path-manifest.js:37 (a documented API).
+  '.forge/protected-paths.yaml',
 ];
+
+// Consumer-facing docs: the shipped docs plus the repo docs set that consumers read
+// (docs/work planning notes excluded). Every lib/ or scripts/ path they point at is a
+// documented building-block API and must ship, except the repo-process references below.
+const CONSUMER_DOC_PATHSPECS = [
+  'README.md', 'QUICKSTART.md', 'AGENTS.md', 'CODING_STANDARDS.md',
+  ':(glob)docs/*.md', 'docs/guides', 'docs/reference', 'docs/forge', 'docs/architecture',
+  'skills', 'rules', '.claude/rules',
+];
+
+const DOC_REFERENCE_EXCEPTIONS = {
+  'scripts/install.sh': 'fetched from raw.githubusercontent.com before the package exists (README.md:213)',
+  'scripts/install.ps1': 'fetched from raw.githubusercontent.com before the package exists (README.md:218)',
+  'scripts/validate.js': 'Forge-contributor `bun run check` in the Forge repo (QUICKSTART.md:123-124)',
+  'scripts/sync-agent-skills.js': 'Forge repo change standard (CODING_STANDARDS.md:44)',
+  'scripts/gen-command-manifest.js': 'Forge repo change standard (CODING_STANDARDS.md:49)',
+  'scripts/check-agents.js': 'Forge repo test tooling (docs/reference/SKILLS.md:9)',
+  'scripts/eval_win.py': 'skill-author eval format note (skills/*/evals/README.md:3)',
+  'lib/workflow-templates/test.yml': 'Forge repo release source read from projectRoot (docs/reference/RELEASE.md:28, lib/test-workflow.js:25)',
+};
+
+function documentedCodePaths() {
+  const refs = new Map();
+  const pattern = /(?:\.\.\/)*((?:lib|scripts)\/[\w./-]+\.(?:js|mjs|cjs|sh|json|ya?ml|py|ps1))/g;
+  for (const doc of trackedUnder(...CONSUMER_DOC_PATHSPECS)) {
+    const lines = fs.readFileSync(path.join(ROOT, doc), 'utf8').split('\n');
+    lines.forEach((line, index) => {
+      for (const match of line.matchAll(pattern)) {
+        const target = match[1];
+        // Mentions of files that no longer exist are a docs problem, not a packaging one.
+        if (refs.has(target) || !fs.existsSync(path.join(ROOT, target))) continue;
+        refs.set(target, `${doc}:${index + 1}`);
+      }
+    });
+  }
+  return refs;
+}
 
 // Repo-only paths (dev/CI tooling, tests, repo docs) and dead code that must not ship.
 const MUST_NOT_SHIP = [
@@ -99,15 +138,10 @@ const MUST_NOT_SHIP = [
   'lefthook.yml',
   '.mcp.json.example',
   '.github/PLUGIN_TEMPLATE.json',
-  '.forge/protected-paths.yaml',
   '.claude/rules/review-process.md',
   '.cursor/rules/permissions-guidance.mdc',
   'lib/agents/README.md',
   'lib/workflow-templates/test.yml',
-  'lib/workflow-profiles.js',
-  'lib/harness-capability-matrix.js',
-  'lib/protected-path-manifest.js',
-  'lib/bun-lockfile-proof.js',
   'lib/validation/risk-manifest.js',
   'lib/pr-monitor/auto-actions.js',
   'lib/pr-monitor/render-summary.js',
@@ -130,7 +164,6 @@ const MUST_NOT_SHIP = [
   'scripts/validate.js',
   'scripts/sync-agent-skills.js',
   'scripts/sync-d20-audit.js',
-  'scripts/protected-state-check.js',
   'scripts/gen-command-manifest.js',
   'scripts/gen-embedded-assets.mjs',
   'scripts/parity-check.mjs',
@@ -156,13 +189,28 @@ describe('package runtime allow-list (npm pack --dry-run --json)', () => {
     .filter(name => name.endsWith('.js'))
     .map(name => `lib/commands/${name}`);
   const binEntries = Object.values(require('../package.json').bin);
-  const closure = requireClosure([...new Set(binEntries), ...commandModules, ...BY_NAME_RUNTIME.filter(f => f.endsWith('.js'))]);
+  const documented = documentedCodePaths();
+  const documentedApis = [...documented.keys()].filter(file => !DOC_REFERENCE_EXCEPTIONS[file]);
+  const closure = requireClosure([...new Set(binEntries), ...commandModules, ...BY_NAME_RUNTIME, ...documentedApis]
+    .filter(file => /\.(c|m)?js$/.test(file)));
   const { getWorkflowRuntimeAssets } = require('../lib/commands/setup');
   const copiedAssets = getWorkflowRuntimeAssets();
   const dataTrees = trackedUnder('skills', 'rules', '.forge/hooks', '.claude/scripts', 'lib/agents')
     .filter(file => file !== 'lib/agents/README.md');
 
-  const expectedRuntime = new Set([...closure, ...copiedAssets, ...dataTrees, ...BY_NAME_RUNTIME]);
+  const expectedRuntime = new Set([...closure, ...copiedAssets, ...dataTrees, ...BY_NAME_RUNTIME, ...documentedApis]);
+
+  it('ships every lib/ or scripts/ path the consumer docs point at', () => {
+    const missing = documentedApis
+      .filter(file => !packed.has(file))
+      .map(file => `${file} <- ${documented.get(file)}`);
+    expect(missing).toEqual([]);
+  });
+
+  it('keeps every doc-reference exception a path the docs still name', () => {
+    const stale = Object.keys(DOC_REFERENCE_EXCEPTIONS).filter(file => !documented.has(file));
+    expect(stale).toEqual([]);
+  });
 
   it('ships every file the runtime loads, executes, copies or reads', () => {
     const missing = [...expectedRuntime].filter(file => !packed.has(file)).sort();
@@ -181,10 +229,9 @@ describe('package runtime allow-list (npm pack --dry-run --json)', () => {
     expect(leaked).toEqual([]);
   });
 
-  it('ships no tests, spikes or non-runtime docs', () => {
+  it('ships no tests or non-runtime docs', () => {
     const leaked = [...packed].filter(file =>
       /\.test\.(js|mjs|sh)$/.test(file)
-      || file.startsWith('scripts/spikes/')
       || (file.startsWith('docs/') && !RUNTIME_DOCS.has(file))
     );
     expect(leaked).toEqual([]);

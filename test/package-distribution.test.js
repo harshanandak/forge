@@ -88,10 +88,10 @@ describe('package distribution (npm pack --dry-run)', () => {
   });
 
   describe('.forge/ protected state manifest', () => {
-    // Its only reader (lib/protected-path-manifest.js) is unreachable from the CLI;
-    // forge init renders a project manifest itself (lib/commands/init.js).
-    it('does NOT ship the repo protected-path manifest', () => {
-      expect(packFiles).not.toContain('.forge/protected-paths.yaml');
+    // Default manifest of the documented lib/protected-path-manifest.js API
+    // (docs/reference/PROTECTED_PATH_MANIFEST.md:22).
+    it('includes the canonical protected-path manifest used by the manifest API default', () => {
+      expect(packFiles).toContain('.forge/protected-paths.yaml');
     });
   });
 
