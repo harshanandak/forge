@@ -62,38 +62,29 @@ function materializePartialTree(fixturesDir) {
 // prints nothing. Every create_* step then "succeeds" (FAILED_FIXTURES stays
 // empty) but dirty-git never gets uncommitted changes, so only the end-of-run
 // completeness check can catch it. A native binary, not a bash script, keeps a
-// whole forced rebuild to a few seconds on Windows.
+// whole forced rebuild to a few seconds on Windows. The copy runs in a committed
+// script, so bash is never handed a command string.
+const MAKE_FAKE_GIT = path.join(__dirname, 'make-fake-git.sh');
+
 function createFakeGitDir() {
   const binDir = track(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-fake-git-')));
-  const copyTrue = [
-    'src="$(type -P true)"; ext=""',
-    'case "$src" in *.exe) ext=".exe" ;; *) if [ -e "$src.exe" ]; then src="$src.exe"; ext=".exe"; fi ;; esac',
-    'cp "$src" "$1/git$ext"',
-  ].join('\n');
-  const result = spawnSync(resolveBashCommand(), ['-c', copyTrue, '_', binDir], { encoding: 'utf8' });
+  const result = spawnSync(resolveBashCommand(), [MAKE_FAKE_GIT, binDir], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`could not create fake git: ${result.stderr}`);
   return binDir;
 }
 
 // Git for Windows' bash.exe wrapper puts its own bin dirs first on PATH, so the
-// fake git is prepended inside bash, right before exec'ing the script. The
-// command text is fixed; the fake-git dir and the script arrive as positional
-// arguments, so no path is ever spliced into the shell string.
-const WITH_FAKE_GIT = [
-  'dir="$1"',
-  'shift',
-  'if command -v cygpath > /dev/null 2>&1; then dir="$(cygpath -u "$dir")"; fi',
-  'PATH="$dir:$PATH"',
-  'export PATH',
-  'exec bash "$@"',
-].join('\n');
+// fake git is prepended inside bash, right before exec'ing the script. That
+// happens in a committed wrapper script; the fake-git dir and the script arrive
+// as its arguments, so no command text is ever built at runtime.
+const WITH_FAKE_GIT = path.join(__dirname, 'with-fake-git.sh');
 
 function runSetup(fixturesDir, args, { fakeGit = false, timeoutMs = 20000 } = {}) {
   const env = { ...process.env, FORGE_FIXTURES_DIR: fixturesDir };
   // These runs build fixtures; never let the runner's reader-only flag leak in.
   delete env.FORGE_FIXTURES_PREPARED;
   const bashArgs = fakeGit
-    ? ['-c', WITH_FAKE_GIT, '_', createFakeGitDir(), SETUP_SCRIPT, ...args]
+    ? [WITH_FAKE_GIT, createFakeGitDir(), SETUP_SCRIPT, ...args]
     : [SETUP_SCRIPT, ...args];
   const result = spawnSync(resolveBashCommand(), bashArgs, {
     cwd: __dirname,
