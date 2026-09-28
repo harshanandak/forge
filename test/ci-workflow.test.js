@@ -10,6 +10,20 @@ const bashExecutable = process.platform === 'win32'
   ? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe')
   : 'bash';
 
+// GitHub Actions runs every `shell: bash` step as
+// `bash --noprofile --norc -eo pipefail {0}`: errexit is ON even when the script
+// only says `set -uo pipefail`. Execute step scripts exactly that way.
+function runGithubBashStep(script, options = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-step-'));
+  try {
+    const file = path.join(dir, 'step.sh');
+    fs.writeFileSync(file, script);
+    return spawnSync(bashExecutable, ['--noprofile', '--norc', '-eo', 'pipefail', file.replace(/\\/g, '/')], { encoding: 'utf8', ...options });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 describe('CI Workflow Configuration', () => {
   const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'test.yml');
   const workflowContent = fs.readFileSync(workflowPath, 'utf-8').replace(/\r\n/g, '\n');
@@ -172,8 +186,7 @@ describe('CI Workflow Configuration', () => {
       const aggregateScript = lines.slice(runIndex + 1, scriptEnd)
         .map((line) => line.slice(10))
         .join('\n');
-      const gate = spawnSync(bashExecutable, ['-c', aggregateScript], {
-        encoding: 'utf8',
+      const gate = runGithubBashStep(aggregateScript, {
         env: { ...process.env, RESULTS: 'followup-tests=failure\n' },
       });
 
@@ -352,7 +365,7 @@ describe('CI Workflow Configuration', () => {
     function runGate(results) {
       const script = extractRunScript('ci-gate', 'Aggregate lane results');
       const RESULTS = `${Object.entries(results).map(([lane, value]) => `${lane}=${value}`).join('\n')}\n`;
-      return spawnSync(bashExecutable, ['-c', script], { encoding: 'utf8', env: { ...process.env, RESULTS } });
+      return runGithubBashStep(script, { env: { ...process.env, RESULTS } });
     }
 
     const irrelevantPr = {
@@ -430,7 +443,7 @@ describe('CI Workflow Configuration', () => {
         MACOS_SMOKE: '${{ needs.macos-smoke.result }}',
         TESTS_RELEVANT: '${{ needs.changes.outputs.tests_relevant }}',
       });
-      const run = (env) => spawnSync(bashExecutable, ['-c', script], { encoding: 'utf8', env: { ...process.env, ...env } });
+      const run = (env) => runGithubBashStep(script, { env: { ...process.env, ...env } });
       expect(run({ WINDOWS_SMOKE: 'skipped', MACOS_SMOKE: 'skipped', TESTS_RELEVANT: 'false' }).status).toBe(0);
       expect(run({ WINDOWS_SMOKE: 'success', MACOS_SMOKE: 'success', TESTS_RELEVANT: 'true' }).status).toBe(0);
       expect(run({ WINDOWS_SMOKE: 'skipped', MACOS_SMOKE: 'skipped', TESTS_RELEVANT: '' }).status).toBe(1);
@@ -499,8 +512,7 @@ describe('CI Workflow Configuration', () => {
         const output = path.join(root, 'out.txt');
         fs.writeFileSync(output, '');
         const prelude = `export PATH="$(cygpath -u '${toPosix(binDir)}' 2>/dev/null || printf '%s' '${toPosix(binDir)}'):$PATH"`;
-        const child = spawnSync(bashExecutable, ['-c', `${prelude}\n${classifyScript()}`], {
-          encoding: 'utf8',
+        const child = runGithubBashStep(`${prelude}\n${classifyScript()}`, {
           env: {
             ...process.env,
             EVENT_NAME: 'pull_request',
@@ -523,6 +535,14 @@ describe('CI Workflow Configuration', () => {
       expect(runClassifier([], { gitFails: true }).tests_relevant).toBe('true');
       // A successful diff that lists no paths is not proof of a docs-only PR.
       expect(runClassifier([]).tests_relevant).toBe('true');
+    }, 30_000);
+
+    // Each grep in the classifier returns 1 on an ordinary PR ("no match"), which
+    // errexit would turn into a failed step unless the status is captured safely.
+    test('the classifier handles every grep outcome under GitHub errexit bash', () => {
+      expect(runClassifier(['docs/INDEX.md', 'README.md'])).toEqual({ tests_relevant: 'false', os_sensitive: 'false' });
+      expect(runClassifier(['skills/plan/SKILL.md', 'lib/commands/status.js'])).toEqual({ tests_relevant: 'true', os_sensitive: 'false' });
+      expect(runClassifier(['docs/INDEX.md', 'bin/forge.js'])).toEqual({ tests_relevant: 'true', os_sensitive: 'true' });
     }, 30_000);
 
     // Under `set -o pipefail`, `printf ... | grep -q` fails when grep exits on the
@@ -573,9 +593,8 @@ describe('CI Workflow Configuration', () => {
 
         const output = path.join(repo, '.out');
         fs.writeFileSync(output, '');
-        const child = spawnSync(bashExecutable, ['-c', classifyScript()], {
+        const child = runGithubBashStep(classifyScript(), {
           cwd: repo,
-          encoding: 'utf8',
           env: { ...process.env, EVENT_NAME: 'pull_request', BASE_SHA: base, HEAD_SHA: head, GITHUB_OUTPUT: output },
         });
         expect(child.status).toBe(0);

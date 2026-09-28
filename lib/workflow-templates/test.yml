@@ -86,8 +86,10 @@ jobs:
           # Here-strings avoid a SIGPIPE from an early-exiting grep under pipefail.
           # A grep exit status of 2+ is an error, not "no match", and
           # fails safe to the full matrix.
-          grep -Evq "$docs_only_pattern" <<< "$changed"
-          docs_status=$?
+          # GitHub runs `shell: bash` as `bash -eo pipefail`, so a bare non-zero grep
+          # would abort the step: capture the status errexit-safely.
+          docs_status=0
+          grep -Evq "$docs_only_pattern" <<< "$changed" || docs_status=$?
           if [ "$docs_status" -gt 1 ]; then
             echo "::warning::Docs-only check failed (grep exit $docs_status); failing safe to the full matrix."
             echo "tests_relevant=true" >> "$GITHUB_OUTPUT"
@@ -107,8 +109,8 @@ jobs:
           # helpers, git-hook + installer plumbing, the SQLite kernel (Windows file
           # handle/EBUSY history), and this workflow itself.
           os_sensitive_pattern='^(bin/|packages/|test-env/|plugin/hooks/|lib/core/|lib/kernel/|lib/activation/|lib/preflight/|lib/commands/(worktree|setup|init|install)|lib/(shell-utils|symlink-utils|file-utils|file-hash|package-root|forge-lock|detect-worktree|protected-path-manifest|hook-global-installer|hook-renderer|lefthook-check|lefthook-wiring|husky-migration|setup|setup-utils|reset)\.js$|install\.sh$|scripts/install\.|lefthook\.yml$|bunfig\.toml$|package\.json$|bun\.lock$|\.github/workflows/test\.yml$)'
-          grep -Eq "$os_sensitive_pattern" <<< "$changed"
-          os_status=$?
+          os_status=0
+          grep -Eq "$os_sensitive_pattern" <<< "$changed" || os_status=$?
           if [ "$os_status" -gt 1 ]; then
             echo "::warning::OS-sensitive check failed (grep exit $os_status); failing safe to the full matrix."
             echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
