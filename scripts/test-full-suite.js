@@ -220,7 +220,7 @@ function verifyPartitionCommand(args = {}, deps = {}) {
     const result = verifyPartition(inventory, shards);
     const heaviestMs = Math.max(0, ...shards.map((shard) => shard.totalMs || 0));
     const violation = result.ok ? '' : ` ${describePartitionViolation(result)}`;
-    console.log(`Partition ${partitionOs}: suite=${suite} shards=${shardTotal} files=${inventory.length} heaviestMs=${heaviestMs} status=${result.ok ? 'OK' : 'FAIL'}${violation}`);
+    console.log(`Partition ${partitionOs}: suite=${suite} shards=${shards.length} files=${inventory.length} heaviestMs=${heaviestMs} status=${result.ok ? 'OK' : 'FAIL'}${violation}`);
     ok = ok && result.ok;
   }
   console.log(`Partition verification: ${ok ? 'PASS' : 'FAIL'}`);

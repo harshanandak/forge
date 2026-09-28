@@ -188,7 +188,7 @@ describe('--verify-partition', () => {
     }));
     expect(result).toBe(0);
     for (const osName of ['linux', 'macos', 'windows']) {
-      expect(lines.some((line) => line.startsWith(`Partition ${osName}: suite=all shards=2 files=5`) && line.includes('status=OK'))).toBe(true);
+      expect(lines.some((line) => line.startsWith(`Partition ${osName}: suite=all shards=4 files=5`) && line.includes('status=OK'))).toBe(true);
     }
     expect(lines.at(-1)).toBe('Partition verification: PASS');
   }, TIMEOUT_MS);
