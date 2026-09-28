@@ -30,7 +30,7 @@ function packet() {
       target_head: "a".repeat(40),
       objective: "execute the bounded task",
       authority: { kind: "kernel", issue_revision: 3 },
-      allowed_mutations: ["packages/flow"],
+      allowed_mutations: ["lib/flow"],
       workflow_config_revision: "config-1",
       capability_manifest_digest: "c".repeat(64),
     },
@@ -65,8 +65,8 @@ function successfulResult(overrides = {}) {
     evidenceRefs: [{ artifact_digest: "d".repeat(64) }],
     validation: { status: "PASS" },
     cleanup: { status: "PASS" },
-    mutationsAttempted: ["packages/flow"],
-    mutationsAuthorized: ["packages/flow"],
+    mutationsAttempted: ["lib/flow"],
+    mutationsAuthorized: ["lib/flow"],
     ...overrides,
   };
 }
@@ -266,12 +266,12 @@ describe("WorkPacket executor", () => {
       mutationsAuthorized: ["git.push"],
     }, "UNAUTHORIZED_MUTATION"],
     ["attempt not claimed as authorized", {
-      mutationsAttempted: ["packages/flow"],
+      mutationsAttempted: ["lib/flow"],
       mutationsAuthorized: [],
     }, "INCONSISTENT_AUTHORIZATION"],
     ["authorization claim without an attempt", {
       mutationsAttempted: [],
-      mutationsAuthorized: ["packages/flow"],
+      mutationsAuthorized: ["lib/flow"],
     }, "INCONSISTENT_AUTHORIZATION"],
   ])("fails closed for %s", (_label, override, code) => {
     const executor = createWorkPacketExecutor({ run: () => successfulResult(override) });

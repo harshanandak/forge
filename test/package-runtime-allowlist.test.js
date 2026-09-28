@@ -179,8 +179,17 @@ const MUST_NOT_SHIP = [
 ];
 
 const RUNTIME_DOCS = new Set(BY_NAME_RUNTIME.filter(file => file.startsWith('docs/')));
-// Bundled workspaces are governed by `bundleDependencies`, not `files`.
-const isBundled = file => file.startsWith('node_modules/@forge/') || /^packages\/[^/]+\/node_modules\/@forge\//.test(file);
+
+// lib/contracts/src/baseline.js (verifyContractBaseline) reads the baseline and every
+// artifact it pins (schemas, fixtures, compatibility matrix) through __dirname.
+function contractBaselineData() {
+  const baselinePath = 'lib/contracts/contract-baseline.v1.json';
+  const baseline = JSON.parse(fs.readFileSync(path.join(ROOT, baselinePath), 'utf8'));
+  return [baselinePath, ...baseline.artifacts.map(entry => `lib/contracts/${entry.path}`)];
+}
+
+// Forge's building blocks are lib/ modules of this one package, never nested packages.
+const BLOCK_ENTRIES = ['lib/contracts/index.js', 'lib/flow/index.js', 'lib/memory-core/index.js'];
 
 describe('package runtime allow-list (npm pack --dry-run --json)', () => {
   const pack = readPack();
@@ -195,8 +204,11 @@ describe('package runtime allow-list (npm pack --dry-run --json)', () => {
     .filter(file => /\.(c|m)?js$/.test(file)));
   const { getWorkflowRuntimeAssets } = require('../lib/commands/setup');
   const copiedAssets = getWorkflowRuntimeAssets();
-  const dataTrees = trackedUnder('skills', 'rules', '.forge/hooks', '.claude/scripts', 'lib/agents')
-    .filter(file => file !== 'lib/agents/README.md');
+  const dataTrees = [
+    ...trackedUnder('skills', 'rules', '.forge/hooks', '.claude/scripts', 'lib/agents')
+      .filter(file => file !== 'lib/agents/README.md'),
+    ...contractBaselineData(),
+  ];
 
   const expectedRuntime = new Set([...closure, ...copiedAssets, ...dataTrees, ...BY_NAME_RUNTIME, ...documentedApis]);
 
@@ -219,9 +231,18 @@ describe('package runtime allow-list (npm pack --dry-run --json)', () => {
 
   it('ships nothing the runtime does not need', () => {
     const unexplained = [...packed]
-      .filter(file => !expectedRuntime.has(file) && !isBundled(file))
+      .filter(file => !expectedRuntime.has(file))
       .sort();
     expect(unexplained).toEqual([]);
+  });
+
+  it('ships each building block exactly once, as a lib/ module with no nested packages', () => {
+    for (const entry of BLOCK_ENTRIES) expect(packed.has(entry)).toBe(true);
+    const contractCopies = [...packed].filter(file => file.endsWith('contracts/src/validate.js'));
+    expect(contractCopies).toEqual(['lib/contracts/src/validate.js']);
+    const nested = [...packed].filter(file => file.includes('node_modules/') || file.startsWith('packages/'));
+    expect(nested).toEqual([]);
+    expect(pack.bundled || []).toEqual([]);
   });
 
   it('keeps repo-only tooling, docs and dead code out of the tarball', () => {

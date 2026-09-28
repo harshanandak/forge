@@ -11,64 +11,46 @@ const LOCK_PATH = path.join(ROOT, 'bun.lock');
 const RISK_MANIFEST_PATH = path.join(ROOT, 'validation', 'risk-manifest.v1.json');
 const rootPackage = require('../../package.json');
 
-function workspaceBlock(lock, workspacePath) {
-  const marker = `    "${workspacePath}": {`;
-  const start = lock.indexOf(marker);
-  if (start === -1) throw new Error(`bun.lock is missing workspace ${workspacePath}`);
-  const end = lock.indexOf('\n    },', start);
-  if (end === -1) throw new Error(`bun.lock workspace ${workspacePath} is malformed`);
-  return lock.slice(start, end);
-}
+const BLOCKS = [
+  ['lib/contracts', '@forge/contracts'],
+  ['lib/memory-core', '@forge/memory'],
+  ['lib/flow', '@forge/flow'],
+];
 
-describe('PR2 root package integration', () => {
-  test('resolves all three prerelease packages through the existing workspace contract', () => {
-    expect(rootPackage.version).toBe('0.1.0-beta.8');
-    expect(rootPackage.workspaces).toContain('packages/*');
-
+describe('root package integration of the internal building blocks', () => {
+  test('ships contracts, memory and flow as lib/ modules of the one forge package', () => {
+    expect(rootPackage.files).toContain('lib/');
     const lock = fs.readFileSync(LOCK_PATH, 'utf8');
-    const expected = [
-      ['packages/contracts', '@forge/contracts'],
-      ['packages/memory', '@forge/memory'],
-      ['packages/flow', '@forge/flow'],
-    ];
-    for (const [workspacePath, packageName] of expected) {
-      const block = workspaceBlock(lock, workspacePath);
-      expect(block).toContain(`"name": "${packageName}"`);
-      expect(block).toContain('"version": "0.1.0-beta.6"');
-
-      const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, workspacePath, 'package.json'), 'utf8'));
-      expect(manifest.license).toBe('MIT');
-      expect(manifest.repository).toEqual({
-        type: 'git',
-        url: 'git+https://github.com/harshanandak/forge.git',
-        directory: workspacePath,
-      });
-      expect(manifest.homepage).toBe('https://github.com/harshanandak/forge#readme');
-      expect(manifest.bugs).toEqual({ url: 'https://github.com/harshanandak/forge/issues' });
-      expect(manifest.publishConfig).toEqual({ access: 'public' });
+    for (const [directory, formerName] of BLOCKS) {
+      expect(fs.existsSync(path.join(ROOT, directory, 'index.js'))).toBe(true);
+      // An internal module, not a package: no manifest of its own.
+      expect(fs.existsSync(path.join(ROOT, directory, 'package.json'))).toBe(false);
+      expect(rootPackage.files.filter((entry) => entry.startsWith(`!${directory}`))).toEqual([]);
+      for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+        expect(Object.keys(rootPackage[field] || {})).not.toContain(formerName);
+      }
+      expect(lock).not.toContain(`"${formerName}"`);
     }
-
-    expect(workspaceBlock(lock, 'packages/flow')).toContain(
-      '"@forge/contracts": "0.1.0-beta.6"',
-    );
-    expect(lock).toContain('"@forge/contracts@workspace:packages/contracts"');
+    expect(rootPackage.bundledDependencies).toBeUndefined();
+    expect(rootPackage.bundleDependencies).toBeUndefined();
+    expect(rootPackage.workspaces).toEqual(['packages/skills']);
   });
 
   test.each([
     {
-      path: 'packages/contracts/src/validate.js', owner: 'contracts',
+      path: 'lib/contracts/src/validate.js', owner: 'contracts',
       product: 'memory', lane: 'contract-baseline', route: 'flow-memory-contract',
-      command: 'validation.command.contract-baseline', testPath: 'packages/contracts',
+      command: 'validation.command.contract-baseline', testPath: 'test/contracts',
     },
     {
-      path: 'packages/memory/src/backend-registry.js', owner: 'memory-foundation',
+      path: 'lib/memory-core/src/backend-registry.js', owner: 'memory-foundation',
       product: 'memory', lane: 'memory-package', route: 'memory-contract',
-      command: 'validation.command.memory-package', testPath: 'packages/memory',
+      command: 'validation.command.memory-package', testPath: 'test/memory-core',
     },
     {
-      path: 'packages/flow/index.js', owner: 'workflow-runtime',
+      path: 'lib/flow/index.js', owner: 'workflow-runtime',
       product: 'flow', lane: 'flow-package', route: 'flow-memory-contract',
-      command: 'validation.command.flow-package', testPath: 'packages/flow',
+      command: 'validation.command.flow-package', testPath: 'test/flow',
     },
   ])('$path selects its product lane without repository fallback', (expected) => {
     const manifest = loadRiskManifest(RISK_MANIFEST_PATH);
