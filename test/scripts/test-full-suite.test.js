@@ -146,9 +146,48 @@ describe('scripts/test-full-suite.js', () => {
   });
 
   test('getDefaultShardCount clamps to a conservative local parallelism limit', () => {
-    expect(getDefaultShardCount(1)).toBe(1);
-    expect(getDefaultShardCount(2)).toBe(2);
-    expect(getDefaultShardCount(8)).toBe(4);
+    expect(getDefaultShardCount(1, 'linux')).toBe(1);
+    expect(getDefaultShardCount(2, 'linux')).toBe(2);
+    expect(getDefaultShardCount(8, 'linux')).toBe(4);
+  });
+
+  test('getDefaultShardCount keeps the non-Windows budget at cores minus one', () => {
+    expect(getDefaultShardCount(1, 'linux')).toBe(1);
+    expect(getDefaultShardCount(2, 'linux')).toBe(2);
+    expect(getDefaultShardCount(4, 'linux')).toBe(3);
+    expect(getDefaultShardCount(8, 'linux')).toBe(4);
+  });
+
+  test('getDefaultShardCount sizes the weighted Windows budget from real cores', () => {
+    expect(getDefaultShardCount(1, 'win32')).toBe(1);
+    expect(getDefaultShardCount(2, 'win32')).toBe(2);
+    expect(getDefaultShardCount(4, 'win32')).toBe(4);
+    // Never more than the heavy lane can use: 3 nominal workers x cost 2.
+    expect(getDefaultShardCount(16, 'win32')).toBe(6);
+  });
+
+  test.each([
+    ['win32', 4, 2],
+    ['win32', 2, 1],
+    ['linux', 4, 3],
+  ])('default %s budget on %i cores grants subprocess concurrency %i', (platform, cpuCount, expected) => {
+    const lanes = [
+      { name: 'unit', concurrency: 3, shards: [{ id: 'u0' }] },
+      { name: 'subprocess', concurrency: 3, shards: [{ id: 's0' }] },
+      { name: 'exclusive', concurrency: 1, shards: [{ id: 'e0' }] },
+    ];
+    const workerBudget = getDefaultShardCount(cpuCount, platform);
+    const grants = computeLaneGrants(lanes, { platform, workerBudget });
+    const subprocess = grants.get(lanes[1]);
+    expect(subprocess.granted).toBe(expected);
+    // #547's protection: weighted Windows processes never exceed real cores.
+    expect(subprocess.granted * subprocess.cost).toBeLessThanOrEqual(cpuCount);
+  });
+
+  test('an explicit Windows budget still wins over the core-derived default', () => {
+    const lanes = [{ name: 'subprocess', concurrency: 3, shards: [{ id: 's0' }] }];
+    const grants = computeLaneGrants(lanes, { platform: 'win32', workerBudget: 3 });
+    expect(grants.get(lanes[0]).granted).toBe(1);
   });
 
   test('buildShardSpecs partitions all discovered files across shards', () => {
@@ -978,9 +1017,9 @@ describe('scripts/test-full-suite.js', () => {
     });
 
     expect(status).toBe(0);
-    expect(maxSubprocessActive).toBe(1);
+    expect(maxSubprocessActive).toBe(2);
     expect(lanesOverlapped).toBe(false);
-    expect(maxWeightedCost).toBeLessThanOrEqual(3);
+    expect(maxWeightedCost).toBeLessThanOrEqual(4);
   });
 
   test.each(['subprocess', 'exclusive'])(
@@ -1142,10 +1181,10 @@ describe('scripts/test-full-suite.js', () => {
     }
 
     const subprocessLine = logged.find((line) => line.startsWith('Resource lane subprocess:'));
-    expect(subprocessLine).toContain('concurrency=1');
+    expect(subprocessLine).toContain('concurrency=2');
     expect(subprocessLine).toContain('nominal=3');
     expect(subprocessLine).toContain('cost=2');
-    expect(subprocessLine).toContain('budget=3');
+    expect(subprocessLine).toContain('budget=4');
   });
 
   test('runLaneSchedule propagates deferred-lane failures instead of masking them', async () => {
@@ -1778,6 +1817,7 @@ describe('scripts/test-full-suite.js', () => {
         allTests: [],
         cpuCount: 5,
         durationMap: new Map(),
+        platform: 'linux',
         prepareFixtures: skipFixturePreparation,
         processTree: fakeProcessTree(),
       })).toBe(1);

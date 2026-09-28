@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The default Windows full-suite budget is sized from real cores.** Windows budgets are charged per OS process (subprocess and exclusive workers cost 2), so the default Windows budget is now the machine's core count (`os.availableParallelism()`, capped at 6) instead of cores minus one. A 4-vCPU Windows runner now runs two subprocess workers (4 processes) instead of one; a 2-vCPU runner still runs one, non-Windows defaults are unchanged, and an explicit `--shards N` budget still wins. (issue `42376a6c`)
+
 ## [0.1.0-beta.8] - 2026-09-26
 
 ### Added

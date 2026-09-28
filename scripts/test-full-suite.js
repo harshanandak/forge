@@ -90,8 +90,20 @@ function parseTimeoutMs(value) {
   return timeoutMs;
 }
 
-function getDefaultShardCount(cpuCount = os.cpus().length) {
+function detectCpuCount() {
+  return typeof os.availableParallelism === 'function'
+    ? os.availableParallelism()
+    : os.cpus().length;
+}
+
+// The default budget is denominated in the units laneWorkerCost charges. Off
+// Windows every worker costs one unit, so keep a core free for the runner. On
+// Windows heavy workers are charged per OS process (2 units), so the budget is
+// the real core count: 2 heavy workers on 4 vCPU is 4 processes, never the 6+
+// that #547 measured flaking. Cap at what the heavy lane can use (3 x 2).
+function getDefaultShardCount(cpuCount = detectCpuCount(), platform = process.platform) {
   if (!Number.isInteger(cpuCount) || cpuCount <= 1) return 1;
+  if (platform === 'win32') return Math.min(6, cpuCount);
   return Math.max(2, Math.min(4, cpuCount - 1));
 }
 
@@ -1058,7 +1070,8 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const requestedResourceBudget = args.shards === null || args.shards === undefined
       ? null
       : parseResourceBudget(args.shards);
-    const shardTotal = requestedResourceBudget ?? getDefaultShardCount(deps.cpuCount);
+    const shardTotal = requestedResourceBudget
+      ?? getDefaultShardCount(deps.cpuCount ?? detectCpuCount(), platform);
     const subprocessShardTotal = requestedResourceBudget !== null
       ? shardTotal
       : Math.max(6, shardTotal);
