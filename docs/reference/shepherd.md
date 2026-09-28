@@ -90,7 +90,7 @@ checks, resolved/outdated threads, and satisfied policy are omitted.
 | --- | --- |
 | `state` / `summary` | Decision state + a one-line WHY (leads with the primary blocker). |
 | `mergeable` / `mergeStateStatus` | GitHub's raw merge signals (e.g. `BLOCKED`, `BEHIND`, `DIRTY`, `UNSTABLE`). |
-| `blockers[]` | Ordered `{type, detail}` list — the human-readable WHY. Types: `draft`, `conflict`, `check-failing`, `check-missing`, `check-skipped`, `check-pending`, `behind`, `changes-requested`, `review-required`, `unresolved-threads`, `blocked-unknown`, `unstable`. |
+| `blockers[]` | Ordered `{type, detail}` list — the human-readable WHY. Types: `draft`, `conflict`, `check-failing`, `check-missing`, `check-skipped`, `check-pending`, `behind`, `changes-requested`, `review-required`, `unresolved-threads`, `direct-comment`, `blocked-unknown`, `unstable`. Direct-comment blockers also expose observed `commentId`, `url`, and `author` when available. |
 | `requiredChecks` | Branch-protection required set classified vs what the PR produced: `missing` (never reported), `skipped` (a **required** check that resolved SKIPPED — NOT a pass to branch protection; this is why an all-green PR can stay `BLOCKED`), `pending`, `failing`. Omitted entirely when the required set is all green. |
 | `failures[]` | Per failed check: `name`, `conclusion`, `jobUrl`, the exact failure **excerpt** pulled from the job log, and `alsoFailedOn` (matrix duplicates collapse to one). |
 | `pendingChecks[]` | Names of checks still running. |
@@ -100,6 +100,15 @@ checks, resolved/outdated threads, and satisfied policy are omitted.
 | `reviewDecision` | Present only when actionable (`CHANGES_REQUESTED` / `REVIEW_REQUIRED`); `APPROVED` is omitted. |
 | `draft` | Present only when the PR is a draft. |
 | `truncated` | Flags when `failures`/`reviewThreads` were capped for size. |
+
+Successful package-size reports and test-completion review triggers in Forge's
+known GitHub Actions formats are informational. Unrecognized Actions comments,
+failure reports and unknown bots retain the existing blocking behavior. A direct
+comment blocker identifies the PR comment to inspect and address; it is separate
+from `reviewThreads[]` and cannot be cleared by resolving a review thread.
+Required checks, review decisions, freshness and settle rules still apply.
+The recognized package-size format uses the 10 MB threshold emitted by Forge's
+workflow; customized formats remain actionable until explicitly supported.
 
 `--bundle --json` is the sibling COMPLETE (not-only-actionable) read-only state
 bundle; `--pull` and `--bundle` are mutually exclusive.
