@@ -81,6 +81,70 @@ describe('kernel_pr write path (§5a)', () => {
 		expect(row.head_sha).toBe('sha2');
 	});
 
+	test('competing non-null PR bindings have one winner and fail closed atomically', async () => {
+		const first = makeBroker();
+		const secondDriver = createBuiltinSQLiteDriver({});
+		const second = createLocalBroker({
+			projectRoot: tmpDir,
+			execFileSync: () => path.join(tmpDir, '.git'),
+			databasePath: config.databasePath,
+			driver: secondDriver,
+		});
+		await first.initialize();
+		await second.initialize();
+		const key = { git_common_dir: '/repo-a/.git', repo: 'owner/a', number: 8 };
+
+		try {
+			const attempts = await Promise.allSettled([
+				first.upsertPr({ ...key, head_sha: 'shaA', issue_id: 'ISSUE-A', worktree_id: 'WT-A' }),
+				second.upsertPr({ ...key, head_sha: 'shaB', issue_id: 'ISSUE-B', worktree_id: 'WT-B' }),
+			]);
+			expect(attempts.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+			expect(attempts.filter(result => result.status === 'rejected')).toHaveLength(1);
+			expect(attempts.find(result => result.status === 'rejected').reason.message)
+				.toMatch(/linkage conflict/i);
+
+			const row = await readRow('/repo-a/.git', 'owner/a', 8);
+			expect([
+				['ISSUE-A', 'WT-A', 'shaA'],
+				['ISSUE-B', 'WT-B', 'shaB'],
+			]).toContainEqual([row.issue_id, row.worktree_id, row.head_sha]);
+		} finally {
+			secondDriver.close();
+		}
+	});
+
+	test('a foreign retired binding cannot be reopened or mutated by upsertPr', async () => {
+		const broker = makeBroker();
+		await broker.initialize();
+		const key = { git_common_dir: '/repo-a/.git', repo: 'owner/a', number: 10 };
+		await broker.upsertPr({
+			...key,
+			branch: 'feat/foreign',
+			head_sha: 'shaForeign',
+			issue_id: 'ISSUE-FOREIGN',
+			worktree_id: 'WT-FOREIGN',
+		});
+		await broker.retirePr(key, { state: 'closed', retired_at: '2026-08-24T00:00:00.000Z' });
+
+		await expect(broker.upsertPr({
+			...key,
+			branch: 'feat/local',
+			head_sha: 'shaLocal',
+			issue_id: 'ISSUE-LOCAL',
+			worktree_id: 'WT-LOCAL',
+		})).rejects.toThrow(/linkage conflict/i);
+
+		const row = await readRow('/repo-a/.git', 'owner/a', 10);
+		expect(row).toMatchObject({
+			state: 'closed',
+			branch: 'feat/foreign',
+			head_sha: 'shaForeign',
+			issue_id: 'ISSUE-FOREIGN',
+			worktree_id: 'WT-FOREIGN',
+		});
+	});
+
 	test('upsertPr coalesces journal_ptr: a head-only refresh does not sever the journal link', async () => {
 		// journal_ptr is a soft link — a head change that omits it must NOT null it (Codex #426).
 		const broker = makeBroker();
