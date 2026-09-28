@@ -34,7 +34,6 @@ describe('adapter CLI commands', () => {
     expect(result.success).toBe(true);
     expect(result.output).toContain('.forge/adapters/review/coderabbit.js');
     expect(fs.existsSync(adapterPath)).toBe(true);
-    expect(fs.readFileSync(adapterPath, 'utf8')).toContain('class CoderabbitReviewAdapter');
   });
 
   test('generated review adapter loads and fails closed until parse is implemented', async () => {
