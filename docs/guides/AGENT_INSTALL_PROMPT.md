@@ -103,7 +103,7 @@ bunx forge setup --agents $DETECTED_AGENT
 - Instructions displayed for next steps
 
 **If command fails:**
-- Check Node.js version: `node --version` (need v18+)
+- Check Node.js version: `node --version` (need v24+)
 - Try with bunx: `bunx forge@latest setup --agents $DETECTED_AGENT`
 - Report error to user with instructions to check `https://github.com/your-repo/issues`
 
@@ -239,7 +239,7 @@ If yes → Run the `/status` skill/command
 ### Installation Fails
 
 **Error: "Command not found: npx"**
-- Solution: Install Node.js v18+ from https://nodejs.org/
+- Solution: Install Node.js v24+ from https://nodejs.org/
 
 **Error: "AGENTS.md already exists"**
 - Solution: Offer user options:

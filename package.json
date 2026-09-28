@@ -79,7 +79,7 @@
   "author": "Harsha Nandak",
   "license": "MIT",
   "engines": {
-    "node": ">=22.16.0"
+    "node": ">=24.0.0"
   },
   "repository": {
     "type": "git",

@@ -16,7 +16,7 @@ test('@forge/memory exposes the stable backend registry entrypoint', () => {
 });
 
 test('@forge/memory supports at least the runtime floor required by contracts', () => {
-  expect(manifest.engines.node).toBe('>=22.16.0');
+  expect(manifest.engines.node).toBe('>=24.0.0');
 });
 
 test('@forge/memory validates usage evidence before delegating to a driver', () => {
