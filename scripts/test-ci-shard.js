@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
+const { assignLongestProcessingTime, normalizePath } = require('./lib/ci-shard-partition');
+
 const rootDir = path.join(__dirname, '..');
 const reportDir = path.join(rootDir, 'test-results');
 const PROFILE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -77,10 +79,6 @@ function ensureFilesExist(files) {
   return files.filter((file) => fs.existsSync(path.join(rootDir, file)));
 }
 
-function normalizePath(file) {
-  return (file || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '');
-}
-
 function selectModuloShard(files, shardIndex, shardTotal) {
   if (!Number.isInteger(shardIndex) || !Number.isInteger(shardTotal) || shardTotal < 1) {
     throw new Error(`Invalid shard args: index=${shardIndex} total=${shardTotal}`);
@@ -130,29 +128,13 @@ function selectRuntimeBalancedShard(files, shardIndex, shardTotal, durationMap) 
     throw new Error(`Invalid shard args: index=${shardIndex} total=${shardTotal}`);
   }
 
-  const shards = Array.from({ length: shardTotal }, (_, index) => ({
-    files: [],
-    index,
-    totalDurationMs: 0,
+  const entries = files.map((file) => ({
+    file,
+    key: file,
+    weightMs: durationMap.get(normalizePath(file)) || 0,
   }));
-  const weightedFiles = files
-    .map((file) => ({
-      durationMs: durationMap.get(normalizePath(file)) || 0,
-      file,
-    }))
-    .sort((left, right) => right.durationMs - left.durationMs || left.file.localeCompare(right.file));
-
-  for (const entry of weightedFiles) {
-    const targetShard = shards
-      .slice()
-      .sort((left, right) => left.totalDurationMs - right.totalDurationMs
-        || left.files.length - right.files.length
-        || left.index - right.index)[0];
-    targetShard.files.push(entry.file);
-    targetShard.totalDurationMs += entry.durationMs;
-  }
-
-  return shards[shardIndex].files.sort((left, right) => left.localeCompare(right));
+  const localeOrder = (left, right) => left.localeCompare(right);
+  return assignLongestProcessingTime(entries, shardTotal, localeOrder)[shardIndex].files;
 }
 
 function selectShard(files, shardIndex, shardTotal, durationMap = new Map()) {
