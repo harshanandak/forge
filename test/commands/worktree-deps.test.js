@@ -538,6 +538,8 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       const srcModules = path.join(f.projectRoot, 'node_modules');
       const destModules = path.join(f.worktreePath, 'node_modules');
       const staleModules = path.join(f.tmp, 'stale-node-modules');
+      // Sharing requires identical dependency inputs; give main the target's manifest.
+      fs.copyFileSync(path.join(f.worktreePath, 'package.json'), path.join(f.projectRoot, 'package.json'));
       populate(f.projectRoot);
       fs.mkdirSync(staleModules);
       try {
@@ -1022,4 +1024,164 @@ describe('forge worktree create — detects deps from the target worktree, not t
     expect(install.cmd).toContain('pnpm');
     expect(path.resolve(install.opts.cwd)).toBe(path.resolve(worktreePath));
   });
+});
+
+// Regression (PR #582 round 8): the main checkout's node_modules may be shared
+// only when the target's dependency inputs (lockfile bytes + package.json
+// dependency sections) match main's exactly. A branch that locks a different
+// version under the same package name must get a target-local install.
+describe('forge worktree create — shares main deps only when dependency inputs match', () => {
+  const { setupWorktreeDeps } = mod._internal;
+  const LINK_ERRORS = new Set(['EPERM', 'EACCES', 'ENOSYS', 'UV_EPERM']);
+
+  function writeRoot(root, version, lock) {
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'app', dependencies: { 'left-pad': version } }));
+    fs.writeFileSync(path.join(root, 'bun.lock'), lock);
+  }
+
+  function installPackage(root, version) {
+    const pkgDir = path.join(root, 'node_modules', 'left-pad');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'left-pad', version }));
+  }
+
+  function makeFixture({ targetVersion, targetLock }) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-inputs-'));
+    const projectRoot = path.join(tmp, 'main');
+    const worktreePath = path.join(projectRoot, '.worktrees', 'target');
+    writeRoot(projectRoot, '1.0.0', 'left-pad@1.0.0');
+    installPackage(projectRoot, '1.0.0');
+    writeRoot(worktreePath, targetVersion, targetLock);
+    const symlinkCalls = [];
+    const spawnCalls = [];
+    const fsApi = {
+      ...fs,
+      // Emulate a link without needing link privilege: copy the shared tree.
+      symlinkSync: (target, dest, type) => {
+        symlinkCalls.push({ target, dest, type });
+        fs.cpSync(target, dest, { recursive: true });
+      },
+      unlinkSync: dest => fs.rmSync(dest, { recursive: true }),
+    };
+    const spawnFn = (cmd, args, opts) => {
+      spawnCalls.push({ cmd, args, opts });
+      installPackage(worktreePath, targetVersion);
+      return { status: 0 };
+    };
+    return { tmp, projectRoot, worktreePath, fsApi, spawnFn, symlinkCalls, spawnCalls };
+  }
+
+  function mainVersion(f) {
+    return JSON.parse(fs.readFileSync(path.join(f.projectRoot, 'node_modules', 'left-pad', 'package.json'), 'utf8')).version;
+  }
+
+  function linkToMain(f) {
+    const srcModules = path.join(f.projectRoot, 'node_modules');
+    const destModules = path.join(f.worktreePath, 'node_modules');
+    try {
+      fs.symlinkSync(srcModules, destModules, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (LINK_ERRORS.has(error.code)) return null;
+      throw error;
+    }
+    return { srcModules, destModules };
+  }
+
+  test('main locks v1, target locks v2 under the same name: target-local install, no shared link', () => {
+    const f = makeFixture({ targetVersion: '2.0.0', targetLock: 'left-pad@2.0.0' });
+    try {
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, { spawnFn: f.spawnFn, fsApi: f.fsApi, platform: 'linux' });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(f.symlinkCalls).toHaveLength(0);
+      expect(f.spawnCalls.map(({ args }) => args)).toEqual([['install']]);
+      expect(path.resolve(f.spawnCalls[0].opts.cwd)).toBe(path.resolve(f.worktreePath));
+      expect(mainVersion(f)).toBe('1.0.0');
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  test('same lockfile but a different dependency section: target-local install', () => {
+    const f = makeFixture({ targetVersion: '2.0.0', targetLock: 'left-pad@1.0.0' });
+    try {
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, { spawnFn: f.spawnFn, fsApi: f.fsApi, platform: 'linux' });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(f.symlinkCalls).toHaveLength(0);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  test('identical dependency inputs: shares main\'s install through the link', () => {
+    const f = makeFixture({ targetVersion: '1.0.0', targetLock: 'left-pad@1.0.0' });
+    try {
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, { spawnFn: f.spawnFn, fsApi: f.fsApi, platform: 'linux' });
+
+      expect(result).toEqual({ linked: true, installed: false, healed: false });
+      expect(f.symlinkCalls).toHaveLength(1);
+      expect(f.spawnCalls).toHaveLength(0);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  test('unreadable lockfile: compatibility cannot be established, so install locally', () => {
+    const f = makeFixture({ targetVersion: '1.0.0', targetLock: 'left-pad@1.0.0' });
+    try {
+      const targetLock = path.resolve(f.worktreePath, 'bun.lock');
+      f.fsApi.readFileSync = (p, ...rest) => {
+        if (path.resolve(String(p)) === targetLock) {
+          const error = new Error('permission denied');
+          error.code = 'EACCES';
+          throw error;
+        }
+        return fs.readFileSync(p, ...rest);
+      };
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, { spawnFn: f.spawnFn, fsApi: f.fsApi, platform: 'linux' });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(f.symlinkCalls).toHaveLength(0);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  test('existing link to main with mismatched inputs: detaches the link, installs locally, leaves main untouched', () => {
+    const f = makeFixture({ targetVersion: '2.0.0', targetLock: 'left-pad@2.0.0' });
+    try {
+      const link = linkToMain(f);
+      if (!link) return;
+      let linkDetachedBeforeInstall = false;
+      const spawnFn = (cmd, args, opts) => {
+        linkDetachedBeforeInstall = !fs.existsSync(link.destModules);
+        return f.spawnFn(cmd, args, opts);
+      };
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, { spawnFn, fsApi: fs, platform: process.platform });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(linkDetachedBeforeInstall).toBe(true);
+      expect(fs.lstatSync(link.destModules).isSymbolicLink()).toBe(false);
+      expect(mainVersion(f)).toBe('1.0.0');
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  test('existing link to main with identical inputs: keeps the shared link', () => {
+    const f = makeFixture({ targetVersion: '1.0.0', targetLock: 'left-pad@1.0.0' });
+    try {
+      const link = linkToMain(f);
+      if (!link) return;
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, { spawnFn: f.spawnFn, fsApi: fs, platform: process.platform });
+
+      expect(result).toEqual({ linked: false, installed: false, healed: false });
+      expect(f.spawnCalls).toHaveLength(0);
+      expect(fs.realpathSync(link.destModules)).toBe(fs.realpathSync(link.srcModules));
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  }, 20000);
 });
