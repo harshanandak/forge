@@ -474,4 +474,68 @@ describe('claim renewal after lease expiry (55a6d3e6)', () => {
       expect(await countRows()).toEqual(before);
     });
   });
+
+  // PR #589 round 7.
+  describe('shared driver and pinned event ids (PR #589 round 7)', () => {
+    test('two interleaved claims on ONE driver serialize instead of nesting BEGIN', async () => {
+      await createIssue('shared-1');
+      const first = await claim('shared-1', 'alice', 'sess-A', t0);
+      expect(first.ok).toBe(true);
+
+      // Gate A inside its transaction (at the in-transaction lease read), then start B
+      // on the same broker/driver while A's transaction is still open.
+      const realLoad = driver.loadActiveKernelClaim.bind(driver);
+      let releaseGate;
+      const gate = new Promise(resolve => { releaseGate = resolve; });
+      let signalEntered;
+      const entered = new Promise(resolve => { signalEntered = resolve; });
+      let gated = false;
+      driver.loadActiveKernelClaim = async (...callArgs) => {
+        if (!gated) {
+          gated = true;
+          signalEntered();
+          await gate;
+        }
+        return realLoad(...callArgs);
+      };
+      try {
+        const a = claim('shared-1', 'alice', 'sess-A', tLive);
+        await entered;
+        const b = claim('shared-1', 'alice', 'sess-A', tLive);
+        // Let B run as far as it can while A holds the transaction.
+        for (let turn = 0; turn < 5; turn += 1) await new Promise(resolve => setImmediate(resolve));
+        releaseGate();
+        const [ra, rb] = await Promise.all([a, b]);
+        expect(ra.ok).toBe(true);
+        expect(rb.ok).toBe(true);
+        expect(ra.data.claim_id).toBe(first.data.claim_id);
+        expect(rb.data.claim_id).toBe(first.data.claim_id);
+      } finally {
+        driver.loadActiveKernelClaim = realLoad;
+      }
+    });
+
+    test('a renewal mints a fresh event id when the caller pinned one', async () => {
+      await createIssue('evid-1');
+      const claimEvent = {
+        id: 'event-pinned-1',
+        entity_type: 'claim',
+        entity_id: 'claim-evid-1',
+        event_type: 'claim.create',
+        idempotency_key: 'caller-evid-1',
+        expected_revision: 0,
+        actor: 'alice',
+        origin: 'cli',
+        session_id: 'sess-A',
+        lease_ttl_ms: TTL_MS,
+        payload: { issue_id: 'evid-1' },
+      };
+      const first = await broker.runGuardedEvent(claimEvent, { now: t0 });
+      expect(first.decision).toBe('accept');
+      const renewed = await broker.runGuardedEvent(claimEvent, { now: tExpired });
+      expect(renewed.decision).toBe('accept');
+      expect(renewed.event.id).not.toBe('event-pinned-1');
+      expect((await owns('evid-1', 'alice', 'sess-A', tExpired)).data.owned).toBe(true);
+    });
+  });
 });
