@@ -256,7 +256,7 @@
 ## Next Steps
 
 1. **Proceed to /plan** with this research doc as input:
-   - `/plan` Phase 3 creates the feature's Kernel issue, branch and worktree, so don't create them by hand first; that would duplicate them
+   - `/plan` creates the feature's Kernel issue at its Entry HARD-GATE, and Phase 3 creates the branch and worktree if the Entry HARD-GATE hasn't already, so don't create them by hand first; that would duplicate them
    - It writes the plan to `docs/work/YYYY-MM-DD-<slug>/plan.md` and the task list to `docs/work/YYYY-MM-DD-<slug>/tasks.md`
    - Link this research doc from the plan
 
