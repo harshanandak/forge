@@ -1,5 +1,12 @@
 const { describe, test, expect } = require('bun:test');
-const { MIN_NODE_MAJOR, nodeVersionError, parseNodeMajor } = require('../lib/node-requirement');
+const {
+  MIN_NODE_MAJOR,
+  MIN_BUN_VERSION,
+  nodeVersionError,
+  parseNodeMajor,
+  runtimeVersionError,
+  runtimeLabel,
+} = require('../lib/node-requirement');
 const packageJson = require('../package.json');
 
 describe('node-requirement', () => {
@@ -39,5 +46,37 @@ describe('node-requirement', () => {
     }
     expect(parseNodeMajor('v24.0.0-nightly20260101abc')).toBe(24);
     expect(parseNodeMajor('24')).toBe(24);
+  });
+
+  describe('runtimeVersionError', () => {
+    test('under Bun, the emulated Node version is not gated', () => {
+      // Bun 1.2.14 reports process.versions.node === '22.6.0' on any host.
+      expect(runtimeVersionError({ node: '22.6.0', bun: '1.2.14' })).toBeNull();
+      expect(runtimeVersionError({ node: '24.3.0', bun: '1.4.2' })).toBeNull();
+    });
+
+    test('under Bun, the Bun floor applies instead', () => {
+      expect(MIN_BUN_VERSION).toBe('1.2');
+      const error = runtimeVersionError({ node: '22.6.0', bun: '1.1.30' });
+      expect(error).toContain('Bun 1.2+ required (current: 1.1.30)');
+      expect(error).toContain('https://bun.sh');
+      expect(runtimeVersionError({ node: '24.0.0', bun: 'garbage' })).toContain('Bun 1.2+ required');
+    });
+
+    test('under Node, the Node 24 floor applies', () => {
+      expect(runtimeVersionError({ node: '24.0.0' })).toBeNull();
+      expect(runtimeVersionError({ node: '26.1.0' })).toBeNull();
+      expect(runtimeVersionError({ node: '22.16.0' })).toContain('Node.js 24+ required (current: v22.16.0)');
+      expect(runtimeVersionError({})).toContain('Node.js 24+ required');
+    });
+
+    test('defaults to the current process', () => {
+      expect(runtimeVersionError()).toBe(runtimeVersionError(process.versions));
+    });
+
+    test('runtimeLabel names the runtime actually executing', () => {
+      expect(runtimeLabel({ node: '22.6.0', bun: '1.2.14' })).toBe('bun v1.2.14');
+      expect(runtimeLabel({ node: '24.1.0' })).toBe('node v24.1.0');
+    });
   });
 });

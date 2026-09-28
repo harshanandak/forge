@@ -77,7 +77,7 @@ const {
 } = require('../lib/commands/_aliases');
 const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
 const { getPackageRoot } = require('../lib/package-root');
-const { nodeVersionError } = require('../lib/node-requirement');
+const { runtimeVersionError, runtimeLabel } = require('../lib/node-requirement');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 const { normalizeStageId } = require('../lib/workflow/stages');
 const { firstPositionalIndex } = require('../lib/global-flags');
@@ -380,12 +380,12 @@ function checkPrerequisites() {
     errors.push('gh (GitHub CLI) - Install from https://cli.github.com');
   }
 
-  // Check Node.js version
-  const nodeError = nodeVersionError(process.version);
-  if (nodeError) {
-    errors.push(nodeError);
+  // Check the executing runtime (Node >= 24, or Bun >= 1.2 under Bun)
+  const runtimeError = runtimeVersionError();
+  if (runtimeError) {
+    errors.push(runtimeError);
   } else {
-    console.log(`  ✓ node ${process.version}`);
+    console.log(`  ✓ ${runtimeLabel()}`);
   }
 
   // Detect package manager
