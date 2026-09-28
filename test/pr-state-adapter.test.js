@@ -705,14 +705,14 @@ describe('PrStateAdapter — bundle gather fields', () => {
     expect(vercel.detailsUrl).toBe('https://vercel.com/x'); // targetUrl → detailsUrl
   });
 
-  test('readIssueComments returns id/author/authorTypename/body/createdAt from paginated GraphQL', async () => {
+  test('readIssueComments returns compatible ids and the comment URL from paginated GraphQL', async () => {
     const page = JSON.stringify({
       data: { repository: { pullRequest: { comments: {
         pageInfo: { hasNextPage: false, endCursor: null },
         nodes: [
           // With fullDatabaseId → the stable REST id is used as the monitor key.
-          { fullDatabaseId: '999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' },
-          { fullDatabaseId: '1000', author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z', updatedAt: '2026-07-12T11:00:00Z' },
+          { fullDatabaseId: '999', url: 'https://github.com/o/r/pull/7#issuecomment-999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' },
+          { fullDatabaseId: '1000', url: 'https://github.com/o/r/pull/7#issuecomment-1000', author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z', updatedAt: '2026-07-12T11:00:00Z' },
         ],
       } } } },
     });
@@ -721,10 +721,15 @@ describe('PrStateAdapter — bundle gather fields', () => {
     const comments = await adapter.readIssueComments({ owner: 'o', repo: 'r', pr: '7' });
     expect(comments).toHaveLength(2);
     // The actor TYPE is surfaced so a bot direct-comment is detectable by mechanism.
-    expect(comments[0]).toEqual({ id: '999', author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' });
+    expect(comments[0]).toEqual({
+      id: '999', commentId: '999', url: 'https://github.com/o/r/pull/7#issuecomment-999',
+      author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed',
+      createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z',
+    });
     expect(comments[1].id).toBe('1000');
     expect(comments[1].authorTypename).toBe('User');
     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
+    expect(calls.find((c) => c.args.join(' ').includes('comments(first')).args.join(' ')).toContain('url');
   });
 
   test('readReviews constructs a GraphQL request and keeps the LATEST review per author with commitOid', async () => {
