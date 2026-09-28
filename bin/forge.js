@@ -3721,6 +3721,17 @@ async function main() {
     return;
   }
 
+  // Runtime floor (Node >= 24, or Bun >= 1.2 under Bun), enforced once before
+  // any command dispatches: npm `engines` is advisory unless engine-strict is set.
+  // Exempt: --help and --version (handled above), and the internal git/gh
+  // credential and proxy helpers routed at the top of main().
+  const runtimeError = runtimeVersionError();
+  if (runtimeError) {
+    console.error(`Forge: ${runtimeError}`);
+    process.exitCode = 1;
+    return;
+  }
+
   // Handle --path option: change to target directory
   if (flags.path) {
     const createTargetPath = !(command === 'docs' && ['verify', 'detect'].includes(args[1]));
