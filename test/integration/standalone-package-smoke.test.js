@@ -70,7 +70,7 @@ function resolvePlatformNode() {
     const match = probe.status === 0 && probe.stdout.trim().match(/^v(\d+)\.(\d+)\.(\d+)$/);
     if (!match) continue;
     const version = { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
-    if (version.major > 22 || (version.major === 22 && version.minor >= 16)) {
+    if (version.major >= 24) {
       const locator = process.platform === "win32" ? "where.exe" : "which";
       const located = path.isAbsolute(executable)
         ? executable
@@ -78,7 +78,7 @@ function resolvePlatformNode() {
       return { executable: fs.realpathSync.native(located), version };
     }
   }
-  throw new Error("Node.js >=22.16.0 is required for the standalone package smoke test");
+  throw new Error("Node.js >=24.0.0 is required for the standalone package smoke test");
 }
 
 function resolveNpmInvocation(platformNode) {
@@ -307,8 +307,7 @@ ${setup.stderr}`).toBe(0);
       expect(manifest.publishConfig).toEqual({ access: "public" });
     }
 
-    expect(platformNode.version.major).toBeGreaterThanOrEqual(22);
-    expect(platformNode.version.major > 22 || platformNode.version.minor >= 16).toBe(true);
+    expect(platformNode.version.major).toBeGreaterThanOrEqual(24);
     expect(path.basename(platformNode.executable).toLowerCase()).not.toContain("bun");
 
     const probe = spawnSync(platformNode.executable, ["-e", "require('@forge/contracts'); require('@forge/memory'); require('@forge/flow')"], {

@@ -77,6 +77,7 @@ const {
 } = require('../lib/commands/_aliases');
 const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
 const { getPackageRoot } = require('../lib/package-root');
+const { nodeVersionError } = require('../lib/node-requirement');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 const { normalizeStageId } = require('../lib/workflow/stages');
 const { firstPositionalIndex } = require('../lib/global-flags');
@@ -380,11 +381,11 @@ function checkPrerequisites() {
   }
 
   // Check Node.js version
-  const nodeVersion = Number.parseInt(process.version.slice(1).split('.')[0]);
-  if (nodeVersion >= 20) {
-    console.log(`  ✓ node ${process.version}`);
+  const nodeError = nodeVersionError(process.version);
+  if (nodeError) {
+    errors.push(nodeError);
   } else {
-    errors.push(`Node.js 20+ required (current: ${process.version})`);
+    console.log(`  ✓ node ${process.version}`);
   }
 
   // Detect package manager
