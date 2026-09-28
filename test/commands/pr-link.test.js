@@ -14,6 +14,7 @@ const ROOT = path.resolve('C:/repo/.worktrees/feature');
 const COMMON = path.resolve('C:/repo/.git');
 const BRANCH = 'feat/existing-pr';
 const REPO = 'acme/product';
+const NUL = String.fromCharCode(0);
 
 function buildHarness(overrides = {}) {
   let persisted = overrides.existingPr || null;
@@ -36,6 +37,17 @@ function buildHarness(overrides = {}) {
     if (key === 'git rev-parse HEAD') return `${overrides.localHead || HEAD}\n`;
     if (key === 'git rev-parse --path-format=absolute --git-common-dir') {
       return `${overrides.commonDirOutput || COMMON}\n`;
+    }
+    if (key === 'git worktree list --porcelain -z') {
+      if (overrides.inventoryFailure) throw new Error('git worktree list failed');
+      const live = overrides.liveWorktrees || [
+        { path: path.dirname(COMMON), branch: 'master' },
+        { path: ROOT, branch: BRANCH },
+      ];
+      return live.map(entry => [
+        `worktree ${entry.path.split(path.sep).join('/')}`, `HEAD ${HEAD}`, `branch refs/heads/${entry.branch}`,
+        ...(entry.prunable ? ['prunable gitdir file points to non-existent location'] : []), '',
+      ].join(NUL)).join(NUL);
     }
     if (key === 'gh repo view --json nameWithOwner,isFork,parent') {
       return JSON.stringify({ nameWithOwner: REPO, isFork: false, parent: null });
@@ -337,6 +349,33 @@ describe('forge pr link', () => {
     expect(result.error).toMatch(/ambiguous/i);
     expect(harness.calls().upserts).toBe(0);
   });
+
+  test('ignores stale Kernel worktree rows absent from the live git inventory', async () => {
+    const live = { id: 'WT-1', path: ROOT, git_common_dir: COMMON, branch: BRANCH, issue_id: ISSUE, state: 'active' };
+    const stalePath = path.resolve('C:/repo/.worktrees/removed');
+    const stale = { ...live, id: 'WT-STALE', path: stalePath };
+    const staleSameRoot = { ...live, id: 'WT-OLD-BRANCH', branch: 'feat/old' };
+
+    const harness = buildHarness({ worktrees: [stale, staleSameRoot, live] });
+    const result = await link(harness);
+    expect(result).toMatchObject({ success: true, worktreeId: 'WT-1' });
+
+    const prunable = buildHarness({
+      worktrees: [stale, live],
+      liveWorktrees: [{ path: ROOT, branch: BRANCH }, { path: stalePath, branch: BRANCH, prunable: true }],
+    });
+    expect((await link(prunable)).success).toBe(true);
+
+    const notLive = buildHarness({ worktrees: [live], liveWorktrees: [{ path: stalePath, branch: BRANCH }] });
+    const notLiveResult = await link(notLive);
+    expect(notLiveResult.success).toBe(false);
+    expect(notLive.calls().upserts).toBe(0);
+
+    const unreadable = buildHarness({ inventoryFailure: true });
+    const unreadableResult = await link(unreadable);
+    expect(unreadableResult.success).toBe(false);
+    expect(unreadable.calls().upserts).toBe(0);
+  }, 10_000);
 
   test('refuses a cross-repository PR head', async () => {
     const harness = buildHarness({ headRepository: 'someone/fork', crossRepository: true });
