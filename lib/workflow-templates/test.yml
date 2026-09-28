@@ -117,6 +117,12 @@ jobs:
           bun-version: __BUN_VERSION__
       - name: Install dependencies
         run: bun install
+      - name: Point TEMP/TMP at the runner work drive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "TEMP=${{ runner.temp }}" >> "$GITHUB_ENV"
+          echo "TMP=${{ runner.temp }}" >> "$GITHUB_ENV"
       - name: Ensure test-results directory
         run: |
           node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
@@ -203,6 +209,12 @@ jobs:
           bun-version: __BUN_VERSION__
       - name: Install dependencies
         run: bun install
+      - name: Point TEMP/TMP at the runner work drive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "TEMP=${{ runner.temp }}" >> "$GITHUB_ENV"
+          echo "TMP=${{ runner.temp }}" >> "$GITHUB_ENV"
       - name: Ensure test-results directory
         run: |
           node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
@@ -321,6 +333,12 @@ jobs:
           bun-version: __BUN_VERSION__
       - name: Install dependencies
         run: bun install
+      - name: Point TEMP/TMP at the runner work drive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "TEMP=${{ runner.temp }}" >> "$GITHUB_ENV"
+          echo "TMP=${{ runner.temp }}" >> "$GITHUB_ENV"
       - name: Ensure test-results directory
         run: |
           node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
