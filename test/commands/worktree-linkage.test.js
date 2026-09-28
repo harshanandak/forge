@@ -25,6 +25,7 @@ const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-fa
 const TIMEOUT = 15000;
 const cleanups = [];
 const DIRECTORY_LINK_UNSUPPORTED_ERRORS = new Set(['EPERM', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+const CANONICAL_ISSUE = '619e1cd4-9a5f-47c2-a3b7-1b8a5e6f0c42';
 
 function probeDirectoryLinkSupport() {
   const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-linkage-link-probe-'));
@@ -90,6 +91,15 @@ async function setup() {
   });
 
   return { root, gitCommonDir, driver: deps.kernelDriver };
+}
+
+async function seedIssues(driver, ids) {
+  const createdAt = '2026-08-27T00:00:00.000Z';
+  for (const [index, id] of ids.entries()) {
+    await driver.exec(
+      `INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('${id}', 'Issue ${index}', '${createdAt}', '${createdAt}');`,
+    );
+  }
 }
 
 afterEach(() => {
@@ -192,6 +202,86 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', () 
     expect(rows).toHaveLength(1);
     expect(rows[0].issue_id).toBe('forge-late');
     expect(rows[0].work_folder).toBe(workFolder);
+  }, TIMEOUT);
+
+  test('canonicalizes a uniquely resolved short issue id on worktree reuse', async () => {
+    const { root, gitCommonDir, driver } = await setup();
+    await seedIssues(driver, [CANONICAL_ISSUE]);
+    const worktreePath = path.resolve(root, '.worktrees', 'canonical');
+    const workFolder = 'docs/work/2026-07-04-linked';
+    const markerPath = path.join(root, workFolder, '.forge-issue');
+    const opts = { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver };
+
+    const first = await worktree.handler(
+      ['create', 'canonical', '--branch', 'feat/canonical', '--issue', '619e1cd4', '--work-folder', workFolder],
+      {}, root, opts,
+    );
+    expect(first.success).toBe(true);
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const original = (await driver.queryAll('SELECT * FROM kernel_worktrees'))[0];
+    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('619e1cd4');
+
+    const repaired = await worktree.handler(
+      ['create', 'canonical', '--branch', 'feat/canonical', '--issue', CANONICAL_ISSUE, '--work-folder', workFolder],
+      {}, root, opts,
+    );
+
+    expect(repaired.success).toBe(true);
+    expect(repaired.reused).toBe(true);
+    const rows = await driver.queryAll('SELECT * FROM kernel_worktrees');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(original.id);
+    expect(rows[0].issue_id).toBe(CANONICAL_ISSUE);
+    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe(CANONICAL_ISSUE);
+
+    const shortReuse = await worktree.handler(
+      ['create', 'canonical', '--branch', 'feat/canonical', '--issue', '619e1cd4', '--work-folder', workFolder],
+      {}, root, opts,
+    );
+    expect(shortReuse.success).toBe(true);
+    expect((await driver.queryAll('SELECT issue_id FROM kernel_worktrees'))[0].issue_id).toBe(CANONICAL_ISSUE);
+    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe(CANONICAL_ISSUE);
+  }, TIMEOUT);
+
+  test('refuses ambiguous, different, and unknown short issue ids without rewriting linkage', async () => {
+    const cases = [
+      {
+        slug: 'ambiguous',
+        stored: '619e1cd4',
+        issues: [CANONICAL_ISSUE, '619e1cd4-1111-4111-8111-111111111111'],
+      },
+      {
+        slug: 'different',
+        stored: 'deadbeef',
+        issues: [CANONICAL_ISSUE, 'deadbeef-1111-4111-8111-111111111111'],
+      },
+      { slug: 'unknown', stored: 'cafebabe', issues: [CANONICAL_ISSUE] },
+    ];
+
+    for (const entry of cases) {
+      const { root, gitCommonDir, driver } = await setup();
+      await seedIssues(driver, entry.issues);
+      const worktreePath = path.resolve(root, '.worktrees', entry.slug);
+      const workFolder = `docs/work/${entry.slug}`;
+      const markerPath = path.join(root, workFolder, '.forge-issue');
+      fs.mkdirSync(path.join(root, workFolder), { recursive: true });
+      const opts = { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver };
+      const originalArgs = ['create', entry.slug, '--branch', `feat/${entry.slug}`, '--issue', entry.stored, '--work-folder', workFolder];
+
+      expect((await worktree.handler(originalArgs, {}, root, opts)).success).toBe(true);
+      fs.mkdirSync(worktreePath, { recursive: true });
+      const before = await driver.queryAll('SELECT * FROM kernel_worktrees');
+
+      const result = await worktree.handler(
+        ['create', entry.slug, '--branch', `feat/${entry.slug}`, '--issue', CANONICAL_ISSUE, '--work-folder', workFolder],
+        {}, root, opts,
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/mismatch/i);
+      expect(await driver.queryAll('SELECT * FROM kernel_worktrees')).toEqual(before);
+      expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe(entry.stored);
+    }
   }, TIMEOUT);
 
   test('rejects mismatched issue or work-folder on reuse without rewriting linkage', async () => {
