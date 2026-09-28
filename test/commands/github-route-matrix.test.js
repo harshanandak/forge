@@ -430,7 +430,7 @@ describe('foreground GitHub account route matrix', () => {
   });
 
   test('bridge ships as an executable runtime asset and selects route regressions', () => {
-    expect(require('../../package.json').files).toContain('scripts/');
+    expect(require('../../package.json').files).toContain('scripts/github-context-bridge.sh');
     expect(require('../../lib/package-root').ASSET_ROOTS).toContain('scripts');
     expect(getTestCandidatesForChangedFile(BRIDGE)).toEqual([SUITE]);
   });
