@@ -74,8 +74,8 @@ Historical references that should not be treated as current release instructions
 
 - [Roadmap](reference/ROADMAP.md) - historical roadmap snapshot.
 - [Enhanced onboarding](guides/ENHANCED_ONBOARDING.md) - superseded by [Quickstart](../QUICKSTART.md); still references the old `/premerge` stage and undocumented flags. Historical reference only.
-- [Superpowers analysis](reference/superpowers-analysis.md) - historical analysis.
-- [Superpowers integration options](reference/superpowers-integration-options.md) - historical options.
+- [Superpowers analysis](work/2026-03-02-superpowers-gaps/research/superpowers-analysis.md) - historical analysis.
+- [Superpowers integration options](work/2026-03-02-superpowers-gaps/research/superpowers-integration-options.md) - historical options.
 - `docs/work/2026-04-28-skeleton-pivot/*v3*` files - `v3` is an internal/historical codename, not a public package version.
 
 ## Consumer-Installed Docs
