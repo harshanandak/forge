@@ -25,6 +25,10 @@ const budget = require('../lib/package-budget');
 const ROOT = path.resolve(__dirname, '..');
 const MANIFEST_PATH = path.join(__dirname, 'package-budgets.json');
 const BASELINE_PATH = path.join(__dirname, 'package-size-baseline.json');
+const MANIFEST_SOURCE = 'scripts/package-budgets.json';
+const BASELINE_SOURCE = 'scripts/package-size-baseline.json';
+const PREVIOUS_SOURCE = 'base-branch baseline (--previous)';
+const PREVIOUS_FIX = 'the base branch must carry a valid scripts/package-size-baseline.json; regenerate it there with node scripts/package-size-check.js --write-baseline';
 
 function runPack(cwd = ROOT) {
   const res = spawn.sync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
@@ -38,16 +42,20 @@ function runPack(cwd = ROOT) {
 }
 
 function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+  const text = fs.readFileSync(file, 'utf8');
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${file} is not valid JSON (${error.message})`);
+  }
 }
 
+// A missing --previous file means the base branch has no baseline yet. A file
+// that exists but does not parse fails closed: ignoring it would silently
+// skip the changed-baseline check.
 function readOptionalJson(file) {
   if (!file || !fs.existsSync(file)) return null;
-  try {
-    return readJson(file);
-  } catch {
-    return null;
-  }
+  return readJson(file);
 }
 
 function parseArgs(argv) {
@@ -62,13 +70,18 @@ function parseArgs(argv) {
   return opts;
 }
 
+// The validation boundary: every input is checked here before evaluateBudget
+// sees it, and any malformed value throws (exit 2) instead of passing.
 function check({ packText, manifest, baseline, previousBaseline = null }) {
-  const measured = budget.measureBlocks(budget.parsePackOutput(packText), manifest);
+  const validManifest = budget.validateManifest(manifest, { source: MANIFEST_SOURCE });
+  const measured = budget.measureBlocks(budget.parsePackOutput(packText), validManifest);
   const result = budget.evaluateBudget({
     measured,
-    baseline,
-    previousBaseline,
-    policy: manifest.policy || budget.DEFAULT_POLICY,
+    baseline: budget.validateBaseline(baseline, { source: BASELINE_SOURCE }),
+    previousBaseline: previousBaseline === null
+      ? null
+      : budget.validateBaseline(previousBaseline, { source: PREVIOUS_SOURCE, fix: PREVIOUS_FIX }),
+    policy: validManifest.policy,
   });
   return { measured, result, report: budget.renderReport(result) };
 }
@@ -79,7 +92,8 @@ function main(argv = process.argv.slice(2), env = process.env) {
   const packText = opts.packJson ? fs.readFileSync(opts.packJson, 'utf8') : runPack();
 
   if (opts.writeBaseline) {
-    const measured = budget.measureBlocks(budget.parsePackOutput(packText), manifest);
+    const validManifest = budget.validateManifest(manifest, { source: MANIFEST_SOURCE });
+    const measured = budget.measureBlocks(budget.parsePackOutput(packText), validManifest);
     fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(budget.buildBaseline(measured), null, 2)}\n`);
     console.log(`Wrote ${path.relative(ROOT, BASELINE_PATH)} (unpacked ${budget.formatBytes(measured.total.unpacked)}, ${measured.total.files} files)`);
     return 0;

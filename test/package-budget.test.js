@@ -299,3 +299,120 @@ describe('renderReport', () => {
     expect(md).toMatch(/FAIL/);
   });
 });
+
+describe('input validation boundary fails closed', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { validateBaseline, validateManifest, DEFAULT_POLICY } = require('../lib/package-budget');
+  const { check, main } = require('../scripts/package-size-check');
+
+  const PACK = { size: 300, unpackedSize: 1000, entryCount: 2, files: [
+    { path: 'bin/forge.js', size: 600 },
+    { path: 'lib/kernel/broker.js', size: 400 },
+  ] };
+  const packText = (pack = PACK) => JSON.stringify([pack]);
+  const validBaseline = () => buildBaseline(measureBlocks(parsePackOutput(packText()), MANIFEST));
+  const validManifest = () => ({ ...MANIFEST, policy: structuredClone(POLICY) });
+  const withValue = (object, keyPath, value) => {
+    const copy = structuredClone(object);
+    const keys = keyPath.split('.');
+    const leaf = keys.pop();
+    const parent = keys.reduce((node, key) => node[key], copy);
+    if (value === undefined) delete parent[leaf];
+    else parent[leaf] = value;
+    return copy;
+  };
+  const messageOf = (fn) => {
+    try {
+      fn();
+    } catch (error) {
+      return error.message;
+    }
+    return '(did not throw)';
+  };
+
+  const BAD_METRICS = [
+    ['a string', 'oops', /"oops"/],
+    ['null', null, /null/],
+    ['a missing key', undefined, /missing/],
+    ['a negative value', -1, /-1/],
+    ['NaN', Number.NaN, /NaN/],
+    ['Infinity', Number.POSITIVE_INFINITY, /Infinity/],
+    ['a float', 1.5, /1\.5/],
+  ];
+
+  describe.each(['blocks.cli.bytes', 'blocks.kernel.files', 'total.unpacked', 'total.tarball', 'total.files'])('baseline %s', (keyPath) => {
+    test.each(BAD_METRICS)('%s fails closed, naming the file, key, value and fix', (_label, value, valuePattern) => {
+      const bad = withValue(validBaseline(), keyPath, value);
+      const message = messageOf(() => validateBaseline(bad, { source: 'scripts/package-size-baseline.json' }));
+      expect(message).toContain('scripts/package-size-baseline.json');
+      expect(message).toContain(keyPath);
+      expect(message).toMatch(valuePattern);
+      expect(message).toContain('--write-baseline');
+    });
+  });
+
+  test('a baseline block that is not an object, and a missing total, fail closed', () => {
+    expect(messageOf(() => validateBaseline(withValue(validBaseline(), 'blocks.cli', 'oops'), { source: 'b.json' }))).toMatch(/b\.json.*blocks\.cli/);
+    expect(messageOf(() => validateBaseline(withValue(validBaseline(), 'total', undefined), { source: 'b.json' }))).toMatch(/b\.json.*total/);
+  });
+
+  test.each([
+    ['a nonnumeric file size', withValue(PACK, 'files.0.size', 'oops'), /files\[0\]\.size/],
+    ['a missing file size', withValue(PACK, 'files.1.size', undefined), /files\[1\]\.size/],
+    ['a float file size', withValue(PACK, 'files.0.size', 2.5), /2\.5/],
+    ['a negative tarball size', withValue(PACK, 'size', -3), /size/],
+    ['a nonnumeric unpacked size', withValue(PACK, 'unpackedSize', 'big'), /unpackedSize/],
+    ['a nonnumeric entry count', withValue(PACK, 'entryCount', 'many'), /entryCount/],
+    ['an empty file path', withValue(PACK, 'files.0.path', ''), /files\[0\]\.path/],
+  ])('npm pack output with %s fails closed', (_label, pack, keyPattern) => {
+    const message = messageOf(() => parsePackOutput(packText(pack)));
+    expect(message).toContain('npm pack');
+    expect(message).toMatch(keyPattern);
+  });
+
+  test.each([
+    ['a string tolerance pct', 'policy.growth.pct', '0.02', /policy\.growth\.pct/],
+    ['a negative files pct', 'policy.files.pct', -0.1, /policy\.files\.pct/],
+    ['an Infinity pct', 'policy.growth.pct', Number.POSITIVE_INFINITY, /Infinity/],
+    ['a string minBytes', 'policy.growth.minBytes', '20480', /policy\.growth\.minBytes/],
+    ['a float files min', 'policy.files.min', 0.5, /policy\.files\.min/],
+    ['a missing ceiling', 'policy.hardCeiling.unpackedBytes', undefined, /policy\.hardCeiling\.unpackedBytes/],
+    ['a zero ceiling (would disable it)', 'policy.hardCeiling.unpackedBytes', 0, /policy\.hardCeiling\.unpackedBytes/],
+    ['block paths that are not a list', 'blocks.cli.paths', 'bin/', /blocks\.cli\.paths/],
+    ['an empty block path', 'blocks.kernel.paths', [''], /blocks\.kernel\.paths/],
+  ])('a manifest with %s fails closed', (_label, keyPath, value, keyPattern) => {
+    const message = messageOf(() => validateManifest(withValue(validManifest(), keyPath, value), { source: 'scripts/package-budgets.json' }));
+    expect(message).toContain('scripts/package-budgets.json');
+    expect(message).toMatch(keyPattern);
+  });
+
+  test('valid fixtures pass the boundary unchanged, and a manifest without a policy gets the default', () => {
+    expect(validateBaseline(validBaseline(), { source: 'b.json' })).toEqual(validBaseline());
+    expect(validateManifest(validManifest(), { source: 'm.json' }).policy).toEqual(POLICY);
+    expect(validateManifest({ blocks: MANIFEST.blocks }, { source: 'm.json' }).policy).toEqual(DEFAULT_POLICY);
+    const { result } = check({ packText: packText(), manifest: validManifest(), baseline: validBaseline() });
+    expect(result.ok).toBe(true);
+  });
+
+  test('check() validates every input: a bad baseline, previous baseline or manifest throws instead of passing', () => {
+    const args = { packText: packText(), manifest: validManifest(), baseline: validBaseline() };
+    expect(messageOf(() => check({ ...args, baseline: withValue(validBaseline(), 'blocks.cli.bytes', 'oops') }))).toMatch(/package-size-baseline\.json.*blocks\.cli\.bytes/);
+    expect(messageOf(() => check({ ...args, previousBaseline: withValue(validBaseline(), 'total.unpacked', null) }))).toMatch(/base-branch baseline.*total\.unpacked/);
+    expect(messageOf(() => check({ ...args, manifest: withValue(validManifest(), 'policy.growth.pct', 'x') }))).toMatch(/package-budgets\.json.*policy\.growth\.pct/);
+  });
+
+  test('a --previous file that exists but is not valid JSON fails closed instead of being ignored', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pkg-budget-'));
+    try {
+      const previous = path.join(dir, 'base-baseline.json');
+      const pack = path.join(dir, 'pack.json');
+      fs.writeFileSync(previous, '{ not json');
+      fs.writeFileSync(pack, packText());
+      expect(messageOf(() => main(['--pack-json', pack, '--previous', previous], {}))).toContain('base-baseline.json');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
