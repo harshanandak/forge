@@ -1,12 +1,11 @@
 'use strict';
 
-const { afterEach, describe, expect, mock, test } = require('bun:test');
+const { afterEach, describe, expect, test } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const contracts = require('../../packages/contracts');
-mock.module('@forge/contracts', () => contracts);
+const contracts = require('../../lib/contracts');
 const { computeContentHash } = contracts;
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 const { buildMonitorDurabilityMigration } = require('../../lib/kernel/migrations');
@@ -16,7 +15,7 @@ const {
 	MonitorTerminalError,
 	MonitorUnavailableError,
 	createMonitorStore,
-} = require('../../packages/memory');
+} = require('../../lib/memory-core');
 
 const HASH = 'a'.repeat(64);
 const createdPaths = [];

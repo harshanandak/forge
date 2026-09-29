@@ -13,9 +13,6 @@
         "@commitlint/cli": "^21.0.0",
         "@commitlint/config-conventional": "^21.0.0",
         "@eslint/js": "^10.0.1",
-        "@forge/contracts": "0.1.0-beta.6",
-        "@forge/flow": "0.1.0-beta.6",
-        "@forge/memory": "0.1.0-beta.6",
         "@microsoft/eslint-formatter-sarif": "^3.1.0",
         "@stryker-mutator/core": "^10.0.0",
         "c8": "^12.0.0",
@@ -30,24 +27,6 @@
       "optionalPeers": [
         "lefthook",
       ],
-    },
-    "packages/contracts": {
-      "name": "@forge/contracts",
-      "version": "0.1.0-beta.6",
-    },
-    "packages/flow": {
-      "name": "@forge/flow",
-      "version": "0.1.0-beta.6",
-      "dependencies": {
-        "@forge/contracts": "0.1.0-beta.6",
-      },
-    },
-    "packages/memory": {
-      "name": "@forge/memory",
-      "version": "0.1.0-beta.6",
-      "dependencies": {
-        "@forge/contracts": "0.1.0-beta.6",
-      },
     },
     "packages/skills": {
       "name": "@forge/skills",
@@ -208,12 +187,6 @@
     "@eslint/object-schema": ["@eslint/object-schema@3.0.5", "", {}, "sha512-vqTaUEgxzm+YDSdElad6PiRoX4t8VGDjCtt05zn4nU810UIx/uNEV7/lZJ6KwFThKZOzOxzXy48da+No7HZaMw=="],
 
     "@eslint/plugin-kit": ["@eslint/plugin-kit@0.7.3", "", { "dependencies": { "@eslint/core": "^1.2.1", "levn": "^0.4.1" } }, "sha512-IkO+/KEUvwbVpiURZg+P7zF74z5Jxe0UgJxVni+RtoHQ6IZieXaO02kmadomap/q+l6bc/jdPGGqTjhuZnuz1Q=="],
-
-    "@forge/contracts": ["@forge/contracts@workspace:packages/contracts"],
-
-    "@forge/flow": ["@forge/flow@workspace:packages/flow"],
-
-    "@forge/memory": ["@forge/memory@workspace:packages/memory"],
 
     "@forge/skills": ["@forge/skills@workspace:packages/skills"],
 
