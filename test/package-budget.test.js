@@ -215,6 +215,58 @@ describe('evaluateBudget decision table', () => {
     expect(result.notes.join('\n')).toContain('cli');
   });
 
+  describe('a baseline changed in this PR must match the measured package', () => {
+    const measured = measuredWith();
+    const inflateBlock = () => {
+      const inflated = buildBaseline(measured);
+      inflated.blocks.cli = { bytes: 400 * KB + 100 * KB, files: 20 };
+      return inflated;
+    };
+
+    test('an inflated block baseline fails and points at --write-baseline', () => {
+      const result = evaluateBudget({ measured, baseline: inflateBlock(), previousBaseline: base, policy: POLICY });
+      expect(result.ok).toBe(false);
+      const failures = result.failures.join('\n');
+      expect(failures).toContain('cli');
+      expect(failures).toContain('node scripts/package-size-check.js --write-baseline');
+    });
+
+    test('an inflated total baseline fails and points at --write-baseline', () => {
+      const inflated = buildBaseline(measured);
+      inflated.total = { ...inflated.total, unpacked: inflated.total.unpacked + 200 * KB };
+      const result = evaluateBudget({ measured, baseline: inflated, previousBaseline: base, policy: POLICY });
+      expect(result.ok).toBe(false);
+      const failures = result.failures.join('\n');
+      expect(failures).toContain('unpacked');
+      expect(failures).toContain('node scripts/package-size-check.js --write-baseline');
+    });
+
+    test('a mis-merged baseline that carries a stale larger block fails', () => {
+      // The base branch shrank the kernel block; the PR baseline kept the old larger value.
+      const shrunk = measuredWith({ blocks: { kernel: { bytes: 500 * KB, files: 30 } } });
+      const previous = buildBaseline(shrunk);
+      const misMerged = buildBaseline(shrunk);
+      misMerged.blocks.kernel = { ...base.blocks.kernel };
+      const result = evaluateBudget({ measured: shrunk, baseline: misMerged, previousBaseline: previous, policy: POLICY });
+      expect(result.ok).toBe(false);
+      expect(result.failures.join('\n')).toContain('kernel');
+    });
+
+    test('a changed baseline within tolerance of the measurement passes', () => {
+      const nearly = buildBaseline(measured);
+      nearly.blocks.cli = { bytes: 400 * KB + 5 * KB, files: 20 };
+      const result = evaluateBudget({ measured, baseline: nearly, previousBaseline: base, policy: POLICY });
+      expect(result.ok).toBe(true);
+    });
+
+    test('an unchanged baseline above a shrunk package still only notes the shrink', () => {
+      const shrunk = measuredWith({ blocks: { kernel: { bytes: 500 * KB, files: 30 } } });
+      const result = evaluateBudget({ measured: shrunk, baseline: base, previousBaseline: base, policy: POLICY });
+      expect(result.ok).toBe(true);
+      expect(result.notes.join('\n')).toContain('--write-baseline');
+    });
+  });
+
   test('over the hard ceiling fails even when the baseline was updated', () => {
     const huge = measuredWith({ blocks: { kernel: { bytes: 11 * 1024 * KB, files: 50 } } });
     const result = evaluateBudget({
