@@ -203,6 +203,10 @@ describe('forge release retire-workflow', () => {
 		}
 		const full = createRulesetRequirementsReader(() => JSON.stringify(Array.from({ length: 100 }, () => rules[0])), 'root', { owner: 'o', repo: 'r', base: 'master' });
 		await expect(full()).rejects.toThrow();
+		// A code_scanning rule requires results from an analyzer workflow Forge cannot map to
+		// a file, so any such rule fails closed rather than letting that analyzer be retired.
+		const scanning = createRulesetRequirementsReader(() => JSON.stringify([...rules, { type: 'code_scanning', parameters: { code_scanning_tools: [{ tool: 'CodeQL' }] } }]), 'root', { owner: 'o', repo: 'r', base: 'master' });
+		await expect(scanning()).rejects.toThrow(/code_scanning/);
 	});
 
 	test('refuses a workflow another workflow depends on unless both retire together', () => withFixture(async fixture => {
