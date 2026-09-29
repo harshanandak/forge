@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`forge release retire-workflow` deletes a workflow file through a supported writer.** The pre-commit protected-state hook previously had no Forge-owned authority for deleting `.github/workflows/*`. The new command issues a delete-only Kernel capability bound to the file's exact HEAD bytes, HEAD, actor, and worktree, and records the `--reason`. It refuses when branch protection is unreadable, when the file produces a required status context, or when another workflow depends on it through `workflow_run` or a reusable `uses:` call. (issue `10f4670b`)
+- **`forge release retire-workflow` deletes a workflow file through a supported writer.** The pre-commit protected-state hook previously had no Forge-owned authority for deleting `.github/workflows/*`. The new command issues a delete-only Kernel capability bound to the file's path, exact HEAD bytes, HEAD, actor, and worktree, and records the `--reason`. It refuses when branch protection or repository rulesets are unreadable, when a ruleset `workflows` rule requires the file, when the file produces a required status context from either source, or when another workflow depends on it through `workflow_run` or a reusable `uses:` call. (issue `10f4670b`)
 
 ### Changed
 
