@@ -281,6 +281,34 @@ describe('forge release retire-workflow', () => {
 		expect(afterLostAck.success).toBe(false);
 	}), 30_000);
 
+	test('never restores a file whose completed capability could not be revoked', () => withFixture(async fixture => {
+		const {
+			completeWorkflowRetirementAuthorization,
+			revokeWorkflowRetirementAuthorization,
+		} = require('../lib/protected-state-authority');
+		let calls = 0;
+		const result = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/followup.yml', '.github/workflows/matrix.yml'],
+			completeAuthorization: async (root, params, opts) => {
+				calls += 1;
+				return calls === 1
+					? completeWorkflowRetirementAuthorization(root, params, opts)
+					: { success: false, error: 'injected completion failure' };
+			},
+			revokeAuthorization: async (root, params, opts) => (params.path === '.github/workflows/followup.yml'
+				? { success: false, error: 'kernel unavailable' }
+				: revokeWorkflowRetirementAuthorization(root, params, opts)),
+		}));
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('.github/workflows/followup.yml');
+		// Its completed capability is still live, so the file must not come back as deletable.
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/followup.yml'))).toBe(false);
+		expect(fs.readFileSync(path.join(fixture.root, '.github/workflows/matrix.yml'), 'utf8'))
+			.toBe(WORKFLOWS['.github/workflows/matrix.yml']);
+		const restored = await hook(fixture, [hookRequest(fixture, '.github/workflows/matrix.yml')]);
+		expect(restored.success).toBe(false);
+	}), 30_000);
+
 	test('refuses a head mismatch, a missing reason, and paths outside .github/workflows', () => withFixture(async fixture => {
 		const cases = [
 			{ expectedHead: 'b'.repeat(40), paths: ['.github/workflows/matrix.yml'] },
