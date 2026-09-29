@@ -138,3 +138,258 @@ describe('detectWorktree', () => {
     }
   });
 });
+
+describe('parseWorktreePorcelain (NUL-delimited, git worktree list --porcelain -z)', () => {
+  const { parseWorktreePorcelain } = require('../lib/detect-worktree');
+
+  test('keeps a path with an embedded newline intact and flags a bare record', () => {
+    const main = path.resolve('/repo/app.git');
+    const odd = path.resolve('/repo/.worktrees/odd\nname');
+    const sample = [
+      `worktree ${main}`, 'bare', '',
+      `worktree ${odd}`, 'HEAD 0123456789abcdef0123456789abcdef01234567', 'branch refs/heads/feat/odd', '',
+      '',
+    ].join('\0');
+
+    expect(parseWorktreePorcelain(sample)).toEqual([
+      { path: main, bare: true },
+      { path: odd, bare: false },
+    ]);
+  });
+});
+
+describe('resolveMainWorktree / resolveInvokingWorktreeRoot (PR #582 review)', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { resolveMainWorktree, resolveInvokingWorktreeRoot } = require('../lib/detect-worktree');
+  const toPorcelain = (p) => p.replace(/\\/g, '/');
+
+  test('does not need --path-format (git < 2.31): relative rev-parse output resolves against projectRoot', () => {
+    const root = path.resolve('/fake/app');
+    const calls = [];
+    const runFile = (cmd, args) => {
+      calls.push(args.join(' '));
+      if (args.includes('list')) return [`worktree ${toPorcelain(root)}`, 'HEAD 0123', 'branch refs/heads/main', '', ''].join('\0');
+      const answers = { '--git-dir': '.git', '--git-common-dir': '.git', '--show-toplevel': root };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+
+    const main = resolveMainWorktree(root, runFile);
+
+    expect(main.error).toBeUndefined();
+    expect(main.root).toBe(root);
+    expect(calls.some((c) => c.includes('--path-format'))).toBe(false);
+  });
+
+  test('fails closed (error, no projectRoot guess) when git fails inside a linked worktree', () => {
+    const linked = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-detect-linked-'));
+    try {
+      // A linked worktree's toplevel has a `.git` FILE pointing at the common dir.
+      fs.writeFileSync(path.join(linked, '.git'), 'gitdir: /elsewhere/.git/worktrees/linked\n');
+      const sub = path.join(linked, 'sub');
+      fs.mkdirSync(sub);
+      const failingGit = () => { throw new Error('git exploded'); };
+
+      const main = resolveMainWorktree(sub, failingGit);
+
+      expect(main.error).toContain('main worktree');
+    } finally {
+      fs.rmSync(linked, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the documented projectRoot fallback only for a non-git (or mocked) root', () => {
+    const main = resolveMainWorktree(path.resolve('/fake/not-a-repo'), () => '');
+    expect(main.error).toBeUndefined();
+    expect(main.root).toBe(path.resolve('/fake/not-a-repo'));
+    expect(main.worktrees).toBeNull();
+  });
+
+  test('a repository path containing a newline comes back exact (each path queried alone)', () => {
+    const root = path.resolve('/fake/new\nline-repo');
+    const linked = path.join(root, '.worktrees', 'a');
+    const runFile = (cmd, args) => {
+      if (args.includes('list')) {
+        return [`worktree ${toPorcelain(root)}`, 'HEAD 0123', 'branch refs/heads/main', '',
+          `worktree ${toPorcelain(linked)}`, 'HEAD 0123', 'branch refs/heads/a', '', ''].join('\0');
+      }
+      const answers = {
+        '--git-dir': path.join(root, '.git', 'worktrees', 'a'),
+        '--git-common-dir': path.join(root, '.git'),
+        '--show-toplevel': linked,
+      };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+
+    const main = resolveMainWorktree(linked, runFile);
+    expect(main.error).toBeUndefined();
+    expect(main.root).toBe(root);
+    expect(resolveInvokingWorktreeRoot(linked, runFile, main)).toEqual({ root: linked });
+  });
+
+  test('preserves a path-owned terminal carriage return before git output newline', () => {
+    const root = path.resolve('/fake/main\r');
+    const linked = path.join(root, '.worktrees', 'linked\r');
+    const runFile = (cmd, args) => {
+      if (args.includes('list')) {
+        return [`worktree ${toPorcelain(root)}`, 'HEAD 0123', 'branch refs/heads/main', '',
+          `worktree ${toPorcelain(linked)}`, 'HEAD 0123', 'branch refs/heads/linked', '', ''].join('\0');
+      }
+      const cwd = args[args.indexOf('-C') + 1];
+      const answers = {
+        '--git-dir': '.git',
+        '--git-common-dir': '.git',
+        '--show-toplevel': cwd,
+      };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+
+    const main = resolveMainWorktree(root, runFile);
+    expect(main.root).toBe(root);
+    expect(resolveInvokingWorktreeRoot(linked, runFile, main)).toEqual({ root: linked });
+  });
+
+  test('resolveInvokingWorktreeRoot fails closed when git lists worktrees but show-toplevel fails', () => {
+    const main = { root: path.resolve('/fake/app'), bare: false, worktrees: [{ path: path.resolve('/fake/app'), bare: false }] };
+    const failing = () => { throw new Error('ETIMEDOUT'); };
+    expect(resolveInvokingWorktreeRoot(path.resolve('/fake/app/.worktrees/foo/sub'), failing, main).error)
+      .toContain('invoking checkout');
+  });
+
+  test('resolveInvokingWorktreeRoot returns the checkout toplevel for a subdirectory cwd', () => {
+    const top = path.resolve('/fake/app/.worktrees/foo');
+    const runFile = (cmd, args) => (args.includes('--show-toplevel') ? `${toPorcelain(top)}\n` : '');
+    expect(resolveInvokingWorktreeRoot(path.join(top, 'sub', 'deeper'), runFile)).toEqual({ root: top });
+  });
+});
+
+describe('git discovery ignores inherited repository-location env (PR #582 round 5)', () => {
+  const { resolveMainWorktree, resolveInvokingWorktreeRoot } = require('../lib/detect-worktree');
+  const LOCATION_VARS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY'];
+
+  test('GIT_DIR from a hook pointing at another repo does not redirect resolution', () => {
+    const root = path.resolve('/fake/real-repo');
+    const linked = path.join(root, '.worktrees', 'a');
+    const other = path.resolve('/fake/other-repo');
+    const saved = {};
+    for (const key of LOCATION_VARS) saved[key] = process.env[key];
+    process.env.GIT_DIR = path.join(other, '.git');
+    process.env.GIT_WORK_TREE = other;
+    process.env.GIT_COMMON_DIR = path.join(other, '.git');
+    process.env.GIT_INDEX_FILE = path.join(other, '.git', 'index');
+    process.env.GIT_OBJECT_DIRECTORY = path.join(other, '.git', 'objects');
+    const envs = [];
+    // A git that honors inherited GIT_DIR: answers for the OTHER repo when it is set.
+    const runFile = (cmd, args, opts) => {
+      const env = (opts && opts.env) || process.env;
+      envs.push(env);
+      const redirected = Boolean(env.GIT_DIR);
+      const top = redirected ? other : root;
+      const self = redirected ? other : linked;
+      if (args.includes('list')) {
+        return [`worktree ${top.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/main', '',
+          ...(redirected ? [] : [`worktree ${linked.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/a', '']), ''].join('\0');
+      }
+      const answers = {
+        '--git-dir': redirected ? path.join(other, '.git') : path.join(root, '.git', 'worktrees', 'a'),
+        '--git-common-dir': path.join(top, '.git'),
+        '--show-toplevel': self,
+      };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+
+    try {
+      const main = resolveMainWorktree(linked, runFile);
+      expect(main.error).toBeUndefined();
+      expect(main.root).toBe(root);
+      expect(resolveInvokingWorktreeRoot(linked, runFile, main)).toEqual({ root: linked });
+      expect(envs.length).toBeGreaterThan(0);
+      for (const env of envs) {
+        for (const key of LOCATION_VARS) expect(env[key]).toBeUndefined();
+      }
+    } finally {
+      for (const key of LOCATION_VARS) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
+});
+
+describe('isSameOrAncestor (never remove a checkout containing the invoking one)', () => {
+  const { isSameOrAncestor } = require('../lib/detect-worktree');
+  const base = path.resolve('/fake/repo/.worktrees');
+
+  test('same path', () => {
+    expect(isSameOrAncestor(path.join(base, 'foo'), path.join(base, 'foo'))).toBe(true);
+  });
+
+  test('ancestor: target contains the invoking checkout (legacy nested layout)', () => {
+    expect(isSameOrAncestor(path.join(base, 'A'), path.join(base, 'A', '.worktrees', 'B'))).toBe(true);
+  });
+
+  test('sibling sharing a name prefix is NOT an ancestor (foo vs foobar)', () => {
+    expect(isSameOrAncestor(path.join(base, 'foo'), path.join(base, 'foobar'))).toBe(false);
+    expect(isSameOrAncestor(path.join(base, 'foo'), path.join(base, 'foobar', 'sub'))).toBe(false);
+  });
+
+  test('unrelated paths, and a descendant target, are not protected', () => {
+    expect(isSameOrAncestor(path.resolve('/fake/other'), path.join(base, 'foo'))).toBe(false);
+    expect(isSameOrAncestor(path.join(base, 'foo', 'child'), path.join(base, 'foo'))).toBe(false);
+  });
+
+  test('case differences match on win32 only', () => {
+    const target = path.join(base, 'Foo');
+    const invoking = path.join(base, 'foo', 'sub');
+    expect(isSameOrAncestor(target, invoking, 'win32')).toBe(true);
+    expect(isSameOrAncestor(target, invoking, 'linux')).toBe(false);
+  });
+});
+
+describe('findNestedWorktrees (no registered worktree may sit inside a removal target)', () => {
+  const { findNestedWorktrees } = require('../lib/detect-worktree');
+  const base = path.resolve('/fake/repo/.worktrees');
+
+  test('returns every registered worktree strictly inside the target, excluding the target itself', () => {
+    const a = path.join(base, 'A');
+    const b = path.join(a, '.worktrees', 'B');
+    const deep = path.join(a, 'x', '.worktrees', 'D');
+    const registered = [path.resolve('/fake/repo'), a, b, path.join(base, 'C'), deep];
+    expect(findNestedWorktrees(a, registered)).toEqual([b, deep]);
+  });
+
+  test('segment prefix, not string prefix: sibling AB is not nested in A', () => {
+    const registered = [path.join(base, 'A'), path.join(base, 'AB'), path.join(base, 'AB', 'sub')];
+    expect(findNestedWorktrees(path.join(base, 'A'), registered)).toEqual([]);
+  });
+
+  test('the main worktree and unrelated siblings are never nested in a linked target', () => {
+    const registered = [path.resolve('/fake/repo'), path.join(base, 'C')];
+    expect(findNestedWorktrees(path.join(base, 'A'), registered)).toEqual([]);
+  });
+
+  test('win32: case-insensitive and separator-normalised (git porcelain emits C:/...)', () => {
+    const registered = ['C:/Repo/.worktrees/A', 'c:/repo/.worktrees/a/.worktrees/B', 'C:\\Repo\\.worktrees\\AB'];
+    expect(findNestedWorktrees('C:\\Repo\\.worktrees\\A', registered, 'win32'))
+      .toEqual(['c:/repo/.worktrees/a/.worktrees/B']);
+    expect(findNestedWorktrees('C:\\Repo\\.worktrees\\A\\', registered, 'win32'))
+      .toEqual(['c:/repo/.worktrees/a/.worktrees/B']);
+  });
+
+  test('posix: case differences are distinct paths', () => {
+    const registered = [path.join(base, 'a', '.worktrees', 'B')];
+    expect(findNestedWorktrees(path.join(base, 'A'), registered, 'linux')).toEqual([]);
+  });
+
+  test('empty registered list yields no nested worktrees', () => {
+    expect(findNestedWorktrees(path.join(base, 'A'), [])).toEqual([]);
+  });
+});

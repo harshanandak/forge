@@ -11,6 +11,7 @@
 const path = require('path');
 const fs = require('fs');
 const { execFileSync, spawn } = require('node:child_process');
+const { resolveMainWorktree } = require('../../lib/detect-worktree');
 
 const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120000;
@@ -124,11 +125,15 @@ function getRepoRoot() {
 
 /**
  * Get the .worktrees directory path for eval worktrees.
- * Eval worktrees live under <repo-root>/.worktrees/
+ * Eval worktrees live under the MAIN repository root's .worktrees/ (the parent of
+ * the git common dir), even when run from inside a linked worktree. getRepoRoot()
+ * stays the current checkout root: createEvalWorktree forks from ITS HEAD.
  */
 function getWorktreesDir() {
-  const root = getRepoRoot();
-  return path.join(root, '.worktrees');
+  const main = resolveMainWorktree(getRepoRoot());
+  if (main.bare) throw new Error('bare repo detected: eval worktrees need a non-bare main worktree');
+  if (main.error) throw new Error(main.error);
+  return path.join(main.root, '.worktrees');
 }
 
 // ── createEvalWorktree ───────────────────────────────────────────────

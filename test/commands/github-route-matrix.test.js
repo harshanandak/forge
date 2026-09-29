@@ -284,7 +284,19 @@ describe('foreground GitHub account route matrix', () => {
     const nativeCalls = [];
     const result = await clean.handler([], { dryRun: true }, ROOT, {
       githubContext: bound ? context : unboundContext(),
-      _exec: (cmd, args, options) => { nativeCalls.push(cmd); assertNotSelected(options); return args[0] === 'rev-parse' ? 'origin/main' : ''; },
+      // Answer worktree discovery as a main-only repo at ROOT so the result doesn't
+      // depend on whether the suite itself runs from a linked worktree.
+      _exec: (cmd, args, options) => {
+        nativeCalls.push(cmd); assertNotSelected(options);
+        if (args[0] === 'rev-parse') return 'origin/main';
+        if (args.includes('worktree') && args.includes('list')) {
+          const sep = args.includes('-z') ? '\0' : '\n';
+          return [`worktree ${ROOT.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/main', '', ''].join(sep);
+        }
+        if (args.includes('--git-dir') || args.includes('--git-common-dir')) return path.join(ROOT, '.git');
+        if (args.includes('--show-toplevel')) return ROOT;
+        return '';
+      },
       _fs: { existsSync: () => true, readdirSync: () => [{ name: 'feature', isDirectory: () => true }] },
       _isMerged: () => false,
     });

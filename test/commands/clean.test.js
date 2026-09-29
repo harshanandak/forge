@@ -1118,3 +1118,366 @@ describe('forge clean — close linked issues on merge', () => {
     expect(closed).toBe(0);
   });
 });
+
+// Regression (issue 7910146e): `forge clean` run from INSIDE a linked worktree must
+// scan the MAIN repository root's .worktrees/, not <linked-worktree>/.worktrees/.
+describe('forge clean resolves the main worktree', () => {
+  const os = require('node:os');
+  const realFs = require('node:fs');
+  const { execFileSync } = require('node:child_process');
+  const { afterEach } = require('bun:test');
+  const tempDirs = [];
+
+  function git(cwd, ...args) {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+  }
+
+  function tempDir(prefix) {
+    const dir = realFs.realpathSync.native(realFs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  // Same fixture shape as worktree-base.test.js: init, local identity, one commit.
+  function seedRepo(dir) {
+    realFs.mkdirSync(dir, { recursive: true });
+    git(dir, 'init', '-b', 'main');
+    git(dir, 'config', 'user.email', 'test@example.com');
+    git(dir, 'config', 'user.name', 'Test');
+    realFs.writeFileSync(path.join(dir, 'README.md'), 'seed\n');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-m', 'seed');
+    return dir;
+  }
+
+  function spyFs(readdirPaths) {
+    return {
+      existsSync: (p) => realFs.existsSync(p),
+      readdirSync: (p, _opts) => { readdirPaths.push(path.resolve(p)); return []; },
+    };
+  }
+
+  afterEach(() => {
+    while (tempDirs.length > 0) realFs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+  });
+
+  test('scans the main root .worktrees, not the linked worktree', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = seedRepo(tempDir('forge-clean-root-'));
+    const linkedPath = path.join(mainRoot, '.worktrees', 'linked');
+    git(mainRoot, 'worktree', 'add', linkedPath, '-b', 'feat/linked');
+    // A nested .worktrees under the linked checkout must NOT be what clean scans.
+    realFs.mkdirSync(path.join(linkedPath, '.worktrees'), { recursive: true });
+
+    const readdirPaths = [];
+    await mod.handler([], { '--dry-run': true }, linkedPath, {
+      _fs: spyFs(readdirPaths),
+      _syncMaster: async () => ({ attempted: false }),
+    });
+
+    expect(readdirPaths).toEqual([path.resolve(mainRoot, '.worktrees')]);
+  }, 30000);
+
+  test('bare main worktree: fails clearly and scans nothing', async () => {
+    const mod = require('../../lib/commands/clean');
+    const base = tempDir('forge-clean-bare-');
+    const src = seedRepo(path.join(base, 'src'));
+    const bare = path.join(base, 'app.git');
+    git(base, 'clone', '--bare', src, bare);
+    const linkedPath = path.join(base, 'wt-linked');
+    git(bare, 'worktree', 'add', linkedPath, '-b', 'feat/linked', 'main');
+
+    const readdirPaths = [];
+    const result = await mod.handler([], { '--dry-run': true }, linkedPath, {
+      _fs: spyFs(readdirPaths),
+      _syncMaster: async () => ({ attempted: false }),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('bare repo detected');
+    expect(readdirPaths).toEqual([]);
+  }, 30000);
+
+  test('never removes the worktree clean is running from, but still cleans merged siblings', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = seedRepo(tempDir('forge-clean-self-'));
+    const selfPath = path.join(mainRoot, '.worktrees', 'self');
+    const siblingPath = path.join(mainRoot, '.worktrees', 'sibling');
+    // Each branch gets its own commit, then is squash-merged into main (the
+    // merge shape clean's git-only detection recognizes as merged).
+    for (const [wtPath, branch, file] of [[selfPath, 'feat/self', 'self.txt'], [siblingPath, 'feat/sibling', 'sibling.txt']]) {
+      git(mainRoot, 'worktree', 'add', wtPath, '-b', branch);
+      realFs.writeFileSync(path.join(wtPath, file), `${branch}\n`);
+      git(wtPath, 'add', '.');
+      git(wtPath, 'commit', '-m', `work on ${branch}`);
+      git(mainRoot, 'merge', '--squash', branch);
+      git(mainRoot, 'commit', '-m', `squash ${branch}`);
+    }
+
+    // clean's git calls run in process.cwd(); run it the way a user would, from A.
+    const previousCwd = process.cwd();
+    const logs = [];
+    const originalLog = console.log;
+    let result;
+    try {
+      process.chdir(selfPath);
+      console.log = (...args) => { logs.push(args.join(' ')); };
+      result = await mod.handler([], {}, selfPath, {
+        // Real git; no network gh lookup from the temp repo.
+        _exec: (cmd, args, options) => {
+          if (cmd === 'gh') throw new Error('gh not available in test');
+          return execFileSync(cmd, args, options);
+        },
+        _syncMaster: async () => ({ attempted: false }),
+        _reconcileClaims: async () => ({ reconciled: 0 }),
+        _closeLinkedIssue: async () => ({ closed: false }),
+      });
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+    }
+
+    expect(result.success).toBe(true);
+    expect(realFs.existsSync(selfPath)).toBe(true);
+    expect(realFs.existsSync(siblingPath)).toBe(false);
+    expect(result.cleaned).toBe(1);
+    // No removal was even attempted on A (on Windows a cwd removal "survives").
+    expect(result.survivors).toEqual([]);
+    expect(git(mainRoot, 'worktree', 'list', '--porcelain')).toContain(selfPath.replace(/\\/g, '/'));
+    expect(logs.some((line) => line.includes('Skipped the current worktree'))).toBe(true);
+  }, 60000);
+
+  function toplevelFailsStub(mainRoot, calls) {
+    const target = path.join(mainRoot, '.worktrees', 'foo');
+    return (cmd, args) => {
+      calls.push(args.join(' '));
+      if (cmd !== 'git') throw new Error(`unexpected ${cmd}`);
+      if (args.includes('list')) {
+        return [`worktree ${mainRoot.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/main', '',
+          `worktree ${target.replace(/\\/g, '/')}`, 'HEAD 0123', 'branch refs/heads/feat/foo', '', ''].join('\0');
+      }
+      if (args.includes('--show-toplevel')) throw new Error('ETIMEDOUT');
+      const answers = { '--git-dir': path.join(mainRoot, '.git', 'worktrees', 'foo'), '--git-common-dir': path.join(mainRoot, '.git') };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+  }
+
+  test('clean removes nothing and errors when the invoking checkout cannot be resolved', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = path.resolve('/fake/main');
+    const calls = [];
+    const readdirPaths = [];
+    const result = await mod.handler([], {}, path.join(mainRoot, '.worktrees', 'foo', 'sub'), {
+      _exec: toplevelFailsStub(mainRoot, calls),
+      _fs: { existsSync: () => true, readdirSync: (p) => { readdirPaths.push(p); return [{ name: 'foo', isDirectory: () => true }]; } },
+      _syncMaster: async () => ({ attempted: false }),
+      _reconcileClaims: async () => ({ reconciled: 0 }),
+      _closeLinkedIssue: async () => ({ closed: false }),
+      _isMerged: () => true,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('invoking checkout');
+    expect(calls.some((c) => c.includes('worktree remove'))).toBe(false);
+  });
+
+  test('clean from inside nested B skips merged A that contains it (legacy A/.worktrees/B)', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = seedRepo(tempDir('forge-clean-ancestor-'));
+    realFs.writeFileSync(path.join(mainRoot, '.gitignore'), '.worktrees/\n');
+    git(mainRoot, 'add', '.gitignore');
+    git(mainRoot, 'commit', '-m', 'ignore worktrees');
+    const aPath = path.join(mainRoot, '.worktrees', 'A');
+    git(mainRoot, 'worktree', 'add', aPath, '-b', 'feat/a');
+    realFs.writeFileSync(path.join(aPath, 'a.txt'), 'feat/a\n');
+    git(aPath, 'add', 'a.txt');
+    git(aPath, 'commit', '-m', 'work on feat/a');
+    git(mainRoot, 'merge', '--squash', 'feat/a');
+    git(mainRoot, 'commit', '-m', 'squash feat/a');
+    const bPath = path.join(aPath, '.worktrees', 'B');
+    git(aPath, 'worktree', 'add', bPath, '-b', 'feat/b');
+    const bWip = path.join(bPath, 'wip.txt');
+    realFs.writeFileSync(bWip, 'uncommitted work\n');
+
+    const previousCwd = process.cwd();
+    const logs = [];
+    const originalLog = console.log;
+    let result;
+    try {
+      process.chdir(bPath);
+      console.log = (...args) => { logs.push(args.join(' ')); };
+      result = await mod.handler([], {}, bPath, {
+        _exec: (cmd, args, options) => {
+          if (cmd === 'gh') throw new Error('gh not available in test');
+          return execFileSync(cmd, args, options);
+        },
+        _syncMaster: async () => ({ attempted: false }),
+        _reconcileClaims: async () => ({ reconciled: 0 }),
+        _closeLinkedIssue: async () => ({ closed: false }),
+      });
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+    }
+
+    expect(result.success).toBe(true);
+    expect(result.cleaned).toBe(0);
+    expect(result.survivors).toEqual([]);
+    expect(realFs.existsSync(aPath)).toBe(true);
+    expect(realFs.existsSync(bWip)).toBe(true);
+    expect(logs.some((line) => line.includes('nested inside it') && line.includes(aPath))).toBe(true);
+  }, 60000);
+
+  test('clean from the MAIN checkout skips merged A while registered B is nested inside it', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = seedRepo(tempDir('forge-clean-nested-'));
+    realFs.writeFileSync(path.join(mainRoot, '.gitignore'), '.worktrees/\n');
+    git(mainRoot, 'add', '.gitignore');
+    git(mainRoot, 'commit', '-m', 'ignore worktrees');
+    const aPath = path.join(mainRoot, '.worktrees', 'A');
+    git(mainRoot, 'worktree', 'add', aPath, '-b', 'feat/a');
+    realFs.writeFileSync(path.join(aPath, 'a.txt'), 'feat/a\n');
+    git(aPath, 'add', 'a.txt');
+    git(aPath, 'commit', '-m', 'work on feat/a');
+    git(mainRoot, 'merge', '--squash', 'feat/a');
+    git(mainRoot, 'commit', '-m', 'squash feat/a');
+    const bPath = path.join(aPath, '.worktrees', 'B');
+    git(aPath, 'worktree', 'add', bPath, '-b', 'feat/b');
+    const bWip = path.join(bPath, 'wip.txt');
+    realFs.writeFileSync(bWip, 'uncommitted work\n');
+
+    const previousCwd = process.cwd();
+    const logs = [];
+    const originalLog = console.log;
+    let result;
+    try {
+      process.chdir(mainRoot);
+      console.log = (...args) => { logs.push(args.join(' ')); };
+      result = await mod.handler([], {}, mainRoot, {
+        _exec: (cmd, args, options) => {
+          if (cmd === 'gh') throw new Error('gh not available in test');
+          return execFileSync(cmd, args, options);
+        },
+        _syncMaster: async () => ({ attempted: false }),
+        _reconcileClaims: async () => ({ reconciled: 0 }),
+        _closeLinkedIssue: async () => ({ closed: false }),
+      });
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+    }
+
+    expect(result.success).toBe(true);
+    expect(result.cleaned).toBe(0);
+    expect(realFs.existsSync(aPath)).toBe(true);
+    expect(realFs.existsSync(bWip)).toBe(true);
+    expect(git(mainRoot, 'worktree', 'list', '--porcelain')).toContain(bPath.replace(/\\/g, '/'));
+    expect(logs.some((line) => line.includes('nested inside it') && line.includes(aPath))).toBe(true);
+  }, 60000);
+
+  test('NUL-delimited registration keeps a newline-path descendant from being deleted', async () => {
+    const { _internals } = require('../../lib/commands/clean');
+    const mainRoot = path.resolve('/fake/main');
+    const worktreesDir = path.join(mainRoot, '.worktrees');
+    const aPath = path.join(worktreesDir, 'A');
+    const bPath = path.join(aPath, '\n', '.worktrees', 'B');
+    const records = [
+      { path: mainRoot, branch: 'main' },
+      { path: aPath, branch: 'feat/a' },
+      { path: bPath, branch: 'feat/b' },
+    ];
+    const porcelain = records.map(({ path: wtPath, branch }) =>
+      `worktree ${wtPath}\nHEAD 0123\nbranch refs/heads/${branch}\n`).join('\n');
+    const porcelainZ = records.flatMap(({ path: wtPath, branch }) =>
+      [`worktree ${wtPath}`, 'HEAD 0123', `branch refs/heads/${branch}`, '']).join('\0');
+    const runFile = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from('[]');
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from(args.includes('-z') ? porcelainZ : porcelain);
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('main\nfeat/a\n');
+      if (args[0] === '-C' && args[2] === 'status') return Buffer.from('');
+      return Buffer.from('');
+    };
+    const fsApi = {
+      existsSync: () => true,
+      readdirSync: () => [{ name: 'A', isDirectory: () => true }],
+    };
+
+    const result = await _internals.cleanWorktrees(
+      worktreesDir, runFile, fsApi, true, { _isMerged: () => true },
+    );
+
+    expect(result.cleaned).toBe(0);
+    expect(result.active).toBe(1);
+  });
+
+  test('clean fails closed (removes nothing) when the registered worktree list cannot be read', async () => {
+    const mod = require('../../lib/commands/clean');
+    const removed = [];
+    const mockExec = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from('[]');
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  main\n  feat/gone\n');
+      if (args[0] === 'worktree' && args[1] === 'list') throw new Error('git worktree list failed');
+      if (args[0] === 'worktree' && args[1] === 'remove') { removed.push(args[2]); return Buffer.from(''); }
+      return Buffer.from('');
+    };
+    const fsApi = {
+      existsSync: () => true,
+      readdirSync: (_p, opts) => ((opts && opts.withFileTypes) ? [{ name: 'gone', isDirectory: () => true }] : []),
+      readFileSync: () => '',
+    };
+    const result = await mod.handler([], {}, path.resolve('/fake/root'), {
+      _exec: mockExec, _fs: fsApi, _syncMaster: async () => ({ attempted: false }),
+    });
+
+    expect(removed).toEqual([]);
+    expect(result.cleaned).toBe(0);
+  });
+
+  test('run from a SUBDIRECTORY of a merged linked worktree, clean still leaves that worktree intact', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mainRoot = seedRepo(tempDir('forge-clean-self-sub-'));
+    const selfPath = path.join(mainRoot, '.worktrees', 'self');
+    git(mainRoot, 'worktree', 'add', selfPath, '-b', 'feat/self');
+    realFs.writeFileSync(path.join(selfPath, 'self.txt'), 'feat/self\n');
+    git(selfPath, 'add', '.');
+    git(selfPath, 'commit', '-m', 'work on feat/self');
+    git(mainRoot, 'merge', '--squash', 'feat/self');
+    git(mainRoot, 'commit', '-m', 'squash feat/self');
+    // bin/forge.js passes the invocation cwd, which may be below the toplevel.
+    const subdir = path.join(selfPath, 'sub');
+    realFs.mkdirSync(subdir, { recursive: true });
+
+    const previousCwd = process.cwd();
+    const logs = [];
+    const originalLog = console.log;
+    let result;
+    try {
+      process.chdir(subdir);
+      console.log = (...args) => { logs.push(args.join(' ')); };
+      result = await mod.handler([], {}, subdir, {
+        _exec: (cmd, args, options) => {
+          if (cmd === 'gh') throw new Error('gh not available in test');
+          return execFileSync(cmd, args, options);
+        },
+        _syncMaster: async () => ({ attempted: false }),
+        _reconcileClaims: async () => ({ reconciled: 0 }),
+        _closeLinkedIssue: async () => ({ closed: false }),
+      });
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+    }
+
+    expect(result.success).toBe(true);
+    expect(realFs.existsSync(selfPath)).toBe(true);
+    expect(result.survivors).toEqual([]);
+    expect(result.cleaned).toBe(0);
+    expect(logs.some((line) => line.includes('Skipped the current worktree'))).toBe(true);
+  }, 60000);
+});

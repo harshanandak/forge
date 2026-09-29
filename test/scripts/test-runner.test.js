@@ -122,6 +122,20 @@ describe('scripts/test pre-push runner', () => {
     expect(env.PATH).toBe('/bin');
   });
 
+  test('stripGitHookEnv removes GIT_COMMON_DIR so nested git resolves its own repo', () => {
+    const env = stripGitHookEnv({
+      GIT_COMMON_DIR: '/outer/.git',
+      git_common_dir: '/outer/.git',
+      GIT_OBJECT_DIRECTORY: '/outer/.git/objects',
+      PATH: '/bin',
+    });
+
+    expect(env.GIT_COMMON_DIR).toBeUndefined();
+    expect(env.git_common_dir).toBeUndefined();
+    expect(env.GIT_OBJECT_DIRECTORY).toBeUndefined();
+    expect(env.PATH).toBe('/bin');
+  });
+
   test('classifyPushTests selects targeted unit tests and edge-case suite for lib changes', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: 'lib/commands/ship.js\n',
