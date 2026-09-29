@@ -287,6 +287,37 @@ describe('forge release retire-workflow', () => {
 		expect(afterLostAck.success).toBe(false);
 	}), 30_000);
 
+	test('restores the HEAD mode when a failed retirement restores an executable workflow', async () => {
+		const fixture = createFixture();
+		const filePath = '.github/workflows/matrix.yml';
+		const fullPath = path.join(fixture.root, filePath);
+		const originalFchmodSync = fs.fchmodSync;
+		const restoredModes = [];
+		try {
+			expect(git(fixture.root, ['update-index', '--chmod=+x', filePath]).status).toBe(0);
+			expect(git(fixture.root, ['commit', '--amend', '--no-edit']).status).toBe(0);
+			fixture.head = git(fixture.root, ['rev-parse', 'HEAD']).stdout.trim();
+			expect(git(fixture.root, ['ls-tree', fixture.head, '--', filePath]).stdout).toStartWith('100755 ');
+
+			fs.fchmodSync = (fd, mode) => {
+				restoredModes.push(mode);
+				return originalFchmodSync(fd, mode);
+			};
+			const result = await retireWorkflows(fixture.root, options(fixture, {
+				paths: [filePath],
+				completeAuthorization: async () => ({ success: false, error: 'injected completion failure' }),
+			}));
+
+			expect(result.success).toBe(false);
+			expect(fs.readFileSync(fullPath, 'utf8')).toBe(WORKFLOWS[filePath]);
+			expect(restoredModes).toContain(0o755);
+			if (process.platform !== 'win32') expect(fs.statSync(fullPath).mode & 0o777).toBe(0o755);
+		} finally {
+			fs.fchmodSync = originalFchmodSync;
+			fs.rmSync(fixture.root, { recursive: true, force: true });
+		}
+	}, 15_000);
+
 	test('a rolled-back batch leaves no unmatched success audit record', () => withFixture(async fixture => {
 		const { completeWorkflowRetirementAuthorization } = require('../lib/protected-state-authority');
 		const paths = ['.github/workflows/followup.yml', '.github/workflows/matrix.yml'];
