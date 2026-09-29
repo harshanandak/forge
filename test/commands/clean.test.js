@@ -1377,6 +1377,44 @@ describe('forge clean resolves the main worktree', () => {
     expect(logs.some((line) => line.includes('nested inside it') && line.includes(aPath))).toBe(true);
   }, 60000);
 
+  test('NUL-delimited registration keeps a newline-path descendant from being deleted', async () => {
+    const { _internals } = require('../../lib/commands/clean');
+    const mainRoot = path.resolve('/fake/main');
+    const worktreesDir = path.join(mainRoot, '.worktrees');
+    const aPath = path.join(worktreesDir, 'A');
+    const bPath = path.join(aPath, '\n', '.worktrees', 'B');
+    const records = [
+      { path: mainRoot, branch: 'main' },
+      { path: aPath, branch: 'feat/a' },
+      { path: bPath, branch: 'feat/b' },
+    ];
+    const porcelain = records.map(({ path: wtPath, branch }) =>
+      `worktree ${wtPath}\nHEAD 0123\nbranch refs/heads/${branch}\n`).join('\n');
+    const porcelainZ = records.flatMap(({ path: wtPath, branch }) =>
+      [`worktree ${wtPath}`, 'HEAD 0123', `branch refs/heads/${branch}`, '']).join('\0');
+    const runFile = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from('[]');
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from(args.includes('-z') ? porcelainZ : porcelain);
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('main\nfeat/a\n');
+      if (args[0] === '-C' && args[2] === 'status') return Buffer.from('');
+      return Buffer.from('');
+    };
+    const fsApi = {
+      existsSync: () => true,
+      readdirSync: () => [{ name: 'A', isDirectory: () => true }],
+    };
+
+    const result = await _internals.cleanWorktrees(
+      worktreesDir, runFile, fsApi, true, { _isMerged: () => true },
+    );
+
+    expect(result.cleaned).toBe(0);
+    expect(result.active).toBe(1);
+  });
+
   test('clean fails closed (removes nothing) when the registered worktree list cannot be read', async () => {
     const mod = require('../../lib/commands/clean');
     const removed = [];
