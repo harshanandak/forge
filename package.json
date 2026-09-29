@@ -99,6 +99,7 @@
     "!lib/pr-monitor/render-summary.js",
     "!lib/validation/",
     "!lib/workflow-templates/",
+    "!lib/bun-release.js",
     "!lib/beta5-compatibility-evidence.js",
     "!lib/fixtures/",
     "!lib/capabilities/",
