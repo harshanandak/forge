@@ -797,3 +797,37 @@ describe('classifyFilesystem — end-to-end with injected probes', () => {
 		expect(c.riskTier).toBe('refuse');
 	}, T);
 });
+
+describe('pathStartsWith — linear trailing-separator trim (CodeQL #136)', () => {
+	const { pathStartsWith } = require('../../lib/kernel/fs-class');
+	const cases = [
+		['exact match', 'C:/Users/x/OneDrive', 'C:/Users/x/OneDrive', true, true],
+		['child path', 'C:/Users/x/OneDrive/repo', 'C:/Users/x/OneDrive', true, true],
+		['trailing slash on root', 'C:/Users/x/OneDrive/repo', 'C:/Users/x/OneDrive/', true, true],
+		['trailing slashes on path', 'C:/Users/x/OneDrive///', 'C:/Users/x/OneDrive', true, true],
+		['backslashes', 'C:\\Users\\x\\OneDrive\\repo', 'C:/Users/x/OneDrive', true, true],
+		['mixed separators and trailing backslash root', 'C:/Users/x/OneDrive/repo', 'C:\\Users\\x\\OneDrive\\\\', true, true],
+		['OneDrive vs OneDriveBackup boundary', 'C:/Users/x/OneDriveBackup/repo', 'C:/Users/x/OneDrive', true, false],
+		['case-insensitive', 'c:/users/X/onedrive/repo', 'C:/Users/x/OneDrive', true, true],
+		['case-sensitive mismatch', '/home/x/dropbox/repo', '/home/x/Dropbox', false, false],
+		['posix root itself', '/', '/', false, true],
+		['posix root covers absolute path', '/home/x', '/', false, true],
+		['empty root', '/home/x', '', false, false],
+	];
+	for (const [name, absPath, root, caseInsensitive, expected] of cases) {
+		test(name, () => {
+			expect(pathStartsWith(absPath, root, { caseInsensitive })).toBe(expected);
+		});
+	}
+
+	test('100k separators complete quickly with the same result', () => {
+		const slashes = '/'.repeat(100_000);
+		const trailing = `a${slashes}`;
+		const start = performance.now();
+		expect(pathStartsWith(slashes, '/', { caseInsensitive: false })).toBe(true);
+		expect(pathStartsWith(trailing, 'a', { caseInsensitive: false })).toBe(true);
+		expect(pathStartsWith(`${trailing}b`, 'a', { caseInsensitive: false })).toBe(true);
+		expect(pathStartsWith('\\'.repeat(100_000), '/', { caseInsensitive: true })).toBe(true);
+		expect(performance.now() - start).toBeLessThan(200);
+	}, T);
+});
