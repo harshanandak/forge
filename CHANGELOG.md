@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`forge release retire-workflow` deletes a workflow file through a supported writer.** The pre-commit protected-state hook previously had no Forge-owned authority for deleting `.github/workflows/*`. The new command issues a delete-only Kernel capability bound to the file's path, exact HEAD bytes, HEAD, actor, and worktree, and records the `--reason`. It refuses when branch protection or repository rulesets are unreadable, when a ruleset `workflows` rule requires the file, when the file produces a required status context from either source, or when another workflow depends on it through `workflow_run` or a reusable `uses:` call. (issue `10f4670b`)
+- **Per-block package size budgets, with a Forge-generated size workflow.** The Package Size Monitor now measures the published package (`npm pack --dry-run --json`) instead of the whole repo checkout. It maps every shipped file to a named block in `scripts/package-budgets.json` and fails when a block or the total grows more than max(2%, 20KB) (or 2% of files) above the committed baseline without that PR updating the baseline, or when the package goes over the 10MB unpacked ceiling. The check runs on every PR and push (no path filters), and `.github/workflows/size-check.yml` is rendered by `forge release generate-size-workflow --expect-head <sha>` under the same exact-bytes authorization as the test workflow; `forge release update-bun-pins` delegates it to the same renderer. (issue `46d25e0a`)
 
 ### Changed
 

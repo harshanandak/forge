@@ -207,6 +207,8 @@ describe('forge release retire-workflow', () => {
 		// a file, so any such rule fails closed rather than letting that analyzer be retired.
 		const scanning = createRulesetRequirementsReader(() => JSON.stringify([...rules, { type: 'code_scanning', parameters: { code_scanning_tools: [{ tool: 'CodeQL' }] } }]), 'root', { owner: 'o', repo: 'r', base: 'master' });
 		await expect(scanning()).rejects.toThrow(/code_scanning/);
+		const deployments = createRulesetRequirementsReader(() => JSON.stringify([...rules, { type: 'required_deployments', parameters: { required_deployment_environments: ['production'] } }]), 'root', { owner: 'o', repo: 'r', base: 'master' });
+		await expect(deployments()).rejects.toThrow(/required_deployments/);
 	});
 
 	test('refuses a workflow another workflow depends on unless both retire together', () => withFixture(async fixture => {

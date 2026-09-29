@@ -1,0 +1,65 @@
+{
+  "total": {
+    "tarball": 1324265,
+    "unpacked": 4998643,
+    "files": 538
+  },
+  "blocks": {
+    "cli": {
+      "bytes": 1126629,
+      "files": 73
+    },
+    "contracts": {
+      "bytes": 100020,
+      "files": 41
+    },
+    "docs": {
+      "bytes": 86059,
+      "files": 7
+    },
+    "flow": {
+      "bytes": 99658,
+      "files": 9
+    },
+    "kernel": {
+      "bytes": 571781,
+      "files": 22
+    },
+    "lib": {
+      "bytes": 1655785,
+      "files": 144
+    },
+    "memory-core": {
+      "bytes": 89268,
+      "files": 7
+    },
+    "meta": {
+      "bytes": 25275,
+      "files": 3
+    },
+    "nested-deps": {
+      "bytes": 200040,
+      "files": 82
+    },
+    "other": {
+      "bytes": 0,
+      "files": 0
+    },
+    "pr-monitor": {
+      "bytes": 311302,
+      "files": 17
+    },
+    "scripts": {
+      "bytes": 371634,
+      "files": 42
+    },
+    "skills": {
+      "bytes": 300172,
+      "files": 80
+    },
+    "templates": {
+      "bytes": 61020,
+      "files": 11
+    }
+  }
+}
