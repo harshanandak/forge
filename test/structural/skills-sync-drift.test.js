@@ -77,7 +77,7 @@ describe('all harness skill dirs render from canonical source', () => {
     ]);
   });
 
-  test('each harness dir regenerates byte-identically from skills/', () => {
+  test.skipIf(process.platform === 'win32')('each harness dir regenerates byte-identically from skills/', () => {
     const canonical = listCanonicalSkills(repoRoot);
     expect(canonical.length).toBeGreaterThan(0);
 

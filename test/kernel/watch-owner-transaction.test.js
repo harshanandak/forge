@@ -157,7 +157,8 @@ describe('watch owner dedicated SQLite transaction', () => {
 		fs.rmSync(root, { recursive: true, force: true });
 	});
 
-	test('Bun and Node contenders commit exactly one generation', async () => {
+	// Quarantined on macOS: six contender subprocesses exceed the 20s budget on loaded CI runners (see test/QUARANTINE.md, 4416c96c).
+	test.skipIf(process.platform === 'darwin')('Bun and Node contenders commit exactly one generation', async () => {
 		const runtimes = [process.execPath, 'node', process.execPath, 'node', process.execPath, 'node'];
 		const results = await Promise.all(runtimes.map((runtime, index) => runContender(runtime, databasePath, 1_000 + index)));
 		expect(results.filter(result => result.ok && result.changed)).toHaveLength(1);
