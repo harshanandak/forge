@@ -185,7 +185,7 @@ After Memory and Flow public APIs are stable, one integration owner updates root
 
 ### R4 — migration and release
 
-PR6 consumes immutable packed candidates and produces backup/cutover/rollback evidence. PR7 freezes the signed BOM, publishes the exact RC artifacts under `next`, then validates those registry artifacts across the full platform/runtime/product/harness matrix. It also completes security gates, 50 clean journey/environment pairs, and seven cumulative observation days. Stable promotion contains no product behavior changes.
+PR6 completes the final migration/removal content changes, repacks the resulting candidate, and produces backup/cutover/rollback evidence against that exact package set. Only then does PR7 freeze the signed BOM, publish the exact RC artifacts under `next`, and validate those registry artifacts across the full platform/runtime/product/harness matrix. It also completes security gates, 50 clean journey/environment pairs, and seven cumulative observation days. Stable promotion contains no product behavior changes.
 
 ## Stability and performance gates
 

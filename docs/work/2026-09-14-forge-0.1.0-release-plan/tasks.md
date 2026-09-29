@@ -90,7 +90,7 @@ Each lane owns only its named modules and focused tests. The validation owner ca
 2. Update root manifests, `bun.lock`, version compatibility, generated manifests, and facade composition in one integration lane.
 3. Resolve runtime workspace packaging and global install issues.
 4. Pack Contracts, Memory, Flow, and the facade; run all journeys without workspace links.
-5. Freeze package candidates and the compatibility/BOM record.
+5. Prepare the integration package set and compatibility inputs; do not freeze candidates or the signed BOM until migration and release-only content changes are complete.
 
 ## Task 4 — migration and rollback
 
@@ -100,7 +100,7 @@ Each lane owns only its named modules and focused tests. The validation owner ca
 2. Prove dry-run, successful cutover, interruption recovery, and rollback.
 3. Prove sole-writer authority and no shadow writes.
 4. Remove remaining shipped Beads integration, including the importer, compatibility helpers, command/config hints, dependencies, and current docs. Search all callers and published artifacts; retain historical provenance and existing user data. Prove Kernel-native backup/restore and stable diagnostics for the removed command. Locked decision D46 supersedes the older D45 import exception; the code removal is tracked by Forge issue `56a99d9b-a5d2-4c10-bc8d-6cb436006075`.
-5. Bind receipts to the exact package candidate BOM.
+5. Repack the post-removal package set, then bind migration receipts to that exact candidate BOM. Any content change after this repack requires a new candidate and fresh migration evidence.
 
 ## Task 5 — release convergence
 
