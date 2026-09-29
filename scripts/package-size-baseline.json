@@ -1,12 +1,12 @@
 {
   "total": {
-    "tarball": 1310531,
-    "unpacked": 4765702,
-    "files": 453
+    "tarball": 1320089,
+    "unpacked": 4805641,
+    "files": 454
   },
   "blocks": {
     "cli": {
-      "bytes": 1124499,
+      "bytes": 1127119,
       "files": 73
     },
     "contracts": {
@@ -26,15 +26,15 @@
       "files": 22
     },
     "lib": {
-      "bytes": 1623206,
-      "files": 143
+      "bytes": 1660497,
+      "files": 144
     },
     "memory-core": {
       "bytes": 89012,
       "files": 6
     },
     "meta": {
-      "bytes": 25073,
+      "bytes": 25101,
       "files": 3
     },
     "nested-deps": {

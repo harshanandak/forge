@@ -1,0 +1,441 @@
+'use strict';
+
+const { describe, expect, test } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const { authorizeAndConsumeProtectedStateWrites } = require('../lib/protected-state-authority');
+const {
+	createRulesetRequirementsReader,
+	producedRequiredContexts,
+	retireWorkflows,
+} = require('../lib/workflow-retirement');
+const releaseCommand = require('../lib/commands/release');
+
+const WORKFLOWS = {
+	'.github/workflows/lint.yml': 'name: Lint\non: [pull_request]\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo lint\n',
+	'.github/workflows/ci.yml': 'name: CI\non: [pull_request]\njobs:\n  gate:\n    name: CI Gate\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo gate\n',
+	'.github/workflows/reusable.yml': 'name: Reusable\non:\n  workflow_call: {}\njobs:\n  inner:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo inner\n',
+	'.github/workflows/caller.yml': 'name: Caller\non: [push]\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n',
+	'.github/workflows/followup.yml': 'name: Followup\non:\n  workflow_run:\n    workflows: [Lint]\n    types: [completed]\njobs:\n  after:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo after\n',
+	'.github/workflows/matrix.yml': 'name: Matrix\non: [push]\njobs:\n  test:\n    name: Test ${{ matrix.os }}\n    strategy:\n      matrix:\n        os: [ubuntu, windows]\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo test\n',
+};
+
+function git(root, args) {
+	return spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+}
+
+function createFixture(files = WORKFLOWS) {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-retire-workflow-'));
+	expect(git(root, ['init']).status).toBe(0);
+	expect(git(root, ['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+	expect(git(root, ['config', 'user.name', 'Forge Test']).status).toBe(0);
+	expect(git(root, ['config', 'core.autocrlf', 'false']).status).toBe(0);
+	for (const [filePath, content] of Object.entries(files)) {
+		fs.mkdirSync(path.dirname(path.join(root, filePath)), { recursive: true });
+		fs.writeFileSync(path.join(root, filePath), content);
+	}
+	expect(git(root, ['add', '.']).status).toBe(0);
+	expect(git(root, ['commit', '-m', 'base']).status).toBe(0);
+	const head = git(root, ['rev-parse', 'HEAD']).stdout.trim();
+	const rows = [];
+	const kernelDeps = {
+		kernelBroker: { config: {} },
+		kernelDriver: {
+			listKernelEvents: async (_type, entityId) => rows.filter(row => row.entity_id === entityId),
+			insertKernelEvent: async event => {
+				rows.push(event);
+				return event;
+			},
+		},
+	};
+	return { root, head, rows, kernelDeps };
+}
+
+function options(fixture, overrides = {}) {
+	return {
+		env: {},
+		actor: 'retire-test',
+		expectedHead: fixture.head,
+		reason: 'Folded into Tests stage 0',
+		kernelDeps: fixture.kernelDeps,
+		readRequiredContexts: async () => ['CI Gate'],
+		readRulesetRequirements: async () => ({ contexts: [], workflowPaths: [] }),
+		recordProtectedStateAuditEvent: () => ({ success: true }),
+		...overrides,
+	};
+}
+
+function hookRequest(fixture, filePath, overrides = {}) {
+	return {
+		actor: 'retire-test',
+		surface: 'workflows',
+		path: filePath,
+		content: Buffer.from(WORKFLOWS[filePath]),
+		operation: 'staged_delete',
+		sourceHead: fixture.head,
+		...overrides,
+	};
+}
+
+function hook(fixture, requests) {
+	return authorizeAndConsumeProtectedStateWrites(fixture.root, requests, {
+		deps: fixture.kernelDeps,
+		validateCompleteBunPinBatch: () => ({ success: true }),
+	});
+}
+
+async function withFixture(run) {
+	const fixture = createFixture();
+	try {
+		await run(fixture);
+	} finally {
+		fs.rmSync(fixture.root, { recursive: true, force: true });
+	}
+}
+
+describe('forge release retire-workflow', () => {
+	test('retires a non-required workflow and the hook accepts the staged deletion', () => withFixture(async fixture => {
+		const result = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/matrix.yml'],
+		}));
+		expect(result).toMatchObject({ success: true, sourceHead: fixture.head, paths: ['.github/workflows/matrix.yml'] });
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/matrix.yml'))).toBe(false);
+		const issued = fixture.rows.find(row => row.event_type === 'protected_state.authorization.issued');
+		expect(issued.payload).toMatchObject({
+			writeIntent: 'delete',
+			operation: 'retire_workflow',
+			sourceCommand: 'forge release retire-workflow',
+			reason: 'Folded into Tests stage 0',
+		});
+
+		const decision = await hook(fixture, [hookRequest(fixture, '.github/workflows/matrix.yml', {
+			content: Buffer.from(WORKFLOWS['.github/workflows/matrix.yml']),
+		})]);
+		expect(decision).toMatchObject({ success: true, decisions: [{ allowed: true }] });
+	}), 15_000);
+
+	test('refuses a workflow that produces a required status context', () => withFixture(async fixture => {
+		const result = await retireWorkflows(fixture.root, options(fixture, { paths: ['.github/workflows/ci.yml'] }));
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('CI Gate');
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/ci.yml'))).toBe(true);
+		expect(fixture.rows).toHaveLength(0);
+	}), 15_000);
+
+	test('treats expression job names as producing matching required contexts', () => {
+		const produced = producedRequiredContexts(WORKFLOWS['.github/workflows/matrix.yml'], ['Test ubuntu', 'Test (windows)', 'Lint']);
+		expect(produced).toEqual(['Test ubuntu', 'Test (windows)']);
+	});
+
+	test('refuses when branch protection is unreadable', () => withFixture(async fixture => {
+		for (const readRequiredContexts of [
+			async () => { throw new Error('HTTP 404'); },
+			async () => null,
+			async () => [42],
+		]) {
+			const result = await retireWorkflows(fixture.root, options(fixture, {
+				paths: ['.github/workflows/matrix.yml'],
+				readRequiredContexts,
+			}));
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/protection/i);
+		}
+		const missingReader = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/matrix.yml'],
+			readRequiredContexts: undefined,
+		}));
+		expect(missingReader.success).toBe(false);
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/matrix.yml'))).toBe(true);
+		expect(fixture.rows).toHaveLength(0);
+	}), 15_000);
+
+	test('refuses a workflow whose job produces a context a ruleset requires', () => withFixture(async fixture => {
+		const byContext = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/matrix.yml'],
+			readRequiredContexts: async () => [],
+			readRulesetRequirements: async () => ({ contexts: ['Test ubuntu'], workflowPaths: [] }),
+		}));
+		expect(byContext.success).toBe(false);
+		expect(byContext.error).toContain('Test ubuntu');
+		const byWorkflowRule = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/matrix.yml'],
+			readRulesetRequirements: async () => ({ contexts: [], workflowPaths: ['.github/workflows/matrix.yml'] }),
+		}));
+		expect(byWorkflowRule.success).toBe(false);
+		expect(byWorkflowRule.error).toContain('ruleset');
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/matrix.yml'))).toBe(true);
+		expect(fixture.rows).toHaveLength(0);
+	}), 15_000);
+
+	test('refuses when repository rulesets are unreadable', () => withFixture(async fixture => {
+		for (const readRulesetRequirements of [
+			async () => { throw new Error('HTTP 403'); },
+			async () => null,
+			async () => ({ contexts: [7], workflowPaths: [] }),
+			async () => ({ contexts: [] }),
+			undefined,
+		]) {
+			const result = await retireWorkflows(fixture.root, options(fixture, {
+				paths: ['.github/workflows/matrix.yml'],
+				readRulesetRequirements,
+			}));
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/ruleset/i);
+		}
+		expect(fixture.rows).toHaveLength(0);
+	}), 15_000);
+
+	test('parses ruleset rules into required contexts and workflow paths, failing closed on bad shapes', async () => {
+		const rules = [
+			{ type: 'pull_request', parameters: {} },
+			{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'CI Gate', integration_id: 1 }] } },
+			{ type: 'workflows', parameters: { workflows: [{ path: '.github/workflows/test.yml', repository_id: 1 }] } },
+		];
+		const read = createRulesetRequirementsReader(() => JSON.stringify(rules), 'root', { owner: 'o', repo: 'r', base: 'master' });
+		expect(await read()).toEqual({ contexts: ['CI Gate'], workflowPaths: ['.github/workflows/test.yml'] });
+		const empty = createRulesetRequirementsReader(() => '[]', 'root', { owner: 'o', repo: 'r', base: 'master' });
+		expect(await empty()).toEqual({ contexts: [], workflowPaths: [] });
+		for (const body of ['{}', '[{"type":"required_status_checks","parameters":{}}]', 'not json']) {
+			const bad = createRulesetRequirementsReader(() => body, 'root', { owner: 'o', repo: 'r', base: 'master' });
+			await expect(bad()).rejects.toThrow();
+		}
+		const full = createRulesetRequirementsReader(() => JSON.stringify(Array.from({ length: 100 }, () => rules[0])), 'root', { owner: 'o', repo: 'r', base: 'master' });
+		await expect(full()).rejects.toThrow();
+		// A code_scanning rule requires results from an analyzer workflow Forge cannot map to
+		// a file, so any such rule fails closed rather than letting that analyzer be retired.
+		const scanning = createRulesetRequirementsReader(() => JSON.stringify([...rules, { type: 'code_scanning', parameters: { code_scanning_tools: [{ tool: 'CodeQL' }] } }]), 'root', { owner: 'o', repo: 'r', base: 'master' });
+		await expect(scanning()).rejects.toThrow(/code_scanning/);
+		const deployments = createRulesetRequirementsReader(() => JSON.stringify([...rules, { type: 'required_deployments', parameters: { required_deployment_environments: ['production'] } }]), 'root', { owner: 'o', repo: 'r', base: 'master' });
+		await expect(deployments()).rejects.toThrow(/required_deployments/);
+	});
+
+	test('refuses a workflow another workflow depends on unless both retire together', () => withFixture(async fixture => {
+		const byRun = await retireWorkflows(fixture.root, options(fixture, { paths: ['.github/workflows/lint.yml'] }));
+		expect(byRun.success).toBe(false);
+		expect(byRun.error).toContain('.github/workflows/followup.yml');
+		const byUses = await retireWorkflows(fixture.root, options(fixture, { paths: ['.github/workflows/reusable.yml'] }));
+		expect(byUses.success).toBe(false);
+		expect(byUses.error).toContain('.github/workflows/caller.yml');
+		expect(fixture.rows).toHaveLength(0);
+
+		const together = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/reusable.yml', '.github/workflows/caller.yml'],
+		}));
+		expect(together).toMatchObject({ success: true });
+		const decision = await hook(fixture, [
+			hookRequest(fixture, '.github/workflows/reusable.yml'),
+			hookRequest(fixture, '.github/workflows/caller.yml'),
+		]);
+		expect(decision.success).toBe(true);
+	}), 15_000);
+
+	test('the authorization cannot be reused to edit the file or delete a different file', () => withFixture(async fixture => {
+		const result = await retireWorkflows(fixture.root, options(fixture, { paths: ['.github/workflows/matrix.yml'] }));
+		expect(result.success).toBe(true);
+
+		const edit = await hook(fixture, [hookRequest(fixture, '.github/workflows/matrix.yml', {
+			operation: 'staged_edit',
+			content: Buffer.from('name: Matrix\non: [push]\njobs: {}\n'),
+		})]);
+		expect(edit.success).toBe(false);
+		const sameBytesEdit = await hook(fixture, [hookRequest(fixture, '.github/workflows/matrix.yml', {
+			operation: 'staged_edit',
+		})]);
+		expect(sameBytesEdit.success).toBe(false);
+		const other = await hook(fixture, [hookRequest(fixture, '.github/workflows/lint.yml')]);
+		expect(other.success).toBe(false);
+
+		const consumed = await hook(fixture, [hookRequest(fixture, '.github/workflows/matrix.yml')]);
+		expect(consumed.success).toBe(true);
+		const replay = await hook(fixture, [hookRequest(fixture, '.github/workflows/matrix.yml')]);
+		expect(replay.success).toBe(false);
+	}), 15_000);
+
+	test('revokes issued and completed capabilities when a failed retirement restores the files', () => withFixture(async fixture => {
+		const { completeWorkflowRetirementAuthorization } = require('../lib/protected-state-authority');
+		let calls = 0;
+		const result = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/followup.yml', '.github/workflows/matrix.yml'],
+			// The first completion is really recorded; the second is forced to fail.
+			completeAuthorization: async (root, params, opts) => {
+				calls += 1;
+				return calls === 1
+					? completeWorkflowRetirementAuthorization(root, params, opts)
+					: { success: false, error: 'injected completion failure' };
+			},
+		}));
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('injected completion failure');
+		for (const filePath of ['.github/workflows/followup.yml', '.github/workflows/matrix.yml']) {
+			expect(fs.readFileSync(path.join(fixture.root, filePath), 'utf8')).toBe(WORKFLOWS[filePath]);
+			const decision = await hook(fixture, [hookRequest(fixture, filePath)]);
+			expect(decision.success).toBe(false);
+		}
+
+		const lostAck = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/matrix.yml'],
+			completeAuthorization: async (root, params, opts) => {
+				await completeWorkflowRetirementAuthorization(root, params, opts);
+				return { success: false, error: 'completion acknowledgement lost' };
+			},
+		}));
+		expect(lostAck.success).toBe(false);
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/matrix.yml'))).toBe(true);
+		const afterLostAck = await hook(fixture, [hookRequest(fixture, '.github/workflows/matrix.yml')]);
+		expect(afterLostAck.success).toBe(false);
+	}), 30_000);
+
+	test('restores the HEAD mode when a failed retirement restores an executable workflow', async () => {
+		const fixture = createFixture();
+		const filePath = '.github/workflows/matrix.yml';
+		const fullPath = path.join(fixture.root, filePath);
+		const originalFchmodSync = fs.fchmodSync;
+		const restoredModes = [];
+		try {
+			expect(git(fixture.root, ['update-index', '--chmod=+x', filePath]).status).toBe(0);
+			expect(git(fixture.root, ['commit', '--amend', '--no-edit']).status).toBe(0);
+			fixture.head = git(fixture.root, ['rev-parse', 'HEAD']).stdout.trim();
+			expect(git(fixture.root, ['ls-tree', fixture.head, '--', filePath]).stdout).toStartWith('100755 ');
+
+			fs.fchmodSync = (fd, mode) => {
+				restoredModes.push(mode);
+				return originalFchmodSync(fd, mode);
+			};
+			const result = await retireWorkflows(fixture.root, options(fixture, {
+				paths: [filePath],
+				completeAuthorization: async () => ({ success: false, error: 'injected completion failure' }),
+			}));
+
+			expect(result.success).toBe(false);
+			expect(fs.readFileSync(fullPath, 'utf8')).toBe(WORKFLOWS[filePath]);
+			expect(restoredModes).toContain(0o755);
+			if (process.platform !== 'win32') expect(fs.statSync(fullPath).mode & 0o777).toBe(0o755);
+		} finally {
+			fs.fchmodSync = originalFchmodSync;
+			fs.rmSync(fixture.root, { recursive: true, force: true });
+		}
+	}, 15_000);
+
+	test('a rolled-back batch leaves no unmatched success audit record', () => withFixture(async fixture => {
+		const { completeWorkflowRetirementAuthorization } = require('../lib/protected-state-authority');
+		const paths = ['.github/workflows/followup.yml', '.github/workflows/matrix.yml'];
+		const unmatchedSuccesses = records => records
+			.filter(record => record.operation === 'retire_workflow')
+			.filter(record => !records.some(other => other.operation === 'retire_workflow_rolled_back' && other.path === record.path));
+
+		const completionAudits = [];
+		let calls = 0;
+		const completionFailure = await retireWorkflows(fixture.root, options(fixture, {
+			paths,
+			recordProtectedStateAuditEvent: record => {
+				completionAudits.push(record);
+				return { success: true };
+			},
+			completeAuthorization: async (root, params, opts) => {
+				calls += 1;
+				return calls === 1
+					? completeWorkflowRetirementAuthorization(root, params, opts)
+					: { success: false, error: 'injected completion failure' };
+			},
+		}));
+		expect(completionFailure.success).toBe(false);
+		expect(unmatchedSuccesses(completionAudits)).toEqual([]);
+
+		const auditAttempts = [];
+		const auditFailure = await retireWorkflows(fixture.root, options(fixture, {
+			paths,
+			recordProtectedStateAuditEvent: record => {
+				auditAttempts.push(record);
+				const failing = record.operation === 'retire_workflow' && record.path === paths[1];
+				return failing ? { success: false, error: 'injected audit failure' } : { success: true };
+			},
+		}));
+		expect(auditFailure.success).toBe(false);
+		expect(auditFailure.error).toContain('injected audit failure');
+		const written = auditAttempts.filter(record => !(record.operation === 'retire_workflow' && record.path === paths[1]));
+		expect(written.some(record => record.operation === 'retire_workflow' && record.path === paths[0])).toBe(true);
+		expect(unmatchedSuccesses(written)).toEqual([]);
+		for (const filePath of paths) {
+			expect(fs.readFileSync(path.join(fixture.root, filePath), 'utf8')).toBe(WORKFLOWS[filePath]);
+		}
+	}), 30_000);
+
+	test('never restores a file whose completed capability could not be revoked', () => withFixture(async fixture => {
+		const {
+			completeWorkflowRetirementAuthorization,
+			revokeWorkflowRetirementAuthorization,
+		} = require('../lib/protected-state-authority');
+		let calls = 0;
+		const result = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/followup.yml', '.github/workflows/matrix.yml'],
+			completeAuthorization: async (root, params, opts) => {
+				calls += 1;
+				return calls === 1
+					? completeWorkflowRetirementAuthorization(root, params, opts)
+					: { success: false, error: 'injected completion failure' };
+			},
+			revokeAuthorization: async (root, params, opts) => (params.path === '.github/workflows/followup.yml'
+				? { success: false, error: 'kernel unavailable' }
+				: revokeWorkflowRetirementAuthorization(root, params, opts)),
+		}));
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('.github/workflows/followup.yml');
+		// Its completed capability is still live, so the file must not come back as deletable.
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/followup.yml'))).toBe(false);
+		expect(fs.readFileSync(path.join(fixture.root, '.github/workflows/matrix.yml'), 'utf8'))
+			.toBe(WORKFLOWS['.github/workflows/matrix.yml']);
+		const restored = await hook(fixture, [hookRequest(fixture, '.github/workflows/matrix.yml')]);
+		expect(restored.success).toBe(false);
+	}), 30_000);
+
+	test('refuses a head mismatch, a missing reason, and paths outside .github/workflows', () => withFixture(async fixture => {
+		const cases = [
+			{ expectedHead: 'b'.repeat(40), paths: ['.github/workflows/matrix.yml'] },
+			{ expectedHead: undefined, paths: ['.github/workflows/matrix.yml'] },
+			{ reason: '  ', paths: ['.github/workflows/matrix.yml'] },
+			{ paths: ['package.json'] },
+			{ paths: ['.github/workflows/nested/x.yml'] },
+			{ paths: ['.github/workflows/absent.yml'] },
+			{ paths: [] },
+		];
+		for (const overrides of cases) {
+			const result = await retireWorkflows(fixture.root, options(fixture, overrides));
+			expect(result.success).toBe(false);
+		}
+		expect(fixture.rows).toHaveLength(0);
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/matrix.yml'))).toBe(true);
+	}), 15_000);
+
+	test('refuses when the working-tree file differs from HEAD', () => withFixture(async fixture => {
+		fs.appendFileSync(path.join(fixture.root, '.github/workflows/matrix.yml'), '# local edit\n');
+		const result = await retireWorkflows(fixture.root, options(fixture, { paths: ['.github/workflows/matrix.yml'] }));
+		expect(result.success).toBe(false);
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/matrix.yml'))).toBe(true);
+	}), 15_000);
+
+	test('the release command parses files, --reason, and --expect-head', async () => {
+		const head = 'a'.repeat(40);
+		let called;
+		const result = await releaseCommand.handler([
+			'retire-workflow', '.github/workflows/a.yml', '--reason', 'gone', '.github/workflows/b.yml', '--expect-head', head,
+		], {}, 'root', {
+			retireWorkflows: async (root, params) => {
+				called = { root, params };
+				return { success: true, paths: params.paths, sourceHead: head };
+			},
+			readRequiredContexts: async () => [],
+			readRulesetRequirements: async () => ({ contexts: [], workflowPaths: [] }),
+		});
+		expect(result.success).toBe(true);
+		expect(called.root).toBe('root');
+		expect(called.params).toMatchObject({
+			paths: ['.github/workflows/a.yml', '.github/workflows/b.yml'],
+			reason: 'gone',
+			expectedHead: head,
+		});
+		expect(await releaseCommand.githubAuth(['retire-workflow', 'x'])).toBe(true);
+		expect(await releaseCommand.githubAuth(['check'])).toBe(false);
+	});
+});
