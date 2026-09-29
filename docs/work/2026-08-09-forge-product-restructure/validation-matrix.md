@@ -62,7 +62,7 @@ Raw logs remain local-sensitive artifacts by default. They are never streamed wh
 The matrix consumes one signed release BOM and proves:
 
 - Ubuntu, macOS, Windows;
-- Node 22 and 24;
+- Node 24 and 26; see the [superseding Forge 0.1.0 RC runtime decision](../2026-09-14-forge-0.1.0-release-plan/decisions.md#rc-runtime-matrix);
 - Memory-only, Flow stateless, Flow connected, and facade installations;
 - Claude, Codex, Cursor, and Hermes projections;
 - current beta.5 binaries/config/JSON/database upgrade;
