@@ -81,8 +81,8 @@ The user-facing products are Memory, Flow, Agent Companion, and the Forge facade
 - Complete process-tree isolation (`50d3f2c3`) and bounded Windows process-heavy scheduling (`fd64f6c9`).
 - A child failure, caller timeout, missing shard result, or incomplete aggregate must block release.
 - Tag the frozen RC candidate, publish immutable prerelease packages in BOM order under `next`, and run the complete exact-artifact/exact-SHA matrix against what users will install.
-- Cover Ubuntu, macOS, Windows, Node 22 and 24, Memory-only, Flow stateless, Flow connected, facade installs, Claude/Codex/Cursor/Hermes projections, and truthful T0-T4 degradation.
-- Require at least 50 distinct clean RC journey/environment pairs, every G0-G8 lane, seven cumulative automated observation days, and no unresolved S0/S1 event before metadata-only stable promotion.
+- Cover Ubuntu, macOS, Windows, Node 24 and 26, Memory-only, Flow stateless, Flow connected, facade installs, Claude/Codex/Cursor/Hermes projections, and truthful T0-T4 degradation.
+- Require at least 50 distinct clean RC journey/environment pairs, every G0-G8 lane, seven cumulative automated observation days, and no unresolved S0/S1 event before stable promotion. Version, changelog, and documentation changes land before the BOM freeze; promotion only moves the `latest` dist-tag to the exact accepted RC artifacts.
 - Narrow the remaining skills evaluation blocker (`d362bd71`) to a release acceptance corpus for supported skills. Move the self-improving/continuous optimization loop after 0.1.0.
 
 ## Release disposition
@@ -225,4 +225,4 @@ No timeout becomes green by increasing the timeout alone. Speed changes must ret
 
 ## Release completion rule
 
-0.1.0 is complete only when every named required outcome has fresh exact-head evidence and the immutable RC artifacts published under `next` reproduce from the signed BOM. The full approved matrix must pass across Ubuntu, macOS, Windows, Node 22/24, Memory-only, Flow stateless, Flow connected, facade installs, and Claude/Codex/Cursor/Hermes projections with truthful capability degradation. Migration and rollback must pass; all G0-G8 receipts must be `PASS`; at least 50 distinct clean RC journey/environment pairs and seven cumulative automated observation days must complete with no unresolved S0/S1 event; the live Kernel release root must be re-fetched with no unresolved blocking dependency. A merged PR, locally packed smoke, green focused test, or old receipt cannot substitute for that proof.
+0.1.0 is complete only when every named required outcome has fresh exact-head evidence and the immutable RC artifacts published under `next` reproduce from the signed BOM. The full approved matrix must pass across Ubuntu, macOS, Windows, Node 24/26, Memory-only, Flow stateless, Flow connected, facade installs, and Claude/Codex/Cursor/Hermes projections with truthful capability degradation. Migration and rollback must pass; all G0-G8 receipts must be `PASS`; at least 50 distinct clean RC journey/environment pairs and seven cumulative automated observation days must complete with no unresolved S0/S1 event; the live Kernel release root must be re-fetched with no unresolved blocking dependency. A merged PR, locally packed smoke, green focused test, or old receipt cannot substitute for that proof.

@@ -8,7 +8,7 @@
 
 The approved restructure has already landed the package skeletons and most early integration work. The live epic is still `in_progress`, while its Memory, Flow, and PR4B parent lanes are marked done. The release is now blocked by usable public assemblies, a bounded facade/capability slice, migration and release convergence, and validation/release hygiene.
 
-The root package is `forge-workflow@0.1.0-beta.7`. `@forge/contracts`, `@forge/memory`, and `@forge/flow` remain at `0.1.0-beta.6` with exact internal dependency pins. The source graph is directionally separated, but standalone usability is incomplete:
+The root package is `forge-workflow@0.1.0-beta.8`. `@forge/contracts`, `@forge/memory`, and `@forge/flow` remain at `0.1.0-beta.6` with exact internal dependency pins. The source graph is directionally separated, but standalone usability is incomplete:
 
 - Memory still needs caller-created broker/backend infrastructure.
 - Flow still needs an injected run function and lacks a supported public runner assembly.
@@ -78,7 +78,7 @@ Release-relevant open stability work includes resource-aware push/full-suite exe
 
 General cache redesign, impact-aware validation, broad CI deduplication, and startup micro-optimization lack a release-candidate baseline. They should be measured after 0.1.0 unless a current failure demonstrates that they block reproducible release evidence.
 
-The approved release matrix remains broader than package development smoke: Ubuntu, macOS, Windows, Node 22 and 24, Memory-only, Flow stateless, Flow connected, facade installs, all supported harness projections, migration/rollback, monitor lifecycle, package integrity/provenance/OIDC/dist-tags, and a sequential merge-train simulation. RC acceptance requires immutable prerelease artifacts published under `next`, at least 50 distinct clean journey/environment pairs, every G0-G8 lane, and seven cumulative automated observation days without an unresolved S0/S1 event.
+The approved release matrix remains broader than package development smoke: Ubuntu, macOS, Windows, Node 24 and 26, Memory-only, Flow stateless, Flow connected, facade installs, all supported harness projections, migration/rollback, monitor lifecycle, package integrity/provenance/OIDC/dist-tags, and a sequential merge-train simulation. RC acceptance requires immutable prerelease artifacts published under `next`, at least 50 distinct clean journey/environment pairs, every G0-G8 lane, and seven cumulative automated observation days without an unresolved S0/S1 event.
 
 ## Confusion and low-value surfaces
 

@@ -28,11 +28,11 @@ This task list begins after this planning checkpoint is accepted. Every implemen
 
 **Owner:** Sol Memory owner  
 **Issue:** `12d92893`  
-**Files:** `packages/memory/**` and Memory package tests/docs.
+**Files:** `packages/memory/**` and Memory package tests/docs, plus the root implementation the default assembly needs: the SQLite/Kernel composition under `lib/kernel/**` (broker, driver, schema, migrations, and store paths the assembly uses), `lib/memory/**`, and `lib/project-memory.js`. The Memory owner moves or wraps those implementations into `packages/memory/**` and converts the root paths into thin delegates to `@forge/memory`, so one authority implementation remains. Other lanes that touch these root paths (for example claim projection in Task 2E) rebase on the extraction instead of editing the moved code in parallel.
 
 1. Start with a failing packed-install journey: create default Memory, store, recall with provenance, close, restart, recall.
 2. Add public authority/receipt acceptance cases for idempotent duplicate, conflict, stale head, wrong capability, and incomplete evidence. Include a contract-valid receipt from a non-Flow executor with Flow uninstalled.
-3. Implement the supported default local assembly without Flow imports.
+3. Move or wrap the root SQLite/Kernel composition into the package, leave root delegates behind, and implement the supported default local assembly without Flow imports. The packed package must contain everything the journey needs; `packages/memory/package.json` `files` publishes only package-local paths.
 4. Prove stable setup/unavailable errors in package-local Windows and Linux development smoke; final RC coverage expands to the approved platform/runtime matrix.
 
 ## Task 2B — standalone Flow and monitor reconciliation
@@ -99,7 +99,7 @@ Each lane owns only its named modules and focused tests. The validation owner ca
 1. Capture beta.5 state inventory and a verified backup.
 2. Prove dry-run, successful cutover, interruption recovery, and rollback.
 3. Prove sole-writer authority and no shadow writes.
-4. Remove remaining shipped Beads integration, including the importer, compatibility helpers, command/config hints, dependencies, and current docs. Search all callers and published artifacts; retain historical provenance and existing user data. Prove Kernel-native backup/restore and stable diagnostics for the removed command. Reconcile the older D45 import exception with the user's 2026-09-14 correction.
+4. Remove remaining shipped Beads integration, including the importer, compatibility helpers, command/config hints, dependencies, and current docs. Search all callers and published artifacts; retain historical provenance and existing user data. Prove Kernel-native backup/restore and stable diagnostics for the removed command. Locked decision D46 supersedes the older D45 import exception; the code removal is tracked by Forge issue `56a99d9b-a5d2-4c10-bc8d-6cb436006075`.
 5. Bind receipts to the exact package candidate BOM.
 
 ## Task 5 — release convergence
@@ -107,11 +107,12 @@ Each lane owns only its named modules and focused tests. The validation owner ca
 **Issues:** `eb2f1753`, then `8e634347`.
 
 1. Resolve every must/conditional disposition in `plan.md` against live state.
-2. Freeze the signed source/package/contract BOM, tag the exact candidate, and publish immutable prerelease packages in dependency order under `next`.
-3. Run the exact-artifact matrix against those registry packages on Ubuntu, macOS, Windows, Node 22 and 24, Memory-only, Flow stateless, Flow connected, facade installs, and Claude/Codex/Cursor/Hermes projections with truthful T0-T4 degradation.
-4. Prove migration/rollback, monitor/cancellation/cleanup, package integrity/provenance/OIDC/dist-tags, and one sequential merge-train simulation.
-5. Run the exact-head full suite and security gates; require durable `PASS` receipts for every G0-G8 lane.
-6. Run the minimal supported-skill acceptance corpus; move continuous self-improvement work out of the release gate.
-7. Accumulate at least 50 distinct clean RC journey/environment pairs and seven automated observation days across RCs with no unresolved S0/S1 event. A behavioral change creates a new RC; unaffected evidence remains reusable only when the BOM proves unchanged inputs.
-8. Perform a metadata-only version, changelog, documentation, and `latest` promotion of the accepted RC. Reverify fresh install, beta.5 upgrade, and rollback from the promoted artifacts.
-9. Re-fetch the live release root and enumerate every dependency before declaring completion.
+2. Complete every content-changing release preparation before the freeze: final package versions, changelog, and documentation. Nothing after this step may change package contents.
+3. Freeze the signed source/package/contract BOM, tag the exact candidate, and publish immutable prerelease packages in dependency order under `next`.
+4. Run the exact-artifact matrix against those registry packages on Ubuntu, macOS, Windows, Node 24 and 26, Memory-only, Flow stateless, Flow connected, facade installs, and Claude/Codex/Cursor/Hermes projections with truthful T0-T4 degradation.
+5. Prove migration/rollback, monitor/cancellation/cleanup, package integrity/provenance/OIDC/dist-tags, and one sequential merge-train simulation.
+6. Run the exact-head full suite and security gates; require durable `PASS` receipts for every G0-G8 lane.
+7. Run the minimal supported-skill acceptance corpus; move continuous self-improvement work out of the release gate.
+8. Accumulate at least 50 distinct clean RC journey/environment pairs and seven automated observation days across RCs with no unresolved S0/S1 event. A behavioral change creates a new RC; unaffected evidence remains reusable only when the BOM proves unchanged inputs. A version, changelog, or documentation change after the freeze also creates a new RC.
+9. Promote the exact accepted RC artifacts to `latest` by dist-tag change only; do not rebuild or republish. Reverify fresh install, beta.5 upgrade, and rollback from the promoted artifacts.
+10. Re-fetch the live release root and enumerate every dependency before declaring completion.
