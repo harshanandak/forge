@@ -10,6 +10,10 @@ User correction, 2026-09-14: Forge 0.1.0 ships no Beads integration, including t
 4. **Forge is a stateless compatibility facade.** It composes installed products explicitly and preserves existing CLI behavior. Missing products or providers return stable diagnostics.
 5. **`@forge/contracts` remains a physical shared library, not a product.** Memory governs authoritative schemas and acceptance semantics. Flow and Companion consume the library without importing Memory implementation code.
 
+## RC runtime matrix
+
+User correction, 2026-09-29: Forge 0.1.0 RC exact-artifact validation requires Node 24 and Node 26. This supersedes the older Node 22/24 row in [`docs/work/2026-08-09-forge-product-restructure/validation-matrix.md`](../2026-08-09-forge-product-restructure/validation-matrix.md). This decision scopes the 0.1.0 RC matrix only; it does not change package engines or global runtime support.
+
 ## Contract model
 
 1. Freeze the smallest v1 surface needed by supported journeys: `WorkPacket`, authority binding, `CapabilityManifest`, provider identity, canonical hashing/idempotency, cancellation, cleanup, evidence, stable errors, and terminal status.
