@@ -720,7 +720,7 @@ describe('CI Workflow Configuration', () => {
       expect(job.permissions).toEqual({ contents: 'read' });
       // Only the no-token tracking-issue job may write issues.
       expect(jobs['bun-pin-issue'].permissions).toEqual({ issues: 'write' });
-      expect(yaml.load(workflowContent).permissions).toEqual({ contents: 'read' });
+      expect(YAML.parse(workflowContent).permissions).toEqual({ contents: 'read' });
     });
 
     test('uses BUN_BUMP_TOKEN only for checkout, token detection, and the push/PR step', () => {
@@ -843,7 +843,7 @@ describe('CI Workflow Configuration', () => {
     test('the manual commands verify no PR is open before deleting or resetting the bump branch', () => {
       const template = fs.readFileSync(path.join(__dirname, '..', 'lib', 'workflow-templates', 'test.yml'));
       const { renderTestWorkflow } = require('../lib/test-workflow');
-      const issueJob = yaml.load(renderTestWorkflow(template, '1.4.2').toString()).jobs['bun-pin-issue'];
+      const issueJob = YAML.parse(renderTestWorkflow(template, '1.4.2').toString()).jobs['bun-pin-issue'];
       const { body } = runIssueStep({ existing: null, issueJob });
       const fenced = /```bash\n([\s\S]*?)\n```/.exec(body);
       expect(fenced).not.toBeNull();
