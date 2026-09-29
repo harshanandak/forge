@@ -167,12 +167,12 @@ describe('size workflow base-baseline step', () => {
 			git(root, ['config', 'user.email', 'test@example.com']);
 			git(root, ['config', 'user.name', 'Test']);
 			git(root, ['config', 'commit.gpgsign', 'false']);
-			write(root, 'README.md', 'base\n');
+			write(root, 'fixture.txt', 'base\n');
 			for (const [file, content] of Object.entries(parentFiles)) write(root, file, content);
 			git(root, ['add', '-A']);
 			git(root, ['commit', '-q', '-m', 'base']);
 			if (withParent) {
-				write(root, 'README.md', 'head\n');
+				write(root, 'fixture.txt', 'head\n');
 				git(root, ['commit', '-q', '-am', 'head']);
 			}
 			const result = spawnSync(resolveBashCommand(), ['-c', baselineStep().run], {
