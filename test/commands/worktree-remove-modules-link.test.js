@@ -105,6 +105,47 @@ describe('worktree removal never follows a shared node_modules link', () => {
     }
   }, 20000);
 
+  test('forge worktree remove restores the link when git refuses the removal (dirty worktree)', async () => {
+    const f = makeFixture();
+    if (!f) return;
+    try {
+      const result = await worktree.handler(['remove', 'linked'], {}, f.mainRoot, {
+        _exec: repoExec(f.mainRoot, () => { throw new Error("fatal: 'linked' contains modified or untracked files, use --force to delete it"); }),
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/modified or untracked/);
+      expect(fs.existsSync(f.worktreePath)).toBe(true);
+      const modules = path.join(f.worktreePath, 'node_modules');
+      expect(fs.lstatSync(modules).isSymbolicLink()).toBe(true);
+      expect(fs.existsSync(path.join(modules, 'left-pad', 'package.json'))).toBe(true);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  test('forge clean restores the link when every removal step fails', async () => {
+    const f = makeFixture();
+    if (!f) return;
+    try {
+      const runFile = (cmd, args) => {
+        if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'remove') throw new Error('locked');
+        return Buffer.from('');
+      };
+      const refuse = () => { const e = new Error('busy'); e.code = 'EBUSY'; throw e; };
+      const outcome = await clean._internals.removeWorktreeRobust(
+        f.worktreePath, runFile, { ...fs, rmSync: refuse }, { _sleep: async () => {}, _maxTries: 1 },
+      );
+
+      expect(outcome.removed).toBe(false);
+      const modules = path.join(f.worktreePath, 'node_modules');
+      expect(fs.lstatSync(modules).isSymbolicLink()).toBe(true);
+      expect(sentinelIntact(f)).toBe(true);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  }, 20000);
+
   test('forge clean removal detaches the link first; the linked target is intact', async () => {
     const f = makeFixture();
     if (!f) return;
