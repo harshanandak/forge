@@ -231,6 +231,30 @@ describe('resolveMainWorktree / resolveInvokingWorktreeRoot (PR #582 review)', (
     expect(resolveInvokingWorktreeRoot(linked, runFile, main)).toEqual({ root: linked });
   });
 
+  test('preserves a path-owned terminal carriage return before git output newline', () => {
+    const root = path.resolve('/fake/main\r');
+    const linked = path.join(root, '.worktrees', 'linked\r');
+    const runFile = (cmd, args) => {
+      if (args.includes('list')) {
+        return [`worktree ${toPorcelain(root)}`, 'HEAD 0123', 'branch refs/heads/main', '',
+          `worktree ${toPorcelain(linked)}`, 'HEAD 0123', 'branch refs/heads/linked', '', ''].join('\0');
+      }
+      const cwd = args[args.indexOf('-C') + 1];
+      const answers = {
+        '--git-dir': '.git',
+        '--git-common-dir': '.git',
+        '--show-toplevel': cwd,
+      };
+      if (args.includes('rev-parse')) return args.filter((a) => answers[a]).map((a) => `${answers[a]}\n`).join('');
+      if (args.includes('core.worktree')) throw new Error('unset');
+      return '';
+    };
+
+    const main = resolveMainWorktree(root, runFile);
+    expect(main.root).toBe(root);
+    expect(resolveInvokingWorktreeRoot(linked, runFile, main)).toEqual({ root: linked });
+  });
+
   test('resolveInvokingWorktreeRoot fails closed when git lists worktrees but show-toplevel fails', () => {
     const main = { root: path.resolve('/fake/app'), bare: false, worktrees: [{ path: path.resolve('/fake/app'), bare: false }] };
     const failing = () => { throw new Error('ETIMEDOUT'); };
