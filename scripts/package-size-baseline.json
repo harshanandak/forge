@@ -1,7 +1,7 @@
 {
   "total": {
-    "tarball": 1310469,
-    "unpacked": 4766035,
+    "tarball": 1310467,
+    "unpacked": 4766027,
     "files": 452
   },
   "blocks": {
@@ -18,7 +18,7 @@
       "files": 7
     },
     "flow": {
-      "bytes": 104273,
+      "bytes": 104265,
       "files": 8
     },
     "kernel": {
