@@ -146,12 +146,34 @@ describe('protected state surfaces', () => {
 
 			expect(result.allowed).toBe(true);
 			expect(fs.readFileSync(path.join(root, '.forge/config.yaml'), 'utf8')).toBe('version: 1\n');
+			if (process.platform !== 'win32') {
+				expect(fs.statSync(path.join(root, '.forge/config.yaml')).mode & 0o777).toBe(0o600);
+			}
 
 			const blocked = writeProtectedFile(root, '.forge/config.yaml', 'bad: true\n', {
 				actor: 'codex',
 			});
 			expect(blocked.allowed).toBe(false);
 			expect(fs.readFileSync(path.join(root, '.forge/config.yaml'), 'utf8')).toBe('version: 1\n');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('fails closed when a requested protected-file mode cannot be applied', () => {
+		const root = createTempDir();
+		try {
+			const result = writeProtectedFile(root, '.forge/config.yaml', 'version: 1\n', {
+				actor: 'forge',
+				surface: 'forge_config',
+				viaForgeApi: true,
+				mode: -1,
+			});
+
+			expect(result).toMatchObject({ allowed: false, decision: 'blocked' });
+			expect(result.reason).toContain('Protected atomic write failed');
+			expect(fs.existsSync(path.join(root, '.forge/config.yaml'))).toBe(false);
+			expect(fs.readdirSync(path.join(root, '.forge'))).toEqual([]);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
