@@ -127,6 +127,90 @@ describe('size workflow renderer', () => {
 	test('has exactly one owner: it is no longer a pin-only Bun workflow', () => {
 		expect(BUN_WORKFLOW_SPECS.map((spec) => spec.path)).not.toContain(SIZE_WORKFLOW_PATH);
 	});
+
+	test('pins Node from the same source as npm-publish.yml before measuring the package', () => {
+		const { WORKFLOW_NODE_VERSION, renderNpmPublishWorkflow } = require('../lib/npm-publish-workflow');
+		expect(Number.isInteger(WORKFLOW_NODE_VERSION)).toBe(true);
+		const steps = yaml.load(renderSizeWorkflow('1.4.2').toString('utf8')).jobs['size-check'].steps;
+		const setupIndex = steps.findIndex((s) => (s.uses || '').startsWith('actions/setup-node'));
+		const checkIndex = steps.findIndex((s) => (s.run || '').includes('node scripts/package-size-check.js'));
+		expect(setupIndex).toBeGreaterThanOrEqual(0);
+		expect(setupIndex).toBeLessThan(checkIndex);
+		expect(steps[setupIndex].with['node-version']).toBe(WORKFLOW_NODE_VERSION);
+		// Same action ref style as the other generated workflows, and npm-publish.yml pins the same version.
+		const publishJobs = Object.values(yaml.load(renderNpmPublishWorkflow('1.4.2')).jobs);
+		const publishSetups = publishJobs.flatMap((job) => job.steps || []).filter((s) => (s.uses || '').startsWith('actions/setup-node'));
+		expect(publishSetups.length).toBeGreaterThan(0);
+		for (const step of publishSetups) {
+			expect(step.uses).toBe(steps[setupIndex].uses);
+			expect(step.with['node-version']).toBe(WORKFLOW_NODE_VERSION);
+		}
+	});
+});
+
+describe('size workflow base-baseline step', () => {
+	const { resolveBashCommand } = require('./helpers/bash');
+	const BASELINE = 'scripts/package-size-baseline.json';
+
+	function baselineStep() {
+		const steps = yaml.load(renderSizeWorkflow('1.4.2').toString('utf8')).jobs['size-check'].steps;
+		return steps.find((s) => s.if === "github.event_name == 'pull_request'" && (s.run || '').includes('base-baseline.json'));
+	}
+
+	// Builds a repo whose HEAD^1 is `parent` (a list of files) and runs the rendered step in bash.
+	function runStep(parentFiles, { withParent = true } = {}) {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'size-base-step-'));
+		const runnerTemp = path.join(root, '.runner-temp');
+		fs.mkdirSync(runnerTemp);
+		try {
+			git(root, ['init', '-q']);
+			git(root, ['config', 'user.email', 'test@example.com']);
+			git(root, ['config', 'user.name', 'Test']);
+			git(root, ['config', 'commit.gpgsign', 'false']);
+			write(root, 'README.md', 'base\n');
+			for (const [file, content] of Object.entries(parentFiles)) write(root, file, content);
+			git(root, ['add', '-A']);
+			git(root, ['commit', '-q', '-m', 'base']);
+			if (withParent) {
+				write(root, 'README.md', 'head\n');
+				git(root, ['commit', '-q', '-am', 'head']);
+			}
+			const result = spawnSync(resolveBashCommand(), ['-c', baselineStep().run], {
+				cwd: root,
+				encoding: 'utf8',
+				env: { ...process.env, RUNNER_TEMP: runnerTemp },
+			});
+			const out = path.join(runnerTemp, 'base-baseline.json');
+			return { status: result.status, stderr: result.stderr, written: fs.existsSync(out) ? fs.readFileSync(out, 'utf8') : null };
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}
+
+	test('never swallows git errors with an "|| rm -f" fallback', () => {
+		const run = baselineStep().run;
+		expect(run).toContain('set -euo pipefail');
+		expect(run).toContain(`git ls-tree --name-only HEAD^1 -- ${BASELINE}`);
+		expect(run).not.toMatch(/\|\|/);
+	});
+
+	test('copies the base baseline when HEAD^1 has one', () => {
+		const result = runStep({ [BASELINE]: '{"total":{}}\n' });
+		expect(result.status).toBe(0);
+		expect(result.written).toBe('{"total":{}}\n');
+	}, 30000);
+
+	test('falls back (no file, exit 0) only when HEAD^1 genuinely has no baseline', () => {
+		const result = runStep({});
+		expect(result.status).toBe(0);
+		expect(result.written).toBeNull();
+	}, 30000);
+
+	test('fails the step when git cannot read HEAD^1', () => {
+		const result = runStep({ [BASELINE]: '{}\n' }, { withParent: false });
+		expect(result.status).not.toBe(0);
+		expect(result.written).toBeNull();
+	}, 30000);
 });
 
 describe('Forge-owned size workflow writer', () => {

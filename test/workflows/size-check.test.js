@@ -73,8 +73,19 @@ describe('.github/workflows/size-check.yml', () => {
     const baselineStep = steps.find((s) => (s.run || '').includes('base-baseline.json') && s.if);
     expect(baselineStep.if).toBe("github.event_name == 'pull_request'");
     expect(baselineStep.run).toContain('git show HEAD^1:scripts/package-size-baseline.json');
-    // No baseline on the base branch: drop the partial file so the check runs without --previous data.
-    expect(baselineStep.run).toContain('|| rm -f "$RUNNER_TEMP/base-baseline.json"');
+    // Only a genuinely absent baseline falls back (ls-tree lists nothing); git errors fail the step.
+    expect(baselineStep.run).toContain('git ls-tree --name-only HEAD^1 -- scripts/package-size-baseline.json');
+    expect(baselineStep.run).not.toMatch(/\|\|/);
+  });
+
+  test('pins Node before measuring, from the npm-publish.yml Node source', () => {
+    const { WORKFLOW_NODE_VERSION } = require('../../lib/npm-publish-workflow');
+    const steps = allSteps(loadWorkflow());
+    const setup = steps.findIndex((s) => (s.uses || '').startsWith('actions/setup-node'));
+    const measure = steps.findIndex((s) => (s.run || '').includes('node scripts/package-size-check.js'));
+    expect(setup).toBeGreaterThanOrEqual(0);
+    expect(setup).toBeLessThan(measure);
+    expect(steps[setup].with['node-version']).toBe(WORKFLOW_NODE_VERSION);
   });
 
   test('reports to the step summary and needs no PR write permission', () => {
