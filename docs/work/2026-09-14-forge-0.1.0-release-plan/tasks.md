@@ -97,10 +97,9 @@ Each lane owns only its named modules and focused tests. The validation owner ca
 **Issue:** `f2a96ff1`.
 
 1. Capture beta.5 state inventory and a verified backup.
-2. Prove dry-run, successful cutover, interruption recovery, and rollback.
-3. Prove sole-writer authority and no shadow writes.
-4. Remove remaining shipped Beads integration, including the importer, compatibility helpers, command/config hints, dependencies, and current docs. Search all callers and published artifacts; retain historical provenance and existing user data. Prove Kernel-native backup/restore and stable diagnostics for the removed command. Locked decision D46 supersedes the older D45 import exception; the code removal is tracked by Forge issue `56a99d9b-a5d2-4c10-bc8d-6cb436006075`.
-5. Repack the post-removal package set, then bind migration receipts to that exact candidate BOM. Any content change after this repack requires a new candidate and fresh migration evidence.
+2. Remove remaining shipped Beads integration, including the importer, compatibility helpers, command/config hints, dependencies, and current docs. Search all callers and published artifacts; retain historical provenance and existing user data. Locked decision D46 supersedes the older D45 import exception; the code removal is tracked by Forge issue `56a99d9b-a5d2-4c10-bc8d-6cb436006075`.
+3. Repack the post-removal package set and bind the candidate BOM to that exact package set. Any content change after this repack invalidates the candidate and requires a new repack plus fresh migration evidence.
+4. Against the exact repacked BOM, generate fresh evidence for dry-run, successful cutover, interruption recovery, rollback, sole-writer authority, no shadow writes, Kernel-native backup/restore, and stable diagnostics for the removed command. Do not relabel or reuse receipts produced before this repack.
 
 ## Task 5 — release convergence
 
