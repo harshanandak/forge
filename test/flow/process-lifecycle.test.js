@@ -1,5 +1,6 @@
 "use strict";
 
+const { createHash } = require("node:crypto");
 const { describe, expect, test } = require("bun:test");
 
 const {
@@ -335,4 +336,13 @@ describe("process lifecycle state machine", () => {
     expect(JSON.parse(serialized)).toEqual(snapshot);
     expect(() => lifecycle.dispatch(nearBudgetEvent(maxLengthId(256), "tick"))).toThrow("event cap");
   });
+});
+
+test("seen-event digests order keys by UTF-16 code unit, not locale", () => {
+  const lifecycle = createProcessLifecycle(options({ clock: () => 0 }));
+  lifecycle.dispatch(event("e1", "start", { metadata: { a: 2, B: 1 } }));
+  const expected = createHash("sha256")
+    .update(JSON.stringify({ id: "e1", metadata: { B: 1, a: 2 }, type: "start" }), "utf8")
+    .digest("hex");
+  expect(lifecycle.snapshot().seenEvents.e1).toBe(expected);
 });

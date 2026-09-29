@@ -1,5 +1,6 @@
 "use strict";
 
+const { createHash } = require("node:crypto");
 const { describe, expect, test } = require("bun:test");
 
 const {
@@ -301,4 +302,13 @@ describe("bounded loop state machine", () => {
       terminalReason: "ELAPSED_CAP",
     });
   });
+});
+
+test("seen-event digests order keys by UTF-16 code unit, not locale", () => {
+  const loop = createBoundedLoop(options({ clock: () => 0 }));
+  loop.dispatch(event("e1", "start", { metadata: { a: 2, B: 1 } }));
+  const expected = createHash("sha256")
+    .update(JSON.stringify({ id: "e1", metadata: { B: 1, a: 2 }, type: "start" }), "utf8")
+    .digest("hex");
+  expect(loop.snapshot().seenEvents.e1).toBe(expected);
 });
