@@ -27,6 +27,8 @@ The trusted npm workflow is generated through `forge release generate-npm-workfl
 
 Generate the canonical test workflow through `forge release generate-test-workflow --expect-head "$(git rev-parse HEAD)"`. The command renders the staged `lib/workflow-templates/test.yml` with the staged manifest's exact Bun version, rejects unrelated target bytes, and binds the protected write to the expected HEAD and exact generated content. For a Bun version change, use `forge release update-bun-pins --expect-head "$(git rev-parse HEAD)"`; it delegates `test.yml` to the same full renderer while preserving the pin-only updates for the other workflows.
 
+Generate the package size workflow through `forge release generate-size-workflow --expect-head "$(git rev-parse HEAD)"`. The command renders `.github/workflows/size-check.yml` from the staged block manifest `scripts/package-budgets.json` (its path filters are the manifest's block paths plus the check's own inputs) and the staged manifest's exact Bun version, rejects unrelated target bytes, and binds the protected write to the expected HEAD and exact generated content. After adding or changing a block, regenerate the workflow and run `node scripts/package-size-check.js --write-baseline`. A Bun version change still goes through `forge release update-bun-pins`, which rewrites only the pin line, and that gives the same bytes as a full regeneration.
+
 For docs-heavy changes, also run a Markdown link check if available. If no docs checker exists and adding one would broaden the PR, create a follow-up issue instead.
 
 ## Packaging Check

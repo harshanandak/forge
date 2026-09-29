@@ -1,12 +1,12 @@
 {
   "total": {
-    "tarball": 1309771,
-    "unpacked": 4940455,
-    "files": 536
+    "tarball": 1313743,
+    "unpacked": 4955465,
+    "files": 537
   },
   "blocks": {
     "cli": {
-      "bytes": 1124147,
+      "bytes": 1124745,
       "files": 73
     },
     "contracts": {
@@ -26,8 +26,8 @@
       "files": 22
     },
     "lib": {
-      "bytes": 1600079,
-      "files": 142
+      "bytes": 1614491,
+      "files": 143
     },
     "memory-core": {
       "bytes": 89268,
