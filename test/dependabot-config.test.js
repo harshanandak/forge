@@ -1,7 +1,7 @@
 const { describe, test, expect } = require("bun:test");
 const { readFileSync, existsSync } = require("fs");
 const { resolve } = require("path");
-const yaml = require("js-yaml");
+const YAML = require("yaml");
 
 const configPath = resolve(__dirname, "../.github/dependabot.yml");
 
@@ -12,18 +12,18 @@ describe("dependabot.yml", () => {
 
   test("is valid YAML", () => {
     const content = readFileSync(configPath, "utf8");
-    expect(() => yaml.load(content)).not.toThrow();
+    expect(() => YAML.parse(content)).not.toThrow();
   });
 
   test("has version 2", () => {
     const content = readFileSync(configPath, "utf8");
-    const config = yaml.load(content);
+    const config = YAML.parse(content);
     expect(config.version).toBe(2);
   });
 
   test("has npm and github-actions ecosystems", () => {
     const content = readFileSync(configPath, "utf8");
-    const config = yaml.load(content);
+    const config = YAML.parse(content);
     const ecosystems = config.updates.map((u) => u["package-ecosystem"]);
     expect(ecosystems).toContain("npm");
     expect(ecosystems).toContain("github-actions");
@@ -31,7 +31,7 @@ describe("dependabot.yml", () => {
 
   test("npm has weekly schedule on monday", () => {
     const content = readFileSync(configPath, "utf8");
-    const config = yaml.load(content);
+    const config = YAML.parse(content);
     const npm = config.updates.find((u) => u["package-ecosystem"] === "npm");
     expect(npm.schedule.interval).toBe("weekly");
     expect(npm.schedule.day).toBe("monday");
@@ -41,7 +41,7 @@ describe("dependabot.yml", () => {
 
   test("npm has production-deps and dev-deps groups", () => {
     const content = readFileSync(configPath, "utf8");
-    const config = yaml.load(content);
+    const config = YAML.parse(content);
     const npm = config.updates.find((u) => u["package-ecosystem"] === "npm");
     expect(npm.groups["production-deps"]).toBeDefined();
     expect(npm.groups["production-deps"]["dependency-type"]).toBe("production");
@@ -51,7 +51,7 @@ describe("dependabot.yml", () => {
 
   test("npm has labels and open-pull-requests-limit", () => {
     const content = readFileSync(configPath, "utf8");
-    const config = yaml.load(content);
+    const config = YAML.parse(content);
     const npm = config.updates.find((u) => u["package-ecosystem"] === "npm");
     expect(npm.labels).toContain("dependencies");
     expect(npm["open-pull-requests-limit"]).toBe(10);
@@ -59,7 +59,7 @@ describe("dependabot.yml", () => {
 
   test("github-actions has weekly schedule on monday", () => {
     const content = readFileSync(configPath, "utf8");
-    const config = yaml.load(content);
+    const config = YAML.parse(content);
     const gha = config.updates.find(
       (u) => u["package-ecosystem"] === "github-actions",
     );
@@ -70,7 +70,7 @@ describe("dependabot.yml", () => {
 
   test("github-actions has groups", () => {
     const content = readFileSync(configPath, "utf8");
-    const config = yaml.load(content);
+    const config = YAML.parse(content);
     const gha = config.updates.find(
       (u) => u["package-ecosystem"] === "github-actions",
     );
@@ -80,7 +80,7 @@ describe("dependabot.yml", () => {
 
   test("github-actions has correct labels", () => {
     const content = readFileSync(configPath, "utf8");
-    const config = yaml.load(content);
+    const config = YAML.parse(content);
     const gha = config.updates.find(
       (u) => u["package-ecosystem"] === "github-actions",
     );

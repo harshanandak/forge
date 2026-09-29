@@ -1,12 +1,12 @@
 const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
-const yaml = require('js-yaml');
+const YAML = require('yaml');
 
 const CONFIG_PATH = path.join(__dirname, '..', '.coderabbit.yaml');
 
 function loadConfig() {
-	return yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8'));
+	return YAML.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 }
 
 describe('.coderabbit.yaml', () => {
