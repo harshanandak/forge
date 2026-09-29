@@ -6,7 +6,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { authorizeAndConsumeProtectedStateWrites } = require('../lib/protected-state-authority');
-const { retireWorkflows, producedRequiredContexts } = require('../lib/workflow-retirement');
+const {
+	createRulesetRequirementsReader,
+	producedRequiredContexts,
+	retireWorkflows,
+} = require('../lib/workflow-retirement');
 const releaseCommand = require('../lib/commands/release');
 
 const WORKFLOWS = {
@@ -57,6 +61,7 @@ function options(fixture, overrides = {}) {
 		reason: 'Folded into Tests stage 0',
 		kernelDeps: fixture.kernelDeps,
 		readRequiredContexts: async () => ['CI Gate'],
+		readRulesetRequirements: async () => ({ contexts: [], workflowPaths: [] }),
 		recordProtectedStateAuditEvent: () => ({ success: true }),
 		...overrides,
 	};
@@ -146,6 +151,60 @@ describe('forge release retire-workflow', () => {
 		expect(fixture.rows).toHaveLength(0);
 	}), 15_000);
 
+	test('refuses a workflow whose job produces a context a ruleset requires', () => withFixture(async fixture => {
+		const byContext = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/matrix.yml'],
+			readRequiredContexts: async () => [],
+			readRulesetRequirements: async () => ({ contexts: ['Test ubuntu'], workflowPaths: [] }),
+		}));
+		expect(byContext.success).toBe(false);
+		expect(byContext.error).toContain('Test ubuntu');
+		const byWorkflowRule = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/matrix.yml'],
+			readRulesetRequirements: async () => ({ contexts: [], workflowPaths: ['.github/workflows/matrix.yml'] }),
+		}));
+		expect(byWorkflowRule.success).toBe(false);
+		expect(byWorkflowRule.error).toContain('ruleset');
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/matrix.yml'))).toBe(true);
+		expect(fixture.rows).toHaveLength(0);
+	}), 15_000);
+
+	test('refuses when repository rulesets are unreadable', () => withFixture(async fixture => {
+		for (const readRulesetRequirements of [
+			async () => { throw new Error('HTTP 403'); },
+			async () => null,
+			async () => ({ contexts: [7], workflowPaths: [] }),
+			async () => ({ contexts: [] }),
+			undefined,
+		]) {
+			const result = await retireWorkflows(fixture.root, options(fixture, {
+				paths: ['.github/workflows/matrix.yml'],
+				readRulesetRequirements,
+			}));
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/ruleset/i);
+		}
+		expect(fixture.rows).toHaveLength(0);
+	}), 15_000);
+
+	test('parses ruleset rules into required contexts and workflow paths, failing closed on bad shapes', async () => {
+		const rules = [
+			{ type: 'pull_request', parameters: {} },
+			{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'CI Gate', integration_id: 1 }] } },
+			{ type: 'workflows', parameters: { workflows: [{ path: '.github/workflows/test.yml', repository_id: 1 }] } },
+		];
+		const read = createRulesetRequirementsReader(() => JSON.stringify(rules), 'root', { owner: 'o', repo: 'r', base: 'master' });
+		expect(await read()).toEqual({ contexts: ['CI Gate'], workflowPaths: ['.github/workflows/test.yml'] });
+		const empty = createRulesetRequirementsReader(() => '[]', 'root', { owner: 'o', repo: 'r', base: 'master' });
+		expect(await empty()).toEqual({ contexts: [], workflowPaths: [] });
+		for (const body of ['{}', '[{"type":"required_status_checks","parameters":{}}]', 'not json']) {
+			const bad = createRulesetRequirementsReader(() => body, 'root', { owner: 'o', repo: 'r', base: 'master' });
+			await expect(bad()).rejects.toThrow();
+		}
+		const full = createRulesetRequirementsReader(() => JSON.stringify(Array.from({ length: 100 }, () => rules[0])), 'root', { owner: 'o', repo: 'r', base: 'master' });
+		await expect(full()).rejects.toThrow();
+	});
+
 	test('refuses a workflow another workflow depends on unless both retire together', () => withFixture(async fixture => {
 		const byRun = await retireWorkflows(fixture.root, options(fixture, { paths: ['.github/workflows/lint.yml'] }));
 		expect(byRun.success).toBe(false);
@@ -224,6 +283,7 @@ describe('forge release retire-workflow', () => {
 				return { success: true, paths: params.paths, sourceHead: head };
 			},
 			readRequiredContexts: async () => [],
+			readRulesetRequirements: async () => ({ contexts: [], workflowPaths: [] }),
 		});
 		expect(result.success).toBe(true);
 		expect(called.root).toBe('root');
