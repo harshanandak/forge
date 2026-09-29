@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { detachModulesLink, detachWorktreeModulesLink } = require('../lib/modules-link');
+const { detachModulesLink, detachWorktreeModulesLink, detachWorktreeModulesLinkRestorable } = require('../lib/modules-link');
 
 const LINK_ERRORS = new Set(['EPERM', 'EACCES', 'ENOSYS', 'UV_EPERM']);
 
@@ -46,5 +46,17 @@ describe('modules-link', () => {
       unlinkSync: () => { const e = new Error('busy'); e.code = 'EBUSY'; throw e; },
     };
     expect(() => detachWorktreeModulesLink('/wt', lockedLink)).toThrow(/node_modules/);
+  });
+
+  test('a restorable detach fails before unlinking when the link target is unreadable', () => {
+    let unlinked = false;
+    const unreadableLink = {
+      lstatSync: () => ({ isSymbolicLink: () => true }),
+      readlinkSync: () => { const error = new Error('access denied'); error.code = 'EACCES'; throw error; },
+      unlinkSync: () => { unlinked = true; },
+    };
+
+    expect(() => detachWorktreeModulesLinkRestorable('/wt', unreadableLink)).toThrow(/node_modules/);
+    expect(unlinked).toBe(false);
   });
 });

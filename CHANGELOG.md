@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The default Windows full-suite budget is sized from real cores.** Windows budgets are charged per OS process (subprocess and exclusive workers cost 2), so the default Windows budget is now the machine's core count (`os.availableParallelism()`, capped at 6) instead of cores minus one. A 4-vCPU Windows runner now runs two subprocess workers (4 processes) instead of one; a 2-vCPU runner still runs one, non-Windows defaults are unchanged, and an explicit `--shards N` budget still wins. (issue `42376a6c`)
 - **Windows CI test jobs put TEMP/TMP on the runner work drive.** The full matrix, Windows smoke, and targeted PR test jobs point `TEMP` and `TMP` at `runner.temp` on Windows only, instead of the image's C: default; heavy fixture files ran 21-25% faster with TEMP off C: locally. Non-Windows jobs are unchanged. (issue `42376a6c`)
 
+### Fixed
+
+- **Worktree lifecycle commands use the main checkout's `.worktrees` directory and fail closed around nested worktrees and shared dependency links.** Create, remove, clean, and eval no longer place worktrees below a linked checkout; removal protects registered descendants and preserves dependency links whenever removal is refused or their target cannot be read. (PR #582; issue `7910146e-567c-4fdd-aa99-59ad46640077`)
+
 ## [0.1.0-beta.8] - 2026-09-26
 
 ### Added
