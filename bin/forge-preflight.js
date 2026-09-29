@@ -16,6 +16,7 @@
 
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const { runtimeVersionError } = require("../lib/node-requirement");
 
 // Validation results
 let checks = [];
@@ -306,6 +307,13 @@ function main() {
   ) {
     showHelp();
     process.exit(0);
+  }
+
+  // Runtime floor (Node >= 24, or Bun >= 1.2 under Bun); help stays exempt.
+  const runtimeError = runtimeVersionError();
+  if (runtimeError) {
+    console.error(`Forge: ${runtimeError}`);
+    process.exit(1);
   }
 
   let success;
