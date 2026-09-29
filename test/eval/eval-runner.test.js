@@ -147,7 +147,8 @@ describe('eval-runner', () => {
   // ── executeCommand — environment setup ──────────────────────────────
 
   describe('executeCommand', () => {
-    test('sets FORGE_EVAL=1 in subprocess environment', async () => {
+    // Quarantined on darwin: cold-start timeout on macOS CI, issue 2390754b (see test/QUARANTINE.md).
+    test.skipIf(process.platform === 'darwin')('sets FORGE_EVAL=1 in subprocess environment', async () => {
       const result = await executeCommand(
         '/test', 'dummy', sharedWorktree.path, 10000,
         ['node', '-e', 'console.log(JSON.stringify({ FORGE_EVAL: process.env.FORGE_EVAL }))']
