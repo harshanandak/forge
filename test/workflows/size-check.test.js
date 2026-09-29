@@ -3,14 +3,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
-const yaml = require('js-yaml');
+const YAML = require('yaml');
 
 const ROOT = path.join(__dirname, '..', '..');
 const WORKFLOW_PATH = path.join(ROOT, '.github', 'workflows', 'size-check.yml');
 const PACK_TIMEOUT_MS = 120000;
 
 function loadWorkflow() {
-  return yaml.load(fs.readFileSync(WORKFLOW_PATH, 'utf8'));
+  return YAML.parse(fs.readFileSync(WORKFLOW_PATH, 'utf8'));
 }
 
 function allSteps(workflow) {
