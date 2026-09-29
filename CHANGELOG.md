@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-block package size budgets, with a Forge-generated size workflow.** The Package Size Monitor now measures the published package (`npm pack --dry-run --json`) instead of the whole repo checkout. It maps every shipped file to a named block in `scripts/package-budgets.json` and fails when a block or the total grows more than max(2%, 20KB) (or 2% of files) above the committed baseline without that PR updating the baseline, or when the package goes over the 10MB unpacked ceiling. The check runs on every PR and push (no path filters), and `.github/workflows/size-check.yml` is rendered by `forge release generate-size-workflow --expect-head <sha>` under the same exact-bytes authorization as the test workflow; `forge release update-bun-pins` delegates it to the same renderer. (issue `46d25e0a`)
+
 ### Changed
 
 - **BREAKING: Node.js 22 is no longer supported; Forge requires Node.js >= 24. CI tests Node 24 and 26.** The `engines.node` field of `forge-workflow` and the `@forge/contracts`, `@forge/flow`, and `@forge/memory` workspaces is now `>=24.0.0`, and `forge setup` prerequisite checks reject older Node.js with an upgrade message. (issue `5d745884`)
