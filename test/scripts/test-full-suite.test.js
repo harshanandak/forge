@@ -805,6 +805,7 @@ describe('scripts/test-full-suite.js', () => {
       'test/scripts/commitlint.test.js',
       'test/scripts/dep-guard.apply-decision.test.js',
       'test/scripts/process-tree.test.js',
+      'test/size-workflow.test.js',
       'test/sync-agent-skills-authority.test.js',
       'test/test-dashboard.test.js',
       'test/test-workflow.test.js',
