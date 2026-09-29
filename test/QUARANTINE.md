@@ -36,3 +36,5 @@ only when the issue is closed and the test has been un-skipped.
 | `test/bun-workflow-pins.test.js` › accepts only complete same-version staged test workflow projections | watching | 2026-09-29 | `5dc2ac03` | First local Windows Git subprocess failure at 20333ms against the test's 20000ms budget during concurrent focused suites; unchanged test and same-version validation path. |
 
 <!-- Add a row above. Keep it one line per test; details belong in the issue. -->
+| `test/commands/init-hooks-onboarding.test.js` > a bare git repo is HOOKS_NOT_ACTIVE before any init (sanity) | quarantined (win32 only) | 2026-09-29 | `a8dc2c86` | PR #601 Windows Node 26 CI run 36606854498, job 109538024448: 15535ms against 15000ms; test and init implementation unchanged from master; investigate runtime-health cold probes. |
+| `test/flow/src/bounded-loop.test.js` > accepts the configured 256-event ceiling with fixed-size seen-event digests | watching | 2026-09-29 | `4399035a` | Local Windows Bun 1.4.2 focused run: 7324ms against 5000ms; no CI evidence, no skip or timeout increase. |

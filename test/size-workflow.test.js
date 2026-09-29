@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const yaml = require('js-yaml');
+const YAML = require('yaml');
 const { hashProtectedContent } = require('../lib/protected-state-surfaces');
 const protectedStateAuthority = require('../lib/protected-state-authority');
 const { BUN_WORKFLOW_SPECS } = require('../lib/bun-workflow-pins');
@@ -106,7 +106,7 @@ describe('size workflow renderer', () => {
 		}
 		expect(renderSizeWorkflow.length).toBe(1);
 		expect(first.toString('utf8')).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
-		expect(() => yaml.load(first.toString('utf8'))).not.toThrow();
+		expect(() => YAML.parse(first.toString('utf8'))).not.toThrow();
 	});
 
 	test('the committed workflow equals the render of the pinned Bun version (drift test)', () => {
@@ -115,7 +115,7 @@ describe('size workflow renderer', () => {
 	});
 
 	test('has no path filters, so no new publishable path can escape the check', () => {
-		const workflow = yaml.load(renderSizeWorkflow('1.4.2').toString('utf8'));
+		const workflow = YAML.parse(renderSizeWorkflow('1.4.2').toString('utf8'));
 		expect(workflow.on.push).toEqual({ branches: ['main', 'master'] });
 		expect(workflow.on.pull_request).toEqual({ branches: ['main', 'master'] });
 	});
@@ -131,14 +131,14 @@ describe('size workflow renderer', () => {
 	test('pins Node from the same source as npm-publish.yml before measuring the package', () => {
 		const { WORKFLOW_NODE_VERSION, renderNpmPublishWorkflow } = require('../lib/npm-publish-workflow');
 		expect(Number.isInteger(WORKFLOW_NODE_VERSION)).toBe(true);
-		const steps = yaml.load(renderSizeWorkflow('1.4.2').toString('utf8')).jobs['size-check'].steps;
+		const steps = YAML.parse(renderSizeWorkflow('1.4.2').toString('utf8')).jobs['size-check'].steps;
 		const setupIndex = steps.findIndex((s) => (s.uses || '').startsWith('actions/setup-node'));
 		const checkIndex = steps.findIndex((s) => (s.run || '').includes('node scripts/package-size-check.js'));
 		expect(setupIndex).toBeGreaterThanOrEqual(0);
 		expect(setupIndex).toBeLessThan(checkIndex);
 		expect(steps[setupIndex].with['node-version']).toBe(WORKFLOW_NODE_VERSION);
 		// Same action ref style as the other generated workflows, and npm-publish.yml pins the same version.
-		const publishJobs = Object.values(yaml.load(renderNpmPublishWorkflow('1.4.2')).jobs);
+		const publishJobs = Object.values(YAML.parse(renderNpmPublishWorkflow('1.4.2')).jobs);
 		const publishSetups = publishJobs.flatMap((job) => job.steps || []).filter((s) => (s.uses || '').startsWith('actions/setup-node'));
 		expect(publishSetups.length).toBeGreaterThan(0);
 		for (const step of publishSetups) {
@@ -153,7 +153,7 @@ describe('size workflow base-baseline step', () => {
 	const BASELINE = 'scripts/package-size-baseline.json';
 
 	function baselineStep() {
-		const steps = yaml.load(renderSizeWorkflow('1.4.2').toString('utf8')).jobs['size-check'].steps;
+		const steps = YAML.parse(renderSizeWorkflow('1.4.2').toString('utf8')).jobs['size-check'].steps;
 		return steps.find((s) => s.if === "github.event_name == 'pull_request'" && (s.run || '').includes('base-baseline.json'));
 	}
 

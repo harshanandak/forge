@@ -3,7 +3,7 @@
 const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
-const yaml = require('js-yaml');
+const YAML = require('yaml');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const WORKFLOW = path.join(ROOT, '.github', 'workflows', 'pr-monitor.yml');
@@ -13,7 +13,7 @@ function readWorkflow() {
 }
 
 function loadWorkflow() {
-  return yaml.load(readWorkflow());
+  return YAML.parse(readWorkflow());
 }
 
 function runSteps(doc) {
