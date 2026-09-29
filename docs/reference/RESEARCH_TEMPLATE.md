@@ -230,7 +230,7 @@
 
 - **Type**: Tactical / Strategic
   - **Rationale**: [Why this classification]
-  - **OpenSpec needed**: Yes / No
+  - **Kernel issues needed**: [Epic + child tasks, or a single issue]
 
 - **Complexity**: Low / Medium / High
   - **Rationale**: [Number of files, systems involved, dependencies]
@@ -255,23 +255,14 @@
 
 ## Next Steps
 
-1. **If Strategic**: Create OpenSpec proposal
-   - `openspec proposal create <feature-slug>`
-   - Write proposal.md, tasks.md, plan.md
-   - Reference this research doc for evidence
+1. **Proceed to /plan** with this research doc as input:
+   - `/plan` creates the feature's Kernel issue at its Entry HARD-GATE, and Phase 3 creates the branch and worktree if the Entry HARD-GATE hasn't already, so don't create them by hand first; that would duplicate them
+   - It writes the plan to `docs/work/YYYY-MM-DD-<slug>/plan.md` and the task list to `docs/work/YYYY-MM-DD-<slug>/tasks.md`
+   - Link this research doc from the plan
 
-2. **Create Beads issue**:
-   - `bd create "<feature-name>"`
-   - Link to this research doc
-   - Link to OpenSpec if strategic
+2. **File what the research surfaced but the feature won't cover**: each open decision or out-of-scope follow-up becomes its own Kernel issue (`forge issue create`), linked to the feature issue
 
-3. **Create branch**:
-   - `git checkout -b feat/<feature-slug>`
-
-4. **Proceed to /plan**:
-   - Read this research doc
-   - Create formal implementation plan
-   - Wait for OpenSpec approval if strategic
+3. **Record stage-exit context** as a Kernel issue comment on the feature issue
 
 ## Research Checklist
 
@@ -289,4 +280,4 @@
 
 ---
 
-**Note**: This research document serves as the single source of truth for all architectural and implementation decisions. Reference it throughout the development lifecycle (in OpenSpec proposals, PR descriptions, code reviews, and documentation).
+**Note**: This research document serves as the single source of truth for all architectural and implementation decisions. Reference it throughout the development lifecycle (in the `docs/work/YYYY-MM-DD-<slug>/plan.md` plan, Kernel issues, PR descriptions, code reviews, and documentation).

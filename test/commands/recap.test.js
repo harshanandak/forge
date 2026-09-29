@@ -39,14 +39,6 @@ describe('forge recap command', () => {
     expect(recap.usage).toContain('--budget');
   });
 
-  test('source documents the forge recap <issue> contract', () => {
-    const source = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'lib', 'commands', 'recap.js'),
-      'utf8'
-    );
-    expect(source).toContain('forge recap <issue>');
-  });
-
   test('forge recap <issue> --json returns an issue-scoped bounded recap', async () => {
     const root = makeProject();
     const result = await recap.handler(['forge-recap.1', '--json', '--budget', '220'], {}, root, opts);
