@@ -12,3 +12,5 @@
 - [decisions.md](decisions.md)
 - [plan.md](plan.md)
 - [tasks.md](tasks.md)
+- [research/superpowers-analysis.md](research/superpowers-analysis.md) (historical, moved from docs/reference)
+- [research/superpowers-integration-options.md](research/superpowers-integration-options.md) (historical, moved from docs/reference)

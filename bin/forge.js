@@ -77,6 +77,7 @@ const {
 } = require('../lib/commands/_aliases');
 const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
 const { getPackageRoot } = require('../lib/package-root');
+const { runtimeVersionError, runtimeLabel } = require('../lib/node-requirement');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 const { normalizeStageId } = require('../lib/workflow/stages');
 const { firstPositionalIndex } = require('../lib/global-flags');
@@ -379,12 +380,12 @@ function checkPrerequisites() {
     errors.push('gh (GitHub CLI) - Install from https://cli.github.com');
   }
 
-  // Check Node.js version
-  const nodeVersion = Number.parseInt(process.version.slice(1).split('.')[0]);
-  if (nodeVersion >= 20) {
-    console.log(`  ✓ node ${process.version}`);
+  // Check the executing runtime (Node >= 24, or Bun >= 1.2 under Bun)
+  const runtimeError = runtimeVersionError();
+  if (runtimeError) {
+    errors.push(runtimeError);
   } else {
-    errors.push(`Node.js 20+ required (current: ${process.version})`);
+    console.log(`  ✓ ${runtimeLabel()}`);
   }
 
   // Detect package manager
@@ -3717,6 +3718,17 @@ async function main() {
   // Show version
   if (flags.version) {
     console.log(`Forge v${VERSION}`);
+    return;
+  }
+
+  // Runtime floor (Node >= 24, or Bun >= 1.2 under Bun), enforced once before
+  // any command dispatches: npm `engines` is advisory unless engine-strict is set.
+  // Exempt: --help and --version (handled above), and the internal git/gh
+  // credential and proxy helpers routed at the top of main().
+  const runtimeError = runtimeVersionError();
+  if (runtimeError) {
+    console.error(`Forge: ${runtimeError}`);
+    process.exitCode = 1;
     return;
   }
 

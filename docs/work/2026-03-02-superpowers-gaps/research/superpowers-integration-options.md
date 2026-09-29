@@ -1,7 +1,7 @@
 # Research: Superpowers Integration Possibilities for Forge
 
 **Feature slug**: `superpowers-integration`
-**Status**: Historical analysis. Current user guidance lives in [Docs Index](../INDEX.md), [Command Reference](COMMANDS.md), and [Release Reference](RELEASE.md).
+**Status**: Historical analysis. Current user guidance lives in [Docs Index](../../../INDEX.md), [Command Reference](../../../reference/COMMANDS.md), and [Release Reference](../../../reference/RELEASE.md).
 **Date**: 2026-02-26
 **Prerequisite**: Read `docs/research/superpowers.md` first for Superpowers overview.
 **Sources**: All claims cite exact URLs.
