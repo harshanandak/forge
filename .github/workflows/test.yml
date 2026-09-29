@@ -849,14 +849,23 @@ jobs:
 
           \`\`\`bash
           git switch ${BASE_BRANCH} && git pull --ff-only
-          # A closed PR can leave bun/bump-${VERSION} behind; delete it (only when no PR for it is open).
-          git ls-remote --exit-code --heads origin bun/bump-${VERSION} > /dev/null && git push origin --delete bun/bump-${VERSION}
-          git switch -C bun/bump-${VERSION}
+          branch=\"bun/bump-${VERSION}\"
+          if ! open_prs=\"\$(gh pr list --head \"\$branch\" --state open --json number --jq length)\"; then
+            echo \"Could not verify whether an open PR uses \${branch}; refusing to delete or reset it.\" >&2
+            exit 1
+          fi
+          if [ \"\$open_prs\" != \"0\" ]; then
+            echo \"An open PR already uses \${branch}; refusing to delete or reset it.\" >&2
+            exit 1
+          fi
+          # A closed PR can leave the branch behind; delete it before recreating it.
+          git ls-remote --exit-code --heads origin \"\$branch\" > /dev/null && git push origin --delete \"\$branch\"
+          git switch -C \"\$branch\"
           forge release update-bun-pins --to ${VERSION} --expect-head \"\$(git rev-parse HEAD)\"
           git add -- package.json .github/workflows
           git commit -m \"chore(deps): pin Bun ${VERSION}\"
-          forge push -- -u origin bun/bump-${VERSION}
-          gh pr create --base ${BASE_BRANCH} --head bun/bump-${VERSION} --title \"chore(deps): pin Bun ${VERSION}\" --body \"Release notes: ${RELEASE_URL}\"
+          forge push -- -u origin \"\$branch\"
+          gh pr create --base ${BASE_BRANCH} --head \"\$branch\" --title \"chore(deps): pin Bun ${VERSION}\" --body \"Release notes: ${RELEASE_URL}\"
           \`\`\`
 
           To make bumps fully automatic, add a \`BUN_BUMP_TOKEN\` repository secret (see docs/reference/RELEASE.md). This issue is updated in place on later runs."

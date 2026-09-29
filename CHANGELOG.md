@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Weekly Bun pin auto-update.** The Tests workflow checks for a newer stable Bun each week. With a `BUN_BUMP_TOKEN` repository secret (Contents, Workflows and Pull requests write) it pushes a `bun/bump-<version>` branch through `forge release update-bun-pins` and opens the PR, whose CI triggers on its own. Without the secret it opens or updates one `Bun <version> available: run forge release update-bun-pins` tracking issue with the exact commands, because `GITHUB_TOKEN` cannot push workflow-file changes. See `docs/reference/RELEASE.md`. (PR #598; issue `e2ff22ca`)
+- **Per-block package size budgets, with a Forge-generated size workflow.** The Package Size Monitor now measures the published package (`npm pack --dry-run --json`) instead of the whole repo checkout. It maps every shipped file to a named block in `scripts/package-budgets.json` and fails when a block or the total grows more than max(2%, 20KB) (or 2% of files) above the committed baseline without that PR updating the baseline, or when the package goes over the 10MB unpacked ceiling. The check runs on every PR and push (no path filters), and `.github/workflows/size-check.yml` is rendered by `forge release generate-size-workflow --expect-head <sha>` under the same exact-bytes authorization as the test workflow; `forge release update-bun-pins` delegates it to the same renderer. (issue `46d25e0a`)
 
 ### Changed
 

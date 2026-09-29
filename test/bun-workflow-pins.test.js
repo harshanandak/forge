@@ -28,6 +28,7 @@ const {
 	TEST_WORKFLOW_TEMPLATE_PATH,
 	renderTestWorkflow,
 } = require('../lib/test-workflow');
+const { SIZE_WORKFLOW_PATH, renderSizeWorkflow } = require('../lib/size-workflow');
 
 const TEST_HEAD = 'a'.repeat(40);
 const repoRoot = path.resolve(__dirname, '..');
@@ -56,6 +57,7 @@ function createFixture() {
 	fs.mkdirSync(path.dirname(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), { recursive: true });
 	fs.writeFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), testTemplate);
 	fs.writeFileSync(path.join(root, TEST_WORKFLOW_PATH), renderTestWorkflow(testTemplate, '1.3.12'));
+	fs.writeFileSync(path.join(root, SIZE_WORKFLOW_PATH), renderSizeWorkflow('1.3.12'));
 	return root;
 }
 
@@ -79,6 +81,18 @@ function batchFixtureOptions() {
 			const update = batchFixtureOptions().resolveTestWorkflowUpdate(projectRoot);
 			fs.writeFileSync(path.join(projectRoot, TEST_WORKFLOW_PATH), update.content);
 			return { success: true, path: TEST_WORKFLOW_PATH };
+		},
+		resolveSizeWorkflowUpdate: projectRoot => ({
+			path: SIZE_WORKFLOW_PATH,
+			version: '1.4.2',
+			baseline: renderSizeWorkflow('1.3.12'),
+			content: renderSizeWorkflow('1.4.2'),
+			indexedWorkflow: renderSizeWorkflow('1.3.12'),
+			snapshot: { existed: true, content: fs.readFileSync(path.join(projectRoot, SIZE_WORKFLOW_PATH)) },
+		}),
+		generateSizeWorkflow: async projectRoot => {
+			fs.writeFileSync(path.join(projectRoot, SIZE_WORKFLOW_PATH), renderSizeWorkflow('1.4.2'));
+			return { success: true, path: SIZE_WORKFLOW_PATH };
 		},
 	};
 }
@@ -106,10 +120,11 @@ describe('Forge-owned Bun workflow pins', () => {
 	test('derives one exact stable Bun version and rewrites only allowlisted pin fields', () => {
 		expect(readPinnedBunVersion('{"packageManager":"bun@1.4.2"}')).toBe('1.4.2');
 		expect(() => readPinnedBunVersion('{"packageManager":"bun@latest"}')).toThrow('exact stable');
-		expect(BUN_WORKFLOW_SPECS).toHaveLength(7);
+		expect(BUN_WORKFLOW_SPECS).toHaveLength(6);
 		expect(BUN_WORKFLOW_SPECS.every(Object.isFrozen)).toBe(true);
 		expect(BUN_WORKFLOW_SPECS.some(spec => spec.path.endsWith('npm-publish.yml'))).toBe(false);
 		expect(BUN_WORKFLOW_SPECS.some(spec => spec.path.endsWith('test.yml'))).toBe(false);
+		expect(BUN_WORKFLOW_SPECS.some(spec => spec.path.endsWith('size-check.yml'))).toBe(false);
 
 		for (const spec of BUN_WORKFLOW_SPECS) {
 			const source = fixtureContent(spec);
@@ -247,6 +262,7 @@ describe('Forge-owned Bun workflow pins', () => {
 		const completed = [];
 		let npmCalls = 0;
 		let testCalls = 0;
+		let sizeCalls = 0;
 		try {
 			const result = await updateBunWorkflowPins(root, {
 				...batchFixtureOptions(),
@@ -295,9 +311,20 @@ describe('Forge-owned Bun workflow pins', () => {
 					fs.writeFileSync(path.join(projectRoot, TEST_WORKFLOW_PATH), update.content);
 					return { success: true, path: TEST_WORKFLOW_PATH };
 				},
+				generateSizeWorkflow: async (projectRoot, options) => {
+					sizeCalls += 1;
+					expect(options.actor).toBe('protected-state-actor');
+					expect(options.expectedHead).toBe(TEST_HEAD);
+					expect(options.expectedUpdate).toEqual({ version: '1.4.2', content: renderSizeWorkflow('1.4.2') });
+					fs.writeFileSync(path.join(projectRoot, SIZE_WORKFLOW_PATH), renderSizeWorkflow('1.4.2'));
+					return { success: true, path: SIZE_WORKFLOW_PATH };
+				},
 			});
 
 			expect(result.success).toBe(true);
+			expect(sizeCalls).toBe(1);
+			expect(result.paths).toContain(SIZE_WORKFLOW_PATH);
+			expect(fs.readFileSync(path.join(root, SIZE_WORKFLOW_PATH))).toEqual(renderSizeWorkflow('1.4.2'));
 			expect(issued.map(record => record.path)).toEqual(BUN_WORKFLOW_SPECS.map(spec => spec.path));
 			expect(issued.every(record => record.actor === 'protected-state-actor')).toBe(true);
 			expect(completed).toEqual(issued.map(record => record.path));
@@ -454,6 +481,8 @@ describe('Forge-owned Bun workflow pins', () => {
 			'npm throw',
 			'test workflow failure',
 			'test workflow throw',
+			'size workflow failure',
+			'size workflow throw',
 		];
 
 		for (const scenario of scenarios) {
@@ -528,6 +557,12 @@ describe('Forge-owned Bun workflow pins', () => {
 						if (scenario === 'test workflow failure') return { success: false, error: 'test workflow failure' };
 						return { success: true, path: TEST_WORKFLOW_PATH };
 					},
+					generateSizeWorkflow: async projectRoot => {
+						fs.writeFileSync(path.join(projectRoot, SIZE_WORKFLOW_PATH), renderSizeWorkflow('1.4.2'));
+						if (scenario === 'size workflow throw') throw new Error('size workflow throw');
+						if (scenario === 'size workflow failure') return { success: false, error: 'size workflow failure' };
+						return { success: true, path: SIZE_WORKFLOW_PATH };
+					},
 				});
 
 				expect(result.success, scenario).toBe(false);
@@ -539,6 +574,8 @@ describe('Forge-owned Bun workflow pins', () => {
 					.toBe(renderNpmPublishWorkflow('1.3.12'));
 				expect(fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH), 'utf8'), scenario)
 					.toBe(renderTestWorkflow(fs.readFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), '1.3.12').toString());
+				expect(fs.readFileSync(path.join(root, SIZE_WORKFLOW_PATH), 'utf8'), scenario)
+					.toBe(renderSizeWorkflow('1.3.12').toString());
 			} finally {
 				fs.rmSync(root, { recursive: true, force: true });
 			}
@@ -980,6 +1017,7 @@ describe('Forge-owned Bun workflow pins', () => {
 			fs.mkdirSync(path.dirname(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), { recursive: true });
 			fs.writeFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), template);
 			fs.writeFileSync(path.join(root, TEST_WORKFLOW_PATH), renderTestWorkflow(template, '1.3.12'));
+			fs.writeFileSync(path.join(root, SIZE_WORKFLOW_PATH), renderSizeWorkflow('1.3.12'));
 			expect(run(['add', '.']).status).toBe(0);
 			expect(run(['commit', '-m', 'base']).status).toBe(0);
 			const sourceHead = run(['rev-parse', 'HEAD']).stdout.trim();
@@ -1026,6 +1064,11 @@ describe('Forge-owned Bun workflow pins', () => {
 			expect(withoutTest.batchDecision.reason).toContain(TEST_WORKFLOW_PATH);
 			fs.writeFileSync(path.join(root, TEST_WORKFLOW_PATH), renderTestWorkflow(template, '1.4.2'));
 			expect(run(['add', TEST_WORKFLOW_PATH]).status).toBe(0);
+			const withoutSize = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, []);
+			expect(withoutSize).toMatchObject({ success: false });
+			expect(withoutSize.batchDecision.reason).toContain(SIZE_WORKFLOW_PATH);
+			fs.writeFileSync(path.join(root, SIZE_WORKFLOW_PATH), renderSizeWorkflow('1.4.2'));
+			expect(run(['add', SIZE_WORKFLOW_PATH]).status).toBe(0);
 			expect(await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, []))
 				.toEqual({ success: true, decisions: [] });
 
@@ -1208,6 +1251,7 @@ function createCommittedBunFixture() {
 	fs.mkdirSync(path.dirname(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), { recursive: true });
 	fs.writeFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), template);
 	fs.writeFileSync(path.join(root, TEST_WORKFLOW_PATH), renderTestWorkflow(template, '1.3.12'));
+	fs.writeFileSync(path.join(root, SIZE_WORKFLOW_PATH), renderSizeWorkflow('1.3.12'));
 	expect(run(['add', '.']).status).toBe(0);
 	expect(run(['commit', '-m', 'base']).status).toBe(0);
 	const head = run(['rev-parse', 'HEAD']).stdout.trim();
@@ -1235,6 +1279,16 @@ function toFixtureOptions(counters = {}) {
 			fs.writeFileSync(path.join(projectRoot, TEST_WORKFLOW_PATH), options.expectedUpdate.content);
 			return { success: true, path: TEST_WORKFLOW_PATH };
 		},
+		resolveSizeWorkflowUpdate: projectRoot => ({
+			path: SIZE_WORKFLOW_PATH,
+			version: '1.4.3',
+			content: renderSizeWorkflow('1.4.3'),
+			snapshot: { existed: true, content: fs.readFileSync(path.join(projectRoot, SIZE_WORKFLOW_PATH)) },
+		}),
+		generateSizeWorkflow: async (projectRoot, options) => {
+			fs.writeFileSync(path.join(projectRoot, SIZE_WORKFLOW_PATH), options.expectedUpdate.content);
+			return { success: true, path: SIZE_WORKFLOW_PATH };
+		},
 	};
 }
 
@@ -1254,7 +1308,7 @@ describe('update-bun-pins --to <version>', () => {
 			const expectedManifest = manifest.replace('bun@1.3.12', 'bun@1.4.3');
 			expect(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).toBe(expectedManifest);
 			expect(run(['show', ':package.json']).stdout).toBe(expectedManifest);
-			const surfaces = [...BUN_WORKFLOW_SPECS.map(spec => spec.path), NPM_PUBLISH_WORKFLOW_PATH, TEST_WORKFLOW_PATH];
+			const surfaces = [...BUN_WORKFLOW_SPECS.map(spec => spec.path), NPM_PUBLISH_WORKFLOW_PATH, TEST_WORKFLOW_PATH, SIZE_WORKFLOW_PATH];
 			for (const surface of surfaces) {
 				const content = fs.readFileSync(path.join(root, surface), 'utf8');
 				expect({ surface, pinned: content.includes('1.4.3'), stale: content.includes('1.3.12') })

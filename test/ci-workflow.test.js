@@ -766,12 +766,13 @@ describe('CI Workflow Configuration', () => {
       expect(commands).not.toMatch(/^\s*(node bin\/forge\.js|git push)|gh pr create --base "\$BASE_BRANCH"/m);
     });
 
-    function runIssueStep({ existing, newer = 'true', tokenAvailable = 'false' }) {
+    function runIssueStep({ existing, newer = 'true', tokenAvailable = 'false', issueJob = jobs['bun-pin-issue'] }) {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-bun-issue-'));
       try {
         const binDir = path.join(root, 'bin');
         fs.mkdirSync(binDir);
         const log = path.join(root, 'calls.log');
+        const bodyFile = path.join(root, 'body.md');
         const summary = path.join(root, 'summary.md');
         fs.writeFileSync(log, '');
         fs.writeFileSync(summary, '');
@@ -779,10 +780,10 @@ describe('CI Workflow Configuration', () => {
         // Flatten the multi-line --body so each call stays on one log line.
         const record = `printf '%s %s\\n' "$(basename "$0")" "$(printf '%s' "$*" | tr '\\n' ' ')" >> '${toPosix(log)}'`;
         const listOutput = existing ? `echo ${existing}` : 'true';
-        fs.writeFileSync(path.join(binDir, 'gh'), `#!/usr/bin/env bash\n${record}\nif [ "$1 $2" = "issue list" ]; then ${listOutput}; fi\nif [ "$1 $2" = "issue create" ]; then echo https://github.com/o/r/issues/7; fi\n`);
+        fs.writeFileSync(path.join(binDir, 'gh'), `#!/usr/bin/env bash\n${record}\nprevious=\nfor arg in "$@"; do\n  if [ "$previous" = "--body" ]; then printf '%s' "$arg" > '${toPosix(bodyFile)}'; break; fi\n  previous="$arg"\ndone\nif [ "$1 $2" = "issue list" ]; then ${listOutput}; fi\nif [ "$1 $2" = "issue create" ]; then echo https://github.com/o/r/issues/7; fi\n`);
         fs.chmodSync(path.join(binDir, 'gh'), 0o755);
         const prelude = `export PATH="$(cygpath -u '${toPosix(binDir)}' 2>/dev/null || printf '%s' '${toPosix(binDir)}'):$PATH"`;
-        const issueStep = jobs['bun-pin-issue'].steps.find((step) => step.name === 'Open or update Bun pin tracking issue');
+        const issueStep = issueJob.steps.find((step) => step.name === 'Open or update Bun pin tracking issue');
         const child = runGithubBashStep(`${prelude}\n${issueStep.run}`, {
           env: {
             ...process.env,
@@ -797,6 +798,7 @@ describe('CI Workflow Configuration', () => {
         expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
         return {
           calls: fs.readFileSync(log, 'utf8').trim().split('\n'),
+          body: fs.existsSync(bodyFile) ? fs.readFileSync(bodyFile, 'utf8') : '',
           summary: fs.readFileSync(summary, 'utf8'),
         };
       } finally {
@@ -838,13 +840,59 @@ describe('CI Workflow Configuration', () => {
       expect(summary).toContain('#42');
     }, 30_000);
 
-    test('the manual commands recover a stale bun/bump-<version> branch left by a closed PR', () => {
-      const { calls } = runIssueStep({ existing: null });
-      const create = calls.find((call) => call.startsWith('gh issue create'));
-      const deleteAt = create.indexOf('git push origin --delete bun/bump-1.4.3');
-      expect(deleteAt).toBeGreaterThan(-1);
-      expect(create.indexOf('git switch -C bun/bump-1.4.3')).toBeGreaterThan(deleteAt);
-      expect(create).not.toContain('git switch -c bun/bump-1.4.3');
+    test('the manual commands verify no PR is open before deleting or resetting the bump branch', () => {
+      const template = fs.readFileSync(path.join(__dirname, '..', 'lib', 'workflow-templates', 'test.yml'));
+      const { renderTestWorkflow } = require('../lib/test-workflow');
+      const issueJob = yaml.load(renderTestWorkflow(template, '1.4.2').toString()).jobs['bun-pin-issue'];
+      const { body } = runIssueStep({ existing: null, issueJob });
+      const fenced = /```bash\n([\s\S]*?)\n```/.exec(body);
+      expect(fenced).not.toBeNull();
+
+      function runManualCommands({ openPrs, listStatus }) {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-manual-bun-bump-'));
+        try {
+          const binDir = path.join(root, 'bin');
+          fs.mkdirSync(binDir);
+          const log = path.join(root, 'calls.log');
+          const script = path.join(root, 'manual.sh');
+          fs.writeFileSync(log, '');
+          const toPosix = (value) => value.replace(/\\/g, '/');
+          const record = `printf '%s %s\\n' "$(basename "$0")" "$*" >> '${toPosix(log)}'`;
+          fs.writeFileSync(path.join(binDir, 'gh'), `#!/usr/bin/env bash\n${record}\nif [ "$1 $2" = "pr list" ]; then echo ${openPrs}; exit ${listStatus}; fi\n`);
+          fs.writeFileSync(path.join(binDir, 'git'), `#!/usr/bin/env bash\n${record}\nif [ "$1" = "rev-parse" ]; then echo ${'c'.repeat(40)}; fi\n`);
+          fs.writeFileSync(path.join(binDir, 'forge'), `#!/usr/bin/env bash\n${record}\n`);
+          for (const name of ['gh', 'git', 'forge']) fs.chmodSync(path.join(binDir, name), 0o755);
+          const prelude = `export PATH="$(cygpath -u '${toPosix(binDir)}' 2>/dev/null || printf '%s' '${toPosix(binDir)}'):$PATH"`;
+          fs.writeFileSync(script, `${prelude}\n${fenced[1]}`);
+          const child = spawnSync(bashExecutable, ['--noprofile', '--norc', toPosix(script)], { encoding: 'utf8' });
+          return { child, calls: fs.readFileSync(log, 'utf8').trim().split('\n') };
+        } finally {
+          fs.rmSync(root, { recursive: true, force: true });
+        }
+      }
+
+      for (const scenario of [
+        { openPrs: 1, listStatus: 0 },
+        { openPrs: 0, listStatus: 1 },
+      ]) {
+        const { child, calls } = runManualCommands(scenario);
+        expect(child.status).not.toBe(0);
+        expect(calls.find((call) => call.startsWith('gh pr list')))
+          .toBe('gh pr list --head bun/bump-1.4.3 --state open --json number --jq length');
+        expect(calls.some((call) => call.startsWith('git push origin --delete'))).toBe(false);
+        expect(calls.some((call) => call.startsWith('git switch -C'))).toBe(false);
+      }
+
+      const { child, calls } = runManualCommands({ openPrs: 0, listStatus: 0 });
+      expect(child.status).toBe(0);
+      const sequence = [
+        'gh pr list --head bun/bump-1.4.3 --state open',
+        'git push origin --delete bun/bump-1.4.3',
+        'git switch -C bun/bump-1.4.3',
+      ];
+      const positions = sequence.map((prefix) => calls.findIndex((call) => call.startsWith(prefix)));
+      expect(positions.every((position) => position >= 0)).toBe(true);
+      expect([...positions].sort((a, b) => a - b)).toEqual(positions);
     }, 30_000);
 
     for (const [label, options] of [
