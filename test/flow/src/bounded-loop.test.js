@@ -9,7 +9,7 @@ const {
   createBoundedLoop,
   createBoundedLoopState,
   reduceBoundedLoop,
-} = require("../../lib/flow/src/bounded-loop.js");
+} = require("../../../lib/flow/src/bounded-loop.js");
 
 function clockSequence(values) {
   let index = 0;

@@ -1,7 +1,7 @@
 "use strict";
 
 const { describe, expect, test } = require("bun:test");
-const { SkillRuntime } = require("../../lib/flow/src/skill-runtime.js");
+const { SkillRuntime } = require("../../../lib/flow/src/skill-runtime.js");
 
 function metadata(nodes) {
   return { id: "plan", nodes };

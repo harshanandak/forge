@@ -6,12 +6,12 @@ const path = require('node:path');
 const {
   computeContentHash,
   validateContractStructure,
-} = require('../../lib/contracts');
+} = require('../../../lib/contracts');
 const {
   PR_LIFECYCLE_PROVIDER_METHODS,
   PrLifecycleAuthorityError,
   createPrLifecycleAuthority: createPrLifecycleAuthorityRaw,
-} = require('../../lib/memory-core/src/pr-lifecycle-authority');
+} = require('../../../lib/memory-core/src/pr-lifecycle-authority');
 
 const ISSUE_ID = 'issue-1';
 const REPOSITORY_ID = 'github.com/example/forge';
@@ -259,7 +259,7 @@ describe('public PR lifecycle authority', () => {
   });
 
   test('keeps a standalone child alive until an unresponsive provider times out', () => {
-    const sourcePath = path.resolve(__dirname, '../../lib/memory-core/src/pr-lifecycle-authority.js');
+    const sourcePath = path.resolve(__dirname, '../../../lib/memory-core/src/pr-lifecycle-authority.js');
     const script = `
       const { createPrLifecycleAuthority } = require(${JSON.stringify(sourcePath)});
       const authority = createPrLifecycleAuthority({

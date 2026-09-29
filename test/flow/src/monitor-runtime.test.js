@@ -1,7 +1,7 @@
 "use strict";
 
 const { beforeAll, describe, expect, test } = require("bun:test");
-const contracts = require("../../lib/contracts");
+const contracts = require("../../../lib/contracts");
 
 
 const { computeContentHash, validateContractStructure } = contracts;
@@ -18,7 +18,7 @@ beforeAll(() => {
     createMonitorState,
     reduceMonitor,
     reduceMonitorBatch,
-  } = require("../../lib/flow/src/monitor-runtime.js"));
+  } = require("../../../lib/flow/src/monitor-runtime.js"));
 });
 
 function spec(overrides = {}) {

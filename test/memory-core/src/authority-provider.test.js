@@ -5,7 +5,7 @@ const {
   MEMORY_AUTHORITY_METHODS,
   assertMemoryAuthorityProvider,
   createMemoryAuthorityProvider,
-} = require('../../lib/memory-core');
+} = require('../../../lib/memory-core');
 
 function brokerStub(calls) {
   return Object.fromEntries(MEMORY_AUTHORITY_METHODS.map(method => [method, async (...args) => {

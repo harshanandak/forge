@@ -1,7 +1,7 @@
 "use strict";
 
 const { describe, expect, test } = require("bun:test");
-const { EfficiencySupervisor } = require("../../lib/flow/src/efficiency-supervisor.js");
+const { EfficiencySupervisor } = require("../../../lib/flow/src/efficiency-supervisor.js");
 
 describe("EfficiencySupervisor", () => {
   test("emits each crossed replan checkpoint once and in deterministic order", () => {

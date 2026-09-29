@@ -1,7 +1,7 @@
 "use strict";
 
 const { expect, test } = require("bun:test");
-const { generateJsonSchema } = require("../../lib/contracts/src/schema.js");
+const { generateJsonSchema } = require("../../../lib/contracts/src/schema.js");
 
 test("generated schemas reject undeclared payload fields", () => {
   const schema = generateJsonSchema("forge.memory.work-packet.v1");

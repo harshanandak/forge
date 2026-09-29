@@ -1,7 +1,7 @@
 "use strict";
 
 const { beforeAll, describe, expect, mock, test } = require("bun:test");
-const contracts = require("../../lib/contracts");
+const contracts = require("../../../lib/contracts");
 
 const {
   canonicalize,
@@ -13,8 +13,8 @@ let MonitorDurabilityError;
 let createMonitorDurabilityBridge;
 
 beforeAll(() => {
-  ({ MonitorDurabilityError, createMonitorDurabilityBridge } = require("../../lib/flow/src/monitor-durability.js"));
-  ({ createMonitorStore } = require("../../lib/memory-core"));
+  ({ MonitorDurabilityError, createMonitorDurabilityBridge } = require("../../../lib/flow/src/monitor-durability.js"));
+  ({ createMonitorStore } = require("../../../lib/memory-core"));
 });
 
 const ZERO_HASH = '0'.repeat(64);

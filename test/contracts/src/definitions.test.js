@@ -1,7 +1,7 @@
 "use strict";
 
 const { expect, test } = require("bun:test");
-const { CONTRACTS } = require("../../lib/contracts/src/definitions.js");
+const { CONTRACTS } = require("../../../lib/contracts/src/definitions.js");
 
 test("defines all packet, receipt, feedback, error, and monitor contracts", () => {
   expect(Object.keys(CONTRACTS)).toHaveLength(11);

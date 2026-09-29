@@ -1,7 +1,7 @@
 'use strict';
 
 const { describe, expect, test } = require('bun:test');
-const { BACKEND_METHODS, createMemoryBackendRegistry } = require('../../lib/memory-core');
+const { BACKEND_METHODS, createMemoryBackendRegistry } = require('../../../lib/memory-core');
 
 function backend(overrides = {}) {
   return {
@@ -45,6 +45,19 @@ describe('memory-core backend registry', () => {
     expect(result.receipt.errors).toEqual([{
       backend: 'graphiti', code: 'MEMORY_BACKEND_FAILED',
     }]);
+  });
+
+  test('returns a detached local snapshot when an enricher fails', () => {
+    const localValue = { id: 'local', nested: { value: 'durable' } };
+    const registry = createMemoryBackendRegistry({
+      local: backend({ add: () => localValue }),
+    });
+    registry.register('graphiti', backend({ add: () => { throw new Error('sidecar down'); } }));
+    registry.select('graphiti');
+
+    const result = registry.add('durable');
+    expect(result.value).toEqual(localValue);
+    expect(result.value).not.toBe(localValue);
   });
 
   test('fails closed on async adapters without leaking an unhandled rejection', async () => {

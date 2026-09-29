@@ -1,12 +1,12 @@
 'use strict';
 
 const { describe, expect, test } = require('bun:test');
-const contracts = require('../../lib/contracts');
+const contracts = require('../../../lib/contracts');
 const {
   FeedbackIntakeError,
   createFeedbackIntake,
   createFeedbackReport,
-} = require('../../lib/memory-core');
+} = require('../../../lib/memory-core');
 const { classifySemanticAttempt, computeContentHash, validateContractStructure } = contracts;
 
 const IDS = [

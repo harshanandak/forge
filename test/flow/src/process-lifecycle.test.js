@@ -9,7 +9,7 @@ const {
   createProcessLifecycle,
   createProcessState,
   reduceProcessLifecycle,
-} = require("../../lib/flow/src/process-lifecycle.js");
+} = require("../../../lib/flow/src/process-lifecycle.js");
 
 function clockSequence(values) {
   let index = 0;

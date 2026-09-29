@@ -1,7 +1,7 @@
 "use strict";
 
 const { beforeAll, describe, expect, test } = require("bun:test");
-const contracts = require("../../lib/contracts");
+const contracts = require("../../../lib/contracts");
 
 
 const { computeContentHash, validateContractStructure } = contracts;
@@ -9,7 +9,7 @@ let FlowExecutionError;
 let createWorkPacketExecutor;
 
 beforeAll(() => {
-  ({ FlowExecutionError, createWorkPacketExecutor } = require("../../lib/flow/src/executor.js"));
+  ({ FlowExecutionError, createWorkPacketExecutor } = require("../../../lib/flow/src/executor.js"));
 });
 
 function packet() {

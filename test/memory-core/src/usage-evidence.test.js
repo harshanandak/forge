@@ -1,8 +1,8 @@
 'use strict';
 
 const { expect, test } = require('bun:test');
-const { createUsageEvidenceStore } = require('../../lib/memory-core/src/usage-evidence');
-const { appendUsageEvidence, installUsageEvidenceSchema, rebuildUsageProjection } = require('../../lib/memory-core/src/usage-evidence');
+const { createUsageEvidenceStore } = require('../../../lib/memory-core/src/usage-evidence');
+const { appendUsageEvidence, installUsageEvidenceSchema, rebuildUsageProjection } = require('../../../lib/memory-core/src/usage-evidence');
 
 function event() {
   return {
