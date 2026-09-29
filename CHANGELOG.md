@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Per-block package size budgets, with a Forge-generated size workflow.** The Package Size Monitor now measures the published package (`npm pack --dry-run --json`) instead of the whole repo checkout. It maps every shipped file to a named block in `scripts/package-budgets.json` and fails when a block or the total grows more than max(2%, 20KB) (or 2% of files) above the committed baseline without that PR updating the baseline, or when the package goes over the 10MB unpacked ceiling. `.github/workflows/size-check.yml` is now rendered from the manifest by `forge release generate-size-workflow --expect-head <sha>` under the same exact-bytes authorization as the test workflow. (issue `46d25e0a`)
+- **Per-block package size budgets, with a Forge-generated size workflow.** The Package Size Monitor now measures the published package (`npm pack --dry-run --json`) instead of the whole repo checkout. It maps every shipped file to a named block in `scripts/package-budgets.json` and fails when a block or the total grows more than max(2%, 20KB) (or 2% of files) above the committed baseline without that PR updating the baseline, or when the package goes over the 10MB unpacked ceiling. The check runs on every PR and push (no path filters), and `.github/workflows/size-check.yml` is rendered by `forge release generate-size-workflow --expect-head <sha>` under the same exact-bytes authorization as the test workflow; `forge release update-bun-pins` delegates it to the same renderer. (issue `46d25e0a`)
 
 ### Changed
 

@@ -9,19 +9,17 @@ const { spawnSync } = require('node:child_process');
 const yaml = require('js-yaml');
 const { hashProtectedContent } = require('../lib/protected-state-surfaces');
 const protectedStateAuthority = require('../lib/protected-state-authority');
-const { renderBunWorkflowPin } = require('../lib/bun-workflow-pins');
+const { BUN_WORKFLOW_SPECS } = require('../lib/bun-workflow-pins');
 const releaseCommand = require('../lib/commands/release');
 const {
 	SIZE_WORKFLOW_PATH,
-	BUDGET_MANIFEST_PATH,
-	derivePathFilters,
 	renderSizeWorkflow,
 	generateSizeWorkflow,
 } = require('../lib/size-workflow');
 
 const repoRoot = path.resolve(__dirname, '..');
+const BUDGET_MANIFEST_PATH = 'scripts/package-budgets.json';
 const pinnedVersion = () => /^bun@(\d+\.\d+\.\d+)$/.exec(require('../package.json').packageManager)[1];
-const committedManifest = () => fs.readFileSync(path.join(repoRoot, BUDGET_MANIFEST_PATH));
 
 function git(root, args) {
 	return spawnSync('git', args, { cwd: root, encoding: 'utf8' });
@@ -61,14 +59,14 @@ function fakeKernel() {
 	};
 }
 
-function createFixture() {
+function createFixture({ bunVersion = '1.4.2', workflow = 'name: Package Size Monitor\n# hand-written legacy workflow\n' } = {}) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-size-workflow-'));
 	expect(git(root, ['init']).status).toBe(0);
 	expect(git(root, ['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
 	expect(git(root, ['config', 'user.name', 'Forge Test']).status).toBe(0);
-	write(root, 'package.json', '{"packageManager":"bun@1.4.2"}\n');
-	write(root, BUDGET_MANIFEST_PATH, committedManifest());
-	write(root, SIZE_WORKFLOW_PATH, 'name: Package Size Monitor\n# hand-written legacy workflow\n');
+	write(root, 'package.json', `{"packageManager":"bun@${bunVersion}"}\n`);
+	write(root, BUDGET_MANIFEST_PATH, '{"blocks":{"lib":{"paths":["lib/"]}}}\n');
+	write(root, SIZE_WORKFLOW_PATH, workflow);
 	expect(git(root, ['add', '.']).status).toBe(0);
 	expect(git(root, ['commit', '-m', 'base']).status).toBe(0);
 	return { root, head: git(root, ['rev-parse', 'HEAD']).stdout.trim() };
@@ -87,66 +85,47 @@ function generate(fixture, kernel, overrides = {}) {
 	});
 }
 
-function authorize(fixture, kernel, content) {
+function authorize(fixture, kernel, content, options = { validateCompleteBunPinBatch: () => ({ success: true }) }) {
 	return protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(fixture.root, [{
 		actor: 'unknown',
 		path: SIZE_WORKFLOW_PATH,
 		surface: 'workflows',
 		content,
 		sourceHead: fixture.head,
-	}], { deps: kernel.deps, validateCompleteBunPinBatch: () => ({ success: true }) });
+	}], { deps: kernel.deps, ...options });
 }
 
 describe('size workflow renderer', () => {
-	test('is byte-stable: same inputs give the same bytes, regardless of env or time', () => {
-		const first = renderSizeWorkflow(committedManifest(), '1.4.2');
+	test('is byte-stable: its only input is the Bun version, never env or time', () => {
+		const first = renderSizeWorkflow('1.4.2');
 		process.env.FORGE_SIZE_RENDER_PROBE = String(Date.now());
 		try {
-			expect(renderSizeWorkflow(committedManifest(), '1.4.2').equals(first)).toBe(true);
+			expect(renderSizeWorkflow('1.4.2').equals(first)).toBe(true);
 		} finally {
 			delete process.env.FORGE_SIZE_RENDER_PROBE;
 		}
+		expect(renderSizeWorkflow.length).toBe(1);
 		expect(first.toString('utf8')).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
 		expect(() => yaml.load(first.toString('utf8'))).not.toThrow();
 	});
 
-	test('the committed workflow equals the render of the committed manifest (drift test)', () => {
+	test('the committed workflow equals the render of the pinned Bun version (drift test)', () => {
 		const committed = fs.readFileSync(path.join(repoRoot, SIZE_WORKFLOW_PATH));
-		expect(renderSizeWorkflow(committedManifest(), pinnedVersion()).toString('utf8')).toBe(committed.toString('utf8'));
+		expect(renderSizeWorkflow(pinnedVersion()).toString('utf8')).toBe(committed.toString('utf8'));
 	});
 
-	test('path filters come from the block manifest plus the check inputs', () => {
-		const manifest = { blocks: { a: { paths: ['lib/', 'lib/kernel/', 'node_modules/@forge/x/', 'README.md'] }, b: { paths: ['packages/flow/node_modules/'] } } };
-		expect(derivePathFilters(manifest)).toEqual([
-			'.github/workflows/size-check.yml',
-			'.npmignore',
-			'README.md',
-			'bun.lock',
-			'lib/**',
-			'package.json',
-			'scripts/package-budgets.json',
-			'scripts/package-size-baseline.json',
-			'scripts/package-size-check.js',
-		]);
+	test('has no path filters, so no new publishable path can escape the check', () => {
+		const workflow = yaml.load(renderSizeWorkflow('1.4.2').toString('utf8'));
+		expect(workflow.on.push).toEqual({ branches: ['main', 'master'] });
+		expect(workflow.on.pull_request).toEqual({ branches: ['main', 'master'] });
 	});
 
-	test('adding a block to the manifest adds its path filter', () => {
-		const manifest = JSON.parse(committedManifest().toString('utf8'));
-		manifest.blocks.widgets = { paths: ['widgets/'] };
-		const rendered = renderSizeWorkflow(Buffer.from(JSON.stringify(manifest)), '1.4.2').toString('utf8');
-		expect(yaml.load(rendered).on.pull_request.paths).toContain('widgets/**');
+	test('rejects inexact Bun versions', () => {
+		expect(() => renderSizeWorkflow('latest')).toThrow(/exact stable Bun/);
 	});
 
-	test('rejects manifest paths that could inject YAML, and inexact Bun versions', () => {
-		const bad = { blocks: { a: { paths: ["lib/'\n  evil: true"] } } };
-		expect(() => renderSizeWorkflow(Buffer.from(JSON.stringify(bad)), '1.4.2')).toThrow(/unsupported characters/);
-		expect(() => renderSizeWorkflow(committedManifest(), 'latest')).toThrow(/exact stable Bun/);
-	});
-
-	test('the Bun pin updater renders the same bytes as the generator at a new version', () => {
-		const current = renderSizeWorkflow(committedManifest(), '1.4.2');
-		const pinned = renderBunWorkflowPin(SIZE_WORKFLOW_PATH, current, '1.5.0');
-		expect(Buffer.from(pinned).equals(renderSizeWorkflow(committedManifest(), '1.5.0'))).toBe(true);
+	test('has exactly one owner: it is no longer a pin-only Bun workflow', () => {
+		expect(BUN_WORKFLOW_SPECS.map((spec) => spec.path)).not.toContain(SIZE_WORKFLOW_PATH);
 	});
 });
 
@@ -169,7 +148,7 @@ describe('Forge-owned size workflow writer', () => {
 			const generated = await generate(fixture, kernel);
 			expect(generated).toMatchObject({ success: true, path: SIZE_WORKFLOW_PATH });
 			const content = fs.readFileSync(path.join(fixture.root, SIZE_WORKFLOW_PATH));
-			expect(content.equals(renderSizeWorkflow(committedManifest(), '1.4.2'))).toBe(true);
+			expect(content.equals(renderSizeWorkflow('1.4.2'))).toBe(true);
 			const committed = await authorize(fixture, kernel, content);
 			expect(committed).toMatchObject({
 				success: true,
@@ -213,14 +192,30 @@ describe('Forge-owned size workflow writer', () => {
 		}
 	}, 20_000);
 
-	test('refuses an unstaged manifest edit so the render is bound to staged bytes', async () => {
-		const fixture = createFixture();
+	// Regression for the dual-owner deadlock: a staged manifest change and a staged
+	// Bun bump, in either order, must yield one committable, hook-accepted file.
+	test.each([
+		['manifest first, then Bun bump', ['manifest', 'bun']],
+		['Bun bump first, then manifest', ['bun', 'manifest']],
+	])('a manifest change and a Bun bump staged together: %s', async (_label, order) => {
+		const fixture = createFixture({ bunVersion: '1.3.12', workflow: renderSizeWorkflow('1.3.12') });
 		const kernel = fakeKernel();
+		const steps = {
+			manifest: () => write(fixture.root, BUDGET_MANIFEST_PATH, '{"blocks":{"lib":{"paths":["lib/"]},"widgets":{"paths":["widgets/"]}}}\n'),
+			bun: () => write(fixture.root, 'package.json', '{"packageManager":"bun@1.4.2"}\n'),
+		};
 		try {
-			fs.appendFileSync(path.join(fixture.root, BUDGET_MANIFEST_PATH), '\n');
-			const result = await generate(fixture, kernel);
-			expect(result.success).toBe(false);
-			expect(result.error).toContain('differs from the Git index');
+			for (const step of order) {
+				steps[step]();
+				expect(git(fixture.root, ['add', 'package.json', BUDGET_MANIFEST_PATH]).status).toBe(0);
+			}
+			const generated = await generate(fixture, kernel);
+			expect(generated).toMatchObject({ success: true });
+			const content = fs.readFileSync(path.join(fixture.root, SIZE_WORKFLOW_PATH));
+			expect(content.equals(renderSizeWorkflow('1.4.2'))).toBe(true);
+			expect(git(fixture.root, ['add', SIZE_WORKFLOW_PATH]).status).toBe(0);
+			const committed = await authorize(fixture, kernel, content, {});
+			expect(committed).toMatchObject({ success: true, decisions: [{ allowed: true }] });
 		} finally {
 			fs.rmSync(fixture.root, { recursive: true, force: true });
 		}

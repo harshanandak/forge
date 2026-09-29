@@ -34,27 +34,11 @@ describe('.github/workflows/size-check.yml', () => {
     expect(workflow.on.pull_request.branches).toContain('master');
   });
 
-  test('path filters cover the shipped surface and the check itself', () => {
+  test('runs on every PR and push, with no path filters a new publishable path could escape', () => {
     const workflow = loadWorkflow();
-    const covered = (paths, file) => paths.some((p) => p === file || (p.endsWith('/**') && file.startsWith(p.slice(0, -2))));
     for (const trigger of ['push', 'pull_request']) {
-      const paths = workflow.on[trigger].paths;
-      for (const file of [
-        'package.json',
-        'bun.lock',
-        '.npmignore',
-        'bin/forge.js',
-        'lib/kernel/broker.js',
-        'packages/flow/index.js',
-        'skills/dev/SKILL.md',
-        'lib/package-budget.js',
-        'scripts/package-size-check.js',
-        'scripts/package-budgets.json',
-        'scripts/package-size-baseline.json',
-        '.github/workflows/size-check.yml',
-      ]) {
-        expect(covered(paths, file)).toBe(true);
-      }
+      expect(workflow.on[trigger].paths).toBeUndefined();
+      expect(workflow.on[trigger]['paths-ignore']).toBeUndefined();
     }
   });
 

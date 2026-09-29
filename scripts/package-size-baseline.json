@@ -1,7 +1,7 @@
 {
   "total": {
-    "tarball": 1313743,
-    "unpacked": 4955465,
+    "tarball": 1313448,
+    "unpacked": 4956195,
     "files": 537
   },
   "blocks": {
@@ -26,7 +26,7 @@
       "files": 22
     },
     "lib": {
-      "bytes": 1614491,
+      "bytes": 1615221,
       "files": 143
     },
     "memory-core": {
