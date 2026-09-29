@@ -767,6 +767,12 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # A branch with no open PR is left by a closed PR or a run that failed
+          # before `gh pr create`; recreate it rather than wedge on a rejected push.
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null; then
+            echo "Deleting stale ${branch} (no open PR) before recreating it."
+            gh api --method DELETE "repos/{owner}/{repo}/git/refs/heads/${branch}"
+          fi
           git switch -c "$branch"
           node bin/forge.js release update-bun-pins --to "$VERSION" --expect-head "$(git rev-parse HEAD)"
           git add -- package.json .github/workflows

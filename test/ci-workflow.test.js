@@ -745,7 +745,7 @@ describe('CI Workflow Configuration', () => {
       expect(bump.run).not.toContain('${{');
     });
 
-    function runBumpStep({ openPrs }) {
+    function runBumpStep({ openPrs, staleBranch = false }) {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-bun-bump-'));
       try {
         const binDir = path.join(root, 'bin');
@@ -755,7 +755,7 @@ describe('CI Workflow Configuration', () => {
         const toPosix = (value) => value.replace(/\\/g, '/');
         const record = `printf '%s %s\\n' "$(basename "$0")" "$*" >> '${toPosix(log)}'`;
         fs.writeFileSync(path.join(binDir, 'gh'), `#!/usr/bin/env bash\n${record}\nif [ "$1 $2" = "pr list" ]; then echo ${openPrs}; fi\n`);
-        fs.writeFileSync(path.join(binDir, 'git'), `#!/usr/bin/env bash\n${record}\nif [ "$1" = "rev-parse" ]; then echo ${'c'.repeat(40)}; fi\n`);
+        fs.writeFileSync(path.join(binDir, 'git'), `#!/usr/bin/env bash\n${record}\nif [ "$1" = "rev-parse" ]; then echo ${'c'.repeat(40)}; fi\nif [ "$1" = "ls-remote" ]; then exit ${staleBranch ? 0 : 2}; fi\n`);
         fs.writeFileSync(path.join(binDir, 'node'), `#!/usr/bin/env bash\n${record}\n`);
         for (const name of ['gh', 'git', 'node']) fs.chmodSync(path.join(binDir, name), 0o755);
         const prelude = `export PATH="$(cygpath -u '${toPosix(binDir)}' 2>/dev/null || printf '%s' '${toPosix(binDir)}'):$PATH"`;
@@ -797,6 +797,26 @@ describe('CI Workflow Configuration', () => {
       expect(positions.every((position) => position >= 0)).toBe(true);
       expect([...positions].sort((a, b) => a - b)).toEqual(positions);
       expect(calls[indexOf('gh pr create')]).toContain('https://github.com/oven-sh/bun/releases/tag/bun-v1.4.3');
+    });
+
+    test('deletes a stale bun/bump-<version> branch with no open PR before recreating it', () => {
+      const calls = runBumpStep({ openPrs: 0, staleBranch: true });
+      const indexOf = (prefix) => calls.findIndex((call) => call.startsWith(prefix));
+      const sequence = [
+        'gh pr list --head bun/bump-1.4.3 --state open',
+        'git ls-remote --exit-code --heads origin bun/bump-1.4.3',
+        'gh api --method DELETE repos/{owner}/{repo}/git/refs/heads/bun/bump-1.4.3',
+        'git switch -c bun/bump-1.4.3',
+        'node bin/forge.js push --quick -- -u origin bun/bump-1.4.3',
+      ];
+      const positions = sequence.map(indexOf);
+      expect(positions.every((position) => position >= 0)).toBe(true);
+      expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+    });
+
+    test('leaves the remote alone when no stale bun/bump-<version> branch exists', () => {
+      const calls = runBumpStep({ openPrs: 0 });
+      expect(calls.some((call) => call.startsWith('gh api --method DELETE'))).toBe(false);
     });
   });
 
