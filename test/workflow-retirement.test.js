@@ -281,6 +281,50 @@ describe('forge release retire-workflow', () => {
 		expect(afterLostAck.success).toBe(false);
 	}), 30_000);
 
+	test('a rolled-back batch leaves no unmatched success audit record', () => withFixture(async fixture => {
+		const { completeWorkflowRetirementAuthorization } = require('../lib/protected-state-authority');
+		const paths = ['.github/workflows/followup.yml', '.github/workflows/matrix.yml'];
+		const unmatchedSuccesses = records => records
+			.filter(record => record.operation === 'retire_workflow')
+			.filter(record => !records.some(other => other.operation === 'retire_workflow_rolled_back' && other.path === record.path));
+
+		const completionAudits = [];
+		let calls = 0;
+		const completionFailure = await retireWorkflows(fixture.root, options(fixture, {
+			paths,
+			recordProtectedStateAuditEvent: record => {
+				completionAudits.push(record);
+				return { success: true };
+			},
+			completeAuthorization: async (root, params, opts) => {
+				calls += 1;
+				return calls === 1
+					? completeWorkflowRetirementAuthorization(root, params, opts)
+					: { success: false, error: 'injected completion failure' };
+			},
+		}));
+		expect(completionFailure.success).toBe(false);
+		expect(unmatchedSuccesses(completionAudits)).toEqual([]);
+
+		const auditAttempts = [];
+		const auditFailure = await retireWorkflows(fixture.root, options(fixture, {
+			paths,
+			recordProtectedStateAuditEvent: record => {
+				auditAttempts.push(record);
+				const failing = record.operation === 'retire_workflow' && record.path === paths[1];
+				return failing ? { success: false, error: 'injected audit failure' } : { success: true };
+			},
+		}));
+		expect(auditFailure.success).toBe(false);
+		expect(auditFailure.error).toContain('injected audit failure');
+		const written = auditAttempts.filter(record => !(record.operation === 'retire_workflow' && record.path === paths[1]));
+		expect(written.some(record => record.operation === 'retire_workflow' && record.path === paths[0])).toBe(true);
+		expect(unmatchedSuccesses(written)).toEqual([]);
+		for (const filePath of paths) {
+			expect(fs.readFileSync(path.join(fixture.root, filePath), 'utf8')).toBe(WORKFLOWS[filePath]);
+		}
+	}), 30_000);
+
 	test('never restores a file whose completed capability could not be revoked', () => withFixture(async fixture => {
 		const {
 			completeWorkflowRetirementAuthorization,
