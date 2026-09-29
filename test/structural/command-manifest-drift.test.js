@@ -54,8 +54,7 @@ describe('static command manifest drift', () => {
     expect(stale).toEqual([]);
   });
 
-  // Windows timeout quarantine: 04afb9f9; restore after module-loading contention is fixed.
-  test.skipIf(process.platform === 'win32')('every manifest entry resolves to a valid command module', () => {
+  test('every manifest entry resolves to a valid command module', () => {
     for (const entry of manifest.commands) {
       expect(typeof entry.file).toBe('string');
       const mod = entry.load();

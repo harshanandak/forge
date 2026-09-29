@@ -25,8 +25,7 @@ const repoRoot = path.resolve(__dirname, '../..');
 // it runs in `bun test` without the @forge/skills deps.
 
 describe('skills sync drift detection', () => {
-  // Windows timeout quarantine: 04afb9f9; restore after filesystem contention is fixed.
-  test.skipIf(process.platform === 'win32')('generated agent skill mirrors are in sync with canonical skills/', () => {
+  test('generated agent skill mirrors are in sync with canonical skills/', () => {
     const result = checkSkillsSync({ repoRoot });
 
     if (!result.inSync) {
