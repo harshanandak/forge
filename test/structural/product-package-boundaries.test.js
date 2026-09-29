@@ -6,18 +6,39 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "../..");
-const PACKAGES = ["contracts", "memory", "flow"];
-const ALLOWED_FORGE_IMPORTS = {
-  contracts: new Set(),
-  memory: new Set(["@forge/contracts"]),
-  flow: new Set(["@forge/contracts"]),
+// Forge's building blocks are internal modules of the one forge package. Each
+// block owns its directory; another block (or any other Forge code) reaches it
+// only through its public entry (the block directory or its index.js), never
+// its internals.
+const BLOCKS = {
+  contracts: path.join(ROOT, "lib", "contracts"),
+  memory: path.join(ROOT, "lib", "memory-core"),
+  flow: path.join(ROOT, "lib", "flow"),
 };
+const ALLOWED_BLOCK_IMPORTS = {
+  contracts: new Set(),
+  memory: new Set(["contracts"]),
+  flow: new Set(["contracts"]),
+};
+const CONSUMER_ROOTS = ["lib", "bin", "scripts"].map((directory) => path.join(ROOT, directory));
+
+function isInside(file, directory) {
+  return file === directory || file.startsWith(`${directory}${path.sep}`);
+}
+
+function blockOf(file) {
+  return Object.keys(BLOCKS).find((name) => isInside(file, BLOCKS[name])) || null;
+}
+
+function isBlockEntry(resolved, name) {
+  return [BLOCKS[name], path.join(BLOCKS[name], "index"), path.join(BLOCKS[name], "index.js")].includes(resolved);
+}
 
 function javascriptFiles(directory) {
   if (!fs.existsSync(directory)) return [];
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) return entry.name === "test" ? [] : javascriptFiles(absolute);
+    if (entry.isDirectory()) return ["test", "node_modules"].includes(entry.name) ? [] : javascriptFiles(absolute);
     return entry.isFile() && entry.name.endsWith(".js") && !entry.name.endsWith(".test.js") ? [absolute] : [];
   });
 }
@@ -107,31 +128,58 @@ describe("product package boundaries", () => {
       .toContain("@forge/memory/private");
   });
 
-  for (const packageName of PACKAGES) {
-    test(`${packageName} imports only its public allowed dependencies`, () => {
-      const packageRoot = path.join(ROOT, "packages", packageName);
+  for (const blockName of Object.keys(BLOCKS)) {
+    test(`${blockName} imports only its own files and the public entry of allowed blocks`, () => {
+      const blockRoot = BLOCKS[blockName];
+      const files = javascriptFiles(blockRoot);
+      expect(files.length).toBeGreaterThan(0);
       const violations = [];
-      for (const file of javascriptFiles(packageRoot)) {
+      for (const file of files) {
         const source = fs.readFileSync(file, "utf8");
         for (const expression of dynamicImportsIn(source)) {
           violations.push(`${path.relative(ROOT, file)} -> dynamic module specifier: ${expression}`);
         }
         for (const specifier of importsIn(source)) {
-          if (specifier.startsWith(".")) {
-            const resolved = path.resolve(path.dirname(file), specifier);
-            if (resolved !== packageRoot && !resolved.startsWith(`${packageRoot}${path.sep}`)) {
-              violations.push(`${path.relative(ROOT, file)} -> ${specifier}`);
-            }
-          }
-          if (specifier.startsWith("@forge/") && !ALLOWED_FORGE_IMPORTS[packageName].has(specifier)) {
+          if (specifier.startsWith("@forge/")) {
             violations.push(`${path.relative(ROOT, file)} -> ${specifier}`);
+            continue;
           }
-          if (/^@forge\/[^/]+\//.test(specifier)) {
-            violations.push(`${path.relative(ROOT, file)} -> ${specifier}`);
-          }
+          if (!specifier.startsWith(".")) continue;
+          const resolved = path.resolve(path.dirname(file), specifier);
+          if (isInside(resolved, blockRoot)) continue;
+          const allowed = [...ALLOWED_BLOCK_IMPORTS[blockName]].some((name) => isBlockEntry(resolved, name));
+          if (!allowed) violations.push(`${path.relative(ROOT, file)} -> ${specifier}`);
         }
       }
       expect(violations).toEqual([]);
     });
   }
+
+  test("Forge code outside the blocks reaches them only through their public entries", () => {
+    const violations = [];
+    for (const file of CONSUMER_ROOTS.flatMap(javascriptFiles)) {
+      if (blockOf(file)) continue;
+      for (const specifier of importsIn(fs.readFileSync(file, "utf8"))) {
+        if (/^@forge\/(contracts|flow|memory)(\/|$)/.test(specifier)) {
+          violations.push(`${path.relative(ROOT, file)} -> ${specifier}`);
+          continue;
+        }
+        if (!specifier.startsWith(".")) continue;
+        const resolved = path.resolve(path.dirname(file), specifier);
+        const target = blockOf(resolved);
+        if (target && !isBlockEntry(resolved, target)) violations.push(`${path.relative(ROOT, file)} -> ${specifier}`);
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  test("the block rule rejects a sibling block's internals and allows its entry", () => {
+    const memoryFile = path.join(BLOCKS.memory, "src", "probe.js");
+    const internal = path.resolve(path.dirname(memoryFile), "../../flow/src/executor.js");
+    expect(blockOf(internal)).toBe("flow");
+    expect(isBlockEntry(internal, "flow")).toBe(false);
+    expect(isBlockEntry(path.resolve(path.dirname(memoryFile), "../../contracts"), "contracts")).toBe(true);
+    expect(ALLOWED_BLOCK_IMPORTS.memory.has("flow")).toBe(false);
+    expect(ALLOWED_BLOCK_IMPORTS.flow.has("memory")).toBe(false);
+  });
 });

@@ -7,13 +7,13 @@ commands:
     argv: [test, --timeout, "15000", test/integration]
   - id: validation.command.contract-baseline
     executable: bun
-    argv: [test, --timeout, "15000", test/integration, packages/contracts]
+    argv: [test, --timeout, "15000", test/integration, test/contracts]
   - id: validation.command.facade-package
     executable: bun
     argv: [test, --timeout, "15000", test/commands]
   - id: validation.command.flow-package
     executable: bun
-    argv: [test, --timeout, "15000", test/workflow, packages/flow]
+    argv: [test, --timeout, "15000", test/workflow, test/flow]
   - id: validation.command.g0-static
     executable: bun
     argv: [x, eslint, ., --max-warnings, "0"]
@@ -43,7 +43,7 @@ commands:
     argv: [test, --timeout, "15000", test/kernel]
   - id: validation.command.memory-package
     executable: bun
-    argv: [test, --timeout, "15000", test/memory, packages/memory]
+    argv: [test, --timeout, "15000", test/memory, test/memory-core]
   - id: validation.command.repository-baseline
     executable: bun
     argv: [run, test:full:parallel]
@@ -125,24 +125,24 @@ owners:
   - id: memory-foundation
     product: memory
     package: forge-memory
-    package_roots: [lib/memory, packages/memory]
+    package_roots: [lib/memory, lib/memory-core]
     selectors:
       - { kind: path, prefix: "lib/memory/" }
-      - { kind: path, prefix: "packages/memory/" }
+      - { kind: path, prefix: "lib/memory-core/" }
       - { kind: schema, prefix: "forge.memory." }
     risk_ids: [memory-data-integrity, contract-compatibility]
-    canonical_test_ids: ["packages/memory/**/*.test.js", "test/memory/**/*.test.js"]
+    canonical_test_ids: ["test/memory-core/**/*.test.js", "test/memory/**/*.test.js"]
     dependent_routes: [memory-contract]
     platform_runtime_additions: [windows-sqlite, linux-sqlite]
     lanes: [memory-package]
   - id: contracts
     product: memory
-    package: "@forge/contracts"
-    package_roots: [packages/contracts]
+    package: forge-contracts
+    package_roots: [lib/contracts]
     selectors:
-      - { kind: path, prefix: "packages/contracts/" }
+      - { kind: path, prefix: "lib/contracts/" }
     risk_ids: [contract-compatibility]
-    canonical_test_ids: ["packages/contracts/**/*.test.js"]
+    canonical_test_ids: ["test/contracts/**/*.test.js"]
     dependent_routes: [flow-memory-contract]
     platform_runtime_additions: []
     lanes: [contract-baseline]
@@ -163,13 +163,13 @@ owners:
   - id: workflow-runtime
     product: flow
     package: forge-flow
-    package_roots: [lib/workflow, packages/flow]
+    package_roots: [lib/workflow, lib/flow]
     selectors:
       - { kind: path, prefix: "lib/workflow/" }
-      - { kind: path, prefix: "packages/flow/" }
+      - { kind: path, prefix: "lib/flow/" }
       - { kind: schema, prefix: "forge.flow." }
     risk_ids: [monitor-cleanup, contract-compatibility]
-    canonical_test_ids: ["packages/flow/**/*.test.js", "test/workflow/**/*.test.js"]
+    canonical_test_ids: ["test/flow/**/*.test.js", "test/workflow/**/*.test.js"]
     dependent_routes: [flow-memory-contract]
     platform_runtime_additions: [windows-process, linux-process, macos-process]
     lanes: [flow-package]

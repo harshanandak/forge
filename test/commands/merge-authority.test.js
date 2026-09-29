@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const mergeCmd = require('../../lib/commands/merge');
-const { MEMORY_AUTHORITY_METHODS } = require('../../packages/memory');
+const { MEMORY_AUTHORITY_METHODS } = require('../../lib/memory-core');
 
 const HEAD = 'a'.repeat(40);
 const OTHER_HEAD = 'b'.repeat(40);

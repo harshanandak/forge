@@ -790,6 +790,7 @@ describe('scripts/test-full-suite.js', () => {
       'test-env/edge-cases/file-limits.test.js',
       'test/bun-workflow-pins.test.js',
       'test/cli-lifecycle.test.js',
+      'test/compiled-binary-blocks.test.js',
       'test/e2e/memory-recall-holdout.test.js',
       'test/forge-cli-registry.test.js',
       'test/github-launcher.test.js',
