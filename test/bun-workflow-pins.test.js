@@ -1384,6 +1384,33 @@ describe('update-bun-pins --to <version>', () => {
 		}
 	}, 30_000);
 
+	test('preserves a concurrent manifest edit when staging the pin fails', async () => {
+		const { root, run, head, manifest } = createCommittedBunFixture();
+		const concurrent = manifest.replace('"private": true', '"private": false');
+		try {
+			const execGit = (command, args, options) => {
+				if (args[0] === 'add') {
+					fs.writeFileSync(path.join(root, 'package.json'), concurrent);
+					throw new Error('index.lock exists');
+				}
+				return secureExecFileSync(command, args, options);
+			};
+			const result = await updateBunWorkflowPins(root, {
+				...toFixtureOptions(),
+				execGit,
+				expectedHead: head,
+				targetVersion: '1.4.3',
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('index.lock exists');
+			expect(result.error).toContain('recovery skipped: package.json changed concurrently');
+			expect(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).toBe(concurrent);
+			expect(run(['show', ':package.json']).stdout).toBe(manifest);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
 	test('the release command forwards --to and refuses a missing value', async () => {
 		const calls = [];
 		const updater = async (_root, options) => {
