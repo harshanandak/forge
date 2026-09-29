@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Replace `fastest-levenshtein` with an internal implementation, consolidate YAML parsing on `yaml`, and remove the unused TypeScript dependency. YAML validator regression tests use isolated fixtures so concurrent worktree cleanup cannot invalidate their inputs. (PR #599; issue `970f91db`)
 - **BREAKING: Node.js 22 is no longer supported; Forge requires Node.js >= 24. CI tests Node 24 and 26.** The `engines.node` field of `forge-workflow` and the `@forge/contracts`, `@forge/flow`, and `@forge/memory` workspaces is now `>=24.0.0`, and `forge setup` prerequisite checks reject older Node.js with an upgrade message. (issue `5d745884`)
 - **The default Windows full-suite budget is sized from real cores.** Windows budgets are charged per OS process (subprocess and exclusive workers cost 2), so the default Windows budget is now the machine's core count (`os.availableParallelism()`, capped at 6) instead of cores minus one. A 4-vCPU Windows runner now runs two subprocess workers (4 processes) instead of one; a 2-vCPU runner still runs one, non-Windows defaults are unchanged, and an explicit `--shards N` budget still wins. (issue `42376a6c`)
 - **Windows CI test jobs put TEMP/TMP on the runner work drive.** The full matrix, Windows smoke, and targeted PR test jobs point `TEMP` and `TMP` at `runner.temp` on Windows only, instead of the image's C: default; heavy fixture files ran 21-25% faster with TEMP off C: locally. Non-Windows jobs are unchanged. (issue `42376a6c`)
