@@ -1,6 +1,12 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { randomUUID } = require('node:crypto');
+const { spawn } = require('node:child_process');
+const { EventEmitter } = require('node:events');
 
 /**
  * Forge Push Command Tests
@@ -12,12 +18,86 @@ const { describe, test, expect } = require('bun:test');
 
 // We will require push.js once it exists — for now these tests should RED
 const pushModule = require('../../lib/commands/push.js');
+const { executeCommand } = require('../../lib/commands/_registry.js');
 const {
 	QUICK_LANE_ENV_VAR,
 	QUICK_LANE_VALUE,
 	OBSERVED_FULL_SUITE_RUNTIME_MS,
 	resolveFullSuiteTimeoutMs,
 } = require('../../scripts/test.js');
+const { MANIFEST_ENV, createProcessTree } = require('../../scripts/process-tree');
+
+const FORGE_MANIFEST = JSON.stringify({
+	name: 'forge-workflow',
+	bin: { forge: 'bin/forge.js' },
+	scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+});
+const PUSH_NONCE_ENV_VAR = 'FORGE_PUSH_NONCE';
+const TIMEOUT_FIXTURE = path.join(__dirname, '..', 'fixtures', 'push-timeout-process.js');
+
+function isProcessAlive(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function waitForProcessExit(pid, timeoutMs = 5000) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (!isProcessAlive(pid)) return true;
+		await new Promise(resolve => setTimeout(resolve, 50));
+	}
+	return !isProcessAlive(pid);
+}
+
+function fakeProcessTree() {
+	return {
+		cleanup: () => ({ killed: [] }),
+		envFor: env => ({ ...env, [MANIFEST_ENV]: 'injected-process-tree.json' }),
+		installSignalHandlers: () => () => {},
+		registerChild: () => true,
+		reserveChild: () => ({ id: 'injected-test' }),
+		unregisterChild: () => true,
+	};
+}
+
+function adaptSpawnSync(spawnSyncFn) {
+	return (command, args, options) => {
+		const child = new EventEmitter();
+		let result;
+		try {
+			result = spawnSyncFn(command, args, {
+				...options,
+				timeout: resolveFullSuiteTimeoutMs(options?.env || process.env),
+				killSignal: 'SIGKILL',
+			});
+		} catch (error) {
+			process.nextTick(() => child.emit('error', error));
+			return child;
+		}
+		child.pid = result?.pid || 12345;
+		child.kill = () => true;
+		process.nextTick(() => {
+			if (result?.error) child.emit('error', result.error);
+			else if (result?.exitedDueToTimeout === true) {
+				child.emit('error', Object.assign(new Error('test run timed out'), { code: 'ETIMEDOUT' }));
+			} else child.emit('close', result?.status ?? null, result?.signal || result?.signalCode || null);
+		});
+		return child;
+	};
+}
+
+function isForgeFullRunnerCall(cmd, args) {
+	return cmd === 'node' && args[0] === 'scripts/test-full-suite.js';
+}
+
+function isTestRunCall(cmd, args) {
+	return isForgeFullRunnerCall(cmd, args)
+		|| (args.includes('run') && args.includes('test'));
+}
 
 describe('Forge Push Command', () => {
 	describe('Module exports', () => {
@@ -120,9 +200,7 @@ describe('Forge Push Command', () => {
 
 			const result = await pushModule.handler([], { '--quick': true }, '/fake/project', deps);
 
-			const testCall = spawnCalls.find(
-				c => c.args.includes('run') && c.args.includes('test'),
-			);
+			const testCall = spawnCalls.find(call => isTestRunCall(call.cmd, call.args));
 			expect(testCall).toBeFalsy(); // tests should NOT be called
 			expect(result.quickMode).toBe(true);
 			expect(result.success).toBe(true);
@@ -165,6 +243,259 @@ describe('Forge Push Command', () => {
 	});
 
 	describe('Full mode (no --quick)', () => {
+		test.each([
+			['omits the manifest marker', env => env],
+			['returns a non-string manifest marker', env => ({ ...env, [MANIFEST_ENV]: true })],
+			['throws while exposing the manifest', () => { throw new Error('manifest unavailable'); }],
+		])('fails before spawn or authorization when supervision %s', async (_case, envFor) => {
+			const execCalls = [];
+			const logs = [];
+			let signalHandlerInstalls = 0;
+			let spawnCalls = 0;
+			let tokenWrites = 0;
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+				createProcessTree: () => ({
+					...fakeProcessTree(),
+					envFor,
+					installSignalHandlers: () => {
+						signalHandlerInstalls += 1;
+						return () => {};
+					},
+				}),
+				spawn: () => {
+					spawnCalls += 1;
+					const child = new EventEmitter();
+					child.pid = 12345;
+					process.nextTick(() => child.emit('close', 0, null));
+					return child;
+				},
+				writeForgeToken: () => { tokenWrites += 1; },
+				log: message => logs.push(String(message)),
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result).toMatchObject({ success: false, testsPassed: false, pushed: false });
+			expect(signalHandlerInstalls).toBe(0);
+			expect(spawnCalls).toBe(0);
+			expect(tokenWrites).toBe(0);
+			expect(execCalls.some(call => call.cmd === 'git' && call.args[0] === 'push')).toBe(false);
+			expect(logs.join('\n')).toContain('supervision unavailable');
+		});
+
+		test('reaps a timed-out runner and its detached descendant without touching an inherited outer tree', async () => {
+			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-push-timeout-'));
+			const pidFile = path.join(tempDir, 'fixture-pids.json');
+			const outerTree = createProcessTree({
+				manifestPath: path.join(tempDir, 'outer-process-tree.json'),
+				token: randomUUID(),
+				getProcessIdentity: pid => `test:${pid}`,
+				allInstances: true,
+				reconcile: false,
+			});
+			const unrelatedReservation = outerTree.reserveChild({ kind: 'unrelated-test-process' });
+			const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+				detached: process.platform !== 'win32',
+				stdio: 'ignore',
+				windowsHide: true,
+			});
+			expect(outerTree.registerChild(unrelatedReservation, unrelated)).toBeTruthy();
+			let supervisorPid = null;
+			let innerTree = null;
+			const logs = [];
+
+			try {
+				const inheritedEnv = outerTree.envFor({
+					...process.env,
+					FORGE_TEST_TIMEOUT_MS: '2000',
+					FORGE_PUSH_TIMEOUT_PID_FILE: pidFile,
+				});
+				const deps = makeDeps({
+					env: inheritedEnv,
+					createProcessTree: options => {
+						innerTree = createProcessTree({
+							...options,
+							getProcessIdentity: pid => `test:${pid}`,
+						});
+						return innerTree;
+					},
+					spawn: (_command, _args, options) => {
+						const child = spawn(process.execPath, [TIMEOUT_FIXTURE], {
+							...options,
+							shell: false,
+						});
+						supervisorPid = child.pid;
+						return child;
+					},
+					log: message => logs.push(String(message)),
+				});
+
+				const result = await pushModule.handler([], {}, path.join(__dirname, '..', '..'), deps);
+				const fixturePids = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
+
+				expect(result).toMatchObject({ success: false, testsPassed: false, pushed: false });
+				expect(fixturePids.registered).toBe(true);
+				expect(logs.join('\n')).toContain('timed out');
+				expect(await waitForProcessExit(supervisorPid)).toBe(true);
+				expect(await waitForProcessExit(fixturePids.descendantPid)).toBe(true);
+				expect(isProcessAlive(unrelated.pid)).toBe(true);
+			} finally {
+				innerTree?.cleanup('SIGKILL');
+				outerTree.abortChild(unrelatedReservation, unrelated);
+				outerTree.cleanup('SIGKILL');
+				fs.rmSync(tempDir, { recursive: true, force: true });
+			}
+		}, 15000);
+
+		test('routes a Forge checkout without a receipt through the supervised full runner', async () => {
+			const spawnCalls = [];
+			const deps = makeDeps({
+				spawnSync: (cmd, args, opts) => {
+					spawnCalls.push({ cmd, args: [...args], opts });
+					return { status: 0 };
+				},
+			});
+
+			await pushModule.handler([], {}, '/fake/project', deps);
+
+			const runnerCall = spawnCalls.find(call => isForgeFullRunnerCall(call.cmd, call.args));
+			expect(runnerCall).toEqual({
+				cmd: 'node',
+				args: ['scripts/test-full-suite.js'],
+				opts: expect.objectContaining({ cwd: '/fake/project' }),
+			});
+			expect(runnerCall.opts.env[PUSH_NONCE_ENV_VAR]).toBeUndefined();
+			expect(runnerCall.opts.env[QUICK_LANE_ENV_VAR]).toBeUndefined();
+			expect(spawnCalls.some(call => call.args.includes('run') && call.args.includes('test'))).toBe(false);
+		});
+
+		test('blocks git push when the Forge full runner fails', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+				spawnSync: (cmd, args) => isForgeFullRunnerCall(cmd, args)
+					? { status: 1 }
+					: { status: 0 },
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result).toMatchObject({ success: false, testsPassed: false, pushed: false });
+			expect(execCalls.some(call => call.cmd === 'git' && call.args[0] === 'push')).toBe(false);
+		});
+
+		test('keeps a consumer-owned scripts/test.js on its configured package command', async () => {
+			const spawnCalls = [];
+			const deps = makeDeps({
+				existsSync: file => /pnpm-lock\.yaml$/.test(file) || /scripts[\\/]test\.js$/.test(file),
+				readFileSync: () => JSON.stringify({
+					name: 'consumer-app',
+					scripts: { test: 'node scripts/test.js' },
+				}),
+				spawnSync: (cmd, args) => {
+					spawnCalls.push({ cmd, args: [...args] });
+					return { status: 0 };
+				},
+			});
+
+			await pushModule.handler([], {}, '/consumer/project', deps);
+
+			expect(spawnCalls.some(call => isForgeFullRunnerCall(call.cmd, call.args))).toBe(false);
+			expect(spawnCalls).toContainEqual({ cmd: 'pnpm', args: ['run', 'test'] });
+		});
+
+		test('keeps the consumer package command on the supervised async path', async () => {
+			const spawnCalls = [];
+			const processTree = {
+				cleanup: () => ({ killed: [] }),
+				envFor: env => ({ ...env, [MANIFEST_ENV]: 'consumer-process-tree.json' }),
+				installSignalHandlers: () => () => {},
+				registerChild: () => true,
+				reserveChild: () => ({ id: 'consumer-test' }),
+				unregisterChild: () => true,
+			};
+			const deps = makeDeps({
+				existsSync: file => /pnpm-lock\.yaml$/.test(file) || /scripts[\\/]test\.js$/.test(file),
+				readFileSync: () => JSON.stringify({
+					name: 'consumer-app',
+					scripts: { test: 'node scripts/test.js' },
+				}),
+				createProcessTree: () => processTree,
+				spawn: (cmd, args) => {
+					spawnCalls.push({ cmd, args: [...args] });
+					const child = new EventEmitter();
+					child.pid = 12345;
+					process.nextTick(() => child.emit('close', 0, null));
+					return child;
+				},
+			});
+
+			const result = await pushModule.handler([], {}, '/consumer/project', deps);
+
+			expect(result).toMatchObject({ success: true, testsPassed: true, pushed: true });
+			expect(spawnCalls).toEqual([{ cmd: 'pnpm', args: ['run', 'test'] }]);
+		});
+
+		test('hard-stops an ignoring runner on cancellation before authorization or push', async () => {
+			const execCalls = [];
+			const cleanupSignals = [];
+			let cancellationHandler = null;
+			let child = null;
+			let childClosed = false;
+			let signalHandlersRemoved = false;
+			let tokenWrites = 0;
+			const processTree = {
+				cleanup: signal => {
+					cleanupSignals.push(signal);
+					if (signal === 'SIGKILL' && child && !childClosed) {
+						childClosed = true;
+						child.emit('close', null, 'SIGKILL');
+					}
+					return { killed: [] };
+				},
+				envFor: env => ({ ...env, [MANIFEST_ENV]: 'cancelled-process-tree.json' }),
+				installSignalHandlers: handler => {
+					cancellationHandler = handler;
+					return () => { signalHandlersRemoved = true; };
+				},
+				registerChild: () => true,
+				reserveChild: () => ({ id: 'cancelled-test' }),
+				unregisterChild: () => true,
+			};
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+				createProcessTree: () => processTree,
+				spawn: () => {
+					child = new EventEmitter();
+					child.pid = 12345;
+					process.nextTick(() => {
+						cancellationHandler('SIGTERM');
+					});
+					return child;
+				},
+				writeForgeToken: () => { tokenWrites += 1; },
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result).toMatchObject({ success: false, testsPassed: false, pushed: false });
+			expect(tokenWrites).toBe(0);
+			expect(execCalls.some(call => call.cmd === 'git' && call.args[0] === 'push')).toBe(false);
+			expect(signalHandlersRemoved).toBe(true);
+			expect(cleanupSignals).toContain('SIGKILL');
+			expect(childClosed).toBe(true);
+		});
+
 		test('reuses exact-head validation only for tests while keeping branch protection and lint', async () => {
 			const spawnCalls = [];
 			const execCalls = [];
@@ -184,7 +515,7 @@ describe('Forge Push Command', () => {
 			const result = await pushModule.handler([], {}, 'C:/wrong/init-cwd', deps);
 
 			expect(spawnCalls.some(call => call.args.includes('lint'))).toBe(true);
-			expect(spawnCalls.some(call => call.args.includes('test'))).toBe(false);
+			expect(spawnCalls.some(call => isTestRunCall(call.cmd, call.args))).toBe(false);
 			expect(execCalls.some(call => call.args.some(arg => arg.includes('branch-protection.js')))).toBe(true);
 			expect(execCalls.some(call => call.args[0] === 'push')).toBe(true);
 			expect(result).toMatchObject({ success: true, testsPassed: true, validationReused: true });
@@ -202,7 +533,7 @@ describe('Forge Push Command', () => {
 
 			const result = await pushModule.handler([], {}, '/fake/project', deps);
 
-			expect(spawnCalls.some(call => call.args.includes('test'))).toBe(true);
+			expect(spawnCalls.some(call => isForgeFullRunnerCall(call.cmd, call.args))).toBe(true);
 			expect(result.validationReused).toBe(false);
 		});
 
@@ -220,9 +551,7 @@ describe('Forge Push Command', () => {
 			const lintCall = spawnCalls.find(
 				c => c.args.includes('run') && c.args.includes('lint'),
 			);
-			const testCall = spawnCalls.find(
-				c => c.args.includes('run') && c.args.includes('test'),
-			);
+			const testCall = spawnCalls.find(call => isForgeFullRunnerCall(call.cmd, call.args));
 			expect(lintCall).toBeTruthy();
 			expect(testCall).toBeTruthy();
 			expect(result.quickMode).toBe(false);
@@ -232,7 +561,7 @@ describe('Forge Push Command', () => {
 		test('should block push if tests fail in full mode', async () => {
 			const deps = makeDeps({
 				spawnSync: (cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall(cmd, args)) {
 						return { status: 1 };
 					}
 					return { status: 0 };
@@ -249,7 +578,7 @@ describe('Forge Push Command', () => {
 			let testOpts = null;
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						testOpts = opts;
 					}
 					return { status: 0 };
@@ -266,7 +595,7 @@ describe('Forge Push Command', () => {
 			let testOpts = null;
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						testOpts = opts;
 					}
 					return { status: 0 };
@@ -283,7 +612,7 @@ describe('Forge Push Command', () => {
 			let testOpts = null;
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						testOpts = opts;
 					}
 					return { status: 0 };
@@ -301,12 +630,12 @@ describe('Forge Push Command', () => {
 			let testOpts = null;
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						testOpts = opts;
 					}
 					return { status: 0 };
 				},
-				env: { ...process.env, FORGE_TEST_TIMEOUT_MS: '1234567' },
+				env: { PATH: 'C:/synthetic-tools', FORGE_TEST_TIMEOUT_MS: '1234567' },
 			});
 
 			await pushModule.handler([], {}, '/fake/project', deps);
@@ -322,7 +651,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return { status: null, signal: 'SIGKILL' };
 					}
 					return { status: 0 };
@@ -349,7 +678,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return {
 							status: null,
 							signal: 'SIGKILL',
@@ -377,7 +706,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return { status: null, signalCode: 'SIGKILL', exitedDueToTimeout: true };
 					}
 					return { status: 0 };
@@ -400,7 +729,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return { status: null, signal: 'SIGTERM' };
 					}
 					return { status: 0 };
@@ -421,7 +750,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return {
 							status: null,
 							signal: null,
@@ -445,7 +774,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return { status: null, signal: null, error: new Error('spawn ENOENT') };
 					}
 					return { status: 0 };
@@ -461,7 +790,7 @@ describe('Forge Push Command', () => {
 	});
 
 	describe('Git push with passthrough args', () => {
-		test('should call git push with passthrough args on success', async () => {
+		test('forwards real Git arguments when no Forge delimiter is present', async () => {
 			const execCalls = [];
 			const deps = makeDeps({
 				execFileSync: (cmd, args, _opts) => {
@@ -480,10 +809,122 @@ describe('Forge Push Command', () => {
 			const pushCall = execCalls.find(
 				c => c.cmd === 'git' && c.args[0] === 'push',
 			);
-			expect(pushCall).toBeTruthy();
-			expect(pushCall.args).toContain('-u');
-			expect(pushCall.args).toContain('origin');
-			expect(pushCall.args).toContain('feat/slug');
+			expect(pushCall.args).toEqual(['push', '-u', 'origin', 'feat/slug']);
+		});
+
+		test('consumes the first Forge passthrough delimiter', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+			});
+
+			await pushModule.handler(
+				['--', '--force-with-lease', '-u', 'origin', 'feat/slug'],
+				{},
+				'/fake/project',
+				deps,
+			);
+
+			const pushCall = execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push');
+			expect(pushCall.args).toEqual([
+				'push',
+				'--force-with-lease',
+				'-u',
+				'origin',
+				'feat/slug',
+			]);
+		});
+
+		test('preserves Git-owned arguments on both sides of the first Forge delimiter', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+			});
+
+			await pushModule.handler(['origin', '--', 'feat/slug'], {}, '/fake/project', deps);
+
+			const pushCall = execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push');
+			expect(pushCall.args).toEqual(['push', 'origin', 'feat/slug']);
+		});
+
+		test('keeps --quick after the delimiter Git-owned', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args, opts) => {
+					execCalls.push({ cmd, args: [...args], opts });
+					return '';
+				},
+			});
+
+			const result = await pushModule.handler(
+				['origin', '--', '--quick', 'feat/slug'],
+				{ quick: true },
+				'/fake/project',
+				deps,
+			);
+
+			const pushCall = execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push');
+			expect(result.quickMode).toBe(false);
+			expect(pushCall.args).toEqual(['push', 'origin', '--quick', 'feat/slug']);
+			expect(pushCall.opts.env[QUICK_LANE_ENV_VAR]).toBeUndefined();
+		});
+
+		test('preserves a later Git delimiter after consuming the Forge delimiter', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+			});
+
+			await pushModule.handler(['--', '--', 'origin', 'feat/slug'], {}, '/fake/project', deps);
+
+			const pushCall = execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push');
+			expect(pushCall.args).toEqual(['push', '--', 'origin', 'feat/slug']);
+		});
+
+		test.each([
+			[['-u', 'origin', 'feat/slug'], ['push', '-u', 'origin', 'feat/slug']],
+			[[
+				'--',
+				'--force-with-lease=refs/heads/feat/slug:0123456789abcdef0123456789abcdef01234567',
+				'origin',
+				'feat/slug',
+			], [
+				'push',
+				'--force-with-lease=refs/heads/feat/slug:0123456789abcdef0123456789abcdef01234567',
+				'origin',
+				'feat/slug',
+			]],
+		])('preserves Git argv through registry dispatch without a network push', async (argv, expected) => {
+			const execCalls = [];
+			const result = await executeCommand(
+				new Map([['push', pushModule]]),
+				'push',
+				argv,
+				{},
+				'/fake/project',
+				{
+					skipEnsureHome: true,
+					commandOpts: makeDeps({
+						execFileSync: (cmd, args) => {
+							execCalls.push({ cmd, args: [...args] });
+							return '';
+						},
+					}),
+				},
+			);
+
+			expect(result.success).toBe(true);
+			expect(execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push').args)
+				.toEqual(expected);
 		});
 
 		test('should declare the quick lane on the spawned git push env in quick mode', async () => {
@@ -559,6 +1000,116 @@ describe('Forge Push Command', () => {
 	});
 
 	describe('Forge push nonce token', () => {
+		test.each([
+			[false, 'full', ['branch-protection', 'lint', 'tests']],
+			[true, 'quick', ['branch-protection', 'lint']],
+		])('captures clean state before gates and signs only completed gates (quick=%s)', async (quick, mode, gates) => {
+			const order = [];
+			let writeOptions;
+			const deps = makeDeps({
+				beginPushProof: () => { order.push('snapshot'); return { clean: true, branch: 'refs/heads/feature' }; },
+				execFileSync: (cmd, args) => {
+					if (cmd === 'node' && args[0].includes('branch-protection.js')) order.push('branch');
+					return '';
+				},
+				spawnSync: (_cmd, args) => {
+					if (args.includes('lint')) order.push('lint');
+					if (isForgeFullRunnerCall('node', args)) order.push('tests');
+					return { status: 0 };
+				},
+				writeForgeToken: (_root, options) => {
+					order.push('write');
+					writeOptions = options;
+					return { nonce: '00000000-0000-4000-8000-000000000000' };
+				},
+				consumeForgeToken: () => true,
+			});
+
+			await pushModule.handler([], quick ? { '--quick': true } : {}, '/fake/project', deps);
+
+			expect(order[0]).toBe('snapshot');
+			expect(order.indexOf('write')).toBeGreaterThan(order.indexOf('lint'));
+			expect(writeOptions).toMatchObject({ mode, gates });
+			expect(writeOptions.snapshot).toEqual({ clean: true, branch: 'refs/heads/feature' });
+		});
+
+		test('passes validation receipt identity into the signed invocation proof', async () => {
+			let writeOptions;
+			await pushModule.handler([], {}, '/fake/project', makeDeps({
+				verifyValidationReceipt: () => ({ valid: true, identity: 'receipt-signature-hash' }),
+				beginPushProof: () => ({ clean: true }),
+				writeForgeToken: (_root, options) => {
+					writeOptions = options;
+					return { nonce: '00000000-0000-4000-8000-000000000000' };
+				},
+				consumeForgeToken: () => true,
+			}));
+
+			expect(writeOptions.receiptIdentity).toBe('receipt-signature-hash');
+		});
+
+		test('puts only the fresh nonce and declared lane in the Git child environment', async () => {
+			const parentEnv = {
+				PATH: '/tools',
+				[PUSH_NONCE_ENV_VAR]: 'stale-parent-nonce',
+				[QUICK_LANE_ENV_VAR]: 'stale-parent-lane',
+			};
+			let childEnv;
+			const deps = makeDeps({
+				env: parentEnv,
+				beginPushProof: () => ({ clean: true }),
+				writeForgeToken: () => ({ nonce: '00000000-0000-4000-8000-000000000000' }),
+				consumeForgeToken: () => true,
+				execFileSync: (cmd, args, options) => {
+					if (cmd === 'git' && args[0] === 'push') childEnv = options.env;
+					return '';
+				},
+			});
+
+			await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(childEnv[PUSH_NONCE_ENV_VAR]).toBe('00000000-0000-4000-8000-000000000000');
+			expect(childEnv[QUICK_LANE_ENV_VAR]).toBeUndefined();
+			expect(parentEnv).toEqual({
+				PATH: '/tools',
+				[PUSH_NONCE_ENV_VAR]: 'stale-parent-nonce',
+				[QUICK_LANE_ENV_VAR]: 'stale-parent-lane',
+			});
+		});
+
+		test.each([false, true])('revokes its own proof in finally when Git push fails=%s', async fails => {
+			const consumed = [];
+			const deps = makeDeps({
+				beginPushProof: () => ({ clean: true }),
+				writeForgeToken: () => ({ nonce: '00000000-0000-4000-8000-000000000000' }),
+				consumeForgeToken: (_root, options) => consumed.push(options.nonce),
+				execFileSync: (cmd, args) => {
+					if (fails && cmd === 'git' && args[0] === 'push') throw new Error('push failed');
+					return '';
+				},
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result.success).toBe(!fails);
+			expect(consumed).toEqual(['00000000-0000-4000-8000-000000000000']);
+		});
+
+		test('token write failure scrubs inherited authority and falls back to ordinary hooks', async () => {
+			let childEnv;
+			await pushModule.handler([], {}, '/fake/project', makeDeps({
+				env: { [PUSH_NONCE_ENV_VAR]: 'stale' },
+				beginPushProof: () => ({ clean: true }),
+				writeForgeToken: () => { throw new Error('read-only metadata'); },
+				execFileSync: (cmd, args, options) => {
+					if (cmd === 'git' && args[0] === 'push') childEnv = options.env;
+					return '';
+				},
+			}));
+
+			expect(childEnv[PUSH_NONCE_ENV_VAR]).toBeUndefined();
+		});
+
 		test('should call writeForgeToken before git push on success', async () => {
 			let tokenWritten = false;
 			const execCalls = [];
@@ -730,17 +1281,23 @@ describe('Forge Push Command', () => {
  */
 function makeDeps(overrides = {}) {
 	const noop = () => '';
+	const spawnSyncFn = overrides.spawnSync || ((_cmd, _args, _opts) => ({ status: 0 }));
 	return {
+		env: overrides.env || { PATH: 'C:/synthetic-tools' },
 		execFileSync: overrides.execFileSync || noop,
-		spawnSync: overrides.spawnSync || ((_cmd, _args, _opts) => ({ status: 0 })),
+		spawnSync: spawnSyncFn,
+		spawn: overrides.spawn || adaptSpawnSync(spawnSyncFn),
+		createProcessTree: overrides.createProcessTree || fakeProcessTree,
 		existsSync: overrides.existsSync || (() => true), // bun.lock exists by default
+		readFileSync: overrides.readFileSync || (() => FORGE_MANIFEST),
 		log: overrides.log || (() => {}),
 		writeForgeToken: overrides.writeForgeToken || (() => {}),
+		consumeForgeToken: overrides.consumeForgeToken || (() => false),
+		beginPushProof: overrides.beginPushProof || (() => ({ clean: true })),
 		verifyValidationReceipt: overrides.verifyValidationReceipt || (() => ({ valid: false, reason: 'missing' })),
 		fireAndForget: () => {},
 		_ensureBackingIssue: async () => null,
 		_kernelDriver: {},
 		_kernelBroker: {},
-		...(overrides.env ? { env: overrides.env } : {}),
 	};
 }

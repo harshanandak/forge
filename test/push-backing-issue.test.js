@@ -55,6 +55,7 @@ describe('push auto-file rail (autoFileBackingIssueForPush)', () => {
 describe('push handler wires the rail non-blockingly', () => {
   function pushDeps(ensureImpl) {
     return {
+      env: { PATH: 'C:/synthetic-tools' },
       execFileSync: fakeExec('feat/foo'),
       spawnSync: () => ({ status: 0 }),        // lint passes
       existsSync: () => false,                 // npm default; no lockfiles

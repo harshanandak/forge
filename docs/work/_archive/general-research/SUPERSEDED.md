@@ -18,5 +18,8 @@ Files moved out of this archive into `docs/reference/` (still current, not super
 - `dependency-chain.md` → `docs/reference/dependency-chain.md`
 - `agent-permissions.md` → `docs/reference/agent-permissions.md`
 - `test-environment.md` → `docs/reference/test-environment.md`
-- `superpowers.md` → `docs/reference/superpowers-analysis.md`
-- `superpowers-integration.md` → `docs/reference/superpowers-integration-options.md`
+
+Files first moved to `docs/reference/`, later returned to history (no longer current):
+
+- `superpowers.md` → `docs/work/2026-03-02-superpowers-gaps/research/superpowers-analysis.md`
+- `superpowers-integration.md` → `docs/work/2026-03-02-superpowers-gaps/research/superpowers-integration-options.md`

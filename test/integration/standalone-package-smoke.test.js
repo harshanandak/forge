@@ -10,9 +10,28 @@ const { spawnSync } = require("node:child_process");
 
 const ROOT = path.resolve(__dirname, "../..");
 const created = [];
+const OUTPUT_LIMIT = 2000;
 
-function npm(args, cwd, invocation) {
-  return spawnSync(invocation.command, [...invocation.prefix, ...args], {
+function runOperation(label, command, args, options) {
+  console.error(`[standalone-package] ${label}: start`);
+  const started = Date.now();
+  const result = spawnSync(command, args, options);
+  const diagnostic = {
+    label,
+    elapsedMs: Date.now() - started,
+    status: result.status,
+    signal: result.signal,
+    error: result.error ? { code: result.error.code, message: result.error.message } : null,
+    stdout: String(result.stdout || "").slice(-OUTPUT_LIMIT),
+    stderr: String(result.stderr || "").slice(-OUTPUT_LIMIT),
+  };
+  result.diagnostic = diagnostic;
+  console.error(`[standalone-package] ${JSON.stringify(diagnostic)}`);
+  return result;
+}
+
+function npm(args, cwd, invocation, label) {
+  return runOperation(label, invocation.command, [...invocation.prefix, ...args], {
     cwd,
     encoding: "utf8",
     env: { ...process.env, npm_config_audit: "false", npm_config_fund: "false" },
@@ -26,9 +45,19 @@ function parsePackOutput(output) {
 }
 
 function pack(packageDirectory, destination, invocation) {
-  const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation);
+  const packageName = path.basename(packageDirectory) || "root";
+  const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation, `pack:${packageName}`);
   expect(result.status, result.stderr).toBe(0);
-  return path.join(destination, parsePackOutput(result.stdout)[0].filename);
+  const packed = parsePackOutput(result.stdout)[0];
+  const declared = JSON.parse(fs.readFileSync(path.join(packageDirectory, "package.json"), "utf8"));
+  expect({ name: packed.name, version: packed.version }).toEqual({ name: declared.name, version: declared.version });
+  const tarball = path.join(destination, packed.filename);
+  return {
+    name: packed.name,
+    version: packed.version,
+    tarball,
+    installSpec: `${packed.name}@file:${tarball}`,
+  };
 }
 
 function resolvePlatformNode() {
@@ -41,7 +70,7 @@ function resolvePlatformNode() {
     const match = probe.status === 0 && probe.stdout.trim().match(/^v(\d+)\.(\d+)\.(\d+)$/);
     if (!match) continue;
     const version = { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
-    if (version.major > 22 || (version.major === 22 && version.minor >= 16)) {
+    if (version.major >= 24) {
       const locator = process.platform === "win32" ? "where.exe" : "which";
       const located = path.isAbsolute(executable)
         ? executable
@@ -49,7 +78,7 @@ function resolvePlatformNode() {
       return { executable: fs.realpathSync.native(located), version };
     }
   }
-  throw new Error("Node.js >=22.16.0 is required for the standalone package smoke test");
+  throw new Error("Node.js >=24.0.0 is required for the standalone package smoke test");
 }
 
 function resolveNpmInvocation(platformNode) {
@@ -80,11 +109,15 @@ function isolatedEnvironment(root, platformNode) {
   return env;
 }
 
-function runInstalledForge(packageRoot, args, cwd, platformNode, env) {
+function runInstalledForge(packageRoot, args, cwd, platformNode, env, label) {
   const shim = path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "forge.cmd" : "forge");
-  if (process.platform !== "win32") return spawnSync(shim, args, { cwd, encoding: "utf8", env });
+  if (process.platform !== "win32" || !fs.existsSync(shim)) {
+    // Bun links a native forge.exe on Windows instead of npm's forge.cmd.
+    const executable = process.platform === "win32" ? shim.replace(/\.cmd$/, ".exe") : shim;
+    return runOperation(label, executable, args, { cwd, encoding: "utf8", env });
+  }
   const command = `""${shim}" ${args.join(" ")}"`;
-  return spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], {
+  return runOperation(label, process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], {
     cwd,
     encoding: "utf8",
     env,
@@ -97,8 +130,84 @@ afterEach(() => {
 });
 
 describe("standalone product packages", () => {
+  test("bounds child operations before the test deadline and preserves diagnostics", () => {
+    const timedOut = runOperation("test:timeout", process.execPath, ["-e", "setTimeout(() => {}, 250)"], {
+      encoding: "utf8",
+      timeout: 50,
+    });
+    expect(timedOut.status).toBeNull();
+    expect(timedOut.error?.code).toBe("ETIMEDOUT");
+    expect(timedOut.diagnostic.stdout.length).toBeLessThanOrEqual(OUTPUT_LIMIT);
+
+    const nonzero = runOperation("test:nonzero", process.execPath, ["-e", `process.stdout.write("x".repeat(${OUTPUT_LIMIT + 100})); process.stderr.write("failed"); process.exit(7)`], {
+      encoding: "utf8",
+      timeout: 2000,
+    });
+    expect(nonzero.status).toBe(7);
+    expect(nonzero.diagnostic.stdout).toHaveLength(OUTPUT_LIMIT);
+    expect(nonzero.diagnostic.stderr).toBe("failed");
+  }, 3000);
+
   test("parses npm 10 JSON after package lifecycle output", () => {
     expect(parsePackOutput('sync hooks: ok\n[{"filename":"forge.tgz"}]\n')[0].filename).toBe("forge.tgz");
+  });
+
+  test("root prepare skips package packing and retains development hook setup", () => {
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge prepare-"));
+    created.push(temporary);
+    const sentinel = path.join(temporary, "lefthook-called");
+    const mock = path.join(temporary, process.platform === "win32" ? "lefthook.cmd" : "lefthook");
+    fs.writeFileSync(mock, process.platform === "win32"
+      ? '@echo off\r\n>"%FORGE_PREPARE_SENTINEL%" echo called\r\n'
+      : '#!/bin/sh\nprintf called > "$FORGE_PREPARE_SENTINEL"\n');
+    if (process.platform !== "win32") fs.chmodSync(mock, 0o755);
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "PATH";
+    const runPrepare = (npmCommand) => spawnSync(manifest.scripts.prepare, {
+      cwd: ROOT,
+      encoding: "utf8",
+      shell: true,
+      env: {
+        ...process.env,
+        [pathKey]: [temporary, process.env[pathKey]].filter(Boolean).join(path.delimiter),
+        FORGE_PREPARE_SENTINEL: sentinel,
+        npm_command: npmCommand,
+      },
+    });
+
+    const development = runPrepare("install");
+    expect(development.status, development.stderr).toBe(0);
+    expect(fs.existsSync(sentinel)).toBeTrue();
+    fs.rmSync(sentinel);
+
+    const packing = runPrepare("pack");
+    expect(packing.status, packing.stderr).toBe(0);
+    expect(fs.existsSync(sentinel)).toBeFalse();
+  });
+
+  test("exact version aliases exit before loading the command graph", () => {
+    const platformNode = resolvePlatformNode();
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge version-"));
+    created.push(temporary);
+    const guard = path.join(temporary, "reject-lib-load.cjs");
+    fs.writeFileSync(guard, `
+const Module = require("node:module");
+const load = Module._load;
+Module._load = function (request, parent, isMain) {
+  if (String(request).startsWith("../lib/")) throw new Error("version loaded " + request);
+  return load.call(this, request, parent, isMain);
+};
+`);
+    const expected = `Forge v${JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version}\n`;
+
+    for (const alias of ["--version", "-V"]) {
+      const result = spawnSync(platformNode.executable, ["--require", guard, path.join(ROOT, "bin", "forge.js"), alias], {
+        cwd: ROOT,
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(expected);
+    }
   });
 
   test("packs and installs the root CLI with its runtime workspaces", () => {
@@ -108,21 +217,78 @@ describe("standalone product packages", () => {
     created.push(temporary);
     fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
     const env = isolatedEnvironment(path.join(temporary, "home"), platformNode);
-    const rootTarball = pack(ROOT, temporary, npmInvocation);
+    const declaredManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    const rootPackage = pack(ROOT, temporary, npmInvocation);
 
-    const install = npm(["install", "--ignore-scripts", rootTarball], temporary, npmInvocation);
+    const install = npm(["install", "--ignore-scripts", rootPackage.installSpec], temporary, npmInvocation, "install:root");
     expect(install.status, install.stderr).toBe(0);
+    const installedManifest = JSON.parse(fs.readFileSync(path.join(temporary, "node_modules", rootPackage.name, "package.json"), "utf8"));
+    expect({ name: installedManifest.name, version: installedManifest.version }).toEqual({
+      name: declaredManifest.name,
+      version: declaredManifest.version,
+    });
 
-    const version = runInstalledForge(temporary, ["--version"], temporary, platformNode, env);
+    const version = runInstalledForge(temporary, ["--version"], temporary, platformNode, env, "cli:version");
     expect(version.status, version.stderr).toBe(0);
     expect(version.stdout).toContain("Forge v");
+
+    // The allow-listed tarball (package.json `files`) must still carry every
+    // module the help surfaces load.
+    for (const args of [["--help"], ["setup", "--help"]]) {
+      const help = runInstalledForge(temporary, args, temporary, platformNode, env, `cli:${args.join("-")}`);
+      expect(help.status, `${help.stdout}\n${help.stderr}`).toBe(0);
+      expect(help.stdout.length).toBeGreaterThan(0);
+    }
 
     const project = path.join(temporary, "project");
     fs.mkdirSync(project);
     const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" });
     expect(init.status, init.stderr).toBe(0);
-    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project, platformNode, env);
+    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project, platformNode, env, "cli:setup");
     expect(setup.status, `${setup.stdout}\n${setup.stderr}`).toBe(0);
+  }, 60000);
+
+  test("packs the root CLI and installs it with Bun using only the bundled runtime workspaces", () => {
+    const platformNode = resolvePlatformNode();
+    const npmInvocation = resolveNpmInvocation(platformNode);
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge bun-root-"));
+    created.push(temporary);
+    fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
+    const env = isolatedEnvironment(path.join(temporary, "home"), platformNode);
+    const declaredManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    const bundled = declaredManifest.bundledDependencies;
+    expect(bundled.length).toBeGreaterThan(0);
+    // Bun resolves every `dependencies` entry from the registry; bundled workspaces are unpublished.
+    for (const name of bundled) expect(Object.keys(declaredManifest.dependencies)).not.toContain(name);
+    const rootPackage = pack(ROOT, temporary, npmInvocation);
+
+    const install = runOperation("install:bun-root", process.execPath, ["add", "--ignore-scripts", rootPackage.tarball], {
+      cwd: temporary,
+      encoding: "utf8",
+    });
+    expect(install.status, `${install.stdout}
+${install.stderr}`).toBe(0);
+    const installedRoot = path.join(temporary, "node_modules", rootPackage.name);
+    const installedManifest = JSON.parse(fs.readFileSync(path.join(installedRoot, "package.json"), "utf8"));
+    expect({ name: installedManifest.name, version: installedManifest.version }).toEqual({
+      name: declaredManifest.name,
+      version: declaredManifest.version,
+    });
+    for (const name of bundled) {
+      expect(fs.existsSync(path.join(installedRoot, "node_modules", ...name.split("/"), "package.json"))).toBeTrue();
+    }
+
+    const version = runInstalledForge(temporary, ["--version"], temporary, platformNode, env, "cli:bun-version");
+    expect(version.status, version.stderr).toBe(0);
+    expect(version.stdout).toContain(`Forge v${declaredManifest.version}`);
+
+    const project = path.join(temporary, "project");
+    fs.mkdirSync(project);
+    const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" });
+    expect(init.status, init.stderr).toBe(0);
+    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project, platformNode, env, "cli:bun-setup");
+    expect(setup.status, `${setup.stdout}
+${setup.stderr}`).toBe(0);
   }, 60000);
 
   test("packs and installs Flow with public Forge contracts in a fresh package", () => {
@@ -131,11 +297,11 @@ describe("standalone product packages", () => {
     const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge products-"));
     created.push(temporary);
     fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
-    const contractsTarball = pack(path.join(ROOT, "packages", "contracts"), temporary, npmInvocation);
-    const memoryTarball = pack(path.join(ROOT, "packages", "memory"), temporary, npmInvocation);
-    const flowTarball = pack(path.join(ROOT, "packages", "flow"), temporary, npmInvocation);
+    const contractsPackage = pack(path.join(ROOT, "packages", "contracts"), temporary, npmInvocation);
+    const memoryPackage = pack(path.join(ROOT, "packages", "memory"), temporary, npmInvocation);
+    const flowPackage = pack(path.join(ROOT, "packages", "flow"), temporary, npmInvocation);
 
-    const install = npm(["install", "--ignore-scripts", contractsTarball, memoryTarball, flowTarball], temporary, npmInvocation);
+    const install = npm(["install", "--ignore-scripts", contractsPackage.installSpec, memoryPackage.installSpec, flowPackage.installSpec], temporary, npmInvocation, "install:products");
     expect(install.status, install.stderr).toBe(0);
 
     for (const [packageName, directory] of [["contracts", "packages/contracts"], ["memory", "packages/memory"], ["flow", "packages/flow"]]) {
@@ -149,8 +315,7 @@ describe("standalone product packages", () => {
       expect(manifest.publishConfig).toEqual({ access: "public" });
     }
 
-    expect(platformNode.version.major).toBeGreaterThanOrEqual(22);
-    expect(platformNode.version.major > 22 || platformNode.version.minor >= 16).toBe(true);
+    expect(platformNode.version.major).toBeGreaterThanOrEqual(24);
     expect(path.basename(platformNode.executable).toLowerCase()).not.toContain("bun");
 
     const probe = spawnSync(platformNode.executable, ["-e", "require('@forge/contracts'); require('@forge/memory'); require('@forge/flow')"], {

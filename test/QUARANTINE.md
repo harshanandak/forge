@@ -26,5 +26,7 @@ only when the issue is closed and the test has been un-skipped.
 | Test | Status | First seen | Issue | Notes |
 | --- | --- | --- | --- | --- |
 | `test/patch-intent.test.js` | watching | 2026-08-16 | `b7a20a71` | ENOTCONN under load in the **local** full suite; kills the suite mid-run with no failing-test output. One occurrence, never on CI, so it stays in the suite until it recurs. |
+| `test/pr-monitor/journal.test.js` › withJournalLock (cross-process serialization) › heartbeat keeps a contender out after the original stale window | quarantined (darwin only) | 2026-09-28 | `8d54c27a` | macOS CI (Node 22) failure on PR #590 run 36457747077: the contender acquired the lock (the promise resolved instead of rejecting) at 6530ms. It's a wall-clock heartbeat vs stale-window race under runner load; the fix is to drive the heartbeat and stale window with an injected clock. |
+| `test/e2e/memory-recall-holdout.test.js` › foreign rows cannot crowd an unseen local memory out of additionalContext | quarantined (win32 only) | 2026-09-27 | `635695bc` | Windows CI (Node 22) timeout, 20051ms vs 15000ms, on the first case of the file (run 36345257796); the same memory-recall family timed out on CI before; suspected cold-start setup inside the case. |
 
 <!-- Add a row above. Keep it one line per test; details belong in the issue. -->

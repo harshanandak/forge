@@ -1,97 +1,115 @@
 'use strict';
 
-const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
+const { _pushProof } = require('../lib/validation-receipt');
+const { defaultGetProcessIdentity } = require('./process-tree');
 
-const TOKEN_FILENAME = '.forge-push-token';
-const MAX_AGE_MS = 30000; // 30 seconds
+const NONCE_ENV_VAR = 'FORGE_PUSH_NONCE';
+const NONCE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/**
- * Get the absolute path to the token file.
- *
- * @param {string} projectRoot - Absolute path to project root
- * @returns {string} Token file path
- */
-function tokenPath(projectRoot) {
-  return path.join(projectRoot, TOKEN_FILENAME);
+function git(projectRoot, args, deps = {}) {
+  return (deps.execFileSync || execFileSync)('git', args, {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
 }
 
-/**
- * Write a one-time nonce token to disk.
- * Called by `forge push` right before `git push` so lefthook hooks
- * can detect that checks already passed and skip re-running them.
- *
- * @param {string} projectRoot - Absolute path to project root
- * @returns {{nonce: string, timestamp: number}} The written token data
- */
-function write(projectRoot) {
-  const data = {
-    nonce: crypto.randomUUID(),
-    timestamp: Date.now(),
-  };
-  fs.writeFileSync(tokenPath(projectRoot), JSON.stringify(data), 'utf-8');
-  return data;
+function resolveProofPath(projectRoot, nonce, deps = {}) {
+  if (!NONCE_PATTERN.test(nonce || '')) throw new Error('invalid push proof nonce');
+  if (deps.resolvePushProofPath) return path.resolve(deps.resolvePushProofPath(projectRoot, nonce));
+  const root = path.resolve(git(projectRoot, ['rev-parse', '--show-toplevel'], deps));
+  return path.resolve(root, git(root, ['rev-parse', '--git-path', `forge/push-tokens/${nonce}.json`], deps));
 }
 
-/**
- * Check if a valid (fresh, well-formed) forge push token exists.
- * Does NOT delete the token — use `consume()` for one-time validation.
- *
- * @param {string} projectRoot - Absolute path to project root
- * @returns {boolean} True if a valid, fresh token exists
- */
-function isValid(projectRoot) {
+function writeAtomic(filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
-    const raw = fs.readFileSync(tokenPath(projectRoot), 'utf-8');
-    const content = JSON.parse(raw);
-    if (!content.nonce || typeof content.timestamp !== 'number') {
-      return false;
-    }
-    const age = Date.now() - content.timestamp;
-    return age < MAX_AGE_MS;
-  } catch (_err) {
-    return false;
+    fs.writeFileSync(temporary, content, { flag: 'wx', mode: 0o600 });
+    fs.renameSync(temporary, filePath);
+  } finally {
+    fs.rmSync(temporary, { force: true });
   }
 }
 
 /**
- * Validate and delete the token in one atomic operation (one-time use).
- * Always attempts to delete the file, even if the token is stale or invalid.
+ * Write signed authority for one active `forge push` invocation.
  *
- * @param {string} projectRoot - Absolute path to project root
- * @returns {boolean} True if the token was valid before deletion
+ * @param {string} projectRoot
+ * @param {object} options
+ * @returns {{nonce: string}}
  */
-function consume(projectRoot) {
-  const tp = tokenPath(projectRoot);
-  try {
-    const raw = fs.readFileSync(tp, 'utf-8');
-    // Always delete after reading — whether valid or not
-    try { fs.unlinkSync(tp); } catch (_e) { /* already gone */ }
+function write(projectRoot, options = {}) {
+  const nonce = (options.randomUUID || crypto.randomUUID)();
+  const ownerPid = options.processPid || process.pid;
+  const getProcessIdentity = options.getProcessIdentity || defaultGetProcessIdentity;
+  const ownerIdentity = getProcessIdentity(ownerPid);
+  if (!ownerIdentity) throw new Error('push proof owner identity unavailable');
+  const proof = _pushProof.create(projectRoot, options.snapshot, {
+    nonce,
+    mode: options.mode,
+    gates: options.gates,
+    owner: { pid: ownerPid, identity: ownerIdentity },
+    receiptIdentity: options.receiptIdentity,
+  }, options);
+  writeAtomic(resolveProofPath(projectRoot, nonce, options), JSON.stringify(proof));
+  return { nonce };
+}
 
-    const content = JSON.parse(raw);
-    if (!content.nonce || typeof content.timestamp !== 'number') {
-      return false;
+function validate(projectRoot, options = {}) {
+  try {
+    const env = options.env || process.env;
+    const nonce = env[NONCE_ENV_VAR];
+    if (!NONCE_PATTERN.test(nonce || '')) return { valid: false };
+    const proof = JSON.parse(fs.readFileSync(resolveProofPath(projectRoot, nonce, options), 'utf8'));
+    const verified = _pushProof.verify(projectRoot, proof, { nonce, env }, options);
+    if (!verified.valid) return verified;
+    const getProcessIdentity = options.getProcessIdentity || defaultGetProcessIdentity;
+    const owner = verified.payload.owner;
+    if (!owner || getProcessIdentity(owner.pid) !== owner.identity) {
+      return { valid: false, reason: 'owner' };
     }
-    const age = Date.now() - content.timestamp;
-    return age < MAX_AGE_MS;
-  } catch (_err) {
-    // File doesn't exist or isn't readable — try cleanup anyway
-    try { fs.unlinkSync(tp); } catch (_e) { /* nothing to clean */ }
+    return verified;
+  } catch {
+    return { valid: false };
+  }
+}
+
+/**
+ * Check signed authority without consuming it so all three hook predicates can read it.
+ */
+function isValid(projectRoot, options = {}) {
+  return validate(projectRoot, options).valid === true;
+}
+
+/**
+ * Revoke only the proof named by this invocation's nonce.
+ */
+function consume(projectRoot, options = {}) {
+  try {
+    const nonce = options.nonce || (options.env || process.env)[NONCE_ENV_VAR];
+    fs.unlinkSync(resolveProofPath(projectRoot, nonce, options));
+    return true;
+  } catch {
     return false;
   }
 }
 
-module.exports = { write, isValid, consume };
+module.exports = {
+  write,
+  isValid,
+  consume,
+  _internal: { NONCE_ENV_VAR, resolveProofPath, validate },
+};
 
-// When run directly as a script (e.g., from lefthook skip check):
-// Exit 0 = token valid (skip hooks), Exit 1 = run hooks normally.
-// Uses isValid() (non-destructive) so multiple lefthook commands can
-// each check the same token. The token expires after 30s automatically.
 if (require.main === module) {
-  const projectRoot = process.cwd();
-  if (isValid(projectRoot)) {
-    console.log('forge push token valid — skipping pre-push hooks');
+  const result = validate(process.cwd());
+  if (result.valid) {
+    console.log(`forge push ${result.payload.mode} authorization valid — skipping pre-push hooks`);
     process.exit(0);
   }
   process.exit(1);

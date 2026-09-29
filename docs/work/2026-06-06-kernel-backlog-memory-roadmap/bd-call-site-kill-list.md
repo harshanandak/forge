@@ -7,16 +7,18 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 | Group | Call sites | Files |
 | --- | ---: | ---: |
-| command | 28 | 5 |
+| command | 29 | 6 |
 | runtime | 118 | 21 |
-| docs | 386 | 45 |
+| docs | 384 | 43 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
 
 ## command
 
 - [ ] bin/forge.js (2)
-  - lines: 2350 (bd), 3789 (bd)
+  - lines: 2355 (bd), 3815 (bd)
+- [ ] lib/commands/_manifest.js (1)
+  - lines: 251 (.beads)
 - [ ] lib/commands/migrate.js (17)
   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
 - [ ] lib/commands/plan.js (6)
@@ -53,7 +55,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/upgrade-safety.js (2)
   - lines: 103 (.beads), 216 (.beads)
 - [ ] lib/workflow/enforce-stage.js (1)
-  - lines: 431 (bd)
+  - lines: 432 (bd)
 - [ ] scripts/bootstrap-windows-tools.sh (2)
   - lines: 42 (bd), 63 (bd)
 - [ ] scripts/branch-protection.js (2)
@@ -61,7 +63,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] scripts/conflict-detect.sh (2)
   - lines: 56 (.beads), 60 (.beads)
 - [ ] scripts/dep-guard.sh (22)
-  - lines: 70 (bd), 91 (bd), 92 (bd), 95 (bd), 103 (bd), 116 (bd), 135 (bd), 152 (bd), 158 (bd), 160 (bd), 165 (bd), 328 (bd), 332 (bd), 333 (bd), 335 (bd), 414 (bd), 415 (bd), 454 (bd), 460 (bd), 466 (bd), 473 (bd), 520 (bd)
+  - lines: 70 (bd), 91 (bd), 92 (bd), 95 (bd), 103 (bd), 116 (bd), 135 (bd), 152 (bd), 158 (bd), 160 (bd), 165 (bd), 333 (bd), 337 (bd), 338 (bd), 340 (bd), 419 (bd), 420 (bd), 459 (bd), 465 (bd), 471 (bd), 478 (bd), 525 (bd)
 - [ ] scripts/file-index.sh (2)
   - lines: 4 (.beads), 38 (.beads)
 - [ ] scripts/pr-coordinator.sh (14)
@@ -99,14 +101,10 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 12 (bd)
 - [ ] docs/reference/protected-state-surfaces.md (2)
   - lines: 11 (.beads), 20 (.beads)
-- [ ] docs/reference/RESEARCH_TEMPLATE.md (1)
-  - lines: 264 (bd)
 - [ ] docs/reference/ROADMAP.md (2)
   - lines: 299 (bd), 316 (.beads)
 - [ ] docs/reference/STATUS_BOARD.md (1)
   - lines: 76 (.beads)
-- [ ] docs/reference/superpowers-analysis.md (1)
-  - lines: 191 (bd)
 - [ ] docs/reference/test-environment.md (1)
   - lines: 483 (bd)
 - [ ] docs/reference/TOOLCHAIN.md (50)

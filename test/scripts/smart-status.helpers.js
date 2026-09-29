@@ -199,9 +199,7 @@ function cleanupTmpDir(tmpDir) {
   }
 }
 
-function createCrLfJqWrapper() {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-jq-'));
-  const wrapperPath = path.join(tmpDir, 'jq');
+function resolveRealJq() {
   if (!cachedRealJq) {
     const probe = spawnSync(resolveBashCommand(), ['-lc', 'command -v jq'], {
       encoding: 'utf8',
@@ -210,12 +208,45 @@ function createCrLfJqWrapper() {
       || (probe.stdout || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean)
       || 'jq';
   }
+
+  return cachedRealJq;
+}
+
+function hasTrailingCrLf(output) {
+  return output.length >= 2
+    && output[output.length - 2] === 0x0d
+    && output[output.length - 1] === 0x0a;
+}
+
+function createCrLfJqWrapper({ forceWrapper = false, realJq = resolveRealJq() } = {}) {
+  if (process.platform === 'win32' && !forceWrapper) {
+    const probe = spawnSync(resolveBashCommand(), ['-c', '"$1" -n 1', '_', toBashPath(realJq)]);
+    if (probe.status === 0 && probe.stdout.length > 0 && hasTrailingCrLf(probe.stdout)) {
+      return {
+        jqCommand: realJq,
+        realJq,
+        tmpDir: null,
+        usesNativeJq: true,
+        wrapperPath: null,
+      };
+    }
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-jq-'));
+  const wrapperPath = path.join(tmpDir, 'jq');
   const scriptContent = `#!/usr/bin/env bash
-REAL_JQ="${cachedRealJq}"
+set -o pipefail
+REAL_JQ="${realJq}"
 "$REAL_JQ" "$@" | awk '{ printf "%s\\r\\n", $0 }'
 `;
   fs.writeFileSync(wrapperPath, scriptContent, { mode: 0o755 });
-  return { tmpDir, wrapperPath };
+  return {
+    jqCommand: wrapperPath,
+    realJq,
+    tmpDir,
+    usesNativeJq: false,
+    wrapperPath,
+  };
 }
 
 function daysAgo(n) {

@@ -49,11 +49,9 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
 
   // -- Hook scripts ---------------------------------------------------
 
-  describe('hook scripts in scripts/', () => {
+  describe('runtime scripts in scripts/', () => {
+    // Repo-only hook scripts (commitlint/branch-protection/lint) no longer ship.
     const requiredHookScripts = [
-      'scripts/commitlint.js',
-      'scripts/branch-protection.js',
-      'scripts/lint.js',
       'scripts/test.js',
     ];
 
@@ -154,7 +152,6 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
 
   describe('core lib/ modules', () => {
     const coreLibModules = [
-      'lib/setup.js',
       'lib/detect-agent.js',
       'lib/detect-worktree.js',
       'lib/context-merge.js',
@@ -163,7 +160,6 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
       'lib/plugin-recommender.js',
       'lib/project-discovery.js',
       'lib/agents-config.js',
-      'lib/workflow-profiles.js',
       'lib/file-hash.js',
       'lib/setup-action-log.js',
       'lib/setup-summary-renderer.js',
@@ -181,10 +177,10 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
   describe('agent directories', () => {
     // .codex/ is intentionally NOT packaged: the global $CODEX_HOME/skills install
     // now generates from canonical skills/, and .codex/skills is a setup-generated
-    // gitignored mirror. Claude/Cursor dirs remain packaged.
+    // gitignored mirror. Only .claude/scripts ships (setup copies it); .cursor/ does
+    // not, because Cursor rules are generated from rules/ (lib/rules-sync.js).
     const agentPrefixes = [
       '.claude/',
-      '.cursor/',
     ];
 
     for (const prefix of agentPrefixes) {
@@ -200,11 +196,10 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
   describe('core distribution files', () => {
     const coreFiles = [
       'bin/forge.js',
+      'bin/forge-gh-proxy.js',
+      'bin/forge-github-credential.js',
       'bin/forge-preflight.js',
-      'install.sh',
-      'lefthook.yml',
       'AGENTS.md',
-      'CLAUDE.md',
       'package.json',
       'README.md',
       'LICENSE',
@@ -271,8 +266,8 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
   // -- MCP configuration example --------------------------------------
 
   describe('MCP configuration example', () => {
-    it('includes .mcp.json.example', () => {
-      expect(packFiles).toContain('.mcp.json.example');
+    it('does NOT ship .mcp.json.example (setup renders MCP config)', () => {
+      expect(packFiles).not.toContain('.mcp.json.example');
     });
   });
 

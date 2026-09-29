@@ -25,6 +25,8 @@ const { ASSET_ROOTS } = pkgRoot;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const OUT_FILE = path.join(REPO_ROOT, 'lib', 'embedded-assets.generated.mjs');
+const STAGING_DIR_NAME = 'embedded-assets.generated-assets';
+const STAGING_DIR = path.join(REPO_ROOT, 'lib', STAGING_DIR_NAME);
 
 // Deterministic, locale-INDEPENDENT codepoint comparator. Locale-default sort would
 // diverge by machine locale and produce different embed bytes across the step-3
@@ -83,14 +85,37 @@ export function assetFingerprint(repoRoot = REPO_ROOT, files = collectAssetFiles
   return h.digest('hex');
 }
 
-function render(files, fingerprint) {
+/**
+ * Copy source assets to deterministic non-code paths before Bun imports them as
+ * raw files. This keeps a JavaScript source path from also becoming a raw asset
+ * module in the same compiled graph.
+ */
+export function stageAssetFiles(repoRoot, files, stagingDir = path.join(repoRoot, 'lib', STAGING_DIR_NAME)) {
+  const expectedDir = path.resolve(repoRoot, 'lib', STAGING_DIR_NAME);
+  const resolvedDir = path.resolve(stagingDir);
+  if (resolvedDir !== expectedDir) {
+    throw new Error(`Refusing to replace unexpected embedded-asset staging path: ${resolvedDir}`);
+  }
+  fs.rmSync(resolvedDir, { recursive: true, force: true });
+  fs.mkdirSync(resolvedDir, { recursive: true });
+  return files.map((rel, index) => {
+    const filename = `a${index}.asset`;
+    fs.copyFileSync(
+      path.join(repoRoot, ...rel.split('/')),
+      path.join(resolvedDir, filename),
+    );
+    return { rel, filename };
+  });
+}
+
+export function renderManifest(stagedFiles, fingerprint) {
   const imports = [];
   const entries = [];
   const execEntries = [];
-  files.forEach((rel, i) => {
+  stagedFiles.forEach(({ rel, filename }, i) => {
     const ident = `a${i}`;
-    // Specifier is relative to lib/embedded-assets.generated.mjs → prefix `../`.
-    const specifier = JSON.stringify(`../${rel}`);
+    // Specifier is relative to the generated manifest in lib/.
+    const specifier = JSON.stringify(`./${STAGING_DIR_NAME}/${filename}`);
     imports.push(`import ${ident} from ${specifier} with { type: "file" };`);
     entries.push(`  ${JSON.stringify(rel)}: ${ident},`);
     if (isExecutableAsset(rel)) execEntries.push(`  ${JSON.stringify(rel)},`);
@@ -116,8 +141,9 @@ function render(files, fingerprint) {
 function main() {
   const files = collectAssetFiles();
   const fingerprint = assetFingerprint(REPO_ROOT, files);
+  const stagedFiles = stageAssetFiles(REPO_ROOT, files, STAGING_DIR);
   fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true });
-  fs.writeFileSync(OUT_FILE, render(files, fingerprint), 'utf8');
+  fs.writeFileSync(OUT_FILE, renderManifest(stagedFiles, fingerprint), 'utf8');
   const execCount = files.filter(isExecutableAsset).length;
   console.log(
     `Embedded ${files.length} asset file(s) (${execCount} executable), fingerprint ${fingerprint.slice(0, 16)} → ${path.relative(REPO_ROOT, OUT_FILE)}`

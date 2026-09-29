@@ -46,6 +46,11 @@ const { execSync } = require('node:child_process');
 const packageDir = path.dirname(__dirname);
 const packageJson = require('../package.json');
 const VERSION = packageJson.version;
+const args = process.argv.slice(2);
+
+if (require.main === module && args.length === 1 && ['--version', '-V'].includes(args[0])) {
+  console.log(`Forge v${VERSION}`);
+} else {
 
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
@@ -72,6 +77,7 @@ const {
 } = require('../lib/commands/_aliases');
 const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
 const { getPackageRoot } = require('../lib/package-root');
+const { runtimeVersionError, runtimeLabel } = require('../lib/node-requirement');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 const { normalizeStageId } = require('../lib/workflow/stages');
 const { firstPositionalIndex } = require('../lib/global-flags');
@@ -104,7 +110,6 @@ const { detectHusky, migrateHusky } = require('../lib/husky-migration');
 
 // Get the project root (let allows reassignment after --path flag handling)
 let projectRoot = process.env.INIT_CWD || process.cwd();
-const args = process.argv.slice(2);
 
 // Incremental setup state (set during main() from parsed flags)
 let FORCE_MODE = false;
@@ -375,12 +380,12 @@ function checkPrerequisites() {
     errors.push('gh (GitHub CLI) - Install from https://cli.github.com');
   }
 
-  // Check Node.js version
-  const nodeVersion = Number.parseInt(process.version.slice(1).split('.')[0]);
-  if (nodeVersion >= 20) {
-    console.log(`  ✓ node ${process.version}`);
+  // Check the executing runtime (Node >= 24, or Bun >= 1.2 under Bun)
+  const runtimeError = runtimeVersionError();
+  if (runtimeError) {
+    errors.push(runtimeError);
   } else {
-    errors.push(`Node.js 20+ required (current: ${process.version})`);
+    console.log(`  ✓ ${runtimeLabel()}`);
   }
 
   // Detect package manager
@@ -3650,6 +3655,16 @@ async function handleExternalServices(skipExternal, selectedAgents) {
 
 async function main() {
   let command = args[0];
+  if (command === 'github' && args[1] === 'credential') {
+    const { runCredentialEntrypoint } = require('./forge-github-credential');
+    process.exitCode = runCredentialEntrypoint(args.slice(2), process.cwd());
+    return;
+  }
+  if (command === 'github' && args[1] === 'proxy' && args[2] === '--') {
+    const { runProxyEntrypoint } = require('./forge-gh-proxy');
+    process.exitCode = runProxyEntrypoint(args.slice(2), process.cwd());
+    return;
+  }
   const flags = parseFlags();
   const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && args.includes('--json');
   const suppressCommandJsonOutput = args.includes('--json');
@@ -3703,6 +3718,17 @@ async function main() {
   // Show version
   if (flags.version) {
     console.log(`Forge v${VERSION}`);
+    return;
+  }
+
+  // Runtime floor (Node >= 24, or Bun >= 1.2 under Bun), enforced once before
+  // any command dispatches: npm `engines` is advisory unless engine-strict is set.
+  // Exempt: --help and --version (handled above), and the internal git/gh
+  // credential and proxy helpers routed at the top of main().
+  const runtimeError = runtimeVersionError();
+  if (runtimeError) {
+    console.error(`Forge: ${runtimeError}`);
+    process.exitCode = 1;
     return;
   }
 
@@ -4520,3 +4546,4 @@ module.exports = {
   validateDirectoryPathInput,
   validateUserInput,
 };
+}

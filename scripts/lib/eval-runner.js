@@ -10,7 +10,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { execFileSync, execSync, spawn } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 
 const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120000;
@@ -20,7 +20,8 @@ const FORCE_KILL_SETTLE_MS = 1000;
 // ── active worktree tracking (cleanup on crash) ─────────────────────
 // Tracks active eval worktrees so we can clean up on process exit/crash.
 // Prevents orphaned eval-* branches when interrupted.
-// Note: execSync is safe here — all paths are internally generated, never user input.
+// Git is always invoked via execFileSync with an argv array (no shell), so
+// paths containing shell metacharacters are passed through verbatim.
 const activeEvalWorktrees = new Map(); // path -> branch
 
 /**
@@ -40,17 +41,32 @@ function cleanupActiveWorktrees() {
   try { repoRoot = getRepoRoot(); } catch (_err) { return; }
   for (const [wtPath, branch] of activeEvalWorktrees) {
     try {
-      execSync(`git worktree remove --force "${wtPath}"`, { cwd: repoRoot, stdio: 'pipe' });
+      execFileSync('git', ['worktree', 'remove', '--force', wtPath], { cwd: repoRoot, stdio: 'pipe' });
     } catch (_err) { /* already removed */ }
     forceRemoveDir(wtPath);
     if (branch && branch.startsWith('eval-')) {
       try {
-        execSync(`git branch -D "${branch}"`, { cwd: repoRoot, stdio: 'pipe' });
+        execFileSync('git', ['branch', '-D', branch], { cwd: repoRoot, stdio: 'pipe' });
       } catch (_err) { /* already deleted */ }
     }
   }
-  try { execSync('git worktree prune', { cwd: repoRoot, stdio: 'pipe' }); } catch (_err) { /* ignore */ }
+  try { execFileSync('git', ['worktree', 'prune'], { cwd: repoRoot, stdio: 'pipe' }); } catch (_err) { /* ignore */ }
   activeEvalWorktrees.clear();
+}
+
+/**
+ * Parse `git worktree list --porcelain -z` output into worktree paths
+ * (backslashes normalized to '/'). Fields are NUL-terminated, so a newline
+ * inside a path cannot split one record into two.
+ *
+ * @param {string} raw
+ * @returns {string[]}
+ */
+function parseWorktreeListPaths(raw) {
+  return String(raw)
+    .split(String.fromCharCode(0))
+    .filter((field) => field.startsWith('worktree '))
+    .map((field) => field.slice('worktree '.length).replace(/\\/g, '/'));
 }
 
 /**
@@ -64,14 +80,10 @@ function cleanupStaleEvalWorktrees() {
 
     // Get the list of paths git still knows about
     const repoRoot = getRepoRoot();
-    const knownRaw = execSync('git worktree list --porcelain', {
+    const knownRaw = execFileSync('git', ['worktree', 'list', '--porcelain', '-z'], {
       cwd: repoRoot, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
     });
-    const knownPaths = new Set(
-      knownRaw.split('\n')
-        .filter((l) => l.startsWith('worktree '))
-        .map((l) => l.slice('worktree '.length).replace(/\\/g, '/'))
-    );
+    const knownPaths = new Set(parseWorktreeListPaths(knownRaw));
 
     const entries = fs.readdirSync(worktreesDir);
     for (const entry of entries) {
@@ -103,7 +115,7 @@ process.on('SIGTERM', () => {
  * Works from both the main repo and from within worktrees.
  */
 function getRepoRoot() {
-  const root = execSync('git rev-parse --show-toplevel', {
+  const root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
   }).trim();
@@ -178,7 +190,7 @@ async function destroyEvalWorktree(worktreePath) {
   // Query actual branch for this worktree (more reliable than inferring from dir name)
   let branch;
   try {
-    branch = execSync('git branch --show-current', {
+    branch = execFileSync('git', ['branch', '--show-current'], {
       cwd: worktreePath,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -189,7 +201,7 @@ async function destroyEvalWorktree(worktreePath) {
   }
 
   // Remove the worktree (--force handles dirty state)
-  execSync(`git worktree remove --force "${worktreePath}"`, {
+  execFileSync('git', ['worktree', 'remove', '--force', worktreePath], {
     cwd: repoRoot,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -199,7 +211,7 @@ async function destroyEvalWorktree(worktreePath) {
   forceRemoveDir(worktreePath);
 
   // Prune to clean up references
-  execSync('git worktree prune', {
+  execFileSync('git', ['worktree', 'prune'], {
     cwd: repoRoot,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -210,7 +222,7 @@ async function destroyEvalWorktree(worktreePath) {
   // Delete the temporary branch (force in case it's not fully merged)
   if (branch && branch.startsWith('eval-')) {
     try {
-      execSync(`git branch -D "${branch}"`, {
+      execFileSync('git', ['branch', '-D', branch], {
         cwd: repoRoot,
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -231,14 +243,14 @@ async function destroyEvalWorktree(worktreePath) {
  */
 async function resetWorktree(worktreePath) {
   // Restore tracked files
-  execSync('git checkout -- .', {
+  execFileSync('git', ['checkout', '--', '.'], {
     cwd: worktreePath,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
   // Remove untracked files, directories, and ignored files (full reset between runs)
-  execSync('git clean -fdx', {
+  execFileSync('git', ['clean', '-fdx'], {
     cwd: worktreePath,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -355,4 +367,5 @@ module.exports = {
   destroyEvalWorktree,
   resetWorktree,
   executeCommand,
+  parseWorktreeListPaths,
 };

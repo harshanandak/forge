@@ -301,7 +301,7 @@ describe('Forge-owned npm publish workflow', () => {
 
 	test.each([
 		{ label: 'missing', expectedHead: undefined, resolvedHead: TEST_HEAD, error: '--expect-head is required' },
-		{ label: 'abbreviated', expectedHead: TEST_HEAD.slice(0, 12), resolvedHead: TEST_HEAD, error: 'full 40-character lowercase commit SHA' },
+		{ label: 'abbreviated', expectedHead: TEST_HEAD.slice(0, 12), resolvedHead: TEST_HEAD, error: 'full 40- or 64-character lowercase commit SHA' },
 		{ label: 'mismatched', expectedHead: TEST_HEAD, resolvedHead: 'b'.repeat(40), error: 'does not match current HEAD' },
 	])('fails closed before writing for $label expected HEAD', async ({ expectedHead, resolvedHead, error }) => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-head-gate-'));

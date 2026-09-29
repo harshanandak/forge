@@ -21,12 +21,24 @@ const {
   parseJUnitTestcases,
   walk: walkProfileFiles,
 } = require('./test-profile');
+const {
+  PARTITION_OSES,
+  assertExactShardAssignment,
+  assertSuite,
+  describePartitionViolation,
+  parseCrossRunnerShard,
+  partitionFiles,
+  resolvePartitionOs,
+  selectSuite,
+  verifyPartition,
+} = require('./lib/ci-shard-partition');
 const { createProcessTree, signalExitCode } = require('./process-tree');
 const { stripGitHookEnv } = require('./test');
 const { redact } = require('../lib/audit-evidence');
 
 const rootDir = path.join(__dirname, '..');
 const reportDir = path.join(rootDir, 'test-results');
+const DEFAULT_WEIGHTS_PATH = path.join(__dirname, 'test-weights.json');
 const RESOURCE_LANES = new Set(['unit', 'subprocess', 'exclusive']);
 const RESOURCE_LANE_RANK = new Map([
   ['unit', 0],
@@ -55,20 +67,53 @@ function stripFullSuiteChildEnv(env) {
 function parseArgs(argv) {
   const args = {
     labelPrefix: 'local-full',
+    shardIndex: null,
+    shardTotal: null,
     shards: null,
+    suite: 'all',
     timeoutMs: DEFAULT_SHARD_TIMEOUT_MS,
+    verifyPartition: false,
   };
+  let rawShardIndex = null;
+  let rawShardTotal = null;
 
   for (let index = 0; index < argv.length; index += 1) {
     const current = argv[index];
     const next = argv[index + 1];
 
     if (current === '--label-prefix') args.labelPrefix = next;
-    if (current === '--shards') args.shards = Number.parseInt(next, 10);
+    // --shards is the per-runner worker budget; --shard-index/--shard-total
+    // pick this runner's slice of the cross-runner partition.
+    if (current === '--shards') args.shards = parseResourceBudget(next);
+    if (current === '--shard-index') rawShardIndex = next ?? '';
+    if (current === '--shard-total') rawShardTotal = next ?? '';
+    if (current === '--suite') args.suite = assertSuite(next);
     if (current === '--timeout') args.timeoutMs = parseTimeoutMs(next);
+    if (current === '--verify-partition') args.verifyPartition = true;
   }
 
+  if (args.verifyPartition) {
+    if (rawShardIndex !== null) throw new Error('--verify-partition takes --shard-total only; it checks every shard');
+    if (rawShardTotal !== null) args.shardTotal = parseCrossRunnerShard({ shardIndex: '0', shardTotal: rawShardTotal }).total;
+    return args;
+  }
+  const shard = parseCrossRunnerShard({ shardIndex: rawShardIndex, shardTotal: rawShardTotal });
+  if (shard) {
+    args.shardIndex = shard.index;
+    args.shardTotal = shard.total;
+  }
   return args;
+}
+
+function parseResourceBudget(value) {
+  if (!/^[1-9]\d*$/.test(String(value ?? ''))) {
+    throw new Error('--shards must be a positive integer resource budget');
+  }
+  const budget = Number(value);
+  if (!Number.isSafeInteger(budget)) {
+    throw new Error('--shards must be a positive integer resource budget');
+  }
+  return budget;
 }
 
 function parseTimeoutMs(value) {
@@ -79,8 +124,20 @@ function parseTimeoutMs(value) {
   return timeoutMs;
 }
 
-function getDefaultShardCount(cpuCount = os.cpus().length) {
+function detectCpuCount() {
+  return typeof os.availableParallelism === 'function'
+    ? os.availableParallelism()
+    : os.cpus().length;
+}
+
+// The default budget is denominated in the units laneWorkerCost charges. Off
+// Windows every worker costs one unit, so keep a core free for the runner. On
+// Windows heavy workers are charged per OS process (2 units), so the budget is
+// the real core count: 2 heavy workers on 4 vCPU is 4 processes, never the 6+
+// that #547 measured flaking. Cap at what the heavy lane can use (3 x 2).
+function getDefaultShardCount(cpuCount = detectCpuCount(), platform = process.platform) {
   if (!Number.isInteger(cpuCount) || cpuCount <= 1) return 1;
+  if (platform === 'win32') return Math.min(6, cpuCount);
   return Math.max(2, Math.min(4, cpuCount - 1));
 }
 
@@ -126,27 +183,60 @@ function walkAllTests(dir) {
   return results;
 }
 
-function assertExactShardAssignment(allTests, shardSpecs) {
-  const expectedFiles = new Set(allTests);
-  const assignedFiles = new Set();
-
-  for (const shard of shardSpecs) {
-    for (const file of shard.files) {
-      if (!expectedFiles.has(file)) {
-        throw new Error(`Test file ${file} is not part of the full suite`);
-      }
-      if (assignedFiles.has(file)) {
-        throw new Error(`Test file ${file} belongs to more than exactly one shard`);
-      }
-      assignedFiles.add(file);
-    }
+function loadTestWeights(weightsPath = DEFAULT_WEIGHTS_PATH) {
+  const table = JSON.parse(fs.readFileSync(weightsPath, 'utf8'));
+  if (table?.version !== 1 || typeof table.files !== 'object' || table.files === null) {
+    throw new Error(`${path.relative(rootDir, weightsPath)} is not a version 1 test weight table`);
   }
+  return table.files;
+}
 
-  for (const file of expectedFiles) {
-    if (!assignedFiles.has(file)) {
-      throw new Error(`Test file ${file} was omitted from the shard assignment`);
-    }
+// Cross-runner selection. With neither shard flags nor a suite, returns the
+// discovered list itself so a plain local run is unchanged.
+function resolveRunFiles(allTests, args = {}, deps = {}) {
+  const suite = assertSuite(args.suite ?? 'all');
+  const shard = parseCrossRunnerShard(args);
+  if (!shard) return selectSuite(allTests, suite);
+  const partitionOs = resolvePartitionOs(deps.platform || process.platform);
+  const suiteFiles = selectSuite(allTests, suite);
+  const shards = (deps.partitionFiles || partitionFiles)({
+    files: suiteFiles,
+    os: partitionOs,
+    shardTotal: shard.total,
+    weights: deps.weights || loadTestWeights(),
+  });
+  assertExactShardAssignment(suiteFiles, shards);
+  const selected = shards[shard.index];
+  console.log(`Cross-runner shard: suite=${suite} os=${partitionOs} index=${shard.index} total=${shard.total} files=${selected.files.length}/${suiteFiles.length} estimatedMs=${selected.totalMs}`);
+  return selected.files;
+}
+
+// Stage-0 proof: for every OS, the requested suite's shards (core and
+// expensive separately when suite=all) cover the inventory exactly.
+function verifyPartitionCommand(args = {}, deps = {}) {
+  const allTests = deps.allTests || listAllFullSuiteTests();
+  const weights = deps.weights || loadTestWeights();
+  const partition = deps.partitionFiles || partitionFiles;
+  const shardTotal = args.shardTotal ?? 1;
+  const suite = args.suite ?? 'all';
+  const inventory = selectSuite(allTests, suite);
+  const suites = suite === 'all' ? ['core', 'expensive'] : [suite];
+  let ok = true;
+  for (const partitionOs of PARTITION_OSES) {
+    const shards = suites.flatMap((name) => partition({
+      files: selectSuite(allTests, name),
+      os: partitionOs,
+      shardTotal,
+      weights,
+    }));
+    const result = verifyPartition(inventory, shards);
+    const heaviestMs = Math.max(0, ...shards.map((shard) => shard.totalMs || 0));
+    const violation = result.ok ? '' : ` ${describePartitionViolation(result)}`;
+    console.log(`Partition ${partitionOs}: suite=${suite} shards=${shards.length} files=${inventory.length} heaviestMs=${heaviestMs} status=${result.ok ? 'OK' : 'FAIL'}${violation}`);
+    ok = ok && result.ok;
   }
+  console.log(`Partition verification: ${ok ? 'PASS' : 'FAIL'}`);
+  return ok ? 0 : 1;
 }
 
 function buildShardSpecs(allTests, shardTotal, durationMap = new Map()) {
@@ -176,14 +266,46 @@ function strongestResourceLane(left, right) {
   return RESOURCE_LANE_RANK.get(left) >= RESOURCE_LANE_RANK.get(right) ? left : right;
 }
 
+const WHITESPACE_RUN = /\s+/y;
+const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/y;
+
+// Reads a quoted literal starting after its opening quote. A backslash drops
+// itself and keeps the next character verbatim. Values are built from slices
+// rather than per-character concatenation: this runs over ~10 MB of suite
+// sources at every full-suite start (issue 6c09647c).
+function readQuotedLiteral(source, start, quote, detectInterpolation) {
+  let value = '';
+  let chunkStart = start;
+  let dynamic = false;
+  let index = start;
+  while (index < source.length && source[index] !== quote) {
+    const current = source[index];
+    if (current === '\\' && index + 1 < source.length) {
+      value += source.slice(chunkStart, index);
+      index += 1;
+      chunkStart = index;
+    } else if (detectInterpolation && current === '$' && source[index + 1] === '{') {
+      dynamic = true;
+    }
+    index += 1;
+  }
+  value += source.slice(chunkStart, index);
+  return { dynamic, end: index + 1, value };
+}
+
 function tokenizeResourceSyntax(source) {
   const tokens = [];
   let index = 0;
   while (index < source.length) {
     const current = source[index];
-    if (/\s/.test(current)) {
-      index += 1;
-      continue;
+    const code = source.charCodeAt(index);
+    // Every \s code point is <= 0x20, 0xA0, or >= 0x1680; skip the regex call otherwise.
+    if (code <= 0x20 || code === 0xa0 || code >= 0x1680) {
+      WHITESPACE_RUN.lastIndex = index;
+      if (WHITESPACE_RUN.test(source)) {
+        index = WHITESPACE_RUN.lastIndex;
+        continue;
+      }
     }
     if (current === '/' && source[index + 1] === '/') {
       index = source.indexOf('\n', index + 2);
@@ -195,41 +317,18 @@ function tokenizeResourceSyntax(source) {
       index = end === -1 ? source.length : end + 2;
       continue;
     }
-    if (current === '"' || current === "'") {
-      const quote = current;
-      let value = '';
-      index += 1;
-      while (index < source.length && source[index] !== quote) {
-        if (source[index] === '\\' && index + 1 < source.length) index += 1;
-        value += source[index];
-        index += 1;
-      }
-      index += 1;
-      tokens.push({ type: 'string', value });
+    if (current === '"' || current === "'" || current === '`') {
+      const literal = readQuotedLiteral(source, index + 1, current, current === '`');
+      index = literal.end;
+      tokens.push({ type: literal.dynamic ? 'dynamic-string' : 'string', value: literal.value });
       continue;
     }
-    if (current === '`') {
-      let dynamic = false;
-      let value = '';
-      index += 1;
-      while (index < source.length && source[index] !== '`') {
-        if (source[index] === '\\' && index + 1 < source.length) {
-          index += 1;
-        } else if (source[index] === '$' && source[index + 1] === '{') {
-          dynamic = true;
-        }
-        value += source[index];
-        index += 1;
-      }
-      index += 1;
-      tokens.push({ type: dynamic ? 'dynamic-string' : 'string', value });
-      continue;
-    }
-    if (/[A-Za-z_$]/.test(current)) {
-      const start = index;
-      index += 1;
-      while (index < source.length && /[A-Za-z0-9_$]/.test(source[index])) index += 1;
-      tokens.push({ type: 'identifier', value: source.slice(start, index) });
+    const lower = code | 0x20;
+    if ((lower >= 0x61 && lower <= 0x7a) || code === 0x5f || code === 0x24) {
+      IDENTIFIER.lastIndex = index;
+      IDENTIFIER.test(source);
+      tokens.push({ type: 'identifier', value: source.slice(index, IDENTIFIER.lastIndex) });
+      index = IDENTIFIER.lastIndex;
       continue;
     }
     tokens.push({ type: 'punctuator', value: current });
@@ -313,6 +412,13 @@ function createTestResourceClassifier(options = {}) {
   const moduleCache = new Map();
   const resolutionCache = new Map();
   const resultCache = new Map();
+  // Many importers resolve to the same helper; realpath is the costliest
+  // resolution step on Windows, so resolve each candidate once.
+  const realpathCache = new Map();
+  const cachedRealpath = (candidate) => {
+    if (!realpathCache.has(candidate)) realpathCache.set(candidate, fs.realpathSync(candidate));
+    return realpathCache.get(candidate);
+  };
 
   const resolveLocalImport = (fromFile, specifier) => {
     const cacheKey = `${fromFile}\0${specifier}`;
@@ -335,7 +441,7 @@ function createTestResourceClassifier(options = {}) {
         continue;
       }
       if (!stats.isFile()) continue;
-      const resolved = fs.realpathSync(candidate);
+      const resolved = cachedRealpath(candidate);
       if (!isWithinRoot(realRoot, resolved)) {
         resolutionCache.set(cacheKey, null);
         return null;
@@ -347,11 +453,11 @@ function createTestResourceClassifier(options = {}) {
     return null;
   };
 
-  const inspectModule = (absoluteFile) => {
+  const inspectModule = (absoluteFile, preloadedSource) => {
     if (moduleCache.has(absoluteFile)) return moduleCache.get(absoluteFile);
     let inspected;
     try {
-      const source = readFile(absoluteFile);
+      const source = preloadedSource === undefined ? readFile(absoluteFile) : preloadedSource;
       if (typeof source !== 'string') throw new TypeError('resource source reader must return a string');
       inspected = inspectTestResourceSource(source, path.relative(root, absoluteFile), options.classifySource);
     } catch (error) {
@@ -393,27 +499,103 @@ function createTestResourceClassifier(options = {}) {
     return { complete, resource };
   };
 
-  return (file) => {
+  const resolveTestFile = (file) => {
     const absoluteFile = path.resolve(root, file);
-    if (!isWithinRoot(root, absoluteFile)) return 'subprocess';
+    if (!isWithinRoot(root, absoluteFile)) return null;
     let realFile;
     try {
       realFile = fs.realpathSync(absoluteFile);
     } catch {
-      return 'subprocess';
+      return null;
     }
-    if (!isWithinRoot(realRoot, realFile)) return 'subprocess';
+    return isWithinRoot(realRoot, realFile) ? realFile : null;
+  };
+
+  const classify = (file) => {
+    const realFile = resolveTestFile(file);
+    if (!realFile) return 'subprocess';
     return classifyModule(realFile, new Set()).resource;
   };
+
+  // Reads the test files and their transitive local imports with a bounded
+  // pool and seeds the module cache, so the synchronous classification pass
+  // below does no I/O for them. Anything that fails here (read error, unknown
+  // lane marker) is left unseeded; the synchronous pass then re-reads it and
+  // applies its usual policy, so preloading never changes a classification.
+  classify.preload = async (files, readFileAsync, concurrency) => {
+    const queue = [];
+    const queued = new Set();
+    const enqueue = (absoluteFile) => {
+      if (queued.has(absoluteFile) || moduleCache.has(absoluteFile)) return;
+      queued.add(absoluteFile);
+      queue.push(absoluteFile);
+    };
+    for (const file of files) {
+      const realFile = resolveTestFile(file);
+      if (realFile) enqueue(realFile);
+    }
+    let active = 0;
+    await new Promise((resolve, reject) => {
+      const pump = () => {
+        if (queue.length === 0 && active === 0) {
+          resolve();
+          return;
+        }
+        while (active < concurrency && queue.length > 0) {
+          const absoluteFile = queue.shift();
+          active += 1;
+          Promise.resolve()
+            .then(() => readFileAsync(absoluteFile))
+            .then((raw) => {
+              // Match the sync reader's utf8 contract: decode Buffers, and leave
+              // any other non-string for the sync pass instead of caching it.
+              const source = Buffer.isBuffer(raw) ? raw.toString('utf8') : raw;
+              if (typeof source !== 'string') return;
+              let inspected;
+              try {
+                inspected = inspectModule(absoluteFile, source);
+              } catch {
+                return;
+              }
+              if (inspected.resource === 'exclusive') return;
+              for (const specifier of inspected.imports) {
+                const resolved = resolveLocalImport(absoluteFile, specifier);
+                if (resolved) enqueue(resolved);
+              }
+            }, () => {})
+            .then(() => {
+              active -= 1;
+              pump();
+            })
+            .catch(reject);
+        }
+      };
+      pump();
+    });
+  };
+
+  return classify;
 }
 
 function classifyTestResource(file, options = {}) {
   return createTestResourceClassifier(options)(file);
 }
 
+// Bounded read parallelism for resource preloading. Sequential reads of the
+// ~960 suite sources cost 0.7-3.1 s on a loaded Windows host; 16 concurrent
+// reads cost 0.2-0.45 s (measured for issue 6c09647c).
+const RESOURCE_READ_CONCURRENCY = 16;
+
 async function loadTestResourceMap(allTests, options = {}) {
   const classify = createTestResourceClassifier(options);
   const uniqueFiles = [...new Set(allTests)];
+  // An injected synchronous reader is a test double: keep it authoritative
+  // unless an async reader is injected alongside it.
+  const readFileAsync = options.readFileAsync
+    || (options.readFile ? null : (target) => fs.promises.readFile(target, 'utf8'));
+  if (readFileAsync) {
+    await classify.preload(uniqueFiles, readFileAsync, options.readConcurrency || RESOURCE_READ_CONCURRENCY);
+  }
   const entries = uniqueFiles.map((file) => [file, classify(file)]);
   return new Map(entries);
 }
@@ -479,10 +661,19 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
 // A subprocess-lane worker owns two OS processes on Windows: the shard's own bun
 // runtime plus the bun.exe grandchild its tests spawn. Counting such a worker as
 // one budget unit oversubscribes small runners (3 workers is ~6 processes on 4
-// vCPU), so weight the grant by real process cost instead of by worker count.
+// vCPU), so weight the grant by the declared worker cost instead of worker count.
 function laneWorkerCost(laneName, platform = process.platform) {
   if (platform !== 'win32') return 1;
   return laneName === 'unit' ? 1 : 2;
+}
+
+function minimumResourceBudget(lanes, platform = process.platform) {
+  return lanes
+    .filter((lane) => lane.shards.length > 0)
+    .reduce(
+      (minimum, lane) => Math.max(minimum, laneWorkerCost(lane.name, platform)),
+      0,
+    );
 }
 
 function computeLaneGrants(lanes, options = {}) {
@@ -515,8 +706,18 @@ function computeLaneGrants(lanes, options = {}) {
     }
     return grants;
   }
-  // An explicit shard count is an operator-imposed cap on total concurrent
-  // children; reserve the budget for heavier subprocess workers first and
+  const minimumBudget = minimumResourceBudget(lanes, platform);
+  if (workerBudget < minimumBudget) {
+    throw new Error(
+      `Full suite resource budget: requested=${workerBudget} minimum=${minimumBudget} outcome=rejected`,
+    );
+  }
+  for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
+    const entry = grants.get(lane);
+    entry.granted = Math.min(lane.concurrency, Math.floor(workerBudget / entry.cost));
+  }
+  // An explicit shard count is an operator-imposed weighted worker budget;
+  // reserve it for heavier subprocess workers first and
   // defer leftover lanes until capacity frees instead of exceeding it.
   const ordered = [...sharedLanes].sort(
     (left, right) => (left.name === 'subprocess' ? 0 : 1) - (right.name === 'subprocess' ? 0 : 1),
@@ -596,7 +797,7 @@ async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {}) 
   if (deferredFailure) throw deferredFailure.reason;
 
   for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
-    resultsByLane.set(lane, await runLane(lane));
+    resultsByLane.set(lane, await runLane(lane, grants.get(lane).granted));
   }
   return lanes.flatMap((lane) => {
     const laneResults = resultsByLane.get(lane);
@@ -916,6 +1117,10 @@ function spawnShard(shard, options = {}) {
   });
 }
 
+function prepareTestFixtures() {
+  require('../test-env/helpers/fixtures.js').ensureTestFixtures();
+}
+
 async function runFullSuiteInParallel(args = {}, deps = {}) {
   const env = deps.env || process.env;
   const platform = deps.platform || process.platform;
@@ -928,11 +1133,13 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
   });
 
   try {
-    const allTests = deps.allTests || listAllFullSuiteTests();
-    const shardTotal = Number.isInteger(args.shards) && args.shards > 0
-      ? args.shards
-      : getDefaultShardCount(deps.cpuCount);
-    const subprocessShardTotal = Number.isInteger(args.shards) && args.shards > 0
+    const allTests = resolveRunFiles(deps.allTests || listAllFullSuiteTests(), args, deps);
+    const requestedResourceBudget = args.shards === null || args.shards === undefined
+      ? null
+      : parseResourceBudget(args.shards);
+    const shardTotal = requestedResourceBudget
+      ?? getDefaultShardCount(deps.cpuCount ?? detectCpuCount(), platform);
+    const subprocessShardTotal = requestedResourceBudget !== null
       ? shardTotal
       : Math.max(6, shardTotal);
     const profile = deps.profile || readNewestProfile(reportDir);
@@ -949,12 +1156,43 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       subprocessShardTotal,
     });
     const shardSpecs = lanePlan.flatMap((lane) => lane.shards);
+    const minimumBudget = minimumResourceBudget(lanePlan, platform);
+    const effectiveResourceBudget = requestedResourceBudget === null
+      ? Math.max(shardTotal, minimumBudget)
+      : shardTotal;
+    if (requestedResourceBudget !== null && requestedResourceBudget < minimumBudget) {
+      console.log(
+        `Full suite resource budget: requested=${requestedResourceBudget} minimum=${minimumBudget} outcome=rejected`,
+      );
+    }
+    const laneGrants = computeLaneGrants(lanePlan, {
+      platform,
+      workerBudget: effectiveResourceBudget,
+    });
+
+    console.log(`Full suite resource budget: requested=${requestedResourceBudget ?? 'default'} effective=${effectiveResourceBudget}`);
 
     if (shardSpecs.length === 0) {
+      // A cross-runner slice may legitimately own no files (more shards than
+      // suite files); an empty unsharded inventory is still INCOMPLETE.
+      const emptyCrossRunnerShard = parseCrossRunnerShard(args) !== null;
+      const exitCode = signal ? signalExitCode(signal) : (emptyCrossRunnerShard ? 0 : 1);
+      console.log(`Full suite aggregate: status=${exitCode === 0 ? 'PASS' : 'INCOMPLETE'} tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0`);
+      console.log('Full suite exit: ' + exitCode);
+      completed = true;
+      return exitCode;
+    }
+
+    // Build the shared test-env fixtures once, before any shard can race to
+    // repair them (CI does the same with `setup-fixtures.sh --force`). This is
+    // a no-op when the fixture completion marker already exists.
+    try {
+      (deps.prepareFixtures || prepareTestFixtures)();
+    } catch (error) {
+      console.error(`Full suite fixture preparation failed: ${error.message}`);
       const exitCode = signal ? signalExitCode(signal) : 1;
       console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
       console.log('Full suite exit: ' + exitCode);
-      completed = true;
       return exitCode;
     }
 
@@ -962,16 +1200,18 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const runReportDir = fs.mkdtempSync(path.join(reportDir, 'full-suite-'));
 
     console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
-    const laneGrants = computeLaneGrants(lanePlan, { platform, workerBudget: shardTotal });
     for (const lane of lanePlan) {
       const grant = laneGrants.get(lane);
       const granted = grant.deferred ? grant.deferredConcurrency : grant.granted;
       const files = lane.shards.reduce((total, shard) => total + shard.files.length, 0);
-      console.log(`Resource lane ${lane.name}: files=${files} shards=${lane.shards.length} concurrency=${granted} (nominal=${lane.concurrency} cost=${grant.cost} budget=${shardTotal}${grant.deferred ? ' deferred' : ''})`);
+      console.log(`Resource lane ${lane.name}: files=${files} shards=${lane.shards.length} concurrency=${granted} (nominal=${lane.concurrency} cost=${grant.cost} budget=${effectiveResourceBudget}${grant.deferred ? ' deferred' : ''})`);
     }
     const childEnv = stripFullSuiteChildEnv(
       typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
     );
+    // Fixtures were prepared above; shards verify them and never repair, so the
+    // runner stays the single fixture writer.
+    childEnv.FORGE_FIXTURES_PREPARED = '1';
     let results;
     try {
       const nodeExecutable = deps.nodeExecutable ?? (
@@ -1001,7 +1241,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       }, {
         grants: laneGrants,
         platform,
-        workerBudget: shardTotal,
+        workerBudget: effectiveResourceBudget,
       });
     } catch (error) {
       console.error('Full suite shard execution failed:', error);
@@ -1056,6 +1296,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
 
 async function main(argv = process.argv.slice(2), deps = {}) {
   const args = parseArgs(argv);
+  if (args.verifyPartition) return verifyPartitionCommand(args, deps);
   const status = await runFullSuiteInParallel(args, deps);
   return status;
 }
@@ -1083,11 +1324,15 @@ module.exports = {
   getDefaultShardCount,
   listAllFullSuiteTests,
   loadTestResourceMap,
+  loadTestWeights,
   main,
   parseArgs,
+  resolveRunFiles,
   runLaneSchedule,
   runFullSuiteInParallel,
   spawnShard,
+  tokenizeResourceSyntax,
+  verifyPartitionCommand,
   walkAllTests,
   writeDurationProfile,
 };

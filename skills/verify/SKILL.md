@@ -258,8 +258,8 @@ Do NOT declare /verify complete until:
   PR: #89 merged by harshanandak at 2026-02-24T14:30:00Z
   Branch: feat/auth-refresh deleted ✓
   CI on master:
-    ✓ Test Suite (ubuntu, node 20): passing
-    ✓ Test Suite (windows, node 22): passing
+    ✓ Test Suite (ubuntu, node 24): passing
+    ✓ Test Suite (windows, node 26): passing
     ✓ ESLint: passing
     ✓ SonarCloud: passing
     ✓ CodeQL: passing

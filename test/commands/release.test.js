@@ -24,6 +24,26 @@ describe('forge release command', () => {
     expect(typeof releaseCommand.description).toBe('string');
     expect(typeof releaseCommand.handler).toBe('function');
   });
+
+  test('dispatches the exact-head test workflow generator', async () => {
+    const head = 'a'.repeat(40);
+    let called;
+    const result = await releaseCommand.handler(
+      ['generate-test-workflow', '--expect-head', head],
+      {},
+      'C:/repo',
+      {
+        generateTestWorkflow: async (root, options) => {
+          called = { root, options };
+          return { success: true, path: '.github/workflows/test.yml', contentHash: 'sha256:test' };
+        },
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(called).toMatchObject({ root: 'C:/repo', options: { expectedHead: head } });
+    expect(result.output).toContain('.github/workflows/test.yml');
+  });
 });
 
 describe('forge release check command', () => {

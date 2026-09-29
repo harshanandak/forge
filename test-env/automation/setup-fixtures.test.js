@@ -7,7 +7,7 @@ const path = require('node:path');
 // SECURITY: Using execSync with HARDCODED script path only (no user input)
 const { execFileSync } = require('node:child_process');
 const { resolveBashCommand } = require('../../test/helpers/bash.js');
-const { ensureTestFixtures, FIXTURES_DIR } = require('../helpers/fixtures.js');
+const { ensureTestFixtures, FIXTURES_COMPLETE_MARKER, FIXTURES_DIR } = require('../helpers/fixtures.js');
 
 // Import validation helpers from Phase 1
 const { checkGitState, isDetachedHead, hasUncommittedChanges, hasMergeConflict } = require('../validation/git-state-checker.js');
@@ -37,6 +37,19 @@ describe('setup-fixtures.sh', () => {
       expect(fs.existsSync(fixturePath)).toBeTruthy();
     }
   });
+
+  test('should publish the fixture completion marker', () => {
+    expect(fs.existsSync(path.join(FIXTURES_DIR, FIXTURES_COMPLETE_MARKER))).toBe(true);
+  });
+
+  // The marker's artifact table must accept exactly the tree these tests accept.
+  test('should pass the script artifact check (--check)', () => {
+    const result = execFileSync(resolveBashCommand(), [SETUP_SCRIPT, '--check'], {
+      cwd: __dirname, stdio: 'pipe', encoding: 'utf8',
+      timeout: SETUP_SPAWN_TIMEOUT_MS, killSignal: 'SIGKILL'
+    });
+    expect(result).toContain('Fixture tree complete');
+  }, SETUP_SPAWN_TIMEOUT_MS);
 
   describe('Fixture: fresh-project', () => {
     const fixturePath = path.join(FIXTURES_DIR, 'fresh-project');

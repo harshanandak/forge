@@ -19,6 +19,20 @@ bun run check
 
 Security audit behavior distinguishes blocking high/critical vulnerabilities from lower-severity warnings.
 
+## Canonical Validation Resource Budget
+
+In a Forge source checkout, run the receipt-producing command from a clean, committed worktree:
+
+```bash
+forge validate --shards 2
+```
+
+`--shards N` accepts a positive integer resource budget for the full-suite scheduler. Unit workers cost one unit; on Windows, subprocess and exclusive workers cost two. An explicit budget below a required worker's cost fails before test workers start. Omitting the flag selects an automatic budget, which may increase to the minimum needed to run every lane. Output records the requested and effective budget, or the requested and minimum budget on rejection.
+
+These weights govern Forge's lane workers; they do not impose an operating-system limit on every process a test may create. The budget changes scheduling, not required test coverage or deadlines. Consumer repositories cannot use this flag because their test commands do not implement Forge's scheduler contract.
+
+A successful full validation can be reused by the next unchanged `forge push` under the existing receipt checks. Changing the source or validation inputs requires fresh evidence.
+
 ## Supporting Commands
 
 ```bash

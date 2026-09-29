@@ -140,7 +140,7 @@ describe('registry GitHub context', () => {
       prepareGithubContext: context,
     });
     expect(result.success).toBe(true);
-    expect(calls).toEqual([{ program: 'git', args: ['config', '--local', '--get', 'github.account'] }]);
+    expect(calls).toEqual([{ program: 'git', args: ['config', '--local', '--get-all', 'github.account'] }]);
   });
 
   test('predicate failures never expose raw diagnostics or enter the handler', async () => {
