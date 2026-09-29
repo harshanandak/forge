@@ -1,0 +1,23 @@
+{
+  "$comment": "Maps every file in the published npm package to one named block. Longest path prefix wins; unmapped files land in the reserved 'other' block. Adding a block is one line here plus `node scripts/package-size-check.js --write-baseline`. Baseline numbers live in package-size-baseline.json.",
+  "policy": {
+    "growth": { "pct": 0.02, "minBytes": 20480 },
+    "files": { "pct": 0.02, "min": 1 },
+    "hardCeiling": { "unpackedBytes": 10485760 }
+  },
+  "blocks": {
+    "cli": { "paths": ["bin/", "lib/commands/"] },
+    "kernel": { "paths": ["lib/kernel/"] },
+    "pr-monitor": { "paths": ["lib/pr-monitor/"] },
+    "contracts": { "paths": ["lib/contracts/", "packages/contracts/", "node_modules/@forge/contracts/"] },
+    "flow": { "paths": ["lib/flow/", "packages/flow/", "node_modules/@forge/flow/"] },
+    "memory-core": { "paths": ["lib/memory-core/", "packages/memory/", "node_modules/@forge/memory/"] },
+    "nested-deps": { "paths": ["packages/flow/node_modules/", "packages/memory/node_modules/", "node_modules/@forge/flow/node_modules/", "node_modules/@forge/memory/node_modules/"] },
+    "lib": { "paths": ["lib/"] },
+    "skills": { "paths": ["skills/"] },
+    "templates": { "paths": ["rules/", ".claude/", ".forge/"] },
+    "scripts": { "paths": ["scripts/"] },
+    "docs": { "paths": ["docs/", "AGENTS.md", "CODING_STANDARDS.md"] },
+    "meta": { "paths": ["package.json", "README.md", "LICENSE"] }
+  }
+}
