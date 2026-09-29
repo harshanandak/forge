@@ -61,6 +61,22 @@ describe('.github/workflows/size-check.yml', () => {
     expect(text).not.toContain('du -sb');
   });
 
+  test('reads the base baseline from the exact base the PR merge commit was built on', () => {
+    const raw = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    const workflow = loadWorkflow();
+    const steps = allSteps(workflow);
+    // The moving base-branch tip can advance mid-run; never fetch it.
+    expect(raw).not.toContain('github.base_ref');
+    expect(runText(workflow)).not.toMatch(/git fetch/);
+    const checkout = steps.find((s) => (s.uses || '').startsWith('actions/checkout'));
+    expect(String(checkout.with && checkout.with['fetch-depth'])).toContain("github.event_name == 'pull_request' && 2");
+    const baselineStep = steps.find((s) => (s.run || '').includes('base-baseline.json') && s.if);
+    expect(baselineStep.if).toBe("github.event_name == 'pull_request'");
+    expect(baselineStep.run).toContain('git show HEAD^1:scripts/package-size-baseline.json');
+    // No baseline on the base branch: drop the partial file so the check runs without --previous data.
+    expect(baselineStep.run).toContain('|| rm -f "$RUNNER_TEMP/base-baseline.json"');
+  });
+
   test('reports to the step summary and needs no PR write permission', () => {
     const workflow = loadWorkflow();
     const job = workflow.jobs['size-check'];
