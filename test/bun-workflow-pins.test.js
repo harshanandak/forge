@@ -1340,6 +1340,29 @@ describe('update-bun-pins --to <version>', () => {
 		}
 	}, 30_000);
 
+	test('refuses a staged manifest edit unrelated to the Bun pin', async () => {
+		const { root, run, head, manifest } = createCommittedBunFixture();
+		const counters = {};
+		try {
+			const staged = manifest.replace('"private": true', '"private": false');
+			fs.writeFileSync(path.join(root, 'package.json'), staged);
+			expect(run(['add', '--', 'package.json']).status).toBe(0);
+			const result = await updateBunWorkflowPins(root, {
+				...toFixtureOptions(counters),
+				expectedHead: head,
+				targetVersion: '1.4.3',
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('differs from HEAD');
+			expect(counters.issued).toBeUndefined();
+			expect(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).toBe(staged);
+			expect(run(['show', ':package.json']).stdout).toBe(staged);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+
 	test('the release command forwards --to and refuses a missing value', async () => {
 		const calls = [];
 		const updater = async (_root, options) => {
