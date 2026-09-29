@@ -169,7 +169,7 @@ One Sol owner controls `packages/contracts/**` and the compatibility baseline. A
 
 | Lane | Exclusive ownership | Must not edit |
 |---|---|---|
-| Memory | `packages/memory/**`, the root SQLite/Kernel composition it must move or wrap (`lib/kernel/**`, `lib/memory/**`, `lib/project-memory.js`), Memory public assembly, and package tests/docs | Flow, facade, root manifests, lockfile, release files; other lanes rebase on the Memory extraction instead of editing those root paths in parallel |
+| Memory | `packages/memory/**`, the root SQLite/Kernel composition it must move or wrap (`lib/kernel/**`, `lib/memory/**`, `lib/project-memory.js`), the transitive recall implementation (`lib/memory-recall.js`) and its memory-facing caller/test slices, Memory public assembly, and package tests/docs | Flow, facade, root manifests, lockfile, release files; other lanes rebase on the Memory extraction instead of editing those root paths in parallel. Hook/control wiring remains in its owning lane, but must consume the Memory export and never duplicate recall normalization |
 | Flow | `packages/flow/**`, its provider seam, Flow/monitor runtime and package tests/docs | Memory internals, facade, root manifests, lockfile |
 | Companion | External Companion repository/package and its conformance tests | Forge Memory/Flow implementation or Forge authority |
 | PR5 | `lib/capabilities/**`, `lib/health/**`, its command/facade files and focused tests; supported adapter slices follow the facade slice with explicit path ownership | Memory/Flow private internals |
