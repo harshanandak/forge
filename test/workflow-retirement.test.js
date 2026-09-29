@@ -247,6 +247,40 @@ describe('forge release retire-workflow', () => {
 		expect(replay.success).toBe(false);
 	}), 15_000);
 
+	test('revokes issued and completed capabilities when a failed retirement restores the files', () => withFixture(async fixture => {
+		const { completeWorkflowRetirementAuthorization } = require('../lib/protected-state-authority');
+		let calls = 0;
+		const result = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/followup.yml', '.github/workflows/matrix.yml'],
+			// The first completion is really recorded; the second is forced to fail.
+			completeAuthorization: async (root, params, opts) => {
+				calls += 1;
+				return calls === 1
+					? completeWorkflowRetirementAuthorization(root, params, opts)
+					: { success: false, error: 'injected completion failure' };
+			},
+		}));
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('injected completion failure');
+		for (const filePath of ['.github/workflows/followup.yml', '.github/workflows/matrix.yml']) {
+			expect(fs.readFileSync(path.join(fixture.root, filePath), 'utf8')).toBe(WORKFLOWS[filePath]);
+			const decision = await hook(fixture, [hookRequest(fixture, filePath)]);
+			expect(decision.success).toBe(false);
+		}
+
+		const lostAck = await retireWorkflows(fixture.root, options(fixture, {
+			paths: ['.github/workflows/matrix.yml'],
+			completeAuthorization: async (root, params, opts) => {
+				await completeWorkflowRetirementAuthorization(root, params, opts);
+				return { success: false, error: 'completion acknowledgement lost' };
+			},
+		}));
+		expect(lostAck.success).toBe(false);
+		expect(fs.existsSync(path.join(fixture.root, '.github/workflows/matrix.yml'))).toBe(true);
+		const afterLostAck = await hook(fixture, [hookRequest(fixture, '.github/workflows/matrix.yml')]);
+		expect(afterLostAck.success).toBe(false);
+	}), 30_000);
+
 	test('refuses a head mismatch, a missing reason, and paths outside .github/workflows', () => withFixture(async fixture => {
 		const cases = [
 			{ expectedHead: 'b'.repeat(40), paths: ['.github/workflows/matrix.yml'] },
