@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Weekly Bun pin auto-update.** The Tests workflow checks for a newer stable Bun each week. With a `BUN_BUMP_TOKEN` repository secret (Contents, Workflows and Pull requests write) it pushes a `bun/bump-<version>` branch through `forge release update-bun-pins` and opens the PR, whose CI triggers on its own. Without the secret it opens or updates one `Bun <version> available: run forge release update-bun-pins` tracking issue with the exact commands, because `GITHUB_TOKEN` cannot push workflow-file changes. See `docs/reference/RELEASE.md`. (PR #598; issue `e2ff22ca`)
+
 ### Changed
 
 - **BREAKING: Node.js 22 is no longer supported; Forge requires Node.js >= 24. CI tests Node 24 and 26.** The `engines.node` field of `forge-workflow` and the `@forge/contracts`, `@forge/flow`, and `@forge/memory` workspaces is now `>=24.0.0`, and `forge setup` prerequisite checks reject older Node.js with an upgrade message. (issue `5d745884`)

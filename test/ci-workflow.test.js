@@ -716,9 +716,121 @@ describe('CI Workflow Configuration', () => {
     });
 
     test('declares only the permissions it needs; the workflow default stays read-only', () => {
-      expect(job.permissions).toEqual({ contents: 'write', 'pull-requests': 'write', actions: 'write' });
+      // Writes on the token path go through BUN_BUMP_TOKEN, so GITHUB_TOKEN stays read-only here.
+      expect(job.permissions).toEqual({ contents: 'read' });
+      // Only the no-token tracking-issue job may write issues.
+      expect(jobs['bun-pin-issue'].permissions).toEqual({ issues: 'write' });
       expect(yaml.load(workflowContent).permissions).toEqual({ contents: 'read' });
     });
+
+    test('uses BUN_BUMP_TOKEN only for checkout, token detection, and the push/PR step', () => {
+      const secretRef = '${{ secrets.BUN_BUMP_TOKEN';
+      const users = job.steps.filter((step) => JSON.stringify(step).includes(secretRef)).map((step) => step.name);
+      expect(users).toEqual(['Checkout code', 'Detect Bun bump token', 'Open Bun pin PR']);
+      expect(stepNamed('Checkout code').with.token).toBe('${{ secrets.BUN_BUMP_TOKEN || github.token }}');
+      expect(stepNamed('Detect Bun bump token').env).toEqual({ BUN_BUMP_TOKEN: '${{ secrets.BUN_BUMP_TOKEN }}' });
+      expect(bumpStep().env.GH_TOKEN).toBe('${{ secrets.BUN_BUMP_TOKEN }}');
+      for (const step of job.steps.filter((s) => !users.includes(s.name))) {
+        expect({ name: step.name, env: JSON.stringify(step.env || {}) }).toEqual({ name: step.name, env: expect.not.stringContaining('BUN_BUMP_TOKEN') });
+      }
+      const issueJob = jobs['bun-pin-issue'];
+      expect(JSON.stringify(issueJob)).not.toContain('BUN_BUMP_TOKEN }}');
+      expect(JSON.stringify(job.env || {})).not.toContain('secrets.');
+    });
+
+    test('no step echoes or interpolates the token', () => {
+      const runs = [...job.steps, ...jobs['bun-pin-issue'].steps].map((step) => step.run || '');
+      for (const run of runs) {
+        expect(run).not.toContain('${{ secrets');
+        expect(run).not.toMatch(/(echo|printf)[^\n]*\$\{?(BUN_BUMP_TOKEN|GH_TOKEN)/);
+      }
+      const detect = stepNamed('Detect Bun bump token');
+      expect(detect.id).toBe('bump-token');
+      expect(detect.run).toContain('[ -n "${BUN_BUMP_TOKEN:-}" ]');
+    });
+
+    test('the token path pushes only when the secret exists; otherwise only the tracking issue runs', () => {
+      expect(bumpStep().if).toBe("steps.bun-release.outputs.newer == 'true' && steps.bump-token.outputs.available == 'true'");
+      expect(job.outputs).toEqual({
+        newer: '${{ steps.bun-release.outputs.newer }}',
+        latest: '${{ steps.bun-release.outputs.latest }}',
+        release_url: '${{ steps.bun-release.outputs.release_url }}',
+        token_available: '${{ steps.bump-token.outputs.available }}',
+      });
+      const issueJob = jobs['bun-pin-issue'];
+      expect(issueJob.needs).toBe('bun-pin-update');
+      expect(issueJob.if).toBe("${{ needs.bun-pin-update.outputs.newer == 'true' && needs.bun-pin-update.outputs.token_available != 'true' }}");
+      const commands = issueJob.steps.map((step) => step.run || '').join('\n');
+      expect(commands).not.toMatch(/node bin\/forge\.js|git push|gh pr create --base "\$BASE_BRANCH"/);
+    });
+
+    function runIssueStep({ existing }) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-bun-issue-'));
+      try {
+        const binDir = path.join(root, 'bin');
+        fs.mkdirSync(binDir);
+        const log = path.join(root, 'calls.log');
+        const summary = path.join(root, 'summary.md');
+        fs.writeFileSync(log, '');
+        fs.writeFileSync(summary, '');
+        const toPosix = (value) => value.replace(/\\/g, '/');
+        // Flatten the multi-line --body so each call stays on one log line.
+        const record = `printf '%s %s\\n' "$(basename "$0")" "$(printf '%s' "$*" | tr '\\n' ' ')" >> '${toPosix(log)}'`;
+        const listOutput = existing ? `echo ${existing}` : 'true';
+        fs.writeFileSync(path.join(binDir, 'gh'), `#!/usr/bin/env bash\n${record}\nif [ "$1 $2" = "issue list" ]; then ${listOutput}; fi\nif [ "$1 $2" = "issue create" ]; then echo https://github.com/o/r/issues/7; fi\n`);
+        fs.chmodSync(path.join(binDir, 'gh'), 0o755);
+        const prelude = `export PATH="$(cygpath -u '${toPosix(binDir)}' 2>/dev/null || printf '%s' '${toPosix(binDir)}'):$PATH"`;
+        const issueStep = jobs['bun-pin-issue'].steps.find((step) => step.name === 'Open or update Bun pin tracking issue');
+        const child = runGithubBashStep(`${prelude}\n${issueStep.run}`, {
+          env: {
+            ...process.env,
+            VERSION: '1.4.3',
+            RELEASE_URL: 'https://github.com/oven-sh/bun/releases/tag/bun-v1.4.3',
+            BASE_BRANCH: 'master',
+            GITHUB_STEP_SUMMARY: toPosix(summary),
+          },
+        });
+        expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
+        return {
+          calls: fs.readFileSync(log, 'utf8').trim().split('\n'),
+          summary: fs.readFileSync(summary, 'utf8'),
+        };
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }
+
+    test('without the token, opens one tracking issue with the exact bump commands and release URL', () => {
+      const issueStep = jobs['bun-pin-issue'].steps.find((step) => step.name === 'Open or update Bun pin tracking issue');
+      expect(issueStep.env).toMatchObject({
+        GH_TOKEN: '${{ github.token }}',
+        GH_REPO: '${{ github.repository }}',
+        VERSION: '${{ needs.bun-pin-update.outputs.latest }}',
+        RELEASE_URL: '${{ needs.bun-pin-update.outputs.release_url }}',
+      });
+      const { calls, summary } = runIssueStep({ existing: null });
+      const create = calls.find((call) => call.startsWith('gh issue create'));
+      expect(create).toContain('--title Bun 1.4.3 available: run forge release update-bun-pins');
+      expect(create).toContain('forge release update-bun-pins --to 1.4.3 --expect-head "$(git rev-parse HEAD)"');
+      expect(create).toContain('https://github.com/oven-sh/bun/releases/tag/bun-v1.4.3');
+      expect(create).toContain('BUN_BUMP_TOKEN');
+      expect(calls.some((call) => call.startsWith('gh issue edit'))).toBe(false);
+      expect(calls.filter((call) => /^gh /.test(call) && !/^gh issue (list|create) /.test(call))).toEqual([]);
+      expect(summary.trim().split('\n')).toHaveLength(1);
+      expect(summary).toContain('no-token path');
+    }, 30_000);
+
+    test('dedupes by title prefix: an open tracking issue is updated, not duplicated', () => {
+      const issueStep = jobs['bun-pin-issue'].steps.find((step) => step.name === 'Open or update Bun pin tracking issue');
+      expect(issueStep.run).toContain('gh issue list --state open');
+      expect(issueStep.run).toContain('startswith("Bun ")');
+      expect(issueStep.run).toContain('endswith(" available: run forge release update-bun-pins")');
+      const { calls, summary } = runIssueStep({ existing: 42 });
+      expect(calls.some((call) => call.startsWith('gh issue create'))).toBe(false);
+      const edit = calls.find((call) => call.startsWith('gh issue edit 42'));
+      expect(edit).toContain('--title Bun 1.4.3 available: run forge release update-bun-pins');
+      expect(summary).toContain('#42');
+    }, 30_000);
 
     test('installs the Git hooks and fails closed when the pre-commit hook is missing', () => {
       const install = stepNamed('Install Git hooks');
@@ -736,9 +848,9 @@ describe('CI Workflow Configuration', () => {
       expect(resolve.id).toBe('bun-release');
       expect(resolve.run).toBe('node lib/bun-release.js >> "$GITHUB_OUTPUT"');
       const bump = bumpStep();
-      expect(bump.if).toBe("steps.bun-release.outputs.newer == 'true'");
+      expect(bump.if).toContain("steps.bun-release.outputs.newer == 'true'");
       expect(bump.env).toMatchObject({
-        GH_TOKEN: '${{ github.token }}',
+        GH_TOKEN: '${{ secrets.BUN_BUMP_TOKEN }}',
         VERSION: '${{ steps.bun-release.outputs.latest }}',
         RELEASE_URL: '${{ steps.bun-release.outputs.release_url }}',
       });
@@ -765,9 +877,13 @@ describe('CI Workflow Configuration', () => {
             VERSION: '1.4.3',
             RELEASE_URL: 'https://github.com/oven-sh/bun/releases/tag/bun-v1.4.3',
             BASE_BRANCH: 'master',
+            GITHUB_STEP_SUMMARY: toPosix(path.join(root, 'summary.md')),
           },
         });
         expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
+        const summary = fs.readFileSync(path.join(root, 'summary.md'), 'utf8');
+        expect(summary.trim().split('\n')).toHaveLength(1);
+        expect(summary).toContain('token path');
         return fs.readFileSync(log, 'utf8').trim().split('\n');
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
@@ -778,9 +894,9 @@ describe('CI Workflow Configuration', () => {
       expect(runBumpStep({ openPrs: 1 })).toEqual([
         'gh pr list --head bun/bump-1.4.3 --state open --json number --jq length',
       ]);
-    });
+    }, 30_000);
 
-    test('pins through the protected writer, pushes, opens the PR, then dispatches Tests on the branch', () => {
+    test('pins through the protected writer, pushes, and opens the PR with the token (its CI triggers on its own)', () => {
       const calls = runBumpStep({ openPrs: 0 });
       const indexOf = (prefix) => calls.findIndex((call) => call.startsWith(prefix));
       const sequence = [
@@ -791,13 +907,13 @@ describe('CI Workflow Configuration', () => {
         'git commit -m chore(deps): pin Bun 1.4.3',
         'node bin/forge.js push --quick -- -u origin bun/bump-1.4.3',
         'gh pr create --base master --head bun/bump-1.4.3 --title chore(deps): pin Bun 1.4.3 --body',
-        'gh workflow run test.yml --ref bun/bump-1.4.3',
       ];
       const positions = sequence.map(indexOf);
       expect(positions.every((position) => position >= 0)).toBe(true);
       expect([...positions].sort((a, b) => a - b)).toEqual(positions);
       expect(calls[indexOf('gh pr create')]).toContain('https://github.com/oven-sh/bun/releases/tag/bun-v1.4.3');
-    });
+      expect(calls.some((call) => call.startsWith('gh workflow run'))).toBe(false);
+    }, 30_000);
 
     test('deletes a stale bun/bump-<version> branch with no open PR before recreating it', () => {
       const calls = runBumpStep({ openPrs: 0, staleBranch: true });
@@ -812,12 +928,12 @@ describe('CI Workflow Configuration', () => {
       const positions = sequence.map(indexOf);
       expect(positions.every((position) => position >= 0)).toBe(true);
       expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-    });
+    }, 30_000);
 
     test('leaves the remote alone when no stale bun/bump-<version> branch exists', () => {
       const calls = runBumpStep({ openPrs: 0 });
       expect(calls.some((call) => call.startsWith('gh api --method DELETE'))).toBe(false);
-    });
+    }, 30_000);
   });
 
   describe('Job timeouts', () => {

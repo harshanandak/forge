@@ -698,22 +698,30 @@ jobs:
     # Weekly: when a newer stable Bun exists, pin every surface to it through the
     # protected writer (`forge release update-bun-pins --to`), commit through the
     # normal Git hooks, and open a `chore(deps): pin Bun <version>` PR. An open PR
-    # for the same version makes the run a no-op. PRs opened with GITHUB_TOKEN do
-    # not trigger workflows, so the job dispatches Tests on the new branch.
+    # for the same version makes the run a no-op. The bump commit changes
+    # .github/workflows, which GITHUB_TOKEN can never push, so the push and the PR
+    # use the optional BUN_BUMP_TOKEN secret (Contents, Workflows and Pull requests
+    # write); a PR opened with it triggers its own CI. Without the secret the
+    # bun-pin-issue job opens a tracking issue instead.
     name: Bun Pin Auto-Update
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.bump_bun) }}
     permissions:
-      contents: write
-      pull-requests: write
-      actions: write
+      contents: read
+    outputs:
+      newer: ${{ steps.bun-release.outputs.newer }}
+      latest: ${{ steps.bun-release.outputs.latest }}
+      release_url: ${{ steps.bun-release.outputs.release_url }}
+      token_available: ${{ steps.bump-token.outputs.available }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          # The bump branch is pushed with these credentials.
+          token: ${{ secrets.BUN_BUMP_TOKEN || github.token }}
       - name: Setup Node.js 24
         uses: actions/setup-node@v7
         with:
@@ -749,11 +757,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node lib/bun-release.js >> "$GITHUB_OUTPUT"
-      - name: Open Bun pin PR
-        if: steps.bun-release.outputs.newer == 'true'
+      - name: Detect Bun bump token
+        # Reports only whether the secret is set; the value is never printed.
+        id: bump-token
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          BUN_BUMP_TOKEN: ${{ secrets.BUN_BUMP_TOKEN }}
+        run: |
+          if [ -n "${BUN_BUMP_TOKEN:-}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open Bun pin PR
+        if: steps.bun-release.outputs.newer == 'true' && steps.bump-token.outputs.available == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.BUN_BUMP_TOKEN }}
           VERSION: ${{ steps.bun-release.outputs.latest }}
           RELEASE_URL: ${{ steps.bun-release.outputs.release_url }}
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
@@ -763,6 +783,7 @@ jobs:
           open_prs="$(gh pr list --head "$branch" --state open --json number --jq length)"
           if [ "$open_prs" != "0" ]; then
             echo "An open PR already pins Bun ${VERSION} (${branch}); nothing to do."
+            echo "Bun pin auto-update: token path; an open PR already pins Bun ${VERSION} (${branch})." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -780,9 +801,57 @@ jobs:
           node bin/forge.js push --quick -- -u origin "$branch"
           body="Pins Bun to ${VERSION}, the latest stable release. Release notes: ${RELEASE_URL}
 
-          Opened by the weekly Bun Pin Auto-Update job through \`forge release update-bun-pins --to ${VERSION}\`. PRs opened with GITHUB_TOKEN do not trigger workflows, so the job dispatched the Tests workflow on this branch."
+          Opened by the weekly Bun Pin Auto-Update job through \`forge release update-bun-pins --to ${VERSION}\`."
           gh pr create --base "$BASE_BRANCH" --head "$branch" --title "chore(deps): pin Bun ${VERSION}" --body "$body"
-          gh workflow run test.yml --ref "$branch"
+          echo "Bun pin auto-update: token path; pushed ${branch} and opened a PR pinning Bun ${VERSION}." >> "$GITHUB_STEP_SUMMARY"
+
+  bun-pin-issue:
+    # No-token path: GITHUB_TOKEN cannot push the workflow-file changes a bump
+    # needs, so open (or update) ONE tracking issue with the manual commands.
+    name: Bun Pin Tracking Issue
+    needs: bun-pin-update
+    if: ${{ needs.bun-pin-update.outputs.newer == 'true' && needs.bun-pin-update.outputs.token_available != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update Bun pin tracking issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.bun-pin-update.outputs.latest }}
+          RELEASE_URL: ${{ needs.bun-pin-update.outputs.release_url }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          title="Bun ${VERSION} available: run forge release update-bun-pins"
+          # One tracking issue across versions: match any open issue by its stable
+          # "Bun <version> available: run forge release update-bun-pins" title.
+          existing="$(gh issue list --state open --limit 500 --json number,title --jq '[.[] | select((.title | startswith("Bun ")) and (.title | endswith(" available: run forge release update-bun-pins")))] | first | .number // empty')"
+          body="Bun ${VERSION} is the latest stable release and is newer than the pinned version. Release notes: ${RELEASE_URL}
+
+          The weekly Bun Pin Auto-Update job did not push the bump: no \`BUN_BUMP_TOKEN\` secret is configured, and \`GITHUB_TOKEN\` cannot push the \`.github/workflows\` changes a bump makes. Run it from an up-to-date \`${BASE_BRANCH}\`:
+
+          \`\`\`bash
+          git switch ${BASE_BRANCH} && git pull --ff-only
+          git switch -c bun/bump-${VERSION}
+          forge release update-bun-pins --to ${VERSION} --expect-head \"\$(git rev-parse HEAD)\"
+          git add -- package.json .github/workflows
+          git commit -m \"chore(deps): pin Bun ${VERSION}\"
+          forge push -- -u origin bun/bump-${VERSION}
+          gh pr create --base ${BASE_BRANCH} --head bun/bump-${VERSION} --title \"chore(deps): pin Bun ${VERSION}\" --body \"Release notes: ${RELEASE_URL}\"
+          \`\`\`
+
+          To make bumps fully automatic, add a \`BUN_BUMP_TOKEN\` repository secret (see docs/reference/RELEASE.md). This issue is updated in place on later runs."
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body "$body" > /dev/null
+            echo "Bun pin auto-update: no-token path; updated tracking issue #${existing} for Bun ${VERSION}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            url="$(gh issue create --title "$title" --body "$body")"
+            echo "Bun pin auto-update: no-token path; opened tracking issue ${url} for Bun ${VERSION}." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   dashboard-pr:
     # Reads every test-artifacts-* bundle, so it waits for every lane that uploads
