@@ -110,6 +110,7 @@ const DOC_REFERENCE_EXCEPTIONS = {
   'scripts/check-agents.js': 'Forge repo test tooling (docs/reference/SKILLS.md:9)',
   'scripts/eval_win.py': 'skill-author eval format note (skills/*/evals/README.md:3)',
   'lib/workflow-templates/test.yml': 'Forge repo release source read from projectRoot (docs/reference/RELEASE.md:28, lib/test-workflow.js:25)',
+  'scripts/package-size-check.js': 'Forge repo CI package-size check run by the generated size-check.yml (docs/reference/RELEASE.md:30)',
 };
 
 function documentedCodePaths() {
