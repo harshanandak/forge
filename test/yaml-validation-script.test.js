@@ -19,7 +19,8 @@ test('validate:yaml runs under Bun and fails when a matching path cannot be read
     });
     expect(clean.status, clean.stderr).toBe(0);
 
-    fs.mkdirSync(unreadablePath, { recursive: true });
+    fs.mkdirSync(probeRoot, { recursive: true });
+    fs.symlinkSync('missing.yaml', unreadablePath, 'file');
     const unreadable = spawnSync('bun', ['run', 'validate:yaml'], {
       cwd: ROOT,
       encoding: 'utf8',
