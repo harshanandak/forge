@@ -5,7 +5,7 @@ This guide covers supported Forge adoption paths. Use [Quickstart](../../QUICKST
 ## Prerequisites
 
 - Git
-- Node.js and Bun
+- Node.js >= 24 and Bun
 - GitHub CLI if using PR or sync workflows
 - Optional: Beads (`bd`) as an opt-out issue backend (issue commands use the built-in kernel backend by default)
 

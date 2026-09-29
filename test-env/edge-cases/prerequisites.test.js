@@ -5,6 +5,7 @@ import { describe, test, expect } from 'bun:test';
 const { execSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { MIN_NODE_MAJOR, nodeVersionError } = require('../../lib/node-requirement');
 
 // Mock safeExec for testing
 function safeExec(cmd) {
@@ -37,9 +38,9 @@ function checkPrerequisitesTest(options = {}) {
     errors.push('gh (GitHub CLI) - Install from https://cli.github.com');
   }
 
-  const nodeVersion = options.nodeVersion || Number.parseInt(process.version.slice(1).split('.')[0]);
-  if (nodeVersion < 20) {
-    errors.push(`Node.js 20+ required (current: v${nodeVersion}.x)`);
+  const nodeError = nodeVersionError(options.nodeVersion || process.version);
+  if (nodeError) {
+    errors.push(nodeError);
   }
 
   let pkgManager = null;
@@ -86,7 +87,7 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24 });
       expect(result.errors.some(e => e.includes('git'))).toBeTruthy();
     });
 
@@ -98,7 +99,7 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24 });
       expect(result.errors.some(e => e.includes('gh'))).toBeTruthy();
     });
 
@@ -111,8 +112,8 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 19 });
-      expect(result.errors.some(e => e.includes('Node.js 20+'))).toBeTruthy();
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 22 });
+      expect(result.errors.some(e => e.includes('Node.js 24+'))).toBeTruthy();
     });
 
     test('should detect missing package manager', () => {
@@ -123,13 +124,19 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24 });
       expect(result.errors.some(e => e.includes('package manager'))).toBeTruthy();
     });
   });
 
   describe('Version Constraints', () => {
-    test('Node exactly 20 - should pass', () => {
+    test('minimum matches package.json engines.node', () => {
+      const pkg = require('../../package.json');
+      expect(pkg.engines.node).toBe(`>=${MIN_NODE_MAJOR}.0.0`);
+      expect(MIN_NODE_MAJOR).toBe(24);
+    });
+
+    test('Node 24 - should pass', () => {
       const mockExec = (cmd) => {
         if (cmd === 'git --version') return 'git version 2.0.0';
         if (cmd === 'gh --version') return 'gh version 2.0.0';
@@ -138,11 +145,24 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24 });
       expect(!result.errors.some(e => e.includes('Node.js'))).toBeTruthy();
     });
 
-    test('Node 22 - should pass', () => {
+    test('Node 26 - should pass', () => {
+      const mockExec = (cmd) => {
+        if (cmd === 'git --version') return 'git version 2.0.0';
+        if (cmd === 'gh --version') return 'gh version 2.0.0';
+        if (cmd === 'gh auth status') return 'Logged in';
+        if (cmd === 'npm --version') return '10.0.0';
+        return null;
+      };
+
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 26 });
+      expect(!result.errors.some(e => e.includes('Node.js'))).toBeTruthy();
+    });
+
+    test('Node 22 - should fail with a clear upgrade message', () => {
       const mockExec = (cmd) => {
         if (cmd === 'git --version') return 'git version 2.0.0';
         if (cmd === 'gh --version') return 'gh version 2.0.0';
@@ -152,20 +172,18 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 22 });
-      expect(!result.errors.some(e => e.includes('Node.js'))).toBeTruthy();
+      const nodeErrors = result.errors.filter(e => e.includes('Node.js'));
+      expect(nodeErrors).toHaveLength(1);
+      expect(nodeErrors[0]).toContain('Node.js 24+ required');
+      expect(nodeErrors[0]).toContain('current: v22.x');
+      expect(nodeErrors[0]).toContain('Upgrade Node.js');
     });
 
-    test('Node 19.9.9 - should fail', () => {
-      const mockExec = (cmd) => {
-        if (cmd === 'git --version') return 'git version 2.0.0';
-        if (cmd === 'gh --version') return 'gh version 2.0.0';
-        if (cmd === 'gh auth status') return 'Logged in';
-        if (cmd === 'npm --version') return '10.0.0';
-        return null;
-      };
-
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 19 });
-      expect(result.errors.some(e => e.includes('Node.js 20+'))).toBeTruthy();
+    test('full version strings: v22.16.0 fails, v24.0.0 and v26.1.0 pass', () => {
+      expect(nodeVersionError('v22.16.0')).toContain('Node.js 24+ required (current: v22.16.0)');
+      expect(nodeVersionError('v24.0.0')).toBeNull();
+      expect(nodeVersionError('v26.1.0')).toBeNull();
+      expect(nodeVersionError('garbage')).toContain('Node.js 24+ required');
     });
   });
 
@@ -179,7 +197,7 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24 });
       expect(result.warnings.some(w => w.includes('not authenticated'))).toBeTruthy();
     });
 
@@ -192,7 +210,7 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24 });
       expect(!result.warnings.some(w => w.includes('not authenticated'))).toBeTruthy();
     });
   });
@@ -207,7 +225,7 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24 });
       expect(result.pkgManager).toBe('npm');
     });
 
@@ -220,7 +238,7 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24 });
       expect(result.pkgManager).toBe('yarn');
     });
 
@@ -233,7 +251,7 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24 });
       expect(result.pkgManager).toBe('pnpm');
     });
 
@@ -246,7 +264,7 @@ describe('prerequisites-edge-cases', () => {
         return null;
       };
 
-      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
+      const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24 });
       expect(result.pkgManager).toBe('bun');
     });
 
@@ -266,7 +284,7 @@ describe('prerequisites-edge-cases', () => {
           return null;
         };
 
-        const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20, projectRoot: tempDir });
+        const result = checkPrerequisitesTest({ mockExec, nodeVersion: 24, projectRoot: tempDir });
         expect(result.pkgManager).toBe('yarn');
       } finally {
         rmSync(tempDir, { recursive: true, force: true });
