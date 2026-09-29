@@ -702,7 +702,8 @@ jobs:
     # .github/workflows, which GITHUB_TOKEN can never push, so the push and the PR
     # use the optional BUN_BUMP_TOKEN secret (Contents, Workflows and Pull requests
     # write); a PR opened with it triggers its own CI. Without the secret the
-    # bun-pin-issue job opens a tracking issue instead.
+    # bun-pin-issue job opens a tracking issue instead, and closes it once no
+    # manual bump is needed.
     name: Bun Pin Auto-Update
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -808,9 +809,11 @@ jobs:
   bun-pin-issue:
     # No-token path: GITHUB_TOKEN cannot push the workflow-file changes a bump
     # needs, so open (or update) ONE tracking issue with the manual commands.
+    # Runs after every successful check so the issue is closed once the pin is
+    # current or the token path owns the bump.
     name: Bun Pin Tracking Issue
     needs: bun-pin-update
-    if: ${{ needs.bun-pin-update.outputs.newer == 'true' && needs.bun-pin-update.outputs.token_available != 'true' }}
+    if: ${{ needs.bun-pin-update.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -824,19 +827,31 @@ jobs:
           VERSION: ${{ needs.bun-pin-update.outputs.latest }}
           RELEASE_URL: ${{ needs.bun-pin-update.outputs.release_url }}
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          NEWER: ${{ needs.bun-pin-update.outputs.newer }}
+          TOKEN_AVAILABLE: ${{ needs.bun-pin-update.outputs.token_available }}
         run: |
           set -euo pipefail
           title="Bun ${VERSION} available: run forge release update-bun-pins"
           # One tracking issue across versions: match any open issue by its stable
           # "Bun <version> available: run forge release update-bun-pins" title.
           existing="$(gh issue list --state open --limit 500 --json number,title --jq '[.[] | select((.title | startswith("Bun ")) and (.title | endswith(" available: run forge release update-bun-pins")))] | first | .number // empty')"
+          if [ "$NEWER" != "true" ] || [ "$TOKEN_AVAILABLE" = "true" ]; then
+            # No manual bump is needed: the pin is current, or BUN_BUMP_TOKEN opens the PR.
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --comment "No manual Bun bump is needed any more: the pin is current, or the BUN_BUMP_TOKEN path now opens the bump PR." > /dev/null
+              echo "Bun pin auto-update: closed tracking issue #${existing}; no manual bump is needed." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
           body="Bun ${VERSION} is the latest stable release and is newer than the pinned version. Release notes: ${RELEASE_URL}
 
           The weekly Bun Pin Auto-Update job did not push the bump: no \`BUN_BUMP_TOKEN\` secret is configured, and \`GITHUB_TOKEN\` cannot push the \`.github/workflows\` changes a bump makes. Run it from an up-to-date \`${BASE_BRANCH}\`:
 
           \`\`\`bash
           git switch ${BASE_BRANCH} && git pull --ff-only
-          git switch -c bun/bump-${VERSION}
+          # A closed PR can leave bun/bump-${VERSION} behind; delete it (only when no PR for it is open).
+          git ls-remote --exit-code --heads origin bun/bump-${VERSION} > /dev/null && git push origin --delete bun/bump-${VERSION}
+          git switch -C bun/bump-${VERSION}
           forge release update-bun-pins --to ${VERSION} --expect-head \"\$(git rev-parse HEAD)\"
           git add -- package.json .github/workflows
           git commit -m \"chore(deps): pin Bun ${VERSION}\"

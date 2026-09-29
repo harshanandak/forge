@@ -759,12 +759,14 @@ describe('CI Workflow Configuration', () => {
       });
       const issueJob = jobs['bun-pin-issue'];
       expect(issueJob.needs).toBe('bun-pin-update');
-      expect(issueJob.if).toBe("${{ needs.bun-pin-update.outputs.newer == 'true' && needs.bun-pin-update.outputs.token_available != 'true' }}");
+      // Runs after every successful check so a stale tracking issue is closed once no bump is needed.
+      expect(issueJob.if).toBe("${{ needs.bun-pin-update.result == 'success' }}");
       const commands = issueJob.steps.map((step) => step.run || '').join('\n');
-      expect(commands).not.toMatch(/node bin\/forge\.js|git push|gh pr create --base "\$BASE_BRANCH"/);
+      // The issue body quotes manual commands; the job itself never executes a push or PR.
+      expect(commands).not.toMatch(/^\s*(node bin\/forge\.js|git push)|gh pr create --base "\$BASE_BRANCH"/m);
     });
 
-    function runIssueStep({ existing }) {
+    function runIssueStep({ existing, newer = 'true', tokenAvailable = 'false' }) {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-bun-issue-'));
       try {
         const binDir = path.join(root, 'bin');
@@ -787,6 +789,8 @@ describe('CI Workflow Configuration', () => {
             VERSION: '1.4.3',
             RELEASE_URL: 'https://github.com/oven-sh/bun/releases/tag/bun-v1.4.3',
             BASE_BRANCH: 'master',
+            NEWER: newer,
+            TOKEN_AVAILABLE: tokenAvailable,
             GITHUB_STEP_SUMMARY: toPosix(summary),
           },
         });
@@ -807,6 +811,8 @@ describe('CI Workflow Configuration', () => {
         GH_REPO: '${{ github.repository }}',
         VERSION: '${{ needs.bun-pin-update.outputs.latest }}',
         RELEASE_URL: '${{ needs.bun-pin-update.outputs.release_url }}',
+        NEWER: '${{ needs.bun-pin-update.outputs.newer }}',
+        TOKEN_AVAILABLE: '${{ needs.bun-pin-update.outputs.token_available }}',
       });
       const { calls, summary } = runIssueStep({ existing: null });
       const create = calls.find((call) => call.startsWith('gh issue create'));
@@ -831,6 +837,33 @@ describe('CI Workflow Configuration', () => {
       expect(edit).toContain('--title Bun 1.4.3 available: run forge release update-bun-pins');
       expect(summary).toContain('#42');
     }, 30_000);
+
+    test('the manual commands recover a stale bun/bump-<version> branch left by a closed PR', () => {
+      const { calls } = runIssueStep({ existing: null });
+      const create = calls.find((call) => call.startsWith('gh issue create'));
+      const deleteAt = create.indexOf('git push origin --delete bun/bump-1.4.3');
+      expect(deleteAt).toBeGreaterThan(-1);
+      expect(create.indexOf('git switch -C bun/bump-1.4.3')).toBeGreaterThan(deleteAt);
+      expect(create).not.toContain('git switch -c bun/bump-1.4.3');
+    }, 30_000);
+
+    for (const [label, options] of [
+      ['the pin is current', { newer: 'false' }],
+      ['the token path owns the bump', { newer: 'true', tokenAvailable: 'true' }],
+    ]) {
+      test(`closes an open tracking issue when ${label}`, () => {
+        const { calls, summary } = runIssueStep({ existing: 42, ...options });
+        const close = calls.find((call) => call.startsWith('gh issue close 42'));
+        expect(close).toContain('--comment');
+        expect(calls.some((call) => /^gh issue (create|edit)/.test(call))).toBe(false);
+        expect(summary).toContain('closed tracking issue #42');
+      }, 30_000);
+
+      test(`writes nothing when ${label} and no tracking issue is open`, () => {
+        const { calls } = runIssueStep({ existing: null, ...options });
+        expect(calls.filter((call) => !call.startsWith('gh issue list '))).toEqual([]);
+      }, 30_000);
+    }
 
     test('installs the Git hooks and fails closed when the pre-commit hook is missing', () => {
       const install = stepNamed('Install Git hooks');
