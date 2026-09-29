@@ -1231,3 +1231,269 @@ describe('Forge-owned Bun workflow pins', () => {
 		}
 	});
 });
+
+function createCommittedBunFixture() {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bun-pins-to-'));
+	const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+	expect(run(['init']).status).toBe(0);
+	expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+	expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+	expect(run(['config', 'core.autocrlf', 'false']).status).toBe(0);
+	const manifest = '{\n  "name": "forge-workflow",\n  "packageManager": "bun@1.3.12",\n  "private": true\n}\n';
+	fs.writeFileSync(path.join(root, 'package.json'), manifest);
+	for (const spec of BUN_WORKFLOW_SPECS) {
+		const fullPath = path.join(root, spec.path);
+		fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+		fs.writeFileSync(fullPath, fixtureContent(spec));
+	}
+	fs.writeFileSync(path.join(root, NPM_PUBLISH_WORKFLOW_PATH), renderNpmPublishWorkflow('1.3.12'));
+	const template = fs.readFileSync(path.join(repoRoot, TEST_WORKFLOW_TEMPLATE_PATH));
+	fs.mkdirSync(path.dirname(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), { recursive: true });
+	fs.writeFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), template);
+	fs.writeFileSync(path.join(root, TEST_WORKFLOW_PATH), renderTestWorkflow(template, '1.3.12'));
+	fs.writeFileSync(path.join(root, SIZE_WORKFLOW_PATH), renderSizeWorkflow('1.3.12'));
+	expect(run(['add', '.']).status).toBe(0);
+	expect(run(['commit', '-m', 'base']).status).toBe(0);
+	const head = run(['rev-parse', 'HEAD']).stdout.trim();
+	return { root, run, head, manifest };
+}
+
+function toFixtureOptions(counters = {}) {
+	return {
+		issueAuthorization: async (_root, _params, authorizationOptions) => {
+			counters.issued = (counters.issued || 0) + 1;
+			return { success: true, capabilityId: authorizationOptions.capabilityId };
+		},
+		completeAuthorization: async () => ({ success: true }),
+		cancelAuthorizations: async () => ({ success: true, results: [] }),
+		writeProtectedFile: (projectRoot, workflowPath, content) => {
+			fs.writeFileSync(path.join(projectRoot, workflowPath), content);
+			return { allowed: true };
+		},
+		recordProtectedStateAuditEvent: () => ({ success: true }),
+		generateNpmPublishWorkflow: async (projectRoot, options) => {
+			fs.writeFileSync(path.join(projectRoot, NPM_PUBLISH_WORKFLOW_PATH), renderNpmPublishWorkflow(options.bunVersion));
+			return { success: true, path: NPM_PUBLISH_WORKFLOW_PATH };
+		},
+		generateTestWorkflow: async (projectRoot, options) => {
+			fs.writeFileSync(path.join(projectRoot, TEST_WORKFLOW_PATH), options.expectedUpdate.content);
+			return { success: true, path: TEST_WORKFLOW_PATH };
+		},
+		resolveSizeWorkflowUpdate: projectRoot => ({
+			path: SIZE_WORKFLOW_PATH,
+			version: '1.4.3',
+			content: renderSizeWorkflow('1.4.3'),
+			snapshot: { existed: true, content: fs.readFileSync(path.join(projectRoot, SIZE_WORKFLOW_PATH)) },
+		}),
+		generateSizeWorkflow: async (projectRoot, options) => {
+			fs.writeFileSync(path.join(projectRoot, SIZE_WORKFLOW_PATH), options.expectedUpdate.content);
+			return { success: true, path: SIZE_WORKFLOW_PATH };
+		},
+	};
+}
+
+describe('update-bun-pins --to <version>', () => {
+	test('stages the manifest pin and pins every Bun surface to the explicit stable version', async () => {
+		const { root, run, head, manifest } = createCommittedBunFixture();
+		try {
+			const result = await updateBunWorkflowPins(root, {
+				...toFixtureOptions(),
+				expectedHead: head,
+				targetVersion: '1.4.3',
+			});
+
+			expect(result.error).toBeUndefined();
+			expect(result.success).toBe(true);
+			expect(result.version).toBe('1.4.3');
+			const expectedManifest = manifest.replace('bun@1.3.12', 'bun@1.4.3');
+			expect(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).toBe(expectedManifest);
+			expect(run(['show', ':package.json']).stdout).toBe(expectedManifest);
+			const surfaces = [...BUN_WORKFLOW_SPECS.map(spec => spec.path), NPM_PUBLISH_WORKFLOW_PATH, TEST_WORKFLOW_PATH, SIZE_WORKFLOW_PATH];
+			for (const surface of surfaces) {
+				const content = fs.readFileSync(path.join(root, surface), 'utf8');
+				expect({ surface, pinned: content.includes('1.4.3'), stale: content.includes('1.3.12') })
+					.toEqual({ surface, pinned: true, stale: false });
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test('refuses prerelease, canary and malformed versions before any write or authority', async () => {
+		const { root, run, head, manifest } = createCommittedBunFixture();
+		const counters = {};
+		try {
+			for (const targetVersion of ['1.5.0-canary.1', '1.5.0-beta', 'canary', 'latest', 'v1.4.3', '1.4', '', '1.4.3\n']) {
+				const result = await updateBunWorkflowPins(root, {
+					...toFixtureOptions(counters),
+					expectedHead: head,
+					targetVersion,
+				});
+				expect({ targetVersion, success: result.success }).toEqual({ targetVersion, success: false });
+				expect(result.error).toContain('exact stable');
+			}
+			expect(counters.issued).toBeUndefined();
+			expect(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).toBe(manifest);
+			expect(run(['show', ':package.json']).stdout).toBe(manifest);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test('keeps the head-mismatch refusal and leaves the manifest untouched', async () => {
+		const { root, run, manifest } = createCommittedBunFixture();
+		const counters = {};
+		try {
+			const result = await updateBunWorkflowPins(root, {
+				...toFixtureOptions(counters),
+				expectedHead: 'b'.repeat(40),
+				targetVersion: '1.4.3',
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('does not match current HEAD');
+			expect(counters.issued).toBeUndefined();
+			expect(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).toBe(manifest);
+			expect(run(['show', ':package.json']).stdout).toBe(manifest);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test('restores the staged manifest when the pin batch fails', async () => {
+		const { root, run, head, manifest } = createCommittedBunFixture();
+		try {
+			const result = await updateBunWorkflowPins(root, {
+				...toFixtureOptions(),
+				issueAuthorization: async () => ({ success: false, error: 'authority offline' }),
+				expectedHead: head,
+				targetVersion: '1.4.3',
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('authority offline');
+			expect(result.manifestRecovery).toMatchObject({ restored: true });
+			expect(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).toBe(manifest);
+			expect(run(['show', ':package.json']).stdout).toBe(manifest);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test('refuses when the working manifest differs from the index', async () => {
+		const { root, head, manifest } = createCommittedBunFixture();
+		try {
+			fs.writeFileSync(path.join(root, 'package.json'), manifest.replace('"private": true', '"private": false'));
+			const result = await updateBunWorkflowPins(root, {
+				...toFixtureOptions(),
+				expectedHead: head,
+				targetVersion: '1.4.3',
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('differs from the Git index');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test('refuses a staged manifest edit unrelated to the Bun pin', async () => {
+		const { root, run, head, manifest } = createCommittedBunFixture();
+		const counters = {};
+		try {
+			const staged = manifest.replace('"private": true', '"private": false');
+			fs.writeFileSync(path.join(root, 'package.json'), staged);
+			expect(run(['add', '--', 'package.json']).status).toBe(0);
+			const result = await updateBunWorkflowPins(root, {
+				...toFixtureOptions(counters),
+				expectedHead: head,
+				targetVersion: '1.4.3',
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('differs from HEAD');
+			expect(counters.issued).toBeUndefined();
+			expect(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).toBe(staged);
+			expect(run(['show', ':package.json']).stdout).toBe(staged);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test('restores the working manifest when staging the pin fails', async () => {
+		const { root, run, head, manifest } = createCommittedBunFixture();
+		try {
+			const execGit = (command, args, options) => {
+				if (args[0] === 'add') throw new Error('index.lock exists');
+				return secureExecFileSync(command, args, options);
+			};
+			const result = await updateBunWorkflowPins(root, {
+				...toFixtureOptions(),
+				execGit,
+				expectedHead: head,
+				targetVersion: '1.4.3',
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('index.lock exists');
+			expect(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).toBe(manifest);
+			expect(run(['show', ':package.json']).stdout).toBe(manifest);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test('preserves a concurrent manifest edit when staging the pin fails', async () => {
+		const { root, run, head, manifest } = createCommittedBunFixture();
+		const concurrent = manifest.replace('"private": true', '"private": false');
+		try {
+			const execGit = (command, args, options) => {
+				if (args[0] === 'add') {
+					fs.writeFileSync(path.join(root, 'package.json'), concurrent);
+					throw new Error('index.lock exists');
+				}
+				return secureExecFileSync(command, args, options);
+			};
+			const result = await updateBunWorkflowPins(root, {
+				...toFixtureOptions(),
+				execGit,
+				expectedHead: head,
+				targetVersion: '1.4.3',
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('index.lock exists');
+			expect(result.error).toContain('recovery skipped: package.json changed concurrently');
+			expect(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).toBe(concurrent);
+			expect(run(['show', ':package.json']).stdout).toBe(manifest);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test('the release command forwards --to and refuses a missing value', async () => {
+		const calls = [];
+		const updater = async (_root, options) => {
+			calls.push(options);
+			return { success: true, version: options.targetVersion, paths: [] };
+		};
+		const forwarded = await releaseCommand.handler(
+			['update-bun-pins', '--to', '1.4.3', '--expect-head', TEST_HEAD], {}, 'C:/repo', { updateBunWorkflowPins: updater },
+		);
+		expect(forwarded.success).toBe(true);
+		expect(calls[0]).toMatchObject({ targetVersion: '1.4.3', expectedHead: TEST_HEAD });
+
+		const equals = await releaseCommand.handler(
+			['update-bun-pins', '--expect-head=' + TEST_HEAD, '--to=1.4.4'], {}, 'C:/repo', { updateBunWorkflowPins: updater },
+		);
+		expect(equals.success).toBe(true);
+		expect(calls[1].targetVersion).toBe('1.4.4');
+
+		const omitted = await releaseCommand.handler(
+			['update-bun-pins', '--expect-head', TEST_HEAD], {}, 'C:/repo', { updateBunWorkflowPins: updater },
+		);
+		expect(omitted.success).toBe(true);
+		expect(calls[2].targetVersion).toBeUndefined();
+
+		const missing = await releaseCommand.handler(
+			['update-bun-pins', '--expect-head', TEST_HEAD, '--to'], {}, 'C:/repo', { updateBunWorkflowPins: updater },
+		);
+		expect(missing.success).toBe(false);
+		expect(missing.error).toContain('--to');
+		expect(calls).toHaveLength(3);
+	});
+});
