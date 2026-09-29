@@ -1,142 +1,152 @@
+'use strict';
+
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
 const YAML = require('yaml');
 
+const ROOT = path.join(__dirname, '..', '..');
+const WORKFLOW_PATH = path.join(ROOT, '.github', 'workflows', 'size-check.yml');
+const PACK_TIMEOUT_MS = 120000;
+
+function loadWorkflow() {
+  return YAML.parse(fs.readFileSync(WORKFLOW_PATH, 'utf8'));
+}
+
+function allSteps(workflow) {
+  return Object.values(workflow.jobs).flatMap((job) => job.steps || []);
+}
+
+function runText(workflow) {
+  return allSteps(workflow).map((s) => s.run || '').join('\n');
+}
+
 describe('.github/workflows/size-check.yml', () => {
-  const workflowPath = path.join(__dirname, '..', '..', '.github', 'workflows', 'size-check.yml');
-
-  describe('Workflow file existence', () => {
-    test('should exist', () => {
-      expect(fs.existsSync(workflowPath)).toBeTruthy();
-    });
-
-    test('should be valid YAML', () => {
-      const content = fs.readFileSync(workflowPath, 'utf-8');
-      expect(() => {
-        YAML.parse(content);
-      }).not.toThrow();
-    });
+  test('exists and is valid YAML with a size-related name', () => {
+    expect(fs.existsSync(WORKFLOW_PATH)).toBe(true);
+    const workflow = loadWorkflow();
+    expect(workflow.name.toLowerCase()).toContain('size');
   });
 
-  describe('Workflow configuration', () => {
-    let workflow;
-
-    test('should load workflow configuration', () => {
-      const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = YAML.parse(content);
-      expect(workflow).toBeTruthy();
-    });
-
-    test('should have name', () => {
-      const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = YAML.parse(content);
-      expect(workflow.name).toBeTruthy();
-      expect(workflow.name.toLowerCase().includes('size') || workflow.name.toLowerCase().includes('bundle')).toBeTruthy();
-    });
-
-    test('should trigger on push and pull_request', () => {
-      const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = YAML.parse(content);
-      expect(workflow.on).toBeTruthy();
-
-      // Should trigger on push or pull_request
-      const hasPush = workflow.on.push || workflow.on === 'push' || (Array.isArray(workflow.on) && workflow.on.includes('push'));
-      const hasPR = workflow.on.pull_request || workflow.on === 'pull_request' || (Array.isArray(workflow.on) && workflow.on.includes('pull_request'));
-
-      expect(hasPush || hasPR).toBeTruthy();
-    });
+  test('runs on push and pull_request to the default branches', () => {
+    const workflow = loadWorkflow();
+    expect(workflow.on.push.branches).toContain('master');
+    expect(workflow.on.pull_request.branches).toContain('master');
   });
 
-  describe('Jobs configuration', () => {
-    let workflow;
-
-    test('should have at least one job', () => {
-      const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = YAML.parse(content);
-      expect(workflow.jobs).toBeTruthy();
-      expect(Object.keys(workflow.jobs).length > 0).toBeTruthy();
-    });
-
-    test('should use ubuntu-latest runner', () => {
-      const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = YAML.parse(content);
-
-      const jobs = Object.values(workflow.jobs);
-      const hasUbuntu = jobs.some(job =>
-        job['runs-on'] === 'ubuntu-latest' ||
-        (Array.isArray(job['runs-on']) && job['runs-on'].includes('ubuntu-latest'))
-      );
-
-      expect(hasUbuntu).toBeTruthy();
-    });
-
-    test('should checkout code', () => {
-      const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = YAML.parse(content);
-
-      const jobs = Object.values(workflow.jobs);
-      const hasCheckout = jobs.some(job =>
-        job.steps && job.steps.some(step =>
-          step.uses && step.uses.includes('actions/checkout')
-        )
-      );
-
-      expect(hasCheckout).toBeTruthy();
-    });
+  test('runs on every PR and push, with no path filters a new publishable path could escape', () => {
+    const workflow = loadWorkflow();
+    for (const trigger of ['push', 'pull_request']) {
+      expect(workflow.on[trigger].paths).toBeUndefined();
+      expect(workflow.on[trigger]['paths-ignore']).toBeUndefined();
+    }
   });
 
-  describe('Package size monitoring', () => {
-    let workflow;
-
-    test('should install dependencies', () => {
-      const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = YAML.parse(content);
-
-      const jobs = Object.values(workflow.jobs);
-      const hasInstall = jobs.some(job =>
-        job.steps && job.steps.some(step =>
-          (step.run && (
-            step.run.includes('npm install') ||
-            step.run.includes('bun install') ||
-            step.run.includes('yarn install') ||
-            step.run.includes('pnpm install')
-          ))
-        )
-      );
-
-      expect(hasInstall).toBeTruthy();
-    });
-
-    test('should measure package size', () => {
-      const content = fs.readFileSync(workflowPath, 'utf-8');
-      workflow = YAML.parse(content);
-
-      const jobs = Object.values(workflow.jobs);
-      const hasSizeCheck = jobs.some(job =>
-        job.steps && job.steps.some(step =>
-          (step.run && (
-            step.run.includes('du') ||
-            step.run.includes('size') ||
-            step.run.includes('bundlesize') ||
-            step.run.includes('package-size')
-          ))
-        )
-      );
-
-      expect(hasSizeCheck).toBeTruthy();
-    });
+  test('is generated by forge release generate-size-workflow', () => {
+    expect(fs.readFileSync(WORKFLOW_PATH, 'utf8')).toMatch(/^# Generated by `forge release generate-size-workflow`/);
   });
 
-  describe('README badge integration', () => {
-    test('README should have size badge', () => {
-      const readmePath = path.join(__dirname, '..', '..', 'README.md');
-      const content = fs.readFileSync(readmePath, 'utf-8');
+  test('checks out code on ubuntu-latest and installs dependencies (bundled deps need node_modules)', () => {
+    const workflow = loadWorkflow();
+    const job = workflow.jobs['size-check'];
+    expect(job['runs-on']).toBe('ubuntu-latest');
+    expect(allSteps(workflow).some((s) => (s.uses || '').startsWith('actions/checkout'))).toBe(true);
+    expect(runText(workflow)).toContain('bun install');
+  });
 
-      // Should have a badge for package size
-      const hasSizeBadge = content.includes('size') && content.includes('badge');
+  test('measures the published package through the budget script, not the repo checkout', () => {
+    const workflow = loadWorkflow();
+    const text = runText(workflow);
+    expect(text).toContain('node scripts/package-size-check.js');
+    expect(text).not.toContain('du -sb');
+  });
 
-      expect(hasSizeBadge).toBeTruthy();
-    });
+  test('reads the base baseline from the exact base the PR merge commit was built on', () => {
+    const raw = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    const workflow = loadWorkflow();
+    const steps = allSteps(workflow);
+    // The moving base-branch tip can advance mid-run; never fetch it.
+    expect(raw).not.toContain('github.base_ref');
+    expect(runText(workflow)).not.toMatch(/git fetch/);
+    const checkout = steps.find((s) => (s.uses || '').startsWith('actions/checkout'));
+    expect(String(checkout.with && checkout.with['fetch-depth'])).toContain("github.event_name == 'pull_request' && 2");
+    const baselineStep = steps.find((s) => (s.run || '').includes('base-baseline.json') && s.if);
+    expect(baselineStep.if).toBe("github.event_name == 'pull_request'");
+    expect(baselineStep.run).toContain('git show HEAD^1:scripts/package-size-baseline.json');
+    // Only a genuinely absent baseline falls back (ls-tree lists nothing); git errors fail the step.
+    expect(baselineStep.run).toContain('git ls-tree --name-only HEAD^1 -- scripts/package-size-baseline.json');
+    expect(baselineStep.run).not.toMatch(/\|\|/);
+  });
+
+  test('pins Node before measuring, from the npm-publish.yml Node source', () => {
+    const { WORKFLOW_NODE_VERSION } = require('../../lib/npm-publish-workflow');
+    const steps = allSteps(loadWorkflow());
+    const setup = steps.findIndex((s) => (s.uses || '').startsWith('actions/setup-node'));
+    const measure = steps.findIndex((s) => (s.run || '').includes('node scripts/package-size-check.js'));
+    expect(setup).toBeGreaterThanOrEqual(0);
+    expect(setup).toBeLessThan(measure);
+    expect(steps[setup].with['node-version']).toBe(WORKFLOW_NODE_VERSION);
+  });
+
+  test('reports to the step summary and needs no PR write permission', () => {
+    const workflow = loadWorkflow();
+    const job = workflow.jobs['size-check'];
+    expect(job.permissions).toEqual({ contents: 'read' });
+    expect(allSteps(workflow).some((s) => (s.uses || '').includes('github-script'))).toBe(false);
+  });
+});
+
+describe('README badge integration', () => {
+  test('README has the package size badge', () => {
+    const content = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+    expect(content).toContain('size-check.yml/badge.svg');
+  });
+});
+
+describe('committed baseline vs the real package', () => {
+  const { runPack, check, MANIFEST_PATH, BASELINE_PATH } = require('../../scripts/package-size-check');
+  const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+  const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
+
+  // Regression for the old failure mode: the old check measured the whole repo
+  // checkout, so repo-only files (docs/work/**, test/**) failed PRs that shipped
+  // nothing. Plant large probes there before packing; they must not register.
+  const probeDirs = [
+    path.join(ROOT, 'docs', 'work', `.size-probe-${process.pid}`),
+    path.join(ROOT, 'test', `.size-probe-${process.pid}`),
+  ];
+  let packText;
+
+  beforeAll(() => {
+    for (const dir of probeDirs) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'probe.bin'), Buffer.alloc(2 * 1024 * 1024));
+    }
+    packText = runPack(ROOT);
+  }, PACK_TIMEOUT_MS);
+
+  afterAll(() => {
+    for (const dir of probeDirs) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('the current package is within budget of the committed baseline', () => {
+    const { result, report } = check({ packText, manifest, baseline });
+    if (!result.ok) console.error(report);
+    expect(result.failures).toEqual([]);
+    expect(result.ok).toBe(true);
+  });
+
+  test('repo-only files growing in docs/work/** and test/** do not affect the result', () => {
+    const { measured, result } = check({ packText, manifest, baseline });
+    const probePaths = JSON.parse(packText)[0].files.map((f) => f.path).filter((p) => p.includes('.size-probe-'));
+    expect(probePaths).toEqual([]);
+    // 4MB of probes would have tripped the old whole-checkout measure on its own.
+    expect(measured.total.unpacked).toBeLessThan(baseline.total.unpacked + 1024 * 1024);
+    expect(result.ok).toBe(true);
+  });
+
+  test('the baseline records every manifest block plus other', () => {
+    const expected = [...Object.keys(manifest.blocks), 'other'].sort();
+    expect(Object.keys(baseline.blocks).sort()).toEqual(expected);
   });
 });

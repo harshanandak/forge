@@ -29,7 +29,7 @@
     "gen:assets": "bun scripts/gen-embedded-assets.mjs",
     "build:binary": "bun scripts/gen-embedded-assets.mjs && bun build --compile --define FORGE_COMPILED=true ./bin/forge.js --outfile forge-bin",
     "parity:binary": "bun scripts/parity-check.mjs",
-    "validate:yaml": "find . \\( -name '*.yml' -o -name '*.yaml' \\) | grep -v node_modules | while IFS= read -r file; do echo \"Checking $file...\" && cat \"$file\" | bun x yaml valid > /dev/null || exit 1; done",
+    "validate:yaml": "bash -c 'find . \\( -name \"*.yml\" -o -name \"*.yaml\" \\) | grep -v node_modules | while IFS= read -r file; do echo \"Checking $file...\" && bun x yaml valid < \"$file\" > /dev/null || exit 1; done'",
     "test:mutation": "npx stryker run",
     "test:benchmark": "node scripts/benchmark.js --output test-results/benchmark-results.json --profile-dir test-results/benchmark-profiles",
     "test:benchmark:full": "node scripts/benchmark.js --output test-results/benchmark-full-results.json --profile-dir test-results/benchmark-full-profiles --group full-suite --group validate",
