@@ -9,6 +9,7 @@ const {
 } = require('../lib/protected-state-surfaces');
 const {
 	authorizeAndConsumeProtectedStateWrites,
+	isExactClaudePointer,
 	isValidGitObjectId,
 } = require('../lib/protected-state-authority');
 const { verifyBunLockfileRegeneration } = require('../lib/bun-lockfile-proof');
@@ -480,6 +481,11 @@ async function main() {
 
 			const content = getStagedContent(probe.path);
 			if (content === null) return { probe };
+			// Deleting a root CLAUDE.md whose HEAD bytes are exactly the generated
+			// `@AGENTS.md` pointer loses nothing; any other content or edit stays gated.
+			if (probe.path === 'CLAUDE.md' && deletedFiles.has(probe.path) && isExactClaudePointer(content)) {
+				return { probe: { ...probe, allowed: true, decision: 'allowed_pointer_delete' } };
+			}
 			return {
 				probe,
 				request: {

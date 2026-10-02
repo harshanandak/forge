@@ -169,7 +169,7 @@ function main() {
     console.error(`  3. Create a pull request for review`);
     console.error('');
     console.error(`${YELLOW}Emergency hook bypass is human-only and must not appear in agent logs.${RESET}`);
-    console.error(`  See ${YELLOW}CLAUDE.md${RESET} (Git Workflow) — AI agents must fix failing hooks, not bypass them.`);
+    console.error(`  See ${YELLOW}AGENTS.md${RESET} (Git Hooks & Push Workflow) — AI agents must fix failing hooks, not bypass them.`);
     console.error('');
     process.exit(1);
   }

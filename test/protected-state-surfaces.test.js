@@ -582,6 +582,36 @@ describe('scripts/protected-state-check.js', () => {
 		expect(output).toContain('.beads/issues.jsonl');
 		expect(output).toContain('beads_state');
 	});
+
+	function runClaudeDeletion(headContent) {
+		const root = createTempDir();
+		try {
+			runGit(root, ['init', '--quiet']);
+			runGit(root, ['config', 'user.email', 'forge-test@example.invalid']);
+			runGit(root, ['config', 'user.name', 'Forge Test']);
+			fs.writeFileSync(path.join(root, 'CLAUDE.md'), headContent);
+			runGit(root, ['add', 'CLAUDE.md']);
+			runGit(root, ['commit', '--quiet', '-m', 'base']);
+			runGit(root, ['rm', '--quiet', 'CLAUDE.md']);
+			const result = spawnSync('node', [scriptPath], { cwd: root, stdio: 'pipe', env: { ...process.env } });
+			return { status: result.status, output: `${result.stdout}${result.stderr}` };
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}
+
+	test('allows deleting a root CLAUDE.md that is exactly the generated @AGENTS.md pointer', () => {
+		const result = runClaudeDeletion('@AGENTS.md\n');
+		expect(result.status).toBe(0);
+		expect(result.output).toContain('No protected state edits detected');
+	}, 15_000);
+
+	test('blocks deleting a root CLAUDE.md with any other content', () => {
+		const result = runClaudeDeletion('@AGENTS.md\n\n# Local notes\n');
+		expect(result.status).toBe(1);
+		expect(result.output).toContain('CLAUDE.md');
+		expect(result.output).toContain('generated_harness');
+	}, 15_000);
 });
 
 describe('scripts/protected-state-check.js merge awareness', () => {

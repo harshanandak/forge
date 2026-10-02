@@ -18,7 +18,6 @@
 # AI agent configuration and workflows (workflow team)
 /.claude/ @harshanandak @forge-workflow-team
 /AGENTS.md @harshanandak @forge-workflow-team
-/CLAUDE.md @harshanandak @forge-workflow-team
 
 # Documentation (documentation team)
 /docs/ @harshanandak @forge-docs-team
