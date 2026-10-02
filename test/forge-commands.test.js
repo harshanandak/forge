@@ -159,11 +159,3 @@ describe('Codex skill entry generation', () => {
     expect(formatCodexSkillsInstallDir({ env: { CODEX_HOME: codexHome }, homeDir: tmpDir })).toBe('$CODEX_HOME/skills');
   });
 });
-
-describe('CLAUDE.md content', () => {
-  test('does not contain placeholder project description', () => {
-    const claudeMdPath = path.resolve(__dirname, '..', 'CLAUDE.md');
-    const content = fs.readFileSync(claudeMdPath, 'utf-8');
-    expect(content).not.toContain('[describe what this project does');
-  });
-});

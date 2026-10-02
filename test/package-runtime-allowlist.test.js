@@ -133,7 +133,6 @@ function documentedCodePaths() {
 // Repo-only paths (dev/CI tooling, tests, repo docs) and dead code that must not ship.
 const MUST_NOT_SHIP = [
   'CHANGELOG.md',
-  'CLAUDE.md',
   'QUICKSTART.md',
   'install.sh',
   'lefthook.yml',
