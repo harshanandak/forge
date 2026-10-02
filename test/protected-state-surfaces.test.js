@@ -638,10 +638,13 @@ describe('scripts/protected-state-check.js', () => {
 		}
 	}, 15_000);
 
-	test('allows deleting a root CLAUDE.md that is exactly the generated @AGENTS.md pointer', () => {
+	// The shipped checker must not carry a universal bypass: deleting even the
+	// exact generated pointer needs a Forge authorization like any protected write.
+	test('blocks deleting a root CLAUDE.md that is exactly the generated @AGENTS.md pointer', () => {
 		const result = runClaudeDeletion('@AGENTS.md\n');
-		expect(result.status).toBe(0);
-		expect(result.output).toContain('No protected state edits detected');
+		expect(result.status).toBe(1);
+		expect(result.output).toContain('CLAUDE.md');
+		expect(result.output).toContain('generated_harness');
 	}, 15_000);
 
 	test('blocks deleting a root CLAUDE.md with any other content', () => {
