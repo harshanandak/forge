@@ -33,13 +33,32 @@ function createTempDir() {
 	return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-protected-state-'));
 }
 
+// Hooks export repository-location variables; a test fixture must never follow them
+// out of its temp repository.
+const GIT_LOCATION_ENV = [
+	'GIT_DIR',
+	'GIT_WORK_TREE',
+	'GIT_INDEX_FILE',
+	'GIT_COMMON_DIR',
+	'GIT_OBJECT_DIRECTORY',
+	'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+	'GIT_QUARANTINE_PATH',
+	'GIT_PREFIX',
+];
+
+function isolatedGitEnv(extra = {}) {
+	const env = { ...process.env };
+	for (const name of GIT_LOCATION_ENV) delete env[name];
+	return { ...env, ...extra };
+}
+
 function runGit(root, args) {
-	const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+	const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', env: isolatedGitEnv() });
 	if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 }
 
 function runGitCapture(root, args) {
-	const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+	const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', env: isolatedGitEnv() });
 	if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 	return result.stdout.trim();
 }
@@ -593,12 +612,31 @@ describe('scripts/protected-state-check.js', () => {
 			runGit(root, ['add', 'CLAUDE.md']);
 			runGit(root, ['commit', '--quiet', '-m', 'base']);
 			runGit(root, ['rm', '--quiet', 'CLAUDE.md']);
-			const result = spawnSync('node', [scriptPath], { cwd: root, stdio: 'pipe', env: { ...process.env } });
+			const result = spawnSync('node', [scriptPath], { cwd: root, stdio: 'pipe', env: isolatedGitEnv() });
 			return { status: result.status, output: `${result.stdout}${result.stderr}` };
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	}
+
+	test('ignores repository-location env inherited from a hook', () => {
+		const decoy = createTempDir();
+		const saved = { GIT_DIR: process.env.GIT_DIR, GIT_INDEX_FILE: process.env.GIT_INDEX_FILE };
+		process.env.GIT_DIR = path.join(decoy, 'decoy.git');
+		process.env.GIT_INDEX_FILE = path.join(decoy, 'decoy-index');
+		try {
+			const result = runClaudeDeletion('@AGENTS.md\n\n# Local notes\n');
+			expect(result.status).toBe(1);
+			expect(result.output).toContain('generated_harness');
+			expect(fs.existsSync(path.join(decoy, 'decoy.git'))).toBe(false);
+		} finally {
+			for (const [name, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+			fs.rmSync(decoy, { recursive: true, force: true });
+		}
+	}, 15_000);
 
 	test('allows deleting a root CLAUDE.md that is exactly the generated @AGENTS.md pointer', () => {
 		const result = runClaudeDeletion('@AGENTS.md\n');
