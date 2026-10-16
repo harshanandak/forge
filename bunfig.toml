@@ -1,0 +1,5 @@
+[install]
+exact = true
+
+[lint]
+typeAware = true
