@@ -9,14 +9,14 @@ Bun builds Forge. Forge itself never assumes Bun, TypeScript or any one tool in 
 ```bash
 bun install                # bun.lock is committed
 bun run check              # type check (bun check)
-bun run lint               # bun lint --type-aware, zero warnings
-bun run fmt                # bun fmt --check (run `bun fmt` to write)
+bun run lint               # bun lint --type-aware, zero warnings (tools/bun-builtin.ts)
+bun run fmt                # bun fmt (pass --check to verify only)
 bun test --timeout 30000   # all tests (bun run test); test/structure holds the repo guards
 bun run build              # tsc emits dist/ (.js + .d.ts)
 bun run pack:smoke         # pack, install with npm on Node without Bun, run forge --version
 ```
 
-`bun lint` and `bun fmt` need a Bun build that has them (currently the canary build; CI uses it). `bun check` needs Bun 1.4.3 or newer.
+`bun lint` and `bun fmt` need a Bun build that has them (currently the canary build; CI uses it). The `lint` and `fmt` scripts go through `tools/bun-builtin.ts`, which exits 1 with an upgrade hint on a Bun without them instead of looping back into the script. `bun check` needs Bun 1.4.3 or newer.
 
 ## Layout
 

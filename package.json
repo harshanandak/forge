@@ -33,8 +33,8 @@
   "packageManager": "bun@1.4.3",
   "scripts": {
     "check": "bun check",
-    "lint": "bun lint --type-aware --max-warnings 0",
-    "fmt": "bun fmt",
+    "lint": "bun tools/bun-builtin.ts lint --type-aware --max-warnings 0",
+    "fmt": "bun tools/bun-builtin.ts fmt",
     "test": "bun test --timeout 30000",
     "test:structure": "bun test --timeout 30000 test/structure",
     "build": "tsc -p tsconfig.build.json",

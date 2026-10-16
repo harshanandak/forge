@@ -32,8 +32,8 @@ export const FORBIDDEN_PACKAGES: readonly RegExp[] = [
 
 export const BUN_FIRST_SCRIPTS: ReadonlyMap<string, string> = new Map([
   ["check", "bun check"],
-  ["lint", "bun lint"],
-  ["fmt", "bun fmt"],
+  ["lint", "bun tools/bun-builtin.ts lint"],
+  ["fmt", "bun tools/bun-builtin.ts fmt"],
 ]);
 
 const STRICT_COMPILER_OPTIONS: readonly string[] = [
@@ -116,7 +116,7 @@ export function findPackageShapeViolations(
     ) {
       fail(
         "package.json",
-        `script "${script}" must run the Bun built-in "${prefix}", with no interim layer`,
+        `script "${script}" must be "${prefix}": the built-in, reached only through the fail-fast shim`,
       );
     }
   }

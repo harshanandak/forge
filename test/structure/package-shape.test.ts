@@ -18,8 +18,8 @@ const good = {
   bin: { forge: "dist/bin/forge.js" },
   scripts: {
     check: "bun check",
-    lint: "bun lint --type-aware",
-    fmt: "bun fmt --check",
+    lint: "bun tools/bun-builtin.ts lint --type-aware",
+    fmt: "bun tools/bun-builtin.ts fmt --check",
     test: "bun test --timeout 30000",
   },
   devDependencies: { typescript: "7.0.2" },
@@ -84,8 +84,12 @@ test("the guard rejects scripts that can hide a failed check", () => {
   expect(bad("check", "bun check | cat")).toBeGreaterThan(0);
   expect(bad("check", "bun check &")).toBeGreaterThan(0);
   expect(bad("check", "bun checkout")).toBeGreaterThan(0);
-  expect(bad("lint", "bun lint --type-aware || true")).toBeGreaterThan(0);
-  expect(bad("fmt", "bun fmt --check; true")).toBeGreaterThan(0);
+  expect(
+    bad("lint", "bun tools/bun-builtin.ts lint --type-aware || true"),
+  ).toBeGreaterThan(0);
+  expect(
+    bad("fmt", "bun tools/bun-builtin.ts fmt --check; true"),
+  ).toBeGreaterThan(0);
   expect(bad("test", "bun test --timeout 30000 || true")).toBeGreaterThan(0);
   expect(
     bad("test", "bun test --timeout 30000 --passWithNoTests"),
