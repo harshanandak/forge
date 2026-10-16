@@ -45,6 +45,21 @@ const STRICT_COMPILER_OPTIONS: readonly string[] = [
   "rewriteRelativeImportExtensions",
 ];
 
+/** Shell syntax and flags that let a failed check still exit 0. */
+const FAILURE_MASKS: readonly RegExp[] = [
+  /\|\|/,
+  /;/,
+  /\|/,
+  /(?<!&)&(?!&)/,
+  /[\n\r`]|\$\(/,
+  /\bexit\s+0\b/,
+  /--(?:passWithNoTests|pass-with-no-tests|exit-zero|no-error-on-unmatched-pattern)\b/i,
+];
+
+export function scriptMasksFailure(script: string): boolean {
+  return FAILURE_MASKS.some((re) => re.test(script));
+}
+
 type Json = Readonly<Record<string, unknown>>;
 
 function asObject(value: unknown): Json {
@@ -95,10 +110,21 @@ export function findPackageShapeViolations(
   }
   for (const [script, prefix] of BUN_FIRST_SCRIPTS) {
     const value = scripts[script];
-    if (typeof value !== "string" || !value.startsWith(prefix)) {
+    if (
+      typeof value !== "string" ||
+      !(value === prefix || value.startsWith(`${prefix} `))
+    ) {
       fail(
         "package.json",
         `script "${script}" must run the Bun built-in "${prefix}", with no interim layer`,
+      );
+    }
+  }
+  for (const [name, value] of Object.entries(scripts)) {
+    if (typeof value === "string" && scriptMasksFailure(value)) {
+      fail(
+        "package.json",
+        `script "${name}" can hide a failed check (shell operator or exit-zero flag); run the command bare`,
       );
     }
   }

@@ -72,6 +72,27 @@ test("the guard rejects install scripts, forbidden fields, retired packages and 
   expect(bad({ type: "commonjs" })).toBe(1);
 }, 30_000);
 
+test("the guard rejects scripts that can hide a failed check", () => {
+  const bad = (script: string, command: string): number =>
+    findPackageShapeViolations(
+      { ...good, scripts: { ...good.scripts, [script]: command } },
+      goodTsconfig,
+    ).length;
+  expect(bad("check", "bun check || true")).toBeGreaterThan(0);
+  expect(bad("check", "bun check || :")).toBeGreaterThan(0);
+  expect(bad("check", "bun check; exit 0")).toBeGreaterThan(0);
+  expect(bad("check", "bun check | cat")).toBeGreaterThan(0);
+  expect(bad("check", "bun check &")).toBeGreaterThan(0);
+  expect(bad("check", "bun checkout")).toBeGreaterThan(0);
+  expect(bad("lint", "bun lint --type-aware || true")).toBeGreaterThan(0);
+  expect(bad("fmt", "bun fmt --check; true")).toBeGreaterThan(0);
+  expect(bad("test", "bun test --timeout 30000 || true")).toBeGreaterThan(0);
+  expect(
+    bad("test", "bun test --timeout 30000 --passWithNoTests"),
+  ).toBeGreaterThan(0);
+  expect(bad("test", "bun test --timeout 30000 && bun test")).toBe(0);
+}, 30_000);
+
 test("the guard rejects loosened compiler options and non-erasable syntax", () => {
   const options = {
     ...goodTsconfig.compilerOptions,

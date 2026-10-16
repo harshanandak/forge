@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { version } from "../../src/index.ts";
 
 const root = new URL("../../", import.meta.url);
@@ -12,10 +13,7 @@ test("the library exports the package.json version", () => {
 }, 10_000);
 
 test("the stub bin prints the version for --version and fails for anything else", () => {
-  const bin = new URL("bin/forge.ts", root).pathname.replace(
-    /^\/([A-Za-z]:)/,
-    "$1",
-  );
+  const bin = fileURLToPath(new URL("bin/forge.ts", root));
   const ok = Bun.spawnSync([process.execPath, bin, "--version"]);
   expect(ok.exitCode).toBe(0);
   expect(ok.stdout.toString().trim()).toBe(version);

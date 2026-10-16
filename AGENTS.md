@@ -20,7 +20,7 @@ bun run pack:smoke         # pack, install with npm on Node without Bun, run for
 
 ## Layout
 
-`bin/` entry stub, `src/` the package (`core`, `ports`, `adapters`, `blocks`, `surface`), `schemas/`, `test/` (`structure` guards, `contract`, `integration`), `tools/`, `docs/` (`dependencies.md` is the dependency ledger). Discover operations with `forge catalog list`, and `--help --json` on any command.
+`bin/` entry stub, `src/` the package (`core`, `ports`, `adapters`, `blocks`, `surface`), `schemas/`, `test/` (`structure` guards, `contract`, `integration`), `tools/`, `docs/` (`dependencies.md` is the dependency ledger). Operation discovery (`forge catalog list`, `--help --json`) is planned for L3; the stub only accepts `--version` today.
 
 ## Rules
 
