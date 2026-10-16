@@ -109,33 +109,86 @@ test("the guard rejects a runtime dependency with no adapter", () => {
   ).toHaveLength(1);
 }, 30_000);
 
-test("the guard rejects a package claimed by two adapters, and allows distinct claims", () => {
-  const twin = { ...yamlAdapter, name: "config-yaml-twin" };
-  const found = findAdapterViolations(
-    ["config-yaml", "config-yaml-twin"],
-    [yamlAdapter, twin],
-    withPackage,
-  );
-  expect(found).toHaveLength(1);
-  expect(found[0]?.message).toContain("yaml");
-  expect(found[0]?.message).toContain("config-yaml");
-  expect(found[0]?.message).toContain("config-yaml-twin");
+const claimKinds = [
+  {
+    kind: "package",
+    deps: { yaml: "2.0.0", toml: "1.0.0" },
+    claim: (name: string, owner: string) => ({
+      name: owner,
+      packages: [name],
+      executables: [],
+    }),
+    shared: "yaml",
+    other: "toml",
+  },
+  {
+    kind: "executable",
+    deps: {},
+    claim: (name: string, owner: string) => ({
+      name: owner,
+      packages: [],
+      executables: [name],
+    }),
+    shared: "git",
+    other: "gh",
+  },
+] as const;
 
-  const both: PackageJson = {
-    dependencies: { yaml: "2.0.0", toml: "1.0.0" },
-  };
-  const tomlAdapter = {
-    name: "config-toml",
-    packages: ["toml"],
-    executables: [],
-  };
+for (const row of claimKinds) {
+  const dirs = ["one", "two"];
+  const pkgOf: PackageJson = { dependencies: row.deps };
+
+  test(`one owner per ${row.kind}: duplicate claims fail naming kind, resource and claimants`, () => {
+    const found = findAdapterViolations(
+      dirs,
+      [row.claim(row.shared, "one"), row.claim(row.shared, "two")],
+      { dependencies: row.kind === "package" ? { [row.shared]: "1.0.0" } : {} },
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0]?.message).toContain(`${row.kind} "${row.shared}"`);
+    expect(found[0]?.message).toContain("one, two");
+  }, 30_000);
+
+  test(`one owner per ${row.kind}: distinct claims pass`, () => {
+    expect(
+      findAdapterViolations(
+        dirs,
+        [row.claim(row.shared, "one"), row.claim(row.other, "two")],
+        pkgOf,
+      ),
+    ).toEqual([]);
+  }, 30_000);
+}
+
+test("a package imported by shipped code must be a runtime dependency", () => {
+  const devOnly: PackageJson = { devDependencies: { yaml: "2.0.0" } };
+  const runtime: PackageJson = { dependencies: { yaml: "2.0.0" } };
+  const source = [
+    {
+      path: "src/adapters/config-yaml/a.ts",
+      text: 'import YAML from "yaml";\n',
+    },
+    { path: "bin/forge.ts", text: 'import YAML from "yaml";\n' },
+  ];
+  const tooling = [
+    { path: "test/a.test.ts", text: 'import YAML from "yaml";\n' },
+    { path: "tools/a.ts", text: 'import YAML from "yaml";\n' },
+  ];
+
+  const shippedDevOnly = findDependencyViolations(source, devOnly, [
+    yamlAdapter,
+  ]);
+  expect(shippedDevOnly.map((v) => v.file)).toContain(
+    "src/adapters/config-yaml/a.ts",
+  );
+  expect(shippedDevOnly.map((v) => v.file)).toContain("bin/forge.ts");
+  expect(shippedDevOnly[0]?.message).toContain("dependencies");
   expect(
-    findAdapterViolations(
-      ["config-yaml", "config-toml"],
-      [yamlAdapter, tomlAdapter],
-      both,
-    ),
+    findDependencyViolations([source[0] as (typeof source)[number]], runtime, [
+      yamlAdapter,
+    ]),
   ).toEqual([]);
+  expect(findDependencyViolations(tooling, devOnly, [yamlAdapter])).toEqual([]);
 }, 30_000);
 
 test("the guard rejects toolchain names in shipped code but not in adapters", () => {

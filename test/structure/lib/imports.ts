@@ -78,6 +78,7 @@ export function findDependencyViolations(
 ): Violation[] {
   const violations: Violation[] = [];
   const knownPackages = declared(pkg);
+  const runtime = new Set(Object.keys(pkg.dependencies ?? {}));
   const owners = new Map<string, string[]>();
   for (const adapter of adapters) {
     for (const name of adapter.packages)
@@ -143,6 +144,12 @@ export function findDependencyViolations(
         continue;
       }
       if (!inShipped) continue;
+      if (!runtime.has(name)) {
+        fail(
+          `"${name}" is not in dependencies, so the published package would break for users; move it out of devDependencies`,
+        );
+        continue;
+      }
       const owner = owners.get(name);
       if (owner === undefined) {
         fail(
@@ -152,6 +159,45 @@ export function findDependencyViolations(
         fail(
           `"${name}" belongs to adapter ${owner.join(", ")}; import its port, never the package`,
         );
+      }
+    }
+  }
+  return violations;
+}
+
+/** Every resource kind an adapter manifest can claim; a new manifest field fails to compile until listed here. */
+const CLAIM_KINDS: Record<
+  Exclude<keyof AdapterManifest, "name">,
+  {
+    readonly kind: string;
+    readonly claims: (m: AdapterManifest) => readonly string[];
+  }
+> = {
+  packages: { kind: "package", claims: (m) => m.packages },
+  executables: { kind: "executable", claims: (m) => m.executables },
+};
+
+/** Each claimed resource, of any kind, sits behind exactly one adapter. */
+export function findDuplicateClaims(
+  manifests: readonly AdapterManifest[],
+): Violation[] {
+  const violations: Violation[] = [];
+  for (const { kind, claims } of Object.values(CLAIM_KINDS)) {
+    const claimants = new Map<string, string[]>();
+    for (const manifest of manifests) {
+      for (const resource of new Set(claims(manifest)))
+        claimants.set(resource, [
+          ...(claimants.get(resource) ?? []),
+          manifest.name,
+        ]);
+    }
+    for (const [resource, names] of claimants) {
+      if (names.length > 1) {
+        violations.push({
+          rule: "dependency-boundary",
+          file: "package.json",
+          message: `${kind} "${resource}" is claimed by adapters ${names.join(", ")}; each ${kind} sits behind exactly one adapter`,
+        });
       }
     }
   }
@@ -176,21 +222,8 @@ export function findAdapterViolations(
       });
     }
   }
-  const claimants = new Map<string, string[]>();
-  for (const manifest of manifests) {
-    for (const name of new Set(manifest.packages))
-      claimants.set(name, [...(claimants.get(name) ?? []), manifest.name]);
-  }
-  for (const [name, names] of claimants) {
-    if (names.length > 1) {
-      violations.push({
-        rule: "dependency-boundary",
-        file: "package.json",
-        message: `package "${name}" is claimed by adapters ${names.join(", ")}; each dependency sits behind exactly one adapter`,
-      });
-    }
-  }
-  const claimed = new Set(claimants.keys());
+  violations.push(...findDuplicateClaims(manifests));
+  const claimed = new Set(manifests.flatMap((m) => m.packages));
   for (const name of Object.keys(pkg.dependencies ?? {})) {
     if (!claimed.has(name)) {
       violations.push({
