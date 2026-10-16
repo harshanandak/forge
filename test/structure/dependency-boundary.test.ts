@@ -109,6 +109,35 @@ test("the guard rejects a runtime dependency with no adapter", () => {
   ).toHaveLength(1);
 }, 30_000);
 
+test("the guard rejects a package claimed by two adapters, and allows distinct claims", () => {
+  const twin = { ...yamlAdapter, name: "config-yaml-twin" };
+  const found = findAdapterViolations(
+    ["config-yaml", "config-yaml-twin"],
+    [yamlAdapter, twin],
+    withPackage,
+  );
+  expect(found).toHaveLength(1);
+  expect(found[0]?.message).toContain("yaml");
+  expect(found[0]?.message).toContain("config-yaml");
+  expect(found[0]?.message).toContain("config-yaml-twin");
+
+  const both: PackageJson = {
+    dependencies: { yaml: "2.0.0", toml: "1.0.0" },
+  };
+  const tomlAdapter = {
+    name: "config-toml",
+    packages: ["toml"],
+    executables: [],
+  };
+  expect(
+    findAdapterViolations(
+      ["config-yaml", "config-toml"],
+      [yamlAdapter, tomlAdapter],
+      both,
+    ),
+  ).toEqual([]);
+}, 30_000);
+
 test("the guard rejects toolchain names in shipped code but not in adapters", () => {
   const files = [
     { path: "src/core/a.ts", text: 'const cmd = "npm test";\n' },

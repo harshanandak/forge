@@ -176,7 +176,21 @@ export function findAdapterViolations(
       });
     }
   }
-  const claimed = new Set(manifests.flatMap((m) => m.packages));
+  const claimants = new Map<string, string[]>();
+  for (const manifest of manifests) {
+    for (const name of new Set(manifest.packages))
+      claimants.set(name, [...(claimants.get(name) ?? []), manifest.name]);
+  }
+  for (const [name, names] of claimants) {
+    if (names.length > 1) {
+      violations.push({
+        rule: "dependency-boundary",
+        file: "package.json",
+        message: `package "${name}" is claimed by adapters ${names.join(", ")}; each dependency sits behind exactly one adapter`,
+      });
+    }
+  }
+  const claimed = new Set(claimants.keys());
   for (const name of Object.keys(pkg.dependencies ?? {})) {
     if (!claimed.has(name)) {
       violations.push({
