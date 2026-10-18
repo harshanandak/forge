@@ -1,0 +1,4 @@
+{
+  "type": "object",
+  "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/CreateItemInput"
+}
