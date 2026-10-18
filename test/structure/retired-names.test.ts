@@ -56,6 +56,34 @@ test("the guard allows detectors, legacy readers, fixtures and clean docs", () =
     },
   ];
   expect(findRetiredNames(files)).toEqual([]);
-  const paths = ["src/blocks/project/lefthook.yml", "test/fixtures/a/.husky/x"];
+  const paths = [
+    "test/fixtures/a/.husky/x",
+    "test/project/fixtures/a/lefthook.yml",
+  ];
   expect(findRetiredNames([], paths)).toEqual([]);
+}, 30_000);
+
+test("the retired-name exemption covers only detector modules of the project block, not its other files or paths", () => {
+  const planted = [
+    { path: "src/blocks/project/run.ts", text: "// installs lefthook\n" },
+    { path: "src/blocks/project/index.ts", text: "// the shepherd daemon\n" },
+    { path: "src/blocks/project/detect/node.ts", text: "// reads beads\n" },
+    {
+      path: "src/blocks/project/sub/detect-node.ts",
+      text: "// kernel store\n",
+    },
+  ];
+  for (const file of planted) {
+    expect(findRetiredNames([file])).not.toEqual([]);
+  }
+  expect(findRetiredNames([], ["src/blocks/project/lefthook.yml"])).not.toEqual(
+    [],
+  );
+  const allowed = [
+    {
+      path: "src/blocks/project/detect-trackers.ts",
+      text: "// recognises beads, lefthook and husky\n",
+    },
+  ];
+  expect(findRetiredNames(allowed)).toEqual([]);
 }, 30_000);

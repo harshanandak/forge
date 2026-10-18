@@ -195,9 +195,36 @@ test("the guard rejects toolchain names in shipped code but not in adapters", ()
   const files = [
     { path: "src/core/a.ts", text: 'const cmd = "npm test";\n' },
     { path: "src/adapters/package-manager/a.ts", text: 'const cmd = "npm";\n' },
-    { path: "src/blocks/project/a.ts", text: 'const cmd = "pnpm";\n' },
+    {
+      path: "src/blocks/project/detect-node.ts",
+      text: 'const cmd = "pnpm";\n',
+    },
   ];
   expect(findToolchainNames(files).map((v) => v.file)).toEqual([
     "src/core/a.ts",
   ]);
+}, 30_000);
+
+test("the toolchain exemption covers only detector modules of the project block, not its other files", () => {
+  const planted = [
+    { path: "src/blocks/project/run.ts", text: 'run("npm test");\n' },
+    { path: "src/blocks/project/index.ts", text: 'const m = "yarn";\n' },
+    { path: "src/blocks/project/detect/node.ts", text: 'const m = "bun";\n' },
+    { path: "src/blocks/project/detect-node.js", text: 'const m = "jest";\n' },
+    {
+      path: "src/blocks/project/sub/detect-node.ts",
+      text: 'const m = "npm";\n',
+    },
+  ];
+  expect(findToolchainNames(planted).map((v) => v.file)).toEqual(
+    planted.map((f) => f.path),
+  );
+  const allowed = [
+    { path: "src/blocks/project/detect-node.ts", text: 'const m = "npm";\n' },
+    {
+      path: "src/blocks/project/detect-hooks.ts",
+      text: 'const m = "husky";\n',
+    },
+  ];
+  expect(findToolchainNames(allowed)).toEqual([]);
 }, 30_000);
