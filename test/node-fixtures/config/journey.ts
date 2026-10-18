@@ -82,11 +82,11 @@ try {
   const handWritten = "# mine\nschemaVersion: forge.config/1\nblocks: {}\n";
   writeFileSync(join(root, ".forge/config.yaml"), handWritten);
   const handRevision = config.show().revision;
-  const d = lifecycle.import({
+  const d = lifecycle.importTemplate({
     template: "forge/delivery",
     expectRevision: handRevision,
   });
-  const s = lifecycle.import({
+  const s = lifecycle.importTemplate({
     template: "forge/starter",
     expectRevision: d.revision,
   });

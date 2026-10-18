@@ -64,7 +64,7 @@ export function createConfigOperations(
       templates.show({ template: text(i, "template") }),
     ),
     "template.import": op((i) =>
-      templates.import({
+      templates.importTemplate({
         template: text(i, "template"),
         expectRevision: text(i, "expectRevision"),
       }),

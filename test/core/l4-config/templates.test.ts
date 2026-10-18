@@ -43,7 +43,7 @@ function starterNext(): TemplateDocument {
 describe("template lifecycle", () => {
   test("import copies plain config and records per-key ownership and provenance", () => {
     const p = project();
-    const imported = p.templates.import({
+    const imported = p.templates.importTemplate({
       template: "forge/starter",
       expectRevision: p.config.show().revision,
     });
@@ -73,13 +73,13 @@ describe("template lifecycle", () => {
 
   test("importing the same template twice is refused", () => {
     const p = project();
-    const first = p.templates.import({
+    const first = p.templates.importTemplate({
       template: "forge/starter",
       expectRevision: p.config.show().revision,
     });
     expect(
       failureOf(() =>
-        p.templates.import({
+        p.templates.importTemplate({
           template: "forge/starter",
           expectRevision: first.revision,
         }),
@@ -94,7 +94,7 @@ describe("template lifecycle", () => {
       value: { path: "blocks/my-work" },
       expectRevision: p.config.show().revision,
     });
-    const imported = p.templates.import({
+    const imported = p.templates.importTemplate({
       template: "forge/starter",
       expectRevision: mine.revision,
     });
@@ -116,14 +116,14 @@ describe("template lifecycle", () => {
       join(p.root, "team-template.json"),
       JSON.stringify(starterNext()),
     );
-    const imported = p.templates.import({
+    const imported = p.templates.importTemplate({
       template: "./team-template.json",
       expectRevision: p.config.show().revision,
     });
     expect(imported.template).toBe("forge/starter@0.2.0");
     expect(
       failureOf(() =>
-        p.templates.import({
+        p.templates.importTemplate({
           template: "../outside.json",
           expectRevision: imported.revision,
         }),
@@ -133,7 +133,7 @@ describe("template lifecycle", () => {
 
   test("compare shows upstream changes key by key against the imported baseline; update applies them and leaves edits", () => {
     const p = project();
-    const imported = p.templates.import({
+    const imported = p.templates.importTemplate({
       template: "forge/starter",
       expectRevision: p.config.show().revision,
     });
@@ -186,7 +186,7 @@ describe("template lifecycle", () => {
 
   test("an upstream change to a key the person edited is a conflict until they accept upstream", () => {
     const p = project();
-    const imported = p.templates.import({
+    const imported = p.templates.importTemplate({
       template: "forge/starter",
       expectRevision: p.config.show().revision,
     });
@@ -232,7 +232,7 @@ describe("template lifecycle", () => {
 
   test("template list shows installed templates and what is imported; an uninstalled import is still listed", () => {
     const p = project();
-    const imported = p.templates.import({
+    const imported = p.templates.importTemplate({
       template: "forge/starter",
       expectRevision: p.config.show().revision,
     });
@@ -253,7 +253,7 @@ describe("template lifecycle", () => {
 
   test("removing a template is revertible like any edit", () => {
     const p = project();
-    const imported = p.templates.import({
+    const imported = p.templates.importTemplate({
       template: "forge/starter",
       expectRevision: p.config.show().revision,
     });
@@ -270,7 +270,7 @@ describe("template lifecycle", () => {
   test("an unknown template names what is installed", () => {
     const p = project();
     const missing = failureOf(() =>
-      p.templates.import({
+      p.templates.importTemplate({
         template: "io.github.alice/nope",
         expectRevision: p.config.show().revision,
       }),

@@ -358,12 +358,12 @@ describe("templates", () => {
   test("two templates, a user edit and a removal: the edit stays, only owned unchanged keys go", () => {
     const p = project({ detections: npmDetections });
     let revision = p.config.show().revision;
-    const d = p.templates.import({
+    const d = p.templates.importTemplate({
       template: "forge/delivery",
       expectRevision: revision,
     });
     expect(d.conflicts).toEqual([]);
-    const s = p.templates.import({
+    const s = p.templates.importTemplate({
       template: "forge/starter",
       expectRevision: d.revision,
     });
@@ -470,11 +470,11 @@ describe("templates", () => {
   test("removing every template returns the project to the adaptive layer", () => {
     const p = project({ detections: npmDetections });
     const adaptive = p.config.show();
-    const d = p.templates.import({
+    const d = p.templates.importTemplate({
       template: "forge/delivery",
       expectRevision: adaptive.revision,
     });
-    const s = p.templates.import({
+    const s = p.templates.importTemplate({
       template: "forge/starter",
       expectRevision: d.revision,
     });

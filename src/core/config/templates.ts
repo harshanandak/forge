@@ -123,7 +123,7 @@ export interface TemplateApi {
       readonly edited: boolean;
     }[];
   };
-  import(input: {
+  importTemplate(input: {
     readonly template: string;
     readonly expectRevision: string;
   }): ImportResult;
@@ -458,7 +458,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
       };
     },
 
-    import(input) {
+    importTemplate(input) {
       const template = load(input.template);
       const ref = refOf(template);
       const result = editWith(

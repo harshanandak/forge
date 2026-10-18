@@ -121,9 +121,9 @@ function run(user: User, change: Change, other: Other, op: Op): Outcome {
     const rev = (): string => p.config.show().revision;
     p.installed.set("acme/t", template("acme/t", "1.0.0", { timeout: BASE }));
     p.installed.set("acme/u", template("acme/u", "1.0.0", { timeout: BASE }));
-    p.templates.import({ template: "acme/t", expectRevision: rev() });
+    p.templates.importTemplate({ template: "acme/t", expectRevision: rev() });
     if (other !== "none")
-      p.templates.import({ template: "acme/u", expectRevision: rev() });
+      p.templates.importTemplate({ template: "acme/u", expectRevision: rev() });
     if (user === "removed")
       p.config.apply({
         patch: [{ op: "remove", path: ROOT }],
