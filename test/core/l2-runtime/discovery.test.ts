@@ -15,6 +15,63 @@ import { CapturedBlock } from "../../../src/core/catalog/index.ts";
 import { operations } from "../../../src/core/catalog/operations.ts";
 import type { SurfaceCatalog } from "../../../src/surface/catalog.ts";
 import type { BlockManifest } from "../../../src/generated/types.ts";
+import { createMcpHandlers } from "../../../src/surface/mcp.ts";
+import { SchemaRegistry } from "../../../src/contract/schema.ts";
+import { SCHEMA_DOCUMENTS } from "../../../src/generated/schemas.ts";
+import { discoveryOperations } from "../../../src/surface/discovery.ts";
+
+for (const name of ["catalog_list", "catalog_describe", "catalog_call"])
+  test(`${name} results validate against the advertised MCP output schema`, async () => {
+    const catalog: SurfaceCatalog = {
+      list: () => [{ ...discoveryOperations[0]!, op: "sample.run" }],
+      invoke: (request) =>
+        Promise.resolve({
+          ok: true,
+          op: request.op,
+          status: "OK",
+          result: "hello",
+          warnings: [],
+        }),
+    };
+    const handlers = createMcpHandlers(catalog);
+    const tool = handlers.listTools().find((tool) => tool.name === name)!;
+    const id = "https://test.invalid/output.json";
+    const registry = new SchemaRegistry([
+      ...SCHEMA_DOCUMENTS,
+      { ...tool.outputSchema, $id: id },
+    ]);
+    const input =
+      name === "catalog_call"
+        ? {
+            schemaVersion: "forge.invocation/1",
+            requestId: "schema-test",
+            op: "sample.run",
+            input: "hello",
+            caller: "agent",
+            context: {},
+          }
+        : { op: "sample.run" };
+    const result = await handlers.callTool(name, input);
+    assert.ok(result?.ok);
+    assert.deepEqual(registry.validate(id, result), []);
+    assert.notDeepEqual(
+      registry.validate(
+        id,
+        name === "catalog_call"
+          ? { ...result, status: "INVALID" }
+          : { ...result, result: 42 },
+      ),
+      [],
+    );
+    if (name !== "catalog_list") {
+      const failure = await handlers.callTool(name, {
+        ...input,
+        op: "missing.run",
+      });
+      assert.equal(failure?.ok, false);
+      assert.deepEqual(registry.validate(id, failure), []);
+    }
+  }, 5000);
 
 test("an added area declaration reaches help, MCP and catalog dispatch after generation", async () => {
   const root = mkdtempSync(join(tmpdir(), "core-discovery-"));
@@ -99,7 +156,7 @@ test("an added area declaration reaches help, MCP and catalog dispatch after gen
     assert.equal(
       handlers.listTools().find((tool) => tool.name === "catalog_call")
         ?.annotations.readOnlyHint,
-      true,
+      false,
     );
     const listed = await handlers.callTool("catalog_list", {});
     assert.ok(listed?.ok);

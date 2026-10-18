@@ -44,7 +44,9 @@ export const operations: Record<string, OperationDeclaration> = {
     context: "stateless",
     idempotent: false,
     stability: "stable",
-    effects: [],
+    // Discovery describes the worst case; runtime grants belong to the target.
+    effects: ["external:write"],
+    destructive: true,
     input: "catalog/call.input.schema.json",
     callers: ["human", "agent"],
   },

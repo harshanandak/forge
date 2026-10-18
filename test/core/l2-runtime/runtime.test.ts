@@ -20,6 +20,8 @@ import {
 } from "../../../src/core/catalog/index.ts";
 import { TrustStore, secretReference } from "../../../src/core/trust/index.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
+import { createMcpHandlers } from "../../../src/surface/mcp.ts";
+import type { SurfaceCatalog } from "../../../src/surface/catalog.ts";
 import type {
   BlockManifest,
   InvocationRequest,
@@ -86,6 +88,123 @@ function fixture(
     close: () => rmSync(root, { recursive: true, force: true }),
   };
 }
+
+test("catalog_call advertises worst-case effects but enforces the target grants", async () => {
+  const f = fixture("services.save(); return input", {
+    effects: ["sample:write"],
+  });
+  let writes = 0;
+  try {
+    f.trust.admit("human", f.block.digest);
+    const runtime = new Runtime(f.catalog, f.trust, {
+      isolation: nodeRunIsolation,
+      services: () =>
+        Promise.resolve({
+          ownership: "borrowed",
+          value: { save: () => writes++ },
+        }),
+    });
+    const catalog: SurfaceCatalog = {
+      list: () => [
+        {
+          ...f.catalog.describe("sample.run"),
+          inputSchema: { type: "string" },
+          outputSchema: { type: "string" },
+          admitted: true,
+          docs: { title: "Run", summary: "Run sample." },
+        },
+      ],
+      invoke: (request) => runtime.invoke(request),
+    };
+    const handlers = createMcpHandlers(catalog);
+    const tool = handlers
+      .listTools()
+      .find((tool) => tool.name === "catalog_call");
+    assert.partialDeepStrictEqual(tool?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: true,
+    });
+    assert.partialDeepStrictEqual(
+      await handlers.callTool("catalog_call", f.request),
+      { ok: false, error: { code: "GRANT_REQUIRED" } },
+    );
+    assert.equal(writes, 0);
+    f.trust.grant("human", f.block.digest, ["sample:write"]);
+    assert.partialDeepStrictEqual(
+      await handlers.callTool("catalog_call", f.request),
+      { ok: true, result: "hello" },
+    );
+    assert.equal(writes, 1);
+    f.trust.revoke("human", f.block.digest);
+    assert.partialDeepStrictEqual(
+      await handlers.callTool("catalog_call", f.request),
+      { ok: false, error: { code: "ADMISSION_REQUIRED" } },
+    );
+    assert.equal(writes, 1);
+  } finally {
+    f.close();
+  }
+}, 5000);
+
+test("catalog_call preserves canonical dry-run, context and request identity without trusting the payload caller", async () => {
+  const f = fixture("services.save(); return input", {
+    effects: ["sample:write"],
+  });
+  let opened = 0;
+  const requests: InvocationRequest[] = [];
+  try {
+    f.trust.admit("human", f.block.digest);
+    f.trust.grant("human", f.block.digest, ["sample:write"]);
+    const runtime = new Runtime(f.catalog, f.trust, {
+      isolation: nodeRunIsolation,
+      services: () => {
+        opened++;
+        return Promise.resolve({
+          ownership: "borrowed",
+          value: { save: () => opened++ },
+        });
+      },
+    });
+    const catalog: SurfaceCatalog = {
+      list: () => [
+        {
+          ...f.catalog.describe("sample.run"),
+          inputSchema: { type: "string" },
+          outputSchema: { type: "string" },
+          admitted: true,
+          docs: { title: "Run", summary: "Run sample." },
+        },
+      ],
+      invoke: (request) => {
+        requests.push(request);
+        return runtime.invoke(request);
+      },
+    };
+    const input = {
+      ...f.request,
+      caller: "human" as const,
+      dryRun: true,
+      context: { device: { id: "inner-device" } },
+    };
+    const direct = await runtime.invoke({ ...input, caller: "agent" });
+    const handlers = createMcpHandlers(catalog);
+    assert.deepEqual(await handlers.callTool("catalog_call", input), direct);
+    assert.partialDeepStrictEqual(direct, {
+      ok: false,
+      error: { code: "UNAVAILABLE" },
+    });
+    assert.equal(opened, 0);
+    assert.deepEqual(requests[0], { ...input, caller: "agent" });
+    await createMcpHandlers(catalog, {}, { dryRun: true }).callTool(
+      "catalog_call",
+      { ...input, dryRun: false },
+    );
+    assert.equal(opened, 0);
+  } finally {
+    f.close();
+  }
+}, 5000);
 
 test("discovery never activates code and denied admission never opens services", async () => {
   const f = fixture("services.spy(); return input");

@@ -3,6 +3,33 @@ import { assembleCoreManifest } from "../../src/core/catalog/index.ts";
 import { operations as catalog } from "../../src/core/catalog/operations.ts";
 import { operations as trust } from "../../src/core/trust/operations.ts";
 
+/** Inline file references so advertised schemas need no repository-relative resolver. */
+function readSchema(url: URL): unknown {
+  const expand = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(expand);
+    if (node === null || typeof node !== "object") return node;
+    const object = node as Record<string, unknown>;
+    if (
+      typeof object.$ref === "string" &&
+      !object.$ref.includes(":") &&
+      !object.$ref.startsWith("#")
+    ) {
+      return {
+        ...(readSchema(new URL(object.$ref, url)) as object),
+        ...Object.fromEntries(
+          Object.entries(object)
+            .filter(([key]) => key !== "$ref")
+            .map(([key, value]) => [key, expand(value)]),
+        ),
+      };
+    }
+    return Object.fromEntries(
+      Object.entries(object).map(([key, value]) => [key, expand(value)]),
+    );
+  };
+  return expand(JSON.parse(readFileSync(url, "utf8")) as unknown);
+}
+
 /** Each area owns its typed declarations; this is the sole assembly boundary. */
 export function writeCoreManifest(): void {
   const manifest = assembleCoreManifest(
@@ -31,12 +58,9 @@ export function writeCoreManifest(): void {
           "utf8",
         ),
       ) as unknown,
-      outputSchema: JSON.parse(
-        readFileSync(
-          new URL(`../../src/core/${declaration.output}`, import.meta.url),
-          "utf8",
-        ),
-      ) as unknown,
+      outputSchema: readSchema(
+        new URL(`../../src/core/${declaration.output}`, import.meta.url),
+      ),
     }),
   );
   writeFileSync(

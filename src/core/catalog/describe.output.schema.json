@@ -1,20 +1,37 @@
 {
   "type": "object",
-  "required": [
-    "op",
-    "blockId",
-    "digest",
-    "declaration",
-    "inputSchema",
-    "outputSchema"
-  ],
+  "required": ["op", "declaration", "admitted", "docs", "inputSchema"],
   "properties": {
-    "op": { "type": "string" },
-    "blockId": { "type": "string" },
-    "digest": { "type": "string" },
-    "declaration": { "type": "object" },
-    "inputSchema": {},
-    "outputSchema": {}
+    "op": {
+      "type": "string"
+    },
+    "declaration": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/operation.json"
+    },
+    "admitted": {
+      "type": "boolean"
+    },
+    "docs": {
+      "type": "object"
+    },
+    "inputSchema": {
+      "type": "object"
+    },
+    "outputSchema": {
+      "type": "object"
+    },
+    "rename": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "blockId": {
+      "type": "string"
+    },
+    "digest": {
+      "type": "string"
+    }
   },
   "additionalProperties": false
 }

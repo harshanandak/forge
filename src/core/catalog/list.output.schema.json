@@ -1,1 +1,1 @@
-{ "type": "array", "items": { "type": "string" } }
+{ "type": "array", "items": { "$ref": "describe.output.schema.json" } }

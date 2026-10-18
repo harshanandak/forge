@@ -8,6 +8,7 @@ import type {
 import type { SurfaceCatalog } from "./catalog.ts";
 import { failure } from "./result.ts";
 import { discoveryOperations } from "./discovery.ts";
+import { validateInvocationRequest } from "../generated/validators.ts";
 
 export interface CallOptions {
   readonly caller: Caller;
@@ -81,7 +82,25 @@ export async function dispatch(
         "INPUT_INVALID",
         "Expected a catalog operation and input.",
       );
-    return dispatch(catalog, args.op, args.input ?? {}, options);
+    const checked = validateInvocationRequest({
+      ...args,
+      schemaVersion: args.schemaVersion ?? "forge.invocation/1",
+      requestId: args.requestId ?? options.requestId ?? randomUUID(),
+      input: args.input === undefined ? {} : args.input,
+      context: args.context ?? options.context ?? {},
+      caller: options.caller,
+    });
+    if (!checked.ok)
+      return failure("INPUT_INVALID", "Invalid catalog invocation request.");
+    const request = checked.value;
+    return dispatch(catalog, request.op, request.input, {
+      caller: options.caller,
+      context: request.context,
+      requestId: request.requestId,
+      ...(options.dryRun === undefined && request.dryRun === undefined
+        ? {}
+        : { dryRun: options.dryRun === true || request.dryRun === true }),
+    });
   }
   if (
     ![...discoveryOperations, ...catalog.list()].some(

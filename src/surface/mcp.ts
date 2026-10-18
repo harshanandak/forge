@@ -12,6 +12,12 @@ import { discoveryOperations } from "./discovery.ts";
 
 /** MCP output schemas describe the shared result envelope, including failures. */
 function enveloped(candidate: McpCandidate): McpCandidate {
+  // The generic dispatcher already returns the target's canonical envelope.
+  if (candidate.op === "catalog.call")
+    return {
+      ...candidate,
+      outputSchema: { type: "object", ...candidate.outputSchema },
+    };
   return {
     ...candidate,
     ...(candidate.outputSchema === undefined
