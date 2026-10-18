@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "required": ["ok", "status", "warnings"],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "status": { "enum": ["OK", "FAIL", "INCOMPLETE"] },
+    "op": { "type": "string" },
+    "warnings": { "type": "array" },
+    "result": {},
+    "error": { "type": "object" },
+    "observation": { "type": "object" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,11 @@
+{
+  "block.admit": {
+    "output": "trust/admit.output.schema.json",
+    "context": "device",
+    "idempotent": true,
+    "stability": "stable",
+    "effects": ["block:write"],
+    "input": "trust/admit.input.schema.json",
+    "callers": ["human"]
+  }
+}
