@@ -4,6 +4,7 @@ import { test, expect } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -89,13 +90,14 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       consumer,
       env,
     );
-    for (const name of [
+    const fixtures = [
       "journey",
       "writer",
       "review",
       "mutation-proof",
       "review-two",
-    ])
+    ];
+    for (const name of fixtures)
       copyFileSync(
         join(import.meta.dirname, `fixtures/${name}.mjs`),
         join(consumer, `${name}.mjs`),
@@ -119,8 +121,47 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       expect(
         run(runtime, [join(consumer, "review-two.mjs")], consumer, env),
       ).toContain("PASS lifetime");
-    const installed = join(consumer, "node_modules/forge-workflow/dist");
+    const installed = join(consumer, "node_modules/forge-workflow");
+    const isolated = join(
+      consumer,
+      "node_modules/forge-first-slice-counterfactual",
+    );
+    cpSync(installed, isolated, {
+      recursive: true,
+      filter: (path) => !path.endsWith(".map") && !path.endsWith(".ts"),
+    });
+    // Package self-references resolve from each fixture's location. Keep fixtures
+    // inside the private copy so imports, CLI and writer children load that copy.
+    for (const name of fixtures)
+      copyFileSync(
+        join(consumer, `${name}.mjs`),
+        join(isolated, `${name}.mjs`),
+      );
     const mutations = [
+      {
+        file: "src/assembly/command.js",
+        from: 'argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")',
+        to: "false",
+        mode: "bootstrap",
+        fixture: "review-two",
+        evidence: "version must not open local state",
+      },
+      {
+        file: "src/assembly/command.js",
+        from: "const response = respond(",
+        to: "throw error; const response = respond(",
+        mode: "bootstrap",
+        fixture: "review-two",
+        evidence: "bootstrap must return a JSON failure",
+      },
+      {
+        file: "src/assembly/index.js",
+        from: "readyBindings(active, name);",
+        to: "void 0;",
+        mode: "implicit-bindings",
+        fixture: "review-two",
+        evidence: "unsupported implicit bindings must not be advertised",
+      },
       {
         file: "src/assembly/index.js",
         from: "const reason = error instanceof Error",
@@ -186,7 +227,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         evidence: "unadmitted agent call",
       },
       {
-        file: "bin/forge.js",
+        file: "src/assembly/command.js",
         from: "catalog: assembly.catalog",
         to: "catalog: { list: () => [], invoke: assembly.catalog.invoke }",
         mode: "all",
@@ -208,7 +249,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       })),
     ];
     for (const mutation of mutations) {
-      const path = join(installed, mutation.file);
+      const path = join(isolated, "dist", mutation.file);
       const original = readFileSync(path, "utf8");
       expect(original).toContain(mutation.from);
       try {
@@ -217,12 +258,12 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         writeFileSync(path, changed);
         expect(readFileSync(path, "utf8")).toBe(changed);
         const hash = createHash("sha256").update(changed).digest("hex");
-        const proof = join(consumer, "mutation-proof.jsonl");
+        const proof = join(isolated, "mutation-proof.jsonl");
         writeFileSync(proof, "");
         const mutationEnv = {
           ...env,
           NODE_OPTIONS:
-            `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(join(consumer, "mutation-proof.mjs")).href}`.trim(),
+            `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(join(isolated, "mutation-proof.mjs")).href}`.trim(),
           FORGE_MUTATION_TARGET: realpathSync(path),
           FORGE_MUTATION_HASH: hash,
           FORGE_MUTATION_PROOF: proof,
@@ -230,11 +271,11 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         const result = spawnSync(
           node,
           [
-            join(consumer, `${mutation.fixture ?? "journey"}.mjs`),
+            join(isolated, `${mutation.fixture ?? "journey"}.mjs`),
             mutation.mode,
           ],
           {
-            cwd: consumer,
+            cwd: isolated,
             env: mutationEnv,
             encoding: "utf8",
             windowsHide: true,
@@ -253,6 +294,9 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
           ),
           `child must load the mutated ${mutation.file}`,
         ).toBe(true);
+        expect(
+          readFileSync(join(installed, "dist", mutation.file), "utf8"),
+        ).toBe(original);
         expect(
           result.status,
           `${mutation.fixture ?? "journey"}:${mutation.mode} must detect the mutation in ${mutation.file}`,

@@ -238,6 +238,115 @@ async function lifetime() {
   );
 }
 try {
+  if (mode === "all" || mode === "bootstrap") {
+    const root = join(work, "bootstrap");
+    mkdirSync(join(root, "device/trust.sqlite"), { recursive: true });
+    const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") };
+    for (const flag of ["--version", "-v"]) {
+      const result = spawnSync(process.execPath, [bin, flag], {
+        cwd: root,
+        env,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 15000,
+      });
+      assert.equal(result.status, 0, "version must not open local state");
+      assert.match(result.stdout, /^\d+\.\d+\.\d+[^\r\n]*\r?\n$/);
+      assert.equal(result.stderr, "");
+    }
+    const result = spawnSync(process.execPath, [bin, "config", "show"], {
+      cwd: root,
+      env,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 15000,
+    });
+    assert.match(result.stdout, /^\{/, "bootstrap must return a JSON failure");
+    const failure = JSON.parse(result.stdout);
+    assert.equal(result.status, 1);
+    assert.equal(failure.ok, false);
+    assert.equal(failure.status, "FAIL");
+    assert.equal(failure.error.code, "UNAVAILABLE");
+    assert.equal(failure.error.retry, "never");
+    assert.deepEqual(failure.warnings, []);
+    assert.doesNotMatch(
+      result.stderr,
+      /\n\s+at /,
+      "bootstrap failure must be handled",
+    );
+    console.log(
+      "PASS bootstrap: typed JSON failure and state-independent version",
+    );
+  }
+  if (mode === "all" || mode === "implicit-bindings") {
+    for (const order of ["unbound", "provider-first", "consumer-first"]) {
+      const root = join(work, order);
+      mkdirSync(root);
+      const consumer = block(join(root, "client"), "client");
+      consumer.requires = [
+        { slot: "cache", interface: "example.cache@1", optional: true },
+      ];
+      rewrite(join(root, "client"), "forge.block.json", consumer);
+      const provider = block(join(root, "provider"), "provider");
+      provider.provides = [
+        { interface: "example.cache@1.0.0", noun: "provider" },
+      ];
+      rewrite(join(root, "provider"), "forge.block.json", provider);
+      const entries = [
+        ["client", { source: { path: "./client" } }],
+        ...(order === "unbound"
+          ? []
+          : [["provider", { source: { path: "./provider" } }]]),
+      ];
+      if (order === "provider-first") entries.reverse();
+      mkdirSync(join(root, ".forge"));
+      rewrite(join(root, ".forge"), "config.yaml", {
+        schemaVersion: "forge.config/1",
+        blocks: Object.fromEntries(entries),
+      });
+      const assembly = await createAssembly({
+        root,
+        deviceRoot: join(root, "device"),
+      });
+      try {
+        const advertised = assembly.catalog
+          .list()
+          .some((entry) => entry.op === "client.echo");
+        if (order === "unbound") {
+          assert.ok(advertised, "unbound optional slots remain optional");
+          assert.deepEqual(assembly.catalog.unavailable(), []);
+        } else {
+          assert.equal(
+            advertised,
+            false,
+            "unsupported implicit bindings must not be advertised",
+          );
+          assert.equal(
+            assembly.catalog
+              .unavailable()
+              .find((entry) => entry.name === "client").error.code,
+            "PROVIDER_MISSING",
+          );
+          assert.ok(
+            assembly.catalog
+              .list()
+              .some((entry) => entry.op === "provider.echo"),
+            "provider remains available",
+          );
+          assert.ok(
+            cli(root, ["config", "show"]).result.problems.some((problem) =>
+              problem.includes("client"),
+            ),
+          );
+        }
+      } finally {
+        await assembly.close();
+      }
+    }
+    console.log(
+      "PASS implicit-bindings: resolved optional providers checked in both config orders",
+    );
+  }
   if (["all", "per-block", "bad-docs"].includes(mode)) {
     for (const [name, breakBlock] of cases.filter(
       ([name]) => mode !== "bad-docs" || name === "invalid-docs",

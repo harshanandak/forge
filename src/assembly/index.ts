@@ -247,6 +247,36 @@ export async function createAssembly(
     }
     return docs.value;
   }
+  function readyBindings(catalog: Catalog, name: string): void {
+    for (const binding of catalog.bindings(name)) {
+      if (
+        binding.provider !== "core" ||
+        !interfaceSatisfies("forge.state@1.0.0", binding.interface)
+      )
+        refuse(
+          "PROVIDER_MISSING",
+          `No assembled provider for ${name}.${binding.slot} (${binding.interface})`,
+        );
+    }
+  }
+  function unavailableBlock(
+    name: string,
+    instance: BlockInstance,
+    error: unknown,
+  ): UnavailableBlock {
+    const reason =
+      error instanceof Error ? error.message : "Block could not be prepared";
+    return {
+      name,
+      source: instance.source,
+      reason,
+      error:
+        error instanceof ForgeFailure
+          ? error.error
+          : { code: "PROVIDER_MISSING", message: reason, retry: "never" },
+      remedy: `Repair the source or configuration for ${name}, or remove /blocks/${name} with config.apply at the current config revision.`,
+    };
+  }
   function snapshot(): {
     catalog: Catalog;
     blocks: ReadonlyMap<string, CapturedBlock>;
@@ -309,26 +339,29 @@ export async function createAssembly(
         candidates.push(...entries);
         active = checked;
       } catch (error) {
-        const reason =
-          error instanceof Error
-            ? error.message
-            : "Block could not be prepared";
-        unavailable.push({
-          name,
-          source: instance.source,
-          reason,
-          error:
-            error instanceof ForgeFailure
-              ? error.error
-              : { code: "PROVIDER_MISSING", message: reason, retry: "never" },
-          remedy: `Repair the source or configuration for ${name}, or remove /blocks/${name} with config.apply at the current config revision.`,
-        });
+        unavailable.push(unavailableBlock(name, instance, error));
       }
     }
+    // Adding a provider can implicitly bind a previously optional slot. Check
+    // the completed composition, including consumers captured before providers.
+    for (const name of blocks.keys()) {
+      try {
+        readyBindings(active, name);
+      } catch (error) {
+        unavailable.push(unavailableBlock(name, document.blocks[name]!, error));
+        blocks.delete(name);
+      }
+    }
+    active = new Catalog(
+      availableComposition(document, blocks),
+      blocks,
+      version,
+    );
+    const executable = new Set(active.list());
     return {
       catalog: active,
       blocks,
-      candidates,
+      candidates: candidates.filter((entry) => executable.has(entry.op)),
       unavailable,
       problems: [
         ...show.problems,
@@ -400,11 +433,13 @@ export async function createAssembly(
             const blocks = new Map(current.blocks);
             blocks.set(name, block);
             ready(block, instance);
-            new Catalog(
+            const checkedCatalog = new Catalog(
               availableComposition(proposed, blocks),
               blocks,
               version,
             );
+            for (const name of blocks.keys())
+              readyBindings(checkedCatalog, name);
             const docs = validateDocsRecords(
               JSON.parse(block.text(block.manifest.docs)) as unknown,
             );
