@@ -80,36 +80,39 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
   }
   const work = mkdtempSync(join(tmpdir(), "forge-packed-state-"));
   try {
-    // CI builds once before starting the smoke and integration readers together.
-    if (process.env.STATE_PREBUILT !== "1")
-      run(process.execPath, ["run", "build"]);
     const node = Bun.which("node");
     if (!node) throw new Error("Node runtime required for packed integration");
-    const npm = [
-      join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-      join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-    ].find((path) => existsSync(path));
-    if (!npm) throw new Error("Cannot locate the Node installation's npm CLI");
-    const pack = JSON.parse(
-      run(node, [npm, "pack", "--json", "--pack-destination", work]),
-    ) as { filename: string }[];
-    const consumer = join(work, "consumer");
-    mkdirSync(consumer);
-    writeFileSync(
-      join(consumer, "package.json"),
-      '{"name":"state-consumer","version":"1.0.0","private":true}',
-    );
-    run(
-      node,
-      [
-        npm,
-        "install",
-        join(work, pack[0]!.filename),
-        "--no-audit",
-        "--no-fund",
-      ],
-      consumer,
-    );
+    // The smoke owns a real npm install until this test process has finished.
+    const consumer =
+      process.env.STATE_PACKED_CONSUMER ?? join(work, "consumer");
+    if (!process.env.STATE_PACKED_CONSUMER) {
+      run(process.execPath, ["run", "build"]);
+      const npm = [
+        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
+        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
+      ].find((path) => existsSync(path));
+      if (!npm)
+        throw new Error("Cannot locate the Node installation's npm CLI");
+      const pack = JSON.parse(
+        run(node, [npm, "pack", "--json", "--pack-destination", work]),
+      ) as { filename: string }[];
+      mkdirSync(consumer);
+      writeFileSync(
+        join(consumer, "package.json"),
+        '{"name":"state-consumer","version":"1.0.0","private":true}',
+      );
+      run(
+        node,
+        [
+          npm,
+          "install",
+          join(work, pack[0]!.filename),
+          "--no-audit",
+          "--no-fund",
+        ],
+        consumer,
+      );
+    }
     const installed = join(consumer, "node_modules/forge-workflow");
     phase("install");
     const runtimes = [
@@ -119,33 +122,21 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
         ),
       ),
     ];
-    const journeys = JSON.parse(
-      run(node, [fixture, installed, "list"], consumer),
-    ) as string[];
-    expect(journeys).toHaveLength(20);
     await complete(
-      Array.from({ length: 4 }, async (_, worker) => {
-        for (const journey of journeys.filter(
-          (_, index) => index % 4 === worker,
-        )) {
-          await complete(
-            runtimes.map(async (runtime) => {
-              const result = await launch(
-                runtime,
-                [fixture, installed, journey],
-                consumer,
-                90000,
-              );
-              if (result.error || result.status !== 0)
-                throw new Error(
-                  `${runtime}: ${result.error?.message ?? result.stderr}\n${result.stdout}`,
-                );
-              expect(
-                (JSON.parse(result.stdout) as { passed: string[] }).passed,
-              ).toEqual([journey]);
-            }),
+      runtimes.map(async (runtime) => {
+        const result = await launch(
+          runtime,
+          [fixture, installed],
+          consumer,
+          90000,
+        );
+        if (result.error || result.status !== 0)
+          throw new Error(
+            `${runtime}: ${result.error?.message ?? result.stderr}\n${result.stdout}`,
           );
-        }
+        expect(
+          (JSON.parse(result.stdout) as { passed: string[] }).passed,
+        ).toHaveLength(20);
       }),
     );
     phase("journeys");

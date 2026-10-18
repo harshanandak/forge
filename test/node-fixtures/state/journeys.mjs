@@ -1454,12 +1454,6 @@ const cases = {
   },
 };
 const passed = [];
-if (selected === "list") {
-  console.log(
-    JSON.stringify(Object.keys(cases).filter((name) => name !== "crashchild")),
-  );
-  process.exit(0);
-}
 for (const [name, run] of Object.entries(cases))
   if (
     (selected === "all" && name !== "crashchild") ||

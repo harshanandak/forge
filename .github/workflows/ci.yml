@@ -124,17 +124,15 @@ jobs:
       - run: bun run build
       - name: Unit tests
         run: bun run test:unit
-      # Both lanes only read the completed build, and pack/install into separate temp directories.
-      # Other integration files stay serial while the isolated packed state process overlaps them.
+      # Pack once: Node-only smoke checks and packed state share its temporary npm install.
+      # Other integration files stay serial alongside it, after the parallel unit lane.
       - name: Process integration tests and pack smoke
-        env:
-          STATE_PREBUILT: "1"
         run: |
           smoke_log="$RUNNER_TEMP/pack-smoke.log"
-          node tools/pack-smoke/run.ts > "$smoke_log" 2>&1 &
+          node tools/pack-smoke/run.ts --state-test "$(command -v bun)" > "$smoke_log" 2>&1 &
           smoke_pid=$!
           status=0
-          bun run test:integration || status=1
+          bun tools/test-suite.ts integration-rest --timeout 30000 || status=1
           wait "$smoke_pid" || status=1
           echo "::group::pack smoke"
           cat "$smoke_log"

@@ -80,6 +80,10 @@ function run(
 
 function main(): void {
   if (process.versions.bun !== undefined) fail("run this with Node, not Bun");
+  const stateBun =
+    process.argv[2] === "--state-test" ? process.argv[3] : undefined;
+  if (process.argv.length !== (stateBun ? 4 : 2))
+    fail("usage: run.ts [--state-test <bun-executable>]");
   const pkg: unknown = JSON.parse(
     readFileSync(join(root, "package.json"), "utf8"),
   );
@@ -203,6 +207,20 @@ function main(): void {
     if (imported.trim() !== expected)
       fail(`import gave "${imported.trim()}", expected "${expected}"`);
     step("the package exports resolve under Node");
+    if (stateBun) {
+      step("running packed state checks against the same npm install");
+      console.log(
+        run(
+          "packed state integration",
+          stateBun,
+          ["test", "./test/node-fixtures/state/packed.integration.test.ts"],
+          {
+            cwd: root,
+            env: { ...process.env, STATE_PACKED_CONSUMER: consumer },
+          },
+        ),
+      );
+    }
     console.log("pack-smoke: PASS");
   } finally {
     rmSync(work, { recursive: true, force: true });
