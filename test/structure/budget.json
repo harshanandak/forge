@@ -1,0 +1,5 @@
+{
+  "_comment": "Byte caps (raw UTF-8) for documents agents read. The budget guard fails when a file exceeds its cap: prune the file, or raise the cap here deliberately. Keep caps about 15% above the current size so growth is a decision, not drift.",
+  "AGENTS.md": 1900,
+  "CODING_STANDARDS.md": 8300
+}
