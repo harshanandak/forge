@@ -134,6 +134,24 @@ test("a platform builtin is owned by its adapter without claiming the Node execu
   ).toContain("does not belong");
 }, 30_000);
 
+test("the merged config filesystem provider uses a canonical builtin and keeps one owner", () => {
+  const fs = {
+    name: "fs",
+    packages: [],
+    executables: [],
+    builtins: ["node:fs"],
+  };
+  expect(findAdapterViolations(["fs"], [fs], {})).toEqual([]);
+  expect(
+    findAdapterViolations(["wrong"], [{ ...fs, name: "wrong" }], {})[0]
+      ?.message,
+  ).toContain("does not belong");
+  expect(
+    findAdapterViolations(["fs"], [{ ...fs, builtins: ["fs"] }], {})[0]
+      ?.message,
+  ).toContain("unknown builtin");
+}, 30_000);
+
 const claimKinds = [
   {
     kind: "package",

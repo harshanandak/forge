@@ -28,6 +28,13 @@ export const RESTRICTED_BUILTINS: ReadonlyMap<string, string> = new Map([
   ["sqlite", "store-sqlite"],
 ]);
 
+// Manifest ownership also covers the config filesystem provider. Other OS adapters
+// may use filesystem primitives internally without implementing ConfigFiles.
+const BUILTIN_PROVIDERS: ReadonlyMap<string, string> = new Map([
+  ...RESTRICTED_BUILTINS,
+  ["fs", "fs"],
+]);
+
 const BUILTINS = new Set(
   builtinModules.map((m) => m.replace(/^node:/, "").split("/")[0]),
 );
@@ -244,7 +251,7 @@ export function findAdapterViolations(
           file: `src/adapters/${manifest.name}/adapter.json`,
           message: `names unknown builtin "${name}"`,
         });
-      } else if (RESTRICTED_BUILTINS.get(bare) !== manifest.name) {
+      } else if (BUILTIN_PROVIDERS.get(bare) !== manifest.name) {
         violations.push({
           rule: "dependency-boundary",
           file: `src/adapters/${manifest.name}/adapter.json`,
