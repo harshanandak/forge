@@ -5,26 +5,17 @@
   "authorAbi": "forge.author/v1",
   "profile": "trusted-action-sync/v1",
   "entry": "index.cjs",
-  "files": [
-    "schemas/defs.json"
-  ],
+  "files": ["schemas/defs.json"],
   "configSchema": "schemas/config.json",
   "operations": {
     "memory.add": {
       "input": "schemas/add.input.json",
       "output": "schemas/add.output.json",
       "context": "device",
-      "effects": [
-        "memory:write"
-      ],
-      "args": [
-        "text"
-      ],
+      "effects": ["memory:write"],
+      "args": ["text"],
       "idempotent": false,
-      "callers": [
-        "agent",
-        "human"
-      ],
+      "callers": ["agent", "human"],
       "stability": "stable"
     },
     "memory.search": {
@@ -32,14 +23,9 @@
       "output": "schemas/search.output.json",
       "context": "device",
       "effects": [],
-      "args": [
-        "query"
-      ],
+      "args": ["query"],
       "idempotent": true,
-      "callers": [
-        "agent",
-        "human"
-      ],
+      "callers": ["agent", "human"],
       "stability": "stable"
     },
     "memory.show": {
@@ -47,31 +33,20 @@
       "output": "schemas/show.output.json",
       "context": "device",
       "effects": [],
-      "args": [
-        "id"
-      ],
+      "args": ["id"],
       "idempotent": true,
-      "callers": [
-        "agent",
-        "human"
-      ],
+      "callers": ["agent", "human"],
       "stability": "stable"
     },
     "memory.forget": {
       "input": "schemas/forget.input.json",
       "output": "schemas/forget.output.json",
       "context": "device",
-      "effects": [
-        "memory:write"
-      ],
-      "args": [
-        "id"
-      ],
+      "effects": ["memory:write"],
+      "args": ["id"],
       "destructive": true,
       "idempotent": true,
-      "callers": [
-        "human"
-      ],
+      "callers": ["human"],
       "stability": "stable"
     },
     "memory.export": {
@@ -80,57 +55,36 @@
       "context": "device",
       "effects": [],
       "idempotent": true,
-      "callers": [
-        "agent",
-        "human"
-      ],
+      "callers": ["agent", "human"],
       "stability": "stable"
     },
     "memory.restore": {
       "input": "schemas/restore.input.json",
       "output": "schemas/restore.output.json",
       "context": "device",
-      "effects": [
-        "memory:write"
-      ],
+      "effects": ["memory:write"],
       "idempotent": true,
-      "callers": [
-        "human"
-      ],
+      "callers": ["human"],
       "stability": "stable"
     },
     "decision.propose": {
       "input": "schemas/propose.input.json",
       "output": "schemas/propose.output.json",
       "context": "project",
-      "effects": [
-        "decision:write"
-      ],
-      "args": [
-        "title",
-        "text"
-      ],
+      "effects": ["decision:write"],
+      "args": ["title", "text"],
       "idempotent": false,
-      "callers": [
-        "agent",
-        "human"
-      ],
+      "callers": ["agent", "human"],
       "stability": "stable"
     },
     "decision.adopt": {
       "input": "schemas/adopt.input.json",
       "output": "schemas/adopt.output.json",
       "context": "project",
-      "effects": [
-        "decision:write"
-      ],
-      "args": [
-        "id"
-      ],
+      "effects": ["decision:write"],
+      "args": ["id"],
       "idempotent": true,
-      "callers": [
-        "human"
-      ],
+      "callers": ["human"],
       "stability": "stable"
     },
     "decision.list": {
@@ -139,10 +93,7 @@
       "context": "project",
       "effects": [],
       "idempotent": true,
-      "callers": [
-        "agent",
-        "human"
-      ],
+      "callers": ["agent", "human"],
       "stability": "stable"
     }
   },

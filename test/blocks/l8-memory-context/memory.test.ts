@@ -34,9 +34,10 @@ interface Hits {
   truncated: boolean;
 }
 
-async function open(
-  settings: Record<string, unknown> = {},
-): Promise<{ h: Harness; agent: { context: ReturnType<Harness["deviceOnly"]>; caller: "agent" } }> {
+async function open(settings: Record<string, unknown> = {}): Promise<{
+  h: Harness;
+  agent: { context: ReturnType<Harness["deviceOnly"]>; caller: "agent" };
+}> {
   harness = await openHarness(["memory"], settings);
   return {
     h: harness,
@@ -47,7 +48,11 @@ async function open(
 test("notes are written, read, edited as versions and forgotten under the device context alone", async () => {
   const { h, agent } = await open();
   const added = done(
-    await h.call("memory.add", { text: "the release job needs a clean tree" }, agent),
+    await h.call(
+      "memory.add",
+      { text: "the release job needs a clean tree" },
+      agent,
+    ),
   ) as Added;
   expect(added).toMatchObject({ status: "added", id: "note-1" });
   expect(added.note.revision).toBe(1);
@@ -55,7 +60,11 @@ test("notes are written, read, edited as versions and forgotten under the device
   const edited = done(
     await h.call(
       "memory.add",
-      { id: "note-1", expectRevision: 1, text: "the release job needs a clean tree and a tag" },
+      {
+        id: "note-1",
+        expectRevision: 1,
+        text: "the release job needs a clean tree and a tag",
+      },
       agent,
     ),
   ) as Added;
@@ -79,9 +88,10 @@ test("notes are written, read, edited as versions and forgotten under the device
   expect(stale.ok).toBe(false);
   expect(!stale.ok && stale.error?.code).toBe("REVISION_CONFLICT");
 
-  expect(
-    done(await h.call("memory.forget", { id: "note-1" })),
-  ).toEqual({ status: "forgotten", id: "note-1" });
+  expect(done(await h.call("memory.forget", { id: "note-1" }))).toEqual({
+    status: "forgotten",
+    id: "note-1",
+  });
   expect(done(await h.call("memory.show", { id: "note-1" }, agent))).toEqual({
     status: "forgotten",
   });
@@ -137,12 +147,32 @@ test("a natural-language prompt finds notes that match any of its words, best fi
 
 test("search narrows by scope and tag and honours the limit", async () => {
   const { h, agent } = await open();
-  done(await h.call("memory.add", { text: "alpha one", scope: "repo:a", tags: ["x"] }, agent));
-  done(await h.call("memory.add", { text: "alpha two", scope: "repo:b", tags: ["y"] }, agent));
-  done(await h.call("memory.add", { text: "alpha three", scope: "repo:a", tags: ["y"] }, agent));
+  done(
+    await h.call(
+      "memory.add",
+      { text: "alpha one", scope: "repo:a", tags: ["x"] },
+      agent,
+    ),
+  );
+  done(
+    await h.call(
+      "memory.add",
+      { text: "alpha two", scope: "repo:b", tags: ["y"] },
+      agent,
+    ),
+  );
+  done(
+    await h.call(
+      "memory.add",
+      { text: "alpha three", scope: "repo:a", tags: ["y"] },
+      agent,
+    ),
+  );
   const ids = async (input: Record<string, unknown>) =>
     (
-      done(await h.call("memory.search", { query: "alpha", ...input }, agent)) as Hits
+      done(
+        await h.call("memory.search", { query: "alpha", ...input }, agent),
+      ) as Hits
     ).hits
       .map((hit) => hit.id)
       .sort();
@@ -187,7 +217,10 @@ test("a note that imitates a provenance marker is read back fenced as untrusted 
 test("two writers on one device store never take the same note id", async () => {
   const { h, agent } = await open();
   // A second assembly on the same folders stands in for a second process.
-  const other = await createAssembly({ root: h.root, deviceRoot: h.deviceRoot });
+  const other = await createAssembly({
+    root: h.root,
+    deviceRoot: h.deviceRoot,
+  });
   try {
     let counter = 0;
     const request = (assembly: typeof other, text: string) =>
@@ -201,15 +234,20 @@ test("two writers on one device store never take the same note id", async () => 
       });
     const results = await Promise.all(
       Array.from({ length: 8 }, (_, index) =>
-        request(index % 2 === 0 ? h.assembly : other, `note from writer ${index}`),
+        request(
+          index % 2 === 0 ? h.assembly : other,
+          `note from writer ${index}`,
+        ),
       ),
     );
     const ids = results.map((result) => {
       expect(result.ok).toBe(true);
-      return (result.ok ? (result.result as Added).id : "");
+      return result.ok ? (result.result as Added).id : "";
     });
     expect(new Set(ids).size).toBe(8);
-    const listed = done(await h.call("memory.search", { query: "writer", limit: 50 }, agent)) as Hits;
+    const listed = done(
+      await h.call("memory.search", { query: "writer", limit: 50 }, agent),
+    ) as Hits;
     expect(listed.matched).toBe(8);
   } finally {
     await other.close();
@@ -218,7 +256,13 @@ test("two writers on one device store never take the same note id", async () => 
 
 test("export and restore round-trip notes and leave existing ones alone", async () => {
   const { h, agent } = await open();
-  done(await h.call("memory.add", { text: "keep this", scope: "repo:a", tags: ["k"] }, agent));
+  done(
+    await h.call(
+      "memory.add",
+      { text: "keep this", scope: "repo:a", tags: ["k"] },
+      agent,
+    ),
+  );
   done(await h.call("memory.add", { text: "and this" }, agent));
   const exported = done(await h.call("memory.export", {}, agent)) as {
     format: string;
@@ -230,24 +274,37 @@ test("export and restore round-trip notes and leave existing ones alone", async 
   const second = await openHarness(["memory"]);
   try {
     const target = { context: second.deviceOnly(), caller: "agent" as const };
-    expect(
-      done(await second.call("memory.restore", exported)),
-    ).toEqual({ added: 2, skipped: 0, conflicts: [] });
-    expect(
-      done(await second.call("memory.restore", exported)),
-    ).toEqual({ added: 0, skipped: 2, conflicts: [] });
+    expect(done(await second.call("memory.restore", exported))).toEqual({
+      added: 2,
+      skipped: 0,
+      conflicts: [],
+    });
+    expect(done(await second.call("memory.restore", exported))).toEqual({
+      added: 0,
+      skipped: 2,
+      conflicts: [],
+    });
     const found = done(
       await second.call("memory.show", { id: "note-1" }, target),
     ) as { note: Note };
     expect(found.note.text.text).toBe("keep this");
     // Restored ids are never handed out again.
-    const next = done(await second.call("memory.add", { text: "after" }, target)) as Added;
+    const next = done(
+      await second.call("memory.add", { text: "after" }, target),
+    ) as Added;
     expect(next.id).toBe("note-3");
     // A different text under a restored id is a conflict, and is left alone.
-    done(await second.call("memory.add", { id: "note-1", expectRevision: 1, text: "changed" }, target));
-    expect(
-      done(await second.call("memory.restore", exported)),
-    ).toMatchObject({ added: 0, conflicts: ["note-1"] });
+    done(
+      await second.call(
+        "memory.add",
+        { id: "note-1", expectRevision: 1, text: "changed" },
+        target,
+      ),
+    );
+    expect(done(await second.call("memory.restore", exported))).toMatchObject({
+      added: 0,
+      conflicts: ["note-1"],
+    });
   } finally {
     await second.close();
   }
@@ -292,14 +349,25 @@ test("decisions follow the project's own id format and numbering", async () => {
   const first = done(
     await h.call(
       "decision.propose",
-      { title: "Use SQLite for state!", text: "One store.", consequences: "No second store." },
+      {
+        title: "Use SQLite for state!",
+        text: "One store.",
+        consequences: "No second store.",
+      },
       agent,
     ),
-  ) as { status: string; id: string; file: { path: string; mode: string; content: string } };
+  ) as {
+    status: string;
+    id: string;
+    file: { path: string; mode: string; content: string };
+  };
   expect(first).toMatchObject({
     status: "proposed",
     id: "D-046",
-    file: { path: "docs/decisions/D-046-use-sqlite-for-state.md", mode: "create" },
+    file: {
+      path: "docs/decisions/D-046-use-sqlite-for-state.md",
+      mode: "create",
+    },
   });
   expect(first.file.content).toContain("# D-046: Use SQLite for state!");
   expect(first.file.content).toContain("Status: proposed");
@@ -333,8 +401,11 @@ test("decisions follow the project's own id format and numbering", async () => {
     source: "decision:D-046",
   });
   expect(
-    (done(await h.call("decision.list", { status: "proposed" }, agent)) as { total: number })
-      .total,
+    (
+      done(await h.call("decision.list", { status: "proposed" }, agent)) as {
+        total: number;
+      }
+    ).total,
   ).toBe(1);
 }, 60_000);
 
@@ -348,22 +419,37 @@ test("decisions in one log file are appended in the log's own heading style", as
     },
   });
   const proposed = done(
-    await h.call("decision.propose", { title: "Pick a queue", text: "Use one." }, { caller: "agent" }),
+    await h.call(
+      "decision.propose",
+      { title: "Pick a queue", text: "Use one." },
+      { caller: "agent" },
+    ),
   ) as { id: string; file: { path: string; mode: string; content: string } };
   expect(proposed.id).toBe("ADR-0013");
-  expect(proposed.file).toMatchObject({ path: "docs/decision-log.md", mode: "append" });
+  expect(proposed.file).toMatchObject({
+    path: "docs/decision-log.md",
+    mode: "append",
+  });
   expect(proposed.file.content).toContain("## ADR-0013: Pick a queue");
 }, 30_000);
 
 test("without a configured format a decision is not invented", async () => {
   const { h } = await open();
   const result = done(
-    await h.call("decision.propose", { title: "t", text: "x" }, { caller: "agent" }),
+    await h.call(
+      "decision.propose",
+      { title: "t", text: "x" },
+      { caller: "agent" },
+    ),
   ) as { status: string; repair: string };
   expect(result.status).toBe("format_missing");
   expect(result.repair).toContain("idPattern");
   expect(
-    (done(await h.call("decision.list", {}, { caller: "agent" })) as { total: number }).total,
+    (
+      done(await h.call("decision.list", {}, { caller: "agent" })) as {
+        total: number;
+      }
+    ).total,
   ).toBe(0);
 }, 30_000);
 
@@ -380,8 +466,31 @@ test("a writer that loses the race for a note id retries and gets the next one",
       updatedBy: { kind: "agent", id: "b" },
     });
   });
-  const added = entry["memory.add"]!({ input: { text: "mine" }, services: { state } }) as {
+  const added = entry["memory.add"]!({
+    input: { text: "mine" },
+    services: { state },
+  }) as {
     id: string;
   };
   expect(added.id).toBe("note-2");
+}, 30_000);
+
+test("without the retry the same lost race surfaces as a failed write", () => {
+  const entry = loadEntry("memory", {
+    from: "if (!conflict(error)) throw error;\n      last = error;",
+    to: "throw error;",
+  });
+  const state = racing((records) => {
+    records.set("meta/note-counter", {
+      namespace: "forge/memory",
+      key: "meta/note-counter",
+      revision: 1,
+      value: { last: 1 },
+      updatedAt: "2026-10-18T00:00:00Z",
+      updatedBy: { kind: "agent", id: "b" },
+    });
+  });
+  expect(() =>
+    entry["memory.add"]!({ input: { text: "mine" }, services: { state } }),
+  ).toThrow(/REVISION_CONFLICT/);
 }, 30_000);

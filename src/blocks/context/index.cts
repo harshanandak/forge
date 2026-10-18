@@ -78,9 +78,8 @@ function conflict(error: unknown): boolean {
 }
 function slots(state: StateClient): StateRecord[] {
   return [...state.list(SLOT_PREFIX)].sort(
-      (a, b) =>
-        (b.value as HandoffValue).seq - (a.value as HandoffValue).seq,
-    );
+    (a, b) => (b.value as HandoffValue).seq - (a.value as HandoffValue).seq,
+  );
 }
 function present(record: StateRecord) {
   const value = record.value as HandoffValue;
@@ -107,7 +106,9 @@ function present(record: StateRecord) {
         ...(thread.author === undefined ? {} : { author: thread.author }),
         ...(thread.summary === undefined
           ? {}
-          : { summary: fence(thread.summary, `${source}:review:${thread.id}`) }),
+          : {
+              summary: fence(thread.summary, `${source}:review:${thread.id}`),
+            }),
       })),
     },
     evidence: value.evidence.map((check) => ({ ...check })),
@@ -122,7 +123,8 @@ function sameWork(
   recorded: Uncommitted,
   digest: string | undefined,
 ): "same" | "changed" | "unknown" {
-  if (recorded.state === "clean") return digest === undefined ? "same" : "changed";
+  if (recorded.state === "clean")
+    return digest === undefined ? "same" : "changed";
   if (digest === undefined) return "unknown";
   return digest === recorded.digest ? "same" : "changed";
 }
@@ -200,7 +202,10 @@ module.exports = {
       current === undefined
         ? undefined
         : {
-            head: current.head === shown.head ? ("same" as const) : ("moved" as const),
+            head:
+              current.head === shown.head
+                ? ("same" as const)
+                : ("moved" as const),
             uncommitted: sameWork(shown.uncommitted, current.uncommittedDigest),
           };
     return {
@@ -215,7 +220,11 @@ module.exports = {
           at: record.updatedAt,
           head: value.head,
           ...(value.issue === undefined ? {} : { issue: value.issue }),
-          nextStep: fence(value.nextStep, `context:handoff-${value.seq}`, record.updatedAt),
+          nextStep: fence(
+            value.nextStep,
+            `context:handoff-${value.seq}`,
+            record.updatedAt,
+          ),
         };
       }),
       held: all.length,

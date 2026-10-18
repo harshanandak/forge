@@ -91,7 +91,11 @@ function claim(state: StateClient, key: string, floor: number): number {
     const issued = current ? (current.value as { last: number }).last : 0;
     const next = Math.max(issued, floor) + 1;
     try {
-      state.put(key, { last: next }, { expectRevision: current?.revision ?? 0 });
+      state.put(
+        key,
+        { last: next },
+        { expectRevision: current?.revision ?? 0 },
+      );
       return next;
     } catch (error) {
       if (!conflict(error)) throw error;
@@ -106,7 +110,11 @@ function raise(state: StateClient, key: string, number: number): void {
     const issued = current ? (current.value as { last: number }).last : 0;
     if (issued >= number) return;
     try {
-      state.put(key, { last: number }, { expectRevision: current?.revision ?? 0 });
+      state.put(
+        key,
+        { last: number },
+        { expectRevision: current?.revision ?? 0 },
+      );
       return;
     } catch (error) {
       if (!conflict(error)) throw error;
@@ -140,7 +148,10 @@ function liveNotes(state: StateClient): {
     .filter((note) => note.value.deleted !== true);
   return { notes, truncated: records.length > MAX_SCAN };
 }
-function versionsOf(state: StateClient, key: string): { revision: number; at: string }[] {
+function versionsOf(
+  state: StateClient,
+  key: string,
+): { revision: number; at: string }[] {
   return state.events(key).map((event) => ({
     revision: event.revision,
     at: event.at,
@@ -241,16 +252,23 @@ module.exports = {
       const record = state.put(
         key,
         fields(
-          [...old.previous, { revision: existing.revision, text: old.text }].slice(
-            -MAX_VERSIONS,
-          ),
+          [
+            ...old.previous,
+            { revision: existing.revision, text: old.text },
+          ].slice(-MAX_VERSIONS),
         ),
         { expectRevision: input.expectRevision ?? existing.revision },
       );
       return {
         status: "updated" as const,
         id: input.id,
-        note: present(state, input.id, record, record.value as NoteValue, input.text),
+        note: present(
+          state,
+          input.id,
+          record,
+          record.value as NoteValue,
+          input.text,
+        ),
       };
     }
     const id = noteId(claim(state, NOTE_COUNTER, 0));
@@ -280,7 +298,9 @@ module.exports = {
     const documents = candidates.map((note) => {
       const counts = new Map<string, number>();
       let length = 0;
-      for (const term of terms(`${note.value.text} ${note.value.tags.join(" ")}`)) {
+      for (const term of terms(
+        `${note.value.text} ${note.value.tags.join(" ")}`,
+      )) {
         const key = stem(term);
         counts.set(key, (counts.get(key) ?? 0) + 1);
         length += 1;
@@ -289,7 +309,8 @@ module.exports = {
     });
     const total = documents.length;
     const average =
-      documents.reduce((sum, document) => sum + document.length, 0) / Math.max(1, total);
+      documents.reduce((sum, document) => sum + document.length, 0) /
+      Math.max(1, total);
     // Any query term may match (an agent's natural-language prompt never has every word in one
     // note); notes that match more, rarer terms rank first, newest first on a tie.
     const scored = documents
@@ -298,9 +319,14 @@ module.exports = {
         for (const term of wanted) {
           const frequency = document.counts.get(term);
           if (frequency === undefined) continue;
-          const holders = documents.filter((other) => other.counts.has(term)).length;
-          const rarity = Math.log(1 + (total - holders + 0.5) / (holders + 0.5));
-          const norm = 1.2 * (0.25 + (0.75 * document.length) / Math.max(1, average));
+          const holders = documents.filter((other) =>
+            other.counts.has(term),
+          ).length;
+          const rarity = Math.log(
+            1 + (total - holders + 0.5) / (holders + 0.5),
+          );
+          const norm =
+            1.2 * (0.25 + (0.75 * document.length) / Math.max(1, average));
           score += (rarity * frequency * 2.2) / (frequency + norm);
         }
         return { document, score };
@@ -319,7 +345,9 @@ module.exports = {
           id: note.id,
           score: Math.round(score * 1000) / 1000,
           revision: note.record.revision,
-          ...(note.value.scope === undefined ? {} : { scope: note.value.scope }),
+          ...(note.value.scope === undefined
+            ? {}
+            : { scope: note.value.scope }),
           tags: [...note.value.tags],
           snippet: fence(
             snippet(note.value.text, wanted),
@@ -352,7 +380,9 @@ module.exports = {
         status: "found" as const,
         note: present(state, input.id, record, value, value.text),
       };
-    const older = value.previous.find((entry) => entry.revision === input.revision);
+    const older = value.previous.find(
+      (entry) => entry.revision === input.revision,
+    );
     if (!older) return { status: "version_unavailable" as const };
     return {
       status: "found" as const,
@@ -482,7 +512,9 @@ module.exports = {
       number,
       title: input.title,
       text: input.text,
-      ...(input.consequences === undefined ? {} : { consequences: input.consequences }),
+      ...(input.consequences === undefined
+        ? {}
+        : { consequences: input.consequences }),
       status: "proposed",
     };
     const record = state.put(`${DECISION_PREFIX}${number}`, value, {
@@ -530,7 +562,11 @@ module.exports = {
       { ...value, status: "adopted" },
       { expectRevision: input.expectRevision ?? match.revision },
     );
-    return { status: "adopted" as const, id: input.id, revision: record.revision };
+    return {
+      status: "adopted" as const,
+      id: input.id,
+      revision: record.revision,
+    };
   },
 
   "decision.list": ({
@@ -544,7 +580,8 @@ module.exports = {
       .list(DECISION_PREFIX)
       .filter(
         (record) =>
-          input.status === undefined || decisionOf(record).status === input.status,
+          input.status === undefined ||
+          decisionOf(record).status === input.status,
       )
       .sort((a, b) => decisionOf(a).number - decisionOf(b).number);
     return {

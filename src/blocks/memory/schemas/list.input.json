@@ -3,10 +3,7 @@
   "type": "object",
   "properties": {
     "status": {
-      "enum": [
-        "proposed",
-        "adopted"
-      ]
+      "enum": ["proposed", "adopted"]
     }
   },
   "additionalProperties": false

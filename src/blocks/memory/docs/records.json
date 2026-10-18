@@ -9,9 +9,7 @@
         {
           "input": {
             "text": "The release job needs a clean tree",
-            "tags": [
-              "release"
-            ]
+            "tags": ["release"]
           }
         }
       ]

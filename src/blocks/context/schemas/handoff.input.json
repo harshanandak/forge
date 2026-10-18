@@ -27,10 +27,7 @@
       "type": "object",
       "properties": {
         "state": {
-          "enum": [
-            "clean",
-            "dirty"
-          ]
+          "enum": ["clean", "dirty"]
         },
         "base": {
           "type": "string",
@@ -48,30 +45,21 @@
         }
       },
       "additionalProperties": false,
-      "required": [
-        "state",
-        "base"
-      ],
+      "required": ["state", "base"],
       "if": {
         "properties": {
           "state": {
             "const": "dirty"
           }
         },
-        "required": [
-          "state"
-        ]
+        "required": ["state"]
       },
       "then": {
-        "required": [
-          "digest"
-        ]
+        "required": ["digest"]
       },
       "else": {
         "not": {
-          "required": [
-            "digest"
-          ]
+          "required": ["digest"]
         }
       }
     },
@@ -105,9 +93,5 @@
     }
   },
   "additionalProperties": false,
-  "required": [
-    "head",
-    "nextStep",
-    "uncommitted"
-  ]
+  "required": ["head", "nextStep", "uncommitted"]
 }

@@ -33,14 +33,7 @@
           }
         },
         "additionalProperties": false,
-        "required": [
-          "id",
-          "score",
-          "revision",
-          "tags",
-          "snippet",
-          "updatedAt"
-        ]
+        "required": ["id", "score", "revision", "tags", "snippet", "updatedAt"]
       }
     },
     "matched": {
@@ -56,10 +49,5 @@
     }
   },
   "additionalProperties": false,
-  "required": [
-    "hits",
-    "matched",
-    "scanned",
-    "truncated"
-  ]
+  "required": ["hits", "matched", "scanned", "truncated"]
 }

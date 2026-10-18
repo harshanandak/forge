@@ -16,9 +16,7 @@
         }
       },
       "additionalProperties": false,
-      "required": [
-        "head"
-      ],
+      "required": ["head"],
       "description": "Where this session stands now, to compare with the handoff."
     },
     "earlier": {

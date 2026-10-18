@@ -16,9 +16,5 @@
     }
   },
   "additionalProperties": false,
-  "required": [
-    "id",
-    "seq",
-    "revision"
-  ]
+  "required": ["id", "seq", "revision"]
 }

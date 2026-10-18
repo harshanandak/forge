@@ -3,19 +3,12 @@
   "type": "object",
   "properties": {
     "status": {
-      "enum": [
-        "forgotten",
-        "not_found",
-        "already_forgotten"
-      ]
+      "enum": ["forgotten", "not_found", "already_forgotten"]
     },
     "id": {
       "$ref": "defs.json#/$defs/NoteId"
     }
   },
   "additionalProperties": false,
-  "required": [
-    "status",
-    "id"
-  ]
+  "required": ["status", "id"]
 }

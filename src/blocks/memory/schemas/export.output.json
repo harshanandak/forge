@@ -38,20 +38,10 @@
           }
         },
         "additionalProperties": false,
-        "required": [
-          "id",
-          "tags",
-          "links",
-          "text"
-        ]
+        "required": ["id", "tags", "links", "text"]
       }
     }
   },
   "additionalProperties": false,
-  "required": [
-    "format",
-    "count",
-    "truncated",
-    "notes"
-  ]
+  "required": ["format", "count", "truncated", "notes"]
 }

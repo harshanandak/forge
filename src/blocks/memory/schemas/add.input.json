@@ -28,24 +28,16 @@
     }
   },
   "additionalProperties": false,
-  "required": [
-    "text"
-  ],
+  "required": ["text"],
   "if": {
-    "required": [
-      "id"
-    ]
+    "required": ["id"]
   },
   "then": {
-    "required": [
-      "expectRevision"
-    ]
+    "required": ["expectRevision"]
   },
   "else": {
     "not": {
-      "required": [
-        "expectRevision"
-      ]
+      "required": ["expectRevision"]
     }
   }
 }

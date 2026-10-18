@@ -12,7 +12,5 @@
     }
   },
   "additionalProperties": false,
-  "required": [
-    "id"
-  ]
+  "required": ["id"]
 }

@@ -3,11 +3,7 @@
   "type": "object",
   "properties": {
     "status": {
-      "enum": [
-        "adopted",
-        "not_found",
-        "already_adopted"
-      ]
+      "enum": ["adopted", "not_found", "already_adopted"]
     },
     "id": {
       "type": "string",
@@ -19,8 +15,5 @@
     }
   },
   "additionalProperties": false,
-  "required": [
-    "status",
-    "id"
-  ]
+  "required": ["status", "id"]
 }

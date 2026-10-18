@@ -7,6 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { runInNewContext } from "node:vm";
 import { join, resolve } from "node:path";
 import { createAssembly, type Assembly } from "../../../src/assembly/index.ts";
 import { ForgeFailure } from "../../../src/contract/author.ts";
@@ -30,7 +31,10 @@ export function stageBlock(name: BlockName, into: string): string {
     recursive: true,
     filter: (path) => !path.endsWith(".cts"),
   });
-  const source = readFileSync(join(repo, "src/blocks", name, "index.cts"), "utf8");
+  const source = readFileSync(
+    join(repo, "src/blocks", name, "index.cts"),
+    "utf8",
+  );
   writeFileSync(join(target, "index.cjs"), transpiler.transformSync(source));
   return target;
 }
@@ -42,13 +46,25 @@ type Handler = (args: {
 }) => unknown;
 
 /** The block's handlers, loaded the way the runtime evaluates the entry, for fault-injection tests. */
-export function loadEntry(name: BlockName): Record<string, Handler> {
-  const source = readFileSync(join(repo, "src/blocks", name, "index.cts"), "utf8");
-  const module = { exports: {} as Record<string, Handler> };
-  new Function("module", "exports", transpiler.transformSync(source))(
-    module,
-    module.exports,
+export function loadEntry(
+  name: BlockName,
+  without?: { readonly from: string; readonly to: string },
+): Record<string, Handler> {
+  let source = readFileSync(
+    join(repo, "src/blocks", name, "index.cts"),
+    "utf8",
   );
+  if (without !== undefined) {
+    if (!source.includes(without.from))
+      throw new Error("fix to remove not found");
+    source = source.replace(without.from, without.to);
+  }
+  const module = { exports: {} as Record<string, Handler> };
+  const wrapped = runInNewContext(
+    `(function (module, exports) {${transpiler.transformSync(source)}
+})`,
+  ) as (module: unknown, exports: unknown) => void;
+  wrapped(module, module.exports);
   return module.exports;
 }
 
@@ -62,7 +78,11 @@ export interface Harness {
   readonly deviceRoot: string;
   readonly work: string;
   /** Call with the full local context (project and device). */
-  call(op: string, input: unknown, options?: CallOptions): Promise<ResultEnvelope>;
+  call(
+    op: string,
+    input: unknown,
+    options?: CallOptions,
+  ): Promise<ResultEnvelope>;
   /** Only an actor and the device: what a host with no project supplies. */
   deviceOnly(): AmbientContext;
   close(): Promise<void>;
@@ -150,12 +170,15 @@ export async function openHarness(
 }
 
 /** A state client whose next write loses a race: another writer lands first. */
-export function racing(onFirstPut: (state: Map<string, StateRecord>) => void): StateClient {
+export function racing(
+  onFirstPut: (state: Map<string, StateRecord>) => void,
+): StateClient {
   const records = new Map<string, StateRecord>();
   let raced = false;
   return {
     get: (key) => records.get(key),
-    list: (prefix = "") => [...records.values()].filter((r) => r.key.startsWith(prefix)),
+    list: (prefix = "") =>
+      [...records.values()].filter((r) => r.key.startsWith(prefix)),
     events: () => [],
     put(key, value, options: PutOptions) {
       if (!raced) {
@@ -182,4 +205,3 @@ export function racing(onFirstPut: (state: Map<string, StateRecord>) => void): S
     },
   };
 }
-

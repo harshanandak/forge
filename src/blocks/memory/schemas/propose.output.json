@@ -3,10 +3,7 @@
   "type": "object",
   "properties": {
     "status": {
-      "enum": [
-        "proposed",
-        "format_missing"
-      ]
+      "enum": ["proposed", "format_missing"]
     },
     "id": {
       "type": "string",
@@ -26,21 +23,14 @@
           "maxLength": 400
         },
         "mode": {
-          "enum": [
-            "create",
-            "append"
-          ]
+          "enum": ["create", "append"]
         },
         "content": {
           "type": "string"
         }
       },
       "additionalProperties": false,
-      "required": [
-        "path",
-        "mode",
-        "content"
-      ],
+      "required": ["path", "mode", "content"],
       "description": "The record as the project writes it. Forge does not write project files; place this where it says."
     },
     "repair": {
@@ -48,7 +38,5 @@
     }
   },
   "additionalProperties": false,
-  "required": [
-    "status"
-  ]
+  "required": ["status"]
 }
