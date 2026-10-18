@@ -12,6 +12,7 @@ import { validateInvocationRequest } from "../generated/validators.ts";
 
 export interface CallOptions {
   readonly caller: Caller;
+  readonly readOnly?: boolean;
   readonly context?: AmbientContext;
   readonly requestId?: string;
   readonly dryRun?: boolean;
@@ -24,9 +25,13 @@ export function success(op: string, result: unknown): ResultEnvelope {
 export function visible(
   catalog: SurfaceCatalog,
   caller: Caller,
+  readOnly = false,
 ): ReturnType<SurfaceCatalog["list"]> {
   return [...discoveryOperations, ...catalog.list()].filter(
-    (c) => c.admitted && (caller !== "agent" || isAgentCallable(c.declaration)),
+    (c) =>
+      c.admitted &&
+      (caller !== "agent" || isAgentCallable(c.declaration)) &&
+      (!readOnly || c.declaration.effects.length === 0),
   );
 }
 
@@ -66,7 +71,14 @@ export async function dispatch(
   input: unknown,
   options: CallOptions,
 ): Promise<ResultEnvelope> {
-  const entries = visible(catalog, options.caller);
+  const entries = visible(catalog, options.caller, options.readOnly);
+  if (
+    options.readOnly &&
+    discoveryOperations.some(
+      (entry) => entry.op === op && entry.declaration.effects.length > 0,
+    )
+  )
+    return failure("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
   if (op === "catalog.list") return success(op, entries);
   if (op === "catalog.describe") {
     const name = record(input)?.op;
@@ -95,6 +107,7 @@ export async function dispatch(
     const request = checked.value;
     return dispatch(catalog, request.op, request.input, {
       caller: options.caller,
+      ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
       context: request.context,
       requestId: request.requestId,
       ...(options.dryRun === undefined && request.dryRun === undefined
@@ -106,7 +119,8 @@ export async function dispatch(
     ![...discoveryOperations, ...catalog.list()].some(
       (c) =>
         c.op === op &&
-        (options.caller !== "agent" || isAgentCallable(c.declaration)),
+        (options.caller !== "agent" || isAgentCallable(c.declaration)) &&
+        (!options.readOnly || c.declaration.effects.length === 0),
     )
   )
     return failure(

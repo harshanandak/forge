@@ -20,6 +20,71 @@ import { SchemaRegistry } from "../../../src/contract/schema.ts";
 import { SCHEMA_DOCUMENTS } from "../../../src/generated/schemas.ts";
 import { discoveryOperations } from "../../../src/surface/discovery.ts";
 
+test("read-only MCP exposure refuses effectful core and block operations", async () => {
+  const calls: string[] = [];
+  const entries = [
+    { ...discoveryOperations[0]!, op: "sample.inspect" },
+    {
+      ...discoveryOperations[0]!,
+      op: "sample.write",
+      declaration: {
+        ...discoveryOperations[0]!.declaration,
+        effects: ["sample:write"],
+      },
+    },
+  ];
+  const catalog: SurfaceCatalog = {
+    list: () => entries,
+    invoke: (request) => {
+      calls.push(request.op);
+      return Promise.resolve({
+        ok: true,
+        op: request.op,
+        status: "OK",
+        result: {},
+        warnings: [],
+      });
+    },
+  };
+  const handlers = createMcpHandlers(catalog, { readOnly: true });
+  const names = handlers.listTools().map((tool) => tool.name);
+  assert.ok(names.includes("catalog_list"));
+  assert.ok(names.includes("catalog_describe"));
+  assert.ok(names.includes("block_check"));
+  assert.ok(names.includes("sample_inspect"));
+  assert.ok(!names.includes("catalog_call"));
+  assert.ok(!names.includes("block_add"));
+  assert.ok(!names.includes("sample_write"));
+  assert.ok(
+    handlers.listTools().every((tool) => tool.annotations.readOnlyHint),
+  );
+
+  for (const name of ["catalog_call", "block_add", "sample_write"]) {
+    const result = await handlers.callTool(name, { op: "sample.write" });
+    assert.equal(result?.ok, false);
+    if (result && !result.ok)
+      assert.equal(result.error.code, "UNKNOWN_COMMAND");
+  }
+  const listed = await handlers.callTool("catalog_list", {});
+  assert.ok(listed?.ok);
+  for (const op of ["catalog.call", "block.add", "sample.write"])
+    assert.ok(
+      !(listed.result as { op: string }[]).some((entry) => entry.op === op),
+    );
+  for (const op of ["catalog.call", "block.add", "sample.write"]) {
+    const result = await handlers.callTool("catalog_describe", { op });
+    assert.equal(result?.ok, false);
+    if (result && !result.ok)
+      assert.equal(result.error.code, "UNKNOWN_COMMAND");
+  }
+  assert.equal(
+    (await handlers.callTool("block_check", { path: "x" }))?.ok,
+    true,
+  );
+  assert.equal((await handlers.callTool("sample_inspect", {}))?.ok, true);
+  assert.deepEqual(calls, ["block.check", "sample.inspect"]);
+}, 5000);
+
 for (const name of ["catalog_list", "catalog_describe", "catalog_call"])
   test(`${name} results validate against the advertised MCP output schema`, async () => {
     const catalog: SurfaceCatalog = {
