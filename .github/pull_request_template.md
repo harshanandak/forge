@@ -1,31 +1,59 @@
-<!-- Write for someone new to this change: short sentences, plain words, no internal shorthand. No machine-local paths, usernames or links to files that only exist on your machine. -->
+<!--
+Title: a plain-words conventional commit (it becomes the changelog line). No internal codes (lane, test or issue ids).
+Write for someone new to this change: short sentences, plain words.
+No machine-local data: no drive paths, usernames, worktree paths, or links to files that only exist on your machine.
+Delete the hints as you fill each part in.
+-->
 
-## What and why
+<!-- Opening, 2–3 plain sentences: the problem from the user's side, then what this changes. -->
 
-<!-- One or two sentences: the problem, and what this PR changes to solve it. One underlying problem per PR. -->
+## <Topic name>
+
+<!-- 2–4 sections like this, named for the topic, not the file. Start each bullet with a bold one-line takeaway. -->
+
+- **<One-line takeaway.>** Detail in a sentence or two.
 
 ## Before / after
 
-<!-- What a user or maintainer sees differently. For improvements (speed, size, reliability), give measured numbers before and after and how they were measured. "Not applicable" when nothing measurable changed. -->
+<!-- Concrete, observable differences: "when X happens, before: …, after: …". Never "didn't exist, now exists". -->
 
-|     | Before | After |
-| --- | ------ | ----- |
-|     |        |       |
+- When <X>: before, <…>; after, <…>.
 
-## Proof
+<!-- Add a numbers row only where real numbers exist, and say how you measured them. Otherwise drop the table. -->
 
-<!-- One line per claim, each with its evidence: the test that fails without the change and passes with it, the CI run link, or the command and its output. Say what was not checked. "Tests pass" alone is not proof. -->
+| Measure | Before | After | How measured |
+| ------- | ------ | ----- | ------------ |
+|         |        |       |              |
 
-- Claim — evidence
+## What review found
 
-## Tracking
+<!-- Each blocker: a bold failure the user would see, then the one-line fix. Minor findings deferred: name the issue id. -->
 
-<!-- The Forge issue, and for behavior changes the plan row or decision it implements. Follow-ups filed as issues. -->
+- **<What a user would have seen go wrong.>** Fixed by <one line>.
+- Deferred: <minor finding> (<issue id>).
+
+## Notes for review
+
+<!-- Things a reviewer should know: shared-file changes, ordering, what is deliberately left out. -->
+
+- <note>
+
+## Verification
+
+<!-- Counts, the tests that fail without the change (GitHub URLs pinned to the head commit), and the CI run for the current head. -->
+
+- <N> tests pass; checks run: <commands>.
+- Fails without the change: [test name](https://github.com/<owner>/<repo>/blob/<head-sha>/<path>#L<n>)
+- CI for the current head: <run link>
+
+**Not verified:** <what you did not check>
+
+Reviewed with Codex code review: <N> rounds.
+
+Tracking: <issue ids>
 
 ## Models
 
-<!-- The model and harness for each role; "None" when a role was not used. No tool-branding footer. -->
-
-- Planned: <model> (<harness>)
+- Planned: <model>, <role>
 - Implemented: <model> via <harness>
-- Reviewed: <model> via <harness>
+- Reviewed: <model or review tool>
