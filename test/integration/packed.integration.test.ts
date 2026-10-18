@@ -1,4 +1,4 @@
-﻿import { createHash } from "node:crypto";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { test, expect } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -258,15 +258,15 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         evidence: "Unknown operation: config.show",
       },
       {
-        file: "src/assembly/index.js",
+        file: "src/assembly/state-client.js",
         from: "structuredClone(value)",
         to: "value",
         mode: "all",
         evidence: "State values must be plain JSON",
       },
       ...["all", "race"].map((mode) => ({
-        file: "src/assembly/index.js",
-        from: "expectRevision: options.expectRevision",
+        file: "src/assembly/state-client.js",
+        from: "expectRevision: put.expectRevision",
         to: "expectRevision: owner.get(namespace, key)?.revision ?? 0",
         mode,
         evidence: mode === "race" ? "one writer wins" : "semver mark 1.6.0 0",

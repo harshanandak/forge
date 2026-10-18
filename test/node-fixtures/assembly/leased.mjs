@@ -6,6 +6,7 @@ const [source, root] = process.argv.slice(2);
 const load = (file) =>
   import(pathToFileURL(join(source, "dist/src", file)).href);
 const { createAssembly } = await load("assembly/index.js");
+const { dispatch } = await load("surface/dispatch.js");
 const { firstPartyBlocks } = await load("assembly/first-party.js");
 const block = join(root, "counter");
 mkdirSync(block, { recursive: true });
@@ -128,7 +129,7 @@ try {
     false,
     "read must not create state",
   );
-  const grant = await invoke("counter.claim", {}, context, "agent", "first");
+  const grant = await dispatch(assembly.catalog, "catalog.call", {op: "counter.claim", input: {}, context, requestId: "first"}, {caller: "agent"});
   assert.equal(grant.ok, true, JSON.stringify(grant));
   assert.equal(grant.result.generation, 1);
   assert.deepEqual(
