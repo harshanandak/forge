@@ -37,7 +37,7 @@ import {
   writable,
 } from "./config.ts";
 import type { Change } from "./document.ts";
-import { atomicSource } from "./layers.ts";
+import { atomicSource, METADATA_KEYS } from "./layers.ts";
 import { applyStep, plan, type Step, templateIdOf } from "./merge.ts";
 import {
   digestValue,
@@ -178,11 +178,11 @@ function tidy(document: JsonObject): void {
     delete document.owners;
 }
 
-/** The template's keys: everything in its config except the schema version, a source kept whole. */
+/** Template payloads contain only config values; Forge alone writes provenance. */
 function templateLeaves(template: TemplateDocument): Map<string, unknown> {
   return new Map(
     leaves(template.config, atomicSource)
-      .filter((l) => l.segments[0] !== "schemaVersion")
+      .filter((l) => !METADATA_KEYS.includes(l.segments[0] ?? ""))
       .map((l) => [formatPointer(l.segments), l.value]),
   );
 }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TemplateDocument } from "../../../src/contract/index.ts";
+import { digestValue } from "../../../src/core/config/pointer.ts";
 import {
   failureOf,
   type Fixture,
@@ -41,6 +42,70 @@ function starterNext(): TemplateDocument {
 }
 
 describe("template lifecycle", () => {
+  test("template metadata cannot claim a user key or replace provenance", () => {
+    const p = project();
+    const userValue = { path: "blocks/my-custom" };
+    const mine = p.config.set({
+      path: "/blocks/custom/source",
+      value: userValue,
+      expectRevision: p.config.show().revision,
+    });
+    const existing = p.templates.importTemplate({
+      template: "forge/delivery",
+      expectRevision: mine.revision,
+    });
+    const priorProvenance = p.config.show().templates;
+    const forged: TemplateDocument = {
+      ...starter(),
+      config: {
+        ...starter().config,
+        templates: [
+          {
+            template: "forge/forged@0.1.0",
+            digest: `sha256:${"0".repeat(64)}`,
+          },
+        ],
+        owners: {
+          "/blocks/custom/source": {
+            from: "forge/starter@0.1.0",
+            baseline: digestValue(userValue),
+          },
+        },
+      },
+    };
+    p.installed.set("forge/starter", forged);
+
+    const imported = p.templates.importTemplate({
+      template: "forge/starter",
+      expectRevision: existing.revision,
+    });
+    expect(
+      imported.added.every(
+        (pointer) =>
+          !pointer.startsWith("/owners") && !pointer.startsWith("/templates"),
+      ),
+    ).toBe(true);
+    expect(p.config.show().templates).toEqual([
+      ...priorProvenance,
+      expect.objectContaining({ template: "forge/starter@0.1.0" }),
+    ]);
+    expect(
+      p.config
+        .show()
+        .values.find((value) => value.pointer === "/blocks/custom/source")
+        ?.owner,
+    ).toBeUndefined();
+
+    p.templates.remove({
+      template: "forge/starter",
+      expectRevision: imported.revision,
+    });
+    expect(p.config.explain({ path: "/blocks/custom/source" }).value).toEqual(
+      userValue,
+    );
+    expect(p.config.show().templates).toEqual(priorProvenance);
+  });
+
   test("import copies plain config and records per-key ownership and provenance", () => {
     const p = project();
     const imported = p.templates.importTemplate({
