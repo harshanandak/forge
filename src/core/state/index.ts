@@ -380,7 +380,16 @@ function verifyEventDerivedState(candidate: SqlDatabase): void {
               Date.parse(lease.expiresAt) <= Date.parse(event.at)
             )
               reject("state_leases", id);
-          } else if (json(lease) !== json({ ...prior, releasedAt: event.at }))
+          } else if (
+            !decideLease(prior, {
+              mode: "held",
+              subject: event.key,
+              holder: lease.holder,
+              generation: lease.generation,
+              nowMs: Date.parse(event.at),
+            }).ok ||
+            json(lease) !== json({ ...prior, releasedAt: event.at })
+          )
             reject("state_leases", id);
         } else return reject("state_events", id);
         if (
@@ -488,11 +497,11 @@ export class StateOwner {
   client(namespace: string, actor: Actor): StateClient {
     namespaceValid(namespace);
     if (!validateActor(actor).ok) invalid("Invalid actor");
-    const boundActor = JSON.parse(json(actor)) as Actor;
+    const boundActor = Object.freeze(JSON.parse(json(actor)) as Actor);
     return Object.freeze({
       get: (key: string) => this.get(namespace, key),
       put: (key: string, value: unknown, options: PutOptions) =>
-        this.put(namespace, key, value, boundActor, options),
+        this.put(namespace, key, value, { ...boundActor }, options),
       list: (prefix?: string) => this.list(namespace, prefix),
       events: (key?: string) => this.events(namespace, key),
     });
@@ -893,6 +902,16 @@ export class StateOwner {
             const lease = JSON.parse(String(row.body)) as LeaseRecord;
             if (!validateLeaseRecord(lease).ok)
               invalid("Invalid imported lease");
+            if (
+              !decideLease(lease, {
+                mode: "held",
+                subject: lease.subject,
+                holder: lease.holder,
+                generation: lease.generation,
+                nowMs: Date.parse(at),
+              }).ok
+            )
+              continue;
             const released = { ...lease, releasedAt: at };
             candidate.run(
               "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",
