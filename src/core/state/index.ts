@@ -118,6 +118,66 @@ function namespaceValid(namespace: string): void {
   if (!validateBlockId(namespace).ok) invalid("Invalid namespace");
 }
 
+// The same constructors define live history and the exact history restore accepts.
+function recordEvent(record: StateRecord, requestId?: string): StateEvent {
+  return {
+    type: `${record.namespace}:record.updated@1`,
+    namespace: record.namespace,
+    key: record.key,
+    revision: record.revision,
+    at: record.updatedAt,
+    actor: record.updatedBy,
+    ...(requestId === undefined ? {} : { requestId }),
+    data: record.value,
+  };
+}
+function acquisitionEvent(
+  namespace: string,
+  lease: LeaseRecord,
+  previous: LeaseRecord | undefined,
+  at: string,
+  requestId: string,
+): StateEvent {
+  const decision = decideLease(previous, {
+    mode: "acquire",
+    subject: lease.subject,
+    holder: lease.holder,
+    nowMs: Date.parse(at),
+  });
+  if (!decision.ok || decision.kind !== "acquired")
+    invalid("Invalid acquisition event");
+  return {
+    type: `${namespace}:lease.${decision.reacquired ? "reacquired" : "acquired"}@1`,
+    namespace,
+    key: lease.subject,
+    revision: lease.generation,
+    at,
+    actor: lease.holder.actor,
+    requestId,
+    data: { lease, previous: previous ?? null },
+  };
+}
+function changedLeaseEvent(
+  namespace: string,
+  previous: LeaseRecord,
+  at: string,
+  expiresAt?: string,
+): StateEvent {
+  const lease =
+    expiresAt === undefined
+      ? { ...previous, releasedAt: at }
+      : { ...previous, expiresAt };
+  return {
+    type: `${namespace}:lease.${expiresAt === undefined ? "released" : "renewed"}@1`,
+    namespace,
+    key: lease.subject,
+    revision: lease.generation,
+    at,
+    actor: lease.holder.actor,
+    data: lease,
+  };
+}
+
 function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
   let input: Record<string, unknown>;
   let result: unknown;
@@ -328,14 +388,17 @@ function verifyEventDerivedState(
       if (event.type === `${event.namespace}:record.updated@1`) {
         if (event.revision !== (records.get(id)?.revision ?? 0) + 1)
           reject("state_records", id);
-        records.set(id, {
+        const record: StateRecord = {
           namespace: event.namespace,
           key: event.key,
           revision: event.revision,
           value: event.data,
           updatedAt: event.at,
           updatedBy: event.actor,
-        });
+        };
+        if (json(event) !== json(recordEvent(record, event.requestId)))
+          reject("state_events", id);
+        records.set(id, record);
       } else {
         const prior = leases.get(id);
         let lease: LeaseRecord;
@@ -349,7 +412,16 @@ function verifyEventDerivedState(
           };
           lease = data.lease;
           if (
-            json(data.previous) !== json(prior ?? null) ||
+            json(event) !==
+              json(
+                acquisitionEvent(
+                  event.namespace,
+                  lease,
+                  prior,
+                  event.at,
+                  event.requestId!,
+                ),
+              ) ||
             !validateLeaseRecord(lease).ok
           )
             reject("state_leases", id);
@@ -386,7 +458,15 @@ function verifyEventDerivedState(
                 generation: lease.generation,
                 nowMs: Date.parse(event.at),
               }).ok ||
-              json(lease) !== json({ ...prior, expiresAt: lease.expiresAt }) ||
+              json(event) !==
+                json(
+                  changedLeaseEvent(
+                    event.namespace,
+                    prior!,
+                    event.at,
+                    lease.expiresAt,
+                  ),
+                ) ||
               Date.parse(lease.expiresAt) <= Date.parse(event.at)
             )
               reject("state_leases", id);
@@ -398,7 +478,8 @@ function verifyEventDerivedState(
               generation: lease.generation,
               nowMs: Date.parse(event.at),
             }).ok ||
-            json(lease) !== json({ ...prior, releasedAt: event.at })
+            json(event) !==
+              json(changedLeaseEvent(event.namespace, prior!, event.at))
           )
             reject("state_leases", id);
         } else return reject("state_events", id);
@@ -707,18 +788,7 @@ export class StateOwner {
               "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,?,?)",
               [namespace, key, record.revision, json(record)],
             );
-          this.#event({
-            type: `${namespace}:record.updated@1`,
-            namespace,
-            key,
-            revision: record.revision,
-            at: record.updatedAt,
-            actor,
-            ...(options.requestId === undefined
-              ? {}
-              : { requestId: options.requestId }),
-            data: stored,
-          });
+          this.#event(recordEvent(record, options.requestId));
           return record;
         },
       );
@@ -769,16 +839,15 @@ export class StateOwner {
             expiresAt: this.#expiry(now, durationMs),
           };
           this.#saveLease(namespace, lease);
-          this.#event({
-            type: `${namespace}:lease.${decision.kind === "acquired" && decision.reacquired ? "reacquired" : "acquired"}@1`,
-            namespace,
-            key: subject,
-            revision: lease.generation,
-            at: new Date(now).toISOString(),
-            actor: holder.actor,
-            requestId,
-            data: { lease, previous: current ?? null },
-          });
+          this.#event(
+            acquisitionEvent(
+              namespace,
+              lease,
+              current,
+              new Date(now).toISOString(),
+              requestId,
+            ),
+          );
           return lease;
         },
       );
@@ -819,20 +888,15 @@ export class StateOwner {
       const now = this.#now();
       const current = this.#held(namespace, fence, now);
       const at = new Date(now).toISOString();
-      const lease =
-        durationMs === undefined
-          ? { ...current, releasedAt: at }
-          : { ...current, expiresAt: this.#expiry(now, durationMs) };
-      this.#saveLease(namespace, lease);
-      this.#event({
-        type: `${namespace}:lease.${durationMs === undefined ? "released" : "renewed"}@1`,
+      const event = changedLeaseEvent(
         namespace,
-        key: fence.subject,
-        revision: lease.generation,
+        current,
         at,
-        actor: fence.holder.actor,
-        data: lease,
-      });
+        durationMs === undefined ? undefined : this.#expiry(now, durationMs),
+      );
+      const lease = event.data as LeaseRecord;
+      this.#saveLease(namespace, lease);
+      this.#event(event);
       return lease;
     });
   }
@@ -949,26 +1013,15 @@ export class StateOwner {
               }).ok
             )
               continue;
-            const released = { ...lease, releasedAt: at };
+            const event = changedLeaseEvent(String(row.namespace), lease, at);
+            const released = event.data as LeaseRecord;
             candidate.run(
               "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",
               [json(released), row.namespace!, row.subject!],
             );
             candidate.run(
               "INSERT INTO state_events(namespace,key,body) VALUES (?,?,?)",
-              [
-                row.namespace!,
-                row.subject!,
-                json({
-                  type: `${String(row.namespace)}:lease.released@1`,
-                  namespace: row.namespace,
-                  key: lease.subject,
-                  revision: lease.generation,
-                  at,
-                  actor: lease.holder.actor,
-                  data: released,
-                }),
-              ],
+              [row.namespace!, row.subject!, json(event)],
             );
             eventHighWaterMark++;
           }
