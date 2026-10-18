@@ -1,10 +1,10 @@
-import type { SourceFile, Violation } from "./repo.ts";
+import { DETECTOR_MODULE, type SourceFile, type Violation } from "./repo.ts";
 
 /** Paths where retired names may legitimately appear (recognition and fixtures), plus the denylist itself. */
 export const RETIRED_EXEMPT: readonly RegExp[] = [
   /^test\/structure\//,
   /^src\/blocks\/migrate\/legacy\//,
-  /^src\/blocks\/project\//,
+  DETECTOR_MODULE,
   /(?:^|\/)fixtures\//,
   /(?:^|\/)bun\.lock$/,
   /^LICENSE$/,

@@ -1,0 +1,12 @@
+{
+  "name": "yarn-app",
+  "scripts": {
+    "test": "mocha",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "mocha": "^10.0.0",
+    "husky": "^9.0.0"
+  },
+  "bugs": "https://acme.atlassian.net/browse/APP"
+}

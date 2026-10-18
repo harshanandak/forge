@@ -1,0 +1,14 @@
+{
+  "name": "pnpm-monorepo",
+  "private": true,
+  "packageManager": "pnpm@9.12.1+sha512.abc",
+  "scripts": {
+    "test": "jest",
+    "build": "turbo run build",
+    "test:unit": "jest unit"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "@playwright/test": "^1.48.0"
+  }
+}

@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: ruff check
+      - id: tests-required
+        name: require tests
+        entry: python tools/require_tests.py
