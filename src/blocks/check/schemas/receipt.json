@@ -1,0 +1,77 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "id",
+    "status",
+    "subject",
+    "checkedAt",
+    "checked",
+    "reason",
+    "inputsDigest",
+    "digest",
+    "runs"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-f0-9-]{36}$" },
+    "status": { "enum": ["PASS", "FAIL", "INCOMPLETE", "NOT_EXECUTED"] },
+    "subject": { "type": "string", "minLength": 1 },
+    "checkedAt": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string", "minLength": 1 },
+    "inputsDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "checked": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["PASS", "FAIL", "INCOMPLETE", "NOT_EXECUTED"] }
+        }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "argv",
+          "executable",
+          "status",
+          "testCount",
+          "exitCode",
+          "signal",
+          "timedOut",
+          "truncated",
+          "stdout",
+          "stderr",
+          "durationMs",
+          "reason"
+        ],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "argv": { "type": "array", "items": { "type": "string" } },
+          "executable": { "type": ["string", "null"] },
+          "status": { "enum": ["PASS", "FAIL", "INCOMPLETE", "NOT_EXECUTED"] },
+          "testCount": { "type": ["integer", "null"], "minimum": 0 },
+          "exitCode": { "type": ["integer", "null"] },
+          "signal": { "type": ["string", "null"] },
+          "timedOut": { "type": "boolean" },
+          "truncated": { "type": "boolean" },
+          "stdout": { "type": "string" },
+          "stderr": { "type": "string" },
+          "durationMs": { "type": "number", "minimum": 0 },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}
