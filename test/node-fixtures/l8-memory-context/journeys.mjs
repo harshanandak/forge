@@ -106,18 +106,44 @@ function mcp() {
   };
 }
 
-/** Add the block as the installed package ships it, then admit and grant it as the human. */
+/**
+ * Select the block the way a project does, as the package's own registered block, then admit and
+ * grant it as the human. The digest comes from a checked copy of the shipped files; the registered
+ * block must hash to the same bytes or the admission would not cover it.
+ */
 function setup(name, effects) {
   mkdirSync(join(root, "blocks"), { recursive: true });
   cpSync(join(installed, "dist/src/blocks", name), join(root, "blocks", name), {
     recursive: true,
     filter: (path) => !path.endsWith(".map"),
   });
-  const added = cli(["block", "add", `./blocks/${name}`], 2);
-  assert.equal(added.error.code, "ADMISSION_REQUIRED");
-  const digest = added.error.repair.match(/sha256:[a-f0-9]{64}/)[0];
+  const digest = cli(["block", "check", `./blocks/${name}`]).result.digest;
+  const shown = cli(["config", "show"]);
+  cli([
+    "config",
+    "apply",
+    "--input",
+    JSON.stringify({
+      expectRevision: shown.result.revision,
+      patch: [
+        {
+          op: "set",
+          path: `/blocks/${name}`,
+          value: { source: { builtin: `forge/${name}` } },
+        },
+      ],
+    }),
+  ]);
+  const probe =
+    name === "memory" ? ["memory", "search", "x"] : ["context", "show"];
+  assert.equal(
+    cli(probe, 2).error.code,
+    "ADMISSION_REQUIRED",
+    "the registered block is not admitted until a human admits it",
+  );
   assert.equal(cli(["block", "admit", digest]).result.admitted, true);
   cli(["config", "grant", "--input", JSON.stringify({ digest, effects })]);
+  assert.equal(cli(probe).ok, true, "the registered block runs once admitted");
 }
 async function connect() {
   const server = mcp();
