@@ -14,11 +14,12 @@ export interface PackageJson {
   readonly peerDependencies?: Readonly<Record<string, string>>;
 }
 
-/** `src/adapters/<name>/adapter.json`: the one place a dependency or external executable is reached. */
+/** `src/adapters/<name>/adapter.json`: the one place a dependency or platform resource is reached. */
 export interface AdapterManifest {
   readonly name: string;
   readonly packages: readonly string[];
   readonly executables: readonly string[];
+  readonly builtins?: readonly string[];
 }
 
 /** Built-in modules that belong to exactly one adapter. */
@@ -175,6 +176,7 @@ const CLAIM_KINDS: Record<
 > = {
   packages: { kind: "package", claims: (m) => m.packages },
   executables: { kind: "executable", claims: (m) => m.executables },
+  builtins: { kind: "builtin", claims: (m) => m.builtins ?? [] },
 };
 
 /** Each claimed resource, of any kind, sits behind exactly one adapter. */
@@ -218,7 +220,7 @@ export function findAdapterViolations(
         rule: "dependency-boundary",
         file: `src/adapters/${dir}`,
         message:
-          "adapter has no valid adapter.json ({ package | executable, port })",
+          "adapter has no valid adapter.json ({ package | executable | builtin, port })",
       });
     }
   }
@@ -234,6 +236,22 @@ export function findAdapterViolations(
     }
   }
   for (const manifest of manifests) {
+    for (const name of manifest.builtins ?? []) {
+      const bare = name.replace(/^node:/, "");
+      if (!name.startsWith("node:") || !BUILTINS.has(bare)) {
+        violations.push({
+          rule: "dependency-boundary",
+          file: `src/adapters/${manifest.name}/adapter.json`,
+          message: `names unknown builtin "${name}"`,
+        });
+      } else if (RESTRICTED_BUILTINS.get(bare) !== manifest.name) {
+        violations.push({
+          rule: "dependency-boundary",
+          file: `src/adapters/${manifest.name}/adapter.json`,
+          message: `builtin "${name}" does not belong to adapter ${manifest.name}`,
+        });
+      }
+    }
     for (const name of manifest.packages) {
       if (!declared(pkg).has(name)) {
         violations.push({

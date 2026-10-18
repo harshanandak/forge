@@ -6,10 +6,15 @@ import {
   renameSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
+import {
+  adoptPrivateFile,
+  makePrivateTempDirectory,
+} from "../../../src/adapters/store-sqlite/file-ops.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 
 const posixTest = process.platform === "win32" ? test.skip : test;
@@ -84,3 +89,28 @@ test("restore syncs its parent after removing the fence", async () => {
     rmSync(work, { recursive: true, force: true });
   }
 }, 30000);
+
+posixTest(
+  "SQLite output is adopted privately inside a private temp directory",
+  () => {
+    const priorUmask = process.umask(0o022);
+    try {
+      const directory = makePrivateTempDirectory(
+        join(tmpdir(), "forge-private-export-"),
+      );
+      try {
+        const path = join(directory, "snapshot.db");
+        writeFileSync(path, "snapshot");
+        expect(statSync(path).mode & 0o777).toBe(0o644);
+        adoptPrivateFile(path);
+        expect(statSync(path).mode & 0o777).toBe(0o600);
+        expect(statSync(directory).mode & 0o777).toBe(0o700);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    } finally {
+      process.umask(priorUmask);
+    }
+  },
+  30000,
+);

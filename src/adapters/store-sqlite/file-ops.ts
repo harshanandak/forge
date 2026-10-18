@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   closeSync,
   fsyncSync,
   mkdirSync,
@@ -86,6 +87,12 @@ export function writePrivateFile(
   } finally {
     closeSync(fd);
   }
+}
+
+/** SQLite must create VACUUM output itself; its containing directory is private until this adopts it. */
+export function adoptPrivateFile(path: string, fs?: DirectorySyncPort): void {
+  if (process.platform !== "win32") chmodSync(path, 0o600);
+  syncParentDirectory(path, fs);
 }
 
 export function copyPrivateFile(

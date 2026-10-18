@@ -34,12 +34,13 @@ export function scanAdapters(
     const record = raw as Record<string, unknown>;
     const packages = strings(record.package);
     const executables = strings(record.executable);
+    const builtins = strings(record.builtin);
     if (
       typeof record.port !== "string" ||
-      packages.length + executables.length === 0
+      packages.length + executables.length + builtins.length === 0
     )
       continue;
-    manifests.push({ name: dir, packages, executables });
+    manifests.push({ name: dir, packages, executables, builtins });
   }
   return { dirs, manifests };
 }

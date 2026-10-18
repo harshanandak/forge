@@ -109,6 +109,31 @@ test("the guard rejects a runtime dependency with no adapter", () => {
   ).toHaveLength(1);
 }, 30_000);
 
+test("a platform builtin is owned by its adapter without claiming the Node executable", () => {
+  const sqlite = {
+    name: "store-sqlite",
+    packages: [],
+    executables: [],
+    builtins: ["node:sqlite"],
+  };
+  const runtime = {
+    name: "node-runtime",
+    packages: [],
+    executables: ["node"],
+  };
+  expect(
+    findAdapterViolations(
+      ["store-sqlite", "node-runtime"],
+      [sqlite, runtime],
+      {},
+    ),
+  ).toEqual([]);
+  expect(
+    findAdapterViolations(["wrong"], [{ ...sqlite, name: "wrong" }], {})[0]
+      ?.message,
+  ).toContain("does not belong");
+}, 30_000);
+
 const claimKinds = [
   {
     kind: "package",

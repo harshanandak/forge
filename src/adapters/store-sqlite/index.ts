@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { inspectRecoveryFile } from "./recovery.ts";
 import {
+  adoptPrivateFile,
   copyPrivateFile,
   createPrivateFile,
   makePrivateTempDirectory,
@@ -268,9 +269,9 @@ export function createSqliteStore(
             );
             const destination = join(directory, "snapshot.db");
             try {
-              closeSync(createPrivateFile(destination, "wx", hooks.fs));
               // SQLite creates a consistent complete image, including WAL contents, without INSERT replay.
               db.exec(`VACUUM INTO '${destination.replaceAll("'", "''")}'`);
+              adoptPrivateFile(destination, hooks.fs);
               const captured = connect(destination, true);
               try {
                 inspect?.(wrap(captured));

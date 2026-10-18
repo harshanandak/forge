@@ -22,7 +22,7 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 
 ## Dependencies and external tools
 
-- **R1. One adapter per dependency.** Every third-party package and external executable is reached through exactly one `src/adapters/<name>/`, implementing a typed port from `src/ports/`. The adapter declares what it wraps in `adapter.json` (`{ "package": "...", "port": "..." }` or `{ "executable": "...", "port": "..." }`). Core, blocks and other adapters import the port type, never the package or another adapter's internals. **Guard:** `dependency-boundary`.
+- **R1. One adapter per dependency.** Every third-party package, external executable and owned platform builtin is reached through exactly one `src/adapters/<name>/`, implementing a typed port from `src/ports/`. The adapter declares what it wraps in `adapter.json` with `package`, `executable` or `builtin` and its `port`. Core, blocks and other adapters import the port type, never the package or another adapter's internals. **Guard:** `dependency-boundary`.
 - **R2. No import of a dependency outside its adapter.** `node:child_process` is allowed only in `src/adapters/process/` and `node:sqlite` only in `src/adapters/store-sqlite/`. Build scripts under `tools/` and tests may import development dependencies. **Guard:** `dependency-boundary`.
 - **R3. Missing is a result, not a crash.** An adapter reports `Unavailable { reason, remedy }`. Only `git` and the Node runtime may be required.
 - **R4. Our toolchain is not the user's.** No package manager, test runner, linter or hook runner is named outside adapters and project detectors. User commands come from the project's own declared scripts and config. **Guard:** `toolchain-names`.
