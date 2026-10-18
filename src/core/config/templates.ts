@@ -177,7 +177,7 @@ function owners(document: JsonObject): JsonObject {
       retry: "never",
     });
   }
-  return document.owners as JsonObject;
+  return document.owners;
 }
 
 /** Owner records left empty are dropped, so a project without templates has none. */

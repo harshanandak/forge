@@ -222,7 +222,7 @@ export function applyStep(document: JsonObject, step: Step, ref: string): void {
       retry: "never",
     });
   }
-  const owners = document.owners as JsonObject;
+  const owners = document.owners;
   if (step.kind === "adopt") {
     for (const key of under(step.segments, Object.keys(owners))) {
       const owner = owners[key];
