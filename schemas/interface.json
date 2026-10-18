@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/interface.json",
+  "title": "InterfaceDocument",
+  "description": "forge.interface/1: verbs any provider of an interface implements under its own noun. A provider at version M.n.p satisfies a requirement for major M.",
+  "type": "object",
+  "required": ["schemaVersion", "id", "version", "summary", "operations"],
+  "properties": {
+    "schemaVersion": { "const": "forge.interface/1" },
+    "id": { "$ref": "common.json#/$defs/InterfaceId" },
+    "version": { "$ref": "common.json#/$defs/SemVer" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "operations": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "propertyNames": { "$ref": "common.json#/$defs/Verb" },
+      "additionalProperties": { "$ref": "#/$defs/InterfaceOperation" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "SchemaRef": {
+      "description": "A schema in this repository's schemas folder: <file>.json, optionally #/$defs/<Name>.",
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^[a-z][a-z0-9-]*\\.json(?:#/\\$defs/[A-Za-z][A-Za-z0-9]*)?$"
+    },
+    "InterfaceOperation": {
+      "type": "object",
+      "required": ["input", "output", "context", "access", "idempotent"],
+      "properties": {
+        "input": { "$ref": "#/$defs/SchemaRef" },
+        "output": { "$ref": "#/$defs/SchemaRef" },
+        "context": { "$ref": "common.json#/$defs/ContextVariant" },
+        "leaseMode": { "$ref": "common.json#/$defs/LeaseMode" },
+        "access": {
+          "description": "read: the provider declares no write effect for this verb; write: it declares <noun>:write.",
+          "enum": ["read", "write"]
+        },
+        "idempotent": { "type": "boolean" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": ["context"],
+            "properties": { "context": { "const": "leased" } }
+          },
+          "then": { "required": ["leaseMode"] },
+          "else": { "not": { "required": ["leaseMode"] } }
+        }
+      ]
+    }
+  }
+}

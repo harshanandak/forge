@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/state.json",
+  "description": "Accepted state, written only by the single state owner: records with compare-and-set revisions, events, and leases with fenced generations.",
+  "$defs": {
+    "StateRecord": {
+      "type": "object",
+      "required": [
+        "namespace",
+        "key",
+        "revision",
+        "value",
+        "updatedAt",
+        "updatedBy"
+      ],
+      "properties": {
+        "namespace": { "$ref": "common.json#/$defs/BlockId" },
+        "key": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "revision": {
+          "description": "Starts at 1 and increases by one on every accepted write.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "value": {},
+        "updatedAt": { "$ref": "common.json#/$defs/Timestamp" },
+        "updatedBy": { "$ref": "context.json#/$defs/Actor" }
+      },
+      "additionalProperties": false
+    },
+    "StateEvent": {
+      "type": "object",
+      "required": ["type", "namespace", "key", "revision", "at", "actor"],
+      "properties": {
+        "type": { "$ref": "common.json#/$defs/EventType" },
+        "namespace": { "$ref": "common.json#/$defs/BlockId" },
+        "key": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "revision": { "type": "integer", "minimum": 1 },
+        "at": { "$ref": "common.json#/$defs/Timestamp" },
+        "actor": { "$ref": "context.json#/$defs/Actor" },
+        "requestId": { "$ref": "common.json#/$defs/RequestId" },
+        "data": {}
+      },
+      "additionalProperties": false
+    },
+    "LeaseHolder": {
+      "type": "object",
+      "required": ["actor", "session"],
+      "properties": {
+        "actor": { "$ref": "context.json#/$defs/Actor" },
+        "session": { "$ref": "context.json#/$defs/Session" }
+      },
+      "additionalProperties": false
+    },
+    "LeaseRecord": {
+      "description": "One record per leased subject. The generation only increases and is never reused; expiry is judged on the state owner's clock inside the write's transaction.",
+      "type": "object",
+      "required": ["subject", "holder", "generation", "expiresAt"],
+      "properties": {
+        "subject": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "holder": { "$ref": "#/$defs/LeaseHolder" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "expiresAt": { "$ref": "common.json#/$defs/Timestamp" },
+        "releasedAt": { "$ref": "common.json#/$defs/Timestamp" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

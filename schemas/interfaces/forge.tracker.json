@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "forge.interface/1",
+  "id": "forge.tracker",
+  "version": "1.0.0",
+  "summary": "Tracked work items: create, read, list, update, comment, close, and claim with a fenced lease.",
+  "operations": {
+    "create": {
+      "input": "tracker.json#/$defs/CreateItemInput",
+      "output": "tracker.json#/$defs/TrackerItem",
+      "context": "project",
+      "access": "write",
+      "idempotent": false
+    },
+    "show": {
+      "input": "tracker.json#/$defs/ItemRef",
+      "output": "tracker.json#/$defs/TrackerItem",
+      "context": "project",
+      "access": "read",
+      "idempotent": true
+    },
+    "list": {
+      "input": "tracker.json#/$defs/ListItemsInput",
+      "output": "tracker.json#/$defs/ListItemsOutput",
+      "context": "project",
+      "access": "read",
+      "idempotent": true
+    },
+    "update": {
+      "input": "tracker.json#/$defs/UpdateItemInput",
+      "output": "tracker.json#/$defs/TrackerItem",
+      "context": "leased",
+      "leaseMode": "held",
+      "access": "write",
+      "idempotent": false
+    },
+    "comment": {
+      "input": "tracker.json#/$defs/CommentInput",
+      "output": "tracker.json#/$defs/CommentOutput",
+      "context": "project",
+      "access": "write",
+      "idempotent": false
+    },
+    "claim": {
+      "input": "tracker.json#/$defs/ClaimInput",
+      "output": "tracker.json#/$defs/LeaseGrant",
+      "context": "leased",
+      "leaseMode": "acquire",
+      "access": "write",
+      "idempotent": false
+    },
+    "renew": {
+      "input": "tracker.json#/$defs/ClaimInput",
+      "output": "tracker.json#/$defs/LeaseGrant",
+      "context": "leased",
+      "leaseMode": "held",
+      "access": "write",
+      "idempotent": false
+    },
+    "release": {
+      "input": "tracker.json#/$defs/ItemRef",
+      "output": "tracker.json#/$defs/ItemRef",
+      "context": "leased",
+      "leaseMode": "held",
+      "access": "write",
+      "idempotent": false
+    },
+    "close": {
+      "input": "tracker.json#/$defs/CloseInput",
+      "output": "tracker.json#/$defs/TrackerItem",
+      "context": "leased",
+      "leaseMode": "held",
+      "access": "write",
+      "idempotent": false
+    }
+  }
+}

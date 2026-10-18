@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/invocation.json",
+  "title": "InvocationRequest",
+  "description": "forge.invocation/1: one call to one operation, the same from the CLI, MCP, a host hook or the library API.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "op",
+    "input",
+    "caller",
+    "context"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "forge.invocation/1" },
+    "requestId": { "$ref": "common.json#/$defs/RequestId" },
+    "op": { "$ref": "common.json#/$defs/OperationName" },
+    "input": {
+      "description": "The operation's input; validated against the operation's own input schema."
+    },
+    "caller": { "$ref": "common.json#/$defs/Caller" },
+    "context": { "$ref": "context.json#/$defs/AmbientContext" },
+    "dryRun": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

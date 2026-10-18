@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "io.github.alice/semver",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v1",
+  "profile": "trusted-action-sync/v1",
+  "entry": "dist/index.cjs",
+  "configSchema": "schemas/config.json",
+  "operations": {
+    "semver.bump": {
+      "input": "schemas/bump.input.json",
+      "output": "schemas/bump.output.json",
+      "args": ["current", "part"],
+      "context": "stateless",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "stable"
+    },
+    "semver.mark": {
+      "input": "schemas/mark.input.json",
+      "output": "schemas/mark.output.json",
+      "args": ["version", "expectRevision"],
+      "context": "project",
+      "effects": ["semver:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    }
+  },
+  "requires": [{ "slot": "state", "interface": "forge.state@1" }],
+  "docs": "docs/records.json"
+}

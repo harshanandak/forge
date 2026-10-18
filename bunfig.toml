@@ -3,3 +3,6 @@ exact = true
 
 [lint]
 typeAware = true
+
+[test]
+preload = ["./tools/gen/preload.ts"]

@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/common.json",
+  "description": "The naming grammar, version grammar and shared shapes every other schema uses.",
+  "$defs": {
+    "Segment": {
+      "description": "One kebab-case name segment: lower case, digits and single hyphens, no leading or trailing hyphen.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "Publisher": {
+      "description": "Reverse-DNS publisher, for example io.github.alice; forge is reserved for first-party blocks.",
+      "type": "string",
+      "maxLength": 100,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)*$"
+    },
+    "BlockId": {
+      "description": "<publisher>/<name>, for example io.github.alice/semver.",
+      "type": "string",
+      "maxLength": 132,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)*/[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "Noun": {
+      "description": "Operation noun: one segment of 2 to 21 characters.",
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 21,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "Verb": {
+      "description": "Operation verb: one segment of 2 to 21 characters.",
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 21,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "OperationName": {
+      "description": "Public operation address <noun>.<verb>, for example semver.bump.",
+      "type": "string",
+      "maxLength": 43,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "McpToolName": {
+      "description": "MCP tool name <noun>_<verb>, at most 48 characters so a host prefix stays within 64.",
+      "type": "string",
+      "maxLength": 48,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*_[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "InstanceName": {
+      "description": "Name of a block instance in config; kebab-case, defaults to the block name.",
+      "type": "string",
+      "maxLength": 40,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "PropertyName": {
+      "description": "Config key or schema property name in lowerCamel case; maps to a kebab-case CLI flag.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)*$"
+    },
+    "ErrorCode": {
+      "description": "Error code in UPPER_SNAKE case.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$"
+    },
+    "EffectName": {
+      "description": "Declared effect: <noun>:read, <noun>:write or external:<target>.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:(?:read|write)|external:[a-z][a-z0-9]*(?:-[a-z0-9]+)*)$"
+    },
+    "EventType": {
+      "description": "Event type <blockId>:<noun>.<past-participle>@<major>, for example io.github.alice/semver:semver.released@1.",
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)*/[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*@(?:0|[1-9][0-9]*)$"
+    },
+    "PermissionKey": {
+      "description": "Grant and permission key <blockId>.<noun>@<interface version>#<verb>; a local rename never changes it.",
+      "type": "string",
+      "maxLength": 240,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)*/[a-z][a-z0-9]*(?:-[a-z0-9]+)*\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*@(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)#[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "SemVer": {
+      "description": "Semantic Versioning 2.0.0 version, no leading v.",
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "VersionRange": {
+      "description": "Space-separated comparators that must all hold, for example >=0.1.0 <0.2.0; a bare version means exactly that version.",
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?:>=|<=|>|<|=)?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?: (?:>=|<=|>|<|=)?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?)*$"
+    },
+    "InterfaceId": {
+      "description": "Interface identity: at least two dotted segments, for example forge.state.",
+      "type": "string",
+      "maxLength": 100,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+$"
+    },
+    "InterfaceRef": {
+      "description": "A required interface and major version, for example forge.state@1.",
+      "type": "string",
+      "maxLength": 110,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+@(?:0|[1-9][0-9]*)$"
+    },
+    "InterfaceVersionRef": {
+      "description": "A provided interface at an exact version, for example forge.state@1.0.0.",
+      "type": "string",
+      "maxLength": 130,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+@(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+    },
+    "TemplateRef": {
+      "description": "A template at an exact version, <blockId>@<version>.",
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)*/[a-z][a-z0-9]*(?:-[a-z0-9]+)*@(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "Digest": {
+      "description": "Content digest, sha256:<64 lower-case hex>.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "Timestamp": {
+      "description": "RFC 3339 date-time with an explicit offset.",
+      "type": "string",
+      "maxLength": 40,
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "RequestId": {
+      "description": "Caller-chosen request ID; identifies a request for replay, never grants a retry.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "JsonPointer": {
+      "description": "RFC 6901 JSON Pointer.",
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?:/(?:[^~/]|~[01])*)*$"
+    },
+    "RelativePath": {
+      "description": "Forward-slash path relative to the block or project root; no absolute paths, no .. segments, no backslashes.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?![/~])(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\:*?\"<>|\\u0000-\\u001f]+$"
+    },
+    "Caller": {
+      "description": "Who may call an operation; agents never mint trust, so human-only operations omit agent.",
+      "enum": ["agent", "human"]
+    },
+    "Stability": {
+      "enum": ["experimental", "stable", "deprecated"]
+    },
+    "ContextVariant": {
+      "description": "The closed set of contexts an operation may declare; the runtime requires exactly what the declared variant needs.",
+      "enum": ["stateless", "device", "project", "leased"]
+    },
+    "LeaseMode": {
+      "description": "acquire creates a lease and supplies no generation; held needs the current lease generation.",
+      "enum": ["acquire", "held"]
+    },
+    "SecretRef": {
+      "description": "Reference to a named secret; plaintext credentials are never accepted.",
+      "type": "object",
+      "required": ["$secret"],
+      "properties": {
+        "$secret": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Unavailable": {
+      "description": "A missing tool or provider is a result, not a crash.",
+      "type": "object",
+      "required": ["kind", "reason", "remedy"],
+      "properties": {
+        "kind": { "const": "unavailable" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "remedy": { "type": "string", "minLength": 1, "maxLength": 2000 }
+      },
+      "additionalProperties": false
+    },
+    "ParseLimits": {
+      "description": "Budgets applied at the byte/text parse boundary for untrusted input.",
+      "type": "object",
+      "required": ["maxBytes", "maxDepth", "maxNodes", "maxStringLength"],
+      "properties": {
+        "maxBytes": { "type": "integer", "minimum": 1 },
+        "maxDepth": { "type": "integer", "minimum": 1 },
+        "maxNodes": { "type": "integer", "minimum": 1 },
+        "maxStringLength": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "UntrustedContent": {
+      "description": "Text from outside the trust boundary, fenced with its provenance; it is data, never instructions.",
+      "type": "object",
+      "required": ["kind", "source", "text"],
+      "properties": {
+        "kind": { "const": "untrusted" },
+        "source": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "receivedAt": { "$ref": "#/$defs/Timestamp" },
+        "text": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

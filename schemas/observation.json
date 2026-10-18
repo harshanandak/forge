@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/observation.json",
+  "title": "ExecutionObservation",
+  "description": "forge.observation/1: what one invocation actually did, including the outcome of every declared effect.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "op",
+    "startedAt",
+    "finishedAt",
+    "status",
+    "effects"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "forge.observation/1" },
+    "requestId": { "$ref": "common.json#/$defs/RequestId" },
+    "op": { "$ref": "common.json#/$defs/OperationName" },
+    "startedAt": { "$ref": "common.json#/$defs/Timestamp" },
+    "finishedAt": { "$ref": "common.json#/$defs/Timestamp" },
+    "status": { "$ref": "#/$defs/ExecutionStatus" },
+    "limit": { "$ref": "#/$defs/LimitHit" },
+    "effects": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/EffectObservation" }
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "const": "stopped" } }
+      },
+      "then": { "required": ["limit"] }
+    }
+  ],
+  "$defs": {
+    "ExecutionStatus": {
+      "description": "completed: the handler returned; failed: it threw or its output was refused; stopped: a limit ended it.",
+      "enum": ["completed", "failed", "stopped"]
+    },
+    "LimitHit": {
+      "type": "object",
+      "required": ["name", "limit"],
+      "properties": {
+        "name": { "enum": ["time", "outputBytes", "memory", "depth", "nodes"] },
+        "limit": { "type": "number", "minimum": 0 },
+        "observed": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "EffectOutcome": {
+      "description": "applied and not_applied are known; uncertain must be reconciled through the owning block's read operation before any retry.",
+      "enum": ["applied", "not_applied", "uncertain"]
+    },
+    "EffectObservation": {
+      "type": "object",
+      "required": ["effect", "outcome"],
+      "properties": {
+        "effect": { "$ref": "common.json#/$defs/EffectName" },
+        "outcome": { "$ref": "#/$defs/EffectOutcome" },
+        "target": { "type": "string", "maxLength": 500 },
+        "reconcileWith": { "$ref": "common.json#/$defs/OperationName" },
+        "detail": { "type": "string", "maxLength": 2000 }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": ["outcome"],
+            "properties": { "outcome": { "const": "uncertain" } }
+          },
+          "then": { "required": ["reconcileWith"] }
+        }
+      ]
+    }
+  }
+}

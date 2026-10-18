@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["current", "part"],
+  "properties": {
+    "current": { "type": "string", "minLength": 5, "maxLength": 64 },
+    "part": { "enum": ["major", "minor", "patch"] },
+    "preRelease": { "type": "string", "maxLength": 32 }
+  },
+  "additionalProperties": false
+}

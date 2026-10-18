@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/evidence.json",
+  "title": "Evidence",
+  "description": "An outcome judgement bound to what was checked. Nothing checked is never PASS.",
+  "type": "object",
+  "required": ["status", "subject", "checkedAt", "checked"],
+  "properties": {
+    "status": { "$ref": "#/$defs/EvidenceStatus" },
+    "subject": {
+      "description": "What was judged, for example an exact revision or artifact digest.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "checkedAt": { "$ref": "common.json#/$defs/Timestamp" },
+    "checked": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/CheckItem" }
+    },
+    "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "inputsDigest": { "$ref": "common.json#/$defs/Digest" }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "const": "PASS" } }
+      },
+      "then": {
+        "properties": {
+          "checked": {
+            "minItems": 1,
+            "items": {
+              "properties": { "status": { "const": "PASS" } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "enum": ["INCOMPLETE", "NOT_EXECUTED"] } }
+      },
+      "then": { "required": ["reason"] }
+    }
+  ],
+  "$defs": {
+    "EvidenceStatus": {
+      "enum": ["PASS", "FAIL", "INCOMPLETE", "NOT_EXECUTED"]
+    },
+    "CheckItem": {
+      "type": "object",
+      "required": ["name", "status"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "status": { "$ref": "#/$defs/EvidenceStatus" },
+        "detail": { "type": "string", "maxLength": 4000 }
+      },
+      "additionalProperties": false
+    }
+  }
+}
