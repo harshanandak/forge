@@ -41,3 +41,16 @@ None. The package ships with no runtime dependencies at this scaffold. Each one 
 - **Licence:** MIT.
 - **Trust:** DefinitelyTyped publish pipeline; version and integrity pinned in `bun.lock`.
 - **Swap proof:** types only; the compiled output is identical without it, only the type check changes.
+
+## Platform adapters
+
+#### Node filesystem capture
+
+- **Saves:** platform file descriptors, canonical paths and regular-file identity checks.
+- **Maintenance:** built into the supported Node runtime.
+- **Transitive packages:** 0.
+- **Fit:** Node 24/26; no additional executable or package.
+- **Licence:** Node runtime licence.
+- **Trust:** the same runtime already required by the package.
+- **Swap proof:** injected capture test reproduces the exact byte digest.
+- **Adapter:** src/adapters/fs-capture/, using catalog-local FileCapturePort and L1 borrowed handle. The manifest names the Node runtime; it spawns no process.

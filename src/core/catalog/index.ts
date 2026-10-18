@@ -1,12 +1,4 @@
-import {
-  openSync,
-  readSync,
-  closeSync,
-  fstatSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
-import { resolve, relative, isAbsolute, sep } from "node:path";
+import type { BorrowedHandle } from "../../ports/lifetime.ts";
 import { resolveComposition } from "../../contract/composition.ts";
 import { SchemaRegistry, isSchemaObject } from "../../contract/schema.ts";
 import {
@@ -26,6 +18,15 @@ import { SCHEMA_DOCUMENTS } from "../../generated/schemas.ts";
 import { digest, refuse } from "../trust/index.ts";
 import type { TrustStore } from "../trust/index.ts";
 import { nounRefusal } from "../../contract/naming.ts";
+
+/** Root-scoped, bounded byte capture. Platform containment belongs to the adapter. */
+export interface CaptureFiles {
+  read(name: string, maxBytes: number): Uint8Array;
+}
+
+export interface FileCapturePort {
+  open(root: string): BorrowedHandle<CaptureFiles>;
+}
 
 export interface CaptureLimits {
   readonly maxBytes: number;
@@ -152,61 +153,20 @@ export class CapturedBlock {
 /** Reads bounded regular files contained in one root; discovery executes no module. */
 export function captureBlock(
   rootPath: string,
+  capture: FileCapturePort,
   limits: CaptureLimits = DEFAULT_CAPTURE_LIMITS,
 ): CapturedBlock {
-  const root = realpathSync(rootPath);
+  const source = capture.open(rootPath).value;
   let bytes = 0;
   const files = new Map<string, string>();
   const hashes = new Map<string, string>();
   const read = (name: string): string => {
     const cached = files.get(name);
     if (cached !== undefined) return cached;
-    const path = realpathSync(resolve(root, name));
-    const rel = relative(root, path);
-    if (
-      isAbsolute(name) ||
-      name.split(/[\\/]/).includes("..") ||
-      rel === ".." ||
-      rel.startsWith(`..${sep}`) ||
-      isAbsolute(rel)
-    )
-      refuse("INPUT_INVALID", "capture path leaves its root");
-    const stat = statSync(path);
-    if (!stat.isFile())
-      refuse("INPUT_INVALID", "capture requires regular files");
-    bytes += stat.size;
+    const data = source.read(name, limits.maxBytes - bytes);
+    bytes += data.byteLength;
     if (bytes > limits.maxBytes)
-      refuse("LIMIT_EXCEEDED", `capture exceeds maxBytes ${limits.maxBytes}`);
-    const descriptor = openSync(path, "r");
-    let data: Buffer;
-    try {
-      const opened = fstatSync(descriptor);
-      if (
-        !opened.isFile() ||
-        opened.dev !== stat.dev ||
-        opened.ino !== stat.ino ||
-        opened.size !== stat.size
-      )
-        refuse("INPUT_CONFLICT", "file changed during capture");
-      data = Buffer.alloc(stat.size);
-      let offset = 0;
-      while (offset < data.length) {
-        const count = readSync(
-          descriptor,
-          data,
-          offset,
-          data.length - offset,
-          offset,
-        );
-        if (count === 0)
-          refuse("INPUT_CONFLICT", "file changed during capture");
-        offset += count;
-      }
-      if (readSync(descriptor, Buffer.alloc(1), 0, 1, offset) !== 0)
-        refuse("INPUT_CONFLICT", "file grew during capture");
-    } finally {
-      closeSync(descriptor);
-    }
+      refuse("LIMIT_EXCEEDED", "capture exceeds maxBytes");
     const text = new TextDecoder("utf-8", { fatal: true }).decode(data);
     files.set(name, text);
     hashes.set(name, digest(data));
@@ -331,9 +291,10 @@ export class Catalog {
 export function addBlock(
   root: string,
   trust: TrustStore,
+  capture: FileCapturePort,
   limits: CaptureLimits = DEFAULT_CAPTURE_LIMITS,
 ): { readonly block: CapturedBlock; readonly admitted: boolean } {
-  const block = captureBlock(root, limits);
+  const block = captureBlock(root, capture, limits);
   try {
     trust.check(block.digest, []);
     return { block, admitted: true };

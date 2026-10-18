@@ -1,3 +1,9 @@
+import { nodeFileCapture } from "../../../src/adapters/fs-capture/index.ts";
+import type { CaptureLimits } from "../../../src/core/catalog/index.ts";
+const captureBlock = (root: string, limits?: CaptureLimits) =>
+  capture(root, nodeFileCapture, limits);
+const addBlock = (root: string, trust: TrustStore) =>
+  add(root, trust, nodeFileCapture);
 import { operations as catalogOperations } from "../../../src/core/catalog/operations.ts";
 import { operations as trustOperations } from "../../../src/core/trust/operations.ts";
 import { test } from "bun:test";
@@ -7,8 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   Catalog,
-  captureBlock,
-  addBlock,
+  captureBlock as capture,
+  addBlock as add,
   assembleCoreManifest,
 } from "../../../src/core/catalog/index.ts";
 import { TrustStore, secretReference } from "../../../src/core/trust/index.ts";
@@ -541,6 +547,132 @@ test("missing embedding service provider is incomplete and never activates the h
     assert.partialDeepStrictEqual(
       await new Runtime(catalog, f.trust).invoke(f.request),
       { ok: false, status: "INCOMPLETE", error: { code: "PROVIDER_MISSING" } },
+    );
+  } finally {
+    f.close();
+  }
+}, 5000);
+test("clients are constructed for only the invoked operation effects", async () => {
+  const f = fixture();
+  let writes = 0;
+  try {
+    const manifest: BlockManifest = {
+      ...f.block.manifest,
+      operations: {
+        "sample.read": {
+          ...f.block.manifest.operations["sample.run"]!,
+          effects: [],
+        },
+        "sample.write": {
+          ...f.block.manifest.operations["sample.run"]!,
+          effects: ["sample:write"],
+        },
+      },
+    };
+    writeFileSync(join(f.root, "block.json"), JSON.stringify(manifest));
+    writeFileSync(
+      join(f.root, "index.cjs"),
+      "module.exports = { 'sample.read': ({services}) => { services.write(); return 'written'; }, 'sample.write': ({services}) => { services.write(); return 'written'; } };",
+    );
+    const block = captureBlock(f.root);
+    const catalog = new Catalog(f.catalog.config, new Map([["sample", block]]));
+    f.trust.admit("human", block.digest);
+    f.trust.grant("human", block.digest, ["sample:write"]);
+    const scopes: unknown[] = [];
+    const runtime = new Runtime(catalog, f.trust, {
+      services: (_instance, _context, scope) => {
+        scopes.push(scope);
+        const allowed =
+          scope === undefined || scope.effects.includes("sample:write");
+        return Promise.resolve({
+          ownership: "borrowed",
+          value: Object.freeze(allowed ? { write: () => writes++ } : {}),
+        });
+      },
+    });
+    assert.partialDeepStrictEqual(
+      await runtime.invoke({ ...f.request, op: "sample.read" }),
+      {
+        ok: false,
+        error: { code: "BLOCK_EXECUTION_FAILED" },
+      },
+    );
+    assert.equal(writes, 0);
+    assert.partialDeepStrictEqual(
+      await runtime.invoke({ ...f.request, op: "sample.write" }),
+      {
+        ok: true,
+        result: "written",
+      },
+    );
+    assert.equal(writes, 1);
+    assert.deepEqual(scopes, [
+      { op: "sample.read", effects: [] },
+      { op: "sample.write", effects: ["sample:write"] },
+    ]);
+    for (const scope of scopes) {
+      assert.ok(Object.isFrozen(scope));
+      assert.ok(Object.isFrozen((scope as { effects: unknown }).effects));
+    }
+  } finally {
+    f.close();
+  }
+}, 5000);
+
+test("catalog core imports no filesystem or platform path modules", () => {
+  const source = readFileSync(
+    new URL("../../../src/core/catalog/index.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    source,
+    /["'](?:node:)?(?:fs|path|os)(?:\/[^"']*)?["']|bun:/,
+  );
+}, 5000);
+
+test("catalog capture accepts an injected source through the L1 handle", () => {
+  const f = fixture();
+  try {
+    const reads: string[] = [];
+    const memory = new Map(
+      ["block.json", "index.cjs", "docs.json", "input.json", "output.json"].map(
+        (name) => [name, readFileSync(join(f.root, name))],
+      ),
+    );
+    const block = capture(f.root, {
+      open: () => ({
+        ownership: "borrowed",
+        value: {
+          read: (name, maxBytes) => {
+            reads.push(name);
+            const data = memory.get(name)!;
+            assert.ok(data.length <= maxBytes);
+            return data;
+          },
+        },
+      }),
+    });
+    assert.equal(block.digest, f.block.digest);
+    assert.deepEqual(
+      new Set(reads),
+      new Set([
+        "block.json",
+        "index.cjs",
+        "docs.json",
+        "input.json",
+        "output.json",
+      ]),
+    );
+    assert.throws(() =>
+      nodeFileCapture.open(f.root).value.read("../outside", 1000),
+    );
+    assert.throws(
+      () => nodeFileCapture.open(f.root).value.read(f.root, 1000),
+      /INPUT_INVALID/,
+    );
+    assert.throws(
+      () => nodeFileCapture.open(f.root).value.read(".", 1000),
+      /regular files/,
     );
   } finally {
     f.close();

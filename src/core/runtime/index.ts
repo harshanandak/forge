@@ -31,12 +31,20 @@ export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
 
 export type ServiceHandle = Handle<unknown>;
 
+export interface ServiceScope {
+  readonly op: string;
+  readonly effects: readonly string[];
+}
+
 export interface RuntimeOptions {
   readonly limits?: Partial<RuntimeLimits>;
-  /** Builds explicit, context-bound clients from catalog.bindings(instance); owns partial-open rollback. */
+  /** Constructs clients exposing only scope.effects, never block-wide grants.
+   * The embedding owns capability enforcement and partial-open rollback.
+   */
   readonly services?: (
     instance: string,
     context: BoundContext,
+    scope: ServiceScope,
   ) => Promise<ServiceHandle>;
 }
 
@@ -228,6 +236,10 @@ export class Runtime {
       handle = await this.#options.services?.(
         operation.instance,
         bound.context,
+        Object.freeze({
+          op: request.op,
+          effects: Object.freeze([...declaration.effects]),
+        }),
       );
       // Opening clients may yield; trust must still hold immediately before execution.
       this.#trust.check(block.digest, declaration.effects);

@@ -13,7 +13,11 @@ const installed = process.argv[2];
 assert.ok(installed, "pass the installed package root");
 const load = (area: string): string =>
   pathToFileURL(resolve(installed, `dist/src/core/${area}/index.js`)).href;
-const { Catalog, captureBlock, addBlock } = (await import(
+const {
+  Catalog,
+  captureBlock: capture,
+  addBlock: add,
+} = (await import(
   load("catalog")
 )) as typeof import("../../../src/core/catalog/index.ts");
 const { Runtime } = (await import(
@@ -22,6 +26,16 @@ const { Runtime } = (await import(
 const { TrustStore } = (await import(
   load("trust")
 )) as typeof import("../../../src/core/trust/index.ts");
+const { nodeFileCapture } = (await import(
+  pathToFileURL(resolve(installed, "dist/src/adapters/fs-capture/index.js"))
+    .href
+)) as typeof import("../../../src/adapters/fs-capture/index.ts");
+const captureBlock = (
+  root: string,
+  limits?: import("../../../src/core/catalog/index.ts").CaptureLimits,
+) => capture(root, nodeFileCapture, limits);
+const addBlock = (root: string, trust: InstanceType<typeof TrustStore>) =>
+  add(root, trust, nodeFileCapture);
 const root = mkdtempSync(join(tmpdir(), "runtime-artifact-"));
 let completed = 0;
 try {
@@ -173,6 +187,74 @@ try {
       error: { code: "CONTEXT_MISSING", missing: ["leaseGeneration"] },
     },
   );
+  // The installed artifact must withhold the write method from a read-only operation.
+  const base = captureBlock(root).manifest;
+  const declaration = base.operations["sample.run"]!;
+  writeFileSync(
+    join(root, "block.json"),
+    JSON.stringify({
+      ...base,
+      operations: {
+        "sample.read": {
+          ...declaration,
+          context: "stateless",
+          leaseMode: undefined,
+          effects: [],
+        },
+        "sample.write": {
+          ...declaration,
+          context: "stateless",
+          leaseMode: undefined,
+          effects: ["sample:write"],
+        },
+      },
+    }),
+  );
+  writeFileSync(
+    join(root, "index.cjs"),
+    "module.exports = { 'sample.read': ({services}) => { services.write(); return 'written'; }, 'sample.write': ({services}) => { services.write(); return 'written'; } };",
+  );
+  const scopedBlock = captureBlock(root);
+  const scopedCatalog = new Catalog(
+    {
+      schemaVersion: "forge.config/1",
+      blocks: { sample: { source: { path: "./sample" } } },
+    },
+    new Map([["sample", scopedBlock]]),
+  );
+  const scopedTrust = new TrustStore();
+  scopedTrust.admit("human", scopedBlock.digest);
+  scopedTrust.grant("human", scopedBlock.digest, ["sample:write"]);
+  let writes = 0;
+  const scopedRuntime = new Runtime(scopedCatalog, scopedTrust, {
+    services: (_instance, _context, scope) =>
+      Promise.resolve({
+        ownership: "borrowed",
+        value: Object.freeze(
+          scope.effects.includes("sample:write")
+            ? { write: () => writes++ }
+            : {},
+        ),
+      }),
+  });
+  const scopedRequest = {
+    schemaVersion: "forge.invocation/1",
+    requestId: "scoped",
+    caller: "agent",
+    input: "hello",
+    context: {},
+  };
+  assert.partialDeepStrictEqual(
+    await scopedRuntime.invoke({ ...scopedRequest, op: "sample.read" }),
+    { ok: false, error: { code: "BLOCK_EXECUTION_FAILED" } },
+  );
+  assert.equal(writes, 0);
+  assert.partialDeepStrictEqual(
+    await scopedRuntime.invoke({ ...scopedRequest, op: "sample.write" }),
+    { ok: true, result: "written" },
+  );
+  assert.equal(writes, 1);
+  completed++;
   const before = captureBlock(root);
   writeFileSync(join(root, "index.cjs"), "module.exports = {};\n");
   const changed = captureBlock(root);
