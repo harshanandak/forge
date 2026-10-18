@@ -3,3 +3,5 @@
 import { write } from "./types.ts";
 
 write();
+const { writeCoreManifest } = await import("./core.ts");
+writeCoreManifest();

@@ -13,7 +13,8 @@ function stateOf(pid: number): string | undefined {
   const ps = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], {
     encoding: "utf8",
   });
-  return ps.stdout.trim().slice(0, 1) || undefined;
+  // No state printed: the pid was collected between the kill probe and this read, so it is gone.
+  return ps.stdout.trim().slice(0, 1);
 }
 
 export function isRunning(pid: number): boolean {
@@ -23,7 +24,8 @@ export function isRunning(pid: number): boolean {
     return false;
   }
   try {
-    return stateOf(pid) !== "Z";
+    const state = stateOf(pid);
+    return state !== "Z" && state !== "";
   } catch {
     return false;
   }
