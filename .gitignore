@@ -1,0 +1,18 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+*.tsbuildinfo
+.worktrees/
+tmp/
+.DS_Store
+.env
+.env.*
+
+# Agent and editor mirrors are generated per user, never committed.
+.claude/
+.cursor/
+.codex/
+.hermes/
+.opencode/
+.pi/
