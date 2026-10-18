@@ -1,9 +1,9 @@
 // Generate src/generated/** from schemas/**: TypeScript types, the embedded schema documents and
 // one typed validator per named shape. The schemas are the one source of truth.
-// Usage: bun tools/gen/types.ts [--check]
-// --check writes nothing and exits 1 when a generated file differs from what the schemas produce.
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+// The output is gitignored and never committed: `bun run check`, `lint`, `build` and `bun test` generate it
+// first, so a clean checkout works. Usage: bun tools/gen/types.ts
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 type Schema = boolean | Readonly<Record<string, unknown>>;
@@ -349,34 +349,12 @@ export function generate(root: string = repoRoot): Map<string, string> {
   ]);
 }
 
-/** Paths whose committed bytes differ from the generator's output. */
-export function drift(root: string = repoRoot): string[] {
-  const stale: string[] = [];
+/** Write the generated files under `root`, creating src/generated when it is absent. */
+export function write(root: string = repoRoot): void {
   for (const [path, text] of generate(root)) {
-    let current: string | undefined;
-    try {
-      current = readFileSync(join(root, path), "utf8");
-    } catch {
-      current = undefined;
-    }
-    if (current !== text) stale.push(path);
-  }
-  return stale;
-}
-
-export function main(argv: readonly string[], root: string = repoRoot): number {
-  if (argv.includes("--check")) {
-    const stale = drift(root);
-    for (const path of stale) {
-      console.error(
-        `${path} differs from what schemas/ generate; regenerate with tools/gen/types.ts`,
-      );
-    }
-    return stale.length === 0 ? 0 : 1;
-  }
-  for (const [path, text] of generate(root))
+    mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), text);
-  return 0;
+  }
 }
 
-if (import.meta.main) process.exit(main(process.argv.slice(2)));
+if (import.meta.main) write();

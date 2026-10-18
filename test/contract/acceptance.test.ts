@@ -26,7 +26,6 @@ import {
   checkProvidedInterface,
 } from "../../src/contract/index.ts";
 import { findBoundaryViolations } from "../structure/lib/boundary.ts";
-import { drift } from "../../tools/gen/types.ts";
 import {
   alice,
   device,
@@ -395,8 +394,4 @@ test("a core file that names a workflow concept is rejected", () => {
   expect(new Set(findBoundaryViolations(planted).map((v) => v.file))).toEqual(
     new Set(planted.map((p) => p.path)),
   );
-}, 30_000);
-
-test("regenerating types from the schemas yields identical bytes", () => {
-  expect(drift()).toEqual([]);
 }, 30_000);
