@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TemplateDocument } from "../../../src/contract/index.ts";
 import { digestValue } from "../../../src/core/config/pointer.ts";
@@ -42,6 +42,23 @@ function starterNext(): TemplateDocument {
 }
 
 describe("template lifecycle", () => {
+  test("import refuses invalid existing owner records without rewriting the config", () => {
+    const p = project();
+    const invalid =
+      "schemaVersion: forge.config/1\nblocks: {}\nowners: invalid\n";
+    mkdirSync(join(p.root, ".forge"), { recursive: true });
+    writeFileSync(join(p.root, ".forge/config.yaml"), invalid);
+    const failure = failureOf(() =>
+      p.templates.importTemplate({
+        template: "forge/starter",
+        expectRevision: p.config.show().revision,
+      }),
+    );
+    expect(failure?.code).toBe("INPUT_INVALID");
+    expect(failure?.pointer).toBe("/owners");
+    expect(p.read()).toBe(invalid);
+  });
+
   test("template metadata cannot claim a user key or replace provenance", () => {
     const p = project();
     const userValue = { path: "blocks/my-custom" };

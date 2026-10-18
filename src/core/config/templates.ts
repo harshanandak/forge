@@ -168,7 +168,15 @@ function provenance(document: JsonObject | undefined): TemplateProvenance[] {
 }
 
 function owners(document: JsonObject): JsonObject {
-  if (!isObject(document.owners)) document.owners = {};
+  if (!Object.hasOwn(document, "owners")) document.owners = {};
+  if (!isObject(document.owners)) {
+    throw new ForgeFailure({
+      code: "INPUT_INVALID",
+      message: "the planned config has invalid /owners; expected an object",
+      pointer: "/owners",
+      retry: "never",
+    });
+  }
   return document.owners as JsonObject;
 }
 

@@ -1,5 +1,6 @@
 // The three-way decision between one template and the project config; the model is described at
 // the top of templates.ts. `plan` only reads; `applyStep` writes one decided step.
+import { ForgeFailure } from "../../contract/failure.ts";
 import { jsonEqual } from "../../contract/schema.ts";
 import { atomicSource } from "./layers.ts";
 import {
@@ -212,7 +213,15 @@ function assemble(
  * because the values they described are gone.
  */
 export function applyStep(document: JsonObject, step: Step, ref: string): void {
-  if (!isObject(document.owners)) document.owners = {};
+  if (!Object.hasOwn(document, "owners")) document.owners = {};
+  if (!isObject(document.owners)) {
+    throw new ForgeFailure({
+      code: "INPUT_INVALID",
+      message: "the planned config has invalid /owners; expected an object",
+      pointer: "/owners",
+      retry: "never",
+    });
+  }
   const owners = document.owners as JsonObject;
   if (step.kind === "adopt") {
     for (const key of under(step.segments, Object.keys(owners))) {

@@ -23,6 +23,36 @@ afterEach(() => {
 });
 
 describe("sparse edits (behaviours kept from the old config writer)", () => {
+  for (const value of ["invalid", [], null]) {
+    for (const operation of ["set", "apply"] as const) {
+      test(`${operation} rejects ${JSON.stringify(value)} at /blocks without changing the file`, () => {
+        const p = project();
+        const initial = p.config.set({
+          path: "check.commands.test",
+          value: "make test",
+          expectRevision: p.config.show().revision,
+        });
+        const before = p.read();
+        const failure = failureOf(() =>
+          operation === "set"
+            ? p.config.set({
+                path: "/blocks",
+                value,
+                expectRevision: initial.revision,
+              })
+            : p.config.apply({
+                patch: [{ op: "set", path: "/blocks", value }],
+                expectRevision: initial.revision,
+              }),
+        );
+        expect(failure?.code).toBe("INPUT_INVALID");
+        expect(failure?.pointer).toBe("/blocks");
+        expect(p.read()).toBe(before);
+        expect(p.config.show().revision).toBe(initial.revision);
+      });
+    }
+  }
+
   test("a key containing dots stays one key when addressed by pointer", () => {
     const p = project();
     p.config.set({

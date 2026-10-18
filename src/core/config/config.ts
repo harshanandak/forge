@@ -258,7 +258,7 @@ export function planBytes(
   current: ProjectConfig,
   next: JsonObject,
 ): { bytes: Uint8Array | null; changes: Change[] } {
-  if (!isObject(next.blocks)) next.blocks = {};
+  if (!Object.hasOwn(next, "blocks")) next.blocks = {};
   fillSources(next, env);
   checkDocument(next, env);
   const bytes = encodeDocument(next, env.codec);
