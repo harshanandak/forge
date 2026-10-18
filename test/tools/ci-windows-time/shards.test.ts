@@ -1,0 +1,46 @@
+import { expect, test } from "bun:test";
+import {
+  counterfactuals,
+  packedCoverage,
+  selectShard,
+} from "../../node-fixtures/state/counterfactuals.ts";
+
+test("Node shards cover the full mutation list exactly once, including the timeout", () => {
+  const left = selectShard(counterfactuals, packedCoverage("24").shard);
+  const right = selectShard(counterfactuals, packedCoverage("26").shard);
+  const union = [...left, ...right];
+  expect(union).toHaveLength(counterfactuals.length);
+  expect(new Set(union).size).toBe(counterfactuals.length);
+  expect(
+    union.toSorted(
+      (a, b) => counterfactuals.indexOf(a) - counterfactuals.indexOf(b),
+    ),
+  ).toEqual([...counterfactuals]);
+  expect(Math.abs(left.length - right.length)).toBeLessThanOrEqual(1);
+  expect(
+    new Set(counterfactuals.map((mutation) => JSON.stringify(mutation))).size,
+  ).toBe(counterfactuals.length);
+  expect(union.filter((mutation) => mutation.kind === "timeout")).toHaveLength(
+    1,
+  );
+}, 1000);
+
+test("shards stay complete and balanced as mutations are added", () => {
+  for (let length = 0; length <= counterfactuals.length + 5; length++) {
+    const cases = Array.from({ length }, (_, index) => index);
+    const left = selectShard(cases, 0);
+    const right = selectShard(cases, 1);
+    expect([...left, ...right].toSorted((a, b) => a - b)).toEqual(cases);
+    expect(new Set([...left, ...right]).size).toBe(length);
+    expect(Math.abs(left.length - right.length)).toBeLessThanOrEqual(1);
+  }
+}, 1000);
+
+test("Bun runs on Node 24 only; standalone runs retain full coverage", () => {
+  expect(packedCoverage("24")).toEqual({ bun: true, shard: 0 });
+  expect(packedCoverage("26")).toEqual({ bun: false, shard: 1 });
+  expect(packedCoverage(undefined)).toEqual({ bun: true, shard: undefined });
+  expect(selectShard(counterfactuals, undefined)).toEqual(counterfactuals);
+  for (const value of ["", "25", "0", "24.18.0", "26 "])
+    expect(() => packedCoverage(value)).toThrow("STATE_NODE_LEG");
+}, 1000);

@@ -127,6 +127,9 @@ jobs:
       # Pack once: Node-only smoke checks and packed state share its temporary npm install.
       # Other integration files stay serial alongside it, after the parallel unit lane.
       - name: Process integration tests and pack smoke
+        env:
+          # Node legs split counterfactuals; Bun keeps the full set on Node 24 only.
+          STATE_NODE_LEG: ${{ matrix.node }}
         run: |
           smoke_log="$RUNNER_TEMP/pack-smoke.log"
           node tools/pack-smoke/run.ts --state-test "$(command -v bun)" > "$smoke_log" 2>&1 &
