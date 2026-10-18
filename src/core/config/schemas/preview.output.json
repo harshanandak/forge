@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/preview.output.json",
+  "type": "object",
+  "required": ["file", "revision", "valid", "changes", "text"],
+  "properties": {
+    "file": {
+      "$ref": "../../../../schemas/common.json#/$defs/RelativePath"
+    },
+    "revision": {
+      "$ref": "../../../../schemas/common.json#/$defs/Digest"
+    },
+    "valid": {
+      "type": "boolean"
+    },
+    "error": {
+      "$ref": "../../../../schemas/error.json"
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "$ref": "defs.json#/$defs/Change"
+      }
+    },
+    "text": {
+      "type": ["string", "null"]
+    }
+  },
+  "additionalProperties": false
+}

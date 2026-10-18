@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/template-show.output.json",
+  "type": "object",
+  "required": ["template", "imported", "owned"],
+  "properties": {
+    "template": {
+      "oneOf": [
+        {
+          "$ref": "../../../../schemas/template.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "imported": {
+      "oneOf": [
+        {
+          "$ref": "../../../../schemas/config.json#/$defs/TemplateProvenance"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "owned": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pointer", "edited"],
+        "properties": {
+          "pointer": {
+            "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+          },
+          "edited": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

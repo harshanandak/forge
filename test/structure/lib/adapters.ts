@@ -34,6 +34,7 @@ export function scanAdapters(
     const record = raw as Record<string, unknown>;
     const packages = strings(record.package);
     const executables = strings(record.executable);
+    // a Node built-in module (node:fs) is a platform boundary too, so an adapter may wrap only that
     const builtins = strings(record.builtin);
     if (
       typeof record.port !== "string" ||

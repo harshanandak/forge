@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/template-update.input.json",
+  "type": "object",
+  "required": ["template", "expectRevision"],
+  "properties": {
+    "template": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "An installed template id (optionally <id>@<version>), or a project-relative .json/.yaml template file."
+    },
+    "expectRevision": {
+      "description": "The revision read with config show: the digest of the config file's bytes (an absent file has the digest of no bytes).",
+      "$ref": "../../../../schemas/common.json#/$defs/Digest"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "An installed template id (optionally <id>@<version>), or a project-relative .json/.yaml template file."
+    },
+    "accept": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+      },
+      "description": "Conflicting keys for which to take the upstream value."
+    }
+  },
+  "additionalProperties": false
+}
