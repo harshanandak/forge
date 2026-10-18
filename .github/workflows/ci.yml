@@ -126,7 +126,7 @@ jobs:
       - run: bun run build
       - name: Unit tests
         run: bun run test:unit
-      # Pack once: Node-only smoke checks and packed state share its temporary npm install.
+      # Pack once: host smoke, first slice and state share its temporary npm install.
       # Other integration files stay serial alongside it, after the parallel unit lane.
       - name: Process integration tests and pack smoke
         env:

@@ -1,7 +1,7 @@
 // Pack the built package, install the tarball with npm on Node, and run `forge --version`.
 // Run it with Node (`node tools/pack-smoke/run.ts`), never Bun: the point is that a user with
 // only Node and npm can install and run what we publish. Build first (`bun run build`).
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -96,7 +96,35 @@ function run(
   return result.stdout;
 }
 
-function main(): void {
+async function packedIntegration(
+  bun: string,
+  file: string,
+  label: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const started = performance.now();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(bun, ["test", `./${file}`], {
+        cwd: root,
+        env,
+        stdio: "inherit",
+        windowsHide: true,
+      });
+      child.once("error", reject);
+      child.once("close", (status) => {
+        if (status === 0) resolve();
+        else reject(new Error(`${label} exited ${String(status)}`));
+      });
+    });
+  } finally {
+    console.log(
+      `Pack smoke ${label}: ${Math.round(performance.now() - started)} ms`,
+    );
+  }
+}
+
+async function main(): Promise<void> {
   if (process.versions.bun !== undefined) fail("run this with Node, not Bun");
   const stateBun =
     process.argv[2] === "--state-test" ? process.argv[3] : undefined;
@@ -291,18 +319,27 @@ function main(): void {
       ).trim(),
     );
     if (stateBun) {
-      step("running packed state checks against the same npm install");
-      console.log(
-        run(
-          "packed state integration",
-          stateBun,
-          ["test", "./test/node-fixtures/state/packed.integration.test.ts"],
-          {
-            cwd: root,
-            env: { ...process.env, STATE_PACKED_CONSUMER: consumer },
-          },
-        ),
+      step(
+        "running packed first slice and state checks against the same npm install",
       );
+      // Both suites read the base install and mutate private copies. Drain both
+      // children before cleanup, including when either suite fails.
+      const results = await Promise.allSettled([
+        packedIntegration(
+          stateBun,
+          "test/integration/packed.integration.test.ts",
+          "packed first slice integration",
+          { ...process.env, FORGE_PACKED_CONSUMER: consumer },
+        ),
+        packedIntegration(
+          stateBun,
+          "test/node-fixtures/state/packed.integration.test.ts",
+          "packed state integration",
+          { ...process.env, STATE_PACKED_CONSUMER: consumer },
+        ),
+      ]);
+      for (const result of results)
+        if (result.status === "rejected") throw result.reason;
     }
     console.log("pack-smoke: PASS");
   } finally {
@@ -310,9 +347,14 @@ function main(): void {
   }
 }
 
+const started = performance.now();
 try {
-  timed("total", main);
+  await main();
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
+} finally {
+  console.log(
+    `Pack smoke total: ${Math.round(performance.now() - started)} ms`,
+  );
 }

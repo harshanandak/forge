@@ -68,24 +68,15 @@ function withoutBun(): NodeJS.ProcessEnv {
 
 test("packed first slice: npm detection, human admission, CLI/MCP parity and competing revisions", () => {
   const started = performance.now();
-  const work = mkdtempSync(join(tmpdir(), "forge-first-slice-"));
+  const sharedConsumer = process.env.FORGE_PACKED_CONSUMER;
+  // A child workspace resolves the smoke's install through its ancestors without
+  // sharing project files. Counterfactuals still mutate only their private copy.
+  const work = mkdtempSync(
+    join(sharedConsumer ?? tmpdir(), "forge-first-slice-"),
+  );
   try {
-    run("build", process.execPath, ["run", "build"], root);
     const node = Bun.which("node");
     if (!node) throw new Error("Node is required");
-    const npm = [
-      join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-      join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-    ].find((path) => existsSync(path));
-    if (!npm) throw new Error("npm CLI is required");
-    const packed = JSON.parse(
-      run(
-        "npm pack",
-        node,
-        [npm, "pack", "--json", "--ignore-scripts", "--pack-destination", work],
-        root,
-      ),
-    ) as { filename: string }[];
     const consumer = join(work, "consumer");
     mkdirSync(consumer);
     writeFileSync(
@@ -93,19 +84,48 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       '{"name":"packed-consumer","version":"1.0.0","private":true,"type":"module"}',
     );
     const env = withoutBun();
-    run(
-      "npm install",
-      node,
-      [
-        npm,
-        "install",
-        join(work, packed[0]!.filename),
-        "--no-audit",
-        "--no-fund",
-      ],
-      consumer,
-      env,
-    );
+    if (sharedConsumer) {
+      console.log("Packed first slice: reusing smoke's pack and npm install");
+    } else {
+      run("build", process.execPath, ["run", "build"], root);
+      const npm = [
+        ...(process.env.FORGE_SMOKE_NPM_CLI
+          ? [process.env.FORGE_SMOKE_NPM_CLI]
+          : []),
+        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
+        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
+      ].find((path) => existsSync(path));
+      if (!npm) throw new Error("npm CLI is required");
+      const packed = JSON.parse(
+        run(
+          "npm pack",
+          node,
+          [
+            npm,
+            "pack",
+            "--json",
+            "--ignore-scripts",
+            "--pack-destination",
+            work,
+          ],
+          root,
+        ),
+      ) as { filename: string }[];
+      run(
+        "npm install",
+        node,
+        [
+          npm,
+          "install",
+          join(work, packed[0]!.filename),
+          "--no-audit",
+          "--no-fund",
+          "--prefer-offline",
+        ],
+        consumer,
+        env,
+      );
+    }
     const fixtures = [
       "journey",
       "writer",
@@ -155,7 +175,10 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
           env,
         ),
       ).toContain("PASS lifetime");
-    const installed = join(consumer, "node_modules/forge-workflow");
+    const installed = join(
+      sharedConsumer ?? consumer,
+      "node_modules/forge-workflow",
+    );
     const isolated = join(
       consumer,
       "node_modules/forge-first-slice-counterfactual",
