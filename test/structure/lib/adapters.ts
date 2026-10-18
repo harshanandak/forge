@@ -41,7 +41,7 @@ export function scanAdapters(
       packages.length + executables.length + builtins.length === 0
     )
       continue;
-    manifests.push({ name: dir, packages, executables });
+    manifests.push({ name: dir, packages, executables, builtins });
   }
   return { dirs, manifests };
 }

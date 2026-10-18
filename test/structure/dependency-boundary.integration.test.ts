@@ -109,6 +109,49 @@ test("the guard rejects a runtime dependency with no adapter", () => {
   ).toHaveLength(1);
 }, 30_000);
 
+test("a platform builtin is owned by its adapter without claiming the Node executable", () => {
+  const sqlite = {
+    name: "store-sqlite",
+    packages: [],
+    executables: [],
+    builtins: ["node:sqlite"],
+  };
+  const runtime = {
+    name: "node-runtime",
+    packages: [],
+    executables: ["node"],
+  };
+  expect(
+    findAdapterViolations(
+      ["store-sqlite", "node-runtime"],
+      [sqlite, runtime],
+      {},
+    ),
+  ).toEqual([]);
+  expect(
+    findAdapterViolations(["wrong"], [{ ...sqlite, name: "wrong" }], {})[0]
+      ?.message,
+  ).toContain("does not belong");
+}, 30_000);
+
+test("the merged config filesystem provider uses a canonical builtin and keeps one owner", () => {
+  const fs = {
+    name: "fs",
+    packages: [],
+    executables: [],
+    builtins: ["node:fs"],
+  };
+  expect(findAdapterViolations(["fs"], [fs], {})).toEqual([]);
+  expect(
+    findAdapterViolations(["wrong"], [{ ...fs, name: "wrong" }], {})[0]
+      ?.message,
+  ).toContain("does not belong");
+  expect(
+    findAdapterViolations(["fs"], [{ ...fs, builtins: ["fs"] }], {})[0]
+      ?.message,
+  ).toContain("unknown builtin");
+}, 30_000);
+
 const claimKinds = [
   {
     kind: "package",
