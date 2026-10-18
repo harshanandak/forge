@@ -38,5 +38,8 @@ native asynchronous dispatch seam or execution profile. This engine does not wid
 outside-author ABI, add a parallel registry, or expose a special CLI-only path.
 
 Node acceptance fixtures exercise the packed, installed engine and real state owner.
+Run the normal pack smoke first when running the packed check fixture alone. The full
+suite's earlier packed slice also seeds the package installer cache. This additional
+install is offline so it verifies the artifact without repeating registry requests.
 Optional ecosystem tools are checked before use and report an explicit skip reason when
 missing. Their local installations are test-only and are never shipped as dependencies.

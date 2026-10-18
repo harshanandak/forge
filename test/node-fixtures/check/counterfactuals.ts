@@ -11,7 +11,7 @@ export const counterfactuals: readonly Counterfactual[] = [
     from: "parsed.testCount === 0",
     to: "false",
     journey: "zero",
-    evidence: "recognized zero tests fail",
+    evidence: "Check receipt integrity failed",
   },
   {
     file: "blocks/check/index.js",
@@ -25,7 +25,7 @@ export const counterfactuals: readonly Counterfactual[] = [
     from: "runs.length === 0 ||",
     to: "false ||",
     journey: "nothing",
-    evidence: "nothing declared is not executed",
+    evidence: "Check receipt integrity failed",
   },
   {
     file: "blocks/check/index.js",

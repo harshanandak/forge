@@ -72,7 +72,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
           npm,
           "install",
           join(work, pack[0]!.filename),
-          "--prefer-offline",
+          "--offline",
           "--no-audit",
           "--no-fund",
         ],
