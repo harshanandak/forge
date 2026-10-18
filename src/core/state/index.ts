@@ -451,6 +451,24 @@ function verifyEventDerivedState(candidate: SqlDatabase): void {
   if (requests.size) reject("state_requests", requests.keys().next().value!);
 }
 
+// Only these ledgers contain setup metadata that restore may replace in a nonempty store.
+const metadataTables = new Set(["state_migrations", "state_domains"]);
+const stateDataTables = new Set([
+  "state_records",
+  "state_events",
+  "state_leases",
+  "state_requests",
+]);
+function dataTables(db: SqlDatabase): readonly string[] {
+  return db
+    .all("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+    .map((row) => String(row.name))
+    .filter(
+      (name) =>
+        !name.toLowerCase().startsWith("sqlite_") && !metadataTables.has(name),
+    );
+}
+
 export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
@@ -484,6 +502,14 @@ export class StateOwner {
             })),
           ),
         );
+        const registered = new Set(
+          this.#db
+            .all("SELECT table_name FROM state_domains")
+            .map((row) => String(row.table_name)),
+        );
+        for (const table of dataTables(this.#db))
+          if (!stateDataTables.has(table) && !registered.has(table))
+            invalid(`Unregistered user table: ${table}`);
       },
     );
     this.#knownMigrations = new Set([
@@ -858,19 +884,11 @@ export class StateOwner {
       });
     const expected = signature(this.#db);
     const empty = (): void => {
-      if (
-        this.#db.get(
-          "SELECT 1 FROM state_records UNION ALL SELECT 1 FROM state_events UNION ALL SELECT 1 FROM state_leases UNION ALL SELECT 1 FROM state_requests LIMIT 1",
-        )
-      )
-        invalid("Restore target must be empty");
-      for (const row of this.#db.all("SELECT table_name FROM state_domains"))
+      for (const table of dataTables(this.#db))
         if (
-          this.#db.get(
-            `SELECT 1 FROM "${String(row.table_name).replaceAll('"', '""')}" LIMIT 1`,
-          )
+          this.#db.get(`SELECT 1 FROM "${table.replaceAll('"', '""')}" LIMIT 1`)
         )
-          invalid("Domain restore target must be empty");
+          invalid("Restore target must be empty");
     };
     empty();
     imageStore.restoreImage(

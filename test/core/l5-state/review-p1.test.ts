@@ -96,3 +96,63 @@ test("restore accepts acquire, release, then acquire history", async () => {
     await target.close();
   }
 }, 30000);
+
+test("restore refuses rows only in an unregistered table without changing the target", async () => {
+  for (const table of [
+    "domain_omitted",
+    "state_unregistered",
+    'odd"table',
+    "sqliteXuser",
+  ]) {
+    const source = await open();
+    const target = await open();
+    try {
+      const quoted = `"${table.replaceAll('"', '""')}"`;
+      // Simulate a store initialized by a migration whose registration omitted this table.
+      source.db.exec(`CREATE TABLE ${quoted} (value TEXT)`);
+      target.db.exec(`CREATE TABLE ${quoted} (value TEXT)`);
+      target.db.run(`INSERT INTO ${quoted} VALUES (?)`, ["keep me"]);
+      const before = target.owner.export();
+      expect(() => target.owner.restore(source.owner.export())).toThrow(
+        "Restore target must be empty",
+      );
+      expect(target.db.all(`SELECT * FROM ${quoted}`)).toEqual([
+        { value: "keep me" },
+      ]);
+      expect(target.owner.export()).toEqual(before);
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  }
+}, 30000);
+
+test("initialization rolls back a migration with an unregistered user table", async () => {
+  const store = await open();
+  try {
+    const before = store.owner.export();
+    expect(() =>
+      store.owner.initialize([
+        {
+          namespace: ns,
+          reviewedDigest: `sha256:${"a".repeat(64)}`,
+          migrations: [
+            {
+              id: "002_omitted",
+              statements: ["CREATE TABLE domain_omitted (value TEXT)"],
+            },
+          ],
+          tables: [],
+        },
+      ]),
+    ).toThrow("Unregistered user table: domain_omitted");
+    expect(
+      store.db.get(
+        "SELECT name FROM sqlite_schema WHERE name='domain_omitted'",
+      ),
+    ).toBeUndefined();
+    expect(store.owner.export()).toEqual(before);
+  } finally {
+    await store.close();
+  }
+}, 30000);
