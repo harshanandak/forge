@@ -92,7 +92,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
         "receipt",
       ].map((mutation) => ({
         file: "core/state/index.js",
-        from: "verifyEventDerivedState(candidate);",
+        from: "verifyEventDerivedState(candidate, eventHighWaterMark);",
         to: "void 0;",
         journey: `derivedstate:${mutation}`,
         evidence: "Missing expected exception",
@@ -241,7 +241,12 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
         from: "renameDurable(candidatePath, path, hooks.fs);",
         to: "void 0;",
         journey,
-        evidence: "AssertionError",
+        // With history present, the completeness check now catches a missing swap
+        // before the journey can inspect the absent domain rows.
+        evidence:
+          journey === "foreignkeys"
+            ? "Inconsistent imported state_events key high-water mark"
+            : "AssertionError",
       });
     for (const mutation of mutations) {
       const path = join(installed, "dist/src", mutation.file);

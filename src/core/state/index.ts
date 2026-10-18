@@ -44,6 +44,7 @@ export interface WriteOptions extends PutOptions {
 }
 export interface Snapshot {
   readonly image: string;
+  readonly eventHighWaterMark: number;
   readonly domains: readonly DomainData[];
   readonly format: "forge.state/1";
   readonly records: readonly StateRecord[];
@@ -278,7 +279,12 @@ export class RestoreConsistencyFailure extends ForgeFailure {
 
 /** Reproduce all event-derived tables before accepting an image. Domain tables and
  * registration/migration ledgers have no event provenance; schema and FK checks cover them. */
-function verifyEventDerivedState(candidate: SqlDatabase): void {
+function verifyEventDerivedState(
+  candidate: SqlDatabase,
+  highWaterMark: number,
+): void {
+  if (!Number.isSafeInteger(highWaterMark) || highWaterMark < 0)
+    throw new RestoreConsistencyFailure("state_events", "high-water mark");
   const records = new Map<string, StateRecord>();
   const leases = new Map<string, LeaseRecord>();
   const requests = new Map<string, StateEvent>();
@@ -296,10 +302,14 @@ function verifyEventDerivedState(candidate: SqlDatabase): void {
       reject(table, name);
     }
   };
+  let sequence = 0;
   for (const row of candidate.all(
-    "SELECT namespace,key,body FROM state_events ORDER BY sequence",
+    "SELECT sequence,namespace,key,body FROM state_events ORDER BY sequence",
   )) {
     const id = key(String(row.namespace), String(row.key));
+    sequence++;
+    if (row.sequence !== sequence && row.sequence !== BigInt(sequence))
+      reject("state_events", id);
     inspect("state_events", id, () => {
       const event = JSON.parse(String(row.body)) as StateEvent;
       if (
@@ -403,6 +413,7 @@ function verifyEventDerivedState(candidate: SqlDatabase): void {
       }
     });
   }
+  if (sequence !== highWaterMark) reject("state_events", "high-water mark");
   for (const row of candidate.all(
     "SELECT namespace,key,revision,body FROM state_records",
   )) {
@@ -830,6 +841,13 @@ export class StateOwner {
     let snapshot: Omit<Snapshot, "image"> | undefined;
     const image = this.#images().exportImage((db) => {
       snapshot = {
+        // INTEGER PRIMARY KEY has no sqlite_sequence; retain the export boundary
+        // separately so losing the final operation cannot shorten history silently.
+        eventHighWaterMark: Number(
+          db.get(
+            "SELECT COALESCE(MAX(sequence),0) AS sequence FROM state_events",
+          )?.sequence,
+        ),
         domains: exportTables(db),
         format: "forge.state/1",
         records: db
@@ -891,6 +909,7 @@ export class StateOwner {
           invalid("Restore target must be empty");
     };
     empty();
+    let eventHighWaterMark = snapshot.eventHighWaterMark;
     imageStore.restoreImage(
       image,
       (candidate) => {
@@ -908,7 +927,7 @@ export class StateOwner {
           Number(candidate.get("PRAGMA user_version")?.user_version) !== 0
         )
           invalid("Unsupported baseline or newer schema version");
-        verifyEventDerivedState(candidate);
+        verifyEventDerivedState(candidate, eventHighWaterMark);
       },
       (candidate) => {
         // Preserve lease counters and receipts, but never revive authority from a backup.
@@ -951,6 +970,7 @@ export class StateOwner {
                 }),
               ],
             );
+            eventHighWaterMark++;
           }
         });
       },

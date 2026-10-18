@@ -4,6 +4,7 @@ import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import {
   StateOwner,
   RestoreConsistencyFailure,
+  type StateImageStore,
 } from "../../../src/core/state/index.ts";
 
 const ns = "forge/test";
@@ -20,6 +21,78 @@ async function open() {
   owner.initialize();
   return { db: result.handle.value, owner, close: () => result.handle.close() };
 }
+
+for (const removed of [1, 2, 3]) {
+  test(`restore refuses an entirely lost operation at sequence ${removed}`, async () => {
+    const source = await open();
+    const target = await open();
+    try {
+      for (let sequence = 1; sequence <= 3; sequence++)
+        source.owner.put(ns, `key-${sequence}`, sequence, actor, {
+          expectRevision: 0,
+          requestId: `request-${sequence}`,
+        });
+      const snapshot = source.owner.export();
+      source.db.run("DELETE FROM state_events WHERE sequence=?", [removed]);
+      source.db.run("DELETE FROM state_records WHERE key=?", [
+        `key-${removed}`,
+      ]);
+      source.db.run("DELETE FROM state_requests WHERE request_id=?", [
+        `request-${removed}`,
+      ]);
+      const damaged = { ...snapshot, image: source.owner.export().image };
+      const before = target.owner.export();
+      expect(() => target.owner.restore(damaged)).toThrow(
+        RestoreConsistencyFailure,
+      );
+      expect(target.owner.export()).toEqual(before);
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  }, 30000);
+}
+
+test("restore refuses duplicate sequence numbers before touching the target", async () => {
+  const source = await open();
+  const target = await open();
+  try {
+    source.owner.put(ns, "one", 1, actor, { expectRevision: 0 });
+    source.owner.put(ns, "two", 2, actor, { expectRevision: 0 });
+    const before = target.owner.export();
+    // SQLite's primary key normally prevents duplicates. Inject damaged driver rows
+    // without changing the schema or the otherwise consistent event bodies.
+    const db = target.db as StateImageStore;
+    const intercepted: StateImageStore = {
+      ...db,
+      restoreImage(image, validate, prepare, verify) {
+        db.restoreImage(
+          image,
+          (candidate) =>
+            validate({
+              ...candidate,
+              all(sql, params) {
+                const rows = candidate.all(sql, params);
+                return sql.includes("FROM state_events ORDER BY sequence")
+                  ? rows.map((row) => ({ ...row, sequence: 1 }))
+                  : rows;
+              },
+            }),
+          prepare,
+          verify,
+        );
+      },
+    };
+    const owner = new StateOwner(intercepted, { now: () => 1000 });
+    expect(() => owner.restore(source.owner.export())).toThrow(
+      RestoreConsistencyFailure,
+    );
+    expect(target.owner.export()).toEqual(before);
+  } finally {
+    await source.close();
+    await target.close();
+  }
+}, 30000);
 
 test("a client result cannot change its bound actor on later writes", async () => {
   const store = await open();

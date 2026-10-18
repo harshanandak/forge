@@ -657,6 +657,7 @@ const cases = {
     const owner = new StateOwner(opened.handle.value, { now: () => 1000 });
     owner.restore({
       format: "forge.state/1",
+      eventHighWaterMark: 1,
       image: readFileSync(join(directory, "image.db")).toString("base64"),
     });
     throw new Error("Crash step was not reached");
