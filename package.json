@@ -37,6 +37,7 @@
     "fmt": "bun tools/bun-builtin.ts fmt",
     "test": "bun test --timeout 30000",
     "test:structure": "bun test --timeout 30000 test/structure",
+    "gen": "bun tools/gen/types.ts",
     "build": "tsc -p tsconfig.build.json",
     "pack:smoke": "node tools/pack-smoke/run.ts"
   },

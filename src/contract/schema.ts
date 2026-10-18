@@ -1,0 +1,559 @@
+// A JSON Schema (2020-12) validator for the bounded keyword profile Forge's own schemas use.
+// Schemas are data; nothing here evaluates code. A schema using a keyword outside the profile is
+// refused when the registry is built, so a validator can never silently skip a rule.
+
+export type SchemaObject = Readonly<Record<string, unknown>>;
+export type JsonSchema = boolean | SchemaObject;
+
+export interface SchemaProblem {
+  readonly pointer: string;
+  readonly keyword: string;
+  readonly message: string;
+}
+
+export type ValidationResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly problems: readonly SchemaProblem[] };
+
+export type Validator<T> = (value: unknown) => ValidationResult<T>;
+
+/** Keywords that only annotate; they never change whether a value is valid. */
+const ANNOTATIONS: ReadonlySet<string> = new Set([
+  "$schema",
+  "$id",
+  "$defs",
+  "$comment",
+  "title",
+  "description",
+  "examples",
+  "default",
+  "deprecated",
+]);
+
+/** Keywords that constrain a value. Anything else is refused. */
+export const SUPPORTED_KEYWORDS: ReadonlySet<string> = new Set([
+  "$ref",
+  "type",
+  "enum",
+  "const",
+  "properties",
+  "required",
+  "additionalProperties",
+  "propertyNames",
+  "minProperties",
+  "maxProperties",
+  "items",
+  "minItems",
+  "maxItems",
+  "uniqueItems",
+  "minLength",
+  "maxLength",
+  "pattern",
+  "minimum",
+  "maximum",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+  "oneOf",
+  "anyOf",
+  "allOf",
+  "not",
+  "if",
+  "then",
+  "else",
+]);
+
+const TYPES: ReadonlySet<string> = new Set([
+  "object",
+  "array",
+  "string",
+  "number",
+  "integer",
+  "boolean",
+  "null",
+]);
+
+function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function isSchemaObject(value: unknown): value is SchemaObject {
+  return isObject(value);
+}
+
+export function escapePointer(segment: string): string {
+  return segment.replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+function unescapePointer(segment: string): string {
+  return segment.replaceAll("~1", "/").replaceAll("~0", "~");
+}
+
+/** Structural equality for JSON values. */
+export function jsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a)) {
+    return (
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((item, index) => jsonEqual(item, b[index]))
+    );
+  }
+  if (isObject(a) && isObject(b)) {
+    const keys = Object.keys(a);
+    return (
+      keys.length === Object.keys(b).length &&
+      keys.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key], b[key]))
+    );
+  }
+  return false;
+}
+
+function typeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? "integer" : "number";
+  }
+  return typeof value;
+}
+
+function hasType(value: unknown, type: string): boolean {
+  const actual = typeOf(value);
+  return actual === type || (type === "number" && actual === "integer");
+}
+
+function documentUri(uri: string): string {
+  const hash = uri.indexOf("#");
+  return hash === -1 ? uri : uri.slice(0, hash);
+}
+
+interface Located {
+  readonly schema: JsonSchema;
+  readonly base: string;
+}
+
+/**
+ * Every schema document Forge knows, by `$id`. Built once; refuses unknown keywords, unresolvable
+ * `$ref`s and invalid patterns up front.
+ */
+export class SchemaRegistry {
+  readonly #documents = new Map<string, SchemaObject>();
+  readonly #patterns = new Map<string, RegExp>();
+  readonly #validators = new Map<string, Validator<unknown>>();
+  readonly #base: string;
+
+  /** `base` resolves short references such as `block.json#/$defs/X` given to `validator`. */
+  constructor(
+    documents: ReadonlyArray<SchemaObject>,
+    base = "urn:forge:inline",
+  ) {
+    this.#base = base;
+    for (const document of documents) {
+      const id = document.$id;
+      const uri = typeof id === "string" ? documentUri(id) : base;
+      if (this.#documents.has(uri)) {
+        throw new Error(`schema ${uri} is registered twice`);
+      }
+      this.#documents.set(uri, document);
+    }
+    for (const [uri, document] of this.#documents) {
+      this.#check(document, uri, "", true);
+    }
+  }
+
+  /** The full URI a short reference resolves to. */
+  resolve(reference: string, base: string = this.#base): string {
+    return new URL(reference, base).href;
+  }
+
+  /** The schema a reference points at, or undefined. */
+  lookup(reference: string, base: string = this.#base): JsonSchema | undefined {
+    return this.#locate(this.resolve(reference, base))?.schema;
+  }
+
+  validate(reference: string, value: unknown): SchemaProblem[] {
+    const uri = this.resolve(reference);
+    const located = this.#locate(uri);
+    if (located === undefined) throw new Error(`no schema at ${uri}`);
+    return this.#evaluate(located.schema, located.base, value, "");
+  }
+
+  validator<T>(reference: string): Validator<T> {
+    const uri = this.resolve(reference);
+    const cached = this.#validators.get(uri);
+    if (cached !== undefined) return cached as Validator<T>;
+    if (this.#locate(uri) === undefined) throw new Error(`no schema at ${uri}`);
+    const validator: Validator<T> = (value) => {
+      const problems = this.validate(uri, value);
+      return problems.length === 0
+        ? { ok: true, value: value as T }
+        : { ok: false, problems };
+    };
+    this.#validators.set(uri, validator);
+    return validator;
+  }
+
+  #locate(uri: string): Located | undefined {
+    const base = documentUri(uri);
+    const document = this.#documents.get(base);
+    if (document === undefined) return undefined;
+    const hash = uri.indexOf("#");
+    const fragment = hash === -1 ? "" : decodeURIComponent(uri.slice(hash + 1));
+    if (fragment === "") return { schema: document, base };
+    if (!fragment.startsWith("/")) return undefined;
+    let node: unknown = document;
+    for (const raw of fragment.slice(1).split("/")) {
+      const segment = unescapePointer(raw);
+      if (!isObject(node) || !Object.hasOwn(node, segment)) return undefined;
+      node = node[segment];
+    }
+    return typeof node === "boolean" || isObject(node)
+      ? { schema: node, base }
+      : undefined;
+  }
+
+  #check(schema: unknown, base: string, at: string, root: boolean): void {
+    if (typeof schema === "boolean") return;
+    if (!isObject(schema)) {
+      throw new Error(`${base}#${at}: a schema must be an object or boolean`);
+    }
+    for (const [keyword, value] of Object.entries(schema)) {
+      if (keyword.startsWith("x-")) continue;
+      if (ANNOTATIONS.has(keyword)) {
+        if (keyword === "$id" && !root) {
+          throw new Error(`${base}#${at}: $id is allowed only at a root`);
+        }
+        continue;
+      }
+      if (!SUPPORTED_KEYWORDS.has(keyword)) {
+        throw new Error(
+          `${base}#${at}: keyword "${keyword}" is outside the supported profile`,
+        );
+      }
+      this.#checkKeyword(keyword, value, base, `${at}/${keyword}`);
+    }
+    if (isObject(schema.$defs)) {
+      for (const [name, def] of Object.entries(schema.$defs)) {
+        this.#check(def, base, `${at}/$defs/${escapePointer(name)}`, false);
+      }
+    }
+  }
+
+  #checkKeyword(
+    keyword: string,
+    value: unknown,
+    base: string,
+    at: string,
+  ): void {
+    const fail = (message: string): never => {
+      throw new Error(`${base}#${at}: ${message}`);
+    };
+    switch (keyword) {
+      case "$ref": {
+        if (typeof value !== "string") fail("$ref must be a string");
+        const target = this.resolve(value as string, base);
+        if (this.#locate(target) === undefined) {
+          fail(`$ref ${String(value)} does not resolve`);
+        }
+        return;
+      }
+      case "type": {
+        const types = Array.isArray(value) ? value : [value];
+        if (types.length === 0 || !types.every((t) => TYPES.has(String(t)))) {
+          fail("type must name JSON types");
+        }
+        return;
+      }
+      case "enum":
+        if (!Array.isArray(value) || value.length === 0) {
+          fail("enum must be a non-empty array");
+        }
+        return;
+      case "pattern":
+        if (typeof value !== "string") fail("pattern must be a string");
+        this.#pattern(value as string);
+        return;
+      case "required":
+        if (
+          !Array.isArray(value) ||
+          !value.every((v) => typeof v === "string")
+        ) {
+          fail("required must list property names");
+        }
+        return;
+      case "properties":
+        if (!isObject(value)) fail("properties must be an object");
+        for (const [name, sub] of Object.entries(value as SchemaObject)) {
+          this.#check(sub, base, `${at}/${escapePointer(name)}`, false);
+        }
+        return;
+      case "oneOf":
+      case "anyOf":
+      case "allOf":
+        if (!Array.isArray(value) || value.length === 0) {
+          fail(`${keyword} must be a non-empty array`);
+        }
+        (value as unknown[]).forEach((sub, index) => {
+          this.#check(sub, base, `${at}/${index}`, false);
+        });
+        return;
+      case "additionalProperties":
+      case "propertyNames":
+      case "items":
+      case "not":
+      case "if":
+      case "then":
+      case "else":
+        this.#check(value, base, at, false);
+        return;
+      case "uniqueItems":
+        if (typeof value !== "boolean") fail("uniqueItems must be a boolean");
+        return;
+      case "const":
+        return;
+      case "minimum":
+      case "maximum":
+      case "exclusiveMinimum":
+      case "exclusiveMaximum":
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          fail(`${keyword} must be a finite number`);
+        }
+        return;
+      default:
+        if (!Number.isInteger(value) || (value as number) < 0) {
+          fail(`${keyword} must be a non-negative integer`);
+        }
+    }
+  }
+
+  #pattern(source: string): RegExp {
+    let regex = this.#patterns.get(source);
+    if (regex === undefined) {
+      regex = new RegExp(source, "u");
+      this.#patterns.set(source, regex);
+    }
+    return regex;
+  }
+
+  #evaluate(
+    schema: JsonSchema,
+    base: string,
+    value: unknown,
+    at: string,
+  ): SchemaProblem[] {
+    if (schema === true) return [];
+    if (schema === false) {
+      return [
+        { pointer: at, keyword: "false", message: "no value is allowed here" },
+      ];
+    }
+    const problems: SchemaProblem[] = [];
+    const add = (keyword: string, message: string, pointer = at): void => {
+      problems.push({ pointer, keyword, message });
+    };
+    const sub = (s: unknown, v: unknown, p: string): SchemaProblem[] =>
+      this.#evaluate(s as JsonSchema, base, v, p);
+
+    if (typeof schema.$ref === "string") {
+      const uri = this.resolve(schema.$ref, base);
+      const target = this.#locate(uri);
+      if (target === undefined) add("$ref", `unresolvable reference ${uri}`);
+      else
+        problems.push(...this.#evaluate(target.schema, target.base, value, at));
+    }
+
+    if (schema.type !== undefined) {
+      const types = (
+        Array.isArray(schema.type) ? schema.type : [schema.type]
+      ).map(String);
+      if (!types.some((type) => hasType(value, type))) {
+        add("type", `expected ${types.join(" or ")}, got ${typeOf(value)}`);
+        return problems;
+      }
+    }
+    if (
+      Array.isArray(schema.enum) &&
+      !schema.enum.some((e) => jsonEqual(e, value))
+    ) {
+      add("enum", `expected one of ${JSON.stringify(schema.enum)}`);
+    }
+    if ("const" in schema && !jsonEqual(schema.const, value)) {
+      add("const", `expected ${JSON.stringify(schema.const)}`);
+    }
+
+    if (typeof value === "string") {
+      const length = [...value].length;
+      if (typeof schema.minLength === "number" && length < schema.minLength) {
+        add("minLength", `must be at least ${schema.minLength} characters`);
+      }
+      if (typeof schema.maxLength === "number" && length > schema.maxLength) {
+        add("maxLength", `must be at most ${schema.maxLength} characters`);
+      }
+      if (
+        typeof schema.pattern === "string" &&
+        !this.#pattern(schema.pattern).test(value)
+      ) {
+        add("pattern", `must match ${schema.pattern}`);
+      }
+    }
+
+    if (typeof value === "number") {
+      if (typeof schema.minimum === "number" && value < schema.minimum) {
+        add("minimum", `must be at least ${schema.minimum}`);
+      }
+      if (typeof schema.maximum === "number" && value > schema.maximum) {
+        add("maximum", `must be at most ${schema.maximum}`);
+      }
+      if (
+        typeof schema.exclusiveMinimum === "number" &&
+        value <= schema.exclusiveMinimum
+      ) {
+        add("exclusiveMinimum", `must be more than ${schema.exclusiveMinimum}`);
+      }
+      if (
+        typeof schema.exclusiveMaximum === "number" &&
+        value >= schema.exclusiveMaximum
+      ) {
+        add("exclusiveMaximum", `must be less than ${schema.exclusiveMaximum}`);
+      }
+    }
+
+    if (Array.isArray(value)) {
+      if (
+        typeof schema.minItems === "number" &&
+        value.length < schema.minItems
+      ) {
+        add("minItems", `must have at least ${schema.minItems} items`);
+      }
+      if (
+        typeof schema.maxItems === "number" &&
+        value.length > schema.maxItems
+      ) {
+        add("maxItems", `must have at most ${schema.maxItems} items`);
+      }
+      if (schema.uniqueItems === true) {
+        const duplicate = value.findIndex((item, index) =>
+          value.slice(0, index).some((earlier) => jsonEqual(earlier, item)),
+        );
+        if (duplicate !== -1) {
+          add("uniqueItems", "items must be unique", `${at}/${duplicate}`);
+        }
+      }
+      if (schema.items !== undefined) {
+        value.forEach((item, index) => {
+          problems.push(...sub(schema.items, item, `${at}/${index}`));
+        });
+      }
+    }
+
+    if (isObject(value)) {
+      const keys = Object.keys(value);
+      const properties = isObject(schema.properties) ? schema.properties : {};
+      if (
+        typeof schema.minProperties === "number" &&
+        keys.length < schema.minProperties
+      ) {
+        add(
+          "minProperties",
+          `must have at least ${schema.minProperties} properties`,
+        );
+      }
+      if (
+        typeof schema.maxProperties === "number" &&
+        keys.length > schema.maxProperties
+      ) {
+        add(
+          "maxProperties",
+          `must have at most ${schema.maxProperties} properties`,
+        );
+      }
+      if (Array.isArray(schema.required)) {
+        for (const name of schema.required) {
+          if (typeof name === "string" && !Object.hasOwn(value, name)) {
+            add(
+              "required",
+              `missing required property "${name}"`,
+              `${at}/${escapePointer(name)}`,
+            );
+          }
+        }
+      }
+      for (const key of keys) {
+        const pointer = `${at}/${escapePointer(key)}`;
+        if (schema.propertyNames !== undefined) {
+          for (const problem of sub(schema.propertyNames, key, pointer)) {
+            add(
+              "propertyNames",
+              `property name "${key}": ${problem.message}`,
+              pointer,
+            );
+          }
+        }
+        if (Object.hasOwn(properties, key)) {
+          problems.push(...sub(properties[key], value[key], pointer));
+        } else if (schema.additionalProperties !== undefined) {
+          if (schema.additionalProperties === false) {
+            add("additionalProperties", `unknown property "${key}"`, pointer);
+          } else {
+            problems.push(
+              ...sub(schema.additionalProperties, value[key], pointer),
+            );
+          }
+        }
+      }
+    }
+
+    if (Array.isArray(schema.allOf)) {
+      for (const part of schema.allOf) problems.push(...sub(part, value, at));
+    }
+    if (Array.isArray(schema.anyOf)) {
+      const results = schema.anyOf.map((part) => sub(part, value, at));
+      if (!results.some((r) => r.length === 0)) {
+        add("anyOf", "matches none of the allowed alternatives");
+        problems.push(...closest(results));
+      }
+    }
+    if (Array.isArray(schema.oneOf)) {
+      const results = schema.oneOf.map((part) => sub(part, value, at));
+      const matches = results.filter((r) => r.length === 0).length;
+      if (matches === 0) {
+        add("oneOf", "matches none of the allowed alternatives");
+        problems.push(...closest(results));
+      } else if (matches > 1) {
+        add("oneOf", `matches ${matches} alternatives; exactly one is allowed`);
+      }
+    }
+    if (schema.not !== undefined && sub(schema.not, value, at).length === 0) {
+      add("not", "matches a shape that is not allowed here");
+    }
+    if (schema.if !== undefined) {
+      const branch =
+        sub(schema.if, value, at).length === 0 ? schema.then : schema.else;
+      if (branch !== undefined) problems.push(...sub(branch, value, at));
+    }
+    return problems;
+  }
+}
+
+/** The problems of the alternative that came closest, so a refusal says what to fix. */
+function closest(results: readonly SchemaProblem[][]): SchemaProblem[] {
+  let best: SchemaProblem[] = [];
+  for (const result of results) {
+    if (best.length === 0 || result.length < best.length) best = result;
+  }
+  return best;
+}
+
+/** Validate a value against one standalone schema, such as a block's configSchema. */
+export function validateWithSchema(
+  schema: JsonSchema,
+  value: unknown,
+): SchemaProblem[] {
+  if (typeof schema === "boolean") {
+    return schema
+      ? []
+      : [{ pointer: "", keyword: "false", message: "no value is allowed" }];
+  }
+  const id = typeof schema.$id === "string" ? schema.$id : "#";
+  return new SchemaRegistry([schema]).validate(id, value);
+}
