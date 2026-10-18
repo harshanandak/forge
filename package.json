@@ -1,0 +1,48 @@
+{
+  "name": "forge-workflow",
+  "version": "0.1.0-dev.0",
+  "description": "An open building-block platform for AI coding agents.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/harshanandak/forge.git"
+  },
+  "homepage": "https://github.com/harshanandak/forge#readme",
+  "bugs": {
+    "url": "https://github.com/harshanandak/forge/issues"
+  },
+  "bin": {
+    "forge": "dist/bin/forge.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^24.15.0 || >=26"
+  },
+  "packageManager": "bun@1.4.3",
+  "scripts": {
+    "check": "bun check",
+    "lint": "bun tools/bun-builtin.ts lint --type-aware --max-warnings 0",
+    "fmt": "bun tools/bun-builtin.ts fmt",
+    "test": "bun test --timeout 30000",
+    "test:structure": "bun test --timeout 30000 test/structure",
+    "build": "tsc -p tsconfig.build.json",
+    "pack:smoke": "node tools/pack-smoke/run.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
