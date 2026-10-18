@@ -1,5 +1,6 @@
-// Opening several owned resources together: if one fails, everything already opened is closed in
-// reverse order before the failure is returned, so a partial open never leaks.
+// Opening several owned resources together: if one fails, by refusal or by rejecting, everything
+// already opened is closed in reverse order, whether or not an individual close fails, before the
+// failure is returned or rethrown, so a partial open never leaks.
 import type { Unavailable } from "../generated/types.ts";
 import type {
   BorrowedHandle,
@@ -62,7 +63,18 @@ export async function openAll(
 ): Promise<OpenAllResult> {
   const opened: OwnedHandle<unknown>[] = [];
   for (const [index, openStep] of steps.entries()) {
-    const result = await openStep.open();
+    let result: OpenResult<unknown>;
+    try {
+      result = await openStep.open();
+    } catch (error) {
+      const cleanupErrors = await closeAll(opened);
+      throw cleanupErrors.length === 0
+        ? error
+        : new AggregateError(
+            [error, ...cleanupErrors],
+            "open rejected and closing the handles already opened also failed",
+          );
+    }
     if (!result.ok) {
       const cleanupErrors = await closeAll(opened);
       return {

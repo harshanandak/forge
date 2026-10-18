@@ -149,6 +149,78 @@ export function jsonEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
+const hasPrototype = (value: object, prototype: object | null): boolean =>
+  Object.getPrototypeOf(value) === prototype;
+
+/** What a value is, when it is not JSON: a short name for the refusal message. */
+function nonJsonKind(value: unknown): string | undefined {
+  switch (typeof value) {
+    case "string":
+    case "boolean":
+      return undefined;
+    case "number":
+      return Number.isFinite(value) ? undefined : String(value);
+    case "object":
+      if (value === null || Array.isArray(value)) return undefined;
+      return hasPrototype(value, Object.prototype) || hasPrototype(value, null)
+        ? undefined
+        : "a non-plain object";
+    default:
+      return typeof value;
+  }
+}
+
+/**
+ * The first place a value leaves the JSON domain: undefined, functions, symbols, bigints,
+ * non-finite numbers, objects that are not plain, array holes and cycles. These pass an
+ * unconstrained schema yet change or vanish when serialized, so they are refused before any schema
+ * keyword runs. Iterative, so a deeply nested value cannot overflow the stack.
+ */
+export function findNonJson(root: unknown): SchemaProblem | undefined {
+  interface Frame {
+    readonly value: unknown;
+    readonly pointer: string;
+    readonly exit?: true;
+  }
+  const refuse = (pointer: string, what: string): SchemaProblem => ({
+    pointer,
+    keyword: "json",
+    message: `${what} is not a JSON value`,
+  });
+  const ancestors = new Set<object>();
+  const verified = new Set<object>();
+  const stack: Frame[] = [{ value: root, pointer: "" }];
+  for (let frame = stack.pop(); frame !== undefined; frame = stack.pop()) {
+    const { value, pointer } = frame;
+    if (frame.exit === true) {
+      ancestors.delete(value as object);
+      verified.add(value as object);
+      continue;
+    }
+    const kind = nonJsonKind(value);
+    if (kind !== undefined) return refuse(pointer, kind);
+    if (typeof value !== "object" || value === null) continue;
+    if (ancestors.has(value)) return refuse(pointer, "a cycle");
+    if (verified.has(value)) continue;
+    ancestors.add(value);
+    stack.push({ value, pointer, exit: true });
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        if (!(index in value)) return refuse(`${pointer}/${index}`, "a hole");
+        stack.push({ value: value[index], pointer: `${pointer}/${index}` });
+      }
+    } else {
+      for (const [key, child] of Object.entries(value)) {
+        stack.push({
+          value: child,
+          pointer: `${pointer}/${escapePointer(key)}`,
+        });
+      }
+    }
+  }
+  return undefined;
+}
+
 function typeOf(value: unknown): string {
   if (value === null) return "null";
   if (Array.isArray(value)) return "array";
@@ -216,6 +288,8 @@ export class SchemaRegistry {
     const uri = this.resolve(reference);
     const located = this.#locate(uri);
     if (located === undefined) throw new Error(`no schema at ${uri}`);
+    const outside = findNonJson(value);
+    if (outside !== undefined) return [outside];
     return this.#evaluate(located.schema, located.base, value, "");
   }
 
@@ -600,6 +674,8 @@ export function validateWithSchema(
   schema: JsonSchema,
   value: unknown,
 ): SchemaProblem[] {
+  const outside = findNonJson(value);
+  if (outside !== undefined) return [outside];
   if (typeof schema === "boolean") {
     return schema
       ? []

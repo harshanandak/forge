@@ -20,6 +20,8 @@ export interface McpCandidate {
   readonly docs: OperationDocs;
   readonly inputSchema: SchemaObject;
   readonly outputSchema?: SchemaObject;
+  /** The instance's local noun renames; a deprecation's replacement is projected through them. */
+  readonly rename?: Readonly<Record<string, string>>;
 }
 
 export interface McpSelection {
@@ -52,6 +54,18 @@ export function isAgentCallable(declaration: OperationDeclaration): boolean {
   return declaration.callers.includes("agent");
 }
 
+/** A block-declared operation name as it appears on the surfaces, after the instance's renames. */
+function renamed(
+  op: string,
+  rename: Readonly<Record<string, string>> | undefined,
+): string {
+  const parsed = parseOperationName(op);
+  const noun = parsed === undefined ? undefined : rename?.[parsed.noun];
+  return parsed === undefined || noun === undefined
+    ? op
+    : `${noun}.${parsed.verb}`;
+}
+
 export function projectMcpTool(
   candidate: McpCandidate,
   prefix?: string,
@@ -60,7 +74,9 @@ export function projectMcpTool(
   if (name === undefined || !isAgentCallable(candidate.declaration))
     return undefined;
   const { docs, declaration } = candidate;
-  const replacement = declaration.deprecated?.use;
+  const declared = declaration.deprecated?.use;
+  const replacement =
+    declared === undefined ? undefined : renamed(declared, candidate.rename);
   const notice =
     replacement === undefined
       ? ""

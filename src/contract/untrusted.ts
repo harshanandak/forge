@@ -106,7 +106,11 @@ export function parseUntrustedJson(
       return limitExceeded("maxStringLength", limits.maxStringLength);
     }
     if (Array.isArray(node)) {
-      pending.push(...(node as unknown[]));
+      // no spread: an array of 500k elements would exceed the engine's argument limit
+      if (nodes + pending.length + node.length > limits.maxNodes) {
+        return limitExceeded("maxNodes", limits.maxNodes);
+      }
+      for (const child of node as unknown[]) pending.push(child);
     } else if (typeof node === "object" && node !== null) {
       for (const [key, child] of Object.entries(node)) {
         if (key.length > limits.maxStringLength) {

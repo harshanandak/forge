@@ -72,6 +72,19 @@ export function resolveComposition(
   for (const [name, instance] of enabled) {
     const manifest = manifests.get(name);
     if (manifest === undefined) continue;
+    const declaredNouns = new Set(
+      Object.keys(manifest.operations).map((o) => parseOperationName(o)?.noun),
+    );
+    for (const key of Object.keys(instance.rename ?? {})) {
+      if (!declaredNouns.has(key)) {
+        errors.push({
+          code: "INPUT_INVALID",
+          message: `blocks.${name}.rename names the noun "${key}", which block "${manifest.id}" does not declare`,
+          retry: "never",
+          repair: `rename one of: ${[...declaredNouns].filter((n) => n !== undefined).join(", ")}`,
+        });
+      }
+    }
     // projected noun -> the noun this instance declared under it, to catch renames that land together
     const projected = new Map<string, string>();
     for (const [declaredOp, declaration] of Object.entries(
@@ -196,7 +209,7 @@ export function resolveComposition(
 
 /**
  * Check that a block providing an interface under a noun declares every verb of that interface with
- * the same context, lease mode and access.
+ * the same context, lease mode, idempotence and access.
  */
 export function checkProvidedInterface(
   manifest: BlockManifest,
@@ -224,6 +237,11 @@ export function checkProvidedInterface(
     if (declared.leaseMode !== expected.leaseMode) {
       problems.push(
         `${op} declares lease mode ${String(declared.leaseMode)}; ${doc.id} needs ${String(expected.leaseMode)}`,
+      );
+    }
+    if (declared.idempotent !== expected.idempotent) {
+      problems.push(
+        `${op} declares idempotent ${String(declared.idempotent)}; ${doc.id} needs ${String(expected.idempotent)}`,
       );
     }
     const writes = declared.effects.includes(`${noun}:write`);
