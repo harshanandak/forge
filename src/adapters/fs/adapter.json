@@ -1,1 +1,1 @@
-{ "builtin": "fs", "port": "ConfigFiles" }
+{ "builtin": "node:fs", "port": "ConfigFiles" }
