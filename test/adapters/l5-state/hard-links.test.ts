@@ -109,8 +109,20 @@ test("restore refuses links added after open or during final approval and preser
       expect(() => db.run("INSERT INTO preserved VALUES (?)", [99])).toThrow(
         StoreRestoringError,
       );
+      await result.handle.close();
       unlinkSync(alias);
-      expect(db.all("SELECT value FROM preserved")).toEqual([{ value: 42n }]);
+      const reopened = await createSqliteStore(work).open({
+        path,
+        readOnly: true,
+      });
+      if (!reopened.ok) throw new Error(reopened.unavailable.reason);
+      try {
+        expect(
+          reopened.handle.value.all("SELECT value FROM preserved"),
+        ).toEqual([{ value: 42n }]);
+      } finally {
+        await reopened.handle.close();
+      }
     } finally {
       await result.handle.close();
       rmSync(work, { recursive: true, force: true });
