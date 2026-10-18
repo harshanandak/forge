@@ -174,8 +174,7 @@ function main(): void {
         join(packDir, entry.filename),
         "--no-audit",
         "--no-fund",
-        "--cache",
-        join(work, "cache"),
+        "--prefer-offline",
       ],
       consumer,
     );
