@@ -18,6 +18,7 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 - **B2. One state owner.** Accepted state is written only through `src/core/state`. There is no backend selector, compatibility projection or second store.
 - **B3. Bind each write to the context its operation declares** (stateless, device, project, leased). Refuse only what the declared variant requires.
 - **B4. Reads never write.** `show`, `list`, `detect`, `explain` and `status` mutate nothing, including lazily creating homes.
+- **B5. Core reaches the OS only through ports.** `src/core`, `src/contract` and `src/ports` import no platform module (`fs`, `path`, `os`, `child_process`, `worker_threads`, `net`, `http(s)`, `process`, `url`, any `bun:*`, or any Node built-in not on the pure list), with or without `node:`, statically or by `import()` and `require()`, and read no `process.cwd`, `process.env` or Bun global. Pure modules such as `node:crypto` (hashing), `node:util`, `node:events` and `node:buffer` are fine. Take paths and environment as arguments or through a port implemented under `src/adapters`. **Guard:** `platform-boundary`.
 
 ## Dependencies and external tools
 
