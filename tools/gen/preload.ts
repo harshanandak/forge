@@ -1,7 +1,10 @@
-// Bun test preload: generate src/generated before any test file is loaded, so `bun test` works from a
-// clean checkout without a separate gen step.
-import { write } from "./types.ts";
+// Bun test preload: fallback for running a test file directly, without `bun run gen` first.
+import { repoRoot, write } from "./types.ts";
 
-write();
-const { writeCoreManifest } = await import("./core.ts");
-writeCoreManifest();
+export async function preload(root: string = repoRoot): Promise<void> {
+  write(root);
+  const { writeCoreManifest } = await import("./core.ts");
+  writeCoreManifest(root);
+}
+
+await preload();
