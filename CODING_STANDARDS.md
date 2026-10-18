@@ -9,7 +9,7 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 - TypeScript with `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`, `rewriteRelativeImportExtensions` and `module: nodenext`. ESM only. **Guard:** `package-shape`.
 - Erasable syntax only, so Node can run the sources: no enums, namespaces, parameter properties or decorators. **Guard:** `package-shape`.
 - Import siblings with their real `.ts` extension; the build rewrites it.
-- No `any` in public modules. Data boundaries take `unknown` and validate. Prefix unused parameters with `_`.
+- No `any` anywhere; use `unknown` at boundaries, then narrow. Prefix unused parameters with `_`.
 - The published package never uses Bun APIs: `tsconfig.build.json` loads Node types only and `bun:*` imports are allowed only inside adapters. **Guard:** `dependency-boundary`.
 
 ## Boundaries
