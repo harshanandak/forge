@@ -237,7 +237,112 @@ async function lifetime() {
     "PASS lifetime: queued first opens, leased clients, mode promotion and shutdown barriers",
   );
 }
+async function directories() {
+  for (const scenario of ["created", "raced", 0, 1, 2]) {
+    const root = join(work, `directories-${scenario}`);
+    const a = join(root, "a"),
+      b = join(a, "b"),
+      c = join(b, "c");
+    const known = new Set([root]),
+      descriptors = new Map(),
+      events = [];
+    let next = 0,
+      syncs = 0,
+      opened = false;
+    const fs = {
+      platform: "linux",
+      statSync(path) {
+        if (!known.has(path))
+          throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        return { isDirectory: () => true };
+      },
+      mkdirSync(path, options) {
+        assert.equal(options.mode, 0o700, "each new directory must be private");
+        known.add(path);
+        events.push(["mkdir", path]);
+        if (scenario === "raced")
+          throw Object.assign(new Error("created concurrently"), {
+            code: "EEXIST",
+          });
+      },
+      openSync(path, flags) {
+        assert.equal(flags, "r");
+        const fd = ++next;
+        descriptors.set(fd, path);
+        return fd;
+      },
+      fsyncSync(fd) {
+        assert.ok(descriptors.has(fd));
+        events.push(["fsync", descriptors.get(fd)]);
+        if (syncs++ === scenario) throw new Error("directory sync failed");
+      },
+      closeSync(fd) {
+        assert.ok(
+          descriptors.delete(fd),
+          "directory descriptors close exactly once",
+        );
+      },
+    };
+    const state = new LocalState(
+      join(c, "state.sqlite"),
+      {
+        async open() {
+          opened = true;
+          events.push(["store-open"]);
+          return sqliteStore.open({ path: ":memory:", readOnly: false });
+        },
+      },
+      fs,
+    );
+    try {
+      if (typeof scenario === "number") {
+        await assert.rejects(state.acquire(true), /directory sync failed/);
+        assert.equal(
+          opened,
+          false,
+          "a directory sync failure must prevent the first write",
+        );
+      } else {
+        const lease = await state.acquire(true);
+        try {
+          const record = lease.value.put(
+            "example.org/directory",
+            "first",
+            { value: 1 },
+            { kind: "human", id: "test" },
+            { expectRevision: 0 },
+          );
+          assert.equal(record.revision, 1);
+          events.push(["acknowledged"]);
+          assert.deepEqual(
+            events,
+            [
+              ["mkdir", a],
+              ["fsync", root],
+              ["mkdir", b],
+              ["fsync", a],
+              ["mkdir", c],
+              ["fsync", b],
+              ["store-open"],
+              ["acknowledged"],
+            ],
+            "each new parent must be synced in order before acknowledging the first write",
+          );
+        } finally {
+          await lease.close();
+        }
+      }
+      assert.equal(descriptors.size, 0);
+    } finally {
+      await state.close();
+    }
+  }
+  console.log(
+    "PASS directories: private components and ordered parent syncs before acknowledgement; sync failures prevent writes",
+  );
+}
 try {
+  if (mode === "all" || mode === "directories") await directories();
   if (mode === "all" || mode === "bootstrap") {
     const root = join(work, "bootstrap");
     mkdirSync(join(root, "device/trust.sqlite"), { recursive: true });

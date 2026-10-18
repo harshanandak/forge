@@ -139,6 +139,22 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       );
     const mutations = [
       {
+        file: "src/assembly/state.js",
+        from: "ensurePrivateDirectory(dirname(this.#path), this.#directories);",
+        to: "void 0;",
+        mode: "directories",
+        fixture: "review-two",
+        evidence: "each new parent must be synced in order",
+      },
+      {
+        file: "src/adapters/store-sqlite/file-ops.js",
+        from: "syncParentDirectory(directory, fs);",
+        to: "void 0;",
+        mode: "directories",
+        fixture: "review-two",
+        evidence: "each new parent must be synced in order",
+      },
+      {
         file: "src/assembly/command.js",
         from: 'argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")',
         to: "false",

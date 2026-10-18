@@ -1,7 +1,11 @@
 ﻿import { dirname } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
 import { sqliteStore } from "../adapters/store-sqlite/index.ts";
+import {
+  ensurePrivateDirectory,
+  type DirectoryCreatePort,
+} from "../adapters/store-sqlite/file-ops.ts";
 import type { OwnedHandle } from "../ports/lifetime.ts";
 import type { SqlDatabase, StorePort } from "../ports/store.ts";
 import { refuse } from "../core/trust/index.ts";
@@ -19,12 +23,18 @@ interface Entry {
 export class LocalState {
   readonly #path: string;
   readonly #store: StorePort;
+  readonly #directories: DirectoryCreatePort | undefined;
   readonly #entries = new Map<boolean, Entry>();
   #queue: Promise<void> = Promise.resolve();
   #closed = false;
-  constructor(path: string, store: StorePort = sqliteStore) {
+  constructor(
+    path: string,
+    store: StorePort = sqliteStore,
+    directories?: DirectoryCreatePort,
+  ) {
     this.#path = path;
     this.#store = store;
+    this.#directories = directories;
   }
   #serial<T>(work: () => Promise<T>): Promise<T> {
     const result = this.#queue.then(work);
@@ -41,7 +51,7 @@ export class LocalState {
       (!write ? this.#entries.get(false) : undefined);
     if (current) return current;
     if (!write && !existsSync(this.#path)) return undefined;
-    if (write) mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
+    if (write) ensurePrivateDirectory(dirname(this.#path), this.#directories);
     const result = await this.#store.open({
       path: this.#path,
       readOnly: !write,
