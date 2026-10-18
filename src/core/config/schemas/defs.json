@@ -148,7 +148,8 @@
         },
         "receipt": {
           "type": ["string", "null"],
-          "pattern": "^[0-9]{6,}$"
+          "pattern": "^[0-9]{6,}$",
+          "maxLength": 64
         },
         "changes": {
           "type": "array",

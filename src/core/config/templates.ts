@@ -39,7 +39,7 @@ import {
 import type { Change } from "./document.ts";
 import { MAX_TEMPLATE_FILE_BYTES, readProjectFile } from "./files.ts";
 import { atomicSource, METADATA_KEYS } from "./layers.ts";
-import { applyStep, plan, type Step, templateIdOf } from "./merge.ts";
+import { applyStep, basesOf, plan, type Step, templateIdOf } from "./merge.ts";
 import {
   digestValue,
   formatPointer,
@@ -216,6 +216,69 @@ function report(
 
 const byPointer = (a: KeyChange, b: KeyChange): number =>
   a.pointer.localeCompare(b.pointer);
+
+/** A different source makes every key of that instance one held decision. */
+function sourceConflictRoots(
+  document: JsonObject,
+  id: string,
+  theirs: ReadonlyMap<string, unknown>,
+  steps: readonly Step[],
+): string[][] {
+  const roots = new Map<string, string[]>();
+  const bases = basesOf(document, id);
+  for (const [pointer, source] of theirs) {
+    const segments = parsePointer(pointer) ?? [];
+    if (
+      segments.length !== 3 ||
+      segments[0] !== "blocks" ||
+      segments[2] !== "source"
+    )
+      continue;
+    const current = getIn(document, segments);
+    if (
+      hasIn(document, segments) &&
+      !jsonEqual(current, source) &&
+      bases.get(pointer) !== digestValue(current)
+    )
+      roots.set(segments[1] ?? "", segments.slice(0, 2));
+  }
+  for (const step of steps) {
+    if (
+      step.segments.length === 3 &&
+      step.segments[0] === "blocks" &&
+      step.segments[2] === "source" &&
+      (step.kind === "conflict" || step.kind === "kept")
+    )
+      roots.set(step.segments[1] ?? "", step.segments.slice(0, 2));
+  }
+  return [...roots.values()];
+}
+
+function blockedBySource(step: Step, roots: readonly string[][]): boolean {
+  return roots.some((root) => isPrefix(root, step.segments));
+}
+
+function sourceConflictChanges(
+  document: JsonObject,
+  theirs: ReadonlyMap<string, unknown>,
+  roots: readonly string[][],
+  steps: readonly Step[],
+): KeyChange[] {
+  return roots.map((root) => {
+    const segments = [...root, "source"];
+    const pointer = formatPointer(segments);
+    const existing = steps.find((step) => step.pointer === pointer);
+    if (existing?.kind === "conflict") return report(existing);
+    const present = hasIn(document, segments);
+    return {
+      pointer,
+      kind: "conflict",
+      ...(present ? { current: getIn(document, segments) } : {}),
+      ...(theirs.has(pointer) ? { upstream: theirs.get(pointer) } : {}),
+      reason: `instance ${root[1]} already comes from a different source`,
+    };
+  });
+}
 
 export function createTemplates(env: TemplateEnvironment): TemplateApi {
   const load = (reference: string): TemplateDocument => {
@@ -503,25 +566,12 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           const added: string[] = [];
           const shared: string[] = [];
           const conflicts: KeyChange[] = [];
-          const blocks = isObject(document.blocks) ? document.blocks : {};
-          const foreign = new Set(
-            Object.entries(
-              isObject(template.config.blocks) ? template.config.blocks : {},
-            )
-              .filter(([name, instance]) => {
-                const mine = blocks[name];
-                return (
-                  isObject(mine) &&
-                  Object.hasOwn(mine, "source") &&
-                  !jsonEqual(mine.source, instance.source)
-                );
-              })
-              .map(([name]) => name),
-          );
+          const leaves = templateLeaves(template);
+          const roots = sourceConflictRoots(document, template.id, leaves, []);
           const theirs = new Map<string, unknown>();
-          for (const [pointer, value] of templateLeaves(template)) {
+          for (const [pointer, value] of leaves) {
             const segments = parsePointer(pointer) ?? [];
-            if (segments[0] === "blocks" && foreign.has(segments[1] ?? "")) {
+            if (roots.some((root) => isPrefix(root, segments))) {
               const present = hasIn(document, segments);
               conflicts.push({
                 pointer,
@@ -569,11 +619,26 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
         imported,
         upstream: refOf(upstream),
         revision: current.revision,
-        changes: plan(document, id, templateLeaves(upstream))
-          .filter((step) => step.kind !== "shared" && step.kind !== "drop")
-          .map((step) =>
-            step.kind === "kept" ? report(step, DROPPED_EDITED) : report(step),
-          ),
+        changes: (() => {
+          const theirs = templateLeaves(upstream);
+          const steps = plan(document, id, theirs);
+          const roots = sourceConflictRoots(document, id, theirs, steps);
+          return [
+            ...steps
+              .filter(
+                (step) =>
+                  !blockedBySource(step, roots) &&
+                  step.kind !== "shared" &&
+                  step.kind !== "drop",
+              )
+              .map((step) =>
+                step.kind === "kept"
+                  ? report(step, DROPPED_EDITED)
+                  : report(step),
+              ),
+            ...sourceConflictChanges(document, theirs, roots, steps),
+          ].sort(byPointer);
+        })(),
       };
     },
 
@@ -595,7 +660,39 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           const conflicts: KeyChange[] = [];
           const held: (readonly string[])[] = [];
           const giving: Step[] = [];
-          for (const step of plan(document, id, templateLeaves(upstream))) {
+          const theirs = templateLeaves(upstream);
+          const steps = plan(document, id, theirs);
+          const conflicting = sourceConflictRoots(document, id, theirs, steps);
+          const roots = conflicting.filter(
+            (root) => !accept.has(formatPointer([...root, "source"])),
+          );
+          for (const root of conflicting) {
+            const segments = [...root, "source"];
+            const pointer = formatPointer(segments);
+            if (
+              !accept.has(pointer) ||
+              steps.some((step) => step.pointer === pointer)
+            )
+              continue;
+            const source = theirs.get(pointer);
+            const synthetic: Step = {
+              kind: "conflict",
+              pointer,
+              segments,
+              present: hasIn(document, segments),
+              current: getIn(document, segments),
+              upstream: source,
+              theirs: new Map([[pointer, source]]),
+            };
+            applyStep(document, synthetic, ref);
+            applied.push(report(synthetic));
+          }
+          conflicts.push(
+            ...sourceConflictChanges(document, theirs, roots, steps),
+          );
+          held.push(...roots);
+          for (const step of steps) {
+            if (blockedBySource(step, roots)) continue;
             switch (step.kind) {
               case "conflict":
                 if (accept.has(step.pointer)) {
@@ -671,7 +768,15 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           ref = requireImported(document, input.template);
           const kept: KeyChange[] = [];
           const giving: Step[] = [];
-          for (const step of plan(document, id, new Map())) {
+          const steps = plan(document, id, new Map());
+          const roots = sourceConflictRoots(document, id, new Map(), steps);
+          for (const step of steps) {
+            if (blockedBySource(step, roots)) {
+              kept.push(
+                report(step, "source conflict holds this instance", "kept"),
+              );
+              continue;
+            }
             if (step.kind === "remove") {
               giving.push(step);
               continue;

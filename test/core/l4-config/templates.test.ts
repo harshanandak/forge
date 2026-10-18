@@ -204,6 +204,125 @@ describe("template lifecycle", () => {
     });
   });
 
+  test("a source conflict holds every sibling through compare and update until resolved", () => {
+    const p = project();
+    const first = structuredClone(starter()) as unknown as {
+      config: { blocks: Record<string, unknown> };
+    };
+    first.config.blocks.check = {
+      source: { builtin: "forge/check" },
+      config: { retryCount: 2 },
+    };
+    p.installed.set("forge/starter", first as TemplateDocument);
+    const mine = p.config.set({
+      path: "/blocks/check/source",
+      value: { path: "blocks/my-check" },
+      expectRevision: p.config.show().revision,
+    });
+    const imported = p.templates.importTemplate({
+      template: "forge/starter",
+      expectRevision: mine.revision,
+    });
+    expect(imported.conflicts.map((c) => c.pointer)).toContain(
+      "/blocks/check/source",
+    );
+    expect(imported.conflicts.map((c) => c.pointer)).toContain(
+      "/blocks/check/config/retryCount",
+    );
+    expect(
+      p.config.explain({ path: "/blocks/check/config/retryCount" }).value,
+    ).toBeNull();
+    p.installed.set("forge/starter", starterNext());
+    const compared = p.templates.compare({ template: "forge/starter" });
+    expect(
+      compared.changes.some(
+        (c) =>
+          c.pointer === "/blocks/check/config/timeoutSeconds" &&
+          c.kind === "add",
+      ),
+    ).toBe(false);
+    const held = p.templates.update({
+      template: "forge/starter",
+      expectRevision: imported.revision,
+    });
+    expect(
+      held.applied.some((c) => c.pointer.startsWith("/blocks/check/")),
+    ).toBe(false);
+    expect(
+      p.config.explain({ path: "/blocks/check/config/timeoutSeconds" }).value,
+    ).toBeNull();
+    const resolved = p.config.set({
+      path: "/blocks/check/source",
+      value: { builtin: "forge/check" },
+      expectRevision: held.revision,
+    });
+    const applied = p.templates.update({
+      template: "forge/starter",
+      expectRevision: resolved.revision,
+    });
+    expect(applied.applied.map((c) => c.pointer)).toContain(
+      "/blocks/check/config/timeoutSeconds",
+    );
+    expect(
+      p.config.explain({ path: "/blocks/check/config/timeoutSeconds" }).value,
+    ).toBe(600);
+  });
+
+  test("accepting a source conflict replaces the source before applying its siblings", () => {
+    const p = project();
+    const mine = p.config.set({
+      path: "/blocks/check/source",
+      value: { path: "blocks/my-check" },
+      expectRevision: p.config.show().revision,
+    });
+    const imported = p.templates.importTemplate({
+      template: "forge/starter",
+      expectRevision: mine.revision,
+    });
+    p.installed.set("forge/starter", starterNext());
+    const taken = p.templates.update({
+      template: "forge/starter",
+      expectRevision: imported.revision,
+      accept: ["/blocks/check/source"],
+    });
+    expect(
+      taken.conflicts.some((c) => c.pointer.startsWith("/blocks/check/")),
+    ).toBe(false);
+    expect(p.config.explain({ path: "/blocks/check/source" }).value).toEqual({
+      builtin: "forge/check",
+    });
+    expect(
+      p.config.explain({ path: "/blocks/check/config/timeoutSeconds" }).value,
+    ).toBe(600);
+  });
+
+  test("removing a template holds an edited source and all sibling values", () => {
+    const p = project();
+    p.installed.set("forge/starter", starterNext());
+    const imported = p.templates.importTemplate({
+      template: "forge/starter",
+      expectRevision: p.config.show().revision,
+    });
+    const edited = p.config.set({
+      path: "/blocks/check/source",
+      value: { path: "blocks/my-check" },
+      expectRevision: imported.revision,
+    });
+    const before = p.config.explain({
+      path: "/blocks/check/config/timeoutSeconds",
+    }).value;
+    const removed = p.templates.remove({
+      template: "forge/starter",
+      expectRevision: edited.revision,
+    });
+    expect(
+      removed.removed.some((pointer) => pointer.startsWith("/blocks/check/")),
+    ).toBe(false);
+    expect(
+      p.config.explain({ path: "/blocks/check/config/timeoutSeconds" }).value,
+    ).toEqual(before);
+  });
+
   test("a template file in the project imports like an installed one", () => {
     const p = project();
     writeFileSync(
@@ -246,7 +365,7 @@ describe("template lifecycle", () => {
       revision: edited.revision,
     });
     expect(compared.changes.map((c) => [c.pointer, c.kind])).toEqual([
-      ["/blocks/check/config/timeoutSeconds", "add"],
+      ["/blocks/check/source", "conflict"],
       ["/blocks/context/source", "remove"],
       ["/blocks/memory/config/scope", "add"],
     ]);
@@ -258,7 +377,9 @@ describe("template lifecycle", () => {
       expectRevision: compared.revision,
     });
     expect(updated.template).toBe("forge/starter@0.2.0");
-    expect(updated.conflicts).toEqual([]);
+    expect(updated.conflicts.map((c) => c.pointer)).toEqual([
+      "/blocks/check/source",
+    ]);
     const after = p.config.show();
     expect(after.instances.map((i) => i.name).sort()).toEqual([
       "check",
@@ -269,7 +390,6 @@ describe("template lifecycle", () => {
       blocks: {
         check: {
           source: { path: "blocks/my-check" },
-          config: { timeoutSeconds: 600 },
         },
       },
     });

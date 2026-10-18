@@ -11,6 +11,7 @@
     "receipt": {
       "type": "string",
       "pattern": "^[0-9]{6,}$",
+      "maxLength": 64,
       "description": "A receipt id; omitted means the edit that produced the current revision."
     }
   },

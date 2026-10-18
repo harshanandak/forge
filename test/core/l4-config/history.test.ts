@@ -59,6 +59,64 @@ function twoEdits(p: Fixture): string {
 }
 
 describe("damaged edit history", () => {
+  test("a very large numeric receipt id increments exactly and remains revertible", () => {
+    const p = project();
+    const previous = "1000000000000000000000";
+    const dir = join(p.root, ".forge", "config-history");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(receiptFile(p, previous), "{}");
+    const written = p.config.set({
+      path: "check.timeout",
+      value: 300,
+      expectRevision: p.config.show().revision,
+    });
+    expect(written.receipt).toBe("1000000000000000000001");
+    expect(p.env.files.list(".forge/config-history")).toContain(
+      "1000000000000000000001.json",
+    );
+    if (written.receipt === null) throw new Error("expected receipt");
+    const reverted = p.config.revert({ expectRevision: written.revision });
+    expect(reverted.reverted).toBe(written.receipt);
+  });
+
+  test.each(["1e+21.json", `${"9".repeat(65)}.json`])(
+    "an invalid receipt name %s refuses the edit before writing config",
+    (name) => {
+      const p = project();
+      const dir = join(p.root, ".forge", "config-history");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, name), "{}");
+      const failure = failureOf(() =>
+        p.config.set({
+          path: "check.timeout",
+          value: 300,
+          expectRevision: p.config.show().revision,
+        }),
+      );
+      expect(failure?.code).toBe("INPUT_INVALID");
+      expect(p.read()).toBeUndefined();
+      expect(p.env.files.list(".forge/config-history")).toEqual([name]);
+    },
+  );
+
+  test("receipt numbering refuses overflow at the 64 digit limit before writing config", () => {
+    const p = project();
+    const dir = join(p.root, ".forge", "config-history");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(receiptFile(p, "9".repeat(64)), "{}");
+    const failure = failureOf(() =>
+      p.config.set({
+        path: "check.timeout",
+        value: 300,
+        expectRevision: p.config.show().revision,
+      }),
+    );
+    expect(failure?.code).toBe("LIMIT_EXCEEDED");
+    expect(p.read()).toBeUndefined();
+    expect(p.env.files.list(".forge/config-history")).toEqual([
+      `${"9".repeat(64)}.json`,
+    ]);
+  });
   test("an oversized config is refused on show before decoding", () => {
     const p = project();
     mkdirSync(join(p.root, ".forge"), { recursive: true });

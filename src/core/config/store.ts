@@ -162,9 +162,10 @@ export interface History {
   /** Receipt files that are not; they are reported and never applied. */
   readonly damaged: readonly DamagedReceipt[];
   /** The highest receipt number on disk, damaged files included, so a new id never reuses one. */
-  readonly last: number;
+  readonly last: string;
 }
 
+const MAX_RECEIPT_ID_DIGITS = 64;
 const RECEIPT_NAME = /^(\d{6,})\.json$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const BASE64 =
@@ -197,7 +198,9 @@ function receiptProblem(value: unknown, id: string): string | undefined {
     return "to is not a digest";
   if (
     value.reverts !== undefined &&
-    (typeof value.reverts !== "string" || !/^\d{6,}$/.test(value.reverts))
+    (typeof value.reverts !== "string" ||
+      !/^\d{6,}$/.test(value.reverts) ||
+      value.reverts.length > MAX_RECEIPT_ID_DIGITS)
   )
     return "reverts is not a receipt id";
   if (value.before !== null && typeof value.before !== "string")
@@ -214,7 +217,7 @@ function receiptProblem(value: unknown, id: string): string | undefined {
 export function readHistory(deps: StoreDeps): History {
   const receipts: Receipt[] = [];
   const damaged: DamagedReceipt[] = [];
-  let last = 0;
+  let last = "000000";
   const names = deps.files.list(HISTORY_DIR);
   if (names.length > MAX_HISTORY_FILES)
     throw new ForgeFailure({
@@ -224,9 +227,16 @@ export function readHistory(deps: StoreDeps): History {
       retry: "never",
     });
   for (const name of names) {
+    if (!name.endsWith(".json")) continue;
     const id = RECEIPT_NAME.exec(name)?.[1];
-    if (id === undefined) continue;
-    last = Math.max(last, Number.parseInt(id, 10));
+    if (id === undefined || id.length > MAX_RECEIPT_ID_DIGITS) {
+      throw new ForgeFailure({
+        code: "INPUT_INVALID",
+        message: `${HISTORY_DIR}/${name} has an invalid receipt id (expected 6 to ${MAX_RECEIPT_ID_DIGITS} digits)`,
+        retry: "never",
+      });
+    }
+    if (BigInt(id) > BigInt(last)) last = id;
     const file = `${HISTORY_DIR}/${name}`;
     const bytes = readProjectFile(deps.files, file, MAX_RECEIPT_FILE_BYTES);
     if (bytes === undefined) continue;
@@ -242,7 +252,9 @@ export function readHistory(deps: StoreDeps): History {
     else damaged.push({ file, problem });
   }
   return {
-    receipts: receipts.sort((a, b) => a.id.localeCompare(b.id)),
+    receipts: receipts.sort((a, b) =>
+      BigInt(a.id) < BigInt(b.id) ? -1 : BigInt(a.id) > BigInt(b.id) ? 1 : 0,
+    ),
     damaged,
     last,
   };
@@ -292,7 +304,14 @@ export function commit(
     }
     const history = readHistory(deps);
     const receipts = history.receipts;
-    const id = String(history.last + 1).padStart(6, "0");
+    const id = (BigInt(history.last) + 1n).toString().padStart(6, "0");
+    if (id.length > MAX_RECEIPT_ID_DIGITS) {
+      throw new ForgeFailure({
+        code: "LIMIT_EXCEEDED",
+        message: `${HISTORY_DIR} cannot create a receipt id longer than ${MAX_RECEIPT_ID_DIGITS} digits`,
+        retry: "never",
+      });
+    }
     const receipt: Receipt = {
       schemaVersion: RECEIPT_VERSION,
       id,
