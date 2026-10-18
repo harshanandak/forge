@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-const [installed, root] = process.argv.slice(2);
-mkdirSync(root, { recursive: true });
+const [installed, suppliedRoot] = process.argv.slice(2);
+mkdirSync(suppliedRoot, { recursive: true });
+const root = realpathSync(suppliedRoot);
 const bin = join(installed, "dist/bin/forge.js");
 const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") };
 assert.ok(
