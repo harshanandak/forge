@@ -60,3 +60,4 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 - Reports lead with the answer in plain language, then evidence and what would change it.
 - Review is done when there are no P0 or P1 findings and your own regressions are fixed; adjacent findings become issues. After three review rounds, escalate as a design issue instead of iterating; the budget never waives a P0 or P1.
 - The pull request title is a conventional commit title; it becomes the changelog line. Do not edit the changelog by hand.
+- PR CI should stay around 2 minutes wall; a change that adds more than ~30 s states why in its pull request. The CI Gate prints the run's wall time.
