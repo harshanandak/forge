@@ -7,11 +7,12 @@ import {
   readSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 
 export interface DirectorySyncPort {
   readonly platform: string;
@@ -21,12 +22,19 @@ export interface DirectorySyncPort {
   renameSync?(from: string, to: string): void;
 }
 
-const nodeFs: DirectorySyncPort = {
+export interface DirectoryCreatePort extends DirectorySyncPort {
+  statSync(path: string): { isDirectory(): boolean };
+  mkdirSync(path: string, options: { mode: number }): void;
+}
+
+const nodeFs: DirectoryCreatePort = {
   platform: process.platform,
   openSync,
   fsyncSync,
   closeSync,
   renameSync,
+  statSync,
+  mkdirSync,
 };
 
 export function syncParentDirectory(
@@ -39,6 +47,37 @@ export function syncParentDirectory(
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
+  }
+}
+
+/** Sync every path entry on each attempt, including entries left by a failed sync. */
+export function ensurePrivateDirectory(
+  path: string,
+  fs: DirectoryCreatePort = nodeFs,
+): void {
+  const directories: string[] = [];
+  let current = resolve(path);
+  while (dirname(current) !== current) {
+    directories.push(current);
+    current = dirname(current);
+  }
+  for (const directory of directories.reverse()) {
+    try {
+      if (!fs.statSync(directory).isDirectory())
+        throw new Error(`State directory is not a directory: ${directory}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      try {
+        fs.mkdirSync(directory, { mode: 0o700 });
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code !== "EEXIST" ||
+          !fs.statSync(directory).isDirectory()
+        )
+          throw error;
+      }
+    }
+    syncParentDirectory(directory, fs);
   }
 }
 
