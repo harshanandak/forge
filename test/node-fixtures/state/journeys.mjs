@@ -238,6 +238,7 @@ const cases = {
       });
       if (refused.ok) await refused.handle.close();
       assert.equal(refused.ok, false, "dangling file symlink must be refused");
+      assert.match(refused.unavailable.reason, /Dangling store symlink/);
       assert.equal(existsSync(join(cloud, "uncreated.db")), false);
       const local = await createSqliteStore(work).open({
         path: "local.db",
