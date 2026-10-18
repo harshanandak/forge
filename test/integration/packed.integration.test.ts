@@ -17,19 +17,32 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "../..");
+function timed<T>(label: string, action: () => T): T {
+  const started = performance.now();
+  try {
+    return action();
+  } finally {
+    console.log(
+      `Packed first slice ${label}: ${Math.round(performance.now() - started)} ms`,
+    );
+  }
+}
 function run(
+  label: string,
   command: string,
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const result = spawnSync(command, args, {
-    cwd,
-    env,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 90000,
-  });
+  const result = timed(label, () =>
+    spawnSync(command, args, {
+      cwd,
+      env,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 90000,
+    }),
+  );
   if (result.status !== 0)
     throw new Error(
       `${result.error?.message ?? "process failed"}\n${result.stdout}\n${result.stderr}`,
@@ -54,9 +67,10 @@ function withoutBun(): NodeJS.ProcessEnv {
 }
 
 test("packed first slice: npm detection, human admission, CLI/MCP parity and competing revisions", () => {
+  const started = performance.now();
   const work = mkdtempSync(join(tmpdir(), "forge-first-slice-"));
   try {
-    run(process.execPath, ["run", "build"], root);
+    run("build", process.execPath, ["run", "build"], root);
     const node = Bun.which("node");
     if (!node) throw new Error("Node is required");
     const npm = [
@@ -66,6 +80,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
     if (!npm) throw new Error("npm CLI is required");
     const packed = JSON.parse(
       run(
+        "npm pack",
         node,
         [npm, "pack", "--json", "--ignore-scripts", "--pack-destination", work],
         root,
@@ -79,6 +94,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
     );
     const env = withoutBun();
     run(
+      "npm install",
       node,
       [
         npm,
@@ -111,25 +127,45 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
     ];
     for (const runtime of runtimes)
       expect(
-        run(runtime, [join(consumer, "journey.mjs")], consumer, env),
+        run(
+          `journey (${runtime})`,
+          runtime,
+          [join(consumer, "journey.mjs")],
+          consumer,
+          env,
+        ),
       ).toContain("PASS all");
     for (const runtime of runtimes)
       expect(
-        run(runtime, [join(consumer, "review.mjs")], consumer, env),
+        run(
+          `review (${runtime})`,
+          runtime,
+          [join(consumer, "review.mjs")],
+          consumer,
+          env,
+        ),
       ).toContain("PASS package-roots");
     for (const runtime of runtimes)
       expect(
-        run(runtime, [join(consumer, "review-two.mjs")], consumer, env),
+        run(
+          `review-two (${runtime})`,
+          runtime,
+          [join(consumer, "review-two.mjs")],
+          consumer,
+          env,
+        ),
       ).toContain("PASS lifetime");
     const installed = join(consumer, "node_modules/forge-workflow");
     const isolated = join(
       consumer,
       "node_modules/forge-first-slice-counterfactual",
     );
-    cpSync(installed, isolated, {
-      recursive: true,
-      filter: (path) => !path.endsWith(".map") && !path.endsWith(".ts"),
-    });
+    timed("private mutation copy", () =>
+      cpSync(installed, isolated, {
+        recursive: true,
+        filter: (path) => !path.endsWith(".map") && !path.endsWith(".ts"),
+      }),
+    );
     // Package self-references resolve from each fixture's location. Keep fixtures
     // inside the private copy so imports, CLI and writer children load that copy.
     for (const name of fixtures)
@@ -292,19 +328,23 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
           FORGE_MUTATION_HASH: hash,
           FORGE_MUTATION_PROOF: proof,
         };
-        const result = spawnSync(
-          node,
-          [
-            join(isolated, `${mutation.fixture ?? "journey"}.mjs`),
-            mutation.mode,
-          ],
-          {
-            cwd: isolated,
-            env: mutationEnv,
-            encoding: "utf8",
-            windowsHide: true,
-            timeout: 45000,
-          },
+        const result = timed(
+          `counterfactual ${mutation.fixture ?? "journey"}:${mutation.mode}`,
+          () =>
+            spawnSync(
+              node,
+              [
+                join(isolated, `${mutation.fixture ?? "journey"}.mjs`),
+                mutation.mode,
+              ],
+              {
+                cwd: isolated,
+                env: mutationEnv,
+                encoding: "utf8",
+                windowsHide: true,
+                timeout: 45000,
+              },
+            ),
         );
         const loaded = readFileSync(proof, "utf8")
           .trim()
@@ -339,6 +379,9 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       `Packed first slice: ${runtimes.length} Node runtimes, 5 acceptance items, ${mutations.length} remove-the-fix checks`,
     );
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    timed("cleanup", () => rmSync(work, { recursive: true, force: true }));
+    console.log(
+      `Packed first slice total: ${Math.round(performance.now() - started)} ms`,
+    );
   }
 }, 180000);
