@@ -57,6 +57,11 @@ function freeze<T>(value: T): T {
   return value;
 }
 
+/** A captured filename is a path, whereas a schema $ref may contain a fragment. */
+function capturedUri(path: string, base: string): string {
+  return new URL(path.split("/").map(encodeURIComponent).join("/"), base).href;
+}
+
 /** Captured immutable text, never paths that are loaded later. */
 export class CapturedBlock {
   readonly manifest: BlockManifest;
@@ -90,10 +95,10 @@ export class CapturedBlock {
       import("../../contract/schema.ts").SchemaObject
     >();
     const pathsByUri = new Map(
-      [...files.keys()].map((name) => [new URL(name, this.#base).href, name]),
+      [...files.keys()].map((name) => [capturedUri(name, this.#base), name]),
     );
     const register = (name: string): void => {
-      const uri = new URL(name, this.#base).href;
+      const uri = capturedUri(name, this.#base);
       if (documents.has(uri)) return;
       const schema: unknown = JSON.parse(this.text(name));
       if (!isSchemaObject(schema) && typeof schema !== "boolean")
@@ -140,8 +145,8 @@ export class CapturedBlock {
       this.#base,
     );
     for (const op of Object.values(manifest.operations)) {
-      this.#registry.validator(op.input);
-      this.#registry.validator(op.output);
+      this.#registry.validator(capturedUri(op.input, this.#base));
+      this.#registry.validator(capturedUri(op.output, this.#base));
     }
     Object.freeze(this);
   }
@@ -153,7 +158,9 @@ export class CapturedBlock {
   }
 
   validate(path: string, value: unknown): boolean {
-    return this.#registry.validate(path, value).length === 0;
+    return (
+      this.#registry.validate(capturedUri(path, this.#base), value).length === 0
+    );
   }
 
   schema(path: string): unknown {

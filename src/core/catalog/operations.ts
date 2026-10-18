@@ -3,6 +3,7 @@ import type { OperationDeclaration } from "../../generated/types.ts";
 /** Area-owned operation declarations; assembled output is generated, never committed. */
 export const operations: Record<string, OperationDeclaration> = {
   "catalog.describe": {
+    args: ["op"],
     output: "catalog/describe.output.schema.json",
     context: "stateless",
     idempotent: true,

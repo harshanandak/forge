@@ -24,12 +24,9 @@ export function visible(
   catalog: SurfaceCatalog,
   caller: Caller,
 ): ReturnType<SurfaceCatalog["list"]> {
-  return catalog
-    .list()
-    .filter(
-      (c) =>
-        c.admitted && (caller !== "agent" || isAgentCallable(c.declaration)),
-    );
+  return [...discoveryOperations, ...catalog.list()].filter(
+    (c) => c.admitted && (caller !== "agent" || isAgentCallable(c.declaration)),
+  );
 }
 
 export function suggestions(
@@ -69,13 +66,10 @@ export async function dispatch(
   options: CallOptions,
 ): Promise<ResultEnvelope> {
   const entries = visible(catalog, options.caller);
-  if (op === "catalog.list")
-    return success(op, [...discoveryOperations, ...entries]);
+  if (op === "catalog.list") return success(op, entries);
   if (op === "catalog.describe") {
     const name = record(input)?.op;
-    const entry = [...discoveryOperations, ...entries].find(
-      (c) => c.op === name,
-    );
+    const entry = entries.find((c) => c.op === name);
     return entry === undefined
       ? failure("UNKNOWN_COMMAND", `Unknown operation: ${String(name)}`)
       : success(op, entry);
@@ -90,13 +84,11 @@ export async function dispatch(
     return dispatch(catalog, args.op, args.input ?? {}, options);
   }
   if (
-    !catalog
-      .list()
-      .some(
-        (c) =>
-          c.op === op &&
-          (options.caller !== "agent" || isAgentCallable(c.declaration)),
-      )
+    ![...discoveryOperations, ...catalog.list()].some(
+      (c) =>
+        c.op === op &&
+        (options.caller !== "agent" || isAgentCallable(c.declaration)),
+    )
   )
     return failure(
       "UNKNOWN_COMMAND",
