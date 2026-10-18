@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/config.json",
+  "title": "ConfigDocument",
+  "description": "forge.config/1: the one composition document. Block instances, their config, slot bindings, exposure and template provenance. Each block's own config is validated by that block's configSchema, so core knows nothing about what a solution does.",
+  "type": "object",
+  "required": ["schemaVersion", "blocks"],
+  "properties": {
+    "schemaVersion": { "const": "forge.config/1" },
+    "blocks": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "$ref": "common.json#/$defs/InstanceName" },
+      "additionalProperties": { "$ref": "#/$defs/BlockInstance" }
+    },
+    "mcp": { "$ref": "#/$defs/McpExposure" },
+    "templates": {
+      "description": "Templates imported into this config, with the exact version and digest imported.",
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/TemplateProvenance" }
+    },
+    "owners": {
+      "description": "Per-key ownership of imported values, keyed by JSON Pointer into this document.",
+      "type": "object",
+      "propertyNames": { "$ref": "common.json#/$defs/JsonPointer" },
+      "additionalProperties": { "$ref": "#/$defs/KeyOwner" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "BlockInstance": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": { "$ref": "#/$defs/BlockSource" },
+        "enabled": { "type": "boolean" },
+        "config": {
+          "description": "This instance's config; validated by the block's configSchema.",
+          "type": "object"
+        },
+        "bind": {
+          "description": "Required slot name to the instance that provides it.",
+          "type": "object",
+          "propertyNames": { "$ref": "common.json#/$defs/PropertyName" },
+          "additionalProperties": { "$ref": "#/$defs/BindingTarget" }
+        },
+        "rename": {
+          "description": "Local noun renames; they change CLI and MCP names only, never permission keys or authority.",
+          "type": "object",
+          "propertyNames": { "$ref": "common.json#/$defs/Noun" },
+          "additionalProperties": { "$ref": "common.json#/$defs/Noun" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "BindingTarget": {
+      "description": "An instance name in this config, or core for a provider that core itself supplies.",
+      "type": "string",
+      "maxLength": 40,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "BlockSource": {
+      "oneOf": [
+        { "$ref": "#/$defs/BuiltinSource" },
+        { "$ref": "#/$defs/PathSource" },
+        { "$ref": "#/$defs/PackageSource" }
+      ]
+    },
+    "BuiltinSource": {
+      "description": "A block shipped inside the Forge package.",
+      "type": "object",
+      "required": ["builtin"],
+      "properties": {
+        "builtin": { "$ref": "common.json#/$defs/BlockId" }
+      },
+      "additionalProperties": false
+    },
+    "PathSource": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": { "$ref": "common.json#/$defs/RelativePath" }
+      },
+      "additionalProperties": false
+    },
+    "PackageSource": {
+      "description": "An installed package; Forge never installs it.",
+      "type": "object",
+      "required": ["package"],
+      "properties": {
+        "package": { "type": "string", "minLength": 1, "maxLength": 214 },
+        "version": { "$ref": "common.json#/$defs/SemVer" }
+      },
+      "additionalProperties": false
+    },
+    "McpExposure": {
+      "type": "object",
+      "properties": {
+        "expose": {
+          "description": "Nouns or operations to expose as MCP tools; omitted means the default selection.",
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/ExposureSelector" }
+        },
+        "readOnly": { "type": "boolean" },
+        "budget": {
+          "description": "Most operation tools listed before the catalog tools take over; default 40.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "toolPrefix": { "$ref": "common.json#/$defs/Segment" }
+      },
+      "additionalProperties": false
+    },
+    "ExposureSelector": {
+      "description": "A noun, or one <noun>.<verb> operation.",
+      "type": "string",
+      "maxLength": 43,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)?$"
+    },
+    "TemplateProvenance": {
+      "type": "object",
+      "required": ["template", "digest"],
+      "properties": {
+        "template": { "$ref": "common.json#/$defs/TemplateRef" },
+        "digest": { "$ref": "common.json#/$defs/Digest" },
+        "importedAt": { "$ref": "common.json#/$defs/Timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "KeyOwner": {
+      "description": "Who wrote a key and the digest of the value they wrote; a template removes only keys it still owns unchanged.",
+      "type": "object",
+      "required": ["from", "baseline"],
+      "properties": {
+        "from": { "$ref": "common.json#/$defs/TemplateRef" },
+        "baseline": { "$ref": "common.json#/$defs/Digest" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

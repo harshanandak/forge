@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/block.json",
+  "title": "BlockManifest",
+  "description": "forge.block/1: a block's manifest. Checking it never imports the block's code.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "id",
+    "version",
+    "authorAbi",
+    "profile",
+    "entry",
+    "operations",
+    "docs"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "forge.block/1" },
+    "id": { "$ref": "common.json#/$defs/BlockId" },
+    "version": { "$ref": "common.json#/$defs/SemVer" },
+    "forgeVersion": { "$ref": "common.json#/$defs/VersionRange" },
+    "authorAbi": { "const": "forge.author/v1" },
+    "profile": { "$ref": "#/$defs/ExecutionProfile" },
+    "entry": { "$ref": "common.json#/$defs/RelativePath" },
+    "files": {
+      "description": "The exact files captured and digested at add time.",
+      "type": "array",
+      "maxItems": 512,
+      "uniqueItems": true,
+      "items": { "$ref": "common.json#/$defs/RelativePath" }
+    },
+    "runtimeDependencies": {
+      "type": "array",
+      "maxItems": 0,
+      "description": "Outside sync blocks ship one self-contained file; runtime dependencies are not allowed in this profile."
+    },
+    "configSchema": {
+      "description": "JSON Schema for this block's per-instance config.",
+      "$ref": "common.json#/$defs/RelativePath"
+    },
+    "nouns": {
+      "description": "Each noun the block owns, with the interface version its permission keys use.",
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": { "$ref": "common.json#/$defs/Noun" },
+      "additionalProperties": { "$ref": "#/$defs/NounDeclaration" }
+    },
+    "operations": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 128,
+      "propertyNames": { "$ref": "common.json#/$defs/OperationName" },
+      "additionalProperties": { "$ref": "operation.json" }
+    },
+    "provides": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/ProvidedInterface" }
+    },
+    "requires": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/RequiredSlot" }
+    },
+    "docs": { "$ref": "common.json#/$defs/RelativePath" },
+    "license": { "type": "string", "maxLength": 100 },
+    "repository": { "type": "string", "maxLength": 500 },
+    "support": { "type": "string", "maxLength": 500 }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "ExecutionProfile": {
+      "description": "trusted-action-sync/v1: a sync handler gets {input, config, services} and returns one JSON value; a Promise is refused.",
+      "enum": ["trusted-action-sync/v1"]
+    },
+    "NounDeclaration": {
+      "type": "object",
+      "required": ["interface"],
+      "properties": {
+        "interface": { "$ref": "common.json#/$defs/SemVer" }
+      },
+      "additionalProperties": false
+    },
+    "ProvidedInterface": {
+      "description": "An interface this block implements at an exact version, optionally under one of its nouns.",
+      "type": "object",
+      "required": ["interface"],
+      "properties": {
+        "interface": { "$ref": "common.json#/$defs/InterfaceVersionRef" },
+        "noun": { "$ref": "common.json#/$defs/Noun" }
+      },
+      "additionalProperties": false
+    },
+    "RequiredSlot": {
+      "description": "A typed slot the block calls through services.<slot>; config binds it to a compatible provider.",
+      "type": "object",
+      "required": ["slot", "interface"],
+      "properties": {
+        "slot": { "$ref": "common.json#/$defs/PropertyName" },
+        "interface": { "$ref": "common.json#/$defs/InterfaceRef" },
+        "optional": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

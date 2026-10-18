@@ -16,3 +16,6 @@ tmp/
 .hermes/
 .opencode/
 .pi/
+
+# Generated from schemas/ by tools/gen/types.ts before check, lint, build and test; never committed.
+src/generated/

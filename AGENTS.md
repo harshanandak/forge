@@ -12,6 +12,7 @@ bun run check              # type check (bun check)
 bun run lint               # bun lint --type-aware, zero warnings (tools/bun-builtin.ts)
 bun run fmt                # bun fmt (pass --check to verify only)
 bun test --timeout 30000   # all tests (bun run test); test/structure holds the repo guards
+bun run gen                # write src/generated/ from schemas/ (gitignored; check, lint, build and bun test run it first)
 bun run build              # tsc emits dist/ (.js + .d.ts)
 bun run pack:smoke         # pack, install with npm on Node without Bun, run forge --version
 ```

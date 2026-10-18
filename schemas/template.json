@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/template.json",
+  "title": "TemplateDocument",
+  "description": "forge.template/1: a shareable composition. Importing copies its config into the project as plain, editable config.",
+  "type": "object",
+  "required": ["schemaVersion", "id", "version", "summary", "config"],
+  "properties": {
+    "schemaVersion": { "const": "forge.template/1" },
+    "id": { "$ref": "common.json#/$defs/BlockId" },
+    "version": { "$ref": "common.json#/$defs/SemVer" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "config": { "$ref": "config.json" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/docs.json",
+  "title": "DocsRecords",
+  "description": "forge.docs/1: one file feeding help, catalog describe, MCP titles and descriptions, and generated docs.",
+  "type": "object",
+  "required": ["operations"],
+  "properties": {
+    "schemaVersion": { "const": "forge.docs/1" },
+    "operations": {
+      "type": "object",
+      "propertyNames": { "$ref": "common.json#/$defs/OperationName" },
+      "additionalProperties": { "$ref": "#/$defs/OperationDocs" }
+    },
+    "fields": {
+      "description": "Field help keyed by <schema file>#<JSON Pointer>.",
+      "type": "object",
+      "propertyNames": { "type": "string", "maxLength": 1024 },
+      "additionalProperties": { "type": "string", "maxLength": 2000 }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "OperationDocs": {
+      "type": "object",
+      "required": ["title", "summary"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "examples": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/Example" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Example": {
+      "type": "object",
+      "required": ["input"],
+      "properties": {
+        "input": {},
+        "output": {}
+      },
+      "additionalProperties": false
+    }
+  }
+}

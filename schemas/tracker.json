@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json",
+  "description": "Shapes of the forge.tracker@1 interface: tracked work items any tracker provider exposes under its own noun.",
+  "$defs": {
+    "ItemId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "ItemStatus": {
+      "enum": ["open", "closed"]
+    },
+    "TrackerItem": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "status",
+        "labels",
+        "dependsOn",
+        "createdAt",
+        "updatedAt",
+        "revision"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/ItemId" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "body": { "type": "string", "maxLength": 65536 },
+        "kind": {
+          "description": "A provider-defined kind; providers refuse kinds they do not know.",
+          "$ref": "common.json#/$defs/Segment"
+        },
+        "status": { "$ref": "#/$defs/ItemStatus" },
+        "labels": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        },
+        "parent": { "$ref": "#/$defs/ItemId" },
+        "dependsOn": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/ItemId" }
+        },
+        "lease": { "$ref": "state.json#/$defs/LeaseRecord" },
+        "createdAt": { "$ref": "common.json#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "common.json#/$defs/Timestamp" },
+        "revision": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "CreateItemInput": {
+      "type": "object",
+      "required": ["title"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "body": { "type": "string", "maxLength": 65536 },
+        "kind": { "$ref": "common.json#/$defs/Segment" },
+        "labels": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        },
+        "parent": { "$ref": "#/$defs/ItemId" },
+        "dependsOn": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/ItemId" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ItemRef": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ItemId" }
+      },
+      "additionalProperties": false
+    },
+    "ListItemsInput": {
+      "type": "object",
+      "properties": {
+        "status": { "$ref": "#/$defs/ItemStatus" },
+        "ready": {
+          "description": "Only open items whose dependencies are closed and that no live lease holds.",
+          "type": "boolean"
+        },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 1000 }
+      },
+      "additionalProperties": false
+    },
+    "ListItemsOutput": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TrackerItem" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "UpdateItemInput": {
+      "type": "object",
+      "required": ["id", "expectRevision"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ItemId" },
+        "expectRevision": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "body": { "type": "string", "maxLength": 65536 },
+        "labels": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        },
+        "dependsOn": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/ItemId" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "CommentInput": {
+      "type": "object",
+      "required": ["id", "body"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ItemId" },
+        "body": { "type": "string", "minLength": 1, "maxLength": 65536 }
+      },
+      "additionalProperties": false
+    },
+    "CommentOutput": {
+      "type": "object",
+      "required": ["id", "commentId"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ItemId" },
+        "commentId": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    },
+    "ClaimInput": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ItemId" },
+        "ttlSeconds": { "type": "integer", "minimum": 1, "maximum": 604800 }
+      },
+      "additionalProperties": false
+    },
+    "LeaseGrant": {
+      "type": "object",
+      "required": ["id", "generation", "expiresAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ItemId" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "expiresAt": { "$ref": "common.json#/$defs/Timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "CloseInput": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ItemId" },
+        "reason": { "type": "string", "maxLength": 2000 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

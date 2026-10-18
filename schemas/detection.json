@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/detection.json",
+  "title": "DetectionObservation",
+  "description": "One value a detector read from the project, traced to its source. Detection never enables anything by itself.",
+  "type": "object",
+  "required": ["key", "value", "origin"],
+  "properties": {
+    "key": {
+      "description": "Where the value lands in the derived config, as a JSON Pointer.",
+      "$ref": "common.json#/$defs/JsonPointer"
+    },
+    "value": {},
+    "origin": { "$ref": "#/$defs/DetectionOrigin" },
+    "observedAt": { "$ref": "common.json#/$defs/Timestamp" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "DetectionOrigin": {
+      "type": "object",
+      "required": ["detector"],
+      "properties": {
+        "detector": { "$ref": "common.json#/$defs/OperationName" },
+        "file": { "$ref": "common.json#/$defs/RelativePath" },
+        "pointer": { "$ref": "common.json#/$defs/JsonPointer" },
+        "note": { "type": "string", "maxLength": 500 }
+      },
+      "additionalProperties": false
+    }
+  }
+}
