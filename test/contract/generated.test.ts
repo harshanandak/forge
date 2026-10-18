@@ -6,6 +6,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,6 +38,22 @@ test("generating twice into a clean directory yields identical bytes", () => {
     write(dir);
     expect(outputs(dir)).toEqual(first);
     expect(first).toEqual([...generate(dir).values()]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+
+// `bun run test` generates once before Bun starts its parallel workers, so workers only read outputs.
+test("writing up-to-date outputs leaves the files untouched", () => {
+  const dir = scratchCopy();
+  try {
+    write(dir);
+    const stale = new Date("2020-01-01T00:00:00Z");
+    for (const path of Object.values(OUTPUTS))
+      utimesSync(join(dir, path), stale, stale);
+    write(dir);
+    for (const path of Object.values(OUTPUTS))
+      expect(statSync(join(dir, path)).mtimeMs).toBe(stale.getTime());
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
