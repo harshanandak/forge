@@ -83,7 +83,13 @@ function skipQuoted(text: string, start: number, quote: string): number {
 
 function canStartRegex(tokens: readonly Token[]): boolean {
   const previous = tokens.at(-1)?.text;
-  return previous === undefined || /^[([{,:;=!?&|+*%^~<>-]$/.test(previous);
+  return (
+    previous === undefined ||
+    /^[([{,:;=!?&|+*%^~<>-]$/.test(previous) ||
+    /^(?:return|case|throw|delete|void|typeof|yield|await|in|of|instanceof)$/.test(
+      previous,
+    )
+  );
 }
 
 function skipRegex(text: string, start: number): number {

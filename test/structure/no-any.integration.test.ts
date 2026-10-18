@@ -31,6 +31,7 @@ test("the guard ignores comments and string literals", () => {
     "const template = `: any; as any; any[]; <any>; Array<any>`;",
     "const interpolation = `value: ${input as string}`;",
     "const pattern = /Array<any>/;",
+    "function regexAfterReturn() { return /Array<any>/; }",
     "const clean: unknown = 1;",
   ].join("\n");
   expect(findAnyTypeViolations([{ path: "src/example.ts", text }])).toEqual([]);
