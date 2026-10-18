@@ -10,10 +10,12 @@ import {
   parseUntrustedJson,
   SchemaRegistry,
   selectMcpTools,
+  step,
   validateInterfaceDocument,
   validateUntrustedContent,
 } from "../../src/contract/index.ts";
 import type { LifetimeProvider } from "../../src/ports/index.ts";
+import { openRealSteps } from "./fixtures/lifetime-typing.ts";
 
 const limits = {
   maxBytes: 200,
@@ -141,7 +143,7 @@ test("a partial open closes what it already opened, in reverse order", async () 
   const provider = (
     name: string,
     fails = false,
-  ): LifetimeProvider<string, never> => ({
+  ): LifetimeProvider<string, undefined> => ({
     open() {
       log.push(`open ${name}`);
       if (fails) {
@@ -168,11 +170,11 @@ test("a partial open closes what it already opened, in reverse order", async () 
     },
   });
   const failed = await openAll([
-    { provider: provider("store"), options: undefined as never },
-    { provider: provider("process"), options: undefined as never },
-    { provider: provider("mcp", true), options: undefined as never },
+    step(provider("store"), undefined),
+    step(provider("process"), undefined),
+    step(provider("mcp", true), undefined),
   ]);
-  expect(failed).toMatchObject({ ok: false, failedAt: 2 });
+  expect(failed).toMatchObject({ ok: false, failedAt: 2, cleanupErrors: [] });
   expect(log).toEqual([
     "open store",
     "open process",
@@ -180,6 +182,78 @@ test("a partial open closes what it already opened, in reverse order", async () 
     "close process",
     "close store",
   ]);
+}, 30_000);
+
+const ownedOpening = (
+  name: string,
+  log: string[],
+  closeFails = false,
+): LifetimeProvider<string, undefined> => ({
+  open: () =>
+    Promise.resolve({
+      ok: true,
+      handle: {
+        ownership: "owned",
+        value: name,
+        close: () => {
+          log.push(`close ${name}`);
+          return closeFails
+            ? Promise.reject(new Error(`${name} would not close`))
+            : Promise.resolve();
+        },
+      },
+    }),
+});
+
+const unavailableOpening = (): LifetimeProvider<string, undefined> => ({
+  open: () =>
+    Promise.resolve({
+      ok: false,
+      unavailable: {
+        kind: "unavailable",
+        reason: "mcp failed",
+        remedy: "retry later",
+      },
+    }),
+});
+
+test("a close that rejects does not stop the handles opened before it from closing", async () => {
+  const log: string[] = [];
+  const opened = await openAll([
+    step(ownedOpening("store", log), undefined),
+    step(ownedOpening("process", log, true), undefined),
+    step(ownedOpening("mcp", log), undefined),
+  ]);
+  expect(opened.ok).toBe(true);
+  if (!opened.ok) return;
+  const error = await opened.close().then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(error).toBeInstanceOf(AggregateError);
+  expect((error as AggregateError).errors).toHaveLength(1);
+  expect(log).toEqual(["close mcp", "close process", "close store"]);
+}, 30_000);
+
+test("a failed open still returns the provider's refusal when a rollback close rejects", async () => {
+  const log: string[] = [];
+  const failed = await openAll([
+    step(ownedOpening("store", log), undefined),
+    step(ownedOpening("process", log, true), undefined),
+    step(unavailableOpening(), undefined),
+  ]);
+  expect(failed).toMatchObject({
+    ok: false,
+    failedAt: 2,
+    unavailable: { reason: "mcp failed" },
+  });
+  if (failed.ok) return;
+  expect(failed.cleanupErrors).toHaveLength(1);
+  expect(log).toEqual(["close process", "close store"]);
+}, 30_000);
+
+test("a real multi-step open with different options type-checks without casts", () => {
+  expect(typeof openRealSteps).toBe("function");
 }, 30_000);
 
 test("the schema profile refuses unknown keywords and dangling references", () => {

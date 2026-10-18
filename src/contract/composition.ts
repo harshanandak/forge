@@ -72,6 +72,8 @@ export function resolveComposition(
   for (const [name, instance] of enabled) {
     const manifest = manifests.get(name);
     if (manifest === undefined) continue;
+    // projected noun -> the noun this instance declared under it, to catch renames that land together
+    const projected = new Map<string, string>();
     for (const [declaredOp, declaration] of Object.entries(
       manifest.operations,
     )) {
@@ -89,6 +91,17 @@ export function resolveComposition(
         });
         continue;
       }
+      const declaredNoun = projected.get(noun);
+      if (declaredNoun !== undefined && declaredNoun !== parsed.noun) {
+        errors.push({
+          code: "NOUN_COLLISION",
+          message: `instance "${name}" maps the nouns "${declaredNoun}" and "${parsed.noun}" to the same noun "${noun}"`,
+          retry: "never",
+          repair: `rename one to a different noun: blocks.${name}.rename: { ${parsed.noun}: <new-noun> }`,
+        });
+        continue;
+      }
+      projected.set(noun, parsed.noun);
       nounOwners.set(noun, name);
       operations.set(op, {
         op,

@@ -49,6 +49,7 @@ export const SUPPORTED_KEYWORDS: ReadonlySet<string> = new Set([
   "minLength",
   "maxLength",
   "pattern",
+  "format",
   "minimum",
   "maximum",
   "exclusiveMinimum",
@@ -71,6 +72,46 @@ const TYPES: ReadonlySet<string> = new Set([
   "boolean",
   "null",
 ]);
+
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const DATE_TIME =
+  /^([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt]([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]+)?(?:[Zz]|[+-]([0-9]{2}):([0-9]{2}))$/u;
+
+/**
+ * An RFC 3339 date-time whose fields are real: a month 1-12, a day that exists in that month and
+ * year, an hour below 24, a minute and second below 60 and an offset within a day. A leap second
+ * (`:60`) is refused because `Date.parse` cannot read it, and lease fencing compares parsed times.
+ */
+export function isRfc3339DateTime(value: string): boolean {
+  const match = DATE_TIME.exec(value);
+  if (match === null) return false;
+  const [year, month, day, hour, minute, second, offsetHour, offsetMinute] =
+    match.slice(1).map((part) => (part === undefined ? 0 : Number(part)));
+  if (
+    year === undefined ||
+    month === undefined ||
+    day === undefined ||
+    hour === undefined ||
+    minute === undefined ||
+    second === undefined ||
+    offsetHour === undefined ||
+    offsetMinute === undefined
+  ) {
+    return false;
+  }
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const monthDays = DAYS_IN_MONTH[month - 1];
+  if (monthDays === undefined) return false;
+  return (
+    day >= 1 &&
+    day <= (month === 2 && leap ? 29 : monthDays) &&
+    hour < 24 &&
+    minute < 60 &&
+    second < 60 &&
+    offsetHour < 24 &&
+    offsetMinute < 60
+  );
+}
 
 function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -273,6 +314,13 @@ export class SchemaRegistry {
         if (typeof value !== "string") fail("pattern must be a string");
         this.#pattern(value as string);
         return;
+      case "format":
+        if (value !== "date-time") {
+          fail(
+            `format ${JSON.stringify(value)} is outside the supported profile`,
+          );
+        }
+        return;
       case "required":
         if (
           !Array.isArray(value) ||
@@ -394,6 +442,9 @@ export class SchemaRegistry {
         !this.#pattern(schema.pattern).test(value)
       ) {
         add("pattern", `must match ${schema.pattern}`);
+      }
+      if (schema.format === "date-time" && !isRfc3339DateTime(value)) {
+        add("format", "must be an RFC 3339 date-time with real field values");
       }
     }
 

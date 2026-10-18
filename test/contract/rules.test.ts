@@ -296,6 +296,49 @@ test("composition: collisions, renames and slot bindings are resolved without im
     );
   }
 
+  // two nouns of one block renamed to the same noun collide inside a single instance
+  const bumpOp = semver.operations["semver.bump"];
+  if (bumpOp === undefined) throw new Error("semver fixture lost semver.bump");
+  const twoNouns = new Map([
+    [
+      "one",
+      {
+        ...semver,
+        operations: { "semver.bump": bumpOp, "release.bump": bumpOp },
+      },
+    ],
+  ]);
+  const sameRename = resolveComposition(
+    config({
+      one: {
+        source: { path: "a" },
+        rename: { semver: "ver", release: "ver" },
+      },
+    }),
+    twoNouns,
+  );
+  expect(codes(sameRename)).toContain("NOUN_COLLISION");
+  // renaming a noun onto one the same block still declares un-renamed collides too
+  const ontoExisting = resolveComposition(
+    config({
+      one: { source: { path: "a" }, rename: { semver: "release" } },
+    }),
+    twoNouns,
+  );
+  expect(codes(ontoExisting)).toContain("NOUN_COLLISION");
+  // the same rename with no clash stays fine
+  expect(
+    resolveComposition(
+      config({
+        one: {
+          source: { path: "a" },
+          rename: { semver: "ver", release: "rel" },
+        },
+      }),
+      twoNouns,
+    ).ok,
+  ).toBe(true);
+
   const noCore = resolveComposition(
     config({ semver: { source: { path: "a" } } }),
     new Map([["semver", semver]]),
