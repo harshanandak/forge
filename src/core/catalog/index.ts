@@ -1,5 +1,8 @@
 import type { BorrowedHandle } from "../../ports/lifetime.ts";
-import { resolveComposition } from "../../contract/composition.ts";
+import {
+  checkProvidedInterface,
+  resolveComposition,
+} from "../../contract/composition.ts";
 import { SchemaRegistry, isSchemaObject } from "../../contract/schema.ts";
 import {
   parseUntrustedJson,
@@ -14,10 +17,18 @@ import type {
   ConfigDocument,
   ParseLimits,
 } from "../../generated/types.ts";
-import { SCHEMA_DOCUMENTS } from "../../generated/schemas.ts";
+import {
+  SCHEMA_DOCUMENTS,
+  INTERFACE_DOCUMENTS,
+} from "../../generated/schemas.ts";
 import { digest, refuse } from "../trust/index.ts";
 import type { TrustStore } from "../trust/index.ts";
 import { nounRefusal } from "../../contract/naming.ts";
+import {
+  parseInterfaceVersionRef,
+  satisfiesRange,
+} from "../../contract/version.ts";
+import type { InterfaceDocument } from "../../generated/types.ts";
 
 /** Root-scoped, bounded byte capture. Platform containment belongs to the adapter. */
 export interface CaptureFiles {
@@ -177,13 +188,6 @@ export function captureBlock(
   const checked = validateBlockManifest(parsed.value);
   if (!checked.ok) refuse("INPUT_INVALID", "invalid block manifest");
   const manifest = checked.value;
-  const publisher = manifest.id.split("/")[0] ?? "";
-  for (const name of Object.keys(manifest.operations)) {
-    const error = nounRefusal(name.split(".")[0] ?? "", publisher, {
-      firstPartyNouns: [],
-    });
-    if (error !== undefined) refuse(error.code, error.message);
-  }
   const paths = new Set([
     manifest.entry,
     manifest.docs,
@@ -220,11 +224,67 @@ export class Catalog {
   constructor(
     config: ConfigDocument,
     blocks: ReadonlyMap<string, CapturedBlock>,
+    /** Supplied by the host; version-constrained blocks fail closed without it. */
+    forgeVersion?: string,
   ) {
     if (!validateConfigDocument(config).ok)
       refuse("INPUT_INVALID", "invalid composition config");
     this.config = freeze(structuredClone(config));
     this.#blocks = new Map(blocks);
+    for (const [name, instance] of Object.entries(this.config.blocks)) {
+      if (instance.enabled === false) continue;
+      const manifest = this.#blocks.get(name)?.manifest;
+      if (manifest === undefined) continue;
+      if (
+        manifest.forgeVersion !== undefined &&
+        (forgeVersion === undefined ||
+          !satisfiesRange(forgeVersion, manifest.forgeVersion))
+      )
+        refuse(
+          "INPUT_INVALID",
+          `block ${manifest.id} requires Forge ${manifest.forgeVersion}; current version ${forgeVersion ?? "was not supplied"}`,
+        );
+      const publisher = manifest.id.split("/")[0] ?? "";
+      for (const op of Object.keys(manifest.operations)) {
+        const declared = op.split(".")[0] ?? "";
+        const error = nounRefusal(
+          instance.rename?.[declared] ?? declared,
+          publisher,
+          { firstPartyNouns: [] },
+        );
+        if (error !== undefined) refuse(error.code, error.message);
+      }
+      for (const provided of manifest.provides ?? []) {
+        const provision = parseInterfaceVersionRef(provided.interface);
+        const document = INTERFACE_DOCUMENTS.find(
+          (doc) => doc.id === provision?.id,
+        );
+        if (document === undefined) continue;
+        const nouns =
+          provided.noun === undefined
+            ? [
+                ...new Set(
+                  Object.keys(manifest.operations).map(
+                    (op) => op.split(".")[0]!,
+                  ),
+                ),
+              ]
+            : [provided.noun];
+        if (nouns.length !== 1)
+          refuse(
+            "INTERFACE_INCOMPATIBLE",
+            `${provided.interface} must identify its provider noun`,
+          );
+        const problems = checkProvidedInterface(
+          manifest,
+          provided.interface,
+          nouns[0]!,
+          document as unknown as InterfaceDocument,
+        );
+        if (problems.length > 0)
+          refuse("INTERFACE_INCOMPATIBLE", problems.join("; "));
+      }
+    }
     this.#composition = resolveComposition(
       this.config,
       new Map([...blocks].map(([name, block]) => [name, block.manifest])),
