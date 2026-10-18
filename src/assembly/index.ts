@@ -1,4 +1,4 @@
-﻿import { join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import {
   createConfig,
@@ -39,7 +39,8 @@ import type {
 } from "../generated/types.ts";
 import type { SurfaceCatalog } from "../surface/catalog.ts";
 import { discoveryOperations } from "../generated/core-discovery.ts";
-import type { StateClient } from "../ports/state.ts";
+import type { LeaseStateClient } from "./state-client.ts";
+import { createStateClient } from "./state-client.ts";
 import { version } from "../version.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
@@ -235,13 +236,12 @@ export async function createAssembly(
         block.manifest.operations,
       )) {
         if (
-          declaration.context === "leased" ||
-          (declaration.context === "stateless" &&
-            declaration.effects.length > 0)
+          declaration.context === "stateless" &&
+          declaration.effects.length > 0
         )
           refuse(
             "PROVIDER_MISSING",
-            `${op}: state writes require project or device context; leased state bindings are not assembled`,
+            `${op}: state writes require project or device context`,
           );
       }
     }
@@ -541,7 +541,7 @@ export async function createAssembly(
         return await new Runtime(current.catalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
-            const clients: Record<string, StateClient> = {};
+            const clients: Record<string, LeaseStateClient> = {};
             const leases: import("../ports/lifetime.ts").OwnedHandle<
               import("../core/state/index.ts").StateOwner | undefined
             >[] = [];
@@ -555,13 +555,9 @@ export async function createAssembly(
                     "PROVIDER_MISSING",
                     `Missing provider for ${binding.slot}`,
                   );
-                if (context.variant === "leased")
-                  refuse(
-                    "PROVIDER_MISSING",
-                    "Leased state bindings are not assembled",
-                  );
                 if (
-                  context.variant === "project" &&
+                  (context.variant === "project" ||
+                    context.variant === "leased") &&
                   context.project.id !== root
                 )
                   refuse(
@@ -582,34 +578,15 @@ export async function createAssembly(
                 const lease = await storage.acquire(scope.effects.length > 0);
                 leases.push(lease);
                 const owner = lease.value;
-                clients[binding.slot] = Object.freeze<StateClient>({
-                  get: (key) => owner?.get(namespace, key),
-                  list: (prefix) => owner?.list(namespace, prefix) ?? [],
-                  events: (key) => owner?.events(namespace, key) ?? [],
-                  put(key, value, options) {
-                    const noun = current.catalog
-                      .resolve(scope.op)
-                      .operation.declaredOp.split(".")[0]!;
-                    if (!scope.effects.includes(`${noun}:write`))
-                      refuse(
-                        "GRANT_REQUIRED",
-                        "Operation did not declare its record write effect",
-                      );
-                    if (context.variant === "stateless")
-                      refuse(
-                        "CONTEXT_MISSING",
-                        "State writes require an actor and project or device context",
-                      );
-                    if (!owner)
-                      refuse("PROVIDER_MISSING", "Writable state is not open");
-                    return owner.put(
-                      namespace,
-                      key,
-                      structuredClone(value),
-                      context.actor,
-                      { expectRevision: options.expectRevision },
-                    );
-                  },
+                const noun = current.catalog
+                  .resolve(scope.op)
+                  .operation.declaredOp.split(".")[0]!;
+                clients[binding.slot] = createStateClient({
+                  owner,
+                  namespace,
+                  context,
+                  write: scope.effects.includes(`${noun}:write`),
+                  requestId: request.requestId,
                 });
               }
               return {
