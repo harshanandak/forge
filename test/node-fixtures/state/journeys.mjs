@@ -61,6 +61,138 @@ async function filePair() {
   }));
 }
 const cases = {
+  async derivedstate() {
+    for (const mutation of selected.includes(":")
+      ? [selected.split(":")[1]]
+      : [
+          "value",
+          "revision",
+          "orphan",
+          "missing",
+          "gap",
+          "lease",
+          "previous",
+          "receipt",
+        ]) {
+      const a = await store(),
+        b = await store();
+      try {
+        const left = new StateOwner(a.value, { now: () => 1000 });
+        const right = new StateOwner(b.value, { now: () => 2000 });
+        left.initialize();
+        right.initialize();
+        const record = left.put(ns, "one", { value: 1 }, holder.actor, {
+          expectRevision: 0,
+        });
+        left.acquire(ns, "subject", holder, 100, "claim");
+        if (mutation === "value" || mutation === "revision") {
+          const changed = {
+            ...record,
+            ...(mutation === "value" ? { value: 99 } : { revision: 9 }),
+          };
+          a.value.run("UPDATE state_records SET revision=?,body=?", [
+            changed.revision,
+            JSON.stringify(changed),
+          ]);
+        } else if (mutation === "orphan")
+          a.value.exec("DELETE FROM state_events WHERE key='one'");
+        else if (mutation === "missing")
+          a.value.exec("DELETE FROM state_records");
+        else if (mutation === "receipt")
+          a.value.exec("DELETE FROM state_requests");
+        else if (mutation === "gap") {
+          const event = left.events(ns, "one")[0];
+          a.value.run("UPDATE state_events SET body=? WHERE key='one'", [
+            JSON.stringify({ ...event, revision: 3 }),
+          ]);
+        } else if (mutation === "previous") {
+          const event = left.events(ns, "subject")[0];
+          a.value.run("UPDATE state_events SET body=? WHERE key='subject'", [
+            JSON.stringify({
+              ...event,
+              data: { ...event.data, previous: event.data.lease },
+            }),
+          ]);
+        } else {
+          const lease = left.lease(ns, "subject");
+          a.value.run("UPDATE state_leases SET generation=9,body=?", [
+            JSON.stringify({ ...lease, generation: 9 }),
+          ]);
+        }
+        const before = right.export();
+        assert.throws(
+          () => right.restore(left.export()),
+          (error) =>
+            error?.error?.code === "INPUT_INVALID" &&
+            error.name === "RestoreConsistencyFailure" &&
+            error.key.includes(ns) &&
+            error.table.startsWith("state_") &&
+            /state_(records|events|leases|requests).*io.example\/demo/.test(
+              error.message,
+            ),
+          mutation,
+        );
+        assert.deepEqual(right.export(), before);
+      } finally {
+        await a.close();
+        await b.close();
+      }
+    }
+    // A restored image must itself remain replayable, including authority revocation.
+    const handles = [await store(), await store(), await store()];
+    try {
+      const owners = handles.map(
+        (h) => new StateOwner(h.value, { now: () => 2000 }),
+      );
+      owners.forEach((o) => o.initialize());
+      owners[0].acquire(ns, "subject", holder, 100, "claim");
+      owners[1].restore(owners[0].export());
+      owners[2].restore(owners[1].export());
+      assert.equal(
+        owners[2].acquire(ns, "subject", other, 100, "next").generation,
+        2,
+      );
+    } finally {
+      for (const h of handles) await h.close();
+    }
+  },
+  async openidentity() {
+    const dir = mkdtempSync(join(tmpdir(), "forge-open-identity-"));
+    try {
+      for (const boundary of process.platform === "win32"
+        ? ["identity-checked", "opening"]
+        : ["identity-checked", "opening", "connected"]) {
+        const path = join(dir, `${boundary}.db`);
+        const initial = await store(path);
+        await initial.close();
+        const result = await createSqliteStore(dir, {
+          step(step) {
+            if (step === boundary) {
+              renameSync(path, `${path}.old`);
+              writeFileSync(path, "");
+            }
+          },
+        }).open({ path, readOnly: false });
+        if (result.ok) await result.handle.close();
+        assert.equal(
+          result.ok,
+          false,
+          `identity swap at ${boundary} must be refused`,
+        );
+        assert.match(result.unavailable.reason, /identity changed/);
+      }
+      const path = join(dir, "fenced.db");
+      writeFileSync(`${path}.restore-lock`, "");
+      const refused = await createSqliteStore(dir).open({
+        path,
+        readOnly: false,
+      });
+      assert.equal(refused.ok, false);
+      assert.equal(existsSync(path), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
   async relativepaths() {
     const work = mkdtempSync(join(tmpdir(), "forge-relative-store-"));
     const cwd = process.cwd();
@@ -1035,7 +1167,11 @@ const cases = {
       const snapshot = left.export();
       right.restore(snapshot);
       assert.deepEqual(right.list(ns), left.list(ns));
-      assert.deepEqual(right.events(ns), left.events(ns));
+      assert.deepEqual(
+        right.events(ns).slice(0, left.events(ns).length),
+        left.events(ns),
+      );
+      assert.equal(right.events(ns).at(-1).type, `${ns}:lease.released@1`);
       assert.deepEqual(right.get(ns, "full").value, {
         authored: "body",
         history: [{ old: null }],
@@ -1275,7 +1411,10 @@ const cases = {
 };
 const passed = [];
 for (const [name, run] of Object.entries(cases))
-  if ((selected === "all" && name !== "crashchild") || selected === name) {
+  if (
+    (selected === "all" && name !== "crashchild") ||
+    selected.split(":")[0] === name
+  ) {
     await run();
     passed.push(name);
   }

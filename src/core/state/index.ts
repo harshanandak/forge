@@ -261,6 +261,187 @@ function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
   } else invalid("Unknown imported request operation");
 }
 
+export class RestoreConsistencyFailure extends ForgeFailure {
+  readonly table: string;
+  readonly key: string;
+  constructor(table: string, key: string) {
+    super({
+      code: "INPUT_INVALID",
+      message: `Inconsistent imported ${table} key ${key}`,
+      retry: "never",
+    });
+    this.name = "RestoreConsistencyFailure";
+    this.table = table;
+    this.key = key;
+  }
+}
+
+/** Reproduce all event-derived tables before accepting an image. Domain tables and
+ * registration/migration ledgers have no event provenance; schema and FK checks cover them. */
+function verifyEventDerivedState(candidate: SqlDatabase): void {
+  const records = new Map<string, StateRecord>();
+  const leases = new Map<string, LeaseRecord>();
+  const requests = new Map<string, StateEvent>();
+  const events: StateEvent[] = [];
+  const key = (namespace: string, name: string): string =>
+    json([namespace, name]);
+  const reject = (table: string, name: string): never => {
+    throw new RestoreConsistencyFailure(table, name);
+  };
+  const inspect = (table: string, name: string, check: () => void): void => {
+    try {
+      check();
+    } catch (error) {
+      if (error instanceof RestoreConsistencyFailure) throw error;
+      reject(table, name);
+    }
+  };
+  for (const row of candidate.all(
+    "SELECT namespace,key,body FROM state_events ORDER BY sequence",
+  )) {
+    const id = key(String(row.namespace), String(row.key));
+    inspect("state_events", id, () => {
+      const event = JSON.parse(String(row.body)) as StateEvent;
+      if (
+        !validateStateEvent(event).ok ||
+        !Number.isSafeInteger(event.revision) ||
+        event.namespace !== row.namespace ||
+        event.key !== row.key
+      )
+        reject("state_events", id);
+      events.push(event);
+      if (event.requestId !== undefined) {
+        const request = key(event.namespace, event.requestId);
+        if (requests.has(request)) reject("state_requests", request);
+        requests.set(request, event);
+      }
+      if (event.type === `${event.namespace}:record.updated@1`) {
+        if (event.revision !== (records.get(id)?.revision ?? 0) + 1)
+          reject("state_records", id);
+        records.set(id, {
+          namespace: event.namespace,
+          key: event.key,
+          revision: event.revision,
+          value: event.data,
+          updatedAt: event.at,
+          updatedBy: event.actor,
+        });
+      } else {
+        const prior = leases.get(id);
+        let lease: LeaseRecord;
+        if (
+          event.type === `${event.namespace}:lease.acquired@1` ||
+          event.type === `${event.namespace}:lease.reacquired@1`
+        ) {
+          const data = event.data as {
+            lease: LeaseRecord;
+            previous: LeaseRecord | null;
+          };
+          lease = data.lease;
+          if (
+            json(data.previous) !== json(prior ?? null) ||
+            !validateLeaseRecord(lease).ok
+          )
+            reject("state_leases", id);
+          const decision = decideLease(prior, {
+            mode: "acquire",
+            subject: event.key,
+            holder: lease.holder,
+            nowMs: Date.parse(event.at),
+          });
+          if (
+            !decision.ok ||
+            decision.kind !== "acquired" ||
+            decision.generation !== lease.generation ||
+            event.type !==
+              `${event.namespace}:lease.${decision.reacquired ? "reacquired" : "acquired"}@1` ||
+            lease.releasedAt !== undefined ||
+            Date.parse(lease.expiresAt) <= Date.parse(event.at) ||
+            event.requestId === undefined
+          )
+            reject("state_leases", id);
+        } else if (
+          event.type === `${event.namespace}:lease.renewed@1` ||
+          event.type === `${event.namespace}:lease.released@1`
+        ) {
+          lease = event.data as LeaseRecord;
+          if (!prior || !validateLeaseRecord(lease).ok)
+            reject("state_leases", id);
+          if (event.type === `${event.namespace}:lease.renewed@1`) {
+            if (
+              !decideLease(prior, {
+                mode: "held",
+                subject: event.key,
+                holder: lease.holder,
+                generation: lease.generation,
+                nowMs: Date.parse(event.at),
+              }).ok ||
+              json(lease) !== json({ ...prior, expiresAt: lease.expiresAt }) ||
+              Date.parse(lease.expiresAt) <= Date.parse(event.at)
+            )
+              reject("state_leases", id);
+          } else if (json(lease) !== json({ ...prior, releasedAt: event.at }))
+            reject("state_leases", id);
+        } else return reject("state_events", id);
+        if (
+          lease.subject !== event.key ||
+          lease.generation !== event.revision ||
+          !Number.isSafeInteger(lease.generation) ||
+          json(lease.holder.actor) !== json(event.actor)
+        )
+          reject("state_leases", id);
+        leases.set(id, lease);
+      }
+    });
+  }
+  for (const row of candidate.all(
+    "SELECT namespace,key,revision,body FROM state_records",
+  )) {
+    const id = key(String(row.namespace), String(row.key));
+    inspect("state_records", id, () => {
+      const record = JSON.parse(String(row.body)) as StateRecord;
+      if (
+        !validateStateRecord(record).ok ||
+        !records.has(id) ||
+        json(record) !== json(records.get(id)) ||
+        record.revision !== Number(row.revision)
+      )
+        reject("state_records", id);
+      records.delete(id);
+    });
+  }
+  if (records.size) reject("state_records", records.keys().next().value!);
+  for (const row of candidate.all(
+    "SELECT namespace,subject,generation,body FROM state_leases",
+  )) {
+    const id = key(String(row.namespace), String(row.subject));
+    inspect("state_leases", id, () => {
+      const lease = JSON.parse(String(row.body)) as LeaseRecord;
+      if (
+        !leases.has(id) ||
+        json(lease) !== json(leases.get(id)) ||
+        lease.generation !== Number(row.generation)
+      )
+        reject("state_leases", id);
+      leases.delete(id);
+    });
+  }
+  if (leases.size) reject("state_leases", leases.keys().next().value!);
+  for (const row of candidate.all(
+    "SELECT namespace,request_id,fingerprint,result FROM state_requests",
+  )) {
+    const id = key(String(row.namespace), String(row.request_id));
+    inspect("state_requests", id, () => {
+      namespaceValid(String(row.namespace));
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(row.request_id)))
+        reject("state_requests", id);
+      validateReceipt(row, events);
+      requests.delete(id);
+    });
+  }
+  if (requests.size) reject("state_requests", requests.keys().next().value!);
+}
+
 export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
@@ -700,55 +881,7 @@ export class StateOwner {
           Number(candidate.get("PRAGMA user_version")?.user_version) !== 0
         )
           invalid("Unsupported baseline or newer schema version");
-        for (const row of candidate.all(
-          "SELECT namespace,key,revision,body FROM state_records",
-        )) {
-          const record = JSON.parse(String(row.body)) as StateRecord;
-          if (
-            !validateStateRecord(record).ok ||
-            !Number.isSafeInteger(record.revision) ||
-            record.namespace !== row.namespace ||
-            record.key !== row.key ||
-            record.revision !== Number(row.revision)
-          )
-            invalid("Invalid imported record");
-        }
-        const events: StateEvent[] = [];
-        for (const row of candidate.all(
-          "SELECT namespace,key,body FROM state_events ORDER BY sequence",
-        )) {
-          const event = JSON.parse(String(row.body)) as StateEvent;
-          if (
-            !validateStateEvent(event).ok ||
-            event.namespace !== row.namespace ||
-            event.key !== row.key
-          )
-            invalid("Invalid imported event");
-          events.push(event);
-        }
-        for (const row of candidate.all(
-          "SELECT namespace,subject,generation,body FROM state_leases",
-        )) {
-          namespaceValid(String(row.namespace));
-          const lease = JSON.parse(String(row.body)) as LeaseRecord;
-          if (
-            !validateLeaseRecord(lease).ok ||
-            !Number.isSafeInteger(lease.generation) ||
-            lease.subject !== row.subject ||
-            lease.generation !== Number(row.generation)
-          )
-            invalid("Invalid imported lease identity");
-        }
-        for (const row of candidate.all(
-          "SELECT namespace,request_id,fingerprint,result FROM state_requests",
-        )) {
-          namespaceValid(String(row.namespace));
-          if (
-            !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(row.request_id))
-          )
-            invalid("Invalid imported request ID");
-          validateReceipt(row, events);
-        }
+        verifyEventDerivedState(candidate);
       },
       (candidate) => {
         // Preserve lease counters and receipts, but never revive authority from a backup.
@@ -760,12 +893,25 @@ export class StateOwner {
             const lease = JSON.parse(String(row.body)) as LeaseRecord;
             if (!validateLeaseRecord(lease).ok)
               invalid("Invalid imported lease");
+            const released = { ...lease, releasedAt: at };
             candidate.run(
               "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",
+              [json(released), row.namespace!, row.subject!],
+            );
+            candidate.run(
+              "INSERT INTO state_events(namespace,key,body) VALUES (?,?,?)",
               [
-                json({ ...lease, releasedAt: at }),
                 row.namespace!,
                 row.subject!,
+                json({
+                  type: `${String(row.namespace)}:lease.released@1`,
+                  namespace: row.namespace,
+                  key: lease.subject,
+                  revision: lease.generation,
+                  at,
+                  actor: lease.holder.actor,
+                  data: released,
+                }),
               ],
             );
           }

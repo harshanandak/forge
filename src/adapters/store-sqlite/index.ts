@@ -12,6 +12,7 @@ import {
   rmSync,
   existsSync,
   statSync,
+  fstatSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -72,6 +73,7 @@ export function createSqliteStore(
   return {
     async open(options) {
       let binding: Binding | undefined;
+      let pinned: number | undefined;
       try {
         const path =
           options.path === ":memory:"
@@ -94,6 +96,22 @@ export function createSqliteStore(
             process.stderr.write(message);
           },
         );
+        const fencePath = `${path}.restore-lock`;
+        const assertUnfenced = (): void => {
+          if (path !== ":memory:" && existsSync(fencePath))
+            throw new Error("Store is fenced for restore");
+        };
+        assertUnfenced();
+        const expectedIdentity =
+          path === ":memory:" || !existsSync(path)
+            ? undefined
+            : statSync(path, { bigint: true });
+        hooks.step?.("identity-checked");
+        // Keep the opened inode pinned across SQLite's open; reject either side
+        // of a pathname replacement rather than adopting its newer identity.
+        if (path !== ":memory:")
+          pinned = openSync(path, options.readOnly ? "r" : "a+");
+        hooks.step?.("opening");
         let connect: (path: string, readOnly: boolean) => Binding;
         if ("Bun" in globalThis) {
           // A variable specifier keeps the Node-only declaration build independent of Bun types.
@@ -121,9 +139,30 @@ export function createSqliteStore(
           binding = connect(path, options.readOnly);
         }
         let db = binding;
-        const fencePath = `${path}.restore-lock`;
+        hooks.step?.("connected");
         let identity =
+          pinned === undefined
+            ? undefined
+            : fstatSync(pinned, { bigint: true });
+        const current =
           path === ":memory:" ? undefined : statSync(path, { bigint: true });
+        assertUnfenced();
+        if (
+          identity &&
+          current &&
+          ((expectedIdentity !== undefined &&
+            (identity.dev !== expectedIdentity.dev ||
+              identity.ino !== expectedIdentity.ino)) ||
+            identity.dev !== current.dev ||
+            identity.ino !== current.ino)
+        )
+          throw new Error(
+            "Store identity changed while opening; reopen required",
+          );
+        if (pinned !== undefined) {
+          closeSync(pinned);
+          pinned = undefined;
+        }
         let restoring = false;
         let ownsFence = false;
         let memoryDirectory: string | undefined;
@@ -485,6 +524,7 @@ export function createSqliteStore(
           },
         };
       } catch (error) {
+        if (pinned !== undefined) closeSync(pinned);
         binding?.close();
         return {
           ok: false,
