@@ -2,6 +2,7 @@ import {
   realpathSync,
   lstatSync,
   readFileSync,
+  readSync,
   openSync,
   closeSync,
   fsyncSync,
@@ -66,6 +67,26 @@ function realStorePath(path: string): string {
   }
 }
 
+export class StoreRestoringError extends Error {
+  readonly code = "restoring";
+  constructor() {
+    super("Store is fenced for restore");
+    this.name = "StoreRestoringError";
+  }
+}
+
+function changeMarker(path: string): number {
+  const fd = openSync(path, "r");
+  try {
+    const counter = Buffer.alloc(4);
+    if (readSync(fd, counter, 0, 4, 24) !== 4)
+      throw new Error("Store change counter is unreadable");
+    return counter.readUInt32BE();
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** Hosts may bind relative store paths to an explicit absolute base directory. */
 export interface RestoreHooks {
   readonly step?: (step: string) => void;
@@ -108,7 +129,7 @@ export function createSqliteStore(
         const fencePath = `${path}.restore-lock`;
         const assertUnfenced = (): void => {
           if (path !== ":memory:" && existsSync(fencePath))
-            throw new Error("Store is fenced for restore");
+            throw new StoreRestoringError();
         };
         assertUnfenced();
         const expectedIdentity =
@@ -252,12 +273,52 @@ export function createSqliteStore(
             restoring ||
             (path !== ":memory:" && !ownsFence && existsSync(fencePath))
           )
-            throw new Error("Store is fenced for restore");
+            throw new StoreRestoringError();
           if (identity) {
             const current = statSync(path, { bigint: true });
             if (identity.dev !== current.dev || identity.ino !== current.ino)
               throw new Error("Store identity changed; reopen required");
           }
+        };
+        const transact = <T>(body: () => T): T => {
+          assertOpen();
+          if (active) throw new Error("Nested transactions are refused");
+          hooks.step?.("write-pre-lock");
+          hooks.step?.("write-lock-attempt");
+          db.exec("BEGIN IMMEDIATE");
+          active = true;
+          try {
+            hooks.step?.("write-locked");
+            assertOpen();
+            const result = body();
+            if (
+              result !== null &&
+              (typeof result === "object" || typeof result === "function") &&
+              "then" in result
+            )
+              throw new Error("Transaction body must be synchronous");
+            assertOpen();
+            db.exec("COMMIT");
+            return result;
+          } catch (error) {
+            try {
+              db.exec("ROLLBACK");
+            } catch (rollback) {
+              throw new AggregateError(
+                [error, rollback],
+                "Transaction and rollback failed",
+                { cause: rollback },
+              );
+            }
+            throw error;
+          } finally {
+            active = false;
+          }
+        };
+        const execute = <T>(body: () => T): T => {
+          assertOpen();
+          if (active || options.readOnly) return body();
+          return transact(body);
         };
         const value: StateImageStore = {
           exportImage(inspect) {
@@ -287,6 +348,13 @@ export function createSqliteStore(
               );
             }
           },
+          // Restore creates the file fence before taking SQLite's exclusive lock.
+          // Every live SQL entry takes BEGIN IMMEDIATE and checks fence + identity
+          // under that lock; nested calls reuse it, so queued writers roll back.
+          // Final approval holds the exclusive lock and permits reads only.
+          // Closing SQLite releases its lock, but the file fence stays through swap.
+          // Capture the file change counter at approval and recheck just before
+          // rename: an out-of-band commit cancels restore, preserving that write.
           restoreImage(image, validate, prepareCandidate, verify) {
             assertOpen();
             if (options.readOnly || active)
@@ -309,6 +377,7 @@ export function createSqliteStore(
             let liveClosed = false;
             let previous = false;
             let releaseFence = true;
+            let approvedMarker: number | undefined;
             const priorDb = db;
             const priorMemoryDirectory = memoryDirectory;
             const step = (name: string): void => {
@@ -342,11 +411,17 @@ export function createSqliteStore(
               // A writer lock prevents other SQLite writers changing the target during final approval.
               db.exec("BEGIN EXCLUSIVE");
               try {
+                active = true;
+                db.exec("PRAGMA query_only=ON");
                 verify();
+                if (!memory) approvedMarker = changeMarker(path);
                 step("fenced");
               } catch (error) {
                 db.exec("ROLLBACK");
                 throw error;
+              } finally {
+                active = false;
+                db.exec("PRAGMA query_only=OFF");
               }
               db.exec("COMMIT");
               restoring = true;
@@ -379,6 +454,15 @@ export function createSqliteStore(
                   JSON.stringify(approvedCandidate)
                 )
                   throw new Error("Candidate identity drift before swap");
+                const current = statSync(path, { bigint: true });
+                if (
+                  current.dev !== identity?.dev ||
+                  current.ino !== identity.ino ||
+                  changeMarker(path) !== approvedMarker
+                )
+                  throw new Error(
+                    "Store changed after final approval; restore refused",
+                  );
                 renameDurable(candidatePath, path, hooks.fs);
                 swapped = true;
                 step("renamed");
@@ -456,71 +540,45 @@ export function createSqliteStore(
             }
           },
           exec(sql) {
-            assertOpen();
-            db.exec(sql);
+            execute(() => db.exec(sql));
           },
           run(sql, params = []) {
-            assertOpen();
-            const statement = prepare(sql);
-            try {
-              const result = statement.run(...params);
-              return {
-                changes: Number(result.changes),
-                lastInsertRowid: result.lastInsertRowid,
-              };
-            } finally {
-              statement.finalize?.();
-            }
+            return execute(() => {
+              const statement = prepare(sql);
+              try {
+                const result = statement.run(...params);
+                return {
+                  changes: Number(result.changes),
+                  lastInsertRowid: result.lastInsertRowid,
+                };
+              } finally {
+                statement.finalize?.();
+              }
+            });
           },
           get(sql, params = []) {
-            assertOpen();
-            const statement = prepare(sql);
-            try {
-              return (statement.get(...params) ?? undefined) as
-                SqlRow | undefined;
-            } finally {
-              statement.finalize?.();
-            }
+            return execute(() => {
+              const statement = prepare(sql);
+              try {
+                return (statement.get(...params) ?? undefined) as
+                  SqlRow | undefined;
+              } finally {
+                statement.finalize?.();
+              }
+            });
           },
           all(sql, params = []) {
-            assertOpen();
-            const statement = prepare(sql);
-            try {
-              return statement.all(...params) as SqlRow[];
-            } finally {
-              statement.finalize?.();
-            }
+            return execute(() => {
+              const statement = prepare(sql);
+              try {
+                return statement.all(...params) as SqlRow[];
+              } finally {
+                statement.finalize?.();
+              }
+            });
           },
           transaction(body) {
-            assertOpen();
-            if (active) throw new Error("Nested transactions are refused");
-            db.exec("BEGIN IMMEDIATE");
-            active = true;
-            try {
-              assertOpen();
-              const result = body();
-              if (
-                result !== null &&
-                (typeof result === "object" || typeof result === "function") &&
-                "then" in result
-              )
-                throw new Error("Transaction body must be synchronous");
-              db.exec("COMMIT");
-              return result;
-            } catch (error) {
-              try {
-                db.exec("ROLLBACK");
-              } catch (rollback) {
-                throw new AggregateError(
-                  [error, rollback],
-                  "Transaction and rollback failed",
-                  { cause: rollback },
-                );
-              }
-              throw error;
-            } finally {
-              active = false;
-            }
+            return transact(body);
           },
         };
         return {

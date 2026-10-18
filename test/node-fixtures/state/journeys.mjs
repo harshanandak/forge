@@ -461,7 +461,15 @@ const cases = {
         const path = join(dir, "candidate.db");
         writeFileSync(path, Buffer.from(snapshot.image, "base64"));
         const candidate = await store(path);
-        candidate.value.exec(sql);
+        if (sql.startsWith("PRAGMA foreign_keys=OFF")) {
+          const { DatabaseSync } = await import("node:sqlite");
+          const raw = new DatabaseSync(path);
+          try {
+            raw.exec(sql);
+          } finally {
+            raw.close();
+          }
+        } else candidate.value.exec(sql);
         const image = Buffer.from(candidate.value.exportImage()).toString(
           "base64",
         );
