@@ -1,5 +1,3 @@
-import { Script, createContext } from "node:vm";
-import { isPromise } from "node:util/types";
 import { bindContext } from "../../contract/context.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
@@ -15,7 +13,7 @@ import type {
 } from "../../generated/types.ts";
 import { Catalog } from "../catalog/index.ts";
 import { TrustStore, refuse } from "../trust/index.ts";
-import type { Handle } from "../../ports/lifetime.ts";
+import type { Handle, LifetimeProvider } from "../../ports/lifetime.ts";
 
 export interface RuntimeLimits {
   readonly timeoutMs: number;
@@ -36,7 +34,23 @@ export interface ServiceScope {
   readonly effects: readonly string[];
 }
 
+/** Sync evaluation is supplied by the embedding through the L1 lifetime port. */
+export interface RunIsolation {
+  run(options: {
+    readonly source: string;
+    readonly filename: string;
+    readonly operation: string;
+    readonly args: unknown;
+    readonly encode: (output: unknown) => string;
+    readonly fail: typeof refuse;
+    readonly timeoutMs: number;
+  }): unknown;
+}
+
+export type RunIsolationPort = LifetimeProvider<RunIsolation, void>;
+
 export interface RuntimeOptions {
+  readonly isolation?: RunIsolationPort;
   readonly limits?: Partial<RuntimeLimits>;
   /** Constructs clients exposing only scope.effects, never block-wide grants.
    * The embedding owns capability enforcement and partial-open rollback.
@@ -243,8 +257,22 @@ export class Runtime {
       );
       // Opening clients may yield; trust must still hold immediately before execution.
       this.#trust.check(block.digest, declaration.effects);
-      const context = createContext(
-        {
+      if (this.#options.isolation === undefined)
+        refuse(
+          "PROVIDER_MISSING",
+          "sync execution needs an isolation provider",
+        );
+      const opened = await this.#options.isolation.open();
+      if (!opened.ok) refuse("PROVIDER_MISSING", opened.unavailable.reason);
+      let encoded: unknown;
+      try {
+        // Opening the evaluator may yield too; admission must still be current.
+        this.#trust.check(block.digest, declaration.effects);
+        started = true;
+        encoded = opened.handle.value.run({
+          source: block.text(block.manifest.entry),
+          filename: block.manifest.entry,
+          operation: operation.declaredOp,
           args: Object.freeze({
             input: freezeData(structuredClone(request.input)),
             config: freezeData(structuredClone(config)),
@@ -252,39 +280,11 @@ export class Runtime {
           }),
           encode: (output: unknown) => encodeOutput(output, this.#limits),
           fail: refuse,
-          discardPromise: (output: unknown): void => {
-            if (isPromise(output)) {
-              void Promise.prototype.then.call(
-                output,
-                undefined,
-                () => undefined,
-              );
-            }
-          },
-          operation: operation.declaredOp,
-        },
-        { microtaskMode: "afterEvaluate" },
-      );
-      const script = new Script(
-        `
-        const module = { exports: {} };
-        const exports = module.exports;
-        (function(module, exports) { "use strict";\n${block.text(block.manifest.entry)}\n})(module, exports);
-        const handler = module.exports[operation];
-        if (typeof handler !== 'function') fail('BLOCK_EXECUTION_FAILED', 'declared handler is missing');
-        const output = handler(args);
-        if (output != null && typeof output.then === 'function') {
-          discardPromise(output);
-          fail('BLOCK_ASYNC_UNSUPPORTED', 'sync handler returned a thenable');
-        }
-        encode(output);
-      `,
-        { filename: block.manifest.entry },
-      );
-      started = true;
-      const encoded: unknown = script.runInContext(context, {
-        timeout: this.#limits.timeoutMs,
-      });
+          timeoutMs: this.#limits.timeoutMs,
+        });
+      } finally {
+        await opened.handle.close();
+      }
       if (typeof encoded !== "string")
         refuse("OUTPUT_INVALID", "missing JSON output");
       const parsed = parseUntrustedJson(encoded, {
@@ -303,19 +303,12 @@ export class Runtime {
         warnings: [],
       };
     } catch (error) {
-      const timeout =
-        error !== null &&
-        typeof error === "object" &&
-        "code" in error &&
-        error.code === "ERR_SCRIPT_EXECUTION_TIMEOUT";
       const failure =
         error instanceof ForgeFailure
           ? error.error
           : {
-              code: timeout ? "LIMIT_EXCEEDED" : "BLOCK_EXECUTION_FAILED",
-              message: timeout
-                ? `execution exceeds timeoutMs ${this.#limits.timeoutMs}`
-                : "block execution failed",
+              code: "BLOCK_EXECUTION_FAILED",
+              message: "block execution failed",
               retry: "never" as const,
             };
       result = {

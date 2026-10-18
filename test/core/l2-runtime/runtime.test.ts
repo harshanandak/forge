@@ -1,4 +1,5 @@
-import { nodeFileCapture } from "../../../src/adapters/fs-capture/index.ts";
+import { nodeRunIsolation } from "../../../src/adapters/node-runtime/isolation.ts";
+import { nodeFileCapture } from "../../../src/adapters/node-runtime/capture.ts";
 import type { CaptureLimits } from "../../../src/core/catalog/index.ts";
 const captureBlock = (root: string, limits?: CaptureLimits) =>
   capture(root, nodeFileCapture, limits);
@@ -92,6 +93,7 @@ test("discovery never activates code and denied admission never opens services",
   try {
     assert.deepEqual(f.catalog.list(), ["sample.run"]);
     const runtime = new Runtime(f.catalog, f.trust, {
+      isolation: nodeRunIsolation,
       services: () => {
         calls++;
         return Promise.resolve({
@@ -157,6 +159,7 @@ for (const [name, code, expected] of [
     try {
       f.trust.admit("human", f.block.digest);
       const runtime = new Runtime(f.catalog, f.trust, {
+        isolation: nodeRunIsolation,
         limits: {
           timeoutMs: name === "time limit" ? 20 : 1000,
           maxOutputBytes: 1000,
@@ -203,6 +206,7 @@ for (const variant of ["device", "project", "acquire", "held"] as const)
       };
       const saved = new Map<string, unknown>();
       const result = await new Runtime(f.catalog, f.trust, {
+        isolation: nodeRunIsolation,
         services: (_instance, bound) => {
           assert.equal(bound.variant, leased ? "leased" : variant);
           return Promise.resolve({
@@ -291,6 +295,7 @@ test("discovery does not run a top-level activation spy", async () => {
     const catalog = new Catalog(f.catalog.config, new Map([["sample", block]]));
     let calls = 0;
     const runtime = new Runtime(catalog, f.trust, {
+      isolation: nodeRunIsolation,
       services: () =>
         Promise.resolve({
           ownership: "borrowed",
@@ -321,6 +326,7 @@ test("revocation during open refuses execution and still closes the owned handle
   try {
     f.trust.admit("human", f.block.digest);
     const runtime = new Runtime(f.catalog, f.trust, {
+      isolation: nodeRunIsolation,
       services: () => {
         f.trust.revoke("human", f.block.digest);
         return Promise.resolve({
@@ -354,6 +360,7 @@ test("output structural limits and hostile getters never accept a result", async
     try {
       f.trust.admit("human", f.block.digest);
       const runtime = new Runtime(f.catalog, f.trust, {
+        isolation: nodeRunIsolation,
         limits: {
           parse: {
             maxBytes: 1000,
@@ -380,6 +387,7 @@ test("outside text is bounded before validation and SecretRef never accepts plai
   const f = fixture();
   try {
     const runtime = new Runtime(f.catalog, f.trust, {
+      isolation: nodeRunIsolation,
       limits: {
         parse: { maxBytes: 10, maxDepth: 2, maxNodes: 10, maxStringLength: 10 },
       },
@@ -580,6 +588,7 @@ test("clients are constructed for only the invoked operation effects", async () 
     f.trust.grant("human", block.digest, ["sample:write"]);
     const scopes: unknown[] = [];
     const runtime = new Runtime(catalog, f.trust, {
+      isolation: nodeRunIsolation,
       services: (_instance, _context, scope) => {
         scopes.push(scope);
         const allowed =
@@ -673,6 +682,102 @@ test("catalog capture accepts an injected source through the L1 handle", () => {
     assert.throws(
       () => nodeFileCapture.open(f.root).value.read(".", 1000),
       /regular files/,
+    );
+  } finally {
+    f.close();
+  }
+}, 5000);
+
+test("runtime uses the injected evaluator and closes both owned handles on every outcome", async () => {
+  for (const outcome of [
+    "success",
+    "throw",
+    "revoke",
+    "close-failure",
+    "unavailable",
+  ] as const) {
+    const f = fixture("throw Error('the real handler must not run')");
+    const events: string[] = [];
+    try {
+      f.trust.admit("human", f.block.digest);
+      const runtime = new Runtime(f.catalog, f.trust, {
+        services: () =>
+          Promise.resolve({
+            ownership: "owned",
+            value: {},
+            close: () => {
+              events.push("services closed");
+              return Promise.resolve();
+            },
+          }),
+        isolation: {
+          open: async () => {
+            await Promise.resolve();
+            events.push("opened");
+            if (outcome === "unavailable")
+              return {
+                ok: false,
+                unavailable: {
+                  kind: "unavailable",
+                  reason: "evaluator unavailable",
+                  remedy: "supply evaluator",
+                },
+              };
+            if (outcome === "revoke") f.trust.revoke("human", f.block.digest);
+            return {
+              ok: true,
+              handle: {
+                ownership: "owned",
+                value: {
+                  run: (options) => {
+                    events.push("ran");
+                    assert.equal(options.operation, "sample.run");
+                    assert.equal(options.timeoutMs, 1000);
+                    if (outcome === "throw") throw Error("evaluation failed");
+                    return options.encode("injected result");
+                  },
+                },
+                close: async () => {
+                  await Promise.resolve();
+                  events.push("isolation closed");
+                  if (outcome === "close-failure")
+                    throw Error("cleanup failed");
+                },
+              },
+            };
+          },
+        },
+      });
+      const result = await runtime.invoke(f.request);
+      if (outcome === "success")
+        assert.partialDeepStrictEqual(result, {
+          ok: true,
+          result: "injected result",
+        });
+      else assert.equal(result.ok, false);
+      assert.deepEqual(events, [
+        "opened",
+        ...(outcome === "revoke" || outcome === "unavailable" ? [] : ["ran"]),
+        ...(outcome === "unavailable" ? [] : ["isolation closed"]),
+        "services closed",
+      ]);
+    } finally {
+      f.close();
+    }
+  }
+}, 5000);
+
+test("missing evaluator fails closed after admission without activating code", async () => {
+  const f = fixture("throw Error('must not run')");
+  try {
+    f.trust.admit("human", f.block.digest);
+    assert.partialDeepStrictEqual(
+      await new Runtime(f.catalog, f.trust).invoke(f.request),
+      {
+        ok: false,
+        status: "INCOMPLETE",
+        error: { code: "PROVIDER_MISSING" },
+      },
     );
   } finally {
     f.close();

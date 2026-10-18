@@ -27,9 +27,14 @@ const { TrustStore } = (await import(
   load("trust")
 )) as typeof import("../../../src/core/trust/index.ts");
 const { nodeFileCapture } = (await import(
-  pathToFileURL(resolve(installed, "dist/src/adapters/fs-capture/index.js"))
+  pathToFileURL(resolve(installed, "dist/src/adapters/node-runtime/capture.js"))
     .href
-)) as typeof import("../../../src/adapters/fs-capture/index.ts");
+)) as typeof import("../../../src/adapters/node-runtime/capture.ts");
+const { nodeRunIsolation } = (await import(
+  pathToFileURL(
+    resolve(installed, "dist/src/adapters/node-runtime/isolation.js"),
+  ).href
+)) as typeof import("../../../src/adapters/node-runtime/isolation.ts");
 const captureBlock = (
   root: string,
   limits?: import("../../../src/core/catalog/index.ts").CaptureLimits,
@@ -89,6 +94,7 @@ try {
     let closed = 0;
     const saved = new Map<string, unknown>();
     const runtime = new Runtime(catalog, trust, {
+      isolation: nodeRunIsolation,
       limits: { timeoutMs, maxOutputBytes: 1000 },
       services: () =>
         Promise.resolve({
@@ -227,6 +233,7 @@ try {
   scopedTrust.grant("human", scopedBlock.digest, ["sample:write"]);
   let writes = 0;
   const scopedRuntime = new Runtime(scopedCatalog, scopedTrust, {
+    isolation: nodeRunIsolation,
     services: (_instance, _context, scope) =>
       Promise.resolve({
         ownership: "borrowed",

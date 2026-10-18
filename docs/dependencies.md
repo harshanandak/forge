@@ -63,4 +63,15 @@ Not npm dependencies, so not entries here: Bun itself is pinned by `packageManag
 - **Licence:** Node runtime licence.
 - **Trust:** the same runtime already required by the package.
 - **Swap proof:** injected capture test reproduces the exact byte digest.
-- **Adapter:** src/adapters/fs-capture/, using catalog-local FileCapturePort and L1 borrowed handle. The manifest names the Node runtime; it spawns no process.
+- **Adapter:** src/adapters/node-runtime/, using catalog-local FileCapturePort and L1 borrowed handle. The manifest names the Node runtime; it spawns no process.
+
+#### Node synchronous evaluation
+
+- **Saves:** synchronous execution deadlines and isolated evaluation contexts.
+- **Maintenance:** built into the supported Node runtime.
+- **Transitive packages:** 0.
+- **Fit:** Node 24/26; trusted synchronous blocks only, not a security sandbox.
+- **Licence:** Node runtime licence.
+- **Trust:** the same runtime already required by the package.
+- **Swap proof:** runtime acceptance injects the evaluator through L1 LifetimeProvider; admission, output limits and owned-service cleanup stay in core.
+- **Adapter:** src/adapters/node-runtime/ implements runtime-local RunIsolationPort using src/ports/lifetime.ts; no L1 contract change.
