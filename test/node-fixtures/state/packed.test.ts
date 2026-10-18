@@ -71,9 +71,16 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       const result = JSON.parse(
         run(runtime, [fixture, installed], consumer),
       ) as { passed: string[] };
-      expect(result.passed).toHaveLength(19);
+      expect(result.passed).toHaveLength(20);
     }
     const mutations = [
+      {
+        file: "core/state/migrations.js",
+        from: "if (unknown !== undefined)",
+        to: "if (false)",
+        journey: "newerstore",
+        evidence: "Missing expected exception",
+      },
       ...[
         "value",
         "revision",
@@ -271,7 +278,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       }
     }
     console.log(
-      `Packed state: ${runtimes.length} runtimes, 19 journeys, ${mutations.length} counterfactuals each`,
+      `Packed state: ${runtimes.length} runtimes, 20 journeys, ${mutations.length} counterfactuals each`,
     );
     // Removing the linear scan causes catastrophic backtracking on a nonmatching suffix.
     const path = join(installed, "dist/src/core/state/fs-class.js");

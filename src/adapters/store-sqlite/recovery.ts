@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import {
   openSync,
@@ -9,6 +10,33 @@ import {
   fsyncSync,
   existsSync,
 } from "node:fs";
+
+/** Adapter-local filesystem seam; directory handles are unsupported on Windows. */
+export interface DirectorySyncPort {
+  readonly platform: string;
+  openSync(path: string, flags: "r"): number;
+  fsyncSync(fd: number): void;
+  closeSync(fd: number): void;
+}
+export const directorySync: DirectorySyncPort = {
+  platform: process.platform,
+  openSync,
+  fsyncSync,
+  closeSync,
+};
+export function syncParentDirectory(
+  path: string,
+  fs: DirectorySyncPort = directorySync,
+): void {
+  // Node does not support directory fsync on Windows; retain file fsync there.
+  if (fs.platform === "win32") return;
+  const fd = fs.openSync(dirname(path), "r");
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 export interface FileProof {
   readonly path: string;
@@ -74,6 +102,7 @@ export async function withRecoveryFence<T>(
   recoveryPath: string,
   harden: (paths: readonly string[]) => Promise<void>,
   commit: (verify: () => void) => T,
+  fs: DirectorySyncPort = directorySync,
 ): Promise<T> {
   const opened: number[] = [];
   try {
@@ -110,6 +139,7 @@ export async function withRecoveryFence<T>(
       offset += count;
     }
     fsyncSync(recovery);
+    syncParentDirectory(recoveryPath, fs);
     const retained = proof(recoveryPath, recovery);
     if (
       retained.digest !== approved.backup.digest ||

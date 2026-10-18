@@ -7,7 +7,7 @@ import {
   openSync,
   closeSync,
   fsyncSync,
-  renameSync,
+  renameSync as nodeRenameSync,
   copyFileSync,
   rmSync,
   existsSync,
@@ -16,7 +16,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { inspectRecoveryFile } from "./recovery.ts";
+import {
+  syncParentDirectory,
+  type DirectorySyncPort,
+  inspectRecoveryFile,
+} from "./recovery.ts";
 import type { StateImageStore } from "../../core/state/index.ts";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type {
@@ -63,6 +67,9 @@ function realStorePath(path: string): string {
 /** Hosts may bind relative store paths to an explicit absolute base directory. */
 export interface RestoreHooks {
   readonly step?: (step: string) => void;
+  readonly fs?: DirectorySyncPort & {
+    renameSync(from: string, to: string): void;
+  };
 }
 
 export function createSqliteStore(
@@ -175,14 +182,11 @@ export function createSqliteStore(
           }
         };
         const syncDirectory = (): void => {
-          // Windows does not expose directory fsync through node:fs.
-          if (process.platform === "win32" || path === ":memory:") return;
-          const fd = openSync(dirname(path), "r");
-          try {
-            fsyncSync(fd);
-          } finally {
-            closeSync(fd);
-          }
+          if (path !== ":memory:") syncParentDirectory(path, hooks.fs);
+        };
+        const renameSync = (from: string, to: string): void => {
+          if (hooks.fs) hooks.fs.renameSync(from, to);
+          else nodeRenameSync(from, to);
         };
         const wrap = (raw: Binding): SqlDatabase => ({
           exec(sql) {

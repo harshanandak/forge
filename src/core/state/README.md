@@ -26,4 +26,6 @@ The compiled modules are present in the tarball. Assembly must add public packag
 
 `test/node-fixtures/state/packed.test.ts` builds, packs once, installs, runs sixteen journeys under the current Node and Bun, then removes individual fixes in the installed copy and requires the corresponding journey to fail. Set `STATE_NODE26` to an additional Node executable to run the third runtime in one invocation. The filesystem counterfactual replaces the linear scan with the old backtracking expression and must time out on the hostile suffix; the normal journey completes.
 
+Initialization rejects unknown applied migration IDs and nonzero schema versions with `NewerStoreError` before executing schema or data writes. Recovery copies fsync their contents and, on POSIX, their parent directory before commit; Windows skips directory fsync because Node does not support it.
+
 Baseline and migrated stores are compared structurally and by complete snapshots. Fault injection places competing calls at transaction entry and moves authority immediately before a fenced transaction. Windows ACL tests modify and verify only disposable files.

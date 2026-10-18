@@ -44,6 +44,20 @@ export function execMigrationStatement(db: SqlDatabase, sql: string): void {
   }
 }
 
+/** Refuses a schema whose complete applied ledger this binary cannot interpret. */
+export class NewerStoreError extends Error {
+  readonly newestKnownVersion: string;
+  readonly foundVersion: string;
+  constructor(newestKnownVersion: string, foundVersion: string) {
+    super(
+      `Store written by a newer Forge: newest known ${newestKnownVersion}; found ${foundVersion}`,
+    );
+    this.name = "NewerStoreError";
+    this.newestKnownVersion = newestKnownVersion;
+    this.foundVersion = foundVersion;
+  }
+}
+
 export function migrate(
   db: SqlDatabase,
   migrations: readonly Migration[] = [baseline],
@@ -57,6 +71,25 @@ export function migrate(
     ids.add(migration.id);
   }
   db.transaction(() => {
+    const newestKnown = [...ids].sort().at(-1) ?? "none";
+    const schemaVersion = Number(
+      db.get("PRAGMA user_version")?.user_version ?? 0,
+    );
+    if (schemaVersion > 0)
+      throw new NewerStoreError(newestKnown, `schema:${schemaVersion}`);
+    if (
+      db.get(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='state_migrations'",
+      )
+    ) {
+      const unknown = db
+        .all("SELECT id FROM state_migrations ORDER BY id")
+        .map((row) => String(row.id))
+        .filter((id) => !ids.has(id))
+        .at(-1);
+      if (unknown !== undefined)
+        throw new NewerStoreError(newestKnown, unknown);
+    }
     db.exec(
       "CREATE TABLE IF NOT EXISTS state_migrations (id TEXT PRIMARY KEY NOT NULL)",
     );

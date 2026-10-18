@@ -869,6 +869,40 @@ const cases = {
       await handle.close();
     }
   },
+  async newerstore() {
+    for (const future of ["999_future", "000_unknown", "schema"]) {
+      const handle = await store();
+      try {
+        const db = handle.value;
+        const owner = new StateOwner(db, { now: () => 1000 });
+        owner.initialize();
+        if (future === "schema") db.exec("PRAGMA user_version=999");
+        else db.run("INSERT INTO state_migrations VALUES (?)", [future]);
+        const ledger = db.all("SELECT * FROM state_migrations ORDER BY id");
+        const before = db.get("SELECT total_changes() AS total").total;
+        assert.throws(
+          () => owner.initialize(),
+          (error) => {
+            assert.equal(error.name, "NewerStoreError");
+            assert.equal(error.newestKnownVersion, baseline.id);
+            assert.equal(
+              error.foundVersion,
+              future === "schema" ? "schema:999" : future,
+            );
+            assert.match(error.message, /Store written by a newer Forge/);
+            return true;
+          },
+        );
+        assert.deepEqual(
+          db.all("SELECT * FROM state_migrations ORDER BY id"),
+          ledger,
+        );
+        assert.equal(db.get("SELECT total_changes() AS total").total, before);
+      } finally {
+        await handle.close();
+      }
+    }
+  },
   async migration() {
     const a = await store(),
       b = await store();
