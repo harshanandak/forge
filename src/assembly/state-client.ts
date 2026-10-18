@@ -27,6 +27,7 @@ export function createStateClient(options: {
   readonly requestId: string;
 }): LeaseStateClient {
   const { owner, namespace, context, write, requestId } = options;
+  const acquired = new Map<string, LeaseRecord>();
   function writable(): StateOwner {
     if (!write)
       refuse(
@@ -80,16 +81,29 @@ export function createStateClient(options: {
           "CONTEXT_MISSING",
           "Acquisition requires an acquire lease context",
         );
-      return state.acquire(
+      const lease = state.acquire(
         namespace,
         subject,
         { actor: context.actor, session: context.session },
         durationMs,
         requestId,
       );
+      acquired.set(subject, structuredClone(lease));
+      return lease;
     },
     renew: (subject: string, durationMs: number) =>
       writable().renew(namespace, fence(subject), durationMs),
-    release: (subject: string) => writable().release(namespace, fence(subject)),
+    release(subject: string) {
+      const state = writable();
+      const rollback =
+        context.variant === "leased" && context.leaseMode === "acquire"
+          ? acquired.get(subject)
+          : undefined;
+      // Acquisition may revoke only a grant returned to this invocation, never an ambient lease.
+      const held = rollback
+        ? { subject, holder: rollback.holder, generation: rollback.generation }
+        : fence(subject);
+      return state.release(namespace, held);
+    },
   });
 }

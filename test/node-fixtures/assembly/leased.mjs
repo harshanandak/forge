@@ -16,13 +16,35 @@ const write = (name, value) =>
     typeof value === "string" ? value : JSON.stringify(value),
   );
 const operations = {};
-for (const verb of ["show", "claim", "renew", "release", "put", "sneak"]) {
-  const leased = ["claim", "renew", "release", "put"].includes(verb);
+for (const verb of [
+  "show",
+  "claim",
+  "renew",
+  "release",
+  "put",
+  "sneak",
+  "cancel",
+  "undo",
+]) {
+  const leased = [
+    "claim",
+    "renew",
+    "release",
+    "put",
+    "cancel",
+    "undo",
+  ].includes(verb);
   operations[`counter.${verb}`] = {
     input: "input.json",
     output: "output.json",
     context: leased ? "leased" : "project",
-    ...(leased ? { leaseMode: verb === "claim" ? "acquire" : "held" } : {}),
+    ...(leased
+      ? {
+          leaseMode: ["claim", "cancel", "undo"].includes(verb)
+            ? "acquire"
+            : "held",
+        }
+      : {}),
     effects: verb === "show" || verb === "sneak" ? [] : ["counter:write"],
     callers: ["agent", "human"],
     idempotent: false,
@@ -50,6 +72,8 @@ write("output.json", {});
 write(
   "entry.cjs",
   `module.exports = {
+ "counter.cancel": ({services:s}) => { const grant = s.state.acquire("cancelled", 60000); grant.generation = 999; return s.state.release("cancelled"); },
+ "counter.undo": ({services:s}) => s.state.release("count"),
  "counter.show": ({services:s}) => s.state.get("count") ?? null,
  "counter.claim": ({services:s}) => s.state.acquire("count", 60000),
  "counter.renew": ({services:s}) => s.state.renew("count", 120000),
@@ -167,6 +191,17 @@ try {
     (await invoke("counter.claim", {}, { ...other, project: { id: "other" } }))
       .error.code,
     "INPUT_CONFLICT",
+  );
+  const cancelled = await invoke("counter.cancel");
+  assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
+  assert.ok(
+    cancelled.result.releasedAt,
+    "acquiring invocation may revoke its own grant",
+  );
+  assert.equal(
+    (await invoke("counter.undo")).error.code,
+    "CONTEXT_MISSING",
+    "acquiring invocation cannot revoke an ambient grant",
   );
   console.log("PASS generic leased assembly");
 } finally {
