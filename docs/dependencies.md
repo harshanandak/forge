@@ -8,7 +8,18 @@ Not npm dependencies, so not entries here: Bun itself is pinned by `packageManag
 
 ## Runtime dependencies
 
-None. The package ships with no runtime dependencies at this scaffold. Each one added later gets an entry here and an adapter in the same pull request.
+Each one gets an entry here and an adapter in the same pull request.
+
+### yaml
+
+- **Saves:** a YAML 1.2 parser and serializer for `.forge/config.yaml` (settled decision 5): strict parsing with duplicate-key, alias and custom-tag refusal, line-numbered errors, and output that reads back to the same value. A correct YAML 1.2 implementation is a large, subtle piece of code we would otherwise write and keep up.
+- **Maintenance:** actively maintained by Eemeli Aro, also a YAML spec contributor; 2.9.1 published 2026-09-11, a 3.0 line in prerelease alongside.
+- **Transitive packages:** 0.
+- **Fit:** pure JavaScript with no install scripts; `engines` `node >= 14.6`. Used by the published package on Node 24/26 and by our tests under Bun 1.4.3 (the codec contract suite in `test/adapters/l4-config/` runs against it). Strict settings: `version: "1.2"`, core schema, `strict`, `uniqueKeys`, `merge: false`, aliases refused (`maxAliasCount: 0`), and parse budgets enforced around it.
+- **Licence:** ISC.
+- **Trust:** published to npm by its single long-standing maintainer; the exact version and integrity hash are pinned in `bun.lock`. About 686 kB unpacked.
+- **Swap proof:** only `src/adapters/config-yaml/` imports it, behind `ConfigCodecPort`; the codec contract suite passes for this adapter and for an in-memory JSON fake, so another YAML library (or the 3.x line) replaces it by changing that one folder.
+- **Adapter:** `src/adapters/config-yaml/` (`ConfigCodecPort`).
 
 ## Development dependencies
 
