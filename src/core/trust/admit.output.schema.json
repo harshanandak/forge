@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["digest", "admitted"],
+  "properties": {
+    "digest": { "type": "string" },
+    "admitted": { "const": true }
+  },
+  "additionalProperties": false
+}

@@ -83,8 +83,8 @@ test("scoped CLI help includes the built-in catalog declarations", async () => {
         operations:
           argv.length === 2 && argv[0] === "catalog"
             ? [
-                { op: "catalog.list" },
                 { op: "catalog.describe" },
+                { op: "catalog.list" },
                 { op: "catalog.call" },
               ]
             : [{ op: "catalog.list" }],
@@ -338,7 +338,7 @@ test("stable budget is configurable; discovery preserves human and read-only bou
   );
   const catalog = fakeCatalog(entries);
   const handlers = createMcpHandlers(catalog);
-  expect(handlers.listTools()).toHaveLength(43);
+  expect(handlers.listTools()).toHaveLength(45);
   expect(
     handlers
       .listTools()
@@ -346,7 +346,7 @@ test("stable budget is configurable; discovery preserves human and read-only bou
         (t) => t.name === "sample_private" || t.name === "sample_experimental",
       ),
   ).toBe(false);
-  expect(createMcpHandlers(catalog, { budget: 0 }).listTools()).toHaveLength(3);
+  expect(createMcpHandlers(catalog, { budget: 0 }).listTools()).toHaveLength(5);
   expect(
     (await handlers.callTool("catalog_call", { op: "sample.op44", input: {} }))
       ?.ok,
