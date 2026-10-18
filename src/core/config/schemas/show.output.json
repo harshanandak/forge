@@ -12,6 +12,7 @@
     "values",
     "ignored",
     "problems",
+    "excluded",
     "effective"
   ],
   "properties": {
@@ -65,6 +66,26 @@
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "description": "Parts of the config file left out of every other field because they are not valid, with where they are and why.",
+      "items": {
+        "type": "object",
+        "required": ["pointer", "problems"],
+        "properties": {
+          "pointer": {
+            "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
       }
     },
     "effective": {

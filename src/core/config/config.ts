@@ -18,6 +18,7 @@ import {
   encodeDocument,
   fillSources,
 } from "./document.ts";
+import { validateConfigDocument } from "../../generated/validators.ts";
 import type { ConfigFiles } from "./files.ts";
 import {
   type DerivedLayer,
@@ -36,6 +37,7 @@ import {
   hasIn,
   isObject,
   type JsonObject,
+  parsePointer,
   removeIn,
   setIn,
   toPointer,
@@ -78,7 +80,92 @@ export interface ShowResult {
   readonly ignored: readonly Ignored[];
   /** Why the config file cannot be used as it is, if it cannot. */
   readonly problems: readonly string[];
+  /** Parts of the file left out of every other field because they are not valid, with where they are. */
+  readonly excluded: readonly Excluded[];
   readonly effective: JsonObject;
+}
+
+export interface Excluded {
+  readonly pointer: string;
+  readonly problems: readonly string[];
+}
+
+/**
+ * The part of a decoded document a schema problem makes unusable: a whole block instance, template
+ * record or owner record, else the top-level key. Show leaves these out and reports them instead.
+ */
+function excludedAt(pointer: string): string[] {
+  const segments = parsePointer(pointer) ?? [];
+  const [top] = segments;
+  if (top === undefined) return [];
+  if (
+    (top === "blocks" || top === "templates" || top === "owners") &&
+    segments.length >= 2
+  )
+    return segments.slice(0, 2);
+  return [top];
+}
+
+/** The document with every invalid part removed, and what was removed. */
+function usable(
+  document: JsonObject | undefined,
+  lookup: BlockLookup,
+): { document: JsonObject | undefined; excluded: Excluded[] } {
+  if (document === undefined) return { document, excluded: [] };
+  const filled = clone(document);
+  fillSources(filled, lookup);
+  const checked = validateConfigDocument(filled);
+  if (checked.ok) return { document: filled, excluded: [] };
+  const byUnit = new Map<string, string[]>();
+  for (const problem of checked.problems) {
+    const unit = formatPointer(excludedAt(problem.pointer));
+    const found = byUnit.get(unit) ?? [];
+    found.push(`${problem.pointer || "/"} ${problem.message}`);
+    byUnit.set(unit, found);
+  }
+  const excluded = [...byUnit.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([pointer, problems]) => ({ pointer, problems }));
+  if (byUnit.has("")) return { document: undefined, excluded };
+  const dropped = new Set<number>();
+  for (const { pointer } of excluded) {
+    const segments = parsePointer(pointer) ?? [];
+    // template records are array items: drop them together so the indices stay right
+    if (segments[0] === "templates" && segments.length === 2)
+      dropped.add(Number(segments[1]));
+    else removeIn(filled, segments);
+  }
+  if (Array.isArray(filled.templates) && dropped.size > 0)
+    filled.templates = filled.templates.filter((_, i) => !dropped.has(i));
+  return { document: filled, excluded };
+}
+
+/**
+ * Put a derived value into the project document without replacing anything the project sets: an
+ * object is merged key by key, and a key the project already has (at any depth) stays as it is.
+ * Returns true when anything was written.
+ */
+function fillMissing(
+  document: JsonObject,
+  segments: readonly string[],
+  value: unknown,
+): boolean {
+  for (let depth = 1; depth < segments.length; depth += 1) {
+    const ancestor = segments.slice(0, depth);
+    if (hasIn(document, ancestor) && !isObject(getIn(document, ancestor)))
+      return false;
+  }
+  if (!hasIn(document, segments)) {
+    setIn(document, segments, clone(value));
+    return true;
+  }
+  const current = getIn(document, segments);
+  if (!isObject(current) || !isObject(value)) return false;
+  let wrote = false;
+  for (const [key, inner] of Object.entries(value)) {
+    if (fillMissing(document, [...segments, key], inner)) wrote = true;
+  }
+  return wrote;
 }
 
 export interface ExplainResult {
@@ -287,8 +374,8 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
           segments: segmentsOf(step.path),
           value: step.value,
         }));
-      const layers = resolveLayers(derived, current.document, invocation);
-      const document = current.document;
+      const { document, excluded } = usable(current.document, env);
+      const layers = resolveLayers(derived, document, invocation);
       const blocks = isObject(document?.blocks) ? document.blocks : {};
       const instances: Instance[] = [];
       for (const [name, instance] of Object.entries(blocks)) {
@@ -302,7 +389,8 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
       return {
         file: CONFIG_FILE,
         revision: current.revision,
-        configured: document !== undefined || current.unreadable !== undefined,
+        configured:
+          current.document !== undefined || current.unreadable !== undefined,
         instances,
         templates: Array.isArray(document?.templates)
           ? (document.templates as TemplateProvenance[])
@@ -313,8 +401,9 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
           ...(current.unreadable === undefined
             ? []
             : [current.unreadable.message]),
-          ...current.problems.map((p) => `${p.pointer || "/"} ${p.message}`),
+          ...excluded.flatMap((e) => e.problems),
         ],
+        excluded,
         effective: layers.effective,
       };
     },
@@ -480,8 +569,13 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
               });
               continue;
             }
-            setIn(document, segments, clone(entry.value));
-            saved.push(entry.pointer);
+            if (fillMissing(document, segments, entry.value))
+              saved.push(entry.pointer);
+            else
+              skipped.push({
+                pointer: entry.pointer,
+                reason: "the project already sets this value",
+              });
           }
           return document;
         },

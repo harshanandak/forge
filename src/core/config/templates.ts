@@ -2,6 +2,12 @@
 // config and records, per key, which template wrote it and the digest of what it wrote. Compare and
 // update work key by key against that baseline; remove takes back only keys the template still
 // owns unchanged, so a person's edits always survive.
+//
+// Ownership handoff: when a template gives up a key it owns unchanged (template remove, or an update
+// whose new version drops it), the other imported templates are asked in import order (the order of
+// `templates` in the config file). The first installed one that sets the same value takes ownership
+// and the key stays. If none does but one of them is not installed here, the key stays unowned,
+// because whether that template needs it is unknown. Only otherwise is the key removed.
 import { jsonEqual } from "../../contract/schema.ts";
 import { DEFAULT_PARSE_LIMITS } from "../../contract/untrusted.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
@@ -321,6 +327,59 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
     return changes.sort((a, b) => a.pointer.localeCompare(b.pointer));
   };
 
+  /** Who takes over a key template `id` gives up; see the handoff rule at the top of the file. */
+  const successor = (
+    document: JsonObject,
+    id: string,
+    pointer: string,
+    current: unknown,
+  ): { readonly ref: string; readonly installed: boolean } | undefined => {
+    let unknown: string | undefined;
+    for (const p of provenance(document)) {
+      if (idOf(p.template) === id) continue;
+      const template = env.templates.get(idOf(p.template));
+      if (template === undefined) {
+        unknown ??= p.template;
+        continue;
+      }
+      const keys = templateLeaves(template);
+      if (keys.has(pointer) && jsonEqual(keys.get(pointer), current))
+        return { ref: p.template, installed: true };
+    }
+    return unknown === undefined
+      ? undefined
+      : { ref: unknown, installed: false };
+  };
+
+  /** Hand a given-up key over (or keep it unowned); undefined means remove it. */
+  const handOff = (
+    document: JsonObject,
+    id: string,
+    pointer: string,
+    current: unknown,
+  ): KeyChange | undefined => {
+    const next = successor(document, id, pointer, current);
+    if (next === undefined) return undefined;
+    if (next.installed) {
+      owners(document)[pointer] = {
+        from: next.ref,
+        baseline: digestValue(current),
+      };
+      return {
+        pointer,
+        kind: "kept",
+        current,
+        reason: `${next.ref} sets the same value`,
+      };
+    }
+    return {
+      pointer,
+      kind: "kept",
+      current,
+      reason: `${next.ref} is not installed here, so whether it shares this key is unknown`,
+    };
+  };
+
   const editWith = <T>(
     op: string,
     expectRevision: string,
@@ -516,7 +575,24 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           requireImported(document, id);
           const applied: KeyChange[] = [];
           const conflicts: KeyChange[] = [];
-          for (const change of compareKeys(document, id, upstream)) {
+          const changes = compareKeys(document, id, upstream);
+          // a conflict not yet accepted holds every removal that overlaps it (an ancestor or a
+          // descendant), so the project's value stays whole until the conflict is accepted
+          const held = changes
+            .filter((c) => c.kind === "conflict" && !accept.has(c.pointer))
+            .map((c) => ({
+              pointer: c.pointer,
+              segments: parsePointer(c.pointer) ?? [],
+            }));
+          const holder = (segments: readonly string[]): string | undefined =>
+            held.find(
+              (h) =>
+                isPrefix(h.segments, segments) ||
+                isPrefix(segments, h.segments),
+            )?.pointer;
+          const removals: string[][] = [];
+          const sets: KeyChange[] = [];
+          for (const change of changes) {
             const segments = parsePointer(change.pointer) ?? [];
             const take =
               change.kind === "conflict" && accept.has(change.pointer);
@@ -526,17 +602,40 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
               delete owners(document)[change.pointer];
               conflicts.push(change);
             } else if (change.kind === "remove") {
-              removeIn(document, segments);
+              const by = holder(segments);
+              if (by !== undefined) {
+                conflicts.push({
+                  ...change,
+                  reason: `held until the conflict at ${by} is accepted`,
+                });
+                continue;
+              }
               delete owners(document)[change.pointer];
-              applied.push(change);
+              const kept = handOff(
+                document,
+                id,
+                change.pointer,
+                change.current,
+              );
+              if (kept === undefined) removals.push(segments);
+              applied.push(kept ?? change);
             } else {
-              setIn(document, segments, clone(change.upstream));
-              owners(document)[change.pointer] = {
-                from: ref,
-                baseline: digestValue(change.upstream),
-              };
+              sets.push(change);
               applied.push(change);
             }
+          }
+          // removals first, so a key that changes shape is cleared before its new value is set
+          for (const segments of removals) removeIn(document, segments);
+          for (const change of sets) {
+            setIn(
+              document,
+              parsePointer(change.pointer) ?? [],
+              clone(change.upstream),
+            );
+            owners(document)[change.pointer] = {
+              from: ref,
+              baseline: digestValue(change.upstream),
+            };
           }
           const all = owners(document);
           for (const [pointer, owner] of Object.entries(all)) {
@@ -568,17 +667,6 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
         input.expectRevision,
         (document) => {
           ref = requireImported(document, id);
-          const others = provenance(document).filter(
-            (p) => idOf(p.template) !== id,
-          );
-          const otherKeys = others.map((p) => {
-            const template = env.templates.get(idOf(p.template));
-            return {
-              ref: p.template,
-              keys:
-                template === undefined ? undefined : templateLeaves(template),
-            };
-          });
           const all = owners(document);
           const removing: string[] = [];
           const kept: KeyChange[] = [];
@@ -597,33 +685,9 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
               });
               continue;
             }
-            const sharer = otherKeys.find(
-              (o) =>
-                o.keys !== undefined &&
-                o.keys.has(pointer) &&
-                jsonEqual(o.keys.get(pointer), current),
-            );
-            if (sharer !== undefined) {
-              all[pointer] = {
-                from: sharer.ref,
-                baseline: digestValue(current),
-              };
-              kept.push({
-                pointer,
-                kind: "kept",
-                current,
-                reason: `${sharer.ref} sets the same value`,
-              });
-              continue;
-            }
-            const unknown = otherKeys.find((o) => o.keys === undefined);
-            if (unknown !== undefined) {
-              kept.push({
-                pointer,
-                kind: "kept",
-                current,
-                reason: `${unknown.ref} is not installed here, so whether it shares this key is unknown`,
-              });
+            const handed = handOff(document, id, pointer, current);
+            if (handed !== undefined) {
+              kept.push(handed);
               continue;
             }
             removing.push(pointer);
