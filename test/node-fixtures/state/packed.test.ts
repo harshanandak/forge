@@ -238,7 +238,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
     ])
       mutations.push({
         file: "adapters/store-sqlite/index.js",
-        from: "renameSync(candidatePath, path);",
+        from: "renameDurable(candidatePath, path, hooks.fs);",
         to: "void 0;",
         journey,
         evidence: "AssertionError",

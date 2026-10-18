@@ -95,10 +95,12 @@ test("recovery syncs the POSIX parent before commit and skips directory fsync on
           },
           fsyncSync(fd: number) {
             expect(fd).toBe(123);
-            expect(inspectRecoveryFile(recovery).digest).toBe(
-              inspectRecoveryFile(backup).digest,
+            calls.push(
+              inspectRecoveryFile(recovery).digest ===
+                inspectRecoveryFile(backup).digest
+                ? "sync-dir-complete"
+                : "sync-dir-created",
             );
-            calls.push("sync-dir");
           },
           closeSync(fd: number) {
             expect(fd).toBe(123);
@@ -109,7 +111,15 @@ test("recovery syncs the POSIX parent before commit and skips directory fsync on
       expect(calls).toEqual(
         platform === "win32"
           ? ["commit"]
-          : ["open-dir", "sync-dir", "close-dir", "commit"],
+          : [
+              "open-dir",
+              "sync-dir-created",
+              "close-dir",
+              "open-dir",
+              "sync-dir-complete",
+              "close-dir",
+              "commit",
+            ],
       );
     }
   } finally {

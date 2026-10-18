@@ -1,26 +1,27 @@
 import {
   realpathSync,
   lstatSync,
-  mkdtempSync,
   readFileSync,
-  writeFileSync,
   openSync,
   closeSync,
   fsyncSync,
-  renameSync as nodeRenameSync,
-  copyFileSync,
-  rmSync,
   existsSync,
   statSync,
   fstatSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { inspectRecoveryFile } from "./recovery.ts";
 import {
-  syncParentDirectory,
+  copyPrivateFile,
+  createPrivateFile,
+  makePrivateTempDirectory,
+  openStoreFile,
+  removeDurable,
+  renameDurable,
+  writePrivateFile,
   type DirectorySyncPort,
-  inspectRecoveryFile,
-} from "./recovery.ts";
+} from "./file-ops.ts";
 import type { StateImageStore } from "../../core/state/index.ts";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type {
@@ -117,7 +118,7 @@ export function createSqliteStore(
         // Keep the opened inode pinned across SQLite's open; reject either side
         // of a pathname replacement rather than adopting its newer identity.
         if (path !== ":memory:")
-          pinned = openSync(path, options.readOnly ? "r" : "a+");
+          pinned = openStoreFile(path, options.readOnly, hooks.fs);
         hooks.step?.("opening");
         let connect: (path: string, readOnly: boolean) => Binding;
         if ("Bun" in globalThis) {
@@ -180,13 +181,6 @@ export function createSqliteStore(
           } finally {
             closeSync(fd);
           }
-        };
-        const syncDirectory = (): void => {
-          if (path !== ":memory:") syncParentDirectory(path, hooks.fs);
-        };
-        const renameSync = (from: string, to: string): void => {
-          if (hooks.fs) hooks.fs.renameSync(from, to);
-          else nodeRenameSync(from, to);
         };
         const wrap = (raw: Binding): SqlDatabase => ({
           exec(sql) {
@@ -268,9 +262,13 @@ export function createSqliteStore(
           exportImage(inspect) {
             assertOpen();
             if (active) throw new Error("Cannot export during a transaction");
-            const directory = mkdtempSync(join(tmpdir(), ".forge-export-"));
+            const directory = makePrivateTempDirectory(
+              join(tmpdir(), ".forge-export-"),
+              hooks.fs,
+            );
             const destination = join(directory, "snapshot.db");
             try {
+              closeSync(createPrivateFile(destination, "wx", hooks.fs));
               // SQLite creates a consistent complete image, including WAL contents, without INSERT replay.
               db.exec(`VACUUM INTO '${destination.replaceAll("'", "''")}'`);
               const captured = connect(destination, true);
@@ -281,7 +279,11 @@ export function createSqliteStore(
               }
               return new Uint8Array(readFileSync(destination));
             } finally {
-              rmSync(directory, { recursive: true, force: true });
+              removeDurable(
+                directory,
+                { recursive: true, force: true },
+                hooks.fs,
+              );
             }
           },
           restoreImage(image, validate, prepareCandidate, verify) {
@@ -290,7 +292,10 @@ export function createSqliteStore(
               throw new Error("Restore requires an idle writable store");
             const memory = path === ":memory:";
             const directory = memory
-              ? mkdtempSync(join(tmpdir(), ".forge-restore-"))
+              ? makePrivateTempDirectory(
+                  join(tmpdir(), ".forge-restore-"),
+                  hooks.fs,
+                )
               : dirname(path);
             const candidatePath = join(
               directory,
@@ -309,7 +314,7 @@ export function createSqliteStore(
               hooks.step?.(name);
             };
             try {
-              writeFileSync(candidatePath, image, { flag: "wx", mode: 0o600 });
+              writePrivateFile(candidatePath, image, hooks.fs);
               step("written");
               syncFile(candidatePath);
               step("synced");
@@ -329,7 +334,7 @@ export function createSqliteStore(
               const approvedCandidate = inspectRecoveryFile(candidatePath);
               step("prepared");
               if (!memory) {
-                lock = openSync(fencePath, "wx", 0o600);
+                lock = createPrivateFile(fencePath, "wx", hooks.fs);
                 ownsFence = true;
                 fsyncSync(lock);
               }
@@ -363,10 +368,9 @@ export function createSqliteStore(
                   throw new Error(
                     "Other store connections or sidecars prevent replacement",
                   );
-                copyFileSync(path, previousPath);
+                copyPrivateFile(path, previousPath, hooks.fs);
                 previous = true;
                 syncFile(previousPath);
-                syncDirectory();
                 step("retained");
                 const currentCandidate = inspectRecoveryFile(candidatePath);
                 if (
@@ -374,9 +378,8 @@ export function createSqliteStore(
                   JSON.stringify(approvedCandidate)
                 )
                   throw new Error("Candidate identity drift before swap");
-                renameSync(candidatePath, path);
+                renameDurable(candidatePath, path, hooks.fs);
                 swapped = true;
-                syncDirectory();
                 step("renamed");
                 db = connect(path, false);
               }
@@ -388,10 +391,14 @@ export function createSqliteStore(
               else {
                 priorDb.close();
                 if (priorMemoryDirectory)
-                  rmSync(priorMemoryDirectory, {
-                    recursive: true,
-                    force: true,
-                  });
+                  removeDurable(
+                    priorMemoryDirectory,
+                    {
+                      recursive: true,
+                      force: true,
+                    },
+                    hooks.fs,
+                  );
               }
             } catch (error) {
               candidate?.close();
@@ -411,8 +418,7 @@ export function createSqliteStore(
                       /* The replacement may not have opened. */
                     }
                     if (previous) {
-                      renameSync(previousPath, path);
-                      syncDirectory();
+                      renameDurable(previousPath, path, hooks.fs);
                     }
                   }
                   db = connect(path, false);
@@ -435,12 +441,17 @@ export function createSqliteStore(
               candidate?.close();
               if (lock !== undefined) {
                 closeSync(lock);
-                if (releaseFence) rmSync(fencePath);
+                if (releaseFence) removeDurable(fencePath, undefined, hooks.fs);
               }
               // In-memory handles keep the staged database open until handle.close().
-              if (!memory || !swapped) rmSync(candidatePath, { force: true });
+              if (!memory || !swapped)
+                removeDurable(candidatePath, { force: true }, hooks.fs);
               if (memory && !swapped)
-                rmSync(directory, { recursive: true, force: true });
+                removeDurable(
+                  directory,
+                  { recursive: true, force: true },
+                  hooks.fs,
+                );
             }
           },
           exec(sql) {
@@ -521,7 +532,11 @@ export function createSqliteStore(
                 db.close();
                 closed = true;
                 if (memoryDirectory)
-                  rmSync(memoryDirectory, { recursive: true, force: true });
+                  removeDurable(
+                    memoryDirectory,
+                    { recursive: true, force: true },
+                    hooks.fs,
+                  );
               }
               return Promise.resolve();
             },
