@@ -6,6 +6,7 @@ import {
   readFileSync,
   writeFileSync,
   rmSync,
+  existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -33,7 +34,11 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
     run(process.execPath, ["run", "build"]);
     const node = Bun.which("node");
     if (!node) throw new Error("Node runtime required for packed integration");
-    const npm = join(dirname(node), "node_modules/npm/bin/npm-cli.js");
+    const npm = [
+      join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
+      join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
+    ].find((path) => existsSync(path));
+    if (!npm) throw new Error("Cannot locate the Node installation's npm CLI");
     const pack = JSON.parse(
       run(node, [npm, "pack", "--json", "--pack-destination", work]),
     ) as { filename: string }[];
