@@ -1,0 +1,59 @@
+[
+  {
+    "key": "/blocks/check/config/commands/test",
+    "value": "npm test",
+    "origin": {
+      "detector": "project.detect",
+      "file": "package.json",
+      "pointer": "/scripts/test"
+    }
+  },
+  {
+    "key": "/blocks/check/config/commands/lint",
+    "value": "npm run lint",
+    "origin": {
+      "detector": "project.detect",
+      "file": "package.json",
+      "pointer": "/scripts/lint"
+    }
+  },
+  {
+    "key": "/blocks/check/config/packageManager",
+    "value": "npm",
+    "origin": { "detector": "project.detect", "file": "package-lock.json" }
+  },
+  {
+    "key": "/blocks/git/config/hookManager",
+    "value": "pre-commit",
+    "origin": {
+      "detector": "project.detect",
+      "file": ".pre-commit-config.yaml",
+      "note": "the project's own hook manager; reported, never replaced"
+    }
+  },
+  {
+    "key": "/blocks/check/source",
+    "value": { "builtin": "forge/check" },
+    "origin": {
+      "detector": "project.detect",
+      "note": "a detector trying to switch a block on"
+    }
+  },
+  {
+    "key": "/mcp/expose",
+    "value": ["check"],
+    "origin": {
+      "detector": "project.detect",
+      "note": "a detector trying to expose tools"
+    }
+  },
+  {
+    "key": "/blocks/check/config/commands/test",
+    "value": "npm run test:unit",
+    "origin": {
+      "detector": "project.detect",
+      "file": "package.json",
+      "pointer": "/scripts/test:unit"
+    }
+  }
+]

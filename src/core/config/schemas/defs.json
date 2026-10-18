@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/defs.json",
+  "description": "Shapes shared by the config and template operations.",
+  "$defs": {
+    "Layer": {
+      "enum": ["derived", "project", "invocation"]
+    },
+    "PatchStep": {
+      "type": "object",
+      "required": ["op", "path"],
+      "properties": {
+        "op": {
+          "enum": ["set", "remove"]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "A JSON Pointer into the config document, or <instance>.<key>... for that instance's config."
+        },
+        "value": {}
+      },
+      "additionalProperties": false
+    },
+    "Patch": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "$ref": "defs.json#/$defs/PatchStep"
+      }
+    },
+    "Change": {
+      "type": "object",
+      "required": ["pointer"],
+      "properties": {
+        "pointer": {
+          "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+        },
+        "before": {},
+        "after": {}
+      },
+      "additionalProperties": false
+    },
+    "LayerEntry": {
+      "type": "object",
+      "required": ["pointer", "value", "layer", "active"],
+      "properties": {
+        "pointer": {
+          "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+        },
+        "value": {},
+        "layer": {
+          "$ref": "defs.json#/$defs/Layer"
+        },
+        "origin": {
+          "$ref": "../../../../schemas/detection.json#/$defs/DetectionOrigin"
+        },
+        "owner": {
+          "type": "object",
+          "required": ["from", "baseline", "edited"],
+          "properties": {
+            "from": {
+              "$ref": "../../../../schemas/common.json#/$defs/TemplateRef"
+            },
+            "baseline": {
+              "$ref": "../../../../schemas/common.json#/$defs/Digest"
+            },
+            "edited": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "overriddenBy": {
+          "type": "object",
+          "required": ["layer", "pointer"],
+          "properties": {
+            "layer": {
+              "$ref": "defs.json#/$defs/Layer"
+            },
+            "pointer": {
+              "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "Ignored": {
+      "type": "object",
+      "required": ["key", "reason"],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "detector": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "KeyChange": {
+      "type": "object",
+      "required": ["pointer", "kind"],
+      "properties": {
+        "pointer": {
+          "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+        },
+        "kind": {
+          "enum": ["add", "change", "remove", "conflict", "kept", "adopt"]
+        },
+        "current": {},
+        "upstream": {},
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WriteFields": {
+      "type": "object",
+      "required": [
+        "file",
+        "previousRevision",
+        "revision",
+        "receipt",
+        "changes",
+        "fileRemoved"
+      ],
+      "properties": {
+        "file": {
+          "$ref": "../../../../schemas/common.json#/$defs/RelativePath"
+        },
+        "previousRevision": {
+          "$ref": "../../../../schemas/common.json#/$defs/Digest"
+        },
+        "revision": {
+          "$ref": "../../../../schemas/common.json#/$defs/Digest"
+        },
+        "receipt": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{6,}$"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "defs.json#/$defs/Change"
+          }
+        },
+        "fileRemoved": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

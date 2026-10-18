@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/revert.input.json",
+  "type": "object",
+  "required": ["expectRevision"],
+  "properties": {
+    "expectRevision": {
+      "description": "The revision read with config show: the digest of the config file's bytes (an absent file has the digest of no bytes).",
+      "$ref": "../../../../schemas/common.json#/$defs/Digest"
+    },
+    "receipt": {
+      "type": "string",
+      "pattern": "^[0-9]{6,}$",
+      "description": "A receipt id; omitted means the edit that produced the current revision."
+    }
+  },
+  "additionalProperties": false
+}

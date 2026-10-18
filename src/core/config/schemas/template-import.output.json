@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/template-import.output.json",
+  "description": "Keys copied in as plain config, each owned by the template with the digest it wrote; keys already set are left alone.",
+  "allOf": [
+    {
+      "$ref": "defs.json#/$defs/WriteFields"
+    },
+    {
+      "type": "object",
+      "required": ["template", "added", "shared", "conflicts"],
+      "properties": {
+        "file": {},
+        "previousRevision": {},
+        "revision": {},
+        "receipt": {},
+        "changes": {},
+        "fileRemoved": {},
+        "template": {
+          "$ref": "../../../../schemas/common.json#/$defs/TemplateRef"
+        },
+        "added": {
+          "type": "array",
+          "items": {
+            "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+          }
+        },
+        "shared": {
+          "type": "array",
+          "items": {
+            "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "defs.json#/$defs/KeyChange"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}
