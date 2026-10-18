@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "forge.template/1",
+  "id": "forge/delivery",
+  "version": "0.1.0",
+  "summary": "Forge's own delivery solution: plan, dev, validate, ship, review and verify as template data over ordinary blocks.",
+  "config": {
+    "schemaVersion": "forge.config/1",
+    "blocks": {
+      "work": { "source": { "builtin": "forge/work" } },
+      "memory": { "source": { "builtin": "forge/memory" } },
+      "context": { "source": { "builtin": "forge/context" } },
+      "check": { "source": { "builtin": "forge/check" } },
+      "git": { "source": { "builtin": "forge/git" } },
+      "pr": {
+        "source": { "builtin": "forge/pr" },
+        "bind": { "tracker": "work" },
+        "config": {
+          "merge": {
+            "requireChecks": "PASS",
+            "requireResolvedThreads": true,
+            "settleMinutes": 10,
+            "humanMerges": true
+          }
+        }
+      },
+      "github": { "source": { "builtin": "forge/github" } },
+      "policy": {
+        "source": { "builtin": "forge/policy" },
+        "config": {
+          "rules": [
+            {
+              "id": "blocking-findings",
+              "when": "pr.merge",
+              "deny": { "findingSeverity": ["P0", "P1"] }
+            },
+            { "id": "review-round-budget", "maxRounds": 3, "escalate": "human" }
+          ],
+          "bindTo": "ci"
+        }
+      },
+      "workflow": {
+        "source": { "builtin": "forge/workflow" },
+        "config": {
+          "steps": [
+            { "id": "plan", "approval": "optional" },
+            { "id": "dev" },
+            { "id": "validate", "run": "check.run" },
+            { "id": "ship", "run": "pr.create" },
+            { "id": "review", "run": "pr.threads" },
+            { "id": "verify", "run": "check.run", "trigger": "post-merge" }
+          ],
+          "counterfactualCheck": false
+        }
+      },
+      "skills": {
+        "source": { "builtin": "forge/skills" },
+        "config": {
+          "include": [
+            "plan",
+            "dev",
+            "validate",
+            "ship",
+            "review",
+            "verify",
+            "research",
+            "rollback"
+          ]
+        }
+      }
+    },
+    "mcp": { "budget": 40 }
+  }
+}

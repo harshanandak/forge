@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "forge.template/1",
+  "id": "forge/starter",
+  "version": "0.1.0",
+  "summary": "Tracking, memory, orientation and the project's own checks. No steps, no gates.",
+  "config": {
+    "schemaVersion": "forge.config/1",
+    "blocks": {
+      "work": { "source": { "builtin": "forge/work" } },
+      "memory": { "source": { "builtin": "forge/memory" } },
+      "context": { "source": { "builtin": "forge/context" } },
+      "check": { "source": { "builtin": "forge/check" } }
+    }
+  }
+}
