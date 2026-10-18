@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { inspectRecoveryFile } from "./recovery.ts";
+import { probeFilesystem, type FilesystemProbe } from "./filesystem.ts";
 import {
   adoptPrivateFile,
   copyPrivateFile,
@@ -89,6 +90,7 @@ function changeMarker(path: string): number {
 
 /** Hosts may bind relative store paths to an explicit absolute base directory. */
 export interface RestoreHooks {
+  readonly filesystem?: FilesystemProbe;
   readonly step?: (step: string) => void;
   readonly fs?: DirectorySyncPort & {
     renameSync(from: string, to: string): void;
@@ -113,6 +115,9 @@ export function createSqliteStore(
           {
             path,
             platform: process.platform,
+            ...(path === ":memory:"
+              ? {}
+              : probeFilesystem(dirname(path), hooks.filesystem)),
             cloudRoots: [
               process.env.OneDrive,
               process.env.OneDriveConsumer,
