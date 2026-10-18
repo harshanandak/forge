@@ -71,9 +71,30 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       const result = JSON.parse(
         run(runtime, [fixture, installed], consumer),
       ) as { passed: string[] };
-      expect(result.passed).toHaveLength(8);
+      expect(result.passed).toHaveLength(10);
     }
     const mutations = [
+      {
+        file: "core/state/index.js",
+        from: 'this.#db.exec("PRAGMA defer_foreign_keys=ON");',
+        to: "void 0;",
+        journey: "foreignkeys",
+        evidence: "FOREIGN KEY constraint failed",
+      },
+      {
+        file: "core/state/index.js",
+        from: 'if (this.#db.all("PRAGMA foreign_key_check").length)',
+        to: "if (false)",
+        journey: "foreignkeys",
+        evidence: "AssertionError",
+      },
+      {
+        file: "core/state/index.js",
+        from: "if (!outcome.ok)",
+        to: "if (false)",
+        journey: "closeerrors",
+        evidence: "AssertionError",
+      },
       {
         file: "core/state/index.js",
         from: "if (changed.changes !== 1)",
@@ -191,7 +212,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       }
     }
     console.log(
-      `Packed state: ${runtimes.length} runtimes, 8 journeys, ${mutations.length} counterfactuals each`,
+      `Packed state: ${runtimes.length} runtimes, 10 journeys, ${mutations.length} counterfactuals each`,
     );
     // Removing the linear scan causes catastrophic backtracking on a nonmatching suffix.
     const path = join(installed, "dist/src/core/state/fs-class.js");

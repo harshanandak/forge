@@ -41,6 +41,119 @@ async function store(path = ":memory:") {
   return result.handle;
 }
 const cases = {
+  async foreignkeys() {
+    for (const parentFirst of [false, true]) {
+      const parent = parentFirst ? "domain_a_parent" : "domain_z_parent";
+      const child = parentFirst ? "domain_z_child" : "domain_a_child";
+      const declarations = [
+        `CREATE TABLE ${parent}(id TEXT PRIMARY KEY)`,
+        `CREATE TABLE ${child}(id TEXT PRIMARY KEY, parent_id TEXT REFERENCES ${parent}(id))`,
+      ];
+      const domains = [
+        {
+          namespace: "forge/example",
+          reviewedDigest: `sha256:${"a".repeat(64)}`,
+          tables: parentFirst ? [parent, child] : [child, parent],
+          migrations: [
+            {
+              id: "002_foreign_keys",
+              statements: parentFirst
+                ? declarations
+                : declarations.toReversed(),
+            },
+          ],
+        },
+      ];
+      const source = await store(),
+        target = await store();
+      try {
+        const first = new StateOwner(source.value, { now: () => 1000 });
+        const second = new StateOwner(target.value, { now: () => 1000 });
+        first.initialize(domains);
+        second.initialize(domains);
+        source.value.run(`INSERT INTO ${parent} VALUES (?)`, ["parent"]);
+        source.value.run(`INSERT INTO ${child} VALUES (?,?)`, [
+          "child",
+          "parent",
+        ]);
+        first.put(ns, "restored", { preserved: true }, holder.actor, {
+          expectRevision: 0,
+          requestId: "restore-request",
+        });
+        first.acquire(ns, "subject", holder, 100, "restore-lease");
+        const snapshot = first.export();
+        const before = second.export();
+        const corrupt = structuredClone(snapshot);
+        corrupt.domains.find(
+          (entry) => entry.table === child,
+        ).rows[0].parent_id.value = "missing";
+        assert.throws(
+          () => second.restore(corrupt),
+          (error) =>
+            code("INPUT_INVALID")(error) &&
+            /foreign key/i.test(error.error.message),
+        );
+        assert.deepEqual(second.export(), before);
+        assert.deepEqual(target.value.all("PRAGMA foreign_key_check"), []);
+        assert.equal(
+          Number(
+            target.value.get("PRAGMA defer_foreign_keys").defer_foreign_keys,
+          ),
+          0,
+        );
+        second.restore(snapshot);
+        assert.deepEqual(second.export().domains, snapshot.domains);
+        assert.deepEqual(target.value.all("PRAGMA foreign_key_check"), []);
+        assert.throws(
+          () =>
+            target.value.run(`INSERT INTO ${child} VALUES (?,?)`, [
+              "dangling",
+              "missing",
+            ]),
+          /foreign key/i,
+        );
+      } finally {
+        await source.close();
+        await target.close();
+      }
+    }
+  },
+  async closeerrors() {
+    const handle = await store();
+    const callbackError = new Error("callback failed");
+    const closeError = new Error("close failed");
+    let closes = 0;
+    const failing = {
+      ...handle,
+      async close() {
+        closes++;
+        throw closeError;
+      },
+    };
+    try {
+      for (const failure of [callbackError, undefined]) {
+        await assert.rejects(
+          withState(failing, { now: () => 0 }, async () => {
+            throw failure;
+          }),
+          (error) => {
+            assert.ok(error instanceof AggregateError);
+            assert.deepEqual(error.errors, [failure, closeError]);
+            assert.equal(error.cause, closeError);
+            return true;
+          },
+        );
+      }
+      assert.equal(closes, 2);
+      await assert.rejects(
+        withState(failing, { now: () => 0 }, () => "success"),
+        (error) => error === closeError,
+      );
+      assert.equal(closes, 3);
+    } finally {
+      await handle.close();
+    }
+  },
   async records() {
     const handle = await store();
     try {

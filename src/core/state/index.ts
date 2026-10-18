@@ -490,6 +490,8 @@ export class StateOwner {
   restore(snapshot: Snapshot, verifyRecovery?: () => void): void {
     if (snapshot.format !== "forge.state/1") invalid("Unsupported snapshot");
     this.#db.transaction(() => {
+      // Registered tables may reference rows restored later in the snapshot.
+      this.#db.exec("PRAGMA defer_foreign_keys=ON");
       if (
         this.#db.get(
           "SELECT 1 FROM state_records UNION ALL SELECT 1 FROM state_events UNION ALL SELECT 1 FROM state_leases UNION ALL SELECT 1 FROM state_requests LIMIT 1",
@@ -531,6 +533,8 @@ export class StateOwner {
         this.#saveLease(entry.namespace, { ...entry.lease, releasedAt: at });
       }
       verifyRecovery?.();
+      if (this.#db.all("PRAGMA foreign_key_check").length)
+        invalid("Snapshot violates foreign key constraints");
     });
   }
 }
@@ -541,9 +545,28 @@ export async function withState<T>(
   clock: ClockPort,
   use: (owner: StateOwner) => T | Promise<T>,
 ): Promise<T> {
+  let outcome: { ok: true; value: T } | { ok: false; error: unknown };
   try {
-    return await use(new StateOwner(handle.value, clock));
-  } finally {
-    if (handle.ownership === "owned") await handle.close();
+    outcome = {
+      ok: true,
+      value: await use(new StateOwner(handle.value, clock)),
+    };
+  } catch (error) {
+    outcome = { ok: false, error };
   }
+  if (handle.ownership === "owned") {
+    try {
+      await handle.close();
+    } catch (closeError) {
+      if (!outcome.ok)
+        throw new AggregateError(
+          [outcome.error, closeError],
+          "State callback and close failed",
+          { cause: closeError },
+        );
+      throw closeError;
+    }
+  }
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
 }
