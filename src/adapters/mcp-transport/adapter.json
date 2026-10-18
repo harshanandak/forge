@@ -1,0 +1,4 @@
+{
+  "package": "@modelcontextprotocol/server",
+  "port": "McpTransportPort"
+}

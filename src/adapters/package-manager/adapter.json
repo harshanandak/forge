@@ -1,0 +1,4 @@
+{
+  "port": "package-manager",
+  "executable": ["npm", "pnpm", "yarn", "bun"]
+}

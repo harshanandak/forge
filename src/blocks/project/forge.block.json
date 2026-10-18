@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/project",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v1",
+  "profile": "trusted-action-sync/v1",
+  "entry": "index.js",
+  "operations": {
+    "project.detect": {
+      "input": "schemas/detect.input.json",
+      "output": "schemas/detect.output.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    }
+  },
+  "docs": "docs/records.json"
+}

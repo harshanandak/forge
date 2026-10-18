@@ -1,0 +1,4 @@
+{
+  "port": "vcs",
+  "executable": ["git"]
+}

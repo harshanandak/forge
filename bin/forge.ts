@@ -1,12 +1,9 @@
 #!/usr/bin/env node
 import { version } from "../src/version.ts";
+import { emptyCatalog } from "../src/surface/catalog.ts";
+import { runCommand } from "../src/surface/command.ts";
 
-// Stub entry point; the generated CLI surface replaces it.
-const args = process.argv.slice(2);
-
-if (args.includes("--version") || args.includes("-v")) {
-  console.log(version);
-} else {
-  console.error("forge: no commands are available yet. Run `forge --version`.");
-  process.exitCode = 2;
-}
+process.exitCode = await runCommand(process.argv.slice(2), {
+  catalog: emptyCatalog,
+  version,
+});
