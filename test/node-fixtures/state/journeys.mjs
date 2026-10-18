@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import {
@@ -17,10 +18,13 @@ import { spawnSync } from "node:child_process";
 const root = process.argv[2];
 const selected = process.argv[3] ?? "all";
 const load = (path) => import(pathToFileURL(join(root, "dist/src", path)).href);
-const { sqliteStore, createSqliteStore } = await load(
-  "adapters/store-sqlite/index.js",
+const consumer = createRequire(join(root, "package.json"));
+const { sqliteStore, createSqliteStore } = await import(
+  consumer.resolve("forge-workflow/adapters/sqlite")
 );
-const { StateOwner, withState } = await load("core/state/index.js");
+const { StateOwner, withState } = await import(
+  consumer.resolve("forge-workflow/state")
+);
 const { baseline, migrate, execMigrationStatement } = await load(
   "core/state/migrations.js",
 );

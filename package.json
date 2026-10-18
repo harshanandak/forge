@@ -20,7 +20,27 @@
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./runtime": {
+      "types": "./dist/src/assembly/runtime.d.ts",
+      "default": "./dist/src/assembly/runtime.js"
+    },
+    "./config": {
+      "types": "./dist/src/assembly/config.d.ts",
+      "default": "./dist/src/assembly/config.js"
+    },
+    "./state": {
+      "types": "./dist/src/core/state/index.d.ts",
+      "default": "./dist/src/core/state/index.js"
+    },
+    "./adapters/sqlite": {
+      "types": "./dist/src/adapters/store-sqlite/index.d.ts",
+      "default": "./dist/src/adapters/store-sqlite/index.js"
+    },
+    "./author": {
+      "types": "./dist/src/contract/author.d.ts",
+      "default": "./dist/src/contract/author.js"
+    }
   },
   "files": [
     "dist",
@@ -45,7 +65,8 @@
     "prebuild": "bun run gen",
     "prepack:smoke": "bun run gen",
     "build": "tsc -p tsconfig.build.json",
-    "pack:smoke": "node tools/pack-smoke/run.ts"
+    "pack:smoke": "node tools/pack-smoke/run.ts",
+    "postbuild": "bun tools/build-assets.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",

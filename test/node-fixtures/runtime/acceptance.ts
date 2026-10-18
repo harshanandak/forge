@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import type {
   InvocationRequest,
   OperationDeclaration,
@@ -11,30 +11,18 @@ import type {
 // This program is run by Node against the installed tarball, never against source imports.
 const installed = process.argv[2];
 assert.ok(installed, "pass the installed package root");
-const load = (area: string): string =>
-  pathToFileURL(resolve(installed, `dist/src/core/${area}/index.js`)).href;
+const consumer = createRequire(resolve(installed, "package.json"));
 const {
   Catalog,
   captureBlock: capture,
   addBlock: add,
+  Runtime,
+  TrustStore,
+  nodeFileCapture,
+  nodeRunIsolation,
 } = (await import(
-  load("catalog")
-)) as typeof import("../../../src/core/catalog/index.ts");
-const { Runtime } = (await import(
-  load("runtime")
-)) as typeof import("../../../src/core/runtime/index.ts");
-const { TrustStore } = (await import(
-  load("trust")
-)) as typeof import("../../../src/core/trust/index.ts");
-const { nodeFileCapture } = (await import(
-  pathToFileURL(resolve(installed, "dist/src/adapters/node-runtime/capture.js"))
-    .href
-)) as typeof import("../../../src/adapters/node-runtime/capture.ts");
-const { nodeRunIsolation } = (await import(
-  pathToFileURL(
-    resolve(installed, "dist/src/adapters/node-runtime/isolation.js"),
-  ).href
-)) as typeof import("../../../src/adapters/node-runtime/isolation.ts");
+  consumer.resolve("forge-workflow/runtime")
+)) as typeof import("../../../src/assembly/runtime.ts");
 const captureBlock = (
   root: string,
   limits?: import("../../../src/core/catalog/index.ts").CaptureLimits,
