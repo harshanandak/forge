@@ -3,7 +3,10 @@ import { bindContext } from "../../contract/context.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { SchemaRegistry } from "../../contract/schema.ts";
 import { discoveryOperations } from "../../generated/core-discovery.ts";
-import { validateInvocationRequest } from "../../generated/validators.ts";
+import {
+  validateInvocationRequest,
+  validateDocsRecords,
+} from "../../generated/validators.ts";
 import type {
   InvocationRequest,
   ResultEnvelope,
@@ -14,7 +17,7 @@ import {
   type CapturedBlock,
   type FileCapturePort,
 } from "../catalog/index.ts";
-import { TrustStore, refuse } from "../trust/index.ts";
+import { TrustStore, refuse, digest } from "../trust/index.ts";
 import { Runtime, type RuntimeOptions } from "./index.ts";
 import { version } from "../../version.ts";
 
@@ -74,15 +77,27 @@ export class BlockCatalog {
     }
   }
 
+  #docs(block: CapturedBlock) {
+    const checked = validateDocsRecords(
+      JSON.parse(block.text(block.manifest.docs)) as unknown,
+    );
+    if (!checked.ok) refuse("INPUT_INVALID", "invalid block docs record");
+    for (const op of Object.keys(block.manifest.operations)) {
+      if (checked.value.operations[op] === undefined)
+        refuse("INPUT_INVALID", `missing docs for ${op}`);
+    }
+    return checked.value.operations;
+  }
+
   list(): readonly McpCandidate[] {
     const catalog = this.#catalog();
     return catalog.list().map((op) => {
-      const { block } = catalog.resolve(op);
+      const { block, operation } = catalog.resolve(op);
       const entry = catalog.describe(op);
       return {
         ...entry,
         admitted: this.#admitted(block),
-        docs: { title: op, summary: `Operation from ${block.manifest.id}.` },
+        docs: this.#docs(block)[operation.declaredOp]!,
         inputSchema: entry.inputSchema as McpCandidate["inputSchema"],
         outputSchema: entry.outputSchema as McpCandidate["inputSchema"],
       };
@@ -140,8 +155,13 @@ export class BlockCatalog {
       }
       const root = input.path!;
       const block = captureBlock(root, this.#capture);
+      this.#docs(block);
       const candidates = new Map(this.#candidates);
-      const name = block.manifest.id.split("/").at(-1)!;
+      const blockName = block.manifest.id.split("/").at(-1)!;
+      const name =
+        blockName.length <= 40
+          ? blockName
+          : `${blockName.slice(0, 23).replace(/-+$/, "")}-${digest(block.manifest.id).slice(7, 23)}`;
       const previous = candidates.get(name);
       if (
         previous !== undefined &&
