@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
+  cpSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -27,39 +28,93 @@ function run(command: string, args: string[], cwd = root): string {
   return result.stdout;
 }
 
+function launch(command: string, args: string[], cwd: string, timeout = 30000) {
+  return new Promise<{
+    status: number | null;
+    signal: NodeJS.Signals | null;
+    error: Error | undefined;
+    stdout: string;
+    stderr: string;
+  }>((resolve) => {
+    const child = spawn(command, args, {
+      cwd,
+      windowsHide: true,
+      timeout,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let error: Error | undefined;
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", (cause) => {
+      error = cause;
+    });
+    child.on("close", (status, signal) => {
+      resolve({ status, signal, error, stdout, stderr });
+    });
+  });
+}
+
+// Drain every child before restoring package files or removing its working directory.
+async function complete(tasks: Promise<void>[]): Promise<void> {
+  const results = await Promise.allSettled(tasks);
+  const failures = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason as unknown] : [],
+  );
+  if (failures.length) throw new AggregateError(failures);
+}
+
 // Labelled integration: real package install and separate runtime processes, no developer checkout imports.
-test("integration: packed state journeys and targeted remove-the-fix checks", () => {
+test("integration: packed state journeys and targeted remove-the-fix checks", async () => {
+  let started = performance.now();
+  function phase(name: string) {
+    console.log(
+      `Packed state ${name}: ${Math.round(performance.now() - started)} ms`,
+    );
+    started = performance.now();
+  }
   const work = mkdtempSync(join(tmpdir(), "forge-packed-state-"));
   try {
-    run(process.execPath, ["run", "build"]);
     const node = Bun.which("node");
     if (!node) throw new Error("Node runtime required for packed integration");
-    const npm = [
-      join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-      join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-    ].find((path) => existsSync(path));
-    if (!npm) throw new Error("Cannot locate the Node installation's npm CLI");
-    const pack = JSON.parse(
-      run(node, [npm, "pack", "--json", "--pack-destination", work]),
-    ) as { filename: string }[];
-    const consumer = join(work, "consumer");
-    mkdirSync(consumer);
-    writeFileSync(
-      join(consumer, "package.json"),
-      '{"name":"state-consumer","version":"1.0.0","private":true}',
-    );
-    run(
-      node,
-      [
-        npm,
-        "install",
-        join(work, pack[0]!.filename),
-        "--no-audit",
-        "--no-fund",
-      ],
-      consumer,
-    );
+    // The smoke owns a real npm install until this test process has finished.
+    const consumer =
+      process.env.STATE_PACKED_CONSUMER ?? join(work, "consumer");
+    if (!process.env.STATE_PACKED_CONSUMER) {
+      run(process.execPath, ["run", "build"]);
+      const npm = [
+        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
+        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
+      ].find((path) => existsSync(path));
+      if (!npm)
+        throw new Error("Cannot locate the Node installation's npm CLI");
+      const pack = JSON.parse(
+        run(node, [npm, "pack", "--json", "--pack-destination", work]),
+      ) as { filename: string }[];
+      mkdirSync(consumer);
+      writeFileSync(
+        join(consumer, "package.json"),
+        '{"name":"state-consumer","version":"1.0.0","private":true}',
+      );
+      run(
+        node,
+        [
+          npm,
+          "install",
+          join(work, pack[0]!.filename),
+          "--no-audit",
+          "--no-fund",
+        ],
+        consumer,
+      );
+    }
     const installed = join(consumer, "node_modules/forge-workflow");
+    phase("install");
     const runtimes = [
       ...new Set(
         [node, process.execPath, process.env.STATE_NODE26].filter(
@@ -67,12 +122,24 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
         ),
       ),
     ];
-    for (const runtime of runtimes) {
-      const result = JSON.parse(
-        run(runtime, [fixture, installed], consumer),
-      ) as { passed: string[] };
-      expect(result.passed).toHaveLength(20);
-    }
+    await complete(
+      runtimes.map(async (runtime) => {
+        const result = await launch(
+          runtime,
+          [fixture, installed],
+          consumer,
+          90000,
+        );
+        if (result.error || result.status !== 0)
+          throw new Error(
+            `${runtime}: ${result.error?.message ?? result.stderr}\n${result.stdout}`,
+          );
+        expect(
+          (JSON.parse(result.stdout) as { passed: string[] }).passed,
+        ).toHaveLength(20);
+      }),
+    );
+    phase("journeys");
     const mutations = [
       {
         file: "core/state/migrations.js",
@@ -248,44 +315,59 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
             ? "Inconsistent imported state_events key high-water mark"
             : "AssertionError",
       });
-    for (const mutation of mutations) {
-      const path = join(installed, "dist/src", mutation.file);
-      const original = readFileSync(path, "utf8");
-      const pattern = new RegExp(
-        mutation.from
-          .split(/\s+/)
-          .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-          .join("\\s+"),
-      );
-      expect(original).toMatch(pattern);
-      try {
-        writeFileSync(path, original.replace(pattern, mutation.to));
-        for (const runtime of runtimes) {
-          const result = spawnSync(
-            runtime,
-            [fixture, installed, mutation.journey],
-            {
-              cwd: consumer,
-              encoding: "utf8",
-              windowsHide: true,
-              timeout: 30000,
-            },
+    // Each worker mutates its own package copy. Fixtures already create private stores;
+    // runtime processes may share a read-only copy, but concurrent mutations must not.
+    await complete(
+      Array.from({ length: 4 }, async (_, worker) => {
+        const isolated = join(
+          consumer,
+          "node_modules",
+          `forge-counterfactual-${worker}`,
+        );
+        cpSync(installed, isolated, {
+          recursive: true,
+          filter: (path) => !path.endsWith(".map") && !path.endsWith(".ts"),
+        });
+        for (const mutation of mutations.filter(
+          (_, index) => index % 4 === worker,
+        )) {
+          const path = join(isolated, "dist/src", mutation.file);
+          const original = readFileSync(path, "utf8");
+          const pattern = new RegExp(
+            mutation.from
+              .split(/\s+/)
+              .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+              .join("\\s+"),
           );
-          expect(result.error).toBeUndefined();
-          if (result.status !== 1)
-            throw new Error(
-              `Counterfactual survived: ${mutation.journey}: ${mutation.from} (${runtime})\n${result.stdout}\n${result.stderr}`,
+          expect(original).toMatch(pattern);
+          try {
+            writeFileSync(path, original.replace(pattern, mutation.to));
+            await complete(
+              runtimes.map(async (runtime) => {
+                const result = await launch(
+                  runtime,
+                  [fixture, isolated, mutation.journey],
+                  consumer,
+                );
+                expect(result.error).toBeUndefined();
+                if (result.status !== 1)
+                  throw new Error(
+                    `Counterfactual survived: ${mutation.journey}: ${mutation.from} (${runtime})\n${result.stdout}\n${result.stderr}`,
+                  );
+                if (mutation.from === "if (lstatSync(path).isSymbolicLink())")
+                  expect(result.stderr).toMatch(
+                    /dangling file symlink must be refused|Dangling store symlink/,
+                  );
+                else expect(result.stderr).toContain(mutation.evidence);
+              }),
             );
-          if (mutation.from === "if (lstatSync(path).isSymbolicLink())")
-            expect(result.stderr).toMatch(
-              /dangling file symlink must be refused|Dangling store symlink/,
-            );
-          else expect(result.stderr).toContain(mutation.evidence);
+          } finally {
+            writeFileSync(path, original);
+          }
         }
-      } finally {
-        writeFileSync(path, original);
-      }
-    }
+      }),
+    );
+    phase("counterfactuals");
     console.log(
       `Packed state: ${runtimes.length} runtimes, 20 journeys, ${mutations.length} counterfactuals each`,
     );
@@ -299,17 +381,19 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
         path,
         original.replace(needle, "return value.replace(/\\/+$/, '');"),
       );
-      for (const runtime of runtimes) {
-        const result = spawnSync(runtime, [fixture, installed, "filesystem"], {
-          cwd: consumer,
-          encoding: "utf8",
-          windowsHide: true,
-          timeout: 2000,
-        });
-        expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe(
-          "ETIMEDOUT",
-        );
-      }
+      await complete(
+        runtimes.map(async (runtime) => {
+          const result = await launch(
+            runtime,
+            [fixture, installed, "filesystem"],
+            consumer,
+            2000,
+          );
+          expect(result.error).toBeUndefined();
+          expect(result.status).toBeNull();
+          expect(result.signal).toBe("SIGTERM");
+        }),
+      );
     } finally {
       writeFileSync(path, original);
     }
