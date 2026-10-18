@@ -3,10 +3,12 @@
 // only Node and npm can install and run what we publish. Build first (`bun run build`).
 import { spawnSync } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -51,6 +53,9 @@ function environmentWithoutBun(): NodeJS.ProcessEnv {
 function locateNpmCli(): string {
   const bin = dirname(process.execPath);
   const candidates = [
+    ...(process.env.FORGE_SMOKE_NPM_CLI
+      ? [process.env.FORGE_SMOKE_NPM_CLI]
+      : []),
     join(bin, "node_modules", "npm", "bin", "npm-cli.js"),
     join(bin, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
   ];
@@ -207,6 +212,64 @@ function main(): void {
     if (imported.trim() !== expected)
       fail(`import gave "${imported.trim()}", expected "${expected}"`);
     step("the package exports resolve under Node");
+    copyFileSync(
+      join(root, "tools/pack-smoke/api.mjs"),
+      join(consumer, "api.mjs"),
+    );
+    // Counterfactuals run against the installed artifact, then restore its bytes.
+    const packageFile = join(installedDir, "package.json");
+    const packageBytes = readFileSync(packageFile, "utf8");
+    const packageData = JSON.parse(packageBytes) as {
+      exports: Record<string, unknown>;
+    };
+    delete packageData.exports["./runtime"];
+    writeFileSync(packageFile, JSON.stringify(packageData));
+    try {
+      const missingExport = spawnSync(
+        process.execPath,
+        [join(consumer, "api.mjs")],
+        { cwd: consumer, env, encoding: "utf8", windowsHide: true },
+      );
+      if (
+        missingExport.status === 0 ||
+        !missingExport.stderr.includes("ERR_PACKAGE_PATH_NOT_EXPORTED")
+      )
+        fail("missing public export did not fail the API journey");
+    } finally {
+      writeFileSync(packageFile, packageBytes);
+    }
+    for (const asset of [
+      "dist/src/core/config/operations.json",
+      "dist/schemas/config.json",
+    ]) {
+      const path = join(installedDir, asset);
+      renameSync(path, `${path}.hidden`);
+      try {
+        const missingAsset = spawnSync(
+          process.execPath,
+          [join(consumer, "api.mjs")],
+          { cwd: consumer, env, encoding: "utf8", windowsHide: true },
+        );
+        if (
+          missingAsset.status === 0 ||
+          !missingAsset.stderr.includes("ENOENT")
+        )
+          fail(`missing ${asset} did not fail the API journey`);
+      } finally {
+        renameSync(`${path}.hidden`, path);
+      }
+    }
+    step(
+      "remove-the-fix: missing runtime export and both JSON asset sets fail the API journey",
+    );
+    step(
+      run(
+        "public APIs and JSON assets",
+        process.execPath,
+        [join(consumer, "api.mjs")],
+        { cwd: consumer, env },
+      ).trim(),
+    );
     if (stateBun) {
       step("running packed state checks against the same npm install");
       console.log(
