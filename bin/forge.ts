@@ -1,9 +1,4 @@
-#!/usr/bin/env node
-import { version } from "../src/version.ts";
-import { emptyCatalog } from "../src/surface/catalog.ts";
-import { runCommand } from "../src/surface/command.ts";
+﻿#!/usr/bin/env node
+import { runLocalCommand } from "../src/assembly/command.ts";
 
-process.exitCode = await runCommand(process.argv.slice(2), {
-  catalog: emptyCatalog,
-  version,
-});
+process.exitCode = await runLocalCommand(process.argv.slice(2));
