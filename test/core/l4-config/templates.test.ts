@@ -267,6 +267,50 @@ describe("template lifecycle", () => {
     expect(p.read()).toBe(before);
   });
 
+  test("removal by a stale exact ref is refused; the current ref or bare id removes", () => {
+    const p = project();
+    const imported = p.templates.importTemplate({
+      template: "forge/starter",
+      expectRevision: p.config.show().revision,
+    });
+    p.installed.set("forge/starter", starterNext());
+    const updated = p.templates.update({
+      template: "forge/starter",
+      expectRevision: imported.revision,
+    });
+    const before = p.read();
+
+    const stale = failureOf(() =>
+      p.templates.remove({
+        template: "forge/starter@0.1.0",
+        expectRevision: updated.revision,
+      }),
+    );
+    expect(stale?.code).toBe("INPUT_INVALID");
+    expect(stale?.message).toContain("forge/starter@0.2.0");
+    expect(
+      failureOf(() =>
+        p.templates.remove({
+          template: "forge/starter@9.9.9",
+          expectRevision: updated.revision,
+        }),
+      )?.message,
+    ).toContain("forge/starter@0.2.0");
+    // refused: the newer import and its keys are untouched
+    expect(p.read()).toBe(before);
+    expect(p.config.show().templates).toEqual([
+      expect.objectContaining({ template: "forge/starter@0.2.0" }),
+    ]);
+    expect(p.config.show().instances.map((i) => i.name)).toContain("memory");
+
+    const removed = p.templates.remove({
+      template: "forge/starter@0.2.0",
+      expectRevision: updated.revision,
+    });
+    expect(removed.template).toBe("forge/starter@0.2.0");
+    expect(p.config.show().templates).toEqual([]);
+  });
+
   test("an unknown template names what is installed", () => {
     const p = project();
     const missing = failureOf(() =>

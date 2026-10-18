@@ -258,15 +258,26 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
   ): string | undefined =>
     provenance(document).find((p) => idOf(p.template) === id)?.template;
 
+  /**
+   * The import a reference addresses. A bare id means whatever is imported; an exact ref
+   * (id@version) must match the imported ref, so a stale ref cannot act on a newer import.
+   */
   const requireImported = (
     document: JsonObject | undefined,
-    id: string,
+    reference: string,
   ): string => {
+    const id = idOf(reference);
     const ref = importedRef(document, id);
     if (ref === undefined) {
       throw refuse(
         `${id} is not imported into ${CONFIG_FILE}`,
         "see imported templates with template list",
+      );
+    }
+    if (reference !== id && reference !== ref) {
+      throw refuse(
+        `${id} is imported at ${ref}, not ${reference}`,
+        `address it as ${ref}, or by ${id} alone`,
       );
     }
     return ref;
@@ -540,7 +551,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
       const current = readProject(env);
       const document = writable(current);
       const id = idOf(input.template);
-      const imported = requireImported(document, id);
+      const imported = requireImported(document, input.template);
       const upstream = load(input.source ?? id);
       if (upstream.id !== id)
         throw refuse(`${input.source} holds ${upstream.id}, not ${id}`);
@@ -570,7 +581,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
         "template.update",
         input.expectRevision,
         (document) => {
-          requireImported(document, id);
+          requireImported(document, input.template);
           const applied: KeyChange[] = [];
           const conflicts: KeyChange[] = [];
           const held: (readonly string[])[] = [];
@@ -648,7 +659,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
         "template.remove",
         input.expectRevision,
         (document) => {
-          ref = requireImported(document, id);
+          ref = requireImported(document, input.template);
           const kept: KeyChange[] = [];
           const giving: Step[] = [];
           for (const step of plan(document, id, new Map())) {
