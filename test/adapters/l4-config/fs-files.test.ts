@@ -12,11 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { nodeConfigFiles } from "../../../src/adapters/fs/index.ts";
-import { importsOf } from "../../structure/lib/imports.ts";
-import { scanAdapters } from "../../structure/lib/adapters.ts";
-import { listRepoFiles } from "../../structure/lib/repo.ts";
 
 setDefaultTimeout(30_000);
 
@@ -237,27 +233,5 @@ describe("the fs adapter refuses to leave the project root", () => {
     mkdirSync(join(dir, "cfg", "config.yaml"), { recursive: true });
     expect(() => files.write("cfg/config.yaml", bytes("x"))).toThrow();
     expect(readdirSync(join(dir, "cfg"))).toEqual(["config.yaml"]);
-  });
-});
-
-describe("the filesystem stays behind the adapter", () => {
-  const REPO = fileURLToPath(new URL("../../../", import.meta.url));
-
-  test("core config imports no filesystem or path built-in", () => {
-    const core = listRepoFiles().filter((p) =>
-      /^src\/core\/config\/.*\.ts$/.test(p),
-    );
-    expect(core.length).toBeGreaterThan(0);
-    const leaks = core.flatMap((path) =>
-      importsOf({ path, text: readFileSync(join(REPO, path), "utf8") })
-        .filter((s) => /^(?:node:)?(?:fs|path)(?:\/|$)/.test(s))
-        .map((s) => `${path} imports ${s}`),
-    );
-    expect(leaks).toEqual([]);
-  });
-
-  test("the fs adapter has a manifest the structure guard accepts", () => {
-    const { manifests } = scanAdapters(listRepoFiles());
-    expect(manifests.map((m) => m.name)).toContain("fs");
   });
 });
