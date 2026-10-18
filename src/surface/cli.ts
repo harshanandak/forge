@@ -18,7 +18,7 @@ function help(
   options: CallOptions,
   op?: string,
 ): unknown {
-  const entries = visible(catalog, options.caller);
+  const entries = [...discoveryOperations, ...visible(catalog, options.caller)];
   return {
     usage: "forge <noun> <verb> [arguments] [--input JSON] [--text]",
     options: [
@@ -32,7 +32,7 @@ function help(
     ],
     operations:
       op === undefined
-        ? [...discoveryOperations, ...entries]
+        ? entries
         : entries.filter(
             (c) => c.op === op || (op.endsWith(".") && c.op.startsWith(op)),
           ),

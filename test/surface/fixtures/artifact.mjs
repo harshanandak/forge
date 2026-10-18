@@ -51,6 +51,15 @@ const catalog = {
         },
 };
 assert.match((await runCli(catalog, ["--help"])).stdout, /fresh.inspect/);
+for (const argv of [
+  ["catalog", "--help"],
+  ["catalog", "list", "--help"],
+]) {
+  const help = JSON.parse((await runCli(catalog, argv)).stdout);
+  assert.ok(
+    help.result.operations.some((operation) => operation.op === "catalog.list"),
+  );
+}
 assert.equal(
   (await runCli(catalog, ["catalog", "describe", "fresh.inspect"])).envelope
     .result.op,
@@ -69,13 +78,18 @@ const hook = await runHook(
 assert.deepEqual(hook.envelope, refusal);
 assert.equal(hook.exitCode, 3);
 
-for (const era of ["2025-11-25", "2026-07-28"]) {
+for (const [era, budget] of [
+  ["2025-11-25", 40],
+  ["2025-11-25", 0],
+  ["2026-07-28", 40],
+  ["2026-07-28", 0],
+]) {
   const input = new TransformStream();
   const output = new TransformStream();
   const writer = input.writable.getWriter();
   const reader = output.readable.getReader();
   const opened = await createMcpTransport().open({
-    handlers: createMcpHandlers(catalog),
+    handlers: createMcpHandlers(catalog, { budget }),
     serverName: "fixture",
     serverVersion: "1.0.0",
     input: input.readable,
@@ -137,20 +151,36 @@ for (const era of ["2025-11-25", "2026-07-28"]) {
         [era],
       );
     const list = await rpc("tools/list");
-    assert.ok(list.result.tools.some((tool) => tool.name === "fresh_inspect"));
+    assert.equal(
+      list.result.tools.some((tool) => tool.name === "fresh_inspect"),
+      budget > 0,
+    );
+    const discovered = (await rpc("tools/call", { name: "catalog_list" }))
+      .result.structuredContent;
+    assert.ok(discovered.result.some((operation) => operation.op === entry.op));
+    const described = (
+      await rpc("tools/call", {
+        name: "catalog_describe",
+        arguments: { op: entry.op },
+      })
+    ).result.structuredContent;
+    assert.equal(described.result.op, entry.op);
+    const callName = budget === 0 ? "catalog_call" : "fresh_inspect";
+    const callArgs = (value) =>
+      budget === 0 ? { op: entry.op, input: { value } } : { value };
     assert.deepEqual(
       (
         await rpc("tools/call", {
-          name: "fresh_inspect",
-          arguments: { value: "hello" },
+          name: callName,
+          arguments: callArgs("hello"),
         })
       ).result.structuredContent.result,
       { value: "hello" },
     );
     const failed = (
       await rpc("tools/call", {
-        name: "fresh_inspect",
-        arguments: { value: "missing" },
+        name: callName,
+        arguments: callArgs("missing"),
       })
     ).result;
     assert.equal(failed.isError, true);
@@ -161,7 +191,7 @@ for (const era of ["2025-11-25", "2026-07-28"]) {
       -32602,
     );
     console.log(
-      `${process.versions.bun ? `Bun ${process.versions.bun}` : `Node ${process.version}`} installed artifact: ${era} PASS`,
+      `${process.versions.bun ? `Bun ${process.versions.bun}` : `Node ${process.version}`} installed artifact: ${era}, budget ${budget} PASS`,
     );
   } finally {
     await reader.cancel();

@@ -56,11 +56,17 @@ export function createMcpHandlers(
       }),
     ]),
   );
+  // Discovery ignores the direct-tool budget. Keep unadmitted names callable so
+  // the runtime can return ADMISSION_REQUIRED; visible() still hides their metadata.
+  const reachable = new Set(
+    selectMcpTools(
+      catalog.list().map((candidate) => ({ ...candidate, admitted: true })),
+      { ...exposure, budget: 0 },
+    ).overflow,
+  );
   const exposed = catalog
     .list()
-    .filter((candidate) =>
-      byName.has(mcpToolName(candidate.op, exposure.toolPrefix) ?? ""),
-    );
+    .filter((candidate) => reachable.has(candidate.op));
   const restricted: SurfaceCatalog = {
     list: () => exposed,
     invoke: (request) => catalog.invoke(request),

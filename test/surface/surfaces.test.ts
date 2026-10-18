@@ -8,7 +8,7 @@ import { SchemaRegistry } from "../../src/contract/schema.ts";
 import { PassThrough } from "node:stream";
 import { runCommand } from "../../src/surface/command.ts";
 
-test("catalog_call refuses operations outside the listed MCP exposure", async () => {
+test("catalog_call enforces exposure filters without blocking budget overflow", async () => {
   const catalog = fakeCatalog([
     candidate("sample.allowed"),
     candidate("sample.hidden"),
@@ -17,7 +17,6 @@ test("catalog_call refuses operations outside the listed MCP exposure", async ()
   ]);
   for (const [exposure, op] of [
     [{ expose: ["sample.allowed"] }, "sample.hidden"],
-    [{ budget: 1 }, "sample.hidden"],
     [{}, "sample.private"],
     [{}, "sample.experimental"],
   ] as const) {
@@ -28,12 +27,72 @@ test("catalog_call refuses operations outside the listed MCP exposure", async ()
     });
   }
   expect(catalog.calls).toHaveLength(0);
+  for (const budget of [0, 1]) {
+    const handlers = createMcpHandlers(catalog, { budget });
+    expect(handlers.listTools().map((tool) => tool.name)).not.toContain(
+      "sample_hidden",
+    );
+    const listed = await handlers.callTool("catalog_list", {});
+    expect(listed?.ok).toBe(true);
+    expect(listed?.ok ? listed.result : undefined).toContainEqual(
+      candidate("sample.hidden"),
+    );
+    expect(
+      await handlers.callTool("catalog_describe", { op: "sample.hidden" }),
+    ).toMatchObject({
+      ok: true,
+      result: { op: "sample.hidden" },
+    });
+    expect(
+      await handlers.callTool("catalog_call", {
+        op: "sample.hidden",
+        input: { value: "overflow" },
+      }),
+    ).toMatchObject({
+      ok: true,
+      op: "sample.hidden",
+      result: { value: "overflow" },
+    });
+  }
+  expect(catalog.calls).toHaveLength(2);
+  expect(
+    await createMcpHandlers(catalog, {
+      expose: ["sample.experimental"],
+      budget: 0,
+    }).callTool("catalog_call", { op: "sample.experimental" }),
+  ).toMatchObject({ ok: true });
   expect(
     await createMcpHandlers(catalog, { expose: ["sample.allowed"] }).callTool(
       "catalog_call",
       { op: "sample.allowed" },
     ),
   ).toMatchObject({ ok: true });
+}, 30_000);
+
+test("scoped CLI help includes the built-in catalog declarations", async () => {
+  const catalog = fakeCatalog();
+  for (const argv of [
+    ["catalog", "--help"],
+    ["catalog.list", "--help"],
+    ["catalog", "list", "--help"],
+  ]) {
+    const reply = await runCli(catalog, argv);
+    expect(reply.envelope).toMatchObject({
+      ok: true,
+      result: {
+        operations:
+          argv.length === 2 && argv[0] === "catalog"
+            ? [
+                { op: "catalog.list" },
+                { op: "catalog.describe" },
+                { op: "catalog.call" },
+              ]
+            : [{ op: "catalog.list" }],
+      },
+    });
+    expect(reply.stdout).not.toContain("sample.echo");
+  }
+  expect(catalog.calls).toHaveLength(0);
 }, 30_000);
 
 test("CLI positionals follow declaration args rather than schema order", async () => {
@@ -85,6 +144,22 @@ test("unadmitted operations stay out of discovery but named calls reach admissio
       .some((tool) => tool.name === "pending_inspect"),
   ).toBe(false);
   expect(catalog.calls).toHaveLength(0);
+  const handlers = createMcpHandlers(catalog, { budget: 0 });
+  expect(await handlers.callTool("catalog_list", {})).toMatchObject({
+    ok: true,
+  });
+  expect(
+    JSON.stringify(await handlers.callTool("catalog_list", {})),
+  ).not.toContain(entry.op);
+  expect(
+    await handlers.callTool("catalog_describe", { op: entry.op }),
+  ).toMatchObject({
+    ok: false,
+    error: { code: "UNKNOWN_COMMAND" },
+  });
+  expect(await handlers.callTool("catalog_call", { op: entry.op })).toEqual(
+    refusal,
+  );
   expect((await runCli(catalog, [entry.op, "--input", "{}"])).envelope).toEqual(
     refusal,
   );
@@ -97,7 +172,7 @@ test("unadmitted operations stay out of discovery but named calls reach admissio
       ])
     ).envelope,
   ).toEqual(refusal);
-  expect(catalog.calls).toHaveLength(2);
+  expect(catalog.calls).toHaveLength(3);
 }, 30_000);
 
 test("a new catalog entry appears in help, describe and MCP with no surface changes", async () => {
@@ -279,7 +354,7 @@ test("stable budget is configurable; discovery preserves human and read-only bou
   expect(
     (await handlers.callTool("catalog_call", { op: "sample.op9", input: {} }))
       ?.ok,
-  ).toBe(false);
+  ).toBe(true);
   expect(
     (await handlers.callTool("catalog_call", { op: "sample.private" }))?.ok,
   ).toBe(false);
