@@ -19,7 +19,11 @@ import {
   fillSources,
 } from "./document.ts";
 import { validateConfigDocument } from "../../generated/validators.ts";
-import type { ConfigFiles } from "./files.ts";
+import {
+  MAX_CONFIG_FILE_BYTES,
+  readProjectFile,
+  type ConfigFiles,
+} from "./files.ts";
 import {
   type DerivedLayer,
   deriveLayer,
@@ -548,7 +552,7 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
               read: (path) =>
                 path === CONFIG_FILE
                   ? (bytes ?? undefined)
-                  : env.files.read(path),
+                  : readProjectFile(env.files, path, MAX_CONFIG_FILE_BYTES),
             },
           });
           changes = diff(current.document, before.document);

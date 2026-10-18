@@ -37,6 +37,7 @@ import {
   writable,
 } from "./config.ts";
 import type { Change } from "./document.ts";
+import { MAX_TEMPLATE_FILE_BYTES, readProjectFile } from "./files.ts";
 import { atomicSource, METADATA_KEYS } from "./layers.ts";
 import { applyStep, plan, type Step, templateIdOf } from "./merge.ts";
 import {
@@ -223,7 +224,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
       if (!validateRelativePath(path).ok) {
         throw refuse(`${reference} is not a project-relative path`);
       }
-      const bytes = env.files.read(path);
+      const bytes = readProjectFile(env.files, path, MAX_TEMPLATE_FILE_BYTES);
       if (bytes === undefined) throw refuse(`no template file at ${path}`);
       const decoded = env.codec.decode(
         new TextDecoder().decode(bytes),

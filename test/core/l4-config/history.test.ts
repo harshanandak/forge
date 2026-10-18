@@ -1,8 +1,14 @@
 // Edit history is read from disk, so a receipt is untrusted: one that is damaged (fields missing, or
 // prior bytes that no longer match its `from` revision) is reported and never applied.
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  MAX_CONFIG_FILE_BYTES,
+  MAX_HISTORY_FILES,
+  MAX_RECEIPT_FILE_BYTES,
+} from "../../../src/core/config/files.ts";
+import type { ConfigFiles } from "../../../src/core/config/files.ts";
 import { failureOf, type Fixture, makeProject } from "./lib/project.ts";
 
 setDefaultTimeout(30_000);
@@ -10,6 +16,11 @@ setDefaultTimeout(30_000);
 const open: Fixture[] = [];
 function project(): Fixture {
   const made = makeProject();
+  open.push(made);
+  return made;
+}
+function projectWithFiles(wrap: (real: ConfigFiles) => ConfigFiles): Fixture {
+  const made = makeProject({ files: wrap });
   open.push(made);
   return made;
 }
@@ -48,6 +59,73 @@ function twoEdits(p: Fixture): string {
 }
 
 describe("damaged edit history", () => {
+  test("an oversized config is refused on show before decoding", () => {
+    const p = project();
+    mkdirSync(join(p.root, ".forge"), { recursive: true });
+    writeFileSync(
+      join(p.root, ".forge", "config.yaml"),
+      "x".repeat(MAX_CONFIG_FILE_BYTES + 1),
+    );
+    expect(failureOf(() => p.config.show())).toMatchObject({
+      code: "LIMIT_EXCEEDED",
+    });
+  });
+
+  test("an edit that would exceed the config file limit leaves no file or receipt", () => {
+    const p = project();
+    const failure = failureOf(() =>
+      p.config.set({
+        path: "check.largeValue",
+        value: "x".repeat(MAX_CONFIG_FILE_BYTES),
+        expectRevision: p.config.show().revision,
+      }),
+    );
+    expect(failure).toMatchObject({ code: "LIMIT_EXCEEDED" });
+    expect(p.read()).toBeUndefined();
+    expect(p.env.files.list(".forge/config-history")).toEqual([]);
+  });
+  test("an oversized receipt is refused before its bytes are read or decoded", () => {
+    let receiptReads = 0;
+    const p = projectWithFiles((real) => ({
+      ...real,
+      read(path, maxBytes) {
+        if (path.endsWith("000001.json")) receiptReads += 1;
+        return real.read(path, maxBytes);
+      },
+    }));
+    const revision = p.config.show().revision;
+    const path = receiptFile(p, "000001");
+    mkdirSync(join(p.root, ".forge", "config-history"), { recursive: true });
+    writeFileSync(path, "x".repeat(MAX_RECEIPT_FILE_BYTES + 1));
+    const failure = failureOf(() =>
+      p.config.set({
+        path: "check.timeout",
+        value: 300,
+        expectRevision: revision,
+      }),
+    );
+    expect(failure).toMatchObject({ code: "LIMIT_EXCEEDED" });
+    expect(receiptReads).toBe(1);
+    expect(p.read()).toBeUndefined();
+  });
+
+  test("too many receipt files are refused before scanning their contents", () => {
+    const p = project();
+    const revision = p.config.show().revision;
+    const dir = join(p.root, ".forge", "config-history");
+    mkdirSync(dir, { recursive: true });
+    for (let i = 1; i <= MAX_HISTORY_FILES + 1; i += 1)
+      writeFileSync(join(dir, `${String(i).padStart(6, "0")}.json`), "{}");
+    const failure = failureOf(() =>
+      p.config.set({
+        path: "check.timeout",
+        value: 300,
+        expectRevision: revision,
+      }),
+    );
+    expect(failure).toMatchObject({ code: "LIMIT_EXCEEDED" });
+    expect(p.read()).toBeUndefined();
+  });
   test("a receipt whose prior bytes no longer match its from revision is never reverted to", () => {
     const p = project();
     const live = twoEdits(p);

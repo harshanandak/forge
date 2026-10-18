@@ -8,10 +8,11 @@
 // directory, then rename).
 import {
   closeSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -21,6 +22,11 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import type { ConfigFiles } from "../../core/config/files.ts";
+import {
+  fileLimitExceeded,
+  MAX_LOCK_FILE_BYTES,
+  MAX_RECEIPT_FILE_BYTES,
+} from "../../core/config/files.ts";
 
 function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
@@ -91,12 +97,33 @@ function resolveIn(root: string, path: string, finalLink: FinalLink): string {
 
 export function nodeConfigFiles(root: string): ConfigFiles {
   return {
-    read(path) {
+    read(
+      path,
+      maxBytes = path === ".forge/config.lock"
+        ? MAX_LOCK_FILE_BYTES
+        : MAX_RECEIPT_FILE_BYTES,
+    ) {
+      let fd: number;
       try {
-        return readFileSync(resolveIn(root, path, "refuse"));
+        fd = openSync(resolveIn(root, path, "refuse"), "r");
       } catch (error) {
         if (errorCode(error) === "ENOENT") return undefined;
         throw error;
+      }
+      try {
+        if (fstatSync(fd).size > maxBytes)
+          throw fileLimitExceeded(path, maxBytes);
+        const buffer = Buffer.allocUnsafe(maxBytes + 1);
+        let count = 0;
+        while (count <= maxBytes) {
+          const read = readSync(fd, buffer, count, maxBytes + 1 - count, null);
+          if (read === 0) break;
+          count += read;
+        }
+        if (count > maxBytes) throw fileLimitExceeded(path, maxBytes);
+        return buffer.subarray(0, count);
+      } finally {
+        closeSync(fd);
       }
     },
     write(path, bytes) {

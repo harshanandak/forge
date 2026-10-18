@@ -9,7 +9,14 @@ import { validateConfigDocument } from "../../generated/validators.ts";
 import type { ForgeError, ParseLimits } from "../../generated/types.ts";
 import type { ClockPort } from "../../ports/clock.ts";
 import type { ConfigCodecPort } from "../../ports/config-codec.ts";
-import type { ConfigFiles } from "./files.ts";
+import {
+  MAX_CONFIG_FILE_BYTES,
+  MAX_HISTORY_FILES,
+  MAX_RECEIPT_FILE_BYTES,
+  fileLimitExceeded,
+  readProjectFile,
+  type ConfigFiles,
+} from "./files.ts";
 import { digestBytes, isObject, type JsonObject } from "./pointer.ts";
 
 export const CONFIG_FILE = ".forge/config.yaml";
@@ -70,7 +77,7 @@ export interface StoreDeps {
 const EMPTY = new Uint8Array();
 
 export function readProject(deps: StoreDeps): ProjectConfig {
-  const bytes = deps.files.read(CONFIG_FILE);
+  const bytes = readProjectFile(deps.files, CONFIG_FILE, MAX_CONFIG_FILE_BYTES);
   const revision = digestBytes(bytes ?? EMPTY);
   const base = { bytes, revision, problems: [] };
   if (bytes === undefined)
@@ -208,12 +215,20 @@ export function readHistory(deps: StoreDeps): History {
   const receipts: Receipt[] = [];
   const damaged: DamagedReceipt[] = [];
   let last = 0;
-  for (const name of deps.files.list(HISTORY_DIR)) {
+  const names = deps.files.list(HISTORY_DIR);
+  if (names.length > MAX_HISTORY_FILES)
+    throw new ForgeFailure({
+      code: "LIMIT_EXCEEDED",
+      message: `${HISTORY_DIR} exceeds the receipt file count limit of ${MAX_HISTORY_FILES}`,
+      expected: { maxFiles: MAX_HISTORY_FILES },
+      retry: "never",
+    });
+  for (const name of names) {
     const id = RECEIPT_NAME.exec(name)?.[1];
     if (id === undefined) continue;
     last = Math.max(last, Number.parseInt(id, 10));
     const file = `${HISTORY_DIR}/${name}`;
-    const bytes = deps.files.read(file);
+    const bytes = readProjectFile(deps.files, file, MAX_RECEIPT_FILE_BYTES);
     if (bytes === undefined) continue;
     let value: unknown;
     try {
@@ -266,6 +281,11 @@ export function commit(
       throw revisionConflict(expectRevision, current.revision);
     }
     const planned = plan(current);
+    if (
+      planned.bytes !== null &&
+      planned.bytes.byteLength > MAX_CONFIG_FILE_BYTES
+    )
+      throw fileLimitExceeded(CONFIG_FILE, MAX_CONFIG_FILE_BYTES);
     const to = digestBytes(planned.bytes ?? EMPTY);
     if (sameBytes(current.bytes, planned.bytes)) {
       return { from: current.revision, to, receipt: null, fileRemoved: false };
@@ -298,7 +318,9 @@ export function commit(
     }
     if (planned.bytes === null) deps.files.remove(CONFIG_FILE);
     else deps.files.write(CONFIG_FILE, planned.bytes);
-    const readback = digestBytes(deps.files.read(CONFIG_FILE) ?? EMPTY);
+    const readback = digestBytes(
+      readProjectFile(deps.files, CONFIG_FILE, MAX_CONFIG_FILE_BYTES) ?? EMPTY,
+    );
     if (readback !== to) {
       throw new ForgeFailure({
         code: "INTERNAL",

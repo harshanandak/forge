@@ -2,6 +2,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TemplateDocument } from "../../../src/contract/index.ts";
+import { MAX_TEMPLATE_FILE_BYTES } from "../../../src/core/config/files.ts";
 import { digestValue } from "../../../src/core/config/pointer.ts";
 import {
   failureOf,
@@ -42,6 +43,17 @@ function starterNext(): TemplateDocument {
 }
 
 describe("template lifecycle", () => {
+  test("an oversized project template is refused before decoding", () => {
+    const p = project();
+    writeFileSync(
+      join(p.root, "large.yaml"),
+      "x".repeat(MAX_TEMPLATE_FILE_BYTES + 1),
+    );
+    const failure = failureOf(() =>
+      p.templates.show({ template: "large.yaml" }),
+    );
+    expect(failure).toMatchObject({ code: "LIMIT_EXCEEDED" });
+  });
   test("import refuses invalid existing owner records without rewriting the config", () => {
     const p = project();
     const invalid =
