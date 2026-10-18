@@ -71,7 +71,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       const result = JSON.parse(
         run(runtime, [fixture, installed], consumer),
       ) as { passed: string[] };
-      expect(result.passed).toHaveLength(12);
+      expect(result.passed).toHaveLength(16);
     }
     const mutations = [
       {
@@ -82,24 +82,10 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
         evidence: "relative synced store must be refused",
       },
       {
-        file: "core/state/domains.js",
-        from: ".filter(([column]) => !excluded.has(column))",
-        to: ".filter(() => true)",
-        journey: "generatedcolumns",
-        evidence: "cannot INSERT into generated column",
-      },
-      {
-        file: "core/state/index.js",
-        from: 'this.#db.exec("PRAGMA defer_foreign_keys=ON");',
-        to: "void 0;",
-        journey: "foreignkeys",
-        evidence: "FOREIGN KEY constraint failed",
-      },
-      {
-        file: "core/state/index.js",
-        from: 'if (this.#db.all("PRAGMA foreign_key_check").length)',
+        file: "adapters/store-sqlite/index.js",
+        from: 'if (candidate.all("PRAGMA foreign_key_check").length)',
         to: "if (false)",
-        journey: "foreignkeys",
+        journey: "restorevalidation",
         evidence: "AssertionError",
       },
       {
@@ -139,8 +125,8 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       },
       {
         file: "adapters/store-sqlite/index.js",
-        from: "if (active)",
-        to: "if (false)",
+        from: 'if (active) throw new Error("Nested transactions are refused");',
+        to: "void 0;",
         journey: "concurrency",
         evidence: "AssertionError",
       },
@@ -187,13 +173,39 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
         evidence: "strictEqual",
       },
       {
-        file: "core/state/index.js",
-        from: "return snapshot;",
-        to: "return { ...snapshot, records: snapshot.records.map(record => ({ ...record, value: null })) };",
+        file: "adapters/store-sqlite/index.js",
+        from: "return new Uint8Array(readFileSync(destination));",
+        to: "return new Uint8Array([1,2,3]);",
         journey: "roundtrip",
-        evidence: "deepStrictEqual",
+        evidence: "database",
       },
     ];
+    mutations.push({
+      file: "adapters/store-sqlite/index.js",
+      from: "if (lstatSync(path).isSymbolicLink())",
+      to: "if (false)",
+      journey: "relativepaths",
+      evidence: "dangling file symlink must be refused",
+    });
+    mutations.push({
+      file: "core/state/index.js",
+      from: "if (!Object.hasOwn(input, index))",
+      to: "if (false)",
+      journey: "records",
+      evidence: "Missing expected exception",
+    });
+    for (const journey of [
+      "foreignkeys",
+      "generatedcolumns",
+      "namesandtriggers",
+    ])
+      mutations.push({
+        file: "adapters/store-sqlite/index.js",
+        from: "renameSync(candidatePath, path);",
+        to: "void 0;",
+        journey,
+        evidence: "AssertionError",
+      });
     for (const mutation of mutations) {
       const path = join(installed, "dist/src", mutation.file);
       const original = readFileSync(path, "utf8");
@@ -218,7 +230,10 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
             },
           );
           expect(result.error).toBeUndefined();
-          expect(result.status).toBe(1);
+          if (result.status !== 1)
+            throw new Error(
+              `Counterfactual survived: ${mutation.journey}: ${mutation.from} (${runtime})\n${result.stdout}\n${result.stderr}`,
+            );
           expect(result.stderr).toContain(mutation.evidence);
         }
       } finally {
@@ -226,7 +241,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       }
     }
     console.log(
-      `Packed state: ${runtimes.length} runtimes, 12 journeys, ${mutations.length} counterfactuals each`,
+      `Packed state: ${runtimes.length} runtimes, 16 journeys, ${mutations.length} counterfactuals each`,
     );
     // Removing the linear scan causes catastrophic backtracking on a nonmatching suffix.
     const path = join(installed, "dist/src/core/state/fs-class.js");

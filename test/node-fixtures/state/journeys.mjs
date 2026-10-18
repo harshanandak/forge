@@ -44,6 +44,22 @@ async function store(path = ":memory:") {
   assert.equal(result.ok, true, JSON.stringify(result));
   return result.handle;
 }
+async function filePair() {
+  const directory = mkdtempSync(join(tmpdir(), "forge-whole-file-"));
+  const handles = [
+    await store(join(directory, "source.db")),
+    await store(join(directory, "target.db")),
+  ];
+  let remaining = handles.length;
+  return handles.map((handle) => ({
+    ...handle,
+    async close() {
+      await handle.close();
+      if (--remaining === 0)
+        rmSync(directory, { recursive: true, force: true });
+    },
+  }));
+}
 const cases = {
   async relativepaths() {
     const work = mkdtempSync(join(tmpdir(), "forge-relative-store-"));
@@ -82,6 +98,15 @@ const cases = {
       });
       assert.equal(linked.ok, false);
       assert.match(linked.unavailable.reason, /cloud/);
+      const dangling = join(work, "dangling.db");
+      symlinkSync(join(cloud, "uncreated.db"), dangling, "file");
+      const refused = await createSqliteStore(work).open({
+        path: "dangling.db",
+        readOnly: false,
+      });
+      if (refused.ok) await refused.handle.close();
+      assert.equal(refused.ok, false, "dangling file symlink must be refused");
+      assert.equal(existsSync(join(cloud, "uncreated.db")), false);
       const local = await createSqliteStore(work).open({
         path: "local.db",
         readOnly: false,
@@ -115,8 +140,7 @@ const cases = {
         ],
       },
     ];
-    const source = await store(),
-      target = await store();
+    const [source, target] = await filePair();
     try {
       const first = new StateOwner(source.value, { now: () => 1000 });
       const second = new StateOwner(target.value, { now: () => 1000 });
@@ -127,8 +151,6 @@ const cases = {
         7,
       ]);
       const snapshot = first.export();
-      snapshot.domains[0].rows[0].stored.value = "999";
-      snapshot.domains[0].rows[0].virtual.value = "999";
       second.restore(snapshot);
       assert.deepEqual(
         { ...target.value.get("SELECT * FROM domain_generated") },
@@ -175,8 +197,7 @@ const cases = {
           ],
         },
       ];
-      const source = await store(),
-        target = await store();
+      const [source, target] = await filePair();
       try {
         const first = new StateOwner(source.value, { now: () => 1000 });
         const second = new StateOwner(target.value, { now: () => 1000 });
@@ -194,24 +215,10 @@ const cases = {
         first.acquire(ns, "subject", holder, 100, "restore-lease");
         const snapshot = first.export();
         const before = second.export();
-        const corrupt = structuredClone(snapshot);
-        corrupt.domains.find(
-          (entry) => entry.table === child,
-        ).rows[0].parent_id.value = "missing";
-        assert.throws(
-          () => second.restore(corrupt),
-          (error) =>
-            code("INPUT_INVALID")(error) &&
-            /foreign key/i.test(error.error.message),
-        );
+        const corrupt = { ...snapshot, image: snapshot.image.slice(0, 100) };
+        assert.throws(() => second.restore(corrupt));
         assert.deepEqual(second.export(), before);
         assert.deepEqual(target.value.all("PRAGMA foreign_key_check"), []);
-        assert.equal(
-          Number(
-            target.value.get("PRAGMA defer_foreign_keys").defer_foreign_keys,
-          ),
-          0,
-        );
         second.restore(snapshot);
         assert.deepEqual(second.export().domains, snapshot.domains);
         assert.deepEqual(target.value.all("PRAGMA foreign_key_check"), []);
@@ -226,6 +233,251 @@ const cases = {
       } finally {
         await source.close();
         await target.close();
+      }
+    }
+  },
+  async namesandtriggers() {
+    const domains = [
+      {
+        namespace: "forge/example",
+        reviewedDigest: `sha256:${"d".repeat(64)}`,
+        tables: ["domain_unusual", "domain_audit"],
+        migrations: [
+          {
+            id: "002_trigger",
+            statements: [
+              'CREATE TABLE domain_unusual("odd column "" name" TEXT, payload BLOB, counter INTEGER, positive REAL, negative REAL)',
+              "CREATE TABLE domain_audit(value TEXT)",
+              'CREATE TRIGGER capture_insert AFTER INSERT ON domain_unusual BEGIN INSERT INTO domain_audit VALUES (new."odd column "" name"); END',
+            ],
+          },
+        ],
+      },
+    ];
+    const [a, b] = await filePair();
+    try {
+      const left = new StateOwner(a.value, { now: () => 1000 });
+      const right = new StateOwner(b.value, { now: () => 1000 });
+      left.initialize(domains);
+      right.initialize(domains);
+      a.value.run(
+        'INSERT INTO domain_unusual("odd column "" name",payload,counter) VALUES (?,?,?)',
+        ["authored", new Uint8Array([0, 255]), 9007199254740993n],
+      );
+      a.value.exec("UPDATE domain_unusual SET positive=1e999, negative=-1e999");
+      const snapshot = left.export();
+      right.restore(JSON.parse(JSON.stringify(snapshot)));
+      assert.deepEqual(
+        b.value.all("SELECT * FROM domain_unusual"),
+        a.value.all("SELECT * FROM domain_unusual"),
+      );
+      assert.deepEqual(
+        b.value.all("SELECT * FROM domain_audit").map((row) => ({ ...row })),
+        [{ value: "authored" }],
+      );
+      b.value.run(
+        'INSERT INTO domain_unusual("odd column "" name",payload,counter) VALUES (?,?,?)',
+        ["later", null, 2],
+      );
+      assert.equal(b.value.all("SELECT * FROM domain_audit").length, 2);
+    } finally {
+      await a.close();
+      await b.close();
+    }
+  },
+  async restorevalidation() {
+    const dir = mkdtempSync(join(tmpdir(), "forge-image-validation-"));
+    const a = await store(),
+      b = await store();
+    try {
+      const left = new StateOwner(a.value, { now: () => 1000 });
+      const right = new StateOwner(b.value, { now: () => 1000 });
+      const domains = [
+        {
+          namespace: "forge/example",
+          reviewedDigest: `sha256:${"e".repeat(64)}`,
+          tables: ["domain_parent", "domain_child"],
+          migrations: [
+            {
+              id: "002_validation",
+              statements: [
+                "CREATE TABLE domain_parent(id INTEGER PRIMARY KEY)",
+                "CREATE TABLE domain_child(id INTEGER REFERENCES domain_parent(id))",
+              ],
+            },
+          ],
+        },
+      ];
+      left.initialize(domains);
+      right.initialize(domains);
+      left.put(ns, "retained", { value: "complete" }, holder.actor, {
+        expectRevision: 0,
+      });
+      const snapshot = left.export(),
+        before = right.export();
+      for (const image of ["AQID", snapshot.image.slice(0, 100)]) {
+        assert.throws(() => right.restore({ ...snapshot, image }));
+        assert.deepEqual(right.export(), before);
+      }
+      for (const sql of [
+        "PRAGMA user_version=999",
+        "INSERT INTO state_migrations VALUES ('999_future')",
+        "UPDATE state_domains SET reviewed_digest='unknown'",
+        "PRAGMA foreign_keys=OFF; INSERT INTO domain_child VALUES (99)",
+      ]) {
+        const path = join(dir, "candidate.db");
+        writeFileSync(path, Buffer.from(snapshot.image, "base64"));
+        const candidate = await store(path);
+        candidate.value.exec(sql);
+        const image = Buffer.from(candidate.value.exportImage()).toString(
+          "base64",
+        );
+        await candidate.close();
+        assert.throws(() => right.restore({ ...snapshot, image }));
+        assert.deepEqual(right.export(), before);
+      }
+      assert.throws(
+        () =>
+          right.restore(snapshot, () => {
+            throw new Error("approval drift");
+          }),
+        /approval drift/,
+      );
+      assert.deepEqual(right.export(), before);
+    } finally {
+      await a.close();
+      await b.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  async restorefaults() {
+    const steps = [
+      "written",
+      "synced",
+      "validated",
+      "prepared",
+      "fenced",
+      "closed",
+      "retained",
+      "renamed",
+      "verified",
+    ];
+    for (const step of steps) {
+      const dir = mkdtempSync(join(tmpdir(), "forge-restore-fault-"));
+      const path = join(dir, "live.db");
+      const a = await store();
+      const opened = await createSqliteStore(dir, {
+        step(name) {
+          if (name === step) throw new Error(`fault:${step}`);
+        },
+      }).open({ path, readOnly: false });
+      assert.equal(opened.ok, true);
+      const b = opened.handle;
+      try {
+        const left = new StateOwner(a.value, { now: () => 1000 });
+        const right = new StateOwner(b.value, { now: () => 1000 });
+        left.initialize();
+        right.initialize();
+        left.put(ns, "complete", { step }, holder.actor, { expectRevision: 0 });
+        assert.throws(
+          () => right.restore(left.export()),
+          new RegExp(`fault:${step}`),
+        );
+        assert.equal(right.list(ns).length, 0);
+        assert.equal(
+          b.value.get("PRAGMA integrity_check").integrity_check,
+          "ok",
+        );
+      } finally {
+        await a.close();
+        await b.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  },
+  async crashchild() {
+    const directory = process.argv[4],
+      stop = process.argv[5];
+    const opened = await createSqliteStore(directory, {
+      step(name) {
+        if (name === stop) process.exit(73);
+      },
+    }).open({ path: "live.db", readOnly: false });
+    assert.equal(opened.ok, true);
+    const owner = new StateOwner(opened.handle.value, { now: () => 1000 });
+    owner.restore({
+      format: "forge.state/1",
+      image: readFileSync(join(directory, "image.db")).toString("base64"),
+    });
+    throw new Error("Crash step was not reached");
+  },
+  async restorecrashes() {
+    for (const step of [
+      "written",
+      "synced",
+      "validated",
+      "prepared",
+      "fenced",
+      "closed",
+      "retained",
+      "renamed",
+      "verified",
+    ]) {
+      const dir = mkdtempSync(join(tmpdir(), "forge-restore-crash-"));
+      try {
+        const a = await store(),
+          b = await store(join(dir, "live.db"));
+        const left = new StateOwner(a.value, { now: () => 1000 }),
+          right = new StateOwner(b.value, { now: () => 1000 });
+        left.initialize();
+        right.initialize();
+        left.put(
+          ns,
+          "complete",
+          { history: ["all", "retained"] },
+          holder.actor,
+          { expectRevision: 0, requestId: "crash-receipt" },
+        );
+        writeFileSync(
+          join(dir, "image.db"),
+          Buffer.from(left.export().image, "base64"),
+        );
+        await a.close();
+        await b.close();
+        const child = spawnSync(
+          process.execPath,
+          [process.argv[1], root, "crashchild", dir, step],
+          { encoding: "utf8", windowsHide: true, timeout: 30000 },
+        );
+        assert.equal(child.status, 73, child.stderr);
+        // The interrupted operation remains fenced. Explicit offline recovery releases only this fixture lock.
+        rmSync(join(dir, "live.db.restore-lock"), { force: true });
+        const live = await store(join(dir, "live.db"));
+        try {
+          assert.equal(
+            live.value.get("PRAGMA integrity_check").integrity_check,
+            "ok",
+          );
+          assert.deepEqual(live.value.all("PRAGMA foreign_key_check"), []);
+          const owner = new StateOwner(live.value, { now: () => 1000 });
+          const installed = ["renamed", "verified"].includes(step);
+          assert.equal(owner.list(ns).length, installed ? 1 : 0);
+          assert.equal(owner.events(ns).length, installed ? 1 : 0);
+          assert.equal(
+            Number(
+              live.value.get("SELECT COUNT(*) AS n FROM state_requests").n,
+            ),
+            installed ? 1 : 0,
+          );
+          if (installed)
+            assert.deepEqual(owner.get(ns, "complete").value, {
+              history: ["all", "retained"],
+            });
+        } finally {
+          await live.close();
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
     }
   },
@@ -270,6 +522,16 @@ const cases = {
     try {
       const owner = new StateOwner(handle.value, { now: () => 1000 });
       owner.initialize();
+      assert.throws(
+        () =>
+          owner.put(ns, "sparse", new Array(1), holder.actor, {
+            expectRevision: 0,
+          }),
+        code("INPUT_INVALID"),
+      );
+      assert.equal(owner.get(ns, "sparse"), undefined);
+      assert.equal(owner.events(ns, "sparse").length, 0);
+
       const client = owner.client(ns, holder.actor);
       const value = {
         authored: "full text",
@@ -690,8 +952,7 @@ const cases = {
           ],
         },
       ];
-      const source = await store(),
-        target = await store();
+      const [source, target] = await filePair();
       try {
         const first = new StateOwner(source.value, { now: () => 1000 }),
           second = new StateOwner(target.value, { now: () => 1000 });
@@ -852,17 +1113,19 @@ const cases = {
         first
           .client(ns, holder.actor)
           .put("recover", { authored: "retained" }, { expectRevision: 0 });
-        let swapped = false;
         const fault = {
           ...destination.value,
-          run(sql, params) {
-            const result = destination.value.run(sql, params);
-            if (!swapped && sql.startsWith("INSERT INTO state_records")) {
-              swapped = true;
-              renameSync(backup, join(dir, "old-transaction"));
-              writeFileSync(backup, "backup");
-            }
-            return result;
+          restoreImage(image, validate, prepare, verify) {
+            return destination.value.restoreImage(
+              image,
+              validate,
+              prepare,
+              () => {
+                renameSync(backup, join(dir, "old-transaction"));
+                writeFileSync(backup, "backup");
+                verify();
+              },
+            );
           },
         };
         const second = new StateOwner(fault, { now: () => 1000 });
@@ -903,7 +1166,7 @@ const cases = {
 };
 const passed = [];
 for (const [name, run] of Object.entries(cases))
-  if (selected === "all" || selected === name) {
+  if ((selected === "all" && name !== "crashchild") || selected === name) {
     await run();
     passed.push(name);
   }

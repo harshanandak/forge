@@ -19,12 +19,18 @@ import type { StateClient, PutOptions } from "../../ports/state.ts";
 import type { SqlDatabase, SqlRow } from "../../ports/store.ts";
 import type { Handle } from "../../ports/lifetime.ts";
 import { baseline, migrate, type Migration } from "./migrations.ts";
-import {
-  registerTables,
-  exportTables,
-  restoreTables,
-  type DomainData,
-} from "./domains.ts";
+import { registerTables, exportTables, type DomainData } from "./domains.ts";
+
+/** Optional storage capability supplied by trusted assembly; the locked SQL port stays unchanged. */
+export interface StateImageStore extends SqlDatabase {
+  exportImage(inspect?: (image: SqlDatabase) => void): Uint8Array;
+  restoreImage(
+    image: Uint8Array,
+    validate: (candidate: SqlDatabase) => void,
+    prepare: (candidate: SqlDatabase) => void,
+    verify: () => void,
+  ): void;
+}
 
 export interface Fence {
   readonly subject: string;
@@ -36,6 +42,7 @@ export interface WriteOptions extends PutOptions {
   readonly fence?: Fence;
 }
 export interface Snapshot {
+  readonly image: string;
   readonly domains: readonly DomainData[];
   readonly format: "forge.state/1";
   readonly records: readonly StateRecord[];
@@ -76,8 +83,12 @@ function json(value: unknown): string {
       return invalid("State values must be finite JSON without cycles");
     seen.add(input);
     let result: unknown;
-    if (Array.isArray(input)) result = input.map(walk);
-    else {
+    if (Array.isArray(input)) {
+      for (let index = 0; index < input.length; index++)
+        if (!Object.hasOwn(input, index))
+          invalid("State arrays must not contain holes");
+      result = input.map(walk);
+    } else {
       if (
         Object.getPrototypeOf(input) !== Object.prototype &&
         Object.getPrototypeOf(input) !== null
@@ -108,6 +119,7 @@ function namespaceValid(namespace: string): void {
 export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
+  #knownMigrations = new Set([baseline.id]);
   constructor(db: SqlDatabase, clock: ClockPort) {
     this.#db = db;
     this.#clock = clock;
@@ -139,6 +151,12 @@ export class StateOwner {
         );
       },
     );
+    this.#knownMigrations = new Set([
+      baseline.id,
+      ...domains.flatMap((domain) =>
+        domain.migrations.map((migration) => migration.id),
+      ),
+    ]);
   }
 
   client(namespace: string, actor: Actor): StateClient {
@@ -448,19 +466,18 @@ export class StateOwner {
   }
 
   export(): Snapshot {
-    // Deferred read transaction: no home creation, schema changes or write lock.
-    this.#db.exec("BEGIN");
-    try {
-      const snapshot: Snapshot = {
-        domains: exportTables(this.#db),
+    let snapshot: Omit<Snapshot, "image"> | undefined;
+    const image = this.#images().exportImage((db) => {
+      snapshot = {
+        domains: exportTables(db),
         format: "forge.state/1",
-        records: this.#db
+        records: db
           .all("SELECT body FROM state_records ORDER BY namespace,key")
           .map((row) => body<StateRecord>(row)!),
-        events: this.#db
+        events: db
           .all("SELECT body FROM state_events ORDER BY sequence")
           .map((row) => body<StateEvent>(row)!),
-        leases: this.#db
+        leases: db
           .all(
             "SELECT namespace,body FROM state_leases ORDER BY namespace,subject",
           )
@@ -468,7 +485,7 @@ export class StateOwner {
             namespace: String(row.namespace),
             lease: body<LeaseRecord>(row)!,
           })),
-        requests: this.#db
+        requests: db
           .all(
             "SELECT namespace,request_id,fingerprint,result FROM state_requests ORDER BY namespace,request_id",
           )
@@ -479,63 +496,148 @@ export class StateOwner {
             result: String(row.result),
           })),
       };
-      this.#db.exec("COMMIT");
-      return snapshot;
-    } catch (error) {
-      this.#db.exec("ROLLBACK");
-      throw error;
-    }
+    });
+    return { ...snapshot!, image: Buffer.from(image).toString("base64") };
   }
-  /** Restore only into an initialized empty target. Imported leases retain counters, never authority. */
+  /** Validate without mutating the candidate; only the adapter can replace database storage. */
   restore(snapshot: Snapshot, verifyRecovery?: () => void): void {
-    if (snapshot.format !== "forge.state/1") invalid("Unsupported snapshot");
-    this.#db.transaction(() => {
-      // Registered tables may reference rows restored later in the snapshot.
-      this.#db.exec("PRAGMA defer_foreign_keys=ON");
+    if (
+      snapshot.format !== "forge.state/1" ||
+      typeof snapshot.image !== "string"
+    )
+      invalid("Unsupported snapshot");
+    const image = Buffer.from(snapshot.image, "base64");
+    if (image.toString("base64") !== snapshot.image)
+      invalid("Invalid database image encoding");
+    const imageStore = this.#images();
+    const signature = (db: SqlDatabase): string =>
+      JSON.stringify({
+        migrations: db.all("SELECT id FROM state_migrations ORDER BY id"),
+        domains: db.all(
+          "SELECT namespace,table_name,reviewed_digest FROM state_domains ORDER BY table_name",
+        ),
+        schema: db.all(
+          "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+        ),
+        version: String(db.get("PRAGMA user_version")?.user_version),
+      });
+    const expected = signature(this.#db);
+    const empty = (): void => {
       if (
         this.#db.get(
           "SELECT 1 FROM state_records UNION ALL SELECT 1 FROM state_events UNION ALL SELECT 1 FROM state_leases UNION ALL SELECT 1 FROM state_requests LIMIT 1",
         )
       )
         invalid("Restore target must be empty");
-      for (const record of snapshot.records) {
+      for (const row of this.#db.all("SELECT table_name FROM state_domains"))
         if (
-          !validateStateRecord(record).ok ||
-          !Number.isSafeInteger(record.revision)
+          this.#db.get(
+            `SELECT 1 FROM "${String(row.table_name).replaceAll('"', '""')}" LIMIT 1`,
+          )
         )
-          invalid("Invalid imported record");
-        this.#db.run(
-          "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,?,?)",
-          [record.namespace, record.key, record.revision, json(record)],
-        );
-      }
-      for (const event of snapshot.events) this.#event(event);
-      for (const request of snapshot.requests) {
-        namespaceValid(request.namespace);
-        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(request.requestId))
-          invalid("Invalid imported request ID");
-        json(JSON.parse(request.fingerprint));
-        json(JSON.parse(request.result));
-        this.#db.run(
-          "INSERT INTO state_requests(namespace,request_id,fingerprint,result) VALUES (?,?,?,?)",
-          [
-            request.namespace,
-            request.requestId,
-            request.fingerprint,
-            request.result,
-          ],
-        );
-      }
-      const at = new Date(this.#now()).toISOString();
-      restoreTables(this.#db, snapshot.domains);
-      for (const entry of snapshot.leases) {
-        namespaceValid(entry.namespace);
-        this.#saveLease(entry.namespace, { ...entry.lease, releasedAt: at });
-      }
-      verifyRecovery?.();
-      if (this.#db.all("PRAGMA foreign_key_check").length)
-        invalid("Snapshot violates foreign key constraints");
-    });
+          invalid("Domain restore target must be empty");
+    };
+    empty();
+    imageStore.restoreImage(
+      image,
+      (candidate) => {
+        if (signature(candidate) !== expected)
+          invalid(
+            "Snapshot needs the same schema, baseline version and reviewed table registration",
+          );
+        if (
+          !candidate.get("SELECT id FROM state_migrations WHERE id=?", [
+            baseline.id,
+          ]) ||
+          candidate
+            .all("SELECT id FROM state_migrations")
+            .some((row) => !this.#knownMigrations.has(String(row.id))) ||
+          Number(candidate.get("PRAGMA user_version")?.user_version) !== 0
+        )
+          invalid("Unsupported baseline or newer schema version");
+        for (const row of candidate.all(
+          "SELECT namespace,key,revision,body FROM state_records",
+        )) {
+          const record = JSON.parse(String(row.body)) as StateRecord;
+          if (
+            !validateStateRecord(record).ok ||
+            !Number.isSafeInteger(record.revision) ||
+            record.namespace !== row.namespace ||
+            record.key !== row.key ||
+            record.revision !== Number(row.revision)
+          )
+            invalid("Invalid imported record");
+        }
+        for (const row of candidate.all(
+          "SELECT namespace,key,body FROM state_events",
+        )) {
+          const event = JSON.parse(String(row.body)) as StateEvent;
+          if (
+            !validateStateEvent(event).ok ||
+            event.namespace !== row.namespace ||
+            event.key !== row.key
+          )
+            invalid("Invalid imported event");
+        }
+        for (const row of candidate.all(
+          "SELECT namespace,subject,generation,body FROM state_leases",
+        )) {
+          namespaceValid(String(row.namespace));
+          const lease = JSON.parse(String(row.body)) as LeaseRecord;
+          if (
+            !validateLeaseRecord(lease).ok ||
+            !Number.isSafeInteger(lease.generation) ||
+            lease.subject !== row.subject ||
+            lease.generation !== Number(row.generation)
+          )
+            invalid("Invalid imported lease identity");
+        }
+        for (const row of candidate.all(
+          "SELECT namespace,request_id,fingerprint,result FROM state_requests",
+        )) {
+          namespaceValid(String(row.namespace));
+          if (
+            !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(row.request_id))
+          )
+            invalid("Invalid imported request ID");
+          json(JSON.parse(String(row.fingerprint)));
+          json(JSON.parse(String(row.result)));
+        }
+      },
+      (candidate) => {
+        // Preserve lease counters and receipts, but never revive authority from a backup.
+        const at = new Date(this.#now()).toISOString();
+        candidate.transaction(() => {
+          for (const row of candidate.all(
+            "SELECT namespace,subject,body FROM state_leases",
+          )) {
+            const lease = JSON.parse(String(row.body)) as LeaseRecord;
+            if (!validateLeaseRecord(lease).ok)
+              invalid("Invalid imported lease");
+            candidate.run(
+              "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",
+              [
+                json({ ...lease, releasedAt: at }),
+                row.namespace!,
+                row.subject!,
+              ],
+            );
+          }
+        });
+      },
+      () => {
+        empty();
+        if (signature(this.#db) !== expected)
+          invalid("Restore target schema changed");
+        verifyRecovery?.();
+      },
+    );
+  }
+  #images(): StateImageStore {
+    const db = this.#db as Partial<StateImageStore>;
+    if (!db.exportImage || !db.restoreImage)
+      throw new Error("Store has no database image capability");
+    return db as StateImageStore;
   }
 }
 
