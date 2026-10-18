@@ -13,11 +13,12 @@ export const operations: Record<string, OperationDeclaration> = {
     callers: ["human", "agent"],
   },
   "block.add": {
+    args: ["path"],
     output: "catalog/capture.output.schema.json",
     context: "stateless",
     idempotent: true,
     stability: "stable",
-    effects: [],
+    effects: ["block:write"],
     input: "catalog/path.input.schema.json",
     callers: ["human", "agent"],
   },
@@ -31,6 +32,7 @@ export const operations: Record<string, OperationDeclaration> = {
     callers: ["human", "agent"],
   },
   "block.check": {
+    args: ["path"],
     output: "catalog/capture.output.schema.json",
     context: "stateless",
     idempotent: true,

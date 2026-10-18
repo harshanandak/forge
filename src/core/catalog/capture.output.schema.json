@@ -2,6 +2,7 @@
   "type": "object",
   "required": ["digest", "admitted"],
   "properties": {
+    "blockId": { "type": "string" },
     "digest": { "type": "string" },
     "admitted": { "type": "boolean" }
   },
