@@ -34,6 +34,17 @@ function step(message: string): void {
   console.log(`- ${message}`);
 }
 
+function timed<T>(label: string, action: () => T): T {
+  const started = performance.now();
+  try {
+    return action();
+  } finally {
+    console.log(
+      `Pack smoke ${label}: ${Math.round(performance.now() - started)} ms`,
+    );
+  }
+}
+
 /** The current environment with every directory that holds a Bun executable removed from PATH. */
 function environmentWithoutBun(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -69,11 +80,13 @@ function run(
   args: string[],
   options: { cwd: string; env: NodeJS.ProcessEnv },
 ): string {
-  const result = spawnSync(command, args, {
-    ...options,
-    encoding: "utf8",
-    windowsHide: true,
-  });
+  const result = timed(label, () =>
+    spawnSync(command, args, {
+      ...options,
+      encoding: "utf8",
+      windowsHide: true,
+    }),
+  );
   if (result.error !== undefined) fail(`${label}: ${result.error.message}`);
   if (result.status !== 0) {
     fail(
@@ -98,7 +111,9 @@ function main(): void {
     fail("dist/ is missing; run `bun run build` first");
 
   const env = environmentWithoutBun();
-  const probe = spawnSync("bun", ["--version"], { env, windowsHide: true });
+  const probe = timed("no Bun on PATH", () =>
+    spawnSync("bun", ["--version"], { env, windowsHide: true }),
+  );
   if (probe.error === undefined)
     fail("bun is still resolvable on PATH; the smoke must run without Bun");
   step(`node ${process.version}, no bun on PATH`);
@@ -225,10 +240,13 @@ function main(): void {
     delete packageData.exports["./runtime"];
     writeFileSync(packageFile, JSON.stringify(packageData));
     try {
-      const missingExport = spawnSync(
-        process.execPath,
-        [join(consumer, "api.mjs")],
-        { cwd: consumer, env, encoding: "utf8", windowsHide: true },
+      const missingExport = timed("missing runtime export", () =>
+        spawnSync(process.execPath, [join(consumer, "api.mjs")], {
+          cwd: consumer,
+          env,
+          encoding: "utf8",
+          windowsHide: true,
+        }),
       );
       if (
         missingExport.status === 0 ||
@@ -245,10 +263,13 @@ function main(): void {
       const path = join(installedDir, asset);
       renameSync(path, `${path}.hidden`);
       try {
-        const missingAsset = spawnSync(
-          process.execPath,
-          [join(consumer, "api.mjs")],
-          { cwd: consumer, env, encoding: "utf8", windowsHide: true },
+        const missingAsset = timed(`missing ${asset}`, () =>
+          spawnSync(process.execPath, [join(consumer, "api.mjs")], {
+            cwd: consumer,
+            env,
+            encoding: "utf8",
+            windowsHide: true,
+          }),
         );
         if (
           missingAsset.status === 0 ||
@@ -286,12 +307,12 @@ function main(): void {
     }
     console.log("pack-smoke: PASS");
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    timed("cleanup", () => rmSync(work, { recursive: true, force: true }));
   }
 }
 
 try {
-  main();
+  timed("total", main);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
