@@ -72,13 +72,18 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
   // A child workspace resolves the smoke's install through its ancestors without
   // sharing project files. Counterfactuals still mutate only their private copy.
   const work = mkdtempSync(
-    join(sharedConsumer ?? tmpdir(), "forge-first-slice-"),
+    join(
+      sharedConsumer ?? tmpdir(),
+      sharedConsumer ? "fs-" : "forge-first-slice-",
+    ),
   );
   try {
     const node = Bun.which("node");
     if (!node) throw new Error("Node is required");
-    const consumer = join(work, "consumer");
-    mkdirSync(consumer);
+    // Keep project identities below the contract's length limit on macOS's long
+    // temporary-directory prefix, including the private mutation workspace.
+    const consumer = sharedConsumer ? work : join(work, "consumer");
+    if (!sharedConsumer) mkdirSync(consumer);
     writeFileSync(
       join(consumer, "package.json"),
       '{"name":"packed-consumer","version":"1.0.0","private":true,"type":"module"}',
