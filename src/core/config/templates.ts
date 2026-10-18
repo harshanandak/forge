@@ -1,18 +1,28 @@
 // template.* operations. Importing copies a template's config into the project as plain, editable
-// config and records, per key, which template wrote it and the digest of what it wrote. Compare and
-// update work key by key against that baseline; remove takes back only keys the template still
-// owns unchanged, so a person's edits always survive.
+// config; compare, update and remove then work key by key against one merge model.
 //
-// Ownership handoff: when a template gives up a key it owns unchanged (template remove, or an update
-// whose new version drops it), the other imported templates are asked in import order (the order of
-// `templates` in the config file). The first installed one that sets the same value takes ownership
-// and the key stays. If none does but one of them is not installed here, the key stays unowned,
-// because whether that template needs it is unknown. Only otherwise is the key removed.
+// The model. Per key path there are three values: (a) the user's value, which is whatever the
+// config file holds unless it is a template's value left unchanged; (b) each imported template's
+// value at the version recorded in `templates` (id@version + digest); (c) the base: the last value
+// the owning template contributed that the project took, kept as the owner record's `baseline`.
+// Every operation (import, update, remove; save writes only where nothing is set and makes what it
+// writes the user's) is one deterministic three-way decision per key path:
+// - the user's value always wins: a template value is applied only where the project still holds
+//   that template's base (or nothing, for a key the template never set);
+// - a template change where the user diverged from the base is a conflict, held with nothing
+//   written until the caller accepts it; a template that did not change a key never conflicts;
+// - key paths that overlap (one a prefix of another: a value becoming an object or back) are
+//   decided together at their highest path, and a held conflict there holds every key below it;
+// - a key a template gives up (removed, or dropped by an update) that the project still holds
+//   unchanged passes, in import order, to the first other imported template that sets the same
+//   value and is installed at exactly the imported version and digest. If none does but one of
+//   them is not available like that, the key stays unowned, since whether it needs the key is
+//   unknown. Only otherwise is the key removed, so removal leaves only keys someone may still own.
+// The decisions are in merge.ts; this file runs them inside one compare-and-set edit.
 import { jsonEqual } from "../../contract/schema.ts";
 import { DEFAULT_PARSE_LIMITS } from "../../contract/untrusted.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import type {
-  KeyOwner,
   TemplateDocument,
   TemplateProvenance,
 } from "../../generated/types.ts";
@@ -28,8 +38,8 @@ import {
 } from "./config.ts";
 import type { Change } from "./document.ts";
 import { atomicSource } from "./layers.ts";
+import { applyStep, plan, type Step, templateIdOf } from "./merge.ts";
 import {
-  clone,
   digestValue,
   formatPointer,
   getIn,
@@ -40,7 +50,6 @@ import {
   leaves,
   parsePointer,
   removeIn,
-  setIn,
 } from "./pointer.ts";
 import { CONFIG_FILE, commit, readProject } from "./store.ts";
 
@@ -135,6 +144,7 @@ export interface TemplateApi {
 }
 
 const TEMPLATE_FILE = /\.(?:json|ya?ml)$/;
+const DROPPED_EDITED = "upstream dropped it, but it was edited since import";
 
 function refuse(message: string, repair?: string): ForgeFailure {
   return new ForgeFailure({
@@ -145,10 +155,7 @@ function refuse(message: string, repair?: string): ForgeFailure {
   });
 }
 
-function idOf(ref: string): string {
-  const at = ref.lastIndexOf("@");
-  return at === -1 ? ref : ref.slice(0, at);
-}
+const idOf = templateIdOf;
 
 function refOf(template: TemplateDocument): string {
   return `${template.id}@${template.version}`;
@@ -165,17 +172,10 @@ function owners(document: JsonObject): JsonObject {
   return document.owners as JsonObject;
 }
 
-function ownerOf(
-  document: JsonObject | undefined,
-  pointer: string,
-): KeyOwner | undefined {
-  const all = isObject(document?.owners) ? document.owners : {};
-  const owner = all[pointer];
-  return isObject(owner) &&
-    typeof owner.from === "string" &&
-    typeof owner.baseline === "string"
-    ? { from: owner.from, baseline: owner.baseline }
-    : undefined;
+/** Owner records left empty are dropped, so a project without templates has none. */
+function tidy(document: JsonObject): void {
+  if (isObject(document.owners) && Object.keys(document.owners).length === 0)
+    delete document.owners;
 }
 
 /** The template's keys: everything in its config except the schema version, a source kept whole. */
@@ -187,15 +187,26 @@ function templateLeaves(template: TemplateDocument): Map<string, unknown> {
   );
 }
 
-/** A value in the document overlaps the pointer (an ancestor that is not an object counts). */
-function blocked(document: JsonObject, segments: readonly string[]): boolean {
-  for (let depth = 1; depth < segments.length; depth += 1) {
-    const ancestor = segments.slice(0, depth);
-    if (hasIn(document, ancestor) && !isObject(getIn(document, ancestor)))
-      return true;
-  }
-  return false;
+/** A decided step as the operations report it. */
+function report(
+  step: Step,
+  reason?: string,
+  kind: KeyChangeKind = step.kind === "shared" || step.kind === "drop"
+    ? "kept"
+    : step.kind,
+): KeyChange {
+  const why = reason ?? step.reason;
+  return {
+    pointer: step.pointer,
+    kind,
+    ...(step.present ? { current: step.current } : {}),
+    ...(step.theirs.size > 0 ? { upstream: step.upstream } : {}),
+    ...(why === undefined ? {} : { reason: why }),
+  };
 }
+
+const byPointer = (a: KeyChange, b: KeyChange): number =>
+  a.pointer.localeCompare(b.pointer);
 
 export function createTemplates(env: TemplateEnvironment): TemplateApi {
   const load = (reference: string): TemplateDocument => {
@@ -261,123 +272,111 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
     return ref;
   };
 
-  const compareKeys = (
-    document: JsonObject,
-    id: string,
-    upstream: TemplateDocument,
-  ): KeyChange[] => {
-    const upstreamKeys = templateLeaves(upstream);
-    const changes: KeyChange[] = [];
-    for (const [pointer, value] of upstreamKeys) {
-      const segments = parsePointer(pointer) ?? [];
-      const owner = ownerOf(document, pointer);
-      const present = hasIn(document, segments);
-      const current = getIn(document, segments);
-      const shown = present ? { current } : {};
-      if (owner !== undefined && idOf(owner.from) === id) {
-        if (digestValue(value) === owner.baseline) continue;
-        const edited = !present || digestValue(current) !== owner.baseline;
-        if (!edited)
-          changes.push({ pointer, kind: "change", ...shown, upstream: value });
-        else if (present && jsonEqual(current, value))
-          changes.push({ pointer, kind: "adopt", ...shown, upstream: value });
-        else
-          changes.push({
-            pointer,
-            kind: "conflict",
-            ...shown,
-            upstream: value,
-            reason: present ? "edited since import" : "removed since import",
-          });
-      } else if (!present && !blocked(document, segments)) {
-        changes.push({ pointer, kind: "add", upstream: value });
-      } else if (!present || !jsonEqual(current, value)) {
-        changes.push({
-          pointer,
-          kind: "conflict",
-          ...shown,
-          upstream: value,
-          reason: "already set in the project",
-        });
-      }
-    }
-    for (const [pointer, owner] of Object.entries(
-      isObject(document.owners) ? document.owners : {},
-    )) {
-      if (
-        !isObject(owner) ||
-        idOf(String(owner.from)) !== id ||
-        upstreamKeys.has(pointer)
-      )
-        continue;
-      const segments = parsePointer(pointer) ?? [];
-      if (!hasIn(document, segments)) continue;
-      const current = getIn(document, segments);
-      changes.push(
-        digestValue(current) === owner.baseline
-          ? { pointer, kind: "remove", current }
-          : {
-              pointer,
-              kind: "kept",
-              current,
-              reason: "upstream dropped it, but it was edited since import",
-            },
-      );
-    }
-    return changes.sort((a, b) => a.pointer.localeCompare(b.pointer));
-  };
-
-  /** Who takes over a key template `id` gives up; see the handoff rule at the top of the file. */
+  /**
+   * Who takes over a key template `id` gives up, in import order. A template counts only when it
+   * is installed at exactly the version and digest that was imported; otherwise it is unavailable.
+   */
   const successor = (
     document: JsonObject,
     id: string,
     pointer: string,
     current: unknown,
-  ): { readonly ref: string; readonly installed: boolean } | undefined => {
-    let unknown: string | undefined;
+  ): { readonly ref: string; readonly why?: string } | undefined => {
+    let unavailable: { ref: string; why: string } | undefined;
     for (const p of provenance(document)) {
       if (idOf(p.template) === id) continue;
       const template = env.templates.get(idOf(p.template));
       if (template === undefined) {
-        unknown ??= p.template;
+        unavailable ??= { ref: p.template, why: "is not installed here" };
+        continue;
+      }
+      if (
+        refOf(template) !== p.template ||
+        digestValue(template) !== p.digest
+      ) {
+        unavailable ??= {
+          ref: p.template,
+          why:
+            refOf(template) === p.template
+              ? "is installed here with different content than was imported"
+              : `is installed here as ${refOf(template)}, not the imported version`,
+        };
         continue;
       }
       const keys = templateLeaves(template);
       if (keys.has(pointer) && jsonEqual(keys.get(pointer), current))
-        return { ref: p.template, installed: true };
+        return { ref: p.template };
     }
-    return unknown === undefined
-      ? undefined
-      : { ref: unknown, installed: false };
+    return unavailable;
   };
 
-  /** Hand a given-up key over (or keep it unowned); undefined means remove it. */
-  const handOff = (
+  /**
+   * Release keys template `id` gives up while the project still holds its value: hand each over or
+   * keep it unowned, else remove it. A source stays while anything else of its instance stays.
+   */
+  const release = (
     document: JsonObject,
     id: string,
-    pointer: string,
-    current: unknown,
-  ): KeyChange | undefined => {
-    const next = successor(document, id, pointer, current);
-    if (next === undefined) return undefined;
-    if (next.installed) {
-      owners(document)[pointer] = {
-        from: next.ref,
-        baseline: digestValue(current),
-      };
-      return {
-        pointer,
-        kind: "kept",
-        current,
-        reason: `${next.ref} sets the same value`,
-      };
+    given: readonly Step[],
+  ): { removed: string[]; kept: KeyChange[] } => {
+    const kept: KeyChange[] = [];
+    const removing: Step[] = [];
+    for (const step of given) {
+      delete owners(document)[step.pointer];
+      const next = successor(document, id, step.pointer, step.current);
+      if (next === undefined) {
+        removing.push(step);
+      } else if (next.why === undefined) {
+        owners(document)[step.pointer] = {
+          from: next.ref,
+          baseline: digestValue(step.current),
+        };
+        kept.push(report(step, `${next.ref} sets the same value`, "kept"));
+      } else {
+        kept.push(
+          report(
+            step,
+            `${next.ref} ${next.why}, so whether it shares this key is unknown`,
+            "kept",
+          ),
+        );
+      }
     }
-    return {
-      pointer,
-      kind: "kept",
-      current,
-      reason: `${next.ref} is not installed here, so whether it shares this key is unknown`,
-    };
+    const removingSet = new Set(removing.map((s) => s.pointer));
+    const removed: string[] = [];
+    for (const step of removing) {
+      const segments = step.segments;
+      if (
+        segments.length === 3 &&
+        segments[0] === "blocks" &&
+        segments[2] === "source"
+      ) {
+        const instance = segments.slice(0, 2);
+        const staying = leaves(
+          getIn(document, instance),
+          atomicSource,
+          instance,
+        ).filter(
+          (l) =>
+            !isPrefix(segments, l.segments) &&
+            !removingSet.has(formatPointer(l.segments)),
+        );
+        if (staying.length > 0) {
+          kept.push(
+            report(
+              step,
+              "other keys of this instance stay, so its source stays",
+              "kept",
+            ),
+          );
+          continue;
+        }
+      }
+      removed.push(step.pointer);
+    }
+    for (const pointer of removed)
+      removeIn(document, parsePointer(pointer) ?? []);
+    return { removed, kept };
   };
 
   const editWith = <T>(
@@ -475,6 +474,12 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
               repair: `see what changed with template compare ${template.id}, then template update`,
             });
           }
+          // records a hand edit left for a template that is not imported describe nothing
+          const all = owners(document);
+          for (const [pointer, owner] of Object.entries(all)) {
+            if (isObject(owner) && idOf(String(owner.from)) === template.id)
+              delete all[pointer];
+          }
           const added: string[] = [];
           const shared: string[] = [];
           const conflicts: KeyChange[] = [];
@@ -493,10 +498,11 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
               })
               .map(([name]) => name),
           );
+          const theirs = new Map<string, unknown>();
           for (const [pointer, value] of templateLeaves(template)) {
             const segments = parsePointer(pointer) ?? [];
-            const present = hasIn(document, segments);
             if (segments[0] === "blocks" && foreign.has(segments[1] ?? "")) {
+              const present = hasIn(document, segments);
               conflicts.push({
                 pointer,
                 kind: "conflict",
@@ -504,38 +510,26 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
                 upstream: value,
                 reason: `instance ${segments[1]} already comes from a different source`,
               });
-            } else if (present) {
-              const current = getIn(document, segments);
-              if (jsonEqual(current, value)) shared.push(pointer);
-              else
-                conflicts.push({
-                  pointer,
-                  kind: "conflict",
-                  current,
-                  upstream: value,
-                  reason: "already set in the project",
-                });
-            } else if (blocked(document, segments)) {
-              conflicts.push({
-                pointer,
-                kind: "conflict",
-                upstream: value,
-                reason: "a value in the project covers this key",
-              });
-            } else {
-              setIn(document, segments, clone(value));
-              owners(document)[pointer] = {
-                from: ref,
-                baseline: digestValue(value),
-              };
-              added.push(pointer);
+            } else theirs.set(pointer, value);
+          }
+          for (const step of plan(document, template.id, theirs)) {
+            if (step.kind === "shared") shared.push(...step.theirs.keys());
+            else if (step.kind === "conflict") conflicts.push(report(step));
+            else if (step.kind === "add") {
+              applyStep(document, step, ref);
+              added.push(...step.theirs.keys());
             }
           }
+          tidy(document);
           document.templates = [
             ...provenance(document),
             { template: ref, digest: digestValue(template), importedAt: now() },
           ];
-          return { added, shared, conflicts };
+          return {
+            added: added.sort(),
+            shared: shared.sort(),
+            conflicts: conflicts.sort(byPointer),
+          };
         },
       );
       const { detail, ...written } = result;
@@ -555,7 +549,11 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
         imported,
         upstream: refOf(upstream),
         revision: current.revision,
-        changes: compareKeys(document, id, upstream),
+        changes: plan(document, id, templateLeaves(upstream))
+          .filter((step) => step.kind !== "shared" && step.kind !== "drop")
+          .map((step) =>
+            step.kind === "kept" ? report(step, DROPPED_EDITED) : report(step),
+          ),
       };
     },
 
@@ -575,74 +573,58 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           requireImported(document, id);
           const applied: KeyChange[] = [];
           const conflicts: KeyChange[] = [];
-          const changes = compareKeys(document, id, upstream);
-          // a conflict not yet accepted holds every removal that overlaps it (an ancestor or a
-          // descendant), so the project's value stays whole until the conflict is accepted
-          const held = changes
-            .filter((c) => c.kind === "conflict" && !accept.has(c.pointer))
-            .map((c) => ({
-              pointer: c.pointer,
-              segments: parsePointer(c.pointer) ?? [],
-            }));
-          const holder = (segments: readonly string[]): string | undefined =>
-            held.find(
-              (h) =>
-                isPrefix(h.segments, segments) ||
-                isPrefix(segments, h.segments),
-            )?.pointer;
-          const removals: string[][] = [];
-          const sets: KeyChange[] = [];
-          for (const change of changes) {
-            const segments = parsePointer(change.pointer) ?? [];
-            const take =
-              change.kind === "conflict" && accept.has(change.pointer);
-            if (change.kind === "conflict" && !take) {
-              conflicts.push(change);
-            } else if (change.kind === "kept") {
-              delete owners(document)[change.pointer];
-              conflicts.push(change);
-            } else if (change.kind === "remove") {
-              const by = holder(segments);
-              if (by !== undefined) {
-                conflicts.push({
-                  ...change,
-                  reason: `held until the conflict at ${by} is accepted`,
-                });
-                continue;
-              }
-              delete owners(document)[change.pointer];
-              const kept = handOff(
-                document,
-                id,
-                change.pointer,
-                change.current,
-              );
-              if (kept === undefined) removals.push(segments);
-              applied.push(kept ?? change);
-            } else {
-              sets.push(change);
-              applied.push(change);
+          const held: (readonly string[])[] = [];
+          const giving: Step[] = [];
+          for (const step of plan(document, id, templateLeaves(upstream))) {
+            switch (step.kind) {
+              case "conflict":
+                if (accept.has(step.pointer)) {
+                  applyStep(document, step, ref);
+                  applied.push(report(step));
+                } else {
+                  // held whole: nothing at or below the root is written, its records included
+                  held.push(step.segments);
+                  conflicts.push(report(step));
+                }
+                break;
+              case "add":
+              case "change":
+              case "adopt":
+                applyStep(document, step, ref);
+                applied.push(report(step));
+                break;
+              case "remove":
+                giving.push(step);
+                break;
+              case "kept":
+                delete owners(document)[step.pointer];
+                conflicts.push(report(step, DROPPED_EDITED));
+                break;
+              case "drop":
+                delete owners(document)[step.pointer];
+                break;
+              case "shared":
+                break;
             }
           }
-          // removals first, so a key that changes shape is cleared before its new value is set
-          for (const segments of removals) removeIn(document, segments);
-          for (const change of sets) {
-            setIn(
-              document,
-              parsePointer(change.pointer) ?? [],
-              clone(change.upstream),
-            );
-            owners(document)[change.pointer] = {
-              from: ref,
-              baseline: digestValue(change.upstream),
-            };
+          const released = release(document, id, giving);
+          const removed = new Set(released.removed);
+          for (const step of giving) {
+            if (removed.has(step.pointer)) applied.push(report(step));
           }
+          applied.push(...released.kept);
+          // the template's other records now come from the new version; held ones keep their base
           const all = owners(document);
           for (const [pointer, owner] of Object.entries(all)) {
-            if (isObject(owner) && idOf(String(owner.from)) === id) {
+            const segments = parsePointer(pointer) ?? [];
+            if (
+              isObject(owner) &&
+              idOf(String(owner.from)) === id &&
+              !held.some((root) => isPrefix(root, segments))
+            )
               all[pointer] = { ...owner, from: ref };
-            }
           }
+          tidy(document);
           document.templates = provenance(document).map((p) =>
             idOf(p.template) === id
               ? {
@@ -652,7 +634,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
                 }
               : p,
           );
-          return { applied, conflicts };
+          return { applied: applied.sort(byPointer), conflicts };
         },
       );
       const { detail, ...written } = result;
@@ -667,76 +649,26 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
         input.expectRevision,
         (document) => {
           ref = requireImported(document, id);
-          const all = owners(document);
-          const removing: string[] = [];
           const kept: KeyChange[] = [];
-          for (const [pointer, owner] of Object.entries(all)) {
-            if (!isObject(owner) || idOf(String(owner.from)) !== id) continue;
-            const segments = parsePointer(pointer) ?? [];
-            delete all[pointer];
-            if (!hasIn(document, segments)) continue;
-            const current = getIn(document, segments);
-            if (digestValue(current) !== owner.baseline) {
-              kept.push({
-                pointer,
-                kind: "kept",
-                current,
-                reason: "edited since import; it is yours now",
-              });
+          const giving: Step[] = [];
+          for (const step of plan(document, id, new Map())) {
+            if (step.kind === "remove") {
+              giving.push(step);
               continue;
             }
-            const handed = handOff(document, id, pointer, current);
-            if (handed !== undefined) {
-              kept.push(handed);
-              continue;
-            }
-            removing.push(pointer);
+            delete owners(document)[step.pointer];
+            if (step.kind === "kept")
+              kept.push(report(step, "edited since import; it is yours now"));
           }
-          // a source stays while anything else of its instance stays
-          const removed: string[] = [];
-          const removingSet = new Set(removing);
-          for (const pointer of removing) {
-            const segments = parsePointer(pointer) ?? [];
-            if (
-              segments.length === 3 &&
-              segments[0] === "blocks" &&
-              segments[2] === "source"
-            ) {
-              const instance = segments.slice(0, 2);
-              const staying = leaves(
-                getIn(document, instance),
-                atomicSource,
-                instance,
-              ).filter(
-                (l) =>
-                  !isPrefix(segments, l.segments) &&
-                  !removingSet.has(formatPointer(l.segments)),
-              );
-              if (staying.length > 0) {
-                kept.push({
-                  pointer,
-                  kind: "kept",
-                  current: getIn(document, segments),
-                  reason:
-                    "other keys of this instance stay, so its source stays",
-                });
-                continue;
-              }
-            }
-            removed.push(pointer);
-          }
-          for (const pointer of removed)
-            removeIn(document, parsePointer(pointer) ?? []);
-          if (Object.keys(all).length === 0) delete document.owners;
+          const released = release(document, id, giving);
+          kept.push(...released.kept);
+          tidy(document);
           const rest = provenance(document).filter(
             (p) => idOf(p.template) !== id,
           );
           if (rest.length === 0) delete document.templates;
           else document.templates = rest;
-          return {
-            removed,
-            kept: kept.sort((a, b) => a.pointer.localeCompare(b.pointer)),
-          };
+          return { removed: released.removed, kept: kept.sort(byPointer) };
         },
       );
       const { detail, ...written } = result;

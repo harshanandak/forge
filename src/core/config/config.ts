@@ -45,10 +45,11 @@ import {
 import {
   CONFIG_FILE,
   type Committed,
+  HISTORY_DIR,
   commit,
   decodeReceiptBytes,
-  listReceipts,
   type ProjectConfig,
+  readHistory,
   readProject,
   type StoreDeps,
 } from "./store.ts";
@@ -484,7 +485,21 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
         "config.revert",
         input.expectRevision,
         (current) => {
-          const receipts = listReceipts(env);
+          const { receipts, damaged } = readHistory(env);
+          const broken =
+            input.receipt === undefined
+              ? undefined
+              : damaged.find(
+                  (d) => d.file === `${HISTORY_DIR}/${input.receipt}.json`,
+                );
+          if (broken !== undefined) {
+            throw new ForgeFailure({
+              code: "INPUT_INVALID",
+              message: `receipt ${broken.file} is damaged (${broken.problem}); it is never applied`,
+              retry: "never",
+              repair: `restore ${CONFIG_FILE} by hand or from version control`,
+            });
+          }
           const undone = new Set(
             receipts.flatMap((r) =>
               r.reverts === undefined ? [] : [r.reverts],
@@ -507,6 +522,11 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
                   ? `no recorded edit produced the current ${CONFIG_FILE}; there is nothing to revert`
                   : `no receipt "${input.receipt}" is recorded`,
               retry: "never",
+              ...(damaged.length === 0
+                ? {}
+                : {
+                    repair: `damaged receipts were ignored and never applied: ${damaged.map((d) => `${d.file} (${d.problem})`).join("; ")}`,
+                  }),
             });
           }
           if (target.to !== current.revision) {
@@ -546,6 +566,12 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
         "config.save",
         input.expectRevision,
         (document, current) => {
+          // a key a template owned but the project no longer holds: what save writes there is the
+          // user's value, so that template's record goes (see the merge model in templates.ts)
+          const owners = isObject(document.owners) ? document.owners : {};
+          const vacant = Object.keys(owners).filter(
+            (p) => !hasIn(document, parsePointer(p) ?? []),
+          );
           const layers = resolveLayers(derive(), current.document);
           for (const entry of layers.entries) {
             if (entry.layer !== "derived" || !entry.active) continue;
@@ -577,6 +603,12 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
                 reason: "the project already sets this value",
               });
           }
+          for (const pointer of vacant) {
+            if (hasIn(document, parsePointer(pointer) ?? []))
+              delete owners[pointer];
+          }
+          if (isObject(document.owners) && Object.keys(owners).length === 0)
+            delete document.owners;
           return document;
         },
       );

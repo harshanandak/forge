@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { nodeConfigFiles } from "../../../../src/adapters/fs/index.ts";
 import { yamlConfigCodec } from "../../../../src/adapters/config-yaml/index.ts";
 import type {
   BlockSource,
@@ -11,7 +12,6 @@ import {
   type ConfigFiles,
   createConfig,
   createTemplates,
-  nodeConfigFiles,
   type TemplateEnvironment,
 } from "../../../../src/core/config/index.ts";
 

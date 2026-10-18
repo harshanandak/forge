@@ -15,7 +15,7 @@ export {
   type WriteResult,
 } from "./config.ts";
 export type { BlockLookup, Change } from "./document.ts";
-export { type ConfigFiles, nodeConfigFiles } from "./files.ts";
+export type { ConfigFiles } from "./files.ts";
 export type { Ignored, Layer, LayerEntry } from "./layers.ts";
 export { createConfigOperations, type ConfigOperations } from "./operations.ts";
 export { CONFIG_FILE, HISTORY_DIR, LOCK_FILE } from "./store.ts";

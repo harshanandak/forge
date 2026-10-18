@@ -218,7 +218,7 @@ export function findAdapterViolations(
         rule: "dependency-boundary",
         file: `src/adapters/${dir}`,
         message:
-          "adapter has no valid adapter.json ({ package | executable, port })",
+          "adapter has no valid adapter.json ({ package | executable | builtin, port })",
       });
     }
   }

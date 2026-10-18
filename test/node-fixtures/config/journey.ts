@@ -9,12 +9,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { nodeConfigFiles } from "../../../src/adapters/fs/index.ts";
 import { yamlConfigCodec } from "../../../src/adapters/config-yaml/index.ts";
 import type { TemplateDocument } from "../../../src/contract/index.ts";
 import {
   createConfig,
   createTemplates,
-  nodeConfigFiles,
   type TemplateEnvironment,
 } from "../../../src/core/config/index.ts";
 

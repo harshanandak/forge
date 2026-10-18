@@ -144,28 +144,93 @@ function receiptPath(id: string): string {
   return `${HISTORY_DIR}/${id}.json`;
 }
 
-export function listReceipts(deps: StoreDeps): Receipt[] {
-  const receipts: Receipt[] = [];
-  for (const name of deps.files.list(HISTORY_DIR)) {
-    if (!/^\d{6,}\.json$/.test(name)) continue;
-    const bytes = deps.files.read(`${HISTORY_DIR}/${name}`);
-    if (bytes === undefined) continue;
-    try {
-      const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
-      if (isObject(value) && value.schemaVersion === RECEIPT_VERSION) {
-        receipts.push(value as unknown as Receipt);
-      }
-    } catch {
-      // a damaged receipt is skipped; it can never match a live revision anyway
-    }
-  }
-  return receipts.sort((a, b) => a.id.localeCompare(b.id));
+export interface DamagedReceipt {
+  readonly file: string;
+  readonly problem: string;
 }
 
-function nextId(receipts: readonly Receipt[]): string {
-  const last = receipts.at(-1);
-  const next = last === undefined ? 1 : Number.parseInt(last.id, 10) + 1;
-  return String(next).padStart(6, "0");
+export interface History {
+  /** Receipts that are whole and whose prior bytes match their `from` revision, oldest first. */
+  readonly receipts: readonly Receipt[];
+  /** Receipt files that are not; they are reported and never applied. */
+  readonly damaged: readonly DamagedReceipt[];
+  /** The highest receipt number on disk, damaged files included, so a new id never reuses one. */
+  readonly last: number;
+}
+
+const RECEIPT_NAME = /^(\d{6,})\.json$/;
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
+const BASE64 =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const RECEIPT_KEYS = new Set([
+  "schemaVersion",
+  "id",
+  "op",
+  "at",
+  "from",
+  "to",
+  "before",
+  "reverts",
+]);
+
+/** Why a parsed receipt cannot be trusted, or undefined when it can. */
+function receiptProblem(value: unknown, id: string): string | undefined {
+  if (!isObject(value)) return "it is not a JSON object";
+  if (value.schemaVersion !== RECEIPT_VERSION)
+    return `schemaVersion is not ${RECEIPT_VERSION}`;
+  const extra = Object.keys(value).find((key) => !RECEIPT_KEYS.has(key));
+  if (extra !== undefined) return `it has an unknown field "${extra}"`;
+  if (value.id !== id) return `its id does not match its file name ${id}`;
+  if (typeof value.op !== "string" || value.op === "") return "op is missing";
+  if (typeof value.at !== "string" || Number.isNaN(Date.parse(value.at)))
+    return "at is not a timestamp";
+  if (typeof value.from !== "string" || !DIGEST.test(value.from))
+    return "from is not a digest";
+  if (typeof value.to !== "string" || !DIGEST.test(value.to))
+    return "to is not a digest";
+  if (
+    value.reverts !== undefined &&
+    (typeof value.reverts !== "string" || !/^\d{6,}$/.test(value.reverts))
+  )
+    return "reverts is not a receipt id";
+  if (value.before !== null && typeof value.before !== "string")
+    return "before is neither base64 text nor null";
+  if (typeof value.before === "string" && !BASE64.test(value.before))
+    return "before is not base64";
+  const before =
+    value.before === null ? EMPTY : Buffer.from(value.before, "base64");
+  if (digestBytes(before) !== value.from)
+    return "its prior bytes do not match its from revision";
+  return undefined;
+}
+
+export function readHistory(deps: StoreDeps): History {
+  const receipts: Receipt[] = [];
+  const damaged: DamagedReceipt[] = [];
+  let last = 0;
+  for (const name of deps.files.list(HISTORY_DIR)) {
+    const id = RECEIPT_NAME.exec(name)?.[1];
+    if (id === undefined) continue;
+    last = Math.max(last, Number.parseInt(id, 10));
+    const file = `${HISTORY_DIR}/${name}`;
+    const bytes = deps.files.read(file);
+    if (bytes === undefined) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      damaged.push({ file, problem: "it is not valid JSON" });
+      continue;
+    }
+    const problem = receiptProblem(value, id);
+    if (problem === undefined) receipts.push(value as Receipt);
+    else damaged.push({ file, problem });
+  }
+  return {
+    receipts: receipts.sort((a, b) => a.id.localeCompare(b.id)),
+    damaged,
+    last,
+  };
 }
 
 function sameBytes(a: Uint8Array | undefined, b: Uint8Array | null): boolean {
@@ -205,8 +270,9 @@ export function commit(
     if (sameBytes(current.bytes, planned.bytes)) {
       return { from: current.revision, to, receipt: null, fileRemoved: false };
     }
-    const receipts = listReceipts(deps);
-    const id = nextId(receipts);
+    const history = readHistory(deps);
+    const receipts = history.receipts;
+    const id = String(history.last + 1).padStart(6, "0");
     const receipt: Receipt = {
       schemaVersion: RECEIPT_VERSION,
       id,
