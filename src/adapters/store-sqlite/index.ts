@@ -70,10 +70,34 @@ function realStorePath(path: string): string {
 
 export class StoreRestoringError extends Error {
   readonly code = "restoring";
-  constructor(message = "Store is fenced for restore") {
-    super(message);
+  constructor(message = "Store is fenced for restore", options?: ErrorOptions) {
+    super(message, options);
     this.name = "StoreRestoringError";
   }
+}
+
+export function sqliteIdentityError(
+  error: unknown,
+  identityChanged = false,
+): unknown {
+  if (typeof error !== "object" || error === null) return error;
+  // Node exposes errcode; Bun exposes errno/code. Some exec errors retain only
+  // the generic message, which needs independent file-identity evidence.
+  const vnode =
+    ("errcode" in error && error.errcode === 6922) ||
+    ("errno" in error && error.errno === 6922) ||
+    ("code" in error && error.code === "SQLITE_IOERR_VNODE");
+  if (
+    vnode ||
+    (identityChanged &&
+      "message" in error &&
+      error.message === "disk I/O error")
+  )
+    return new StoreRestoringError(
+      "Store identity changed (SQLite VNODE); operation refused; reopen required",
+      { cause: error },
+    );
+  return error;
 }
 
 function assertSingleLink(file: { readonly nlink: bigint } | undefined): void {
@@ -298,6 +322,28 @@ export function createSqliteStore(
               throw new Error("Store identity changed; reopen required");
           }
         };
+        const storeError = (error: unknown): unknown => {
+          let changed = false;
+          if (identity) {
+            try {
+              const current = statSync(path, { bigint: true });
+              changed =
+                current.nlink > 1n ||
+                current.dev !== identity.dev ||
+                current.ino !== identity.ino;
+            } catch {
+              // A failed probe must not hide the original SQLite error.
+            }
+          }
+          return sqliteIdentityError(error, changed);
+        };
+        const storeCall = <T>(body: () => T): T => {
+          try {
+            return body();
+          } catch (error) {
+            throw storeError(error);
+          }
+        };
         const transact = <T>(body: () => T): T => {
           assertOpen();
           if (active) throw new Error("Nested transactions are refused");
@@ -333,11 +379,12 @@ export function createSqliteStore(
             active = false;
           }
         };
-        const execute = <T>(body: () => T): T => {
-          assertOpen();
-          if (active || options.readOnly) return body();
-          return transact(body);
-        };
+        const execute = <T>(body: () => T): T =>
+          storeCall(() => {
+            assertOpen();
+            if (active || options.readOnly) return body();
+            return transact(body);
+          });
         const value: StateImageStore = {
           exportImage(inspect) {
             assertOpen();
@@ -358,6 +405,8 @@ export function createSqliteStore(
                 captured.close();
               }
               return new Uint8Array(readFileSync(destination));
+            } catch (error) {
+              throw storeError(error);
             } finally {
               removeDurable(
                 directory,
@@ -541,7 +590,7 @@ export function createSqliteStore(
                   { cause: recoveryError },
                 );
               }
-              throw error;
+              throw storeError(error);
             } finally {
               restoring = false;
               ownsFence = false;
@@ -600,7 +649,7 @@ export function createSqliteStore(
             });
           },
           transaction(body) {
-            return transact(body);
+            return storeCall(() => transact(body));
           },
         };
         return {
