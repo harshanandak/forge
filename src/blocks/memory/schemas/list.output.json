@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "enum": [
+              "proposed",
+              "adopted"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "$ref": "defs.json#/$defs/Untrusted"
+          },
+          "updatedAt": {
+            "type": "string",
+            "maxLength": 40
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "number",
+          "status",
+          "revision",
+          "title",
+          "updatedAt"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "total",
+    "decisions"
+  ]
+}

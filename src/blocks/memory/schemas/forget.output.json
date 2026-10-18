@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {
+      "enum": [
+        "forgotten",
+        "not_found",
+        "already_forgotten"
+      ]
+    },
+    "id": {
+      "$ref": "defs.json#/$defs/NoteId"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "id"
+  ]
+}

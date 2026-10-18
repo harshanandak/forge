@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "head": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "description": "The commit the work stands on."
+    },
+    "nextStep": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "What the next session should do first."
+    },
+    "issue": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "run": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "uncommitted": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "clean",
+            "dirty"
+          ]
+        },
+        "base": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+          "description": "The commit the working tree was compared against."
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "A digest of the working-tree diff against base; the identity of the unfinished work."
+        },
+        "files": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "base"
+      ],
+      "if": {
+        "properties": {
+          "state": {
+            "const": "dirty"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "required": [
+          "digest"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "digest"
+          ]
+        }
+      }
+    },
+    "pendingReview": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "defs.json#/$defs/Thread"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "$ref": "defs.json#/$defs/Check"
+      }
+    },
+    "memory": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "$ref": "defs.json#/$defs/NoteId"
+      }
+    },
+    "leases": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "defs.json#/$defs/Lease"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "head",
+    "nextStep",
+    "uncommitted"
+  ]
+}

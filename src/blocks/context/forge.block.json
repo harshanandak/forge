@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/context",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v1",
+  "profile": "trusted-action-sync/v1",
+  "entry": "index.cjs",
+  "files": [
+    "schemas/defs.json"
+  ],
+  "operations": {
+    "context.handoff": {
+      "input": "schemas/handoff.input.json",
+      "output": "schemas/handoff.output.json",
+      "context": "project",
+      "effects": [
+        "context:write"
+      ],
+      "args": [
+        "head",
+        "nextStep"
+      ],
+      "idempotent": false,
+      "callers": [
+        "agent",
+        "human"
+      ],
+      "stability": "stable"
+    },
+    "context.show": {
+      "input": "schemas/show.input.json",
+      "output": "schemas/show.output.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": [
+        "agent",
+        "human"
+      ],
+      "stability": "stable"
+    }
+  },
+  "requires": [
+    {
+      "slot": "state",
+      "interface": "forge.state@1"
+    }
+  ],
+  "docs": "docs/records.json"
+}
