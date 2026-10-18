@@ -18,7 +18,7 @@ function help(
   options: CallOptions,
   op?: string,
 ): unknown {
-  const entries = [...discoveryOperations, ...visible(catalog, options.caller)];
+  const entries = visible(catalog, options.caller);
   return {
     usage: "forge <noun> <verb> [arguments] [--input JSON] [--text]",
     options: [
