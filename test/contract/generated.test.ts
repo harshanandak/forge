@@ -43,8 +43,7 @@ test("generating twice into a clean directory yields identical bytes", () => {
   }
 }, 30_000);
 
-// `bun test --parallel` runs the gen preload in every worker; rewriting an unchanged file would
-// truncate it under a worker that is importing it.
+// `bun run test` generates once before Bun starts its parallel workers, so workers only read outputs.
 test("writing up-to-date outputs leaves the files untouched", () => {
   const dir = scratchCopy();
   try {
