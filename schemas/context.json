@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/context.json",
+  "description": "Who is calling and where: the ambient context a caller supplies, and the bound context the runtime hands an operation for its declared variant.",
+  "$defs": {
+    "Actor": {
+      "description": "The acting identity; each agent has its own.",
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "$ref": "common.json#/$defs/Caller" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    },
+    "DeviceScope": {
+      "description": "The device-level store this machine's user owns.",
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    },
+    "ProjectIdentity": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "root": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      },
+      "additionalProperties": false
+    },
+    "Session": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    },
+    "AmbientContext": {
+      "description": "Everything a caller may supply. Only what the operation's declared variant needs is bound; the rest is ignored, and nothing is invented.",
+      "type": "object",
+      "properties": {
+        "actor": { "$ref": "#/$defs/Actor" },
+        "device": { "$ref": "#/$defs/DeviceScope" },
+        "project": { "$ref": "#/$defs/ProjectIdentity" },
+        "session": { "$ref": "#/$defs/Session" },
+        "leaseGeneration": { "type": "integer", "minimum": 1 },
+        "subjectVersion": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    },
+    "StatelessContext": {
+      "type": "object",
+      "required": ["variant"],
+      "properties": {
+        "variant": { "const": "stateless" }
+      },
+      "additionalProperties": false
+    },
+    "DeviceContext": {
+      "type": "object",
+      "required": ["variant", "actor", "device"],
+      "properties": {
+        "variant": { "const": "device" },
+        "actor": { "$ref": "#/$defs/Actor" },
+        "device": { "$ref": "#/$defs/DeviceScope" }
+      },
+      "additionalProperties": false
+    },
+    "ProjectContext": {
+      "description": "Project writes carry a compare-and-set revision in the state call itself, not in the context.",
+      "type": "object",
+      "required": ["variant", "actor", "project"],
+      "properties": {
+        "variant": { "const": "project" },
+        "actor": { "$ref": "#/$defs/Actor" },
+        "project": { "$ref": "#/$defs/ProjectIdentity" }
+      },
+      "additionalProperties": false
+    },
+    "LeaseAcquireContext": {
+      "description": "An acquire call supplies no generation; the state owner returns the new one.",
+      "type": "object",
+      "required": ["variant", "leaseMode", "actor", "session", "project"],
+      "properties": {
+        "variant": { "const": "leased" },
+        "leaseMode": { "const": "acquire" },
+        "actor": { "$ref": "#/$defs/Actor" },
+        "session": { "$ref": "#/$defs/Session" },
+        "project": { "$ref": "#/$defs/ProjectIdentity" }
+      },
+      "additionalProperties": false
+    },
+    "LeaseHeldContext": {
+      "description": "A held call names the lease generation it holds; subjectVersion is the exact external version when the operation declares it.",
+      "type": "object",
+      "required": [
+        "variant",
+        "leaseMode",
+        "actor",
+        "session",
+        "project",
+        "leaseGeneration"
+      ],
+      "properties": {
+        "variant": { "const": "leased" },
+        "leaseMode": { "const": "held" },
+        "actor": { "$ref": "#/$defs/Actor" },
+        "session": { "$ref": "#/$defs/Session" },
+        "project": { "$ref": "#/$defs/ProjectIdentity" },
+        "leaseGeneration": { "type": "integer", "minimum": 1 },
+        "subjectVersion": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    },
+    "BoundContext": {
+      "description": "Exactly the context an operation's declared variant requires, and nothing more.",
+      "oneOf": [
+        { "$ref": "#/$defs/StatelessContext" },
+        { "$ref": "#/$defs/DeviceContext" },
+        { "$ref": "#/$defs/ProjectContext" },
+        { "$ref": "#/$defs/LeaseAcquireContext" },
+        { "$ref": "#/$defs/LeaseHeldContext" }
+      ]
+    }
+  }
+}

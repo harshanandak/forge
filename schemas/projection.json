@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/projection.json",
+  "description": "Surface projections of one catalog operation: the MCP tool entry. MCP holds no domain logic; it is a projection of the catalog.",
+  "$defs": {
+    "McpToolAnnotations": {
+      "description": "Hints derived from declared effects. Clients treat them as untrusted; Forge's grants still decide.",
+      "type": "object",
+      "required": ["readOnlyHint", "openWorldHint"],
+      "properties": {
+        "readOnlyHint": { "type": "boolean" },
+        "destructiveHint": { "type": "boolean" },
+        "idempotentHint": { "type": "boolean" },
+        "openWorldHint": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "McpTool": {
+      "type": "object",
+      "required": [
+        "name",
+        "title",
+        "description",
+        "inputSchema",
+        "annotations"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "inputSchema": { "type": "object" },
+        "outputSchema": { "type": "object" },
+        "annotations": { "$ref": "#/$defs/McpToolAnnotations" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

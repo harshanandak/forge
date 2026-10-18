@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/operation.json",
+  "title": "OperationDeclaration",
+  "description": "One operation, declared once in a block manifest; the CLI, MCP tools and help are generated from it.",
+  "type": "object",
+  "required": [
+    "input",
+    "output",
+    "context",
+    "effects",
+    "idempotent",
+    "callers",
+    "stability"
+  ],
+  "properties": {
+    "input": { "$ref": "common.json#/$defs/RelativePath" },
+    "output": { "$ref": "common.json#/$defs/RelativePath" },
+    "args": {
+      "description": "Ordered required scalar input properties that the CLI also accepts positionally.",
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "common.json#/$defs/PropertyName" }
+    },
+    "context": { "$ref": "common.json#/$defs/ContextVariant" },
+    "leaseMode": { "$ref": "common.json#/$defs/LeaseMode" },
+    "requiresSubjectVersion": {
+      "description": "A leased operation that acts on an external subject requires the caller to state its exact version.",
+      "type": "boolean"
+    },
+    "effects": {
+      "description": "Every effect the operation may have; an empty list means read-only.",
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "common.json#/$defs/EffectName" }
+    },
+    "destructive": { "type": "boolean" },
+    "idempotent": { "type": "boolean" },
+    "callers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "common.json#/$defs/Caller" }
+    },
+    "stability": { "$ref": "common.json#/$defs/Stability" },
+    "deprecated": { "$ref": "#/$defs/Deprecation" },
+    "formerly": {
+      "description": "Earlier names that resolve with a warning for one minor version, then stop.",
+      "type": "array",
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": { "$ref": "common.json#/$defs/OperationName" }
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "required": ["context"],
+        "properties": { "context": { "const": "leased" } }
+      },
+      "then": { "required": ["leaseMode"] },
+      "else": {
+        "not": {
+          "anyOf": [
+            { "required": ["leaseMode"] },
+            { "required": ["requiresSubjectVersion"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["stability"],
+        "properties": { "stability": { "const": "deprecated" } }
+      },
+      "then": { "required": ["deprecated"] },
+      "else": { "not": { "required": ["deprecated"] } }
+    }
+  ],
+  "$defs": {
+    "Deprecation": {
+      "type": "object",
+      "required": ["since", "use"],
+      "properties": {
+        "since": { "$ref": "common.json#/$defs/SemVer" },
+        "use": { "$ref": "common.json#/$defs/OperationName" },
+        "removeIn": { "$ref": "common.json#/$defs/SemVer" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
