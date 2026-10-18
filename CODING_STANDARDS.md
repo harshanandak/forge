@@ -20,6 +20,9 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 - **B4. Reads never write.** `show`, `list`, `detect`, `explain` and `status` mutate nothing, including lazily creating homes.
 - **B5. Core reaches the OS only through ports.** `src/core`, `src/contract` and `src/ports` import no platform module (`fs`, `path`, `os`, `child_process`, `worker_threads`, `net`, `http(s)`, `process`, `url`, any `bun:*`, or any Node built-in not on the pure list), with or without `node:`, statically or by `import()` and `require()`, and read no `process.cwd`, `process.env` or Bun global. Pure modules such as `node:crypto` (hashing), `node:util`, `node:events` and `node:buffer` are fine. Take paths and environment as arguments or through a port implemented under `src/adapters`. **Guard:** `platform-boundary`.
 
+- **B6. Declare each operation once.** An operation is declared in its block; the CLI command and MCP tool are generated from that catalog. No hand-written command, alias or per-harness copy.
+- **B7. Demand before breadth.** A block enters with a named consumer and a contract test.
+
 ## Dependencies and external tools
 
 - **R1. One adapter per dependency.** Every third-party package, external executable and owned platform builtin is reached through exactly one `src/adapters/<name>/`, implementing a typed port from `src/ports/`. The adapter declares what it wraps in `adapter.json` with `package`, `executable` or `builtin` and its `port`. Core, blocks and other adapters import the port type, never the package or another adapter's internals. **Guard:** `dependency-boundary`.
@@ -42,7 +45,7 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 - Unit tests use an injected clock and fake process ports. Real git and subprocesses run only in a labelled integration lane. A flaky test is quarantined with an issue, never retried.
 - Every guard ships with a test that it fails on its motivating bad input. A concurrency or authority fix has a fault-injection test and a check that the journey fails with the fix removed.
 - Acceptance is an end-to-end outcome on the real artifact (the packed package, the installed host), never test counts. `bun run pack:smoke` is the minimum: pack once, install with npm on Node without Bun, run `forge --version`.
-- Gates return `PASS`, `FAIL`, `INCOMPLETE` or `NOT_EXECUTED`. Nothing checked is never `PASS`.
+- Gates judge outcomes and return `PASS`, `FAIL`, `INCOMPLETE` or `NOT_EXECUTED`. Nothing checked is never `PASS`.
 
 ## Platform
 
@@ -53,7 +56,9 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 
 ## Documents and reviews
 
+- `AGENTS.md` loads every turn and this file loads at review, so both stay lean: each has a byte cap in `test/structure/budget.json`. Prune before growing; raise a cap deliberately in that one file. **Guard:** `budget`.
 - One decision record namespace (`ADR-NNN`) with a title; refer to a decision by name. Records hold durable choices only.
 - Reports lead with the answer in plain language, then evidence and what would change it.
 - Review is done when there are no P0 or P1 findings and your own regressions are fixed; adjacent findings become issues. After three review rounds, escalate as a design issue instead of iterating; the budget never waives a P0 or P1.
 - The pull request title is a conventional commit title; it becomes the changelog line. Do not edit the changelog by hand.
+- PR CI should stay around 2 minutes wall; a change that adds more than ~30 s states why in its pull request. The CI Gate prints the run's wall time.

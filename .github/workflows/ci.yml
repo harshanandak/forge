@@ -28,7 +28,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      started: ${{ steps.start.outputs.at }}
     steps:
+      - id: start
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -107,11 +110,35 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      # Windows only: installs take 3-10 s there against about 0.2 s on Linux and macOS.
+      - id: bun-cache
+        if: runner.os == 'Windows'
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - if: runner.os == 'Windows'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.bun-cache.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: bun run test
       - run: bun run build
-      - run: bun run pack:smoke
+      # Overlap the process-heavy smoke with parallel unit tests only. Integration tests launch real
+      # git, Bun and Node processes, so they run afterward without parallel workers.
+      # `build` has already generated src/generated; the smoke runs directly to avoid regeneration.
+      - name: Unit tests and pack smoke
+        run: |
+          smoke_log="$RUNNER_TEMP/pack-smoke.log"
+          node tools/pack-smoke/run.ts > "$smoke_log" 2>&1 &
+          smoke_pid=$!
+          status=0
+          bun run test:unit || status=1
+          wait "$smoke_pid" || status=1
+          echo "::group::pack smoke"
+          cat "$smoke_log"
+          echo "::endgroup::"
+          exit "$status"
+      - name: Process integration tests
+        run: bun run test:integration
 
   # The one required check. Skipped heavy legs pass only when the change is documentation-only.
   ci-gate:
@@ -128,7 +155,16 @@ jobs:
           STRUCTURE: ${{ needs.structure.result }}
           STATIC: ${{ needs.static.result }}
           VERIFY: ${{ needs.verify.result }}
+          STARTED: ${{ needs.changes.outputs.started }}
         run: |
+          if [ -n "$STARTED" ]; then
+            wall=$(( $(date +%s) - STARTED ))
+            echo "CI wall time: ${wall}s (budget: about 120s)"
+            echo "CI wall time: ${wall}s" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$wall" -gt 150 ]; then
+              echo "::warning::CI wall time ${wall}s is over the ~2 minute budget; see CODING_STANDARDS.md"
+            fi
+          fi
           ok=1
           require() {
             if [ "$2" != "success" ]; then
