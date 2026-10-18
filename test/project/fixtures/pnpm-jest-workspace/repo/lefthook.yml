@@ -1,0 +1,10 @@
+pre-commit:
+  commands:
+    format:
+      run: pnpm prettier --check {staged_files}
+    require-tests:
+      run: node scripts/check-source-test-coupling.mjs
+pre-push:
+  commands:
+    unit:
+      run: pnpm test
