@@ -350,6 +350,115 @@ const cases = {
       rmSync(dir, { recursive: true, force: true });
     }
   },
+  async requestreceipts() {
+    const dir = mkdtempSync(join(tmpdir(), "forge-receipt-validation-"));
+    const [source, target] = await filePair();
+    try {
+      const left = new StateOwner(source.value, { now: () => 1000 });
+      const right = new StateOwner(target.value, { now: () => 2000 });
+      left.initialize();
+      right.initialize();
+      const options = { expectRevision: 0, requestId: "first" };
+      const first = left.put(ns, "one", { value: 1 }, holder.actor, options);
+      const second = left.put(ns, "two", { value: 2 }, holder.actor, {
+        expectRevision: 0,
+        requestId: "second",
+      });
+      left.put(ns, "one", { value: 3 }, other.actor, { expectRevision: 1 });
+      left.acquire(ns, "subject", holder, 100, "acquisition");
+      left.renew(ns, { subject: "subject", holder, generation: 1 }, 200);
+      left.put(ns, "subject", true, holder.actor, { expectRevision: 0 });
+      left.put(ns, "fenced", true, holder.actor, {
+        expectRevision: 0,
+        requestId: "fenced",
+        fence: { subject: "subject", holder, generation: 1 },
+      });
+      left.release(ns, { subject: "subject", holder, generation: 1 });
+      left.acquire(ns, "subject", other, 200, "next-acquisition");
+      const snapshot = left.export();
+      const before = right.export();
+      const corruptions = [
+        [
+          "UPDATE state_requests SET result=? WHERE request_id='first'",
+          [JSON.stringify(second)],
+        ],
+        [
+          "UPDATE state_requests SET result='null' WHERE request_id='first'",
+          [],
+        ],
+        [
+          "UPDATE state_requests SET fingerprint=? WHERE request_id='first'",
+          [JSON.stringify({ kind: "put", key: "wrong" })],
+        ],
+        [
+          "UPDATE state_requests SET fingerprint=' ' || fingerprint WHERE request_id='first'",
+          [],
+        ],
+        [
+          "UPDATE state_requests SET request_id='orphan' WHERE request_id='first'",
+          [],
+        ],
+        [
+          "UPDATE state_requests SET namespace='io.example/other' WHERE request_id='first'",
+          [],
+        ],
+        [
+          "UPDATE state_requests SET result=? WHERE request_id='acquisition'",
+          [JSON.stringify(first)],
+        ],
+        [
+          "UPDATE state_requests SET fingerprint=replace(fingerprint, '100', '101') WHERE request_id='acquisition'",
+          [],
+        ],
+        [
+          "UPDATE state_requests SET fingerprint='{' WHERE request_id='first'",
+          [],
+        ],
+        [
+          "INSERT INTO state_events(namespace,key,body) SELECT namespace,key,body FROM state_events WHERE key='two'",
+          [],
+        ],
+      ];
+      for (const [sql, params] of corruptions) {
+        const path = join(dir, "candidate.db");
+        writeFileSync(path, Buffer.from(snapshot.image, "base64"));
+        const candidate = await store(path);
+        let image;
+        try {
+          candidate.value.run(sql, params);
+          image = Buffer.from(candidate.value.exportImage()).toString("base64");
+        } finally {
+          await candidate.close();
+        }
+        assert.throws(
+          () => right.restore({ ...snapshot, image }),
+          code("INPUT_INVALID"),
+          sql,
+        );
+        assert.deepEqual(
+          right.export(),
+          before,
+          "rejected receipt must leave live store unchanged",
+        );
+      }
+      right.restore(snapshot);
+      const restored = right.export();
+      assert.deepEqual(
+        right.put(ns, "one", { value: 1 }, holder.actor, options),
+        first,
+      );
+      assert.deepEqual(right.export(), restored, "clean replay must not write");
+      assert.deepEqual(right.list(ns), left.list(ns));
+      assert.throws(
+        () => right.acquire(ns, "subject", holder, 100, "acquisition"),
+        code("LEASE_STALE"),
+      );
+    } finally {
+      await source.close();
+      await target.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
   async restorefaults() {
     const steps = [
       "written",

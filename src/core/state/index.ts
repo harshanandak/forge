@@ -4,6 +4,7 @@ import {
   validateActor,
   validateBlockId,
   validateLeaseRecord,
+  validateLeaseHolder,
   validateStateRecord,
   validateStateEvent,
 } from "../../generated/validators.ts";
@@ -114,6 +115,150 @@ function keyValid(key: string): void {
 }
 function namespaceValid(namespace: string): void {
   if (!validateBlockId(namespace).ok) invalid("Invalid namespace");
+}
+
+function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
+  let input: Record<string, unknown>;
+  let result: unknown;
+  try {
+    input = JSON.parse(String(row.fingerprint)) as Record<string, unknown>;
+    result = JSON.parse(String(row.result)) as unknown;
+    if (
+      !input ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      json(input) !== row.fingerprint
+    )
+      invalid("Invalid imported request fingerprint");
+    json(result);
+  } catch {
+    invalid("Invalid imported request JSON");
+  }
+  const matches = events.filter(
+    (event) =>
+      event.namespace === row.namespace && event.requestId === row.request_id,
+  );
+  if (matches.length !== 1)
+    invalid("Imported request needs exactly one matching event");
+  const event = matches[0]!;
+  if (input.kind === "put") {
+    const record = result as StateRecord;
+    if (
+      !validateStateRecord(record).ok ||
+      !Number.isSafeInteger(record.revision) ||
+      event.type !== `${event.namespace}:record.updated@1` ||
+      json(record) !==
+        json({
+          namespace: event.namespace,
+          key: event.key,
+          revision: event.revision,
+          value: event.data,
+          updatedAt: event.at,
+          updatedBy: event.actor,
+        }) ||
+      json(input) !==
+        json({
+          kind: "put",
+          key: event.key,
+          value: event.data,
+          actor: event.actor,
+          revision: event.revision - 1,
+          fence: input.fence,
+        })
+    )
+      invalid("Imported put receipt does not match its operation");
+    if (input.fence !== null) {
+      const fence = input.fence as Fence;
+      if (
+        !fence ||
+        typeof fence !== "object" ||
+        typeof fence.subject !== "string" ||
+        !validateLeaseHolder(fence.holder).ok ||
+        !Number.isSafeInteger(fence.generation) ||
+        json(fence) !==
+          json({
+            subject: fence.subject,
+            holder: fence.holder,
+            generation: fence.generation,
+          })
+      )
+        invalid("Invalid imported request fence");
+      let lease: LeaseRecord | undefined;
+      for (const prior of events) {
+        if (prior === event) break;
+        if (prior.namespace !== event.namespace || prior.key !== fence.subject)
+          continue;
+        if (
+          prior.type === `${event.namespace}:lease.acquired@1` ||
+          prior.type === `${event.namespace}:lease.reacquired@1`
+        )
+          lease = (prior.data as { lease?: LeaseRecord } | null)?.lease;
+        else if (
+          prior.type === `${event.namespace}:lease.renewed@1` ||
+          prior.type === `${event.namespace}:lease.released@1`
+        )
+          lease = prior.data as LeaseRecord;
+        else continue;
+        if (!validateLeaseRecord(lease).ok)
+          invalid("Invalid imported request lease history");
+      }
+      if (
+        !decideLease(lease, {
+          mode: "held",
+          ...fence,
+          nowMs: Date.parse(event.at),
+        }).ok
+      )
+        invalid("Imported request fence does not match its lease");
+    }
+  } else if (input.kind === "acquire") {
+    const lease = result as LeaseRecord;
+    const data = event.data as {
+      lease?: unknown;
+      previous?: LeaseRecord | null;
+    } | null;
+    const duration = input.durationMs;
+    if (
+      !validateLeaseRecord(lease).ok ||
+      !Number.isSafeInteger(lease.generation) ||
+      !data ||
+      typeof data !== "object" ||
+      json(data.lease) !== json(lease) ||
+      (data.previous !== null && !validateLeaseRecord(data.previous).ok) ||
+      event.key !== lease.subject ||
+      event.revision !== lease.generation ||
+      json(event.actor) !== json(lease.holder.actor) ||
+      typeof duration !== "number" ||
+      !Number.isSafeInteger(duration) ||
+      duration <= 0 ||
+      !Number.isSafeInteger(Date.parse(event.at) + duration) ||
+      lease.expiresAt !==
+        new Date(Date.parse(event.at) + duration).toISOString() ||
+      lease.releasedAt !== undefined ||
+      json(input) !==
+        json({
+          kind: "acquire",
+          subject: lease.subject,
+          holder: lease.holder,
+          durationMs: duration,
+        })
+    )
+      invalid("Imported acquisition receipt does not match its operation");
+    const decision = decideLease(data.previous ?? undefined, {
+      mode: "acquire",
+      subject: lease.subject,
+      holder: lease.holder,
+      nowMs: Date.parse(event.at),
+    });
+    if (
+      !decision.ok ||
+      decision.kind !== "acquired" ||
+      decision.generation !== lease.generation ||
+      event.type !==
+        `${event.namespace}:lease.${decision.reacquired ? "reacquired" : "acquired"}@1`
+    )
+      invalid("Imported acquisition receipt does not match its event");
+  } else invalid("Unknown imported request operation");
 }
 
 export class StateOwner {
@@ -568,8 +713,9 @@ export class StateOwner {
           )
             invalid("Invalid imported record");
         }
+        const events: StateEvent[] = [];
         for (const row of candidate.all(
-          "SELECT namespace,key,body FROM state_events",
+          "SELECT namespace,key,body FROM state_events ORDER BY sequence",
         )) {
           const event = JSON.parse(String(row.body)) as StateEvent;
           if (
@@ -578,6 +724,7 @@ export class StateOwner {
             event.key !== row.key
           )
             invalid("Invalid imported event");
+          events.push(event);
         }
         for (const row of candidate.all(
           "SELECT namespace,subject,generation,body FROM state_leases",
@@ -600,8 +747,7 @@ export class StateOwner {
             !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(row.request_id))
           )
             invalid("Invalid imported request ID");
-          json(JSON.parse(String(row.fingerprint)));
-          json(JSON.parse(String(row.result)));
+          validateReceipt(row, events);
         }
       },
       (candidate) => {

@@ -71,9 +71,16 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       const result = JSON.parse(
         run(runtime, [fixture, installed], consumer),
       ) as { passed: string[] };
-      expect(result.passed).toHaveLength(16);
+      expect(result.passed).toHaveLength(17);
     }
     const mutations = [
+      {
+        file: "core/state/index.js",
+        from: "validateReceipt(row, events);",
+        to: "void 0;",
+        journey: "requestreceipts",
+        evidence: "Missing expected exception",
+      },
       {
         file: "adapters/store-sqlite/index.js",
         from: "path, platform: process.platform",
@@ -241,7 +248,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       }
     }
     console.log(
-      `Packed state: ${runtimes.length} runtimes, 16 journeys, ${mutations.length} counterfactuals each`,
+      `Packed state: ${runtimes.length} runtimes, 17 journeys, ${mutations.length} counterfactuals each`,
     );
     // Removing the linear scan causes catastrophic backtracking on a nonmatching suffix.
     const path = join(installed, "dist/src/core/state/fs-class.js");
