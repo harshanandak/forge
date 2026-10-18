@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, renameSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  renameSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
@@ -113,7 +119,9 @@ test("recovery syncs the POSIX parent before commit and skips directory fsync on
 
 test("restore syncs the POSIX parent after swap and rollback renames", async () => {
   for (const rollback of [false, true]) {
-    const work = mkdtempSync(join(tmpdir(), "forge-rename-sync-"));
+    const work = realpathSync(
+      mkdtempSync(join(tmpdir(), "forge-rename-sync-")),
+    );
     const calls: string[] = [];
     const source = await createSqliteStore(work).open({
       path: ":memory:",
