@@ -70,10 +70,19 @@ function realStorePath(path: string): string {
 
 export class StoreRestoringError extends Error {
   readonly code = "restoring";
-  constructor() {
-    super("Store is fenced for restore");
+  constructor(message = "Store is fenced for restore") {
+    super(message);
     this.name = "StoreRestoringError";
   }
+}
+
+function assertSingleLink(file: { readonly nlink: bigint } | undefined): void {
+  // Path-scoped fences cannot exclude hard-link aliases (including NTFS).
+  // Refuse them instead of maintaining a second identity-scoped lock protocol.
+  if (file && file.nlink > 1n)
+    throw new StoreRestoringError(
+      "Hard-linked store files are refused; remove extra links before opening or restoring",
+    );
 }
 
 function changeMarker(path: string): number {
@@ -141,6 +150,7 @@ export function createSqliteStore(
           path === ":memory:" || !existsSync(path)
             ? undefined
             : statSync(path, { bigint: true });
+        assertSingleLink(expectedIdentity);
         hooks.step?.("identity-checked");
         // Keep the opened inode pinned across SQLite's open; reject either side
         // of a pathname replacement rather than adopting its newer identity.
@@ -182,6 +192,8 @@ export function createSqliteStore(
         const current =
           path === ":memory:" ? undefined : statSync(path, { bigint: true });
         assertUnfenced();
+        assertSingleLink(identity);
+        assertSingleLink(current);
         if (
           identity &&
           current &&
@@ -281,6 +293,7 @@ export function createSqliteStore(
             throw new StoreRestoringError();
           if (identity) {
             const current = statSync(path, { bigint: true });
+            assertSingleLink(current);
             if (identity.dev !== current.dev || identity.ino !== current.ino)
               throw new Error("Store identity changed; reopen required");
           }
@@ -419,7 +432,10 @@ export function createSqliteStore(
                 active = true;
                 db.exec("PRAGMA query_only=ON");
                 verify();
-                if (!memory) approvedMarker = changeMarker(path);
+                if (!memory) {
+                  assertSingleLink(statSync(path, { bigint: true }));
+                  approvedMarker = changeMarker(path);
+                }
                 step("fenced");
               } catch (error) {
                 db.exec("ROLLBACK");
@@ -460,6 +476,7 @@ export function createSqliteStore(
                 )
                   throw new Error("Candidate identity drift before swap");
                 const current = statSync(path, { bigint: true });
+                assertSingleLink(current);
                 if (
                   current.dev !== identity?.dev ||
                   current.ino !== identity.ino ||
