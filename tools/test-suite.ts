@@ -6,11 +6,16 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const suite = process.argv[2];
 if (
-  (suite !== "unit" && suite !== "integration" && suite !== "all") ||
+  (suite !== "unit" &&
+    suite !== "integration" &&
+    suite !== "integration-rest" &&
+    suite !== "all") ||
   process.argv[3] !== "--timeout" ||
   !/^\d+$/.test(process.argv[4] ?? "")
 ) {
-  throw new Error("select unit, integration or all, with --timeout <ms>");
+  throw new Error(
+    "select unit, integration, integration-rest or all, with --timeout <ms>",
+  );
 }
 const timeout = process.argv[4]!;
 
@@ -23,11 +28,15 @@ function testFiles(dir: string): string[] {
 }
 
 const files = testFiles(join(root, "test")).sort();
-function run(kind: "unit" | "integration"): void {
+function run(kind: "unit" | "integration" | "integration-rest"): void {
   const selected = files.filter((file) =>
-    kind === "integration"
-      ? file.endsWith(".integration.test.ts")
-      : !file.endsWith(".integration.test.ts"),
+    kind === "unit"
+      ? !file.endsWith(".integration.test.ts")
+      : file.endsWith(".integration.test.ts") &&
+        (kind !== "integration-rest" ||
+          !file
+            .replaceAll("\\", "/")
+            .endsWith("node-fixtures/state/packed.integration.test.ts")),
   );
   if (selected.length === 0) throw new Error(`the ${kind} test suite is empty`);
   console.log(`${kind}: ${selected.length} test files`);
@@ -38,7 +47,7 @@ function run(kind: "unit" | "integration"): void {
       "--timeout",
       timeout,
       ...(kind === "unit" ? ["--parallel"] : []),
-      ...selected,
+      ...selected.map((file) => `./${file}`),
     ],
     { cwd: root, stdio: "inherit", windowsHide: true },
   );
@@ -47,3 +56,4 @@ function run(kind: "unit" | "integration"): void {
 }
 if (suite === "unit" || suite === "all") run("unit");
 if (suite === "integration" || suite === "all") run("integration");
+if (suite === "integration-rest") run("integration-rest");
