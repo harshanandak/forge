@@ -86,7 +86,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       consumer,
       env,
     );
-    for (const name of ["journey", "writer"])
+    for (const name of ["journey", "writer", "review"])
       copyFileSync(
         join(import.meta.dirname, `fixtures/${name}.mjs`),
         join(consumer, `${name}.mjs`),
@@ -102,8 +102,29 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       expect(
         run(runtime, [join(consumer, "journey.mjs")], consumer, env),
       ).toContain("PASS all");
+    for (const runtime of runtimes)
+      expect(
+        run(runtime, [join(consumer, "review.mjs")], consumer, env),
+      ).toContain("PASS package-roots");
     const installed = join(consumer, "node_modules/forge-workflow/dist");
     const mutations = [
+      {
+        file: "src/assembly/index.js",
+        from: "const reason = error instanceof Error",
+        to: "throw error; const reason = error instanceof Error",
+        mode: "missing-sources",
+        fixture: "review",
+        evidence: "config show:",
+      },
+      {
+        file: "src/assembly/capture.js",
+        from: "const candidate = join(directory, source.package);",
+        to: 'const candidate = resolve(require.resolve(`${source.package}/package.json`), "..");',
+        mode: "package-roots",
+        fixture: "review",
+        evidence: "block check hidden-block",
+      },
+
       {
         file: "src/assembly/index.js",
         from: "detectProject(createFolderFiles(root)).observations",
@@ -148,7 +169,10 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         writeFileSync(path, original.replaceAll(mutation.from, mutation.to));
         const result = spawnSync(
           node,
-          [join(consumer, "journey.mjs"), mutation.mode],
+          [
+            join(consumer, `${mutation.fixture ?? "journey"}.mjs`),
+            mutation.mode,
+          ],
           {
             cwd: consumer,
             env,

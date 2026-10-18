@@ -16,4 +16,5 @@ export {
   localContext,
   type Assembly,
   type AssemblyOptions,
+  type UnavailableBlock,
 } from "./index.ts";

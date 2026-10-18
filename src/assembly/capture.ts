@@ -28,8 +28,23 @@ export const blockCapture: FileCapturePort = {
 export function resolveBlock(root: string, source: BlockSource): string {
   if ("path" in source) return resolve(root, source.path);
   if ("package" in source) {
+    if (
+      !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(
+        source.package,
+      )
+    )
+      refuse("INPUT_INVALID", "Expected an installed package name");
     const require = createRequire(join(root, "package.json"));
-    return resolve(require.resolve(`${source.package}/package.json`), "..");
+    // Search Node's installed-package roots without requesting an exported subpath
+    // or loading the package's entry point. Scoped packages use the same roots.
+    for (const directory of require.resolve.paths(source.package) ?? []) {
+      const candidate = join(directory, source.package);
+      if (existsSync(candidate)) return candidate;
+    }
+    refuse(
+      "PROVIDER_MISSING",
+      `Package ${source.package} is not installed; install it or repair the block source`,
+    );
   }
   refuse(
     "PROVIDER_MISSING",

@@ -27,6 +27,8 @@ import {
 import type { McpCandidate } from "../contract/mcp.ts";
 import type {
   Actor,
+  BlockSource,
+  ConfigDocument,
   AmbientContext,
   McpExposure,
   ResultEnvelope,
@@ -85,8 +87,16 @@ export interface AssemblyOptions {
   readonly root: string;
   readonly deviceRoot: string;
 }
+export interface UnavailableBlock {
+  readonly name: string;
+  readonly source: BlockSource;
+  readonly reason: string;
+  readonly remedy: string;
+}
 export interface Assembly {
-  readonly catalog: SurfaceCatalog;
+  readonly catalog: SurfaceCatalog & {
+    unavailable(): readonly UnavailableBlock[];
+  };
   readonly root: string;
   readonly deviceRoot: string;
   readonly exposure: McpExposure;
@@ -176,22 +186,86 @@ export async function createAssembly(
     if (!checked.ok) refuse("INPUT_INVALID", "Invalid effective composition");
     return checked.value;
   }
+  function availableComposition(
+    document: ConfigDocument,
+    blocks: ReadonlyMap<string, CapturedBlock>,
+  ): ConfigDocument {
+    return {
+      ...document,
+      blocks: Object.fromEntries(
+        Object.entries(document.blocks).filter(
+          ([name, instance]) => instance.enabled === false || blocks.has(name),
+        ),
+      ),
+    };
+  }
   function snapshot(): {
     catalog: Catalog;
     blocks: ReadonlyMap<string, CapturedBlock>;
+    unavailable: readonly UnavailableBlock[];
+    problems: readonly string[];
+    compositionProblem?: string;
   } {
     const show = config.show();
-    if (show.problems.length) refuse("INPUT_INVALID", show.problems.join("; "));
-    const document = { value: composition(show) };
+    const document = composition(show);
     const blocks = new Map<string, CapturedBlock>();
-    for (const [name, instance] of Object.entries(document.value.blocks)) {
+    const unavailable: UnavailableBlock[] = [];
+    for (const [name, instance] of Object.entries(document.blocks)) {
       if (instance.enabled === false) continue;
-      blocks.set(
-        name,
-        captureBlock(resolveBlock(root, instance.source), blockCapture),
-      );
+      try {
+        blocks.set(
+          name,
+          captureBlock(resolveBlock(root, instance.source), blockCapture),
+        );
+      } catch (error) {
+        const reason =
+          error instanceof Error
+            ? error.message
+            : "Source could not be captured";
+        unavailable.push({
+          name,
+          source: instance.source,
+          reason,
+          remedy: `Restore the source for ${name}, or remove /blocks/${name} with config.apply at the current config revision.`,
+        });
+      }
     }
-    return { catalog: new Catalog(document.value, blocks, version), blocks };
+    const problems = [
+      ...show.problems,
+      ...unavailable.map(
+        (block) =>
+          `Block ${block.name} is unavailable: ${block.reason}. ${block.remedy}`,
+      ),
+    ];
+    try {
+      return {
+        catalog: new Catalog(
+          availableComposition(document, blocks),
+          blocks,
+          version,
+        ),
+        blocks,
+        unavailable,
+        problems,
+      };
+    } catch (error) {
+      // Broken bindings must remain repairable through the core config operations.
+      const compositionProblem =
+        error instanceof Error
+          ? error.message
+          : "Block composition is unavailable";
+      return {
+        catalog: new Catalog(
+          { schemaVersion: "forge.config/1", blocks: {} },
+          new Map(),
+          version,
+        ),
+        blocks,
+        unavailable,
+        problems: [...problems, compositionProblem],
+        compositionProblem,
+      };
+    }
   }
   function blockEntries(): readonly McpCandidate[] {
     const { catalog } = snapshot();
@@ -223,7 +297,8 @@ export async function createAssembly(
       };
     });
   }
-  const catalog: SurfaceCatalog = {
+  const catalog: Assembly["catalog"] = {
+    unavailable: () => snapshot().unavailable,
     list: () => [...configCandidates, grantCandidate, ...blockEntries()],
     async invoke(request) {
       try {
@@ -252,7 +327,11 @@ export async function createAssembly(
           if (configHandler) {
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
-            const output = configHandler(request.input);
+            const handled = configHandler(request.input);
+            const output =
+              request.op === "config.show"
+                ? { ...(handled as ShowResult), problems: snapshot().problems }
+                : handled;
             if (!validateConfigValue(entry.declaration, "output", output))
               refuse("OUTPUT_INVALID", "Invalid config output");
             return success(request.op, output);
@@ -278,7 +357,11 @@ export async function createAssembly(
             };
             const blocks = new Map(current.blocks);
             blocks.set(name, block);
-            new Catalog(proposed, blocks, version);
+            new Catalog(
+              availableComposition(proposed, blocks),
+              blocks,
+              version,
+            );
             const docs = validateDocsRecords(
               JSON.parse(block.text(block.manifest.docs)) as unknown,
             );
@@ -377,6 +460,8 @@ export async function createAssembly(
           refuse("UNKNOWN_COMMAND", "Operation is not assembled");
         }
         const current = snapshot();
+        if (current.compositionProblem)
+          refuse("PROVIDER_MISSING", current.compositionProblem);
         return await new Runtime(current.catalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
