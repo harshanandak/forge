@@ -2,9 +2,10 @@
 // one typed validator per named shape. The schemas are the one source of truth.
 // The output is gitignored and never committed: `bun run check`, `lint`, `build` and `bun test` generate it
 // first, so a clean checkout works. Usage: bun tools/gen/types.ts
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeGenerated } from "./write.ts";
 
 type Schema = boolean | Readonly<Record<string, unknown>>;
 type SchemaObject = Readonly<Record<string, unknown>>;
@@ -349,11 +350,10 @@ export function generate(root: string = repoRoot): Map<string, string> {
   ]);
 }
 
-/** Write the generated files under `root`, creating src/generated when it is absent. */
+/** Write generated outputs under `root`, leaving current files untouched. */
 export function write(root: string = repoRoot): void {
   for (const [path, text] of generate(root)) {
-    mkdirSync(dirname(join(root, path)), { recursive: true });
-    writeFileSync(join(root, path), text);
+    writeGenerated(join(root, path), text);
   }
 }
 
