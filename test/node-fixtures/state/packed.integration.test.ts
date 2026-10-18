@@ -71,6 +71,13 @@ async function complete(tasks: Promise<void>[]): Promise<void> {
 
 // Labelled integration: real package install and separate runtime processes, no developer checkout imports.
 test("integration: packed state journeys and targeted remove-the-fix checks", async () => {
+  let started = performance.now();
+  function phase(name: string) {
+    console.log(
+      `Packed state ${name}: ${Math.round(performance.now() - started)} ms`,
+    );
+    started = performance.now();
+  }
   const work = mkdtempSync(join(tmpdir(), "forge-packed-state-"));
   try {
     // CI builds once before starting the smoke and integration readers together.
@@ -104,6 +111,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
       consumer,
     );
     const installed = join(consumer, "node_modules/forge-workflow");
+    phase("install");
     const runtimes = [
       ...new Set(
         [node, process.execPath, process.env.STATE_NODE26].filter(
@@ -111,23 +119,36 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
         ),
       ),
     ];
+    const journeys = JSON.parse(
+      run(node, [fixture, installed, "list"], consumer),
+    ) as string[];
+    expect(journeys).toHaveLength(20);
     await complete(
-      runtimes.map(async (runtime) => {
-        const result = await launch(
-          runtime,
-          [fixture, installed],
-          consumer,
-          90000,
-        );
-        if (result.error || result.status !== 0)
-          throw new Error(
-            `${runtime}: ${result.error?.message ?? result.stderr}\n${result.stdout}`,
+      Array.from({ length: 4 }, async (_, worker) => {
+        for (const journey of journeys.filter(
+          (_, index) => index % 4 === worker,
+        )) {
+          await complete(
+            runtimes.map(async (runtime) => {
+              const result = await launch(
+                runtime,
+                [fixture, installed, journey],
+                consumer,
+                90000,
+              );
+              if (result.error || result.status !== 0)
+                throw new Error(
+                  `${runtime}: ${result.error?.message ?? result.stderr}\n${result.stdout}`,
+                );
+              expect(
+                (JSON.parse(result.stdout) as { passed: string[] }).passed,
+              ).toEqual([journey]);
+            }),
           );
-        expect(
-          (JSON.parse(result.stdout) as { passed: string[] }).passed,
-        ).toHaveLength(20);
+        }
       }),
     );
+    phase("journeys");
     const mutations = [
       {
         file: "core/state/migrations.js",
@@ -312,7 +333,10 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
           "node_modules",
           `forge-counterfactual-${worker}`,
         );
-        cpSync(installed, isolated, { recursive: true });
+        cpSync(installed, isolated, {
+          recursive: true,
+          filter: (path) => !path.endsWith(".map") && !path.endsWith(".ts"),
+        });
         for (const mutation of mutations.filter(
           (_, index) => index % 4 === worker,
         )) {
@@ -352,6 +376,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
         }
       }),
     );
+    phase("counterfactuals");
     console.log(
       `Packed state: ${runtimes.length} runtimes, 20 journeys, ${mutations.length} counterfactuals each`,
     );

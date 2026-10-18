@@ -125,7 +125,7 @@ jobs:
       - name: Unit tests
         run: bun run test:unit
       # Both lanes only read the completed build, and pack/install into separate temp directories.
-      # Keep integration files serial; only the packed state's isolated fixture workers overlap.
+      # Other integration files stay serial while the isolated packed state process overlaps them.
       - name: Process integration tests and pack smoke
         env:
           STATE_PREBUILT: "1"
