@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import type {
   InvocationRequest,
@@ -21,7 +22,7 @@ const {
   nodeFileCapture,
   nodeRunIsolation,
 } = (await import(
-  consumer.resolve("forge-workflow/runtime")
+  pathToFileURL(consumer.resolve("forge-workflow/runtime")).href
 )) as typeof import("../../../src/assembly/runtime.ts");
 const captureBlock = (
   root: string,

@@ -20,10 +20,10 @@ const selected = process.argv[3] ?? "all";
 const load = (path) => import(pathToFileURL(join(root, "dist/src", path)).href);
 const consumer = createRequire(join(root, "package.json"));
 const { sqliteStore, createSqliteStore } = await import(
-  consumer.resolve("forge-workflow/adapters/sqlite")
+  pathToFileURL(consumer.resolve("forge-workflow/adapters/sqlite")).href
 );
 const { StateOwner, withState } = await import(
-  consumer.resolve("forge-workflow/state")
+  pathToFileURL(consumer.resolve("forge-workflow/state")).href
 );
 const { baseline, migrate, execMigrationStatement } = await load(
   "core/state/migrations.js",
