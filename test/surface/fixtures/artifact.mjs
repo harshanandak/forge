@@ -22,6 +22,7 @@ const entry = {
     idempotent: true,
     callers: ["human", "agent"],
     stability: "stable",
+    args: ["value"],
   },
   docs: { title: "Fresh inspect", summary: "Inspect the fixture." },
   inputSchema: {

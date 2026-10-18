@@ -20,6 +20,7 @@ export function candidate(
       idempotent: true,
       callers: ["human", "agent"],
       stability: "stable",
+      args: ["value"],
       ...change,
     },
     docs: { title: op, summary: `Run ${op}` },

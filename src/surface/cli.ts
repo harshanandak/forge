@@ -57,10 +57,7 @@ function mapArguments(
   entry: McpCandidate | undefined,
 ): unknown {
   const properties = record(entry?.inputSchema.properties) ?? {};
-  const required = entry?.inputSchema.required;
-  const positions = Array.isArray(required)
-    ? required.filter((v): v is string => typeof v === "string")
-    : Object.keys(properties);
+  const positions = entry?.declaration.args ?? [];
   const result: Record<string, unknown> = Object.create(null) as Record<
     string,
     unknown
@@ -94,7 +91,10 @@ function mapArguments(
       result[key] = argumentValue(raw, properties[key]);
     } else {
       const key = positions[position++];
-      if (key === undefined) throw new Error("Unexpected positional argument.");
+      if (key === undefined)
+        throw new Error(
+          "Unexpected positional argument. Use declared flags or --input JSON.",
+        );
       if (Object.hasOwn(result, key))
         throw new Error(`Duplicate argument ${key}.`);
       result[key] = argumentValue(token, properties[key]);

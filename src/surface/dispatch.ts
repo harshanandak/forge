@@ -26,7 +26,10 @@ export function visible(
 ): ReturnType<SurfaceCatalog["list"]> {
   return catalog
     .list()
-    .filter((c) => caller !== "agent" || isAgentCallable(c.declaration));
+    .filter(
+      (c) =>
+        c.admitted && (caller !== "agent" || isAgentCallable(c.declaration)),
+    );
 }
 
 export function suggestions(
@@ -86,7 +89,15 @@ export async function dispatch(
       );
     return dispatch(catalog, args.op, args.input ?? {}, options);
   }
-  if (!entries.some((c) => c.op === op))
+  if (
+    !catalog
+      .list()
+      .some(
+        (c) =>
+          c.op === op &&
+          (options.caller !== "agent" || isAgentCallable(c.declaration)),
+      )
+  )
     return failure(
       "UNKNOWN_COMMAND",
       `Unknown operation: ${op}`,

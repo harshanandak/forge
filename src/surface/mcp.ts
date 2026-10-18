@@ -1,8 +1,4 @@
-import {
-  mcpAnnotations,
-  selectMcpTools,
-  projectMcpTool,
-} from "../contract/mcp.ts";
+import { selectMcpTools, projectMcpTool } from "../contract/mcp.ts";
 import { mcpToolName } from "../contract/naming.ts";
 import type { McpExposure } from "../generated/types.ts";
 import type { McpHandlers } from "../ports/mcp-transport.ts";
@@ -60,6 +56,15 @@ export function createMcpHandlers(
       }),
     ]),
   );
+  const exposed = catalog
+    .list()
+    .filter((candidate) =>
+      byName.has(mcpToolName(candidate.op, exposure.toolPrefix) ?? ""),
+    );
+  const restricted: SurfaceCatalog = {
+    list: () => exposed,
+    invoke: (request) => catalog.invoke(request),
+  };
   return {
     listTools: () => [
       ...selected.tools,
@@ -70,18 +75,6 @@ export function createMcpHandlers(
     ],
     callTool: async (name, args) => {
       if (discoveryOperations.some((entry) => name === mcpToolName(entry.op))) {
-        // catalog_call must honor a read-only connection even for operations beyond the budget.
-        const restricted =
-          exposure.readOnly === true
-            ? {
-                invoke: (request: Parameters<SurfaceCatalog["invoke"]>[0]) =>
-                  catalog.invoke(request),
-                list: () =>
-                  catalog
-                    .list()
-                    .filter((c) => mcpAnnotations(c.declaration).readOnlyHint),
-              }
-            : catalog;
         return dispatch(restricted, name.replace("_", "."), args, {
           ...options,
           caller: "agent",

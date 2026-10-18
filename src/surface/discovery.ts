@@ -15,6 +15,7 @@ export const discoveryOperations: readonly McpCandidate[] = (
     idempotent: verb !== "call",
     callers: ["human", "agent"],
     stability: "stable",
+    args: verb === "list" ? [] : ["op"],
   },
   docs: {
     title: `Catalog ${verb}`,

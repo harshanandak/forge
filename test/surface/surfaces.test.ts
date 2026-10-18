@@ -8,6 +8,98 @@ import { SchemaRegistry } from "../../src/contract/schema.ts";
 import { PassThrough } from "node:stream";
 import { runCommand } from "../../src/surface/command.ts";
 
+test("catalog_call refuses operations outside the listed MCP exposure", async () => {
+  const catalog = fakeCatalog([
+    candidate("sample.allowed"),
+    candidate("sample.hidden"),
+    candidate("sample.private", { callers: ["human"] }),
+    candidate("sample.experimental", { stability: "experimental" }),
+  ]);
+  for (const [exposure, op] of [
+    [{ expose: ["sample.allowed"] }, "sample.hidden"],
+    [{ budget: 1 }, "sample.hidden"],
+    [{}, "sample.private"],
+    [{}, "sample.experimental"],
+  ] as const) {
+    const handlers = createMcpHandlers(catalog, exposure);
+    expect(await handlers.callTool("catalog_call", { op })).toMatchObject({
+      ok: false,
+      error: { code: "UNKNOWN_COMMAND" },
+    });
+  }
+  expect(catalog.calls).toHaveLength(0);
+  expect(
+    await createMcpHandlers(catalog, { expose: ["sample.allowed"] }).callTool(
+      "catalog_call",
+      { op: "sample.allowed" },
+    ),
+  ).toMatchObject({ ok: true });
+}, 30_000);
+
+test("CLI positionals follow declaration args rather than schema order", async () => {
+  const entry = candidate("sample.ordered", { args: ["count", "value"] });
+  const catalog = fakeCatalog([entry]);
+  expect(
+    (await runCli(catalog, [entry.op, "2", "hello"])).envelope,
+  ).toMatchObject({
+    ok: true,
+    result: { count: 2, value: "hello" },
+  });
+}, 30_000);
+
+test("CLI refuses positionals when no args are declared and explains the alternative", async () => {
+  const { args: _args, ...declaration } = candidate().declaration;
+  const catalog = fakeCatalog([{ ...candidate(), declaration }]);
+  const reply = await runCli(catalog, ["sample.echo", "hello"]);
+  expect(reply.envelope).toMatchObject({
+    ok: false,
+    error: { code: "INPUT_INVALID" },
+  });
+  expect(reply.stdout).toContain("--input");
+  expect(catalog.calls).toHaveLength(0);
+  expect(
+    (await runCli(catalog, ["sample.echo", "--value", "hello"])).envelope.ok,
+  ).toBe(true);
+}, 30_000);
+
+test("unadmitted operations stay out of discovery but named calls reach admission refusal", async () => {
+  const entry = { ...candidate("pending.inspect"), admitted: false };
+  const refusal = {
+    ...failure("ADMISSION_REQUIRED", "Run block admit pending."),
+    status: "INCOMPLETE" as const,
+  };
+  const catalog = fakeCatalog([entry], refusal);
+  expect((await runCli(catalog, ["--help"])).stdout).not.toContain(entry.op);
+  expect((await runCli(catalog, ["catalog.list"])).stdout).not.toContain(
+    entry.op,
+  );
+  expect(
+    (await runCli(catalog, ["catalog.describe", "--op", entry.op])).envelope,
+  ).toMatchObject({ ok: false, error: { code: "UNKNOWN_COMMAND" } });
+  expect((await runCli(catalog, ["pending.inspec"])).stdout).not.toContain(
+    '"pending.inspect"',
+  );
+  expect(
+    createMcpHandlers(catalog)
+      .listTools()
+      .some((tool) => tool.name === "pending_inspect"),
+  ).toBe(false);
+  expect(catalog.calls).toHaveLength(0);
+  expect((await runCli(catalog, [entry.op, "--input", "{}"])).envelope).toEqual(
+    refusal,
+  );
+  expect(
+    (
+      await runCli(catalog, [
+        "catalog.call",
+        "--input",
+        JSON.stringify({ op: entry.op }),
+      ])
+    ).envelope,
+  ).toEqual(refusal);
+  expect(catalog.calls).toHaveLength(2);
+}, 30_000);
+
 test("a new catalog entry appears in help, describe and MCP with no surface changes", async () => {
   const catalog = fakeCatalog([candidate("fresh.inspect")]);
   expect((await runCli(catalog, ["--help"])).stdout).toContain("fresh.inspect");
@@ -160,7 +252,7 @@ test("05538ad7: failures retain their full envelope and contract exit, batches s
   ).toBe(2);
 }, 30_000);
 
-test("stable budget is configurable; overflow discovery preserves human and read-only boundaries", async () => {
+test("stable budget is configurable; discovery preserves human and read-only boundaries", async () => {
   const entries = Array.from({ length: 45 }, (_, i) =>
     candidate(`sample.op${i}`),
   );
@@ -184,6 +276,10 @@ test("stable budget is configurable; overflow discovery preserves human and read
     (await handlers.callTool("catalog_call", { op: "sample.op44", input: {} }))
       ?.ok,
   ).toBe(true);
+  expect(
+    (await handlers.callTool("catalog_call", { op: "sample.op9", input: {} }))
+      ?.ok,
+  ).toBe(false);
   expect(
     (await handlers.callTool("catalog_call", { op: "sample.private" }))?.ok,
   ).toBe(false);
