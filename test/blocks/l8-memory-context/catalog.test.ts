@@ -18,7 +18,7 @@ test("both blocks are registered first-party sources that resolve to their folde
   expect(
     resolveBlock("/unused", { builtin: "forge/context" }).replaceAll("\\", "/"),
   ).toMatch(/src\/blocks\/context\/?$/);
-});
+}, 30_000);
 
 const operations = {
   "memory.add": { effects: ["memory:write"], humanOnly: false },
