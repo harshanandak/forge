@@ -271,7 +271,11 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
             throw new Error(
               `Counterfactual survived: ${mutation.journey}: ${mutation.from} (${runtime})\n${result.stdout}\n${result.stderr}`,
             );
-          expect(result.stderr).toContain(mutation.evidence);
+          if (mutation.from === "if (lstatSync(path).isSymbolicLink())")
+            expect(result.stderr).toMatch(
+              /dangling file symlink must be refused|Dangling store symlink/,
+            );
+          else expect(result.stderr).toContain(mutation.evidence);
         }
       } finally {
         writeFileSync(path, original);
