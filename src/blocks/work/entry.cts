@@ -258,11 +258,19 @@ const operations: Operations<WorkOperations> = {
     const state = client(services);
     if (stored(get(state, input.id)).status !== "open")
       fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
-    return grant(
-      state,
-      input.id,
-      state.acquire(key(input.id), (input.ttlSeconds ?? 3600) * 1000),
+    const acquired = state.acquire(
+      key(input.id),
+      (input.ttlSeconds ?? 3600) * 1000,
     );
+    // Another holder may close between the initial read and acquisition.
+    if (stored(get(state, input.id)).status !== "open") {
+      state.release(key(input.id));
+      fail(
+        "INPUT_CONFLICT",
+        "The issue closed during acquisition; the grant was revoked",
+      );
+    }
+    return grant(state, input.id, acquired);
   },
   "issue.renew": ({ input, services }) => {
     const state = client(services);

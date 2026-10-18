@@ -54,4 +54,11 @@ export const counterfactuals: readonly {
     journey: "records",
     evidence: "expected INTERNAL",
   },
+  {
+    file: "blocks/work/entry.cjs",
+    from: 'if (stored(get(state, input.id)).status !== "open") {',
+    to: "if (false) {",
+    journey: "closed-claim",
+    evidence: "expected INPUT_CONFLICT",
+  },
 ];

@@ -27,6 +27,7 @@ const isolation = await nodeRunIsolation.open();
 assert.ok(isolation.ok);
 let sequence = 0;
 let readbackFault = false;
+let closeDuringAcquire = false;
 const actor = (name) => ({ kind: "agent", id: name });
 const context = (who, generation, session = who) => ({
   variant: "leased",
@@ -69,6 +70,30 @@ function call(
         state: {
           ...client,
           now: () => now,
+          acquire: (subject, durationMs) => {
+            if (closeDuringAcquire) {
+              closeDuringAcquire = false;
+              const held = state.lease("forge/work", subject);
+              const record = state.get("forge/work", subject);
+              state.put(
+                "forge/work",
+                subject,
+                { ...record.value, status: "closed" },
+                held.holder.actor,
+                {
+                  expectRevision: record.revision,
+                  fence: {
+                    subject,
+                    holder: held.holder,
+                    generation: held.generation,
+                  },
+                },
+              );
+              now = Date.parse(held.expiresAt);
+            }
+            return client.acquire(subject, durationMs);
+          },
+
           ...(readbackFault ? { get: () => undefined } : {}),
         },
       },
@@ -155,6 +180,31 @@ try {
     }
     console.log(
       "PASS records: create, comment readback, update CAS, links, close readback, unknown kind",
+    );
+  }
+  if (["all", "closed-claim"].includes(mode)) {
+    const item = create("Close during claim");
+    call("claim", { id: item.id, ttlSeconds: 10 }, context("alice", "acquire"));
+    closeDuringAcquire = true;
+    error("INPUT_CONFLICT", () =>
+      call("claim", { id: item.id, ttlSeconds: 10 }, context("bob", "acquire")),
+    );
+    const revoked = state.lease("forge/work", `issue:${item.id}`);
+    assert.equal(revoked.generation, 2);
+    assert.ok(
+      revoked.releasedAt,
+      "closed-issue acquisition must leave no usable grant",
+    );
+    error("LEASE_NOT_HELD", () =>
+      call(
+        "update",
+        { id: item.id, title: "must not write", expectRevision: 2 },
+        context("bob", 2),
+      ),
+    );
+    assert.equal(call("show", { id: item.id }).status, "closed");
+    console.log(
+      "PASS closed-claim: interleaved close revokes just-acquired authority",
     );
   }
   if (["all", "leases"].includes(mode)) {
