@@ -1,0 +1,9 @@
+set shell := ["bash", "-cu"]
+
+default: test
+
+test target="all":
+    pnpm test
+
+@lint:
+    pnpm lint

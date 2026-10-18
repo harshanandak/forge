@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["observations", "failures"],
+  "properties": {
+    "observations": {
+      "description": "Everything the detectors found, each traced to a file.",
+      "type": "array",
+      "items": {
+        "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/detection.json"
+      }
+    },
+    "failures": {
+      "description": "Detectors that could not finish; the rest still ran.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["detector", "message"],
+        "properties": {
+          "detector": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

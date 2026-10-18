@@ -1,0 +1,42 @@
+[
+  {
+    "key": "/blocks/project/detected/node/present",
+    "value": true,
+    "file": "package.json"
+  },
+  {
+    "key": "/blocks/project/detected/node/packageManager",
+    "value": {
+      "name": "bun"
+    },
+    "file": "bun.lock"
+  },
+  {
+    "key": "/blocks/project/detected/node/scripts",
+    "value": {
+      "test": "bun test",
+      "dev": "bun --hot index.ts",
+      "typecheck": "tsc --noEmit"
+    },
+    "file": "package.json",
+    "pointer": "/scripts"
+  },
+  {
+    "key": "/blocks/check/config/commands/test",
+    "value": "bun run test",
+    "file": "package.json",
+    "pointer": "/scripts/test"
+  },
+  {
+    "key": "/blocks/check/config/commands/typecheck",
+    "value": "bun run typecheck",
+    "file": "package.json",
+    "pointer": "/scripts/typecheck"
+  },
+  {
+    "key": "/blocks/project/detected/node/typescript",
+    "value": true,
+    "file": "package.json",
+    "pointer": "/devDependencies/typescript"
+  }
+]

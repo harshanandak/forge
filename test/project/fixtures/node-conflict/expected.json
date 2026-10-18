@@ -1,0 +1,30 @@
+[
+  {
+    "key": "/blocks/project/detected/node/present",
+    "value": true,
+    "file": "package.json"
+  },
+  {
+    "key": "/blocks/project/detected/node/packageManagerConflict",
+    "value": {
+      "yarn": "yarn.lock",
+      "npm": "package-lock.json"
+    },
+    "file": "yarn.lock"
+  },
+  {
+    "key": "/blocks/project/detected/node/scripts",
+    "value": {
+      "test": "echo \"Error: no test specified\" && exit 1",
+      "build": "node build.js"
+    },
+    "file": "package.json",
+    "pointer": "/scripts"
+  },
+  {
+    "key": "/blocks/project/detected/node/placeholderScripts",
+    "value": ["test"],
+    "file": "package.json",
+    "pointer": "/scripts"
+  }
+]

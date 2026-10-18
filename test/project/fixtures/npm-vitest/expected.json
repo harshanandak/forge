@@ -1,0 +1,76 @@
+[
+  {
+    "key": "/blocks/project/detected/node/present",
+    "value": true,
+    "file": "package.json"
+  },
+  {
+    "key": "/blocks/project/detected/node/packageManager",
+    "value": {
+      "name": "npm"
+    },
+    "file": "package-lock.json"
+  },
+  {
+    "key": "/blocks/project/detected/node/scripts",
+    "value": {
+      "test": "vitest run",
+      "lint": "eslint .",
+      "build": "tsc -p .",
+      "type-check": "tsc --noEmit"
+    },
+    "file": "package.json",
+    "pointer": "/scripts"
+  },
+  {
+    "key": "/blocks/check/config/commands/test",
+    "value": "npm test",
+    "file": "package.json",
+    "pointer": "/scripts/test"
+  },
+  {
+    "key": "/blocks/check/config/commands/lint",
+    "value": "npm run lint",
+    "file": "package.json",
+    "pointer": "/scripts/lint"
+  },
+  {
+    "key": "/blocks/check/config/commands/build",
+    "value": "npm run build",
+    "file": "package.json",
+    "pointer": "/scripts/build"
+  },
+  {
+    "key": "/blocks/check/config/commands/typecheck",
+    "value": "npm run type-check",
+    "file": "package.json",
+    "pointer": "/scripts/type-check"
+  },
+  {
+    "key": "/blocks/project/detected/node/testRunners/vitest",
+    "value": {
+      "version": "^2.1.0"
+    },
+    "file": "package.json",
+    "pointer": "/devDependencies/vitest"
+  },
+  {
+    "key": "/blocks/project/detected/node/typescript",
+    "value": true,
+    "file": "tsconfig.json"
+  },
+  {
+    "key": "/blocks/project/detected/ci/github-actions",
+    "value": {
+      "files": [".github/workflows/ci.yml"]
+    },
+    "file": ".github/workflows/ci.yml"
+  },
+  {
+    "key": "/blocks/project/detected/trackers/github-issues",
+    "value": {
+      "adapter": false
+    },
+    "file": ".github/ISSUE_TEMPLATE"
+  }
+]
