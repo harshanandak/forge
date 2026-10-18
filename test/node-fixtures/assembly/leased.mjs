@@ -129,7 +129,12 @@ try {
     false,
     "read must not create state",
   );
-  const grant = await dispatch(assembly.catalog, "catalog.call", {op: "counter.claim", input: {}, context, requestId: "first"}, {caller: "agent"});
+  const grant = await dispatch(
+    assembly.catalog,
+    "catalog.call",
+    { op: "counter.claim", input: {}, context, requestId: "first" },
+    { caller: "agent" },
+  );
   assert.equal(grant.ok, true, JSON.stringify(grant));
   assert.equal(grant.result.generation, 1);
   assert.deepEqual(
