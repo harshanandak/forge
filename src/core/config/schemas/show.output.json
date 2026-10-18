@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/show.output.json",
+  "type": "object",
+  "description": "The effective config with every value traced to its layer and origin. Detection alone never adds an instance.",
+  "required": [
+    "file",
+    "revision",
+    "configured",
+    "instances",
+    "templates",
+    "values",
+    "ignored",
+    "problems",
+    "excluded",
+    "effective"
+  ],
+  "properties": {
+    "file": {
+      "$ref": "../../../../schemas/common.json#/$defs/RelativePath"
+    },
+    "revision": {
+      "$ref": "../../../../schemas/common.json#/$defs/Digest"
+    },
+    "configured": {
+      "type": "boolean"
+    },
+    "instances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "source", "enabled"],
+        "properties": {
+          "name": {
+            "$ref": "../../../../schemas/common.json#/$defs/InstanceName"
+          },
+          "source": {
+            "$ref": "../../../../schemas/config.json#/$defs/BlockSource"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "templates": {
+      "type": "array",
+      "items": {
+        "$ref": "../../../../schemas/config.json#/$defs/TemplateProvenance"
+      }
+    },
+    "values": {
+      "type": "array",
+      "items": {
+        "$ref": "defs.json#/$defs/LayerEntry"
+      }
+    },
+    "ignored": {
+      "type": "array",
+      "items": {
+        "$ref": "defs.json#/$defs/Ignored"
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "description": "Parts of the config file left out of every other field because they are not valid, with where they are and why.",
+      "items": {
+        "type": "object",
+        "required": ["pointer", "problems"],
+        "properties": {
+          "pointer": {
+            "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "effective": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

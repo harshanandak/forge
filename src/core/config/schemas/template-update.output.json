@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/template-update.output.json",
+  "description": "Upstream changes applied to keys still unchanged since import; edited keys are reported and left alone.",
+  "allOf": [
+    {
+      "$ref": "defs.json#/$defs/WriteFields"
+    },
+    {
+      "type": "object",
+      "required": ["template", "applied", "conflicts"],
+      "properties": {
+        "file": {},
+        "previousRevision": {},
+        "revision": {},
+        "receipt": {},
+        "changes": {},
+        "fileRemoved": {},
+        "template": {
+          "$ref": "../../../../schemas/common.json#/$defs/TemplateRef"
+        },
+        "applied": {
+          "type": "array",
+          "items": {
+            "$ref": "defs.json#/$defs/KeyChange"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "defs.json#/$defs/KeyChange"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

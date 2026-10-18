@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/detect.output.json",
+  "type": "object",
+  "required": ["observations", "ignored"],
+  "properties": {
+    "observations": {
+      "type": "array",
+      "items": {
+        "$ref": "defs.json#/$defs/LayerEntry"
+      }
+    },
+    "ignored": {
+      "type": "array",
+      "items": {
+        "$ref": "defs.json#/$defs/Ignored"
+      }
+    }
+  },
+  "additionalProperties": false
+}

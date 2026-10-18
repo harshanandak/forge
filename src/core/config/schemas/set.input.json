@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/set.input.json",
+  "type": "object",
+  "required": ["path", "value", "expectRevision"],
+  "properties": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "A JSON Pointer into the config document, or <instance>.<key>... for that instance's config."
+    },
+    "value": {},
+    "expectRevision": {
+      "description": "The revision read with config show: the digest of the config file's bytes (an absent file has the digest of no bytes).",
+      "$ref": "../../../../schemas/common.json#/$defs/Digest"
+    }
+  },
+  "additionalProperties": false
+}

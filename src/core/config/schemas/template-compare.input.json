@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/template-compare.input.json",
+  "type": "object",
+  "required": ["template"],
+  "properties": {
+    "template": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "An installed template id (optionally <id>@<version>), or a project-relative .json/.yaml template file."
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "Where the upstream version comes from; omitted means the installed template of that id."
+    }
+  },
+  "additionalProperties": false
+}
