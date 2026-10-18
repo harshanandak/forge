@@ -8,7 +8,17 @@ Not npm dependencies, so not entries here: Bun itself is pinned by `packageManag
 
 ## Runtime dependencies
 
-None. The package ships with no runtime dependencies at this scaffold. Each one added later gets an entry here and an adapter in the same pull request.
+### @modelcontextprotocol/server
+
+- **Saves:** MCP framing, protocol negotiation, era-specific wire codecs, stdio lifecycle, protocol errors and notifications. Node built-ins supply streams, not an MCP implementation. The adapter uses the SDK's `serveStdio` factory entry to serve both protocol eras without a protocol implementation of our own.
+- **Maintenance:** official TypeScript SDK maintained at [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk); stable v2 implements the 2026-07-28 specification. Version 2.3.1 is pinned by owner decision; upgrades need review because the 2.3.0 API changes include per-request serving and redirect handling (plan section 6.2).
+- **Transitive packages:** two distinct runtime packages: `@modelcontextprotocol/core` 2.3.1 and `zod ^4.2.0`; core depends on the same zod range. Verified from registry metadata and isolated installs on 2026-10-18. No client package is needed.
+- **Fit:** isolated installation succeeds with Node 24.18.0, Node 26.12.0 and Bun 1.4.3. The local adapter wire suite passes legacy `2025-11-25` initialize and modern `2026-07-28` metadata/discovery, tool listing/calls/errors and idempotent close. The artifact fixture is `test/surface/fixtures/artifact.mjs`; runtime results are recorded in the PR. The SDK declares Node >=20. No install scripts or user toolchain assumptions are added.
+- **Licence:** Apache-2.0 (published package metadata and LICENSE).
+- **Trust:** official scoped registry package; intended runtime declaration is exact `2.3.1`. L0 owns `package.json` and `bun.lock`; this lane requests that declaration and the lockfile in its PR, rather than editing shared files. Until L0 lands it, a clean install cannot load the adapter and dependency structure checks correctly fail.
+- **Swap proof:** `McpTransportPort` is the only caller-facing interface. The same generated `McpHandlers` serve both eras through the adapter. The wire contract suite exercises discovery, structured/text envelope parity, protocol versus operation errors and owned-handle cleanup; the catalog is a fake and imports no runtime implementation.
+- **Adapter:** `src/adapters/mcp-transport/` implements `src/ports/mcp-transport.ts`.
+- **Conformance shortfall:** the official `@modelcontextprotocol/conformance` 0.1.16 runner's `server --help` accepts only `--url`, with no stdio transport option. `list --server --spec-version 2026-07-28` exits 1: `Unknown spec version: 2026-07-28` (valid date versions stop at 2025-11-25). Consequently official conformance is **not proven on either era** for this stdio adapter. Local wire journeys are narrower evidence, not certification. No HTTP transport, substitute SDK, or custom protocol implementation was added to hide this gap. Host interoperability remains an integration acceptance item. [SDK stdio documentation](https://ts.sdk.modelcontextprotocol.io/v2/api/%40modelcontextprotocol/server/stdio/) describes the factory's dual-era selection.
 
 ## Development dependencies
 
