@@ -144,7 +144,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         to: "void 0;",
         mode: "directories",
         fixture: "review-two",
-        evidence: "each new parent must be synced in order",
+        evidence: "each parent must be synced in order",
       },
       {
         file: "src/adapters/store-sqlite/file-ops.js",
@@ -152,7 +152,15 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         to: "void 0;",
         mode: "directories",
         fixture: "review-two",
-        evidence: "each new parent must be synced in order",
+        evidence: "each parent must be synced in order",
+      },
+      {
+        file: "src/adapters/store-sqlite/file-ops.js",
+        from: "for (const directory of directories.reverse()) {",
+        to: "for (const directory of directories.reverse()) { try { if (fs.statSync(directory).isDirectory()) continue; } catch (error) { if (error.code !== 'ENOENT') throw error; }",
+        mode: "directory-retry",
+        fixture: "review-two",
+        evidence: "retry must re-sync the failed parent before opening storage",
       },
       {
         file: "src/assembly/command.js",

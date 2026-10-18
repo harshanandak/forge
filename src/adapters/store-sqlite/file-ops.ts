@@ -50,35 +50,32 @@ export function syncParentDirectory(
   }
 }
 
-/** Publish each private directory entry durably before descending into it. */
+/** Sync every path entry on each attempt, including entries left by a failed sync. */
 export function ensurePrivateDirectory(
   path: string,
   fs: DirectoryCreatePort = nodeFs,
 ): void {
-  const missing: string[] = [];
+  const directories: string[] = [];
   let current = resolve(path);
-  for (;;) {
+  while (dirname(current) !== current) {
+    directories.push(current);
+    current = dirname(current);
+  }
+  for (const directory of directories.reverse()) {
     try {
-      if (!fs.statSync(current).isDirectory())
-        throw new Error(`State directory is not a directory: ${current}`);
-      break;
+      if (!fs.statSync(directory).isDirectory())
+        throw new Error(`State directory is not a directory: ${directory}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      missing.push(current);
-      const parent = dirname(current);
-      if (parent === current) throw error;
-      current = parent;
-    }
-  }
-  for (const directory of missing.reverse()) {
-    try {
-      fs.mkdirSync(directory, { mode: 0o700 });
-    } catch (error) {
-      if (
-        (error as NodeJS.ErrnoException).code !== "EEXIST" ||
-        !fs.statSync(directory).isDirectory()
-      )
-        throw error;
+      try {
+        fs.mkdirSync(directory, { mode: 0o700 });
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code !== "EEXIST" ||
+          !fs.statSync(directory).isDirectory()
+        )
+          throw error;
+      }
     }
     syncParentDirectory(directory, fs);
   }

@@ -9,7 +9,7 @@ import {
   existsSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createAssembly, localContext } from "forge-workflow/runtime";
 import { StateOwner } from "forge-workflow/state";
 import { sqliteStore } from "forge-workflow/adapters/sqlite";
@@ -238,16 +238,22 @@ async function lifetime() {
   );
 }
 async function directories() {
-  for (const scenario of ["created", "raced", 0, 1, 2]) {
+  for (const scenario of mode === "directory-retry"
+    ? [0, 1, 2]
+    : ["created", "raced", 0, 1, 2]) {
     const root = join(work, `directories-${scenario}`);
     const a = join(root, "a"),
       b = join(a, "b"),
       c = join(b, "c");
-    const known = new Set([root]),
+    const prefix = [];
+    for (let path = root; dirname(path) !== path; path = dirname(path))
+      prefix.unshift(path);
+    const known = new Set([...prefix, dirname(prefix[0])]),
       descriptors = new Map(),
       events = [];
     let next = 0,
-      syncs = 0,
+      failed = false,
+      retrying = false,
       opened = false;
     const fs = {
       platform: "linux",
@@ -274,7 +280,14 @@ async function directories() {
       fsyncSync(fd) {
         assert.ok(descriptors.has(fd));
         events.push(["fsync", descriptors.get(fd)]);
-        if (syncs++ === scenario) throw new Error("directory sync failed");
+        if (
+          typeof scenario === "number" &&
+          descriptors.get(fd) === [root, a, b][scenario] &&
+          !failed
+        ) {
+          failed = true;
+          throw new Error("directory sync failed");
+        }
       },
       closeSync(fd) {
         assert.ok(
@@ -287,6 +300,14 @@ async function directories() {
       join(c, "state.sqlite"),
       {
         async open() {
+          if (retrying)
+            assert.ok(
+              events.some(
+                ([kind, path]) =>
+                  kind === "fsync" && path === [root, a, b][scenario],
+              ),
+              "retry must re-sync the failed parent before opening storage",
+            );
           opened = true;
           events.push(["store-open"]);
           return sqliteStore.open({ path: ":memory:", readOnly: false });
@@ -302,7 +323,12 @@ async function directories() {
           false,
           "a directory sync failure must prevent the first write",
         );
-      } else {
+        assert.equal(descriptors.size, 0);
+        retrying = true;
+        events.length = 0;
+      }
+      const before = new Set(known);
+      {
         const lease = await state.acquire(true);
         try {
           const record = lease.value.put(
@@ -317,16 +343,14 @@ async function directories() {
           assert.deepEqual(
             events,
             [
-              ["mkdir", a],
-              ["fsync", root],
-              ["mkdir", b],
-              ["fsync", a],
-              ["mkdir", c],
-              ["fsync", b],
+              ...[...prefix, a, b, c].flatMap((path) => [
+                ...(before.has(path) ? [] : [["mkdir", path]]),
+                ["fsync", dirname(path)],
+              ]),
               ["store-open"],
               ["acknowledged"],
             ],
-            "each new parent must be synced in order before acknowledging the first write",
+            "each parent must be synced in order before acknowledging the first write",
           );
         } finally {
           await lease.close();
@@ -338,11 +362,12 @@ async function directories() {
     }
   }
   console.log(
-    "PASS directories: private components and ordered parent syncs before acknowledgement; sync failures prevent writes",
+    "PASS directories: every parent synced before acknowledgement, including retries after sync failure",
   );
 }
 try {
-  if (mode === "all" || mode === "directories") await directories();
+  if (["all", "directories", "directory-retry"].includes(mode))
+    await directories();
   if (mode === "all" || mode === "bootstrap") {
     const root = join(work, "bootstrap");
     mkdirSync(join(root, "device/trust.sqlite"), { recursive: true });
