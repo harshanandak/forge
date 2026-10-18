@@ -1,0 +1,72 @@
+[
+  {
+    "key": "/blocks/project/detected/python/present",
+    "value": true,
+    "file": "pyproject.toml"
+  },
+  {
+    "key": "/blocks/project/detected/python/packageManagers/uv",
+    "value": {},
+    "file": "uv.lock"
+  },
+  {
+    "key": "/blocks/project/detected/python/buildBackend",
+    "value": "hatchling.build",
+    "file": "pyproject.toml"
+  },
+  {
+    "key": "/blocks/project/detected/python/requiresPython",
+    "value": ">=3.12",
+    "file": "pyproject.toml"
+  },
+  {
+    "key": "/blocks/project/detected/python/pinnedVersion",
+    "value": "3.12",
+    "file": ".python-version"
+  },
+  {
+    "key": "/blocks/project/detected/python/testRunners/pytest",
+    "value": {},
+    "file": "pyproject.toml"
+  },
+  {
+    "key": "/blocks/project/detected/python/taskRunners/tox",
+    "value": {},
+    "file": "tox.ini"
+  },
+  {
+    "key": "/blocks/project/detected/hooks/managers/pre-commit",
+    "value": {
+      "files": [".pre-commit-config.yaml"]
+    },
+    "file": ".pre-commit-config.yaml"
+  },
+  {
+    "key": "/blocks/project/detected/hooks/preCommit/pre-commit",
+    "value": {
+      "commands": [
+        "ruff",
+        "ruff check",
+        "tests-required",
+        "require tests",
+        "python tools/require_tests.py"
+      ]
+    },
+    "file": ".pre-commit-config.yaml"
+  },
+  {
+    "key": "/blocks/project/detected/hooks/existingTestGate",
+    "value": {
+      "manager": "pre-commit",
+      "command": "require tests"
+    },
+    "file": ".pre-commit-config.yaml"
+  },
+  {
+    "key": "/blocks/project/detected/ci/circleci",
+    "value": {
+      "files": [".circleci/config.yml"]
+    },
+    "file": ".circleci/config.yml"
+  }
+]
