@@ -245,8 +245,12 @@ async function race() {
       [1, 1],
       "both writers must read the same revision before either can write",
     );
-    for (const writer of writers) writer.child.send("go");
-    const results = await Promise.all(writers.map((writer) => writer.result));
+    // Both observed revision 1 above. Commit the first writer before releasing
+    // the second, so a faulty re-read cannot accidentally reuse revision 1.
+    writers[0].child.send("go");
+    const first = await writers[0].result;
+    writers[1].child.send("go");
+    const results = [first, await writers[1].result];
     await Promise.all(writers.map((writer) => writer.exited));
     assert.equal(
       results.filter((result) => result.ok).length,

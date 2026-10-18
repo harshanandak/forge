@@ -17,6 +17,7 @@ import { Runtime } from "../core/runtime/index.ts";
 import { nodeRunIsolation } from "../adapters/node-runtime/isolation.ts";
 import { TrustStore, refuse, type TrustRecord } from "../core/trust/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { interfaceSatisfies } from "../contract/version.ts";
 import { bindContext } from "../contract/context.ts";
 import { validateWithSchema } from "../contract/schema.ts";
 import {
@@ -29,6 +30,9 @@ import type {
   Actor,
   BlockSource,
   ConfigDocument,
+  ForgeError,
+  BlockInstance,
+  DocsRecords,
   AmbientContext,
   McpExposure,
   ResultEnvelope,
@@ -91,6 +95,7 @@ export interface UnavailableBlock {
   readonly name: string;
   readonly source: BlockSource;
   readonly reason: string;
+  readonly error: ForgeError;
   readonly remedy: string;
 }
 export interface Assembly {
@@ -144,6 +149,7 @@ export async function createAssembly(
   const deviceRoot = resolve(options.deviceRoot);
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   const projectState = new LocalState(join(root, ".forge", "state.sqlite"));
+  const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
   await trustState.open(false);
   let trustActor: Actor | undefined;
   const trust = new TrustStore({
@@ -199,107 +205,143 @@ export async function createAssembly(
       ),
     };
   }
+  function ready(block: CapturedBlock, instance: BlockInstance): DocsRecords {
+    const docs = validateDocsRecords(
+      JSON.parse(block.text(block.manifest.docs)) as unknown,
+    );
+    if (
+      !docs.ok ||
+      Object.keys(block.manifest.operations).some(
+        (op) => !docs.value.operations[op],
+      )
+    )
+      refuse("INPUT_INVALID", "Block docs do not cover its operations");
+    if (
+      block.manifest.configSchema &&
+      !block.validate(block.manifest.configSchema, instance.config ?? {})
+    )
+      refuse("INPUT_INVALID", "Block configuration does not match its schema");
+    for (const required of block.manifest.requires ?? []) {
+      const provider = instance.bind?.[required.slot];
+      const state = interfaceSatisfies("forge.state@1.0.0", required.interface);
+      if (!state || (provider !== undefined && provider !== "core")) {
+        if (required.optional && provider === undefined) continue;
+        refuse(
+          "PROVIDER_MISSING",
+          `No assembled provider for required slot ${required.slot} (${required.interface})`,
+        );
+      }
+      for (const [op, declaration] of Object.entries(
+        block.manifest.operations,
+      )) {
+        if (
+          declaration.context === "leased" ||
+          (declaration.context === "stateless" &&
+            declaration.effects.length > 0)
+        )
+          refuse(
+            "PROVIDER_MISSING",
+            `${op}: state writes require project or device context; leased state bindings are not assembled`,
+          );
+      }
+    }
+    return docs.value;
+  }
   function snapshot(): {
     catalog: Catalog;
     blocks: ReadonlyMap<string, CapturedBlock>;
+    candidates: readonly McpCandidate[];
     unavailable: readonly UnavailableBlock[];
     problems: readonly string[];
-    compositionProblem?: string;
   } {
     const show = config.show();
     const document = composition(show);
     const blocks = new Map<string, CapturedBlock>();
+    const candidates: McpCandidate[] = [];
     const unavailable: UnavailableBlock[] = [];
+    let active = new Catalog(
+      { schemaVersion: "forge.config/1", blocks: {} },
+      new Map(),
+      version,
+    );
     for (const [name, instance] of Object.entries(document.blocks)) {
       if (instance.enabled === false) continue;
       try {
-        blocks.set(
-          name,
-          captureBlock(resolveBlock(root, instance.source), blockCapture),
+        const block = captureBlock(
+          resolveBlock(root, instance.source),
+          blockCapture,
         );
+        const docs = ready(block, instance);
+        const proposed = new Map(blocks);
+        proposed.set(name, block);
+        const checked = new Catalog(
+          availableComposition(document, proposed),
+          proposed,
+          version,
+        );
+        let admitted = false;
+        try {
+          trust.check(block.digest, []);
+          admitted = true;
+        } catch (error) {
+          if (
+            !(error instanceof ForgeFailure) ||
+            error.error.code !== "ADMISSION_REQUIRED"
+          )
+            throw error;
+        }
+        const entries = checked
+          .list()
+          .filter((op) => checked.resolve(op).operation.instance === name)
+          .map((op) => {
+            const described = checked.describe(op);
+            const { operation } = checked.resolve(op);
+            return {
+              ...described,
+              admitted,
+              docs: docs.operations[operation.declaredOp]!,
+              inputSchema: described.inputSchema as McpCandidate["inputSchema"],
+              outputSchema:
+                described.outputSchema as McpCandidate["inputSchema"],
+            };
+          });
+        blocks.set(name, block);
+        candidates.push(...entries);
+        active = checked;
       } catch (error) {
         const reason =
           error instanceof Error
             ? error.message
-            : "Source could not be captured";
+            : "Block could not be prepared";
         unavailable.push({
           name,
           source: instance.source,
           reason,
-          remedy: `Restore the source for ${name}, or remove /blocks/${name} with config.apply at the current config revision.`,
+          error:
+            error instanceof ForgeFailure
+              ? error.error
+              : { code: "PROVIDER_MISSING", message: reason, retry: "never" },
+          remedy: `Repair the source or configuration for ${name}, or remove /blocks/${name} with config.apply at the current config revision.`,
         });
       }
     }
-    const problems = [
-      ...show.problems,
-      ...unavailable.map(
-        (block) =>
-          `Block ${block.name} is unavailable: ${block.reason}. ${block.remedy}`,
-      ),
-    ];
-    try {
-      return {
-        catalog: new Catalog(
-          availableComposition(document, blocks),
-          blocks,
-          version,
+    return {
+      catalog: active,
+      blocks,
+      candidates,
+      unavailable,
+      problems: [
+        ...show.problems,
+        ...unavailable.map(
+          (block) =>
+            `Block ${block.name} is unavailable: ${block.reason}. ${block.remedy}`,
         ),
-        blocks,
-        unavailable,
-        problems,
-      };
-    } catch (error) {
-      // Broken bindings must remain repairable through the core config operations.
-      const compositionProblem =
-        error instanceof Error
-          ? error.message
-          : "Block composition is unavailable";
-      return {
-        catalog: new Catalog(
-          { schemaVersion: "forge.config/1", blocks: {} },
-          new Map(),
-          version,
-        ),
-        blocks,
-        unavailable,
-        problems: [...problems, compositionProblem],
-        compositionProblem,
-      };
-    }
-  }
-  function blockEntries(): readonly McpCandidate[] {
-    const { catalog } = snapshot();
-    return catalog.list().map((op) => {
-      const { block, operation } = catalog.resolve(op);
-      const docs = validateDocsRecords(
-        JSON.parse(block.text(block.manifest.docs)) as unknown,
-      );
-      if (!docs.ok || !docs.value.operations[operation.declaredOp])
-        refuse("INPUT_INVALID", `Missing docs for ${op}`);
-      let admitted = false;
-      try {
-        trust.check(block.digest, []);
-        admitted = true;
-      } catch (error) {
-        if (
-          !(error instanceof ForgeFailure) ||
-          error.error.code !== "ADMISSION_REQUIRED"
-        )
-          throw error;
-      }
-      const described = catalog.describe(op);
-      return {
-        ...described,
-        admitted,
-        docs: docs.value.operations[operation.declaredOp]!,
-        inputSchema: described.inputSchema as McpCandidate["inputSchema"],
-        outputSchema: described.outputSchema as McpCandidate["inputSchema"],
-      };
-    });
+      ],
+    };
   }
   const catalog: Assembly["catalog"] = {
     unavailable: () => snapshot().unavailable,
-    list: () => [...configCandidates, grantCandidate, ...blockEntries()],
+    list: () => [...configCandidates, grantCandidate, ...snapshot().candidates],
     async invoke(request) {
       try {
         await trustState.open(false);
@@ -357,6 +399,7 @@ export async function createAssembly(
             };
             const blocks = new Map(current.blocks);
             blocks.set(name, block);
+            ready(block, instance);
             new Catalog(
               availableComposition(proposed, blocks),
               blocks,
@@ -460,53 +503,102 @@ export async function createAssembly(
           refuse("UNKNOWN_COMMAND", "Operation is not assembled");
         }
         const current = snapshot();
-        if (current.compositionProblem)
-          refuse("PROVIDER_MISSING", current.compositionProblem);
         return await new Runtime(current.catalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
-            const bindings = current.catalog.bindings(instance);
             const clients: Record<string, StateClient> = {};
-            for (const binding of bindings) {
-              if (
-                binding.provider !== "core" ||
-                !binding.interface.startsWith("forge.state@")
-              )
-                refuse(
-                  "PROVIDER_MISSING",
-                  "Only the core state provider is assembled",
-                );
-              if (context.variant !== "project") continue;
-              if (context.project.id !== root)
-                refuse(
-                  "INPUT_CONFLICT",
-                  "State context belongs to another project",
-                );
-              const namespace = current.blocks.get(instance)!.manifest.id;
-              const owner = await projectState.open(scope.effects.length > 0);
-              const client = owner?.client(namespace, context.actor);
-              clients[binding.slot] = Object.freeze<StateClient>({
-                get: (key) => client?.get(key),
-                list: (prefix) => client?.list(prefix) ?? [],
-                events: (key) => client?.events(key) ?? [],
-                put(key, value, options) {
-                  const noun = current.catalog
-                    .resolve(scope.op)
-                    .operation.declaredOp.split(".")[0]!;
-                  if (!scope.effects.includes(`${noun}:write`))
-                    refuse(
-                      "GRANT_REQUIRED",
-                      "Operation did not declare its record write effect",
+            const leases: import("../ports/lifetime.ts").OwnedHandle<
+              import("../core/state/index.ts").StateOwner | undefined
+            >[] = [];
+            try {
+              for (const binding of current.catalog.bindings(instance)) {
+                if (
+                  binding.provider !== "core" ||
+                  !interfaceSatisfies("forge.state@1.0.0", binding.interface)
+                )
+                  refuse(
+                    "PROVIDER_MISSING",
+                    `Missing provider for ${binding.slot}`,
+                  );
+                if (context.variant === "leased")
+                  refuse(
+                    "PROVIDER_MISSING",
+                    "Leased state bindings are not assembled",
+                  );
+                if (
+                  context.variant === "project" &&
+                  context.project.id !== root
+                )
+                  refuse(
+                    "INPUT_CONFLICT",
+                    "State context belongs to another project",
+                  );
+                if (
+                  context.variant === "device" &&
+                  context.device.id !== deviceRoot
+                )
+                  refuse(
+                    "INPUT_CONFLICT",
+                    "State context belongs to another device",
+                  );
+                const namespace = current.blocks.get(instance)!.manifest.id;
+                const storage =
+                  context.variant === "device" ? deviceState : projectState;
+                const lease = await storage.acquire(scope.effects.length > 0);
+                leases.push(lease);
+                const owner = lease.value;
+                clients[binding.slot] = Object.freeze<StateClient>({
+                  get: (key) => owner?.get(namespace, key),
+                  list: (prefix) => owner?.list(namespace, prefix) ?? [],
+                  events: (key) => owner?.events(namespace, key) ?? [],
+                  put(key, value, options) {
+                    const noun = current.catalog
+                      .resolve(scope.op)
+                      .operation.declaredOp.split(".")[0]!;
+                    if (!scope.effects.includes(`${noun}:write`))
+                      refuse(
+                        "GRANT_REQUIRED",
+                        "Operation did not declare its record write effect",
+                      );
+                    if (context.variant === "stateless")
+                      refuse(
+                        "CONTEXT_MISSING",
+                        "State writes require an actor and project or device context",
+                      );
+                    if (!owner)
+                      refuse("PROVIDER_MISSING", "Writable state is not open");
+                    return owner.put(
+                      namespace,
+                      key,
+                      structuredClone(value),
+                      context.actor,
+                      { expectRevision: options.expectRevision },
                     );
-                  if (!client)
-                    refuse("PROVIDER_MISSING", "Writable state is not open");
-                  return client.put(key, structuredClone(value), {
-                    expectRevision: options.expectRevision,
-                  });
+                  },
+                });
+              }
+              return {
+                ownership: "owned",
+                value: Object.freeze(clients),
+                async close() {
+                  await Promise.all(leases.map((lease) => lease.close()));
                 },
-              });
+              };
+            } catch (error) {
+              const cleaned = await Promise.allSettled(
+                leases.map((lease) => lease.close()),
+              );
+              const errors = cleaned.flatMap((result) =>
+                result.status === "rejected" ? [result.reason as unknown] : [],
+              );
+              if (errors.length)
+                throw new AggregateError(
+                  [error, ...errors],
+                  "Service open and rollback failed",
+                  { cause: error },
+                );
+              throw error;
             }
-            return { ownership: "borrowed", value: Object.freeze(clients) };
           },
         }).invoke(request);
       } catch (error) {
@@ -523,7 +615,11 @@ export async function createAssembly(
       try {
         await projectState.close();
       } finally {
-        await trustState.close();
+        try {
+          await deviceState.close();
+        } finally {
+          await trustState.close();
+        }
       }
     },
   };

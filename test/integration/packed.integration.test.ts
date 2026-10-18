@@ -1,4 +1,6 @@
-﻿import { test, expect } from "bun:test";
+﻿import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
+import { test, expect } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
@@ -6,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -86,7 +89,13 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       consumer,
       env,
     );
-    for (const name of ["journey", "writer", "review"])
+    for (const name of [
+      "journey",
+      "writer",
+      "review",
+      "mutation-proof",
+      "review-two",
+    ])
       copyFileSync(
         join(import.meta.dirname, `fixtures/${name}.mjs`),
         join(consumer, `${name}.mjs`),
@@ -106,8 +115,45 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       expect(
         run(runtime, [join(consumer, "review.mjs")], consumer, env),
       ).toContain("PASS package-roots");
+    for (const runtime of runtimes)
+      expect(
+        run(runtime, [join(consumer, "review-two.mjs")], consumer, env),
+      ).toContain("PASS lifetime");
     const installed = join(consumer, "node_modules/forge-workflow/dist");
     const mutations = [
+      {
+        file: "src/assembly/index.js",
+        from: "const reason = error instanceof Error",
+        to: "throw error; const reason = error instanceof Error",
+        mode: "bad-docs",
+        fixture: "review-two",
+        evidence: "config show:",
+      },
+      {
+        file: "src/assembly/index.js",
+        from: "const namespace = current.blocks.get(instance).manifest.id;",
+        to: "if (context.variant !== 'project') continue; const namespace = current.blocks.get(instance).manifest.id;",
+        mode: "bindings",
+        fixture: "review-two",
+        evidence: "required service must be available",
+      },
+      {
+        file: "src/assembly/state.js",
+        from: "if (--entry.refs !== 0)",
+        to: "if (false)",
+        mode: "lifetime",
+        fixture: "review-two",
+        evidence: "first invocation cannot close",
+      },
+      {
+        file: "src/assembly/state.js",
+        from: "const result = this.#queue.then(work);",
+        to: "const result = work();",
+        mode: "lifetime",
+        fixture: "review-two",
+        evidence: "concurrent first opens must be serialized",
+      },
+
       {
         file: "src/assembly/index.js",
         from: "const reason = error instanceof Error",
@@ -156,7 +202,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       ...["all", "race"].map((mode) => ({
         file: "src/assembly/index.js",
         from: "expectRevision: options.expectRevision",
-        to: "expectRevision: client.get(key)?.revision ?? 0",
+        to: "expectRevision: owner.get(namespace, key)?.revision ?? 0",
         mode,
         evidence: mode === "race" ? "one writer wins" : "semver mark 1.6.0 0",
       })),
@@ -166,7 +212,21 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       const original = readFileSync(path, "utf8");
       expect(original).toContain(mutation.from);
       try {
-        writeFileSync(path, original.replaceAll(mutation.from, mutation.to));
+        const changed = original.replaceAll(mutation.from, mutation.to);
+        expect(changed).not.toBe(original);
+        writeFileSync(path, changed);
+        expect(readFileSync(path, "utf8")).toBe(changed);
+        const hash = createHash("sha256").update(changed).digest("hex");
+        const proof = join(consumer, "mutation-proof.jsonl");
+        writeFileSync(proof, "");
+        const mutationEnv = {
+          ...env,
+          NODE_OPTIONS:
+            `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(join(consumer, "mutation-proof.mjs")).href}`.trim(),
+          FORGE_MUTATION_TARGET: realpathSync(path),
+          FORGE_MUTATION_HASH: hash,
+          FORGE_MUTATION_PROOF: proof,
+        };
         const result = spawnSync(
           node,
           [
@@ -175,15 +235,33 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
           ],
           {
             cwd: consumer,
-            env,
+            env: mutationEnv,
             encoding: "utf8",
             windowsHide: true,
             timeout: 45000,
           },
         );
-        expect(result.status).not.toBe(0);
+        const loaded = readFileSync(proof, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { target: string; hash: string });
+        expect(
+          loaded.some(
+            (entry) =>
+              entry.target === realpathSync(path) && entry.hash === hash,
+          ),
+          `child must load the mutated ${mutation.file}`,
+        ).toBe(true);
+        expect(
+          result.status,
+          `${mutation.fixture ?? "journey"}:${mutation.mode} must detect the mutation in ${mutation.file}`,
+        ).not.toBe(0);
         expect(`${result.stdout}\n${result.stderr}`).toContain(
           mutation.evidence,
+        );
+        console.log(
+          `Counterfactual ${mutation.fixture ?? "journey"}:${mutation.mode}: loaded mutated bytes, expected failure observed`,
         );
       } finally {
         writeFileSync(path, original);
