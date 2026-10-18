@@ -1,21 +1,3 @@
 {
-  "type": "object",
-  "required": [
-    "schemaVersion",
-    "requestId",
-    "op",
-    "input",
-    "caller",
-    "context"
-  ],
-  "properties": {
-    "schemaVersion": { "const": "forge.invocation/1" },
-    "requestId": { "type": "string" },
-    "op": { "type": "string" },
-    "input": {},
-    "caller": { "enum": ["human", "agent"] },
-    "context": { "type": "object" },
-    "dryRun": { "type": "boolean" }
-  },
-  "additionalProperties": false
+  "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/invocation.json"
 }

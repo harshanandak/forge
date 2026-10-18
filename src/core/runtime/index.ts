@@ -312,7 +312,8 @@ export class Runtime {
         status:
           failure.code === "ADMISSION_REQUIRED" ||
           failure.code === "GRANT_REQUIRED" ||
-          failure.code === "LIMIT_EXCEEDED"
+          failure.code === "LIMIT_EXCEEDED" ||
+          failure.code === "PROVIDER_MISSING"
             ? "INCOMPLETE"
             : "FAIL",
         error: {

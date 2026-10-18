@@ -1,3 +1,5 @@
+import { operations as catalogOperations } from "../../../src/core/catalog/operations.ts";
+import { operations as trustOperations } from "../../../src/core/trust/operations.ts";
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -12,6 +14,7 @@ import {
 import { TrustStore, secretReference } from "../../../src/core/trust/index.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
 import type {
+  BlockManifest,
   InvocationRequest,
   OperationDeclaration,
 } from "../../../src/generated/types.ts";
@@ -393,15 +396,7 @@ test("outside text is bounded before validation and SecretRef never accepts plai
 }, 5000);
 
 test("owned core fragments assemble without duplicate operations", () => {
-  const fragments = ["catalog", "trust"].map(
-    (area) =>
-      JSON.parse(
-        readFileSync(
-          new URL(`../../../src/core/${area}/operations.json`, import.meta.url),
-          "utf8",
-        ),
-      ) as Record<string, OperationDeclaration>,
-  );
+  const fragments = [catalogOperations, trustOperations];
   const base = {
     schemaVersion: "forge.block/1" as const,
     id: "forge/core",
@@ -417,4 +412,137 @@ test("owned core fragments assemble without duplicate operations", () => {
     () => assembleCoreManifest(base, [...fragments, fragments[0]!]),
     /duplicate core operation/,
   );
+}, 5000);
+import { existsSync } from "node:fs";
+import { CapturedBlock } from "../../../src/core/catalog/index.ts";
+
+test("core manifest is generated from area declarations at check and build time", () => {
+  const path = new URL(
+    "../../../src/generated/core-manifest.json",
+    import.meta.url,
+  );
+  assert.ok(existsSync(path), "assembled core manifest must be generated");
+  const manifest = JSON.parse(readFileSync(path, "utf8")) as BlockManifest;
+  assert.deepEqual(Object.keys(manifest.operations).sort(), [
+    "block.add",
+    "block.admit",
+    "block.check",
+    "catalog.call",
+    "catalog.describe",
+    "catalog.list",
+  ]);
+  for (const area of ["catalog", "trust"])
+    assert.equal(
+      existsSync(
+        new URL(`../../../src/core/${area}/operations.json`, import.meta.url),
+      ),
+      false,
+    );
+}, 5000);
+
+test("catalog call schemas enforce the canonical invocation and result contracts", () => {
+  const f = fixture();
+  try {
+    const files = new Map(
+      ["input", "output"].map((kind) => [
+        `${kind}.json`,
+        readFileSync(
+          new URL(
+            `../../../src/core/catalog/call.${kind}.schema.json`,
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      ]),
+    );
+    const block = new CapturedBlock(files, f.block.manifest);
+    assert.equal(block.validate("input.json", f.request), true);
+    for (const bad of [
+      { ...f.request, requestId: "" },
+      { ...f.request, op: "invalid" },
+      { ...f.request, context: { unexpected: true } },
+    ])
+      assert.equal(block.validate("input.json", bad), false);
+    assert.equal(
+      block.validate("output.json", {
+        ok: true,
+        op: "sample.run",
+        status: "OK",
+        warnings: [],
+        result: "hello",
+      }),
+      true,
+    );
+    assert.equal(
+      block.validate("output.json", {
+        ok: true,
+        status: "OK",
+        warnings: [],
+        error: {},
+      }),
+      false,
+    );
+  } finally {
+    f.close();
+  }
+}, 5000);
+
+test("captured relative schema dependencies without a suffix validate and void admission on change", () => {
+  const f = fixture();
+  try {
+    const manifest: BlockManifest = {
+      ...f.block.manifest,
+      files: ["defs.json", "nested.json"],
+    };
+    writeFileSync(join(f.root, "block.json"), JSON.stringify(manifest));
+    writeFileSync(
+      join(f.root, "input.json"),
+      JSON.stringify({ $ref: "defs.json#/$defs/X" }),
+    );
+    writeFileSync(
+      join(f.root, "defs.json"),
+      JSON.stringify({ $defs: { X: { $ref: "nested.json" } } }),
+    );
+    writeFileSync(
+      join(f.root, "nested.json"),
+      JSON.stringify({ type: "string" }),
+    );
+    const block = captureBlock(f.root);
+    assert.equal(block.validate("input.json", "hello"), true);
+    assert.equal(block.validate("input.json", 1), false);
+    f.trust.admit("human", block.digest);
+    writeFileSync(
+      join(f.root, "nested.json"),
+      JSON.stringify({ type: "number" }),
+    );
+    const changed = captureBlock(f.root);
+    assert.equal(changed.validate("input.json", 1), true);
+    assert.notEqual(changed.digest, block.digest);
+    assert.throws(
+      () => f.trust.check(changed.digest, []),
+      /ADMISSION_REQUIRED/,
+    );
+  } finally {
+    f.close();
+  }
+}, 5000);
+
+test("missing embedding service provider is incomplete and never activates the handler", async () => {
+  const f = fixture("throw Error('must not activate')");
+  try {
+    const manifest: BlockManifest = {
+      ...f.block.manifest,
+      requires: [{ slot: "state", interface: "forge.state@1" }],
+    };
+    writeFileSync(join(f.root, "block.json"), JSON.stringify(manifest));
+    const block = captureBlock(f.root);
+    const catalog = new Catalog(f.catalog.config, new Map([["sample", block]]));
+    f.trust.admit("human", block.digest);
+    assert.partialDeepStrictEqual(
+      await new Runtime(catalog, f.trust).invoke(f.request),
+      { ok: false, status: "INCOMPLETE", error: { code: "PROVIDER_MISSING" } },
+    );
+  } finally {
+    f.close();
+  }
 }, 5000);

@@ -357,4 +357,8 @@ export function write(root: string = repoRoot): void {
   }
 }
 
-if (import.meta.main) write();
+if (import.meta.main) {
+  write();
+  const { writeCoreManifest } = await import("./core.ts");
+  writeCoreManifest();
+}

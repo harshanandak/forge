@@ -22,6 +22,7 @@ import type {
   ConfigDocument,
   ParseLimits,
 } from "../../generated/types.ts";
+import { SCHEMA_DOCUMENTS } from "../../generated/schemas.ts";
 import { digest, refuse } from "../trust/index.ts";
 import type { TrustStore } from "../trust/index.ts";
 import { nounRefusal } from "../../contract/naming.ts";
@@ -72,20 +73,60 @@ export class CapturedBlock {
     );
     if (manifest.configSchema !== undefined)
       schemaPaths.add(manifest.configSchema);
-    const documents = [...files]
-      .filter(
-        ([name]) => schemaPaths.has(name) || name.endsWith(".schema.json"),
-      )
-      .map(([name, text]) => {
-        const schema: unknown = JSON.parse(text);
-        if (!isSchemaObject(schema) && typeof schema !== "boolean")
-          refuse("INPUT_INVALID", "schema must be an object or boolean");
-        return {
-          ...(typeof schema === "boolean" ? { allOf: [schema] } : schema),
-          $id: new URL(name, this.#base).href,
-        };
-      });
-    this.#registry = new SchemaRegistry(documents, this.#base);
+    const documents = new Map<
+      string,
+      import("../../contract/schema.ts").SchemaObject
+    >();
+    const pathsByUri = new Map(
+      [...files.keys()].map((name) => [new URL(name, this.#base).href, name]),
+    );
+    const register = (name: string): void => {
+      const uri = new URL(name, this.#base).href;
+      if (documents.has(uri)) return;
+      const schema: unknown = JSON.parse(this.text(name));
+      if (!isSchemaObject(schema) && typeof schema !== "boolean")
+        refuse("INPUT_INVALID", "schema must be an object or boolean");
+      const document = {
+        ...(typeof schema === "boolean" ? { allOf: [schema] } : schema),
+        $id: uri,
+      };
+      documents.set(uri, document);
+      const visit = (node: unknown): void => {
+        if (!isSchemaObject(node)) return;
+        if (typeof node.$ref === "string") {
+          const target = new URL(node.$ref, uri);
+          target.hash = "";
+          const dependency = pathsByUri.get(target.href);
+          if (dependency !== undefined) register(dependency);
+        }
+        for (const key of ["properties", "$defs"]) {
+          const children = node[key];
+          if (isSchemaObject(children)) Object.values(children).forEach(visit);
+        }
+        for (const key of ["allOf", "anyOf", "oneOf"]) {
+          const children = node[key];
+          if (Array.isArray(children)) children.forEach(visit);
+        }
+        for (const key of [
+          "items",
+          "additionalProperties",
+          "propertyNames",
+          "not",
+          "if",
+          "then",
+          "else",
+        ])
+          visit(node[key]);
+      };
+      visit(schema);
+    };
+    for (const name of files.keys())
+      if (schemaPaths.has(name) || name.endsWith(".schema.json"))
+        register(name);
+    this.#registry = new SchemaRegistry(
+      [...SCHEMA_DOCUMENTS, ...documents.values()],
+      this.#base,
+    );
     for (const op of Object.values(manifest.operations)) {
       this.#registry.validator(op.input);
       this.#registry.validator(op.output);
