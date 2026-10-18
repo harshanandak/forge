@@ -9,6 +9,7 @@ import { detectRust } from "./detect-rust.ts";
 import { detectTasks } from "./detect-tasks.ts";
 import { detectTrackers } from "./detect-trackers.ts";
 import type { ProjectFiles } from "./files.ts";
+import { detected } from "./observation.ts";
 
 export interface Detector {
   readonly id: string;
@@ -55,6 +56,20 @@ export function detectProject(
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+  const refused = files.refused?.() ?? [];
+  if (refused.length > 0) {
+    observations.push(
+      detected(
+        "refused",
+        [],
+        { paths: refused },
+        {
+          file: refused[0] as string,
+          note: "a link here resolves outside the project, so it was not read",
+        },
+      ),
+    );
   }
   return { observations, failures };
 }

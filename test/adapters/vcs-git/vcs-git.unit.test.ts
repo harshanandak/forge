@@ -120,3 +120,28 @@ test("porcelain output is parsed with renames reporting both paths", async () =>
   const clean = createVcsPort({ ...base, process: fakeProcess(["git"]) });
   expect(await clean.status("/r")).toEqual({ clean: true, changed: [] });
 }, 30_000);
+
+test("output over the limit is a typed limit error, never parsed as if complete", async () => {
+  const vcs = createVcsPort({
+    ...base,
+    process: fakeProcess(["git"], () => ({
+      stdout: " M src/a.ts\0",
+      truncated: true,
+    })),
+  });
+  const reads: Array<[string, () => Promise<unknown>]> = [
+    ["status", () => vcs.status("/r")],
+    ["currentBranch", () => vcs.currentBranch("/r")],
+    ["root", () => vcs.root("/r")],
+    ["revision", () => vcs.revision("/r", "HEAD")],
+    ["defaultBranch", () => vcs.defaultBranch("/r", "origin")],
+  ];
+  for (const [name, read] of reads) {
+    const failure = await read().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure, name).toBeInstanceOf(GitCommandError);
+    expect((failure as GitCommandError).code, name).toBe("GIT_OUTPUT_LIMIT");
+  }
+}, 30_000);

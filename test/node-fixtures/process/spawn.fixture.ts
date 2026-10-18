@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isRunning } from "./liveness.ts";
 
 interface Adapter {
   createProcessPort(): {
@@ -202,10 +203,9 @@ results["timeout"] = timeoutResult;
 const grandchildPid = Number(readFileSync(pidFile, "utf8"));
 let alive = true;
 for (let attempt = 0; attempt < 40 && alive; attempt += 1) {
-  try {
-    process.kill(grandchildPid, 0);
+  if (isRunning(grandchildPid)) {
     await new Promise((resolve) => setTimeout(resolve, 100));
-  } catch {
+  } else {
     alive = false;
   }
 }

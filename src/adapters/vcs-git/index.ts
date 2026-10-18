@@ -3,7 +3,8 @@ import type { Unavailable } from "../../generated/types.ts";
 import type { ProcessPort, ProcessResult } from "../../ports/process.ts";
 import type { VcsPort, WorkingTreeStatus } from "../../ports/vcs.ts";
 
-export type GitErrorCode = "GIT_UNAVAILABLE" | "GIT_FAILED";
+export type GitErrorCode =
+  "GIT_UNAVAILABLE" | "GIT_FAILED" | "GIT_OUTPUT_LIMIT";
 
 /** A git command that a read operation could not answer (the Unavailable-returning ones report it as a value instead). */
 export class GitCommandError extends Error {
@@ -112,6 +113,14 @@ export function createVcsPort(options: VcsAdapterOptions): VcsPort {
         timeoutMs: options.timeoutMs,
         maxOutputBytes: options.maxOutputBytes,
       });
+      if (result.truncated) {
+        // Partial output parses as a different answer (a clean tree, a short hash); refuse it outright.
+        throw new GitCommandError(
+          "GIT_OUTPUT_LIMIT",
+          `git ${args[0] ?? ""} printed more than ${options.maxOutputBytes} bytes; raise maxOutputBytes`,
+          result.exitCode,
+        );
+      }
       return { ok: true, result };
     } catch (error) {
       if (error instanceof Error && error.name === "ProcessSpawnError") {

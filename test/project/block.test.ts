@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -277,4 +278,101 @@ test("the folder reader answers for exact spelling only and never leaves the pro
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}, 30_000);
+
+function canSymlinkFiles(): boolean {
+  const probe = mkdtempSync(join(tmpdir(), "forge-symlink-probe-"));
+  try {
+    writeFileSync(join(probe, "target"), "x");
+    symlinkSync(join(probe, "target"), join(probe, "link"), "file");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+}
+
+/** A folder link: junctions need no privilege on Windows, symlinks do everywhere else they are free. */
+function linkFolder(target: string, at: string): void {
+  symlinkSync(target, at, process.platform === "win32" ? "junction" : "dir");
+}
+
+test("a folder link that leaves the project is refused, reported and never read", () => {
+  const sandbox = mkdtempSync(join(tmpdir(), "forge-escape-"));
+  try {
+    const root = join(sandbox, "project");
+    const outside = join(sandbox, "outside");
+    mkdirSync(root);
+    mkdirSync(join(outside, "adr"), { recursive: true });
+    writeFileSync(join(outside, "adr", "0001-secret.md"), "# secret\n");
+    mkdirSync(join(root, "inside"));
+    writeFileSync(join(root, "inside", "ok.txt"), "fine");
+    linkFolder(outside, join(root, "docs"));
+    linkFolder(join(root, "inside"), join(root, "alias"));
+    const files = createFolderFiles(root);
+    expect(files.exists("docs")).toBe(false);
+    expect(files.isDirectory("docs/adr")).toBe(false);
+    expect(files.list("docs/adr")).toEqual([]);
+    expect(files.read("docs/adr/0001-secret.md")).toBeUndefined();
+    expect(files.read("alias/ok.txt")).toBe("fine");
+    const report = detectProject(createFolderFiles(root));
+    expect(report.observations.some((o) => o.key.includes("/decisions/"))).toBe(
+      false,
+    );
+    const refusal = report.observations.find(
+      (o) => o.key === "/blocks/project/detected/refused",
+    );
+    expect((refusal?.value as { paths: string[] }).paths).toContain("docs/adr");
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+}, 30_000);
+
+const fileLinkTest = canSymlinkFiles() ? test : test.skip;
+
+// Skipped only where the OS cannot create file symlinks without privileges (Windows without
+// developer mode or an elevated shell); the folder-link test above still runs there.
+fileLinkTest(
+  "a manifest that is a link to a file outside the project is refused, reported and never read",
+  () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "forge-escape-"));
+    try {
+      const root = join(sandbox, "project");
+      mkdirSync(root);
+      writeFileSync(
+        join(sandbox, "secret.json"),
+        JSON.stringify({ scripts: { test: "leak" } }),
+      );
+      symlinkSync(join(sandbox, "secret.json"), join(root, "package.json"));
+      const files = createFolderFiles(root);
+      expect(files.read("package.json")).toBeUndefined();
+      expect(files.exists("package.json")).toBe(false);
+      const report = detectProject(files);
+      expect(JSON.stringify(report.observations)).not.toContain("leak");
+      expect(
+        report.observations.find(
+          (o) => o.key === "/blocks/project/detected/refused",
+        )?.value,
+      ).toEqual({ paths: ["package.json"] });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
+test("a decision log that numbers its headings without a prefix keeps its ids", () => {
+  expect(
+    valueOf(
+      { "DECISIONS.md": "## 1 First\n## 2. Second\n## 12 Third\n" },
+      "/blocks/project/detected/decisions/records",
+    ),
+  ).toEqual({
+    layout: "single-file",
+    path: "DECISIONS.md",
+    count: 3,
+    idPattern: "NN",
+    highest: 12,
+  });
 }, 30_000);

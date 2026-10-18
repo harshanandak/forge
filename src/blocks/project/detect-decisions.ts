@@ -98,7 +98,7 @@ export function detectDecisions(files: ProjectFiles): DetectionObservation[] {
       prefix: match[1] as string,
       digits: match[2] as string,
     }));
-    const shape = shapeOf(ids.filter((id) => id.prefix !== ""));
+    const shape = shapeOf(ids);
     out.push(
       detected(
         AREA,

@@ -179,3 +179,23 @@ test("a leaked GIT_DIR cannot redirect the adapter to another repository", async
     await git(wanted, "rev-parse", "HEAD"),
   );
 }, 60_000);
+
+test("a status larger than the output limit fails instead of reporting a partial tree", async () => {
+  const repo = join(work, "limit-repo");
+  mkdirSync(repo);
+  await git(repo, "init");
+  for (let index = 0; index < 20; index += 1) {
+    writeFileSync(join(repo, `untracked-file-${index}.txt`), "x");
+  }
+  const tight = createVcsPort({
+    process: processPort,
+    env: baseEnv,
+    timeoutMs: 30_000,
+    maxOutputBytes: 50,
+  });
+  const failure = await tight.status(repo).then(
+    () => undefined,
+    (error: unknown) => error as { code?: string },
+  );
+  expect(failure?.code).toBe("GIT_OUTPUT_LIMIT");
+}, 30_000);

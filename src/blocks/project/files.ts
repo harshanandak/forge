@@ -1,5 +1,12 @@
-import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
-import { join } from "node:path";
+import {
+  closeSync,
+  openSync,
+  readdirSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 
 /**
  * Read-only, synchronous view of one project folder. Detectors see the project only through this,
@@ -13,6 +20,8 @@ export interface ProjectFiles {
   read(path: string): string | undefined;
   /** Entry names of a folder in code-unit order; empty when it is missing. */
   list(directory: string): readonly string[];
+  /** Paths refused because a link resolves outside the project, sorted; absent for readers that cannot be linked. */
+  refused?(): readonly string[];
 }
 
 /** Manifests are small; a larger file is refused rather than slurped into memory. */
@@ -45,15 +54,39 @@ function existsExactly(root: string, relative: string): boolean {
   return true;
 }
 
+function within(realRoot: string, realTarget: string): boolean {
+  const from = relative(realRoot, realTarget);
+  return from === "" || (!from.startsWith("..") && !isAbsolute(from));
+}
+
 export function createFolderFiles(root: string): ProjectFiles {
+  const refused = new Set<string>();
+  let realRoot: string | undefined;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    realRoot = undefined;
+  }
   const absolute = (path: string): string | undefined => {
     if (path === ".") return root;
-    const relative = safeRelative(path);
-    return relative === undefined || !existsExactly(root, relative)
-      ? undefined
-      : join(root, relative);
+    const named = safeRelative(path);
+    if (named === undefined || !existsExactly(root, named)) return undefined;
+    const target = join(root, named);
+    // A link inside the project can point anywhere; only what it resolves to decides.
+    let real: string;
+    try {
+      real = realpathSync(target);
+    } catch {
+      return undefined;
+    }
+    if (realRoot === undefined || !within(realRoot, real)) {
+      refused.add(named);
+      return undefined;
+    }
+    return target;
   };
   return {
+    refused: () => [...refused].sort(),
     exists(path) {
       const target = absolute(path);
       if (target === undefined) return false;
