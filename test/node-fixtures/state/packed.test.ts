@@ -71,9 +71,23 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       const result = JSON.parse(
         run(runtime, [fixture, installed], consumer),
       ) as { passed: string[] };
-      expect(result.passed).toHaveLength(10);
+      expect(result.passed).toHaveLength(12);
     }
     const mutations = [
+      {
+        file: "adapters/store-sqlite/index.js",
+        from: "path, platform: process.platform",
+        to: "path: options.path, platform: process.platform",
+        journey: "relativepaths",
+        evidence: "relative synced store must be refused",
+      },
+      {
+        file: "core/state/domains.js",
+        from: ".filter(([column]) => !excluded.has(column))",
+        to: ".filter(() => true)",
+        journey: "generatedcolumns",
+        evidence: "cannot INSERT into generated column",
+      },
       {
         file: "core/state/index.js",
         from: 'this.#db.exec("PRAGMA defer_foreign_keys=ON");',
@@ -212,7 +226,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", ()
       }
     }
     console.log(
-      `Packed state: ${runtimes.length} runtimes, 10 journeys, ${mutations.length} counterfactuals each`,
+      `Packed state: ${runtimes.length} runtimes, 12 journeys, ${mutations.length} counterfactuals each`,
     );
     // Removing the linear scan causes catastrophic backtracking on a nonmatching suffix.
     const path = join(installed, "dist/src/core/state/fs-class.js");

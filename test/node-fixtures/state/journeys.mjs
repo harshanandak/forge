@@ -3,6 +3,8 @@ import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import {
   mkdtempSync,
+  mkdirSync,
+  symlinkSync,
   writeFileSync,
   readFileSync,
   renameSync,
@@ -15,7 +17,9 @@ import { spawnSync } from "node:child_process";
 const root = process.argv[2];
 const selected = process.argv[3] ?? "all";
 const load = (path) => import(pathToFileURL(join(root, "dist/src", path)).href);
-const { sqliteStore } = await load("adapters/store-sqlite/index.js");
+const { sqliteStore, createSqliteStore } = await load(
+  "adapters/store-sqlite/index.js",
+);
 const { StateOwner, withState } = await load("core/state/index.js");
 const { baseline, migrate, execMigrationStatement } = await load(
   "core/state/migrations.js",
@@ -41,6 +45,113 @@ async function store(path = ":memory:") {
   return result.handle;
 }
 const cases = {
+  async relativepaths() {
+    const work = mkdtempSync(join(tmpdir(), "forge-relative-store-"));
+    const cwd = process.cwd();
+    const prior = process.env.OneDrive;
+    const cloud = join(work, "synced-fixture");
+    mkdirSync(cloud);
+    process.env.OneDrive = cloud;
+    try {
+      process.chdir(cloud);
+      const opened = await sqliteStore.open({
+        path: "state.db",
+        readOnly: false,
+      });
+      if (opened.ok) await opened.handle.close();
+      assert.equal(opened.ok, false, "relative synced store must be refused");
+      assert.match(opened.unavailable.reason, /cloud/);
+      assert.equal(existsSync(join(cloud, "state.db")), false);
+      process.chdir(cwd);
+      const explicit = createSqliteStore(cloud);
+      const relative = await explicit.open({
+        path: "nested/state.db",
+        readOnly: false,
+      });
+      assert.equal(relative.ok, false);
+      assert.match(relative.unavailable.reason, /cloud/);
+      const alias = join(work, "alias");
+      symlinkSync(
+        cloud,
+        alias,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      const linked = await createSqliteStore(work).open({
+        path: "alias/state.db",
+        readOnly: false,
+      });
+      assert.equal(linked.ok, false);
+      assert.match(linked.unavailable.reason, /cloud/);
+      const local = await createSqliteStore(work).open({
+        path: "local.db",
+        readOnly: false,
+      });
+      assert.equal(local.ok, true);
+      await local.handle.close();
+      assert.equal(existsSync(join(work, "local.db")), true);
+      const memory = await explicit.open({ path: ":memory:", readOnly: false });
+      assert.equal(memory.ok, true);
+      await memory.handle.close();
+    } finally {
+      process.chdir(cwd);
+      if (prior === undefined) delete process.env.OneDrive;
+      else process.env.OneDrive = prior;
+      rmSync(work, { recursive: true, force: true });
+    }
+  },
+  async generatedcolumns() {
+    const domains = [
+      {
+        namespace: "forge/example",
+        reviewedDigest: `sha256:${"c".repeat(64)}`,
+        tables: ["domain_generated"],
+        migrations: [
+          {
+            id: "002_generated",
+            statements: [
+              "CREATE TABLE domain_generated(id TEXT PRIMARY KEY, amount INTEGER, stored INTEGER GENERATED ALWAYS AS (amount * 2) STORED, virtual INTEGER GENERATED ALWAYS AS (amount + 1) VIRTUAL)",
+            ],
+          },
+        ],
+      },
+    ];
+    const source = await store(),
+      target = await store();
+    try {
+      const first = new StateOwner(source.value, { now: () => 1000 });
+      const second = new StateOwner(target.value, { now: () => 1000 });
+      first.initialize(domains);
+      second.initialize(domains);
+      source.value.run("INSERT INTO domain_generated(id,amount) VALUES (?,?)", [
+        "one",
+        7,
+      ]);
+      const snapshot = first.export();
+      snapshot.domains[0].rows[0].stored.value = "999";
+      snapshot.domains[0].rows[0].virtual.value = "999";
+      second.restore(snapshot);
+      assert.deepEqual(
+        { ...target.value.get("SELECT * FROM domain_generated") },
+        {
+          id: "one",
+          amount: 7n,
+          stored: 14n,
+          virtual: 8n,
+        },
+      );
+      target.value.run("UPDATE domain_generated SET amount=9 WHERE id='one'");
+      assert.deepEqual(
+        { ...target.value.get("SELECT stored,virtual FROM domain_generated") },
+        {
+          stored: 18n,
+          virtual: 10n,
+        },
+      );
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  },
   async foreignkeys() {
     for (const parentFirst of [false, true]) {
       const parent = parentFirst ? "domain_a_parent" : "domain_z_parent";

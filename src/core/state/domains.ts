@@ -93,8 +93,16 @@ export function restoreTables(
     const table = identifier(domain.table);
     if (db.get(`SELECT 1 FROM ${table} LIMIT 1`))
       throw new Error("Domain restore target must be empty");
+    const excluded = new Set(
+      db
+        .all(`PRAGMA table_xinfo(${table})`)
+        .filter((column) => Number(column.hidden) !== 0)
+        .map((column) => String(column.name)),
+    );
     for (const row of domain.rows) {
-      const entries = Object.entries(row);
+      const entries = Object.entries(row).filter(
+        ([column]) => !excluded.has(column),
+      );
       if (!entries.length) throw new Error("Empty domain row");
       db.run(
         `INSERT INTO ${table} (${entries.map(([column]) => identifier(column)).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
