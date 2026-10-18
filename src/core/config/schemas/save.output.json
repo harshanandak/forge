@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/save.output.json",
+  "description": "Derived values written into the project config, so they stop depending on detection.",
+  "allOf": [
+    {
+      "$ref": "defs.json#/$defs/WriteFields"
+    },
+    {
+      "type": "object",
+      "required": ["saved", "skipped"],
+      "properties": {
+        "file": {},
+        "previousRevision": {},
+        "revision": {},
+        "receipt": {},
+        "changes": {},
+        "fileRemoved": {},
+        "saved": {
+          "type": "array",
+          "items": {
+            "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+          }
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["pointer", "reason"],
+            "properties": {
+              "pointer": {
+                "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

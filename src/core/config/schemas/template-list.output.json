@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/template-list.output.json",
+  "type": "object",
+  "required": ["templates"],
+  "properties": {
+    "templates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "version", "summary", "imported"],
+        "properties": {
+          "id": {
+            "$ref": "../../../../schemas/common.json#/$defs/BlockId"
+          },
+          "version": {
+            "$ref": "../../../../schemas/common.json#/$defs/SemVer"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "imported": {
+            "type": ["string", "null"]
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

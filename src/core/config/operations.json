@@ -1,0 +1,138 @@
+{
+  "operations": {
+    "config.show": {
+      "input": "schemas/show.input.json",
+      "output": "schemas/show.output.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "config.explain": {
+      "input": "schemas/explain.input.json",
+      "output": "schemas/explain.output.json",
+      "args": ["path"],
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "config.detect": {
+      "input": "schemas/empty.input.json",
+      "output": "schemas/detect.output.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "config.set": {
+      "input": "schemas/set.input.json",
+      "output": "schemas/write.output.json",
+      "args": ["path", "value"],
+      "context": "project",
+      "effects": ["config:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "config.preview": {
+      "input": "schemas/preview.input.json",
+      "output": "schemas/preview.output.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "config.apply": {
+      "input": "schemas/apply.input.json",
+      "output": "schemas/write.output.json",
+      "context": "project",
+      "effects": ["config:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "config.revert": {
+      "input": "schemas/revert.input.json",
+      "output": "schemas/revert.output.json",
+      "context": "project",
+      "effects": ["config:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "config.save": {
+      "input": "schemas/save.input.json",
+      "output": "schemas/save.output.json",
+      "context": "project",
+      "effects": ["config:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "template.list": {
+      "input": "schemas/empty.input.json",
+      "output": "schemas/template-list.output.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "template.show": {
+      "input": "schemas/template.input.json",
+      "output": "schemas/template-show.output.json",
+      "args": ["template"],
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "template.import": {
+      "input": "schemas/template-edit.input.json",
+      "output": "schemas/template-import.output.json",
+      "args": ["template"],
+      "context": "project",
+      "effects": ["config:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "template.compare": {
+      "input": "schemas/template-compare.input.json",
+      "output": "schemas/template-compare.output.json",
+      "args": ["template"],
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "template.update": {
+      "input": "schemas/template-update.input.json",
+      "output": "schemas/template-update.output.json",
+      "args": ["template"],
+      "context": "project",
+      "effects": ["config:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "template.remove": {
+      "input": "schemas/template-edit.input.json",
+      "output": "schemas/template-remove.output.json",
+      "args": ["template"],
+      "context": "project",
+      "effects": ["config:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "destructive": true
+    }
+  }
+}

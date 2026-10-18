@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/explain.output.json",
+  "type": "object",
+  "required": ["pointer", "set", "value", "layer", "entries"],
+  "properties": {
+    "pointer": {
+      "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
+    },
+    "set": {
+      "type": "boolean"
+    },
+    "value": {},
+    "layer": {
+      "enum": ["derived", "project", "invocation", null]
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "defs.json#/$defs/LayerEntry"
+      }
+    }
+  },
+  "additionalProperties": false
+}

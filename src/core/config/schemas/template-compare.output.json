@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/template-compare.output.json",
+  "type": "object",
+  "required": ["template", "imported", "upstream", "revision", "changes"],
+  "properties": {
+    "template": {
+      "$ref": "../../../../schemas/common.json#/$defs/BlockId"
+    },
+    "imported": {
+      "$ref": "../../../../schemas/common.json#/$defs/TemplateRef"
+    },
+    "upstream": {
+      "$ref": "../../../../schemas/common.json#/$defs/TemplateRef"
+    },
+    "revision": {
+      "$ref": "../../../../schemas/common.json#/$defs/Digest"
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "$ref": "defs.json#/$defs/KeyChange"
+      }
+    }
+  },
+  "additionalProperties": false
+}

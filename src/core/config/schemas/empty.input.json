@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/empty.input.json",
+  "type": "object",
+  "description": "This operation takes no input.",
+  "properties": {},
+  "additionalProperties": false
+}
