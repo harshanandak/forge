@@ -1,0 +1,14 @@
+{
+  "name": "bun-app",
+  "scripts": {
+    "test": "bun test",
+    "dev": "bun --hot index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

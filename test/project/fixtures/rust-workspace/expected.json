@@ -1,0 +1,53 @@
+[
+  {
+    "key": "/blocks/project/detected/rust/present",
+    "value": true,
+    "file": "Cargo.toml"
+  },
+  {
+    "key": "/blocks/project/detected/rust/workspace",
+    "value": {
+      "members": ["crates/core", "crates/cli"]
+    },
+    "file": "Cargo.toml"
+  },
+  {
+    "key": "/blocks/project/detected/rust/lockfile",
+    "value": true,
+    "file": "Cargo.lock"
+  },
+  {
+    "key": "/blocks/project/detected/rust/toolchain",
+    "value": "1.82.0",
+    "file": "rust-toolchain.toml"
+  },
+  {
+    "key": "/blocks/project/detected/tasks/make",
+    "value": {
+      "targets": ["test", "lint", "build", "release"]
+    },
+    "file": "Makefile"
+  },
+  {
+    "key": "/blocks/check/config/commands/test",
+    "value": "make test",
+    "file": "Makefile"
+  },
+  {
+    "key": "/blocks/check/config/commands/lint",
+    "value": "make lint",
+    "file": "Makefile"
+  },
+  {
+    "key": "/blocks/check/config/commands/build",
+    "value": "make build",
+    "file": "Makefile"
+  },
+  {
+    "key": "/blocks/project/detected/ci/github-actions",
+    "value": {
+      "files": [".github/workflows/rust.yaml"]
+    },
+    "file": ".github/workflows/rust.yaml"
+  }
+]

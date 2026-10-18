@@ -1,0 +1,52 @@
+[
+  {
+    "key": "/blocks/project/detected/go/present",
+    "value": true,
+    "file": "go.mod"
+  },
+  {
+    "key": "/blocks/project/detected/go/module",
+    "value": "github.com/acme/svc",
+    "file": "go.mod"
+  },
+  {
+    "key": "/blocks/project/detected/go/version",
+    "value": "1.23.2",
+    "file": "go.mod"
+  },
+  {
+    "key": "/blocks/project/detected/tasks/just",
+    "value": {
+      "targets": ["build", "test"]
+    },
+    "file": "justfile"
+  },
+  {
+    "key": "/blocks/check/config/commands/test",
+    "value": "just test",
+    "file": "justfile"
+  },
+  {
+    "key": "/blocks/check/config/commands/build",
+    "value": "just build",
+    "file": "justfile"
+  },
+  {
+    "key": "/blocks/project/detected/ci/drone",
+    "value": {
+      "files": [".drone.yml"]
+    },
+    "file": ".drone.yml"
+  },
+  {
+    "key": "/blocks/project/detected/decisions/records",
+    "value": {
+      "layout": "single-file",
+      "path": "docs/decisions.md",
+      "count": 3,
+      "idPattern": "D-NNN",
+      "highest": 14
+    },
+    "file": "docs/decisions.md"
+  }
+]

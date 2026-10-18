@@ -1,0 +1,103 @@
+[
+  {
+    "key": "/blocks/project/detected/node/present",
+    "value": true,
+    "file": "package.json"
+  },
+  {
+    "key": "/blocks/project/detected/node/packageManager",
+    "value": {
+      "name": "pnpm",
+      "version": "9.12.1"
+    },
+    "file": "package.json",
+    "pointer": "/packageManager"
+  },
+  {
+    "key": "/blocks/project/detected/node/workspaces",
+    "value": true,
+    "file": "pnpm-workspace.yaml"
+  },
+  {
+    "key": "/blocks/project/detected/node/scripts",
+    "value": {
+      "test": "jest",
+      "build": "turbo run build",
+      "test:unit": "jest unit"
+    },
+    "file": "package.json",
+    "pointer": "/scripts"
+  },
+  {
+    "key": "/blocks/check/config/commands/test",
+    "value": "pnpm test",
+    "file": "package.json",
+    "pointer": "/scripts/test"
+  },
+  {
+    "key": "/blocks/check/config/commands/build",
+    "value": "pnpm run build",
+    "file": "package.json",
+    "pointer": "/scripts/build"
+  },
+  {
+    "key": "/blocks/project/detected/node/testRunners/jest",
+    "value": {
+      "version": "^29.7.0"
+    },
+    "file": "package.json",
+    "pointer": "/devDependencies/jest"
+  },
+  {
+    "key": "/blocks/project/detected/node/testRunners/playwright",
+    "value": {
+      "version": "^1.48.0"
+    },
+    "file": "package.json",
+    "pointer": "/devDependencies/@playwright~1test"
+  },
+  {
+    "key": "/blocks/project/detected/tasks/just",
+    "value": {
+      "targets": ["default", "test", "lint"]
+    },
+    "file": "justfile"
+  },
+  {
+    "key": "/blocks/check/config/commands/test",
+    "value": "just test",
+    "file": "justfile"
+  },
+  {
+    "key": "/blocks/check/config/commands/lint",
+    "value": "just lint",
+    "file": "justfile"
+  },
+  {
+    "key": "/blocks/project/detected/hooks/managers/lefthook",
+    "value": {
+      "files": ["lefthook.yml"]
+    },
+    "file": "lefthook.yml"
+  },
+  {
+    "key": "/blocks/project/detected/hooks/preCommit/lefthook",
+    "value": {
+      "commands": [
+        "format",
+        "pnpm prettier --check {staged_files}",
+        "require-tests",
+        "node scripts/check-source-test-coupling.mjs"
+      ]
+    },
+    "file": "lefthook.yml"
+  },
+  {
+    "key": "/blocks/project/detected/hooks/existingTestGate",
+    "value": {
+      "manager": "lefthook",
+      "command": "require-tests"
+    },
+    "file": "lefthook.yml"
+  }
+]

@@ -12,11 +12,23 @@ test("the library exports the package.json version", () => {
   expect(version).toBe((pkg as { version: string }).version);
 }, 10_000);
 
-test("the stub bin prints the version for --version and fails for anything else", () => {
+test("the command bin prints the version, discovers its catalog and refuses unknown commands", () => {
   const bin = fileURLToPath(new URL("bin/forge.ts", root));
   const ok = Bun.spawnSync([process.execPath, bin, "--version"]);
   expect(ok.exitCode).toBe(0);
   expect(ok.stdout.toString().trim()).toBe(version);
-  const bad = Bun.spawnSync([process.execPath, bin]);
-  expect(bad.exitCode).toBe(2);
+  for (const args of [[], ["--help"]]) {
+    const help = Bun.spawnSync([process.execPath, bin, ...args]);
+    expect(help.exitCode).toBe(0);
+    expect(JSON.parse(help.stdout.toString())).toMatchObject({
+      ok: true,
+      op: "catalog.list",
+    });
+  }
+  const bad = Bun.spawnSync([process.execPath, bin, "unknown-command"]);
+  expect(bad.exitCode).toBe(3);
+  expect(JSON.parse(bad.stdout.toString())).toMatchObject({
+    ok: false,
+    error: { code: "UNKNOWN_COMMAND" },
+  });
 }, 30_000);

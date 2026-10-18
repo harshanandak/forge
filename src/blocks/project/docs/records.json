@@ -1,0 +1,28 @@
+{
+  "operations": {
+    "project.detect": {
+      "title": "Detect the project",
+      "summary": "Report what the project already has: package manager and scripts, languages, hook setup, CI, issue tracker and decision records.",
+      "description": "Read-only. Every observation names the file it came from. Detection describes and never decides: it enables nothing, installs nothing and assumes no tool. Commands offered for the check block come from scripts and targets the project itself declares. Facts land under /blocks/project/detected; commands land under /blocks/check/config/commands. When two files offer a value for one key, both are reported and the project's explicit config wins.",
+      "examples": [
+        {
+          "input": {},
+          "output": {
+            "observations": [
+              {
+                "key": "/blocks/check/config/commands/test",
+                "value": "npm test",
+                "origin": {
+                  "detector": "project.detect",
+                  "file": "package.json",
+                  "pointer": "/scripts/test"
+                }
+              }
+            ],
+            "failures": []
+          }
+        }
+      ]
+    }
+  }
+}

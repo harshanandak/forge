@@ -1,7 +1,7 @@
 import { builtinModules } from "node:module";
 import { posix } from "node:path";
 import type { SourceFile, Violation } from "./repo.ts";
-import { CODE_FILE, TEST_FILE } from "./repo.ts";
+import { CODE_FILE, DETECTOR_MODULE, TEST_FILE } from "./repo.ts";
 import { findWords } from "./words.ts";
 
 export const PACKAGE_NAME = "forge-workflow";
@@ -265,7 +265,7 @@ export const TOOLCHAIN_TERMS: ReadonlySet<string> = new Set([
 
 export const TOOLCHAIN_EXEMPT: readonly RegExp[] = [
   /^src\/adapters\//,
-  /^src\/blocks\/project\//,
+  DETECTOR_MODULE,
   /^src\/blocks\/migrate\/legacy\//,
 ];
 

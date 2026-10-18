@@ -45,12 +45,13 @@
     "build": "tsc -p tsconfig.build.json",
     "pack:smoke": "node tools/pack-smoke/run.ts"
   },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "yaml": "2.9.1"
+  },
   "devDependencies": {
     "@types/bun": "1.4.3",
     "@types/node": "24.19.2",
     "typescript": "7.0.2"
-  },
-  "dependencies": {
-    "yaml": "2.9.1"
   }
 }

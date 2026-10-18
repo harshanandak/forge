@@ -69,6 +69,13 @@ export function readRepoFiles(
   return files;
 }
 
+/**
+ * Detector modules of the project block: the only shipped files outside adapters that may name a
+ * package manager, runner or hook runner (to recognise it) or a retired name. A detector is a file
+ * `src/blocks/project/detect-<name>.ts`; everything else in that folder is ordinary shipped code.
+ */
+export const DETECTOR_MODULE = /^src\/blocks\/project\/detect-[^/]+\.ts$/;
+
 export const CODE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 export const TEST_FILE = /(?:\.|_)(?:test|spec)\.[cm]?[jt]sx?$/;
 
