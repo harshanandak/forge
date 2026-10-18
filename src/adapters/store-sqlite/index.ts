@@ -54,7 +54,9 @@ export function createSqliteStore(basePath: string): StorePort {
               process.env.OneDriveConsumer,
               process.env.OneDriveCommercial,
               process.env.Dropbox,
-            ].filter((value): value is string => Boolean(value)),
+            ]
+              .filter((value): value is string => Boolean(value))
+              .map((root) => realStorePath(resolve(basePath, root))),
           },
           (message) => {
             process.stderr.write(message);
