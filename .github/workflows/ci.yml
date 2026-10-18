@@ -122,22 +122,23 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run build
-      # The tests and the installed-package smoke are independent, so they overlap: the smoke is mostly
-      # npm network and process time (15-22 s on Windows) and the tests spread over the cores. `build`
-      # has already generated src/generated, which is why the smoke is run directly rather than through
-      # `bun run pack:smoke` (its prepack hook would regenerate under the running tests).
-      - name: Test and pack smoke
+      # Overlap the process-heavy smoke with parallel unit tests only. Integration tests launch real
+      # git, Bun and Node processes, so they run afterward without parallel workers.
+      # `build` has already generated src/generated; the smoke runs directly to avoid regeneration.
+      - name: Unit tests and pack smoke
         run: |
           smoke_log="$RUNNER_TEMP/pack-smoke.log"
           node tools/pack-smoke/run.ts > "$smoke_log" 2>&1 &
           smoke_pid=$!
           status=0
-          bun run test || status=1
+          bun run test:unit || status=1
           wait "$smoke_pid" || status=1
           echo "::group::pack smoke"
           cat "$smoke_log"
           echo "::endgroup::"
           exit "$status"
+      - name: Process integration tests
+        run: bun run test:integration
 
   # The one required check. Skipped heavy legs pass only when the change is documentation-only.
   ci-gate:
