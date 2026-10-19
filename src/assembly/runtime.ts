@@ -14,6 +14,9 @@ export type {
   FilesService,
   EnvironmentService,
   CryptoService,
+  RunnerOutputPort,
+  OutputReport,
+  ReportFormat,
   FileSnapshotInput,
   ProviderOptions,
 } from "./providers.ts";
