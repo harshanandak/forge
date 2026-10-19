@@ -10,14 +10,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { packedSuites } from "../../../tools/pack-smoke/suites.ts";
+
+const lanes = [
+  ...packedSuites.map((suite) => ({ lane: suite.label, file: suite.file })),
+  { lane: "serial", file: "test/other.integration.test.ts" },
+];
 
 for (const suite of ["integration", "integration-rest"] as const)
-  for (const failing of [
-    "packed",
-    "first-slice",
-    "serial",
-    "neither",
-  ] as const) {
+  for (const failing of [...lanes.map((lane) => lane.lane), "neither"]) {
     test(`${suite} preserves selected files and the ${failing} outcome`, () => {
       const work = mkdtempSync(join(tmpdir(), "forge-suite-outcomes-"));
       try {
@@ -27,21 +28,16 @@ for (const suite of ["integration", "integration-rest"] as const)
           "child-runner.ts",
           "runner-policy.ts",
           "runner-policy.json",
-        ])
+          "pack-smoke/suites.ts",
+        ]) {
+          mkdirSync(dirname(join(work, "tools", file)), { recursive: true });
           cpSync(
             resolve(import.meta.dirname, `../../../tools/${file}`),
             join(work, "tools", file),
           );
-        for (const lane of ["packed", "first-slice", "serial"] as const) {
-          const path = join(
-            work,
-            "test",
-            lane === "packed"
-              ? "node-fixtures/state/packed.integration.test.ts"
-              : lane === "first-slice"
-                ? "integration/packed.integration.test.ts"
-                : "other.integration.test.ts",
-          );
+        }
+        for (const { lane, file } of lanes) {
+          const path = join(work, file);
           mkdirSync(dirname(path), { recursive: true });
           writeFileSync(
             path,
@@ -77,12 +73,11 @@ test("${lane}", async () => {
         expect(result.error).toBeUndefined();
         expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(
           failing === "serial" ||
-            ((failing === "packed" || failing === "first-slice") &&
-              suite === "integration")
+            (failing !== "neither" && suite === "integration")
             ? 1
             : 0,
         );
-        for (const lane of ["packed", "first-slice", "serial"])
+        for (const { lane } of lanes)
           expect(existsSync(join(work, `${lane}.collected`))).toBe(
             lane !== failing && (suite === "integration" || lane === "serial"),
           );

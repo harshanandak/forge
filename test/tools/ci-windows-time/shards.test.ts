@@ -5,6 +5,9 @@ import {
   selectShard,
 } from "../../node-fixtures/state/counterfactuals.ts";
 import { firstSliceMutations } from "../../integration/counterfactuals.ts";
+import { counterfactuals as workMutations } from "../../node-fixtures/work/counterfactuals.ts";
+import { counterfactuals as memoryMutations } from "../../node-fixtures/memory/counterfactuals.ts";
+import { asyncCounterfactuals } from "../../node-fixtures/async-handlers/counterfactuals.ts";
 
 function verifyShards<T>(cases: readonly T[]): readonly T[] {
   const left = selectShard(cases, packedCoverage("24").shard);
@@ -36,10 +39,30 @@ test("Node first-slice shards cover every mutation exactly once", () => {
   );
 }, 1000);
 
+for (const { name, cases } of [
+  { name: "work", cases: workMutations },
+  { name: "memory", cases: memoryMutations },
+  { name: "async Windows", cases: asyncCounterfactuals("win32") },
+  { name: "async Linux", cases: asyncCounterfactuals("linux") },
+  { name: "async macOS", cases: asyncCounterfactuals("darwin") },
+] satisfies { name: string; cases: readonly unknown[] }[])
+  test(`Node ${name} shards cover every mutation exactly once`, () => {
+    verifyShards<unknown>(cases);
+    expect(selectShard<unknown>(cases, undefined)).toEqual(cases);
+  }, 1000);
+
 test("shards stay complete and balanced as mutations are added", () => {
   for (
     let length = 0;
-    length <= Math.max(counterfactuals.length, firstSliceMutations.length) + 5;
+    length <=
+    Math.max(
+      counterfactuals.length,
+      firstSliceMutations.length,
+      workMutations.length,
+      memoryMutations.length,
+      asyncCounterfactuals("win32").length,
+    ) +
+      5;
     length++
   ) {
     const cases = Array.from({ length }, (_, index) => index);
