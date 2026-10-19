@@ -98,3 +98,44 @@ test("all PR and GitHub operations capture their config, schemas, contexts and e
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+for (const { name, path, value } of [
+  {
+    name: "merge input",
+    path: "schemas/call.json",
+    value: {
+      action: "merge",
+      payload: {
+        repository: "owner/repository",
+        number: 42,
+        expectHead: "a".repeat(40),
+        expectBase: "b".repeat(40),
+        title: "Explicit title",
+        body: "",
+        evidence: ready(),
+      },
+    },
+  },
+  {
+    name: "refused merge result",
+    path: "schemas/result.json",
+    value: { merged: false, evidence: ready() },
+  },
+])
+  test(`declared GitHub schema accepts the actual ${name}`, () => {
+    const directory = mkdtempSync(join(tmpdir(), "forge-github-contract-"));
+    try {
+      const source = resolve(import.meta.dirname, "../../../src/blocks/github");
+      cpSync(source, directory, { recursive: true });
+      writeFileSync(
+        join(directory, "entry.cjs"),
+        new Bun.Transpiler({ loader: "ts" }).transformSync(
+          readFileSync(join(source, "entry.cts"), "utf8"),
+        ),
+      );
+      const block = captureBlock(directory, blockCapture);
+      expect(block.validate(path, value)).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });

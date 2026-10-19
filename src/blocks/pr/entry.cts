@@ -49,7 +49,7 @@ interface Check {
 }
 interface Review {
   readonly id: string;
-  readonly author: string;
+  readonly author: string | null;
   readonly state: string;
   readonly headSha: string;
   readonly updatedAt: number;
@@ -291,7 +291,6 @@ function evidence(value: unknown, r: Ref): Evidence | undefined {
       (v: unknown) =>
         object(v) &&
         string(v.id) &&
-        string(v.author) &&
         enumValue(v.state, [
           "APPROVED",
           "CHANGES_REQUESTED",
@@ -386,11 +385,11 @@ function evidence(value: unknown, r: Ref): Evidence | undefined {
     })),
     reviews: e.reviews.map((v) => ({
       id: v.id,
-      author: v.author,
+      author: string(v.author) ? v.author : null,
       state: v.state,
       headSha: v.headSha.toLowerCase(),
       updatedAt: v.updatedAt,
-      authorizing: v.authorizing === true,
+      authorizing: string(v.author) && v.authorizing === true,
     })),
     threads: e.threads.map((v) => ({
       id: v.id,
@@ -545,6 +544,7 @@ function compute(
   const latest = new Map<string, Review>();
   // Historical comments carry no approval authority and cannot invalidate a later head.
   for (const review of reviews) {
+    if (!review.author) continue;
     if (review.state === "COMMENTED" || review.state === "DISMISSED") continue;
     const actor = review.author.toLowerCase(),
       prior = latest.get(actor);
@@ -554,6 +554,7 @@ function compute(
   }
   let approvals = 0;
   for (const review of latest.values()) {
+    if (!review.authorizing) continue;
     if (review.headSha !== e.headSha)
       return result(
         "REVIEW_REQUIRED",
@@ -564,7 +565,7 @@ function compute(
         "REVIEW_BLOCKED",
         "A reviewer requested changes or has a pending review",
       );
-    if (review.authorizing) approvals++;
+    approvals++;
   }
   if (approvals < c.minApprovals)
     return result(

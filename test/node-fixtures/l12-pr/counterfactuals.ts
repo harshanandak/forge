@@ -1,8 +1,36 @@
 export const counterfactuals = [
   {
+    file: "blocks/github/schemas/merge.json",
+    from: '"$ref": "evidence.json"',
+    to: '"type": "null"',
+    journey: "contract-merge",
+    evidence: "real merge contract must pass catalog validation",
+  },
+  {
+    file: "blocks/github/schemas/result.json",
+    from: '"const": false',
+    to: '"const": true',
+    journey: "contract-refusal",
+    evidence: "real merge contract must pass catalog validation",
+  },
+  {
     file: "blocks/pr/entry.cjs",
-    from: "if (review.authorizing) approvals++;",
-    to: "approvals++;",
+    from: "if (!review.authorizing) continue;",
+    to: "if (false) continue;",
+    journey: "review-contract",
+    evidence: "expected verdict MERGE_READY",
+  },
+  {
+    file: "blocks/github/entry.cjs",
+    from: "const author = object(value.author) ? value.author : {},",
+    to: "const author = obj(value.author),",
+    journey: "review-contract",
+    evidence: "expected verdict MERGE_READY",
+  },
+  {
+    file: "blocks/pr/entry.cjs",
+    from: "if (!review.authorizing) continue;",
+    to: "if (false) continue;",
     journey: "review-authority",
     evidence: "expected verdict REVIEW_REQUIRED",
   },

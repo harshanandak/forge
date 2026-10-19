@@ -775,13 +775,12 @@ async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
   let lastActivityAt = stamp(before.updatedAt);
   const reviews = (await pages(call, s, r, "Reviews", before.headRefOid)).map(
     (value) => {
-      const author = obj(value.author),
+      const author = object(value.author) ? value.author : {},
         commit = obj(value.commit),
         headSha = canonicalSha(commit.oid),
         updatedAt = stamp(value.updatedAt);
       if (
         !text(value.id) ||
-        !text(author.login) ||
         !headSha ||
         !enumValue(value.state, [
           "APPROVED",
@@ -796,11 +795,14 @@ async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
         lastActivityAt = Math.max(lastActivityAt, updatedAt);
       return {
         id: value.id,
-        author: author.login,
+        author: text(author.login) ? author.login : null,
         state: value.state,
         headSha,
         updatedAt,
-        authorizing: value.authorCanPushToRepository === true,
+        authorizing:
+          text(author.login) &&
+          author.login.toLowerCase() !== "ghost" &&
+          value.authorCanPushToRepository === true,
       };
     },
   );

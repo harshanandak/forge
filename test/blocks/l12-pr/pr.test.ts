@@ -127,6 +127,30 @@ test("outsider or unknown-authority approvals never satisfy the configured appro
   }
 });
 
+test("non-authorizing and ghost reviews cannot impose change-request or pending blockers", async () => {
+  for (const author of ["outside-account", "ghost", null, undefined]) {
+    for (const state of ["CHANGES_REQUESTED", "PENDING"]) {
+      const h = harness();
+      const value = ready();
+      value.reviews = [
+        ...(value.reviews as Json[]),
+        {
+          id: "outside",
+          author,
+          authorizing: author == null,
+          state,
+          headSha: head,
+          updatedAt: 2000,
+        },
+      ];
+      h.set(value);
+      expect(await h.invoke("status")).toMatchObject({
+        verdict: { status: "MERGE_READY" },
+      });
+    }
+  }
+});
+
 test("approval authority belongs to the latest current-head review per author", async () => {
   const h = harness();
   const old = {

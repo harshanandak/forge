@@ -5,7 +5,7 @@ configured provider for fresh observations on every `pr.status`, `pr.checks` and
 `pr.threads` call. These reads do not write. `evidence` and `verdict` travel
 together; no stored phase or previous verdict authorizes a merge.
 
-An approval counts only when the provider explicitly returns `authorizing: true` for the latest current-head review by that author. Missing, unknown or non-boolean authority does not count. GitHub derives this evidence from repository push access; provider-specific authority lookup stays in the provider block.
+Only the latest current-head review by an explicitly authorizing reviewer can approve or impose a change-request/pending blocker. Missing, unknown or non-boolean authority supplies neither. Unknown authors are recorded as null; ghost authors remain visible without authority. GitHub derives authority from repository push access; provider-specific lookup stays in the provider block.
 
 The catalog describes all twelve operations and their input/output schemas.
 `pr.claim` acquires a lease in this block's namespace; `pr.renew` and

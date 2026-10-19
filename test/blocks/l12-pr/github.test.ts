@@ -621,6 +621,45 @@ test("missing pageInfo, unfinished pages, API errors and head movement never bec
     });
   }
 });
+test("deleted or unknown GitHub review authors remain visible without authority or incomplete evidence", async () => {
+  for (const author of [
+    null,
+    {},
+    { login: "" },
+    { login: "ghost" },
+  ] as (Json | null)[]) {
+    const h = harness({
+      mutate(value, query) {
+        if (!query.includes("ForgePRReviews")) return value;
+        const reviews = value.reviews as Json;
+        return {
+          ...value,
+          reviews: {
+            ...reviews,
+            nodes: (reviews.nodes as Json[]).map((v) => ({
+              ...v,
+              author,
+              authorCanPushToRepository: true,
+              state: "CHANGES_REQUESTED",
+            })),
+          },
+        };
+      },
+    });
+    expect(await h.invoke("read")).toMatchObject({
+      complete: true,
+      reviews: [
+        {
+          id: "R1",
+          author: author?.login || null,
+          authorizing: false,
+          state: "CHANGES_REQUESTED",
+        },
+      ],
+    });
+  }
+});
+
 test("GitHub review authority requires an explicit current provider push-access boolean", async () => {
   for (const authority of [true, false, null, undefined, "true"]) {
     const h = harness({

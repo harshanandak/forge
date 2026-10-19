@@ -134,6 +134,8 @@ test("installed PR/GitHub blocks: all computed verdicts, exact head and both fen
       ),
     ];
     const journeys = [
+      "contracts",
+      "review-contract",
       "review-authority",
       "merge-preflight",
       "targeted-writes",

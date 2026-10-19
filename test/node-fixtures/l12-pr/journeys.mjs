@@ -187,6 +187,7 @@ const context = (generation, who = "alice") => ({
       : { leaseGeneration: generation }),
 });
 async function invoke(op, input = reference, generation, who = "alice") {
+  seenOperations.add(`pr.${op}`);
   sequence++;
   return runtime.invoke({
     schemaVersion: "forge.invocation/1",
@@ -197,6 +198,7 @@ async function invoke(op, input = reference, generation, who = "alice") {
     context: context(generation, who),
   });
 }
+const seenOperations = new Set();
 async function good(op, input = reference, generation) {
   const value = await invoke(op, input, generation);
   assert.equal(value.ok, true, JSON.stringify(value));
@@ -212,6 +214,190 @@ async function status(expected) {
   return value;
 }
 try {
+  if (["contract-merge", "contract-refusal"].includes(mode)) {
+    save(ready(), { contractGuard: true });
+    const direct = async (operation, input) => {
+      const executable = port.resolve(process.execPath, env);
+      assert.equal(executable.kind, "resolved");
+      const result = await port.run(executable, [provider, installed, file], {
+        cwd: root,
+        env,
+        timeoutMs: 20000,
+        maxOutputBytes: 1048576,
+        stdin: JSON.stringify({ operation, input }),
+      });
+      assert.equal(result.exitCode, 0);
+      return JSON.parse(result.stdout);
+    };
+    const current = await direct("github.read", {
+      action: "status",
+      payload: reference,
+    });
+    assert.equal(current.ok, true);
+    if (mode === "contract-refusal") {
+      const stored = JSON.parse(readFileSync(file, "utf8"));
+      stored.evidence.findings = [
+        { label: "P1", headSha: head, resolved: false },
+      ];
+      writeFileSync(file, JSON.stringify(stored));
+    }
+    const merged = await direct("github.call", {
+      action: "merge",
+      payload: {
+        ...reference,
+        expectHead: head,
+        expectBase: base,
+        title: "Explicit title",
+        body: "",
+        evidence: current.result,
+      },
+    });
+    assert.equal(
+      merged.ok,
+      true,
+      "real merge contract must pass catalog validation",
+    );
+    assert.equal(merged.result.merged, mode === "contract-merge");
+  }
+  if (["all", "contracts"].includes(mode)) {
+    save(
+      { ...ready(), threads: [{ id: "T1", resolved: false, headSha: head }] },
+      { contractGuard: true },
+    );
+    const direct = async (operation, input) => {
+      const executable = port.resolve(process.execPath, env);
+      assert.equal(executable.kind, "resolved");
+      const value = await port.run(executable, [provider, installed, file], {
+        cwd: root,
+        env,
+        timeoutMs: 20000,
+        maxOutputBytes: 1048576,
+        stdin: JSON.stringify({ operation, input }),
+      });
+      assert.equal(value.exitCode, 0);
+      return JSON.parse(value.stdout);
+    };
+    for (const op of ["github.status", "github.use"])
+      assert.equal(
+        (await direct(op, {})).ok,
+        true,
+        `${op} real input/output contract`,
+      );
+    await good("create", {
+      repository: reference.repository,
+      title: "Contract guard",
+      body: "",
+      head: "feature",
+      base: "main",
+      draft: false,
+    });
+    await good("link", {
+      ...reference,
+      expectRevision: state.get("forge/pr", subject).revision,
+    });
+    for (const op of ["status", "checks", "threads"]) await good(op);
+    const held = await good("claim", reference, "acquire");
+    await good("renew", reference, held.generation);
+    await good("reply", {
+      ...reference,
+      threadId: "T1",
+      body: "Specific reply",
+    });
+    await good("resolve", { ...reference, threadId: "T1" });
+    await good("rerun", { ...reference, runId: 123 });
+    const authorized = await status("MERGE_READY");
+    let stored = JSON.parse(readFileSync(file, "utf8"));
+    stored.evidence.findings = [
+      { label: "P1", headSha: head, resolved: false },
+    ];
+    writeFileSync(file, JSON.stringify(stored));
+    const refused = await direct("github.call", {
+      action: "merge",
+      payload: {
+        ...reference,
+        expectHead: head,
+        expectBase: base,
+        title: "Explicit title",
+        body: "",
+        evidence: authorized.evidence,
+      },
+    });
+    assert.equal(
+      refused.ok,
+      true,
+      "refused merge real output must pass catalog validation",
+    );
+    assert.equal(refused.result.merged, false);
+    assert.equal(refused.result.evidence.findings[0].label, "P1");
+    stored = JSON.parse(readFileSync(file, "utf8"));
+    stored.evidence.findings = [];
+    writeFileSync(file, JSON.stringify(stored));
+    const merged = await good(
+      "merge",
+      {
+        ...reference,
+        expectHead: head,
+        expectRevision: state.get("forge/pr", subject).revision,
+      },
+      held.generation,
+    );
+    assert.equal(
+      merged.verdict.status,
+      "MERGED",
+      "real merge input/output contract must succeed",
+    );
+    await good("release", reference, held.generation);
+    const expectedPr = Object.keys(pr.manifest.operations).sort();
+    assert.deepEqual(
+      [...seenOperations].sort(),
+      expectedPr,
+      "every PR operation has real input/output contract coverage",
+    );
+    const github = JSON.parse(
+      readFileSync(
+        join(installed, "dist/src/blocks/github/forge.block.json"),
+        "utf8",
+      ),
+    );
+    stored = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(
+      stored.validatedOperations.sort(),
+      Object.keys(github.operations).sort(),
+      "every GitHub operation has real input/output contract coverage",
+    );
+    assert.deepEqual(
+      stored.validatedCases.sort(),
+      [
+        "create:accepted",
+        "reply:accepted",
+        "resolve:accepted",
+        "rerun:accepted",
+        "merge:false",
+        "merge:true",
+      ].sort(),
+    );
+  }
+  if (["all", "review-contract"].includes(mode)) {
+    for (const author of ["outsider", "ghost", null]) {
+      const value = ready();
+      value.reviews.push({
+        id: "outside",
+        author,
+        authorizing: author !== "outsider",
+        state: "CHANGES_REQUESTED",
+        headSha: head,
+        updatedAt: now - 10000,
+      });
+      save(value);
+      const view = await status("MERGE_READY");
+      assert.equal(
+        view.evidence.reviews.length,
+        2,
+        "unknown/ghost review remains visible",
+      );
+      assert.equal(view.evidence.reviews[1].authorizing, false);
+    }
+  }
   if (["all", "review-authority"].includes(mode)) {
     for (const authorizing of [false, null, undefined]) {
       const value = ready();

@@ -7,10 +7,6 @@ const [installed, file] = process.argv.slice(2);
 const load = (path) =>
   import(pathToFileURL(join(installed, "dist/src", path)).href);
 const { nodeRunIsolation } = await load("adapters/node-runtime/isolation.js");
-const source = readFileSync(
-  join(installed, "dist/src/blocks/github/entry.cjs"),
-  "utf8",
-);
 let body = "";
 for await (const chunk of process.stdin) body += chunk;
 const request = JSON.parse(body);
@@ -22,8 +18,6 @@ if (request.action === "status" && stored.directEvidence) {
   );
   process.exit(0);
 }
-const iso = await nodeRunIsolation.open();
-if (!iso.ok) throw new Error("Missing isolation");
 const env = {};
 const config = {
   envNames: [],
@@ -150,7 +144,7 @@ const port = {
           reviews: connection(
             e.reviews.map((v) => ({
               id: v.id,
-              author: { login: v.author },
+              author: v.author == null ? null : { login: v.author },
               authorCanPushToRepository: v.authorizing,
               state: v.state,
               commit: { oid: v.headSha },
@@ -272,29 +266,109 @@ const port = {
   },
 };
 try {
-  const result = JSON.parse(
-    await iso.handle.value.run({
-      source,
-      filename: "github.cjs",
-      operation: request.action === "status" ? "github.read" : "github.call",
-      args: {
-        input: request,
-        config,
-        services: { process: port, environment: { select: () => env } },
-        signal: new AbortController().signal,
-        deadline: Date.now() + 30000,
+  const operation =
+    request.operation ??
+    (request.action === "status" ? "github.read" : "github.call");
+  const input = request.operation ? request.input : request;
+  let result;
+  if (stored.contractGuard) {
+    const { Runtime, Catalog, TrustStore, captureBlock } = await load(
+      "assembly/runtime.js",
+    );
+    const { blockCapture } = await load("assembly/capture.js");
+    const { ASSEMBLY_PROVIDES } = await load("assembly/providers.js");
+    const block = captureBlock(
+      join(installed, "dist/src/blocks/github"),
+      blockCapture,
+    );
+    const catalog = new Catalog(
+      {
+        schemaVersion: "forge.config/1",
+        blocks: { github: { source: { path: "./github" }, config } },
       },
-      encode: JSON.stringify,
-      fail: (code, message) => {
-        throw Object.assign(new Error(message), { code });
+      new Map([["github", block]]),
+      undefined,
+      ASSEMBLY_PROVIDES,
+    );
+    const trust = new TrustStore();
+    trust.admit("human", block.digest);
+    trust.grant("human", block.digest, [
+      "github:write",
+      "external:write",
+      "external:process",
+      "environment:read",
+    ]);
+    const runtime = new Runtime(catalog, trust, {
+      isolation: nodeRunIsolation,
+      limits: { timeoutMs: 30000 },
+      services: async () => ({
+        ownership: "borrowed",
+        value: { process: port, environment: { select: () => env } },
+      }),
+    });
+    result = await runtime.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: "github-fixture",
+      caller: "agent",
+      op: operation,
+      input,
+      context: {
+        actor: { kind: "agent", id: "fixture" },
+        project: { id: process.cwd() },
+        session: { id: "fixture" },
       },
-      timeoutMs: 30000,
-      deadline: Date.now() + 30000,
-      signal: new AbortController().signal,
-      settled() {},
-    }),
-  );
-  process.stdout.write(JSON.stringify({ ok: true, result }));
+    });
+  } else {
+    const iso = await nodeRunIsolation.open();
+    if (!iso.ok) throw new Error("Missing isolation");
+    try {
+      result = {
+        ok: true,
+        result: JSON.parse(
+          await iso.handle.value.run({
+            source: readFileSync(
+              join(installed, "dist/src/blocks/github/entry.cjs"),
+              "utf8",
+            ),
+            filename: "github.cjs",
+            operation,
+            args: {
+              input,
+              config,
+              services: { process: port, environment: { select: () => env } },
+              signal: new AbortController().signal,
+              deadline: Date.now() + 30000,
+            },
+            encode: JSON.stringify,
+            fail: (code, message) => {
+              throw Object.assign(new Error(message), { code });
+            },
+            timeoutMs: 30000,
+            deadline: Date.now() + 30000,
+            signal: new AbortController().signal,
+            settled() {},
+          }),
+        ),
+      };
+    } finally {
+      await iso.handle.close();
+    }
+  }
+  if (result.ok && stored.contractGuard) {
+    const latest = JSON.parse(readFileSync(file, "utf8"));
+    latest.validatedOperations = [
+      ...new Set([...(latest.validatedOperations ?? []), operation]),
+    ];
+    if (operation === "github.call")
+      latest.validatedCases = [
+        ...new Set([
+          ...(latest.validatedCases ?? []),
+          `${input.action}:${result.result.merged ?? "accepted"}`,
+        ]),
+      ];
+    writeFileSync(file, JSON.stringify(latest));
+  }
+  process.stdout.write(JSON.stringify(result));
 } catch (error) {
   process.stdout.write(
     JSON.stringify({
@@ -305,6 +379,4 @@ try {
       },
     }),
   );
-} finally {
-  await iso.handle.close();
 }

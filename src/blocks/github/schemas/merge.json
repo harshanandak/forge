@@ -1,6 +1,7 @@
 {
   "type": "object",
   "properties": {
+    "evidence": { "$ref": "evidence.json" },
     "repository": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
@@ -31,6 +32,7 @@
     }
   },
   "required": [
+    "evidence",
     "repository",
     "number",
     "expectHead",
