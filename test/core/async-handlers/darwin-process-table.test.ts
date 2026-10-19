@@ -88,13 +88,13 @@ test("Darwin refuses a full or malformed PID list rather than hiding members", (
   }
 }, 5000);
 
-test("Darwin skips a member reaped between enumeration and inspection", () => {
+test("Darwin counts a listed member the live-only lookup cannot see as dead, not absent", () => {
   const api = fakeApi([{ pid: 124, state: 5 }]);
   api.pidInfo = () => {
     api.errno(3);
     return 0;
   };
-  expect(members(api)).toEqual([]);
+  expect(members(api)).toEqual([{ pid: 124, state: "Z" }]);
 }, 5000);
 
 test("Darwin refuses permission, short records, invalid identities and unknown states", () => {
@@ -159,7 +159,7 @@ test("Darwin never acquires a retained zombie reference while confirming live me
     api.errno(3);
     return 0;
   };
-  expect(members(api)).toEqual([]);
+  expect(members(api)).toEqual([{ pid: 124, state: "Z" }]);
   expect(argumentsSeen).toEqual([0]);
 }, 5000);
 
@@ -186,4 +186,29 @@ test("Darwin live-only inspection still refuses a live survivor at the cleanup d
   );
   expect(waits).toEqual([10, 10, 3]);
   expect(now).toBe(23);
+}, 5000);
+
+test("Darwin settles a probed group whose only member is a retained zombie", async () => {
+  let now = 0;
+  const api = fakeApi([{ pid: 124, state: 5 }]);
+  // The live-only lookup reports the retained zombie as ESRCH.
+  api.pidInfo = () => {
+    api.errno(3);
+    return 0;
+  };
+  await killTree(
+    123,
+    { cleanupTimeoutMs: 30, pollIntervalMs: 10 },
+    {
+      // The retained zombie keeps every group probe successful.
+      signal() {},
+      now: () => now,
+      pause(ms) {
+        now += ms;
+        return Promise.resolve();
+      },
+      processTable: createDarwinProcessTable(() => api),
+    },
+  );
+  expect(now).toBe(0);
 }, 5000);
