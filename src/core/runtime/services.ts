@@ -8,13 +8,16 @@ export class InvocationServices {
   readonly deadline: number;
   readonly #pending = new Set<Promise<unknown>>();
   #active = true;
-  constructor(deadline: number) {
+  readonly #authorize: () => void;
+  constructor(deadline: number, authorize: () => void) {
     this.deadline = deadline;
+    this.#authorize = authorize;
   }
   check(): void {
     if (!this.#active)
       refuse("SERVICE_EXPIRED", "Invocation services have expired");
     if (this.controller.signal.aborted) throw this.controller.signal.reason;
+    this.#authorize();
     if (Date.now() >= this.deadline) {
       this.controller.abort(
         new ForgeFailure({
@@ -48,7 +51,12 @@ export class InvocationServices {
       let ended = false;
       const abort = (): void => {
         ended = true;
-        reject(this.controller.signal.reason);
+        const reason: unknown = this.controller.signal.reason;
+        reject(
+          reason instanceof Error
+            ? reason
+            : new Error("Invocation aborted", { cause: reason }),
+        );
       };
       this.controller.signal.addEventListener("abort", abort, { once: true });
       if (this.controller.signal.aborted) abort();
@@ -62,11 +70,15 @@ export class InvocationServices {
           ended = true;
           resolve(value);
         },
-        (error) => {
+        (error: unknown) => {
           this.controller.signal.removeEventListener("abort", abort);
           if (!ended) {
             ended = true;
-            reject(error);
+            reject(
+              error instanceof Error
+                ? error
+                : new Error("Invocation failed", { cause: error }),
+            );
           }
         },
       );
@@ -76,14 +88,14 @@ export class InvocationServices {
     await Promise.allSettled([...this.#pending]);
   }
   wrap(value: unknown): unknown {
-    const seen = new WeakMap<object, unknown>();
+    const seen = new WeakMap<object, Map<object | undefined, unknown>>();
     const visit = (entry: unknown, receiver?: object): unknown => {
       if (
         (typeof entry !== "object" || entry === null) &&
         typeof entry !== "function"
       )
         return entry;
-      const cached = seen.get(entry);
+      const cached = seen.get(entry)?.get(receiver);
       if (cached) return cached;
       // ProcessPort has this structural pair. Its run must inherit cancellation even if the
       // handler omits or replaces its own signal and timeout.
@@ -95,44 +107,70 @@ export class InvocationServices {
         typeof entry.run === "function";
       const target =
         typeof entry === "function" ? (..._args: unknown[]) => undefined : {};
+      const read = (key: string | symbol): unknown => {
+        this.check();
+        if (
+          typeof entry === "function" &&
+          (key === "bind" || key === "call" || key === "apply")
+        )
+          return visit(Reflect.get(target, key, target), proxy);
+        if (processPort && key === "run")
+          return (
+            executable: Parameters<ProcessPort["run"]>[0],
+            args: readonly string[],
+            options: SpawnOptions,
+          ) => {
+            this.check();
+            const port = entry as ProcessPort;
+            const signal = options.signal
+              ? AbortSignal.any([this.controller.signal, options.signal])
+              : this.controller.signal;
+            const pending = port.run(executable, args, {
+              ...options,
+              signal,
+              timeoutMs: Math.min(
+                options.timeoutMs,
+                Math.max(1, this.deadline - Date.now()),
+              ),
+            });
+            this.#pending.add(pending);
+            void pending.then(
+              () => this.#pending.delete(pending),
+              () => this.#pending.delete(pending),
+            );
+            return pending;
+          };
+        return visit(Reflect.get(entry, key, entry), entry);
+      };
       const proxy = new Proxy(target, {
-        get: (_target, key) => {
+        get: (_target, key) => read(key),
+        ownKeys: () => {
           this.check();
-          if (processPort && key === "run")
-            return (
-              executable: Parameters<ProcessPort["run"]>[0],
-              args: readonly string[],
-              options: SpawnOptions,
-            ) => {
-              this.check();
-              const port = entry as ProcessPort;
-              const signal = options.signal
-                ? AbortSignal.any([this.controller.signal, options.signal])
-                : this.controller.signal;
-              const pending = port.run(executable, args, {
-                ...options,
-                signal,
-                timeoutMs: Math.min(
-                  options.timeoutMs,
-                  Math.max(1, this.deadline - Date.now()),
-                ),
-              });
-              this.#pending.add(pending);
-              void pending.then(
-                () => this.#pending.delete(pending),
-                () => this.#pending.delete(pending),
-              );
-              return pending;
-            };
-          return visit(Reflect.get(entry, key, entry), entry);
+          return Reflect.ownKeys(entry);
+        },
+        getOwnPropertyDescriptor: (_target, key) => {
+          this.check();
+          const descriptor = Reflect.getOwnPropertyDescriptor(entry, key);
+          if (!descriptor) return undefined;
+          return {
+            configurable: true,
+            enumerable: descriptor.enumerable ?? false,
+            ...("value" in descriptor
+              ? { writable: false, value: read(key) }
+              : { get: () => read(key) }),
+          };
         },
         apply: (_target, _this, args: unknown[]) => {
           this.check();
-          return Reflect.apply(
+          const output: unknown = Reflect.apply(
             entry as (...args: unknown[]) => unknown,
             receiver,
             args,
           );
+          return typeof output === "function" ||
+            (typeof output === "object" && output !== null && seen.has(output))
+            ? visit(output)
+            : output;
         },
         set: () => {
           this.check();
@@ -147,7 +185,8 @@ export class InvocationServices {
           refuse("INPUT_INVALID", "Service clients are read-only");
         },
       });
-      seen.set(entry, proxy);
+      if (!seen.has(entry)) seen.set(entry, new Map());
+      seen.get(entry)!.set(receiver, proxy);
       return proxy;
     };
     return visit(value);

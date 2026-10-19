@@ -65,11 +65,11 @@ test("project.detect returns the report for the folder the runtime binds", async
   );
 }, 30_000);
 
-test("project.detect without a project folder fails with a coded, non-retryable error", () => {
+test("project.detect without a project folder fails with a coded, non-retryable error", async () => {
   for (const services of [undefined, {}, { files: {} }]) {
     let failure: unknown;
     try {
-      operations["project.detect"]({
+      await operations["project.detect"]({
         input: {},
         services,
         signal: new AbortController().signal,

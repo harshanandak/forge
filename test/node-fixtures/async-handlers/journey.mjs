@@ -130,6 +130,20 @@ try {
       "async child process must complete",
     );
   }
+  if (["all", "cpu"].includes(mode)) {
+    const f = fixture(
+      "async ({services}) => { await services.delay(); while(true) {} }",
+      50,
+    );
+    const result = await f
+      .runtime({ delay: () => pause(10) })
+      .invoke(f.request);
+    assert.equal(
+      result.error?.code,
+      "INVOCATION_TIMEOUT",
+      "CPU after a native Promise must remain under deadline",
+    );
+  }
   for (const kind of ["timeout", "cancel"])
     if (["all", kind].includes(mode)) {
       const ready = join(root, `${kind}.ready`),
@@ -178,7 +192,9 @@ try {
       try {
         process.kill(pid, 0);
         alive = true;
-      } catch {}
+      } catch {
+        /* the descendant has exited */
+      }
       if (alive && process.platform === "linux") {
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         alive = !stat.includes(") Z ");
@@ -335,6 +351,203 @@ try {
     } finally {
       child.stdin.end();
       await new Promise((resolve) => child.once("exit", resolve));
+    }
+  }
+  if (["all", "leased"].includes(mode)) {
+    const { createAssembly } = await import("forge-workflow/runtime");
+    const { createStateClient } = await import(
+      new URL("dist/src/assembly/state-client.js", packageUrl)
+    );
+    const { StateOwner } = await import("forge-workflow/state");
+    const { sqliteStore } = await import("forge-workflow/adapters/sqlite");
+    const database = await sqliteStore.open({
+      path: join(root, "leased.sqlite"),
+      readOnly: false,
+    });
+    assert.equal(database.ok, true);
+    const owner = new StateOwner(database.handle.value, {
+      now: () => Date.now(),
+    });
+    owner.initialize();
+    const context = {
+      variant: "leased",
+      leaseMode: "held",
+      actor: { kind: "agent", id: "a" },
+      session: { id: "session" },
+      project: { id: root, root },
+      leaseGeneration: 1,
+    };
+    owner.acquire(
+      "example.org/sample",
+      "subject",
+      { actor: context.actor, session: context.session },
+      60000,
+      "claim",
+    );
+    const state = createStateClient({
+      owner,
+      namespace: "example.org/sample",
+      context,
+      write: true,
+      requestId: "leased-write",
+    });
+    const f = fixture(
+      "async ({ services }) => { services.retain(services.state); await Promise.resolve(); services.state.put('count', {count:1}, {expectRevision:0, subject:'subject'}); return 'leased'; }",
+      3000,
+      ["sample:write"],
+    );
+    f.trust.grant("human", f.block.digest, ["sample:write"]);
+    let retained, cached;
+    try {
+      const result = await f
+        .runtime({
+          state,
+          retain(client) {
+            retained = client;
+            cached = client.put;
+          },
+        })
+        .invoke(f.request);
+      assert.equal(result.result, "leased", JSON.stringify(result));
+      assert.equal(owner.get("example.org/sample", "count").revision, 1);
+      for (const call of [
+        () =>
+          retained.put(
+            "escaped",
+            {},
+            { expectRevision: 0, subject: "subject" },
+          ),
+        () => cached("escaped", {}, { expectRevision: 0, subject: "subject" }),
+        () => retained.renew("subject", 60000),
+        () => retained.release("subject"),
+      ])
+        assert.throws(
+          call,
+          (error) => error.error?.code === "SERVICE_EXPIRED",
+          "settled leased client must not write",
+        );
+      assert.equal(owner.get("example.org/sample", "escaped"), undefined);
+      assert.equal(owner.lease("example.org/sample", "subject").generation, 1);
+    } finally {
+      await database.handle.close();
+    }
+    // Run through the assembled held-context binding too. Cancellation of the settled
+    // signal tries a delayed write while the SQLite invocation lease is still open.
+    const assemblyRoot = join(root, "assembled");
+    mkdirSync(assemblyRoot);
+    const b = join(assemblyRoot, "counter");
+    mkdirSync(b);
+    const declarations = Object.fromEntries(
+      ["claim", "put", "show"].map((verb) => [
+        `counter.${verb}`,
+        {
+          input: "input.json",
+          output: "output.json",
+          context: verb === "show" ? "project" : "leased",
+          ...(verb === "show"
+            ? {}
+            : { leaseMode: verb === "claim" ? "acquire" : "held" }),
+          effects: verb === "show" ? [] : ["counter:write"],
+          idempotent: false,
+          callers: ["human", "agent"],
+          stability: "stable",
+        },
+      ]),
+    );
+    const manifest = {
+      schemaVersion: "forge.block/1",
+      id: "example.org/counter",
+      version: "1.0.0",
+      authorAbi: "forge.author/v2",
+      profile: "trusted-action/v2",
+      entry: "index.cjs",
+      docs: "docs.json",
+      requires: [{ slot: "state", interface: "forge.state@1" }],
+      operations: declarations,
+    };
+    const source = `module.exports = {
+      'counter.claim': async ({services:s}) => { await Promise.resolve(); return s.state.acquire('subject',60000); },
+      'counter.put': async ({services:s,signal}) => { const put=s.state.put; signal.addEventListener('abort',()=>{try{put('escaped',{}, {expectRevision:0,subject:'subject'});}catch(error){if(error.error?.code!=='SERVICE_EXPIRED')throw error;}}); await Promise.resolve(); return s.state.put('count',{count:1},{expectRevision:0,subject:'subject'}); },
+      'counter.show': ({services:s}) => s.state.get('escaped') ?? null
+    };`;
+    for (const [file, value] of Object.entries({
+      "forge.block.json": JSON.stringify(manifest),
+      "index.cjs": source,
+      "input.json": '{"type":"object"}',
+      "output.json": "{}",
+      "docs.json": JSON.stringify({
+        operations: Object.fromEntries(
+          Object.keys(declarations).map((op) => [
+            op,
+            { title: op, summary: op },
+          ]),
+        ),
+      }),
+    }))
+      writeFileSync(join(b, file), value);
+    const assembly = await createAssembly({
+      root: assemblyRoot,
+      deviceRoot: join(assemblyRoot, "device"),
+    });
+    const ctx = {
+      actor: { kind: "agent", id: "a" },
+      project: { id: assemblyRoot, root: assemblyRoot },
+      session: { id: "session" },
+      device: { id: join(assemblyRoot, "device") },
+    };
+    let sequence = 0;
+    const invoke = (op, input = {}, context = ctx, caller = "agent") =>
+      assembly.catalog.invoke({
+        schemaVersion: "forge.invocation/1",
+        requestId: `assembled-${++sequence}`,
+        op,
+        input,
+        context,
+        caller,
+      });
+    try {
+      assert.equal(
+        (await invoke("block.add", { path: "./counter" })).error?.code,
+        "ADMISSION_REQUIRED",
+      );
+      const checked = await invoke("block.check", { path: "./counter" });
+      assert.equal(
+        (
+          await invoke(
+            "block.admit",
+            { digest: checked.result.digest },
+            ctx,
+            "human",
+          )
+        ).ok,
+        true,
+      );
+      assert.equal(
+        (
+          await invoke(
+            "config.grant",
+            { digest: checked.result.digest, effects: ["counter:write"] },
+            ctx,
+            "human",
+          )
+        ).ok,
+        true,
+      );
+      const claimed = await invoke("counter.claim");
+      assert.equal(claimed.result.generation, 1);
+      const put = await invoke(
+        "counter.put",
+        {},
+        { ...ctx, leaseGeneration: 1 },
+      );
+      assert.equal(put.ok, true, JSON.stringify(put));
+      assert.equal(
+        (await invoke("counter.show")).result,
+        null,
+        "settled assembled leased client must not write",
+      );
+    } finally {
+      await assembly.close();
     }
   }
   console.log(`PASS async-handlers ${mode}`);

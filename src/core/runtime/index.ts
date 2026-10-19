@@ -50,7 +50,7 @@ export interface RunIsolation {
     readonly signal: AbortSignal;
     readonly deadline: number;
     readonly settled: () => void;
-  }): unknown | Promise<unknown>;
+  }): unknown;
 }
 
 export type RunIsolationPort = LifetimeProvider<RunIsolation, void>;
@@ -263,7 +263,9 @@ export class Runtime {
         declaration.timeoutMs ?? this.#limits.timeoutMs,
         this.#limits.timeoutMs,
       );
-      invocation = new InvocationServices(Date.now() + timeoutMs);
+      invocation = new InvocationServices(Date.now() + timeoutMs, () =>
+        this.#trust.check(block.digest, declaration.effects),
+      );
       const scope = invocation;
       cancel = () =>
         scope.controller.abort(

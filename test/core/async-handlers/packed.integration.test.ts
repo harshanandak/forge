@@ -1,4 +1,6 @@
 import { test, expect } from "bun:test";
+import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   cpSync,
@@ -7,6 +9,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -107,6 +110,10 @@ test("installed async ABI: child completion, tree interruption, service revocati
       ).toContain("PASS async-handlers all");
     const privateCopy = join(consumer, "node_modules/async-counterfactual");
     cpSync(installed, privateCopy, { recursive: true });
+    copyFileSync(
+      join(root, "test/integration/fixtures/mutation-proof.mjs"),
+      join(privateCopy, "mutation-proof.mjs"),
+    );
     const mutations = [
       {
         file: "adapters/node-runtime/isolation.js",
@@ -131,8 +138,8 @@ test("installed async ABI: child completion, tree interruption, service revocati
       },
       {
         file: "core/runtime/services.js",
-        from: "signal, timeoutMs: Math.min(options.timeoutMs, Math.max(1, this.deadline - Date.now()))",
-        to: "signal: options.signal, timeoutMs: options.timeoutMs",
+        from: "const pending = port.run(executable, args, {",
+        to: "const pending = port.run(executable, args, {",
         mode: "timeout",
         evidence: "invocation must stop its entire process tree",
       },
@@ -143,6 +150,13 @@ test("installed async ABI: child completion, tree interruption, service revocati
         mode: "cancel",
         evidence: "typed interruption",
       },
+      {
+        file: "core/runtime/services.js",
+        from: "this.check();",
+        to: "void 0;",
+        mode: "leased",
+        evidence: "settled leased client must not write",
+      },
     ];
     for (const mutation of selectShard(
       mutations,
@@ -152,14 +166,48 @@ test("installed async ABI: child completion, tree interruption, service revocati
       const original = readFileSync(file, "utf8");
       expect(original).toContain(mutation.from);
       try {
-        writeFileSync(file, original.replaceAll(mutation.from, mutation.to));
+        const changed =
+          mutation.mode === "timeout"
+            ? original.replace(
+                /const pending = port.run\(executable, args, \{[\s\S]*?\}\);/,
+                "const pending = port.run(executable, args, options);",
+              )
+            : original.replaceAll(mutation.from, mutation.to);
+        expect(changed).not.toBe(original);
+        writeFileSync(file, changed);
+        const proof = join(privateCopy, "mutation-proof.jsonl");
+        writeFileSync(proof, "");
+        const hash = createHash("sha256").update(changed).digest("hex");
+        const mutationEnv = {
+          ...env,
+          NODE_OPTIONS:
+            `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(join(privateCopy, "mutation-proof.mjs")).href}`.trim(),
+          FORGE_MUTATION_TARGET: realpathSync(file),
+          FORGE_MUTATION_HASH: hash,
+          FORGE_MUTATION_PROOF: proof,
+        };
         const result = run(
           node,
           [join(privateCopy, "async-journey.mjs"), mutation.mode],
           consumer,
-          env,
+          mutationEnv,
           15000,
         );
+        const loaded = readFileSync(proof, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { target: string; hash: string });
+        expect(
+          loaded.some(
+            (entry) =>
+              entry.target === realpathSync(file) && entry.hash === hash,
+          ),
+          "counterfactual must load mutated bytes",
+        ).toBe(true);
+        expect(
+          readFileSync(join(installed, "dist/src", mutation.file), "utf8"),
+        ).toBe(original);
         expect(result.status, `counterfactual ${mutation.mode}`).not.toBe(0);
         expect(`${result.stdout} ${result.stderr}`).toContain(
           mutation.evidence,

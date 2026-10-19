@@ -49,7 +49,7 @@ export function fixture(
   const block = captureBlock("fixture", {
     open: () => ({
       ownership: "borrowed",
-      value: { read: (name) => new TextEncoder().encode(files.get(name)!) },
+      value: { read: (name) => new TextEncoder().encode(files.get(name)) },
     }),
   });
   const catalog = new Catalog(

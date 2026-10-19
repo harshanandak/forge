@@ -16,7 +16,12 @@ const evaluator: RunIsolation = {
         if (pump !== undefined) clearInterval(pump);
         options.signal.removeEventListener("abort", abort);
         options.settled();
-        if (error !== undefined) reject(error);
+        if (error !== undefined)
+          reject(
+            error instanceof Error
+              ? error
+              : new Error("Block execution failed", { cause: error }),
+          );
         else resolve(output);
       };
       const abort = (): void => finish(options.signal.reason);
