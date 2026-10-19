@@ -1,6 +1,8 @@
 import { realpathSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { createProcessPort } from "../adapters/process/index.ts";
+import { createRunnerOutput } from "../adapters/runner-output/index.ts";
+import type { RunnerOutputPort } from "../ports/runner-output.ts";
 import type { SupervisionOptions } from "../adapters/process/supervision.ts";
 import {
   createCloneFilesLease,
@@ -18,6 +20,11 @@ import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
 
 export type { CloneFilesService } from "../adapters/fs/clone-files.ts";
+export type {
+  RunnerOutputPort,
+  OutputReport,
+  ReportFormat,
+} from "../ports/runner-output.ts";
 export interface FileSnapshotInput {
   readonly paths: readonly string[];
   readonly maxBytes: number;
@@ -49,6 +56,7 @@ export interface AssemblyProviders {
   process(scope: ServiceScope): ProcessService;
   environment(scope: ServiceScope): EnvironmentService;
   crypto(scope: ServiceScope): CryptoService;
+  runnerOutput(scope: ServiceScope): RunnerOutputPort;
   openFiles(scope: ServiceScope): Promise<OwnedHandle<FilesService>>;
 }
 interface InternalProviders extends AssemblyProviders {
@@ -71,6 +79,7 @@ export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.files@1.0.0",
   "forge.environment@1.0.0",
   "forge.crypto@1.0.0",
+  "forge.runner-output@1.0.0",
 ];
 export function assemblyProvides(required: string): boolean {
   return ASSEMBLY_PROVIDES.some((provided) =>
@@ -150,6 +159,15 @@ export function createAssemblyProviders(
       supervision: options.supervision ?? CLEANUP,
     });
   const providers: InternalProviders = {
+    runnerOutput(scope: ServiceScope): RunnerOutputPort {
+      const output = createRunnerOutput();
+      return {
+        parse(stdout, stderr, format) {
+          active(scope);
+          return output.parse(stdout, stderr, format);
+        },
+      };
+    },
     process(scope: ServiceScope): ProcessService {
       return createProcessService(port, scope, root);
     },

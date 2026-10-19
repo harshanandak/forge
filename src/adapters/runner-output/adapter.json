@@ -1,0 +1,4 @@
+{
+  "executable": ["vitest", "jest", "pytest"],
+  "port": "src/ports/runner-output.ts#RunnerOutputPort"
+}

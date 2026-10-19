@@ -177,7 +177,7 @@ function alive(pid) {
     throw error;
   }
 }
-async function mcpRun(input) {
+async function mcpRun(input, name = "provider_run") {
   const child = spawn(process.execPath, [bin, "--mcp"], {
     cwd: root,
     env,
@@ -227,7 +227,7 @@ async function mcpRun(input) {
       '{"jsonrpc":"2.0","method":"notifications/initialized"}\n',
     );
     const response = await rpc("tools/call", {
-      name: "provider_run",
+      name,
       arguments: input,
     });
     assert.ok(
@@ -278,6 +278,97 @@ try {
     [],
     "all declared provider slots must bind",
   );
+
+  if (["all", "runner-output"].includes(mode)) {
+    const directory = join(root, "output-parser");
+    mkdirSync(directory);
+    writeFileSync(
+      join(directory, "forge.block.json"),
+      JSON.stringify({
+        ...manifest,
+        id: "example.org/output-parser",
+        requires: [{ slot: "output", interface: "forge.runner-output@1" }],
+        operations: {
+          "report.parse": {
+            ...operations["provider.crypto"],
+            context: "stateless",
+            effects: [],
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      join(directory, "docs.json"),
+      JSON.stringify({
+        operations: {
+          "report.parse": {
+            title: "Parse",
+            summary: "Parse supplied output without external services.",
+          },
+        },
+      }),
+    );
+    writeFileSync(join(directory, "input.json"), '{"type":"object"}');
+    writeFileSync(join(directory, "output.json"), "{}");
+    writeFileSync(
+      join(directory, "entry.cjs"),
+      `module.exports={"report.parse":async({input,services})=>{
+      if(Object.keys(services).join(',')!=='output') throw Error('only the pure output slot may bind');
+      return services.output.parse(input.stdout,input.stderr,input.format);
+    }};`,
+    );
+    const checked = await invoke("block.check", { path: "./output-parser" });
+    const outputDigest = ok(
+      checked,
+      "runner-output requirement must compose",
+    ).digest;
+    const outputAdded = await invoke("block.add", { path: "./output-parser" });
+    assert.equal(outputAdded.error?.code, "ADMISSION_REQUIRED");
+    ok(
+      await invoke("block.admit", { digest: outputDigest }),
+      "admit output parser",
+    );
+    const input = {
+      stdout: '{"numTotalTests":7,"numFailedTests":2}',
+      stderr: "",
+      format: "json",
+    };
+    const parsed = await invoke("report.parse", input);
+    assert.equal(parsed.ok, true, "runner-output service must bind and parse");
+    assert.deepEqual(parsed.result, {
+      kind: "recognized",
+      testCount: 7,
+      failed: 2,
+      detail: "Structured test report",
+    });
+    const result = spawnSync(
+      process.execPath,
+      [bin, "report", "parse", "--input", JSON.stringify(input)],
+      {
+        cwd: root,
+        env,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 20000,
+      },
+    );
+    assert.equal(result.status, 0, `${result.stdout} ${result.stderr}`);
+    assert.deepEqual(
+      ok(JSON.parse(result.stdout), "output CLI"),
+      parsed.result,
+    );
+    const shown = ok(await invoke("config.show"), "output MCP config");
+    ok(
+      await invoke("config.apply", {
+        expectRevision: shown.revision,
+        patch: [
+          { op: "set", path: "/mcp/expose", value: ["provider", "report"] },
+        ],
+      }),
+      "expose output parser",
+    );
+    assert.deepEqual(await mcpRun(input, "report_parse"), parsed.result);
+  }
 
   if (["all", "conditional-race"].includes(mode)) {
     const { createCloneFiles } = await import(
