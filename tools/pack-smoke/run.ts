@@ -1,7 +1,7 @@
 // Pack the built package, install the tarball with npm on Node, and run `forge --version`.
 // Run it with Node (`node tools/pack-smoke/run.ts`), never Bun: the point is that a user with
 // only Node and npm can install and run what we publish. Build first (`bun run build`).
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -32,6 +32,17 @@ function fail(message: string): never {
 
 function step(message: string): void {
   console.log(`- ${message}`);
+}
+
+function timed<T>(label: string, action: () => T): T {
+  const started = performance.now();
+  try {
+    return action();
+  } finally {
+    console.log(
+      `Pack smoke ${label}: ${Math.round(performance.now() - started)} ms`,
+    );
+  }
 }
 
 /** The current environment with every directory that holds a Bun executable removed from PATH. */
@@ -69,11 +80,13 @@ function run(
   args: string[],
   options: { cwd: string; env: NodeJS.ProcessEnv },
 ): string {
-  const result = spawnSync(command, args, {
-    ...options,
-    encoding: "utf8",
-    windowsHide: true,
-  });
+  const result = timed(label, () =>
+    spawnSync(command, args, {
+      ...options,
+      encoding: "utf8",
+      windowsHide: true,
+    }),
+  );
   if (result.error !== undefined) fail(`${label}: ${result.error.message}`);
   if (result.status !== 0) {
     fail(
@@ -83,7 +96,35 @@ function run(
   return result.stdout;
 }
 
-function main(): void {
+async function packedIntegration(
+  bun: string,
+  file: string,
+  label: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const started = performance.now();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(bun, ["test", `./${file}`], {
+        cwd: root,
+        env,
+        stdio: "inherit",
+        windowsHide: true,
+      });
+      child.once("error", reject);
+      child.once("close", (status) => {
+        if (status === 0) resolve();
+        else reject(new Error(`${label} exited ${String(status)}`));
+      });
+    });
+  } finally {
+    console.log(
+      `Pack smoke ${label}: ${Math.round(performance.now() - started)} ms`,
+    );
+  }
+}
+
+async function main(): Promise<void> {
   if (process.versions.bun !== undefined) fail("run this with Node, not Bun");
   const stateBun =
     process.argv[2] === "--state-test" ? process.argv[3] : undefined;
@@ -98,7 +139,9 @@ function main(): void {
     fail("dist/ is missing; run `bun run build` first");
 
   const env = environmentWithoutBun();
-  const probe = spawnSync("bun", ["--version"], { env, windowsHide: true });
+  const probe = timed("no Bun on PATH", () =>
+    spawnSync("bun", ["--version"], { env, windowsHide: true }),
+  );
   if (probe.error === undefined)
     fail("bun is still resolvable on PATH; the smoke must run without Bun");
   step(`node ${process.version}, no bun on PATH`);
@@ -159,8 +202,7 @@ function main(): void {
         join(packDir, entry.filename),
         "--no-audit",
         "--no-fund",
-        "--cache",
-        join(work, "cache"),
+        "--prefer-offline",
       ],
       consumer,
     );
@@ -225,10 +267,13 @@ function main(): void {
     delete packageData.exports["./runtime"];
     writeFileSync(packageFile, JSON.stringify(packageData));
     try {
-      const missingExport = spawnSync(
-        process.execPath,
-        [join(consumer, "api.mjs")],
-        { cwd: consumer, env, encoding: "utf8", windowsHide: true },
+      const missingExport = timed("missing runtime export", () =>
+        spawnSync(process.execPath, [join(consumer, "api.mjs")], {
+          cwd: consumer,
+          env,
+          encoding: "utf8",
+          windowsHide: true,
+        }),
       );
       if (
         missingExport.status === 0 ||
@@ -245,10 +290,13 @@ function main(): void {
       const path = join(installedDir, asset);
       renameSync(path, `${path}.hidden`);
       try {
-        const missingAsset = spawnSync(
-          process.execPath,
-          [join(consumer, "api.mjs")],
-          { cwd: consumer, env, encoding: "utf8", windowsHide: true },
+        const missingAsset = timed(`missing ${asset}`, () =>
+          spawnSync(process.execPath, [join(consumer, "api.mjs")], {
+            cwd: consumer,
+            env,
+            encoding: "utf8",
+            windowsHide: true,
+          }),
         );
         if (
           missingAsset.status === 0 ||
@@ -271,28 +319,42 @@ function main(): void {
       ).trim(),
     );
     if (stateBun) {
-      step("running packed state checks against the same npm install");
-      console.log(
-        run(
-          "packed state integration",
-          stateBun,
-          ["test", "./test/node-fixtures/state/packed.integration.test.ts"],
-          {
-            cwd: root,
-            env: { ...process.env, STATE_PACKED_CONSUMER: consumer },
-          },
-        ),
+      step(
+        "running packed first slice and state checks against the same npm install",
       );
+      // Both suites read the base install and mutate private copies. Drain both
+      // children before cleanup, including when either suite fails.
+      const results = await Promise.allSettled([
+        packedIntegration(
+          stateBun,
+          "test/integration/packed.integration.test.ts",
+          "packed first slice integration",
+          { ...process.env, FORGE_PACKED_CONSUMER: consumer },
+        ),
+        packedIntegration(
+          stateBun,
+          "test/node-fixtures/state/packed.integration.test.ts",
+          "packed state integration",
+          { ...process.env, STATE_PACKED_CONSUMER: consumer },
+        ),
+      ]);
+      for (const result of results)
+        if (result.status === "rejected") throw result.reason;
     }
     console.log("pack-smoke: PASS");
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    timed("cleanup", () => rmSync(work, { recursive: true, force: true }));
   }
 }
 
+const started = performance.now();
 try {
-  main();
+  await main();
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
+} finally {
+  console.log(
+    `Pack smoke total: ${Math.round(performance.now() - started)} ms`,
+  );
 }
