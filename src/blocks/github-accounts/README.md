@@ -68,14 +68,22 @@ stderr when it blocks a push.
 Enabling checks Git's effective hook path in every listed worktree, including
 worktree-scoped configuration, and verifies the paths again after publication.
 A conflicting worktree override returns `ACCOUNT_HOOKS_CONFLICT` naming the
-worktree and value. It is preserved. Repeating enable rechecks the effective paths.
+worktree and value. It is preserved. Repeating enable rechecks the effective paths
+and the exact recorded guard bytes at every route, including the executable bit
+on POSIX. New installations receive the same check after publication. Missing,
+modified, unreadable, or non-executable guards return
+`ACCOUNT_HOOK_ARTIFACT_INVALID`; enabling never overwrites them with a newly
+rendered script. Restore the recorded artifact before retrying.
 
-`github-account.message` accepts text or a Git-directory message path and applies
+`github-account.message {text}` is stateless, declares no effects, and requires no
+effect grants or services after code admission. It applies
 `allow`, `refuse`, or `strip` to AI co-author trailers. AI markers are configured
 case-insensitive literal substrings, not an internal list of model names. Only the
 final trailer paragraph is considered; human trailers and the body are preserved.
-Text input is pure. A message file is written only when stripping changes it and
-only if its original contents still match. No commit is made by this operation.
+`github-account.message-file {path}` applies the same policy to a Git-directory
+message file and requires the declared file and account write grants. It writes
+only when stripping changes the file and its original contents still match.
+Neither operation makes a commit.
 
 `github-account.status` reads the binding, current effective identity, every linked
 worktree's effective identity, configuration mismatches, and owned script health.

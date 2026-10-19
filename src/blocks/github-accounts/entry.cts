@@ -73,7 +73,8 @@ type Bind = {
   repository?: string;
 };
 type Check = { base?: string; tip: string; trigger: "push" | "merge" };
-type Message = { text?: string; path?: string };
+type Message = { text: string };
+type MessageFile = { path: string };
 type Status = {
   bound: boolean;
   account: string | null;
@@ -99,6 +100,10 @@ type AccountOperations = {
   ];
   "github-account.message": readonly [
     Message,
+    { text: string; changed: boolean },
+  ];
+  "github-account.message-file": readonly [
+    MessageFile,
     { text: string; changed: boolean },
   ];
   "github-account.hook": readonly [{ enabled: boolean }, { enabled: boolean }];
@@ -1095,6 +1100,33 @@ function verifyHookRoutes(
         `Guard hook conflict in worktree ${route.worktree}: core.hooksPath=${JSON.stringify(route.override)} resolves to ${route.hook}; expected ${expected}`,
       );
 }
+function verifyHookArtifacts(
+  s: Services,
+  c: Config,
+  bound: Binding,
+  routes: readonly HookRoute[],
+): void {
+  const path = `${DIRECTORY}/hooks/pre-push`;
+  const recorded = bound.artifacts[path];
+  for (const route of routes) {
+    let valid = false;
+    try {
+      const info = s.files.inspect(path, "common");
+      valid =
+        typeof recorded === "string" &&
+        s.files.read(path, c.maxFileBytes, "common") === recorded &&
+        info !== undefined &&
+        (s.environment.platform === "win32" || info.executable);
+    } catch {
+      // An unreadable or replaced owned file cannot provide the promised guard.
+    }
+    if (!valid)
+      fail(
+        "ACCOUNT_HOOK_ARTIFACT_INVALID",
+        `Recorded guard is missing, modified or not executable in worktree ${route.worktree}: ${route.hook}; restore the recorded artifact before enabling`,
+      );
+  }
+}
 function hookScript(c: Config, launchers: Launchers, s: Services): string {
   const call = [launchers.forge!, ...c.forgeCommand.slice(1)]
     .map(shell)
@@ -1351,15 +1383,11 @@ const operations: Operations<AccountOperations> = {
     const { s, c, env } = context(services, config);
     return check(s, c, env, input);
   },
-  "github-account.message"({ input, services, config }) {
+  "github-account.message"({ input, config }) {
+    return policy(input.text, config as Config);
+  },
+  "github-account.message-file"({ input, services, config }) {
     const c = config as Config;
-    if (input.text !== undefined && input.path !== undefined)
-      fail("INPUT_INVALID", "Choose message text or a message file");
-    if (input.path === undefined) {
-      if (input.text === undefined)
-        fail("INPUT_INVALID", "Message text or path is required");
-      return policy(input.text, c);
-    }
     const { s } = context(services, config);
     let path = input.path.replace(/\\/g, "/");
     const root = s.files.roots.git.replace(/\\/g, "/");
@@ -1386,7 +1414,10 @@ const operations: Operations<AccountOperations> = {
         `${s.files.roots.common}/${DIRECTORY}/hooks/pre-push`,
       );
       const routes = input.enabled ? await hookRoutes(s, c, env) : [];
-      if (input.enabled) verifyHookRoutes(routes, expectedHook, bound.hooks);
+      if (input.enabled) {
+        verifyHookRoutes(routes, expectedHook, bound.hooks);
+        if (bound.hooks) verifyHookArtifacts(s, c, bound, routes);
+      }
       const original = s.files.read("config", c.maxFileBytes, "common");
       if (original === undefined)
         fail("ACCOUNT_CONFIG_MISSING", "Clone Git configuration is missing");
@@ -1480,7 +1511,9 @@ const operations: Operations<AccountOperations> = {
             expected: original,
           });
           published = true;
-          verifyHookRoutes(await hookRoutes(s, c, env), expectedHook, true);
+          const publishedRoutes = await hookRoutes(s, c, env);
+          verifyHookRoutes(publishedRoutes, expectedHook, true);
+          verifyHookArtifacts(s, c, bound, publishedRoutes);
         } catch (error) {
           if (published)
             s.files.write("config", original, {
@@ -1492,7 +1525,8 @@ const operations: Operations<AccountOperations> = {
               area: "common",
               expected: updated,
             });
-          s.files.remove(path, { area: "common", expected: text });
+          if (s.files.read(path, c.maxFileBytes, "common") === text)
+            s.files.remove(path, { area: "common", expected: text });
           throw error;
         }
       } else {

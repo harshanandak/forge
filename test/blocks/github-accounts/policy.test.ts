@@ -1,6 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+
+setDefaultTimeout(1000);
 async function refused(promise: Promise<unknown>, code: string): Promise<void> {
   let error: unknown;
   try {
@@ -115,3 +117,57 @@ test("removing the AI detection makes the refusal counterfactual fail", async ()
     changed: false,
   });
 }, 1000);
+
+test("message-file strips through an exact-content Git-area write and leaves unchanged files alone", () => {
+  const module = { exports: {} as Record<string, (args: unknown) => unknown> };
+  runInNewContext(
+    new Bun.Transpiler({ loader: "ts" }).transformSync(source()),
+    {
+      module,
+      fail: (code: string) => {
+        throw Object.assign(new Error(code), { code });
+      },
+    },
+  );
+  const text = "Change\n\nCo-authored-by: Codex <bot@example.com>\n";
+  const reads: unknown[] = [],
+    writes: unknown[] = [];
+  let current = text;
+  const services = {
+    process: {},
+    repository: {},
+    account: {},
+    crypto: {},
+    environment: { select: () => ({}) },
+    files: {
+      roots: { git: "/clone/.git" },
+      read: (...args: unknown[]) => {
+        reads.push(args);
+        return current;
+      },
+      write: (...args: unknown[]) => {
+        writes.push(args);
+      },
+    },
+  };
+  const config = {
+    coauthorPolicy: "strip",
+    aiCoauthorPatterns: ["codex"],
+    environmentNames: [],
+    maxFileBytes: 10000,
+  };
+  const call = () =>
+    module.exports["github-account.message-file"]!({
+      input: { path: "/clone/.git/COMMIT_EDITMSG" },
+      config,
+      services,
+    });
+  expect(call()).toEqual({ text: "Change\n", changed: true });
+  expect(reads).toEqual([["COMMIT_EDITMSG", 10000, "git"]]);
+  expect(writes).toEqual([
+    ["COMMIT_EDITMSG", "Change\n", { area: "git", expected: text }],
+  ]);
+  current = "Change\n";
+  expect(call()).toEqual({ text: current, changed: false });
+  expect(writes).toHaveLength(1);
+});

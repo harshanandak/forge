@@ -641,6 +641,21 @@ export async function createAssembly(
                   interfaceSatisfies("forge.files@1.0.0", binding.interface)
                 ) {
                   if (
+                    !scope.effects.includes("files:read") &&
+                    !scope.effects.includes("files:write")
+                  ) {
+                    Object.defineProperty(clients, binding.slot, {
+                      enumerable: true,
+                      get() {
+                        return refuse(
+                          "EFFECT_UNDECLARED",
+                          "Clone files require files:read or files:write on this operation",
+                        );
+                      },
+                    });
+                    continue;
+                  }
+                  if (
                     context.variant !== "project" &&
                     context.variant !== "leased"
                   )

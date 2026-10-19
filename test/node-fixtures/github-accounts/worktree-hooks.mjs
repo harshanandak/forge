@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -8,6 +9,7 @@ import {
   realpathSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
@@ -283,6 +285,45 @@ try {
     "late refusal must restore common config, metadata and managed script bytes",
   );
   git(linked, "config", "--worktree", "--unset", "core.hooksPath");
+  const beforeLateDeletion = snapshot();
+  let deletedAfterPublication = false;
+  const deleting = {
+    ...s,
+    repository: {
+      ...s.repository,
+      run(program, args, options) {
+        if (
+          !deletedAfterPublication &&
+          args[0] === "worktree" &&
+          args[1] === "list" &&
+          JSON.parse(readFileSync(join(managed, "metadata.json"), "utf8")).hooks
+        ) {
+          rmSync(join(managed, "hooks/pre-push"));
+          deletedAfterPublication = true;
+        }
+        return s.repository.run(program, args, options);
+      },
+    },
+  };
+  await assert.rejects(
+    module.exports["github-account.hook"]({
+      input: { enabled: true },
+      services: deleting,
+      config,
+    }),
+    { code: "ACCOUNT_HOOK_ARTIFACT_INVALID" },
+    "first activation must refuse a hook deleted after publication",
+  );
+  assert.equal(
+    deletedAfterPublication,
+    true,
+    "the deletion must occur after hook publication",
+  );
+  assert.deepEqual(
+    snapshot(),
+    beforeLateDeletion,
+    "late hook deletion must roll back common config, metadata and script bytes",
+  );
   const enabled = await module.exports["github-account.hook"]({
     input: { enabled: true },
     services: s,
@@ -298,6 +339,73 @@ try {
       owned,
       "Git must actually select the owned hooks directory in every worktree",
     );
+  const hookFile = join(owned, "pre-push");
+  const hookText = readFileSync(hookFile, "utf8");
+  const hookMode = statSync(hookFile).mode & 0o777;
+  rmSync(hookFile);
+  const missingState = snapshot();
+  await assert.rejects(
+    module.exports["github-account.hook"]({
+      input: { enabled: true },
+      services: s,
+      config,
+    }),
+    { code: "ACCOUNT_HOOK_ARTIFACT_INVALID" },
+    "enabling an already enabled guard must refuse when its generated pre-push file is missing",
+  );
+  assert.deepEqual(
+    snapshot(),
+    missingState,
+    "missing-hook refusal must leave configuration and metadata untouched",
+  );
+  writeFileSync(hookFile, hookText, { mode: hookMode });
+  writeFileSync(hookFile, hookText + "# Independent hook edit\n");
+  const modifiedState = snapshot();
+  await assert.rejects(
+    module.exports["github-account.hook"]({
+      input: { enabled: true },
+      services: s,
+      config,
+    }),
+    { code: "ACCOUNT_HOOK_ARTIFACT_INVALID" },
+    "enabling an already enabled guard must refuse modified hook bytes",
+  );
+  assert.deepEqual(
+    snapshot(),
+    modifiedState,
+    "modified-hook refusal must preserve foreign edits",
+  );
+  writeFileSync(hookFile, hookText);
+  if (process.platform !== "win32") {
+    chmodSync(hookFile, 0o600);
+    const nonExecutableState = snapshot();
+    await assert.rejects(
+      module.exports["github-account.hook"]({
+        input: { enabled: true },
+        services: s,
+        config,
+      }),
+      { code: "ACCOUNT_HOOK_ARTIFACT_INVALID" },
+      "enabling an already enabled guard must refuse a non-executable hook",
+    );
+    assert.deepEqual(snapshot(), nonExecutableState);
+    assert.equal(
+      statSync(hookFile).mode & 0o777,
+      0o600,
+      "refusal must preserve mode-only foreign edits",
+    );
+    chmodSync(hookFile, hookMode);
+  }
+  assert.equal(
+    (
+      await module.exports["github-account.hook"]({
+        input: { enabled: true },
+        services: s,
+        config,
+      })
+    ).enabled,
+    true,
+  );
   git(linked, "config", "--worktree", "core.hooksPath", custom);
   await conflict(s, config, custom);
   git(linked, "config", "--worktree", "core.hooksPath", "");

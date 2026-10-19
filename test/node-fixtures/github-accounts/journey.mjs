@@ -362,6 +362,19 @@ try {
       true,
       "strip policy must retain human co-authors",
     );
+    const messagePath = join(alpha.root, ".git/COMMIT_EDITMSG");
+    writeFileSync(messagePath, text);
+    const fileResult = ok(
+      await alpha.call("message-file", { path: "COMMIT_EDITMSG" }),
+      "file policy uses its declared write operation",
+    );
+    assert.deepEqual(fileResult, stripped);
+    assert.equal(readFileSync(messagePath, "utf8"), stripped.text);
+    assert.equal(
+      (await alpha.call("message", { path: "COMMIT_EDITMSG" })).error?.code,
+      "INPUT_INVALID",
+      "pure text operation cannot accept a file path",
+    );
   }
   checkpoint("trailer policy");
   if (mode === "all") {

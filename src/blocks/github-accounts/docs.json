@@ -23,7 +23,11 @@
     },
     "github-account.message": {
       "title": "GitHub account message",
-      "summary": "Apply the configured AI co-author trailer policy before a commit."
+      "summary": "Apply the configured AI co-author trailer policy to text without services or effect grants."
+    },
+    "github-account.message-file": {
+      "title": "GitHub account message file",
+      "summary": "Apply the configured AI co-author trailer policy to a Git-directory file using an exact-content write."
     },
     "github-account.hook": {
       "title": "GitHub account hook",

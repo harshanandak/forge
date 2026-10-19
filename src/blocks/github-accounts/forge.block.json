@@ -99,15 +99,9 @@
     "github-account.message": {
       "input": "schemas/message.input.json",
       "output": "schemas/message.output.json",
-      "context": "project",
+      "context": "stateless",
       "timeoutMs": 300000,
-      "effects": [
-        "external:process",
-        "environment:read",
-        "files:read",
-        "files:write",
-        "github-account:write"
-      ],
+      "effects": [],
       "idempotent": true,
       "callers": ["agent", "human"],
       "stability": "experimental"
@@ -140,6 +134,22 @@
         "external:write"
       ],
       "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "github-account.message-file": {
+      "input": "schemas/message-file.input.json",
+      "output": "schemas/message.output.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "external:process",
+        "environment:read",
+        "files:read",
+        "files:write",
+        "github-account:write"
+      ],
+      "idempotent": true,
       "callers": ["agent", "human"],
       "stability": "experimental"
     }

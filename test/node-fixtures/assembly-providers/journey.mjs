@@ -67,7 +67,7 @@ const effects = {
   write: ["files:write"],
   remove: ["files:write"],
   snapshot: ["files:read"],
-  crypto: [],
+  crypto: ["files:read"],
 };
 for (const [verb, declaredEffects] of Object.entries(effects)) {
   operations[`provider.${verb}`] = {
