@@ -43,11 +43,14 @@ export function invocationDeadline(
   );
   limits.forEach(validateTimeout);
   const timeoutMs = Math.min(...limits);
-  const deadline = clock.now() + timeoutMs;
+  // Validation precedes host preparation; the first check starts handler time.
+  let deadline: number | undefined;
   return {
     timeoutMs,
     remaining() {
-      const remaining = deadline - clock.now();
+      const now = clock.now();
+      deadline ??= now + timeoutMs;
+      const remaining = deadline - now;
       if (remaining <= 0)
         refuse("INVOCATION_TIMEOUT", "Invocation deadline exceeded");
       return Math.max(TIMEOUT_BOUNDS.minimum, Math.ceil(remaining));

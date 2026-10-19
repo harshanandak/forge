@@ -1,4 +1,8 @@
-import { invocationDeadline, validateTimeout } from "./deadline.ts";
+import {
+  invocationDeadline,
+  validateTimeout,
+  TIMEOUT_BOUNDS,
+} from "./deadline.ts";
 import type { ClockPort } from "../../ports/clock.ts";
 import { InvocationServices } from "./services.ts";
 import { bindContext } from "../../contract/context.ts";
@@ -275,9 +279,12 @@ export class Runtime {
         },
         clock,
       );
-      const timeoutMs = budget.remaining();
+      const preparationTimeoutMs = Math.min(
+        this.#catalog.config.runtime?.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
+        this.#limits.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
+      );
       invocation = new InvocationServices(
-        clock.now() + timeoutMs,
+        clock.now() + preparationTimeoutMs,
         () => {
           this.#trust.check(block.digest, declaration.effects);
         },
@@ -296,17 +303,21 @@ export class Runtime {
         );
       options.signal?.addEventListener("abort", cancel, { once: true });
       if (options.signal?.aborted) cancel();
-      timer = setTimeout(
-        () =>
-          scope.controller.abort(
-            new ForgeFailure({
-              code: "INVOCATION_TIMEOUT",
-              message: "Invocation deadline exceeded",
-              retry: "reconcile_first",
-            }),
-          ),
-        timeoutMs,
-      );
+      const armDeadline = (timeoutMs: number): void => {
+        if (timer !== undefined) clearTimeout(timer);
+        timer = setTimeout(
+          () =>
+            scope.controller.abort(
+              new ForgeFailure({
+                code: "INVOCATION_TIMEOUT",
+                message: "Invocation deadline exceeded",
+                retry: "reconcile_first",
+              }),
+            ),
+          timeoutMs,
+        );
+      };
+      armDeadline(preparationTimeoutMs);
       scope.check();
       handle = await scope.wait(
         Promise.resolve(
@@ -317,7 +328,9 @@ export class Runtime {
               op: request.op,
               effects: Object.freeze([...declaration.effects]),
               signal: scope.controller.signal,
-              deadline: scope.deadline,
+              get deadline() {
+                return scope.deadline;
+              },
               processContainment:
                 declaration.processContainment ?? "supervised",
             }),
@@ -342,6 +355,12 @@ export class Runtime {
       if (!opened.ok) refuse("PROVIDER_MISSING", opened.unavailable.reason);
       let encoded: unknown;
       try {
+        // Host preparation has its own ceiling; the handler receives its whole declared budget.
+        const handlerStartedAt = clock.now();
+        scope.startHandler(handlerStartedAt + budget.remaining());
+        armDeadline(
+          Math.max(TIMEOUT_BOUNDS.minimum, scope.deadline - clock.now()),
+        );
         // Opening the evaluator may yield too; admission must still be current.
         this.#trust.check(block.digest, declaration.effects);
         scope.check();

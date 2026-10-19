@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "description": "What to remember."
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "$ref": "defs.json#/$defs/Scope"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "A label that groups notes. On an edit, leave it out to keep the stored scope, or send null to clear it."
+    },
+    "tags": {
+      "$ref": "defs.json#/$defs/Tags",
+      "description": "On an edit, leave out to keep the stored tags, or send [] to clear them."
+    },
+    "links": {
+      "$ref": "defs.json#/$defs/Links",
+      "description": "On an edit, leave out to keep the stored links, or send [] to clear them."
+    },
+    "id": {
+      "$ref": "defs.json#/$defs/NoteId",
+      "description": "Edit this note instead of adding a new one. An edit changes only the fields you send."
+    },
+    "expectRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The revision you last read; required with id."
+    }
+  },
+  "additionalProperties": false,
+  "required": ["text"],
+  "if": {
+    "required": ["id"]
+  },
+  "then": {
+    "required": ["expectRevision"]
+  },
+  "else": {
+    "not": {
+      "required": ["expectRevision"]
+    }
+  }
+}

@@ -8,13 +8,13 @@ import { fixture } from "./fixture.ts";
 function configured(declaration: { timeoutMs?: number } = {}) {
   const f = fixture("({input}) => input", declaration);
   let opened = 0;
-  let deadline: number | undefined;
+  let scopeDeadline: (() => number) | undefined;
   const runtime = (options: RuntimeOptions = {}) =>
     new Runtime(f.catalog, f.trust, {
       ...options,
       services: (_instance, _context, scope) => {
         opened++;
-        deadline = scope.deadline;
+        scopeDeadline = () => scope.deadline;
         return Promise.resolve({ ownership: "borrowed", value: {} });
       },
       isolation: {
@@ -29,7 +29,12 @@ function configured(declaration: { timeoutMs?: number } = {}) {
           }),
       },
     });
-  return { ...f, runtime, opened: () => opened, deadline: () => deadline };
+  return {
+    ...f,
+    runtime,
+    opened: () => opened,
+    deadline: () => scopeDeadline?.(),
+  };
 }
 
 test("an undeclared invocation budget refuses before service or evaluator activation", async () => {
@@ -189,3 +194,54 @@ for (const outcome of ["timeout", "cancelled", "close-failed"] as const) {
     });
   }, 5000);
 }
+
+for (const spent of [80, 101])
+  test(`preparation has a separate configured ceiling, with elapsed host work=${spent}`, async () => {
+    const f = fixture("({input}) => input", { timeoutMs: 20 });
+    let now = 0;
+    let runs = 0;
+    let closed = 0;
+    const runtime = new Runtime(f.catalog, f.trust, {
+      clock: { now: () => now },
+      limits: { timeoutMs: 100 },
+      services: () => {
+        now += spent;
+        return Promise.resolve({
+          ownership: "owned",
+          value: {},
+          close: () => {
+            closed++;
+            return Promise.resolve();
+          },
+        });
+      },
+      isolation: {
+        open: () =>
+          Promise.resolve({
+            ok: true,
+            handle: {
+              ownership: "owned",
+              close: () => Promise.resolve(),
+              value: {
+                run(options) {
+                  runs++;
+                  expect(options.timeoutMs).toBe(20);
+                  now += 19;
+                  return options.encode("hello");
+                },
+              },
+            },
+          }),
+      },
+    });
+    const result = await runtime.invoke(f.request);
+    if (spent < 100)
+      expect(result).toMatchObject({ ok: true, result: "hello" });
+    else
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "INVOCATION_TIMEOUT", retry: "never" },
+      });
+    expect(runs).toBe(spent < 100 ? 1 : 0);
+    expect(closed).toBe(1);
+  }, 5000);

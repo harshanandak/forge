@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {
+      "enum": ["proposed", "adopted"]
+    },
+    "after": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Continue after this decision number: the next value of the previous page."
+    }
+  },
+  "additionalProperties": false
+}

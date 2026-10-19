@@ -12,7 +12,7 @@ import type {
 /** Revocation covers cached methods as well as clients; the embedding still owns effect checks. */
 export class InvocationServices {
   readonly controller: AbortController = new AbortController();
-  readonly deadline: number;
+  #deadline: number;
   readonly #pending = new Set<Promise<unknown>>();
   #active = true;
   readonly #cleanupErrors: unknown[] = [];
@@ -30,9 +30,16 @@ export class InvocationServices {
   ) {
     this.#limits = limits;
     this.#clock = clock;
-    this.deadline = deadline;
+    this.#deadline = deadline;
     this.#authorize = authorize;
     this.#strict = strict;
+  }
+  get deadline(): number {
+    return this.#deadline;
+  }
+  startHandler(deadline: number): void {
+    this.check();
+    this.#deadline = deadline;
   }
   check(): void {
     if (!this.#active)

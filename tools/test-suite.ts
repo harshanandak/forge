@@ -36,6 +36,7 @@ function run(kind: "unit" | "integration" | "integration-rest"): void {
         (kind !== "integration-rest" ||
           ![
             "test/node-fixtures/state/packed.integration.test.ts",
+            "test/node-fixtures/memory/packed.integration.test.ts",
             "test/integration/packed.integration.test.ts",
           ].includes(file.replaceAll("\\", "/"))),
   );

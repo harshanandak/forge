@@ -14,7 +14,15 @@ export type {
   SpawnOptions,
   ResolvedExecutable,
 } from "../ports/process.ts";
-export type { PutOptions, StateClient } from "../ports/state.ts";
+export type {
+  BatchEntry,
+  BatchOptions,
+  ExtendedStateClient,
+  HistoryOptions,
+  PutOptions,
+  RangeOptions,
+  StateClient,
+} from "../ports/state.ts";
 export type { TrackerOperations, TrackerVerbs } from "../ports/tracker.ts";
 export { ForgeFailure } from "./failure.ts";
 

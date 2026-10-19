@@ -16,10 +16,22 @@ import type {
   StateRecord,
 } from "../../generated/types.ts";
 import type { ClockPort } from "../../ports/clock.ts";
-import type { StateClient, PutOptions } from "../../ports/state.ts";
+import type {
+  BatchEntry,
+  BatchOptions,
+  ExtendedStateClient,
+  HistoryOptions,
+  PutOptions,
+  RangeOptions,
+} from "../../ports/state.ts";
 import type { SqlDatabase, SqlRow } from "../../ports/store.ts";
 import type { Handle } from "../../ports/lifetime.ts";
-import { baseline, migrate, type Migration } from "./migrations.ts";
+import {
+  baseline,
+  eventKeyIndex,
+  migrate,
+  type Migration,
+} from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
 
 /** Optional storage capability supplied by trusted assembly; the locked SQL port stays unchanged. */
@@ -46,6 +58,11 @@ export interface WriteOptions extends PutOptions {
     readonly key: string;
     readonly expectRevision: number;
   }[];
+}
+/** Guards a batch write applies to the whole batch (see putMany). */
+export interface BatchWriteOptions {
+  readonly fence?: Fence;
+  readonly readSet?: WriteOptions["readSet"];
 }
 export interface Snapshot {
   readonly image: string;
@@ -603,7 +620,7 @@ function dataTables(db: SqlDatabase): readonly string[] {
 export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
-  #knownMigrations = new Set([baseline.id]);
+  #knownMigrations = new Set([baseline.id, eventKeyIndex.id]);
   constructor(db: SqlDatabase, clock: ClockPort) {
     this.#db = db;
     this.#clock = clock;
@@ -621,7 +638,11 @@ export class StateOwner {
     }
     migrate(
       this.#db,
-      [baseline, ...domains.flatMap((domain) => domain.migrations)],
+      [
+        baseline,
+        eventKeyIndex,
+        ...domains.flatMap((domain) => domain.migrations),
+      ],
       () => {
         registerTables(
           this.#db,
@@ -645,13 +666,14 @@ export class StateOwner {
     );
     this.#knownMigrations = new Set([
       baseline.id,
+      eventKeyIndex.id,
       ...domains.flatMap((domain) =>
         domain.migrations.map((migration) => migration.id),
       ),
     ]);
   }
 
-  client(namespace: string, actor: Actor): StateClient {
+  client(namespace: string, actor: Actor): ExtendedStateClient {
     namespaceValid(namespace);
     if (!validateActor(actor).ok) invalid("Invalid actor");
     const boundActor = Object.freeze(JSON.parse(json(actor)) as Actor);
@@ -659,7 +681,20 @@ export class StateOwner {
       get: (key: string) => this.get(namespace, key),
       put: (key: string, value: unknown, options: PutOptions) =>
         this.put(namespace, key, value, { ...boundActor }, options),
+      putMany: (entries: readonly BatchEntry[], options?: BatchOptions) =>
+        this.putMany(
+          namespace,
+          entries,
+          { ...boundActor },
+          {
+            ...(options?.readSet === undefined
+              ? {}
+              : { readSet: options.readSet }),
+          },
+        ),
       list: (prefix?: string) => this.list(namespace, prefix),
+      listRange: (options: RangeOptions) => this.listRange(namespace, options),
+      history: (options: HistoryOptions) => this.history(namespace, options),
       events: (key?: string) => this.events(namespace, key),
     });
   }
@@ -676,12 +711,60 @@ export class StateOwner {
   }
   list(namespace: string, prefix = ""): readonly StateRecord[] {
     namespaceValid(namespace);
+    // The prefix is a key range, so only those rows are read.
     return this.#db
-      .all("SELECT body FROM state_records WHERE namespace=? ORDER BY key", [
-        namespace,
-      ])
+      .all(
+        "SELECT body FROM state_records WHERE namespace=? AND key>=? AND key<? ORDER BY key",
+        [namespace, prefix, `${prefix}\u{10FFFF}`],
+      )
       .map((row) => body<StateRecord>(row)!)
       .filter((record) => record.key.startsWith(prefix));
+  }
+  /** One bounded page of records from a key range, in key order or reverse. */
+  listRange(namespace: string, options: RangeOptions): readonly StateRecord[] {
+    namespaceValid(namespace);
+    if (
+      !Number.isSafeInteger(options.limit) ||
+      options.limit < 1 ||
+      options.limit > 1000
+    )
+      invalid("Range limit must be an integer from 1 to 1000");
+    const bounds: string[] = [];
+    const params: string[] = [namespace];
+    if (options.from !== undefined) {
+      bounds.push("AND key>=?");
+      params.push(options.from);
+    }
+    if (options.to !== undefined) {
+      bounds.push("AND key<?");
+      params.push(options.to);
+    }
+    return this.#db
+      .all(
+        `SELECT body FROM state_records WHERE namespace=? ${bounds.join(" ")} ORDER BY key ${options.descending === true ? "DESC" : "ASC"} LIMIT ${options.limit}`,
+        params,
+      )
+      .map((row) => body<StateRecord>(row)!);
+  }
+  /** One bounded page of a key's events, newest first; the (namespace, key, sequence) index serves it. */
+  history(namespace: string, options: HistoryOptions): readonly StateEvent[] {
+    namespaceValid(namespace);
+    keyValid(options.key);
+    if (
+      !Number.isSafeInteger(options.limit) ||
+      options.limit < 1 ||
+      options.limit > 1000 ||
+      (options.before !== undefined && !Number.isSafeInteger(options.before))
+    )
+      invalid("History limit must be an integer from 1 to 1000");
+    return this.#db
+      .all(
+        `SELECT body FROM state_events WHERE namespace=? AND key=?${options.before === undefined ? "" : " AND json_extract(body,'$.revision')<?"} ORDER BY sequence DESC LIMIT ${options.limit}`,
+        options.before === undefined
+          ? [namespace, options.key]
+          : [namespace, options.key, options.before],
+      )
+      .map((row) => body<StateEvent>(row)!);
   }
   events(namespace: string, key?: string): readonly StateEvent[] {
     namespaceValid(namespace);
@@ -790,61 +873,146 @@ export class StateOwner {
           ...(options.readSet === undefined ? {} : { readSet }),
         },
         () => {
-          const current = this.get(namespace, key);
-          const revision = current?.revision ?? 0;
-          if (revision !== options.expectRevision)
-            throw new ForgeFailure({
-              code: "REVISION_CONFLICT",
-              message: `Expected revision ${options.expectRevision}; current revision is ${revision}`,
-              retry: "reconcile_first",
-              currentRevision: revision,
-            });
-          for (const read of readSet) {
-            const currentRevision =
-              this.get(namespace, read.key)?.revision ?? 0;
-            if (currentRevision !== read.expectRevision)
-              throw new ForgeFailure({
-                code: "REVISION_CONFLICT",
-                message: `Read-set key ${read.key}: expected revision ${read.expectRevision}; current revision is ${currentRevision}`,
-                retry: "reconcile_first",
-                currentRevision,
-              });
-          }
-          const record: StateRecord = {
+          this.#readSetHolds(namespace, key, options.expectRevision, readSet);
+          return this.#apply(
             namespace,
             key,
-            revision: revision + 1,
-            value: stored,
-            updatedAt: new Date(now).toISOString(),
-            updatedBy: actor,
-          };
-          if (
-            !validateStateRecord(record).ok ||
-            !Number.isSafeInteger(record.revision)
-          )
-            invalid("Invalid record");
-          if (current) {
-            const changed = this.#db.run(
-              "UPDATE state_records SET revision=?,body=? WHERE namespace=? AND key=? AND revision=?",
-              [record.revision, json(record), namespace, key, revision],
-            );
-            if (changed.changes !== 1)
-              throw new ForgeFailure({
-                code: "REVISION_CONFLICT",
-                message: "Revision changed at commit",
-                retry: "reconcile_first",
-                currentRevision: this.get(namespace, key)?.revision ?? 0,
-              });
-          } else
-            this.#db.run(
-              "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,?,?)",
-              [namespace, key, record.revision, json(record)],
-            );
-          this.#event(recordEvent(record, options.requestId));
-          return record;
+            stored,
+            actor,
+            now,
+            options.requestId,
+          );
         },
       );
     });
+  }
+
+  /**
+   * Write several records in one transaction. Every guard a single put has applies to the whole
+   * batch and is checked inside that transaction before anything is written: each entry's
+   * expectRevision, the lease fence, and the read set (revisions of records the batch depends on,
+   * which may be records it does not write). Any conflict leaves none of the records written.
+   * A batch takes no request ID, so it leaves no replayable receipt and has no fingerprint; a
+   * retried batch fails on its stale expectRevision rather than applying twice.
+   */
+  putMany(
+    namespace: string,
+    entries: readonly BatchEntry[],
+    actor: Actor,
+    options: BatchWriteOptions = {},
+  ): readonly StateRecord[] {
+    namespaceValid(namespace);
+    if (!validateActor(actor).ok) invalid("Invalid actor");
+    const readSet = copyReadSet(options.readSet) ?? [];
+    const keys = new Set<string>();
+    const prepared = entries.map((entry) => {
+      keyValid(entry.key);
+      if (
+        !Number.isSafeInteger(entry.expectRevision) ||
+        entry.expectRevision < 0 ||
+        keys.has(entry.key)
+      )
+        invalid("Invalid or repeated batch entry");
+      keys.add(entry.key);
+      return {
+        key: entry.key,
+        stored: JSON.parse(json(entry.value)) as unknown,
+        expectRevision: entry.expectRevision,
+      };
+    });
+    return this.#db.transaction(() => {
+      const now = this.#now();
+      if (options.fence) this.#held(namespace, options.fence, now);
+      for (const entry of prepared) {
+        const revision = this.get(namespace, entry.key)?.revision ?? 0;
+        if (revision !== entry.expectRevision) this.#stale(entry, revision);
+      }
+      this.#readSetHolds(namespace, undefined, undefined, readSet);
+      return prepared.map((entry) =>
+        this.#apply(namespace, entry.key, entry.stored, actor, now, undefined),
+      );
+    });
+  }
+
+  #stale(
+    entry: { readonly key: string; readonly expectRevision: number },
+    revision: number,
+  ): never {
+    throw new ForgeFailure({
+      code: "REVISION_CONFLICT",
+      message: `Expected revision ${entry.expectRevision}; current revision is ${revision}`,
+      retry: "reconcile_first",
+      currentRevision: revision,
+    });
+  }
+
+  /** The write's own expected revision, then every read-set revision; the first mismatch refuses. */
+  #readSetHolds(
+    namespace: string,
+    key: string | undefined,
+    expectRevision: number | undefined,
+    readSet: NonNullable<WriteOptions["readSet"]>,
+  ): void {
+    if (key !== undefined && expectRevision !== undefined) {
+      const revision = this.get(namespace, key)?.revision ?? 0;
+      if (revision !== expectRevision)
+        this.#stale({ key, expectRevision }, revision);
+    }
+    for (const read of readSet) {
+      const currentRevision = this.get(namespace, read.key)?.revision ?? 0;
+      if (currentRevision !== read.expectRevision)
+        throw new ForgeFailure({
+          code: "REVISION_CONFLICT",
+          message: `Read-set key ${read.key}: expected revision ${read.expectRevision}; current revision is ${currentRevision}`,
+          retry: "reconcile_first",
+          currentRevision,
+        });
+    }
+  }
+
+  /** Write one record and its event; the caller has already checked every guard. */
+  #apply(
+    namespace: string,
+    key: string,
+    stored: unknown,
+    actor: Actor,
+    now: number,
+    requestId: string | undefined,
+  ): StateRecord {
+    const current = this.get(namespace, key);
+    const revision = current?.revision ?? 0;
+    const record: StateRecord = {
+      namespace,
+      key,
+      revision: revision + 1,
+      value: stored,
+      updatedAt: new Date(now).toISOString(),
+      updatedBy: actor,
+    };
+    if (
+      !validateStateRecord(record).ok ||
+      !Number.isSafeInteger(record.revision)
+    )
+      invalid("Invalid record");
+    if (current) {
+      const changed = this.#db.run(
+        "UPDATE state_records SET revision=?,body=? WHERE namespace=? AND key=? AND revision=?",
+        [record.revision, json(record), namespace, key, revision],
+      );
+      if (changed.changes !== 1)
+        throw new ForgeFailure({
+          code: "REVISION_CONFLICT",
+          message: "Revision changed at commit",
+          retry: "reconcile_first",
+          currentRevision: this.get(namespace, key)?.revision ?? 0,
+        });
+    } else
+      this.#db.run(
+        "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,?,?)",
+        [namespace, key, record.revision, json(record)],
+      );
+    this.#event(recordEvent(record, requestId));
+    return record;
   }
 
   acquire(
