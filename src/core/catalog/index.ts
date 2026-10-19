@@ -223,6 +223,8 @@ export function captureBlock(
   );
 }
 
+type HostInterfaces = readonly string[];
+
 export class Catalog {
   readonly #blocks: ReadonlyMap<string, CapturedBlock>;
   readonly config: ConfigDocument;
@@ -233,6 +235,8 @@ export class Catalog {
     blocks: ReadonlyMap<string, CapturedBlock>,
     /** Supplied by the host; version-constrained blocks fail closed without it. */
     forgeVersion?: string,
+    /** The embedding supplies capabilities; configuration cannot invent them. */
+    coreProvides?: HostInterfaces,
   ) {
     if (!validateConfigDocument(config).ok)
       refuse("INPUT_INVALID", "invalid composition config");
@@ -295,6 +299,7 @@ export class Catalog {
     this.#composition = resolveComposition(
       this.config,
       new Map([...blocks].map(([name, block]) => [name, block.manifest])),
+      coreProvides,
     );
     if (!this.#composition.ok)
       refuse(

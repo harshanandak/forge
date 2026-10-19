@@ -39,12 +39,17 @@ import type {
 } from "../generated/types.ts";
 import type { SurfaceCatalog } from "../surface/catalog.ts";
 import { discoveryOperations } from "../generated/core-discovery.ts";
-import type { LeaseStateClient } from "./state-client.ts";
 import { createStateClient } from "./state-client.ts";
 import { version } from "../version.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
 import { LocalState } from "./state.ts";
+import {
+  ASSEMBLY_PROVIDES,
+  assemblyProvides,
+  createAssemblyProviders,
+  type ProviderOptions,
+} from "./providers.ts";
 
 const TRUST_NAMESPACE = "forge/core-trust";
 const grantCandidate: McpCandidate = {
@@ -91,6 +96,7 @@ const grantCandidate: McpCandidate = {
 export interface AssemblyOptions {
   readonly root: string;
   readonly deviceRoot: string;
+  readonly providers?: ProviderOptions;
 }
 export interface UnavailableBlock {
   readonly name: string;
@@ -148,6 +154,7 @@ export async function createAssembly(
 ): Promise<Assembly> {
   const root = resolve(options.root);
   const deviceRoot = resolve(options.deviceRoot);
+  const providers = createAssemblyProviders(root, options.providers);
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   const projectState = new LocalState(join(root, ".forge", "state.sqlite"));
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
@@ -228,7 +235,10 @@ export async function createAssembly(
     for (const required of block.manifest.requires ?? []) {
       const provider = instance.bind?.[required.slot];
       const state = interfaceSatisfies("forge.state@1.0.0", required.interface);
-      if (!state || (provider !== undefined && provider !== "core")) {
+      if (
+        !assemblyProvides(required.interface) ||
+        (provider !== undefined && provider !== "core")
+      ) {
         if (required.optional && provider === undefined) continue;
         refuse(
           "PROVIDER_MISSING",
@@ -239,8 +249,9 @@ export async function createAssembly(
         block.manifest.operations,
       )) {
         if (
+          state &&
           declaration.context === "stateless" &&
-          declaration.effects.length > 0
+          declaration.effects.includes(`${op.split(".")[0]}:write`)
         )
           refuse(
             "PROVIDER_MISSING",
@@ -252,10 +263,7 @@ export async function createAssembly(
   }
   function readyBindings(catalog: Catalog, name: string): void {
     for (const binding of catalog.bindings(name)) {
-      if (
-        binding.provider !== "core" ||
-        !interfaceSatisfies("forge.state@1.0.0", binding.interface)
-      )
+      if (binding.provider !== "core" || !assemblyProvides(binding.interface))
         refuse(
           "PROVIDER_MISSING",
           `No assembled provider for ${name}.${binding.slot} (${binding.interface})`,
@@ -311,6 +319,7 @@ export async function createAssembly(
           availableComposition(document, proposed),
           proposed,
           version,
+          ASSEMBLY_PROVIDES,
         );
         let admitted = false;
         try {
@@ -359,6 +368,7 @@ export async function createAssembly(
       availableComposition(document, blocks),
       blocks,
       version,
+      ASSEMBLY_PROVIDES,
     );
     const executable = new Set(active.list());
     return {
@@ -440,6 +450,7 @@ export async function createAssembly(
               availableComposition(proposed, blocks),
               blocks,
               version,
+              ASSEMBLY_PROVIDES,
             );
             for (const name of blocks.keys())
               readyBindings(checkedCatalog, name);
@@ -544,15 +555,14 @@ export async function createAssembly(
         return await new Runtime(current.catalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
-            const clients: Record<string, LeaseStateClient> = {};
-            const leases: import("../ports/lifetime.ts").OwnedHandle<
-              import("../core/state/index.ts").StateOwner | undefined
-            >[] = [];
+            const clients: Record<string, unknown> = {};
+            const leases: import("../ports/lifetime.ts").OwnedHandle<unknown>[] =
+              [];
             try {
               for (const binding of current.catalog.bindings(instance)) {
                 if (
                   binding.provider !== "core" ||
-                  !interfaceSatisfies("forge.state@1.0.0", binding.interface)
+                  !assemblyProvides(binding.interface)
                 )
                   refuse(
                     "PROVIDER_MISSING",
@@ -575,15 +585,63 @@ export async function createAssembly(
                     "INPUT_CONFLICT",
                     "State context belongs to another device",
                   );
+                if (
+                  interfaceSatisfies("forge.process@1.0.0", binding.interface)
+                ) {
+                  clients[binding.slot] = providers.process(scope);
+                  continue;
+                }
+                if (
+                  interfaceSatisfies(
+                    "forge.environment@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  clients[binding.slot] = providers.environment(scope);
+                  continue;
+                }
+                if (
+                  interfaceSatisfies("forge.crypto@1.0.0", binding.interface)
+                ) {
+                  clients[binding.slot] = providers.crypto(scope);
+                  continue;
+                }
+                if (
+                  interfaceSatisfies(
+                    "forge.runner-output@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  clients[binding.slot] = providers.runnerOutput(scope);
+                  continue;
+                }
+                if (
+                  interfaceSatisfies("forge.files@1.0.0", binding.interface)
+                ) {
+                  if (
+                    context.variant !== "project" &&
+                    context.variant !== "leased"
+                  )
+                    refuse(
+                      "CONTEXT_MISSING",
+                      "Clone files require project context",
+                    );
+                  const lease = await providers.openFiles(scope);
+                  leases.push(lease);
+                  clients[binding.slot] = lease.value;
+                  continue;
+                }
                 const namespace = current.blocks.get(instance)!.manifest.id;
                 const storage =
                   context.variant === "device" ? deviceState : projectState;
-                const lease = await storage.acquire(scope.effects.length > 0);
-                leases.push(lease);
-                const owner = lease.value;
                 const noun = current.catalog
                   .resolve(scope.op)
                   .operation.declaredOp.split(".")[0]!;
+                const lease = await storage.acquire(
+                  scope.effects.includes(`${noun}:write`),
+                );
+                leases.push(lease);
+                const owner = lease.value;
                 clients[binding.slot] = createStateClient({
                   owner,
                   namespace,
