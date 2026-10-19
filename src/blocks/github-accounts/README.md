@@ -85,18 +85,35 @@ rejects credential-management/global-auth commands and host/credential/repositor
 override flags, and refuses output containing the selected credential. It returns
 stdout and exit status; subprocess diagnostics are withheld.
 
-`github-account.unbind` restores saved local multivalues for identity, helper and
-hook configuration, preserving unrelated Git configuration. It removes only
-artifacts whose contents match the owned copy. Changed settings or changed owned
-artifacts cause a reconcile-first conflict rather than overwriting user edits.
-Interrupted cleanup can be retried when configuration already matches the saved
-prior values. All metadata, staging files and scripts live under the clone's common
+Binding appends a marked owned config overlay after the clone's existing bytes.
+Hook installation appends a separate overlay. Git formats only these new fragments;
+it never rewrites the user's original sections, comments, whitespace, or ordering
+relative to `include` and `includeIf` directives. Metadata version 2 records the
+exact owned fragments and their added values. Status compares the original local
+values plus the appended values, while effective identity uses Git's precedence.
+
+`github-account.unbind` removes those exact marked fragments and owned artifacts.
+Unrelated edits and explicit sections outside them remain in place. A config that
+originally lacked a final newline is restored exactly when there are no later
+edits; its inserted separator is retained when later user content needs it.
+Duplicate, partial, overlapping, or changed markers/fragments, changed tracked
+settings, and modified artifacts cause a reconcile-first conflict. Entries that
+depend implicitly on an owned section must be given an explicit section before
+that overlay can be removed. No saved values are rewritten into user sections.
+
+Interrupted publication or cleanup can be retried through unbind: metadata retains
+the owned fragments until configuration and artifact cleanup finish. Hook removal
+uses the same delta removal and keeps its ownership metadata until native routing
+is restored. Metadata version 1 remains readable for diagnostics, but automatic
+mutation refuses it because its original include positions were not recorded.
+All metadata, staging files and scripts live under the clone's common
 Git directory in `.forge-github-accounts`; linked worktrees share the clone binding.
 No global Git, gh, shell or project files are written by binding/unbinding.
 
 Transactions use an invocation-owned metadata lock; provider cleanup releases it
-even after timeout or cancellation. Configuration staging uses one fixed marked
-file, bounded by `maxFileBytes`. An interrupted stage is recovered only by a later
+even after timeout or cancellation. Configuration staging renders only a new owned
+fragment in one fixed marked file, bounded by `maxFileBytes`. It never copies user
+configuration into that file. An interrupted stage is recovered only by a later
 mutation while holding that lock. A foreign or changed ownership marker refuses
 recovery. Status never cleans files. Interruption can leave diagnostics requiring
 reconciliation. Account activation is published only after prerequisite artifacts

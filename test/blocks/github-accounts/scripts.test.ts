@@ -55,13 +55,12 @@ test("interrupted staging stays bounded to one marked file and foreign content i
     services: unknown,
     config: unknown,
     env: unknown,
-    original: string,
     changes: unknown,
   ) => Promise<string>;
-  const module = { exports: {} as { stageConfig: Stage } };
+  const module = { exports: {} as { renderConfigFragment: Stage } };
   runInNewContext(
     new Bun.Transpiler({ loader: "ts" }).transformSync(
-      source + "\nmodule.exports = {stageConfig};",
+      source + "\nmodule.exports = {renderConfigFragment};",
     ),
     {
       module,
@@ -82,23 +81,21 @@ test("interrupted staging stays bounded to one marked file and foreign content i
     },
   };
   expect(
-    await module.exports.stageConfig(
+    await module.exports.renderConfigFragment(
       services,
       { maxFileBytes: 10000 },
       {},
-      "[core]\n bare = false\n",
       {},
     ),
-  ).toBe("[core]\n bare = false\n");
+  ).toBe("");
   expect(files.size).toBe(0);
   files.set(path, "foreign content");
   let error: unknown;
   try {
-    await module.exports.stageConfig(
+    await module.exports.renderConfigFragment(
       services,
       { maxFileBytes: 10000 },
       {},
-      "replacement",
       {},
     );
   } catch (caught) {

@@ -199,11 +199,21 @@ try {
     identityName: "profile",
     identityEmail: "noreply",
   };
+  const bindingOverlay = {
+    kind: "binding",
+    text: "# forge/github-accounts config binding begin v1\n# forge/github-accounts config binding end v1\n",
+    separator: false,
+    values: {},
+  };
+  writeFileSync(
+    join(common, "config"),
+    readFileSync(join(common, "config"), "utf8") + bindingOverlay.text,
+  );
   mkdirSync(managed);
   writeFileSync(
     join(managed, "metadata.json"),
     JSON.stringify({
-      version: 1,
+      version: 2,
       account: "fixture",
       name: "Fixture",
       email: "fixture@example.com",
@@ -212,6 +222,7 @@ try {
       previous: {},
       installed: {},
       artifacts: {},
+      overlays: [bindingOverlay],
       hooks: false,
     }),
   );

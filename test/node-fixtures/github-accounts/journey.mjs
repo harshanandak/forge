@@ -103,6 +103,17 @@ function commit(clone, message, overrides = {}) {
 try {
   const alpha = await make("a", "alpha-user");
   const original = identitySnapshot(alpha);
+  const originalConfig = readFileSync(join(alpha.root, ".git/config"), "utf8");
+  assert.deepEqual(
+    original.effectiveHelpers,
+    [
+      "",
+      "fixture-native-helper",
+      "fixture-included-helper",
+      "fixture-conditional-helper",
+    ],
+    "restoration fixture must exercise helper order across include and includeIf",
+  );
   let beta;
   let betaOriginal;
   if (["all", "auth-order"].includes(mode)) {
@@ -579,6 +590,12 @@ try {
       identitySnapshot(alpha),
       original,
       "unbind must restore every prior identity, helper and hook configuration value",
+    );
+    assert.equal(
+      readFileSync(join(alpha.root, ".git/config"), "utf8"),
+      originalConfig +
+        (mode === "all" ? "[extensions]\n\tworktreeConfig = true\n" : ""),
+      "unbind must preserve original config bytes and include positions",
     );
     const native = command(
       process.execPath,

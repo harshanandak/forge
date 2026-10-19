@@ -132,7 +132,7 @@ export function localValues(clone, key) {
   return result.status === 1 ? [] : result.stdout.split("\0").slice(0, -1);
 }
 export function identitySnapshot(clone) {
-  return Object.fromEntries(
+  const snapshot = Object.fromEntries(
     [
       "user.name",
       "user.email",
@@ -141,6 +141,26 @@ export function identitySnapshot(clone) {
       "forge.githubAccount",
     ].map((key) => [key, localValues(clone, key)]),
   );
+  snapshot.effectiveHelpers = good(
+    command(
+      "git",
+      [
+        "-C",
+        clone.root,
+        "config",
+        "--includes",
+        "--null",
+        "--get-all",
+        "credential.https://github.com.helper",
+      ],
+      clone.root,
+      clone.env,
+    ),
+    "read effective helper order through includes",
+  )
+    .split("\0")
+    .slice(0, -1);
+  return snapshot;
 }
 function fixtureEnvironment(parent, root, login, mode) {
   const home = join(parent, "home");
@@ -352,10 +372,19 @@ export async function cloneFixture(
   // identity/restoration assertions. This removes seven setup subprocesses per clone.
   const configPath = join(root, ".git/config");
   writeFileSync(
+    join(root, ".git/native-helpers.config"),
+    '[credential "https://github.com"]\n\thelper = fixture-included-helper\n',
+  );
+  writeFileSync(
+    join(root, ".git/conditional-helpers.config"),
+    '[credential "https://github.com"]\n\thelper = fixture-conditional-helper\n',
+  );
+  writeFileSync(
     configPath,
     readFileSync(configPath, "utf8") +
       '\n[user]\n\tname = Native First\n\tname = Native Last\n\temail = native-first@example.invalid\n\temail = native-last@example.invalid\n[credential "https://github.com"]\n\thelper = ""\n\thelper = fixture-native-helper\n' +
-      (nativeHooks ? "[core]\n\thooksPath = .git/native-hooks\n" : ""),
+      (nativeHooks ? "[core]\n\thooksPath = .git/native-hooks\n" : "") +
+      '[include]\n\tpath = native-helpers.config\n[includeIf "onbranch:*"]\n\tpath = conditional-helpers.config\n[credential "https://github.com"]\n\tuseHttpPath = true\n',
   );
   mkdirSync(join(root, ".git/native-hooks"));
   const deviceRoot = join(root, ".git/fixture-device");

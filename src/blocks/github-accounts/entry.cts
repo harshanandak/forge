@@ -44,7 +44,7 @@ interface Launchers {
   forge?: string;
 }
 interface Binding {
-  version: 1;
+  version: 1 | 2;
   account: string;
   name: string;
   email: string;
@@ -56,6 +56,13 @@ interface Binding {
   hooks: boolean;
   launchers?: Launchers;
   hookLaunchers?: Launchers;
+  overlays?: ConfigOverlay[];
+}
+interface ConfigOverlay {
+  kind: "binding" | "hook";
+  text: string;
+  separator: boolean;
+  values: Record<string, string[]>;
 }
 type Empty = Record<string, never>;
 type Bind = {
@@ -303,7 +310,7 @@ function binding(s: Services, c: Config): Binding | undefined {
   if (text === undefined) return undefined;
   const value = parse<Binding>(text);
   if (
-    value.version !== 1 ||
+    (value.version !== 1 && value.version !== 2) ||
     typeof value.account !== "string" ||
     !Array.isArray(value.emails) ||
     !value.emails.every((email) => typeof email === "string") ||
@@ -427,11 +434,10 @@ function lastConfigValue(
 ): string | null {
   return entries.get(configKey(key))?.at(-1)?.trimEnd() ?? null;
 }
-async function stageConfig(
+async function renderConfigFragment(
   s: Services,
   c: Config,
   env: Record<string, string>,
-  original: string,
   changes: Record<string, string[]>,
 ): Promise<string> {
   const path = STAGING;
@@ -444,20 +450,12 @@ async function stageConfig(
       );
     s.files.remove(path, { area: "common", expected: previous });
   }
-  const initial = STAGING_MARKER + original;
+  const initial = STAGING_MARKER;
   boundedText(initial, c);
   s.files.write(path, initial, { area: "common", expected: null });
   const absolute = `${s.files.roots.common}/${path}`;
   try {
     for (const [key, list] of Object.entries(changes)) {
-      await repository(
-        s,
-        c,
-        env,
-        ["config", "--file", absolute, "--unset-all", key],
-        undefined,
-        [0, 5],
-      );
       for (const value of list)
         await repository(s, c, env, [
           "config",
@@ -486,6 +484,206 @@ async function stageConfig(
       s.files.remove(path, { area: "common", expected: current });
     }
   }
+}
+function overlayMarker(
+  kind: ConfigOverlay["kind"],
+  end: "begin" | "end",
+): string {
+  return `# forge/github-accounts config ${kind} ${end} v1`;
+}
+function createOverlay(
+  original: string,
+  kind: ConfigOverlay["kind"],
+  fragment: string,
+  values: Record<string, string[]>,
+): ConfigOverlay {
+  const text =
+    overlayMarker(kind, "begin") +
+    "\n" +
+    fragment +
+    (fragment.endsWith("\n") || fragment === "" ? "" : "\n") +
+    overlayMarker(kind, "end") +
+    "\n";
+  return {
+    kind,
+    text,
+    separator: original.length > 0 && !original.endsWith("\n"),
+    values,
+  };
+}
+function overlayList(bound: Binding): ConfigOverlay[] {
+  if (
+    bound.version !== 2 ||
+    !Array.isArray(bound.overlays) ||
+    !bound.overlays.length ||
+    bound.overlays.length > 2
+  )
+    fail(
+      "INPUT_CONFLICT",
+      "Binding predates reversible config overlays; reconcile its native settings before changing it",
+    );
+  const kinds = new Set<string>();
+  for (const overlay of bound.overlays) {
+    if (
+      !overlay ||
+      !["binding", "hook"].includes(overlay.kind) ||
+      kinds.has(overlay.kind) ||
+      typeof overlay.text !== "string" ||
+      typeof overlay.separator !== "boolean" ||
+      !overlay.values ||
+      !Object.values(overlay.values).every(
+        (values) =>
+          Array.isArray(values) &&
+          values.every((value) => typeof value === "string"),
+      ) ||
+      !overlay.text.startsWith(overlayMarker(overlay.kind, "begin") + "\n") ||
+      !overlay.text.endsWith(overlayMarker(overlay.kind, "end") + "\n")
+    )
+      fail(
+        "INPUT_CONFLICT",
+        "Owned config overlay metadata is invalid; reconcile before changing it",
+      );
+    kinds.add(overlay.kind);
+  }
+  if (!kinds.has("binding"))
+    fail("INPUT_CONFLICT", "Binding overlay metadata is missing");
+  return bound.overlays;
+}
+function overlayPresence(
+  config: string,
+  overlays: readonly ConfigOverlay[],
+): Map<ConfigOverlay["kind"], boolean> {
+  const expected = new Map<
+    string,
+    { overlay: ConfigOverlay; count: number; position: number }
+  >();
+  for (const overlay of overlays)
+    for (const end of ["begin", "end"] as const)
+      expected.set(overlayMarker(overlay.kind, end), {
+        overlay,
+        count: 0,
+        position: -1,
+      });
+  for (const match of config.matchAll(
+    /^# forge\/github-accounts config[^\n]*$/gm,
+  )) {
+    const line = match[0].replace(/\r$/, ""),
+      entry = expected.get(line);
+    if (!entry || ++entry.count !== 1)
+      fail(
+        "INPUT_CONFLICT",
+        "Config overlay ownership markers are foreign or duplicated",
+      );
+    entry.position = match.index;
+  }
+  const present = new Map<ConfigOverlay["kind"], boolean>();
+  const ranges: { start: number; end: number }[] = [];
+  for (const overlay of overlays) {
+    const start = expected.get(overlayMarker(overlay.kind, "begin"))!,
+      end = expected.get(overlayMarker(overlay.kind, "end"))!;
+    if (
+      start.count !== end.count ||
+      (start.count === 1 &&
+        config.slice(start.position, start.position + overlay.text.length) !==
+          overlay.text)
+    )
+      fail(
+        "INPUT_CONFLICT",
+        "Owned config overlay changed; reconcile before retrying",
+      );
+    if (
+      start.count === 1 &&
+      overlay.separator &&
+      config[start.position - 1] !== "\n"
+    )
+      fail("INPUT_CONFLICT", "Owned config overlay separator changed");
+    present.set(overlay.kind, start.count === 1);
+    if (start.count === 1)
+      ranges.push({
+        start: start.position,
+        end: start.position + overlay.text.length,
+      });
+  }
+  ranges.sort((a, b) => a.start - b.start);
+  for (let index = 1; index < ranges.length; index++)
+    if (ranges[index]!.start < ranges[index - 1]!.end)
+      fail("INPUT_CONFLICT", "Owned config overlay regions overlap");
+  return present;
+}
+function appendOverlay(
+  config: string,
+  overlay: ConfigOverlay,
+  existing: readonly ConfigOverlay[],
+): string {
+  const present = overlayPresence(config, existing);
+  if (existing.some((value) => !present.get(value.kind)))
+    fail(
+      "INPUT_CONFLICT",
+      "An earlier config overlay is not active; unbind to recover before retrying",
+    );
+  return config + (overlay.separator ? "\n" : "") + overlay.text;
+}
+function removeOverlays(
+  config: string,
+  overlays: readonly ConfigOverlay[],
+  kinds: readonly ConfigOverlay["kind"][],
+): string {
+  const present = overlayPresence(config, overlays);
+  const selected = overlays
+    .filter(
+      (overlay) => kinds.includes(overlay.kind) && present.get(overlay.kind),
+    )
+    .sort((a, b) => config.indexOf(b.text) - config.indexOf(a.text));
+  let result = config;
+  for (const overlay of selected) {
+    const at = result.indexOf(overlay.text),
+      after = result.slice(at + overlay.text.length);
+    let before = result.slice(0, at);
+    const following = after
+      .split(/\r?\n/)
+      .find((line) => line.trim() && !/^\s*[#;]/.test(line));
+    if (following && !/^\s*\[/.test(following))
+      fail(
+        "INPUT_CONFLICT",
+        "Unrelated config entries depend on an owned section; give them an explicit section before removing the overlay",
+      );
+    if (overlay.separator) {
+      before = before.slice(0, -1);
+      if (after && before && !before.endsWith("\n") && !after.startsWith("\n"))
+        before += "\n";
+    }
+    result = before + after;
+  }
+  return result;
+}
+function expectedOverlayValues(
+  bound: Binding,
+  present: ReadonlyMap<ConfigOverlay["kind"], boolean>,
+): Record<string, string[]> {
+  const expected: Record<string, string[]> = {};
+  for (const key of Object.keys(bound.installed))
+    expected[key] = [...(bound.previous[key] ?? [])];
+  for (const overlay of overlayList(bound))
+    if (present.get(overlay.kind))
+      for (const [key, values] of Object.entries(overlay.values))
+        expected[key] = [...(expected[key] ?? []), ...values];
+  return expected;
+}
+async function verifyOverlayValues(
+  s: Services,
+  c: Config,
+  env: Record<string, string>,
+  bound: Binding,
+  present: ReadonlyMap<ConfigOverlay["kind"], boolean>,
+): Promise<void> {
+  const expected = expectedOverlayValues(bound, present),
+    actual = await configValues(s, c, env, Object.keys(expected), true);
+  for (const [key, values] of Object.entries(expected))
+    if (!same(actual.get(configKey(key)) ?? [], values))
+      fail(
+        "INPUT_CONFLICT",
+        "Clone settings changed outside the owned config overlay; reconcile before retrying",
+      );
 }
 async function transaction<T>(
   s: Services,
@@ -993,6 +1191,7 @@ const operations: Operations<AccountOperations> = {
       const original = s.files.read("config", c.maxFileBytes, "common");
       if (original === undefined)
         fail("ACCOUNT_CONFIG_MISSING", "Clone Git configuration is missing");
+      overlayPresence(original, []);
       if ((await values(s, c, env, ACCOUNT)).length)
         fail(
           "INPUT_CONFLICT",
@@ -1043,18 +1242,25 @@ const operations: Operations<AccountOperations> = {
       const previous: Record<string, string[]> = {};
       for (const key of Object.keys(installed))
         previous[key] = await values(s, c, env, key);
-      const replacement = await stageConfig(s, c, env, original, installed);
+      const fragment = await renderConfigFragment(s, c, env, installed);
+      const overlay = createOverlay(original, "binding", fragment, installed);
+      const replacement = appendOverlay(original, overlay, []);
+      const installedValues: Record<string, string[]> = {};
+      for (const [key, values] of Object.entries(installed))
+        installedValues[key] = [...previous[key]!, ...values];
+      boundedText(replacement, c);
       const bound: Binding = {
-        version: 1,
+        version: 2,
         account: auth.user.login,
         name,
         email,
         emails: [...new Set(emails)],
         automatic: input.auto,
         previous,
-        installed,
+        installed: installedValues,
         artifacts,
         hooks: false,
+        overlays: [overlay],
         ...(launchers ? { launchers } : {}),
       };
       const written: string[] = [];
@@ -1095,20 +1301,12 @@ const operations: Operations<AccountOperations> = {
       const bound = binding(s, c);
       if (!bound) return { unbound: true };
       const metadata = s.files.read(META, c.maxFileBytes, "common")!;
-      const current: Record<string, string[]> = {};
-      for (const key of Object.keys(bound.installed))
-        current[key] = await values(s, c, env, key);
-      const installed = Object.entries(bound.installed).every(([key, wanted]) =>
-        same(current[key], wanted),
-      );
-      const previous = Object.entries(bound.previous).every(([key, wanted]) =>
-        same(current[key], wanted),
-      );
-      if (!installed && !previous)
-        fail(
-          "INPUT_CONFLICT",
-          "Clone settings changed after binding; reconcile before unbinding",
-        );
+      const original = s.files.read("config", c.maxFileBytes, "common");
+      if (original === undefined)
+        fail("ACCOUNT_CONFIG_MISSING", "Clone Git configuration is missing");
+      const overlays = overlayList(bound),
+        present = overlayPresence(original, overlays);
+      await verifyOverlayValues(s, c, env, bound, present);
       for (const [path, text] of Object.entries(bound.artifacts)) {
         const actual = s.files.read(path, c.maxFileBytes, "common");
         if (actual !== undefined && actual !== text)
@@ -1117,15 +1315,11 @@ const operations: Operations<AccountOperations> = {
             "Owned account artifact changed; reconcile before unbinding",
           );
       }
-      const original = s.files.read("config", c.maxFileBytes, "common")!;
-      if (installed) {
-        const replacement = await stageConfig(
-          s,
-          c,
-          env,
-          original,
-          bound.previous,
-        );
+      const replacement = removeOverlays(original, overlays, [
+        "binding",
+        "hook",
+      ]);
+      if (replacement !== original) {
         s.files.write("config", replacement, {
           area: "common",
           expected: original,
@@ -1193,12 +1387,17 @@ const operations: Operations<AccountOperations> = {
       );
       const routes = input.enabled ? await hookRoutes(s, c, env) : [];
       if (input.enabled) verifyHookRoutes(routes, expectedHook, bound.hooks);
+      const original = s.files.read("config", c.maxFileBytes, "common");
+      if (original === undefined)
+        fail("ACCOUNT_CONFIG_MISSING", "Clone Git configuration is missing");
+      const overlays = overlayList(bound),
+        present = overlayPresence(original, overlays);
+      await verifyOverlayValues(s, c, env, bound, present);
       if (bound.hooks === input.enabled) return { enabled: input.enabled };
       const metadata = s.files.read(META, c.maxFileBytes, "common")!;
       const key = "core.hooksPath",
         path = `${DIRECTORY}/hooks/pre-push`,
         text = launchers ? hookScript(c, launchers, s) : "";
-      const original = s.files.read("config", c.maxFileBytes, "common")!;
       if (input.enabled) {
         const common = hookPath(s.files.roots.common);
         const hookNames = [
@@ -1253,11 +1452,16 @@ const operations: Operations<AccountOperations> = {
             );
         }
         bound.previous[key] = await values(s, c, env, key);
-        bound.installed[key] = [`${s.files.roots.common}/${DIRECTORY}/hooks`];
+        const additions = {
+          [key]: [`${s.files.roots.common}/${DIRECTORY}/hooks`],
+        };
+        const fragment = await renderConfigFragment(s, c, env, additions);
+        const overlay = createOverlay(original, "hook", fragment, additions);
+        const replacement = appendOverlay(original, overlay, overlays);
+        boundedText(replacement, c);
+        bound.installed[key] = [...bound.previous[key], ...additions[key]];
         bound.artifacts[path] = text;
-        const replacement = await stageConfig(s, c, env, original, {
-          [key]: bound.installed[key],
-        });
+        bound.overlays = [...overlays, overlay];
         bound.hooks = true;
         bound.hookLaunchers = launchers!;
         const updated = JSON.stringify(bound);
@@ -1292,36 +1496,30 @@ const operations: Operations<AccountOperations> = {
           throw error;
         }
       } else {
-        if (
-          !same(await values(s, c, env, key), bound.installed[key]) ||
-          s.files.read(path, c.maxFileBytes, "common") !== bound.artifacts[path]
-        )
+        const actual = s.files.read(path, c.maxFileBytes, "common"),
+          owned = bound.artifacts[path];
+        if (actual !== undefined && actual !== owned)
           fail(
             "INPUT_CONFLICT",
             "Guard settings changed; reconcile before removing",
           );
-        const replacement = await stageConfig(s, c, env, original, {
-          [key]: bound.previous[key]!,
-        });
-        const owned = bound.artifacts[path]!;
+        const replacement = removeOverlays(original, overlays, ["hook"]);
+        if (replacement !== original)
+          s.files.write("config", replacement, {
+            area: "common",
+            expected: original,
+          });
+        if (actual !== undefined)
+          s.files.remove(path, { area: "common", expected: owned! });
         delete bound.previous[key];
         delete bound.installed[key];
         delete bound.artifacts[path];
         bound.hooks = false;
         delete bound.hookLaunchers;
+        bound.overlays = overlays.filter((overlay) => overlay.kind !== "hook");
         const updated = JSON.stringify(bound);
         boundedText(updated, c);
         s.files.write(META, updated, { area: "common", expected: metadata });
-        try {
-          s.files.write("config", replacement, {
-            area: "common",
-            expected: original,
-          });
-        } catch (error) {
-          s.files.write(META, metadata, { area: "common", expected: updated });
-          throw error;
-        }
-        s.files.remove(path, { area: "common", expected: owned });
       }
       return { enabled: input.enabled };
     });
