@@ -5,6 +5,11 @@ export const packedSuites = [
     consumerEnv: "CHECK_PACKED_CONSUMER",
   },
   {
+    file: "test/blocks/l12-git/packed.integration.test.ts",
+    label: "packed Git integration",
+    consumerEnv: "GIT_PACKED_CONSUMER",
+  },
+  {
     file: "test/blocks/l7-work/packed.integration.test.ts",
     label: "packed work integration",
     consumerEnv: "WORK_PACKED_CONSUMER",

@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\:\\u0000-\\u001f]).+$"
+    },
+    "expectedHead": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40,64}$"
+    },
+    "expectRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": ["path", "expectedHead", "expectRevision"],
+  "additionalProperties": false
+}
