@@ -62,8 +62,10 @@ const effects = {
   env: ["environment:read"],
   deniedenv: [],
   read: ["files:read"],
-  deniedfiles: [],
-  deniedwrite: [],
+  // Keep opposite-effect probes at the adapter boundary; effect-free slots are
+  // denied earlier by assembly without opening a clone-file service.
+  deniedfiles: ["files:write"],
+  deniedwrite: ["files:read"],
   write: ["files:write"],
   remove: ["files:write"],
   snapshot: ["files:read"],
