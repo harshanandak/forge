@@ -179,6 +179,7 @@ const cases = {
     );
   },
   async cancellation() {
+    const acceptedBefore = structuredClone(state.list());
     const controller = new AbortController();
     const marker = join(directory, "cancel-ready.json");
     let observed;
@@ -229,7 +230,11 @@ const cases = {
           () => process.kill(pid, 0),
           "cancellation stops every marked process",
         );
-      assert.equal(state.list().length, 0, "cancellation persists no receipt");
+      assert.deepEqual(
+        state.list(),
+        acceptedBefore,
+        "cancellation persists no receipt and preserves accepted evidence",
+      );
     } finally {
       unwatchFile(marker);
     }
