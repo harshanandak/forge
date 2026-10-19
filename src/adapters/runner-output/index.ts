@@ -87,20 +87,26 @@ export function createRunnerOutput(): RunnerOutputPort {
           failed: 0,
           detail: "Runner reported zero tests",
         };
-      const pytest =
-        /(?:={2,}\s*)?((?:\d+ (?:passed|failed|skipped|deselected|xfailed|xpassed|errors?)(?:, )?)+) in [\d.]+s(?:\s*={2,})?/g;
-      const summaries = [...text.matchAll(pytest)];
-      const summary = summaries.at(-1)?.[1];
+      const summaries = [
+        ...text.matchAll(
+          /^[\t ]*(.*?)[\t ]+in[\t ]+\d+(?:\.\d+)?s(?:[\t ]+\([^\n]*\))?[\t ]*=*[\t ]*$/gm,
+        ),
+      ];
+      const summary = summaries.at(-1)?.[1]?.replace(/^=+\s*|\s*=+$/g, "");
       if (summary) {
         let total = 0,
           failed = 0;
-        for (const match of summary.matchAll(
-          /(\d+) (passed|failed|skipped|deselected|xfailed|xpassed|errors?)/g,
-        )) {
+        for (const term of summary.split(/,\s*/)) {
+          const match =
+            /^(\d+)\s+(passed|failed|skipped|deselected|xfailed|xpassed|errors?|warnings?|reruns?)$/.exec(
+              term,
+            );
+          if (!match) return unknown;
           const n = Number(match[1]);
-          if (match[2] !== "deselected") total += n;
-          if (/failed|errors?/.test(match[2] ?? "") && match[2] !== "xfailed")
-            failed += n;
+          if (!count(n)) return unknown;
+          if (!/^(?:deselected|warnings?|reruns?)$/.test(match[2]!)) total += n;
+          if (/^(?:failed|errors?)$/.test(match[2]!)) failed += n;
+          if (!count(total) || !count(failed)) return unknown;
         }
         return {
           kind: "recognized",

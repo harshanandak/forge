@@ -11,6 +11,7 @@ import { ProcessSpawnError } from "./errors.ts";
 import { planSpawn } from "./plan.ts";
 import type { Platform } from "./platform.ts";
 import { openContainment, type ContainmentOptions } from "./containment.ts";
+import { StreamCapture } from "./capture.ts";
 
 const MAX_TIMER_MS = 2147483647;
 import { MAX_SUPERVISORS, validateSupervision } from "./supervision.ts";
@@ -27,38 +28,6 @@ export function supervisedSpawnFailure(code: unknown): ProcessSpawnError {
     "Could not start supervised command",
     cause,
   );
-}
-
-/** Keeps the first `limit` bytes of one stream and counts the rest as dropped. */
-class Capture {
-  private readonly chunks: Buffer[] = [];
-  private size = 0;
-  private readonly limit: number;
-  truncated = false;
-
-  constructor(limit: number) {
-    this.limit = limit;
-  }
-
-  push(chunk: Buffer): void {
-    const room = this.limit - this.size;
-    if (room <= 0) {
-      this.truncated = true;
-      return;
-    }
-    if (chunk.length > room) {
-      this.chunks.push(chunk.subarray(0, room));
-      this.size += room;
-      this.truncated = true;
-      return;
-    }
-    this.chunks.push(chunk);
-    this.size += chunk.length;
-  }
-
-  text(): string {
-    return Buffer.concat(this.chunks).toString("utf8");
-  }
 }
 
 function validate(options: SpawnOptions): void {
@@ -79,6 +48,16 @@ function validate(options: SpawnOptions): void {
     bad("timeoutMs must be an integer from 1 to 2147483647.");
   if (!Number.isInteger(options.maxOutputBytes) || options.maxOutputBytes < 0)
     bad("maxOutputBytes must be a non-negative integer.");
+  if (
+    options.capture &&
+    (!Number.isSafeInteger(options.capture.headBytes) ||
+      options.capture.headBytes < 0 ||
+      !Number.isSafeInteger(options.capture.tailBytes) ||
+      options.capture.tailBytes < 0 ||
+      options.capture.headBytes + options.capture.tailBytes >
+        options.maxOutputBytes)
+  )
+    bad("capture headBytes + tailBytes must fit maxOutputBytes.");
   if (!existsSync(options.cwd))
     bad(`the working directory "${options.cwd}" does not exist.`);
   for (const [name, value] of Object.entries(options.env)) {
@@ -163,10 +142,19 @@ export async function runProcess(
         windowsHide: true,
         shell: false,
       });
-      const stdout = new Capture(options.maxOutputBytes),
-        stderr = new Capture(options.maxOutputBytes);
-      child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
-      child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
+      const stdout = new StreamCapture(options.maxOutputBytes, options.capture),
+        stderr = new StreamCapture(options.maxOutputBytes, options.capture);
+      const capture = (stream: StreamCapture, chunk: Buffer): void => {
+        try {
+          stream.push(chunk);
+        } catch (error) {
+          void finish(
+            error instanceof Error ? error : new Error("Output capture failed"),
+          );
+        }
+      };
+      child.stdout?.on("data", (chunk: Buffer) => capture(stdout, chunk));
+      child.stderr?.on("data", (chunk: Buffer) => capture(stderr, chunk));
       let timedOut = false,
         interrupted = false,
         attached = false,
@@ -281,6 +269,14 @@ export async function runProcess(
           truncated: stdout.truncated || stderr.truncated,
           durationMs: Math.round(performance.now() - started),
           supervision,
+          ...(options.capture
+            ? {
+                outputEvidence: {
+                  stdout: stdout.evidence(pipesClosed),
+                  stderr: stderr.evidence(pipesClosed),
+                },
+              }
+            : {}),
         });
       };
       const cancel = (): void => {
