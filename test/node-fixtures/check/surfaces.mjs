@@ -206,7 +206,7 @@ async function mcp(expectedStatus = "PASS", expectedCommands = ["test"]) {
     assert.equal(
       run.result?.structuredContent?.result?.status,
       expectedStatus,
-      "MCP awaits the declared command",
+      `MCP awaits the declared command: ${JSON.stringify(run.error ?? run.result?.structuredContent?.error ?? null)}`,
     );
     const receipt = run.result.structuredContent.result;
     const read = await rpc("tools/call", {
