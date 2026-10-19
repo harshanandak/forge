@@ -118,3 +118,28 @@ test("a zombie snapshot cannot hide a live descendant published before the probe
   expect(descendant).toBe(false);
   expect(kills).toBe(2);
 }, 5000);
+
+test("a failed confirming inventory is a cleanup failure, not proof of absence", async () => {
+  let snapshots = 0;
+  await assert.rejects(
+    killTree(
+      123,
+      { cleanupTimeoutMs: 30, pollIntervalMs: 10 },
+      {
+        // The retained zombie keeps every group probe successful.
+        signal() {},
+        now: () => 0,
+        pause: () => Promise.resolve(),
+        processTable: {
+          *members() {
+            if (++snapshots > 1)
+              throw Object.assign(Error("denied"), { code: "EPERM" });
+            yield { pid: 124, state: "Z" };
+          },
+        },
+      },
+    ),
+    { code: "TREE_KILL_FAILED" },
+  );
+  expect(snapshots).toBe(2);
+}, 5000);

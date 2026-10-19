@@ -104,9 +104,6 @@ export async function killTree(
           try {
             control.signal(-pid, 0);
             checkBudget();
-            // A successful probe cannot tell a retained zombie from a member
-            // published after enumeration; only a fresh zombie-only inventory can.
-            if (zombies && !inventory().live) return;
           } catch (error) {
             if (
               error !== null &&
@@ -117,6 +114,10 @@ export async function killTree(
               return;
             throw error;
           }
+          // A successful probe cannot tell a retained zombie from a member
+          // published after enumeration; only a fresh zombie-only inventory can.
+          // Its errors stay outside the probe fallback and fail cleanup.
+          if (zombies && !inventory().live) return;
         }
       } catch (error) {
         throw new ProcessSpawnError(
