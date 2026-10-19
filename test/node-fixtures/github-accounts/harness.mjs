@@ -132,14 +132,32 @@ export function localValues(clone, key) {
   return result.status === 1 ? [] : result.stdout.split("\0").slice(0, -1);
 }
 export function identitySnapshot(clone) {
+  const keys = [
+    "user.name",
+    "user.email",
+    "credential.https://github.com.helper",
+    "core.hooksPath",
+    "forge.githubAccount",
+  ];
+  const local = good(
+    command(
+      "git",
+      ["-C", clone.root, "config", "--local", "--null", "--list"],
+      clone.root,
+      clone.env,
+    ),
+    "read local identity and helper settings",
+  );
+  const entries = new Map(keys.map((key) => [key.toLowerCase(), []]));
+  for (const record of local.split("\0").slice(0, -1)) {
+    const separator = record.indexOf("\n");
+    const key = (
+      separator < 0 ? record : record.slice(0, separator)
+    ).toLowerCase();
+    entries.get(key)?.push(separator < 0 ? "" : record.slice(separator + 1));
+  }
   const snapshot = Object.fromEntries(
-    [
-      "user.name",
-      "user.email",
-      "credential.https://github.com.helper",
-      "core.hooksPath",
-      "forge.githubAccount",
-    ].map((key) => [key, localValues(clone, key)]),
+    keys.map((key) => [key, entries.get(key.toLowerCase())]),
   );
   snapshot.effectiveHelpers = good(
     command(

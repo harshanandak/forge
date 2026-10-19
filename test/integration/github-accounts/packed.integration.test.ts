@@ -250,13 +250,9 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
       join(root, "test/integration/fixtures/mutation-proof.mjs"),
       join(isolated, "mutation-proof.mjs"),
     );
+    // Balance measured cost: authentication/router mutations take the odd (Node 26)
+    // shard; the four short checks take Node 24. Both shards retain every mutation.
     const mutations: readonly Mutation[] = [
-      {
-        from: "user.login.toLowerCase() !== account.toLowerCase()",
-        to: "false",
-        mode: "auth-order",
-        evidence: "failed login-mismatch preflight must refuse account binding",
-      },
       {
         from: '!bound.emails.includes((author[0] ?? "").trim().toLowerCase())',
         to: "false",
@@ -264,16 +260,16 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
         evidence: "wrong author email must be refused before push",
       },
       {
+        from: "user.login.toLowerCase() !== account.toLowerCase()",
+        to: "false",
+        mode: "auth-order",
+        evidence: "failed login-mismatch preflight must refuse account binding",
+      },
+      {
         from: '!bound.emails.includes((author[1] ?? "").trim().toLowerCase())',
         to: "false",
         mode: "committer",
         evidence: "wrong committer email must be refused before push",
-      },
-      {
-        from: 'c.coauthorPolicy === "allow"',
-        to: "true",
-        mode: "trailers",
-        evidence: "refuse policy must reject AI co-author trailers",
       },
       {
         file: "adapters/github-cli/scripts.js",
@@ -283,11 +279,10 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
         evidence: "marked clone router",
       },
       {
-        from: "result = before + after;",
-        to: "result = before + overlay.text + after;",
-        mode: "restore",
-        evidence:
-          "unbind must restore every prior identity, helper and hook configuration value",
+        from: 'c.coauthorPolicy === "allow"',
+        to: "true",
+        mode: "trailers",
+        evidence: "refuse policy must reject AI co-author trailers",
       },
       {
         file: "adapters/github-cli/scripts.js",
@@ -296,6 +291,13 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
         mode: "environment",
         evidence:
           "configured environment launcher must stay pinned when PATH changes",
+      },
+      {
+        from: "result = before + after;",
+        to: "result = before + overlay.text + after;",
+        mode: "restore",
+        evidence:
+          "unbind must restore every prior identity, helper and hook configuration value",
       },
     ];
     for (const mutation of selectShard(
