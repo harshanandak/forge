@@ -50,6 +50,15 @@ builtTest(
         join(root, "test/node-fixtures/async-handlers/deadline.mjs"),
         join(directory, "deadline.mjs"),
       );
+      writeFileSync(
+        join(directory, "liveness.mjs"),
+        new Bun.Transpiler({ loader: "ts" }).transformSync(
+          readFileSync(
+            join(root, "test/node-fixtures/process/liveness.ts"),
+            "utf8",
+          ),
+        ),
+      );
       const result = spawnSync(
         node,
         ["--disable-warning=ExperimentalWarning", fixture, "surfaces"],
