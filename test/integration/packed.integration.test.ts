@@ -15,6 +15,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import {
+  packedCoverage,
+  selectShard,
+} from "../node-fixtures/state/counterfactuals.ts";
+import { firstSliceMutations } from "./counterfactuals.ts";
+import { runFixtures } from "./fixtures/run.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 function timed<T>(label: string, action: () => T): T {
@@ -66,7 +72,11 @@ function withoutBun(): NodeJS.ProcessEnv {
   return env;
 }
 
-test("packed first slice: npm detection, human admission, CLI/MCP parity and competing revisions", () => {
+test("packed first slice: npm detection, human admission, CLI/MCP parity and competing revisions", async () => {
+  const mutations = selectShard(
+    firstSliceMutations,
+    packedCoverage(process.env.STATE_NODE_LEG).shard,
+  );
   const started = performance.now();
   const sharedConsumer = process.env.FORGE_PACKED_CONSUMER;
   // A child workspace resolves the smoke's install through its ancestors without
@@ -150,36 +160,34 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         ),
       ),
     ];
-    for (const runtime of runtimes)
-      expect(
-        run(
-          `journey (${runtime})`,
-          runtime,
-          [join(consumer, "journey.mjs")],
-          consumer,
+    const positives = runtimes.flatMap((runtime) =>
+      [
+        { name: "journey", expected: "PASS all" },
+        { name: "review", expected: "PASS package-roots" },
+        { name: "review-two", expected: "PASS lifetime" },
+      ].map((fixture) => {
+        const cwd = mkdtempSync(join(consumer, "p-"));
+        for (const name of fixtures)
+          copyFileSync(join(consumer, `${name}.mjs`), join(cwd, `${name}.mjs`));
+        return {
+          ...fixture,
+          label: `${fixture.name} (${runtime})`,
+          command: runtime,
+          args: [join(cwd, `${fixture.name}.mjs`)],
+          cwd,
           env,
-        ),
-      ).toContain("PASS all");
-    for (const runtime of runtimes)
-      expect(
-        run(
-          `review (${runtime})`,
-          runtime,
-          [join(consumer, "review.mjs")],
-          consumer,
-          env,
-        ),
-      ).toContain("PASS package-roots");
-    for (const runtime of runtimes)
-      expect(
-        run(
-          `review-two (${runtime})`,
-          runtime,
-          [join(consumer, "review-two.mjs")],
-          consumer,
-          env,
-        ),
-      ).toContain("PASS lifetime");
+        };
+      }),
+    );
+    const positiveStarted = performance.now();
+    const output = await runFixtures(positives);
+    for (const [index, stdout] of output.entries()) {
+      expect(stdout).toContain(positives[index]!.expected);
+      console.log(stdout.trim());
+    }
+    console.log(
+      `Packed first slice positive fixtures: ${Math.round(performance.now() - positiveStarted)} ms`,
+    );
     const installed = join(
       sharedConsumer ?? consumer,
       "node_modules/forge-workflow",
@@ -201,141 +209,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         join(consumer, `${name}.mjs`),
         join(isolated, `${name}.mjs`),
       );
-    const mutations = [
-      {
-        file: "src/assembly/state.js",
-        from: "ensurePrivateDirectory(dirname(this.#path), this.#directories);",
-        to: "void 0;",
-        mode: "directories",
-        fixture: "review-two",
-        evidence: "each parent must be synced in order",
-      },
-      {
-        file: "src/adapters/store-sqlite/file-ops.js",
-        from: "syncParentDirectory(directory, fs);",
-        to: "void 0;",
-        mode: "directories",
-        fixture: "review-two",
-        evidence: "each parent must be synced in order",
-      },
-      {
-        file: "src/adapters/store-sqlite/file-ops.js",
-        from: "for (const directory of directories.reverse()) {",
-        to: "for (const directory of directories.reverse()) { try { if (fs.statSync(directory).isDirectory()) continue; } catch (error) { if (error.code !== 'ENOENT') throw error; }",
-        mode: "directory-retry",
-        fixture: "review-two",
-        evidence: "retry must re-sync the failed parent before opening storage",
-      },
-      {
-        file: "src/assembly/command.js",
-        from: 'argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")',
-        to: "false",
-        mode: "bootstrap",
-        fixture: "review-two",
-        evidence: "version must not open local state",
-      },
-      {
-        file: "src/assembly/command.js",
-        from: "const response = respond(",
-        to: "throw error; const response = respond(",
-        mode: "bootstrap",
-        fixture: "review-two",
-        evidence: "bootstrap must return a JSON failure",
-      },
-      {
-        file: "src/assembly/index.js",
-        from: "readyBindings(active, name);",
-        to: "void 0;",
-        mode: "implicit-bindings",
-        fixture: "review-two",
-        evidence: "unsupported implicit bindings must not be advertised",
-      },
-      {
-        file: "src/assembly/index.js",
-        from: "const reason = error instanceof Error",
-        to: "throw error; const reason = error instanceof Error",
-        mode: "bad-docs",
-        fixture: "review-two",
-        evidence: "config show:",
-      },
-      {
-        file: "src/assembly/index.js",
-        from: "const namespace = current.blocks.get(instance).manifest.id;",
-        to: "if (context.variant !== 'project') continue; const namespace = current.blocks.get(instance).manifest.id;",
-        mode: "bindings",
-        fixture: "review-two",
-        evidence: "required service must be available",
-      },
-      {
-        file: "src/assembly/state.js",
-        from: "if (--entry.refs !== 0)",
-        to: "if (false)",
-        mode: "lifetime",
-        fixture: "review-two",
-        evidence: "first invocation cannot close",
-      },
-      {
-        file: "src/assembly/state.js",
-        from: "const result = this.#queue.then(work);",
-        to: "const result = work();",
-        mode: "lifetime",
-        fixture: "review-two",
-        evidence: "concurrent first opens must be serialized",
-      },
 
-      {
-        file: "src/assembly/index.js",
-        from: "const reason = error instanceof Error",
-        to: "throw error; const reason = error instanceof Error",
-        mode: "missing-sources",
-        fixture: "review",
-        evidence: "config show:",
-      },
-      {
-        file: "src/assembly/capture.js",
-        from: "const candidate = join(directory, source.package);",
-        to: 'const candidate = resolve(require.resolve(`${source.package}/package.json`), "..");',
-        mode: "package-roots",
-        fixture: "review",
-        evidence: "block check hidden-block",
-      },
-
-      {
-        file: "src/assembly/index.js",
-        from: "detectProject(createFolderFiles(root)).observations",
-        to: "[]",
-        mode: "detection",
-        evidence: "derived npm command",
-      },
-      {
-        file: "src/core/runtime/index.js",
-        from: "this.#trust.check(block.digest, declaration.effects);",
-        to: "void 0;",
-        mode: "admission",
-        evidence: "unadmitted agent call",
-      },
-      {
-        file: "src/assembly/command.js",
-        from: "catalog: assembly.catalog",
-        to: "catalog: { list: () => [], invoke: assembly.catalog.invoke }",
-        mode: "all",
-        evidence: "Unknown operation: config.show",
-      },
-      {
-        file: "src/assembly/state-client.js",
-        from: "structuredClone(value)",
-        to: "value",
-        mode: "all",
-        evidence: "State values must be plain JSON",
-      },
-      ...["all", "race"].map((mode) => ({
-        file: "src/assembly/state-client.js",
-        from: "expectRevision: put.expectRevision",
-        to: "expectRevision: owner.get(namespace, key)?.revision ?? 0",
-        mode,
-        evidence: mode === "race" ? "one writer wins" : "semver mark 1.6.0 0",
-      })),
-    ];
     for (const mutation of mutations) {
       const path = join(isolated, "dist", mutation.file);
       const original = readFileSync(path, "utf8");
@@ -404,7 +278,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       }
     }
     console.log(
-      `Packed first slice: ${runtimes.length} Node runtimes, 5 acceptance items, ${mutations.length} remove-the-fix checks`,
+      `Packed first slice: ${runtimes.length} Node runtimes, 5 acceptance items, ${mutations.length}/${firstSliceMutations.length} remove-the-fix checks`,
     );
   } finally {
     timed("cleanup", () => rmSync(work, { recursive: true, force: true }));

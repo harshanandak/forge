@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "required": ["id", "relation", "url"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "relation": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,49}$"
+    },
+    "url": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    }
+  },
+  "additionalProperties": false
+}

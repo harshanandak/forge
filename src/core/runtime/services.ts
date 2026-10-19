@@ -1,3 +1,4 @@
+import type {ClockPort} from "../../ports/clock.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { refuse } from "../trust/index.ts";
 import type { ProcessPort, SpawnOptions, ProcessSupervisionReport } from "../../ports/process.ts";
@@ -12,7 +13,9 @@ export class InvocationServices {
   readonly #authorize: () => void;
   readonly #strict: boolean;
   readonly #reports: ProcessSupervisionReport[] = [];
-  constructor(deadline: number, authorize: () => void, strict = false) {
+  readonly #clock: ClockPort;
+  constructor(deadline: number, authorize: () => void, strict = false, clock: ClockPort = {now:()=>Date.now()}) {
+    this.#clock=clock;
     this.deadline = deadline;
     this.#authorize = authorize;
     this.#strict = strict;
@@ -22,7 +25,7 @@ export class InvocationServices {
       refuse("SERVICE_EXPIRED", "Invocation services have expired");
     if (this.controller.signal.aborted) throw this.controller.signal.reason;
     this.#authorize();
-    if (Date.now() >= this.deadline) {
+    if (this.#clock.now() >= this.deadline) {
       this.controller.abort(
         new ForgeFailure({
           code: "INVOCATION_TIMEOUT",
@@ -160,7 +163,7 @@ export class InvocationServices {
               containment: this.#strict ? "strict" : "supervised",
               timeoutMs: Math.min(
                 options.timeoutMs,
-                Math.max(1, this.deadline - Date.now()),
+                Math.max(1, this.deadline - this.#clock.now()),
               ),
             });
             this.#pending.add(pending);

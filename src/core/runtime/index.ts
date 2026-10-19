@@ -1,4 +1,6 @@
-﻿import { InvocationServices } from "./services.ts";
+import { invocationDeadline, validateTimeout } from "./deadline.ts";
+import type { ClockPort } from "../../ports/clock.ts";
+import { InvocationServices } from "./services.ts";
 import { bindContext } from "../../contract/context.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
@@ -56,6 +58,7 @@ export interface RunIsolation {
 export type RunIsolationPort = LifetimeProvider<RunIsolation, void>;
 
 export interface RuntimeOptions {
+  readonly clock?: ClockPort;
   readonly isolation?: RunIsolationPort;
   readonly limits?: Partial<RuntimeLimits>;
   /** Constructs clients exposing only scope.effects, never block-wide grants.
@@ -196,12 +199,7 @@ export class Runtime {
         ...(options.limits?.parse ?? DEFAULT_RUNTIME_LIMITS.parse),
       }),
     });
-    const timeoutMs = this.#limits.timeoutMs;
-    if (
-      timeoutMs !== undefined &&
-      (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647)
-    )
-      refuse("INPUT_INVALID", "limits.timeoutMs must be an integer between 1 and 2147483647");
+    if (this.#limits.timeoutMs !== undefined) validateTimeout(this.#limits.timeoutMs);
     const parse = this.#limits.parse;
     for (const limit of [
       this.#limits.maxOutputBytes,
@@ -264,18 +262,14 @@ export class Runtime {
         this.#options.services === undefined
       )
         refuse("PROVIDER_MISSING", "bound clients need a service provider");
-      const declaredTimeout = declaration.timeoutMs;
-      const hostTimeout = this.#limits.timeoutMs;
-      if (declaredTimeout === undefined && hostTimeout === undefined)
-        refuse("INPUT_INVALID", "Declare operation timeoutMs or runtime limits.timeoutMs before invocation");
-      const timeoutMs = declaredTimeout === undefined
-        ? hostTimeout!
-        : hostTimeout === undefined
-          ? declaredTimeout
-          : Math.min(declaredTimeout, hostTimeout);
-      invocation = new InvocationServices(Date.now() + timeoutMs, () => {
-        this.#trust.check(block.digest, declaration.effects);
-      }, declaration.processContainment === "strict");
+      const clock = this.#options.clock ?? {now:()=>Date.now()};
+      const budget = invocationDeadline({declared:declaration.timeoutMs,
+        configured:this.#catalog.config.blocks[operation.instance]?.operationTimeouts?.[operation.declaredOp],
+        host:this.#catalog.config.runtime?.timeoutMs,embedding:this.#limits.timeoutMs},clock);
+      const timeoutMs = budget.remaining();
+      invocation = new InvocationServices(clock.now() + timeoutMs, () => {
+        this.#trust.check(block.digest,declaration.effects);
+      }, declaration.processContainment === "strict", clock);
       const scope = invocation;
       cancel = () =>
         scope.controller.abort(
@@ -351,13 +345,14 @@ export class Runtime {
               }),
               encode: (output: unknown) => encodeOutput(output, this.#limits),
               fail: refuse,
-              timeoutMs: Math.max(1, scope.deadline - Date.now()),
+              timeoutMs: Math.max(1, scope.deadline - clock.now()),
               deadline: scope.deadline,
               signal: scope.controller.signal,
               settled: () => scope.expire(),
             }),
           ),
         );
+        budget.remaining();
       } finally {
         scope.stop();
         await opened.handle.close();
@@ -401,7 +396,7 @@ export class Runtime {
             : "FAIL",
         error: {
           ...failure,
-          retry: started ? "reconcile_first" : failure.retry,
+          retry: started ? "reconcile_first" : failure.code === "INVOCATION_TIMEOUT" ? "never" : failure.retry,
         },
         warnings: [],
       };
@@ -427,7 +422,7 @@ export class Runtime {
           message: "owned service cleanup failed",
           retry: "reconcile_first",
         },
-        warnings: [],
+        warnings: [...(invocation?.warnings() ?? [])],
       };
     }
     if (processCleanupFailed)
@@ -440,7 +435,7 @@ export class Runtime {
           message: "The process tree could not be confirmed stopped",
           retry: "reconcile_first",
         },
-        warnings: [],
+        warnings: [...(invocation?.warnings() ?? [])],
       };
     return { ...result, warnings: [...result.warnings, ...(invocation?.warnings() ?? [])] };
   }
