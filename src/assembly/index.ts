@@ -251,7 +251,7 @@ export async function createAssembly(
         if (
           state &&
           declaration.context === "stateless" &&
-          declaration.effects.length > 0
+          declaration.effects.includes(`${op.split(".")[0]}:write`)
         )
           refuse(
             "PROVIDER_MISSING",

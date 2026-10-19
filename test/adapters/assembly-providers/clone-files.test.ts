@@ -11,6 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
   realpathSync,
+  renameSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -308,4 +309,85 @@ test("configured per-file bounds apply to reads, writes and byte digests", () =>
   expect(() => digestCloneFiles(small, ["file"], 100)).toThrow(
     /LIMIT_EXCEEDED/,
   );
+});
+
+test("conditional write and remove preserve an editor replacement made while the advisory lock is held", () => {
+  for (const action of ["write", "remove"] as const) {
+    const { options, projectRoot } = fixture();
+    writeFileSync(join(projectRoot, "config"), "expected");
+    const files = createCloneFiles(options, {
+      beforeCommit() {
+        writeFileSync(join(projectRoot, "replacement"), "editor replacement");
+        renameSync(
+          join(projectRoot, "replacement"),
+          join(projectRoot, "config"),
+        );
+      },
+    });
+    expect(() =>
+      action === "write"
+        ? files.write("config", "new", { expected: "expected" })
+        : files.remove("config", { expected: "expected" }),
+    ).toThrow(/INPUT_CONFLICT/);
+    expect(readFileSync(join(projectRoot, "config"), "utf8")).toBe(
+      "editor replacement",
+    );
+    expect(readdirSync(projectRoot)).toEqual(["config"]);
+  }
+});
+
+test("conditional create does not overwrite a file appearing after the initial absence check", () => {
+  const { options, projectRoot } = fixture();
+  const files = createCloneFiles(options, {
+    beforeCommit() {
+      writeFileSync(join(projectRoot, "config"), "concurrent create");
+    },
+  });
+  expect(() => files.write("config", "new", { expected: null })).toThrow(
+    /INPUT_CONFLICT/,
+  );
+  expect(readFileSync(join(projectRoot, "config"), "utf8")).toBe(
+    "concurrent create",
+  );
+  expect(readdirSync(projectRoot)).toEqual(["config"]);
+});
+
+test("conditional mutations refuse a replacement inode even when its bytes match the original", () => {
+  const { options, projectRoot } = fixture();
+  writeFileSync(join(projectRoot, "config"), "expected");
+  const files = createCloneFiles(options, {
+    beforeCommit() {
+      writeFileSync(join(projectRoot, "replacement"), "expected");
+      renameSync(join(projectRoot, "replacement"), join(projectRoot, "config"));
+    },
+  });
+  expect(() => files.remove("config", { expected: "expected" })).toThrow(
+    /INPUT_CONFLICT/,
+  );
+  expect(readFileSync(join(projectRoot, "config"), "utf8")).toBe("expected");
+});
+
+test("conditional publication preserves a new target and retains the claimed original for reconciliation", () => {
+  const { options, projectRoot } = fixture();
+  writeFileSync(join(projectRoot, "config"), "expected");
+  const files = createCloneFiles(options, {
+    afterClaim() {
+      writeFileSync(join(projectRoot, "config"), "new editor target");
+    },
+  });
+  expect(() => files.write("config", "new", { expected: "expected" })).toThrow(
+    /INPUT_CONFLICT/,
+  );
+  expect(readFileSync(join(projectRoot, "config"), "utf8")).toBe(
+    "new editor target",
+  );
+  const backup = readdirSync(projectRoot).find((name) =>
+    name.startsWith(".forge-restore-"),
+  );
+  expect(backup).toBeDefined();
+  if (backup === undefined) throw new Error("Missing reconciliation backup");
+  expect(readFileSync(join(projectRoot, backup, "original"), "utf8")).toBe(
+    "expected",
+  );
+  expect(existsSync(join(projectRoot, "config.lock"))).toBe(false);
 });
