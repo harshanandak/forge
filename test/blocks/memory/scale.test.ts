@@ -409,3 +409,51 @@ test("a failing history lookup cannot turn a committed add into a failed call", 
   expect(state.counts.putMany).toBe(1);
   expect(state.get("note/000000001")).toBeDefined();
 }, 30_000);
+
+test("a search walk is pinned to where it started: a note added between pages neither repeats nor skips a hit", () => {
+  const entry = loadEntry("memory");
+  const state = memoryState();
+  const total = 1500;
+  // More than one window, every note matching, so the walk crosses a window boundary too.
+  seedRecords(state, total, (number) => `shared word unique${number}`);
+  const search = (cursor?: string) =>
+    entry["memory.search"]!({
+      input:
+        cursor === undefined
+          ? { query: "shared", limit: 50 }
+          : { query: "shared", limit: 50, cursor },
+      services: { state },
+    }) as SearchPage;
+  const seen: string[] = [];
+  let page = search();
+  seen.push(...page.hits.map((hit) => hit.id));
+  // An agent adds notes while another is mid-walk.
+  entry["memory.add"]!({
+    input: { text: "shared word added during the walk" },
+    services: { state },
+  });
+  entry["memory.add"]!({
+    input: { text: "shared word added again" },
+    services: { state },
+  });
+  let pages = 1;
+  while (page.next !== undefined) {
+    page = search(page.next);
+    seen.push(...page.hits.map((hit) => hit.id));
+    pages += 1;
+    expect(pages).toBeLessThan(100);
+  }
+  // Exactly the notes that existed when the walk began, each once.
+  expect(new Set(seen).size).toBe(seen.length);
+  expect(seen).toHaveLength(total);
+  expect(seen).not.toContain(`note-${total + 1}`);
+  // A new walk sees them.
+  const fresh = entry["memory.search"]!({
+    input: { query: "added", limit: 50 },
+    services: { state },
+  }) as SearchPage;
+  expect(fresh.hits.map((hit) => hit.id).sort()).toEqual([
+    `note-${total + 1}`,
+    `note-${total + 2}`,
+  ]);
+}, 120_000);

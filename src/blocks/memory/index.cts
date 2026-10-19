@@ -424,9 +424,14 @@ module.exports = {
           noteNumber(b.document.note.id) - noteNumber(a.document.note.id),
       );
     const limit = input.limit ?? DEFAULT_LIMIT;
+    // The walk is pinned to where it began: the first page's cursor carries a bound just above the
+    // newest note then, so notes written during the walk are never in a later page and ranks below
+    // the bound cannot shift under it.
+    const first = records[0];
+    const pin = bound !== 0 ? bound : first ? noteNumber(first.id) + 1 : 0;
     const next =
       skip + limit < scored.length
-        ? `${bound}:${skip + limit}`
+        ? `${pin}:${skip + limit}`
         : older && oldest
           ? `${noteNumber(oldest.id)}:0`
           : undefined;
