@@ -1,0 +1,7 @@
+{
+  "oneOf": [
+    { "$ref": "pr.json#/$defs/MergeSuccess" },
+    { "$ref": "merge-refusal.json" }
+  ],
+  "x-conformance-refusals": ["merge-refusal.json"]
+}
