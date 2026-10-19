@@ -1,0 +1,16 @@
+{
+  "operations": {
+    "check.run": {
+      "title": "Run declared checks",
+      "summary": "Run the project declarations with explicit budgets and retain truthful evidence."
+    },
+    "check.list": {
+      "title": "List declared checks",
+      "summary": "Read the configured command names without launching commands."
+    },
+    "check.show": {
+      "title": "Show check evidence",
+      "summary": "Read and verify one accepted receipt."
+    }
+  }
+}

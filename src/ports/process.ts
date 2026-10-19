@@ -8,6 +8,11 @@ export interface SpawnOptions {
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
+  /** Optional bounded head/tail capture; their sum must fit maxOutputBytes. */
+  readonly capture?: {
+    readonly headBytes: number;
+    readonly tailBytes: number;
+  };
   readonly stdin?: string;
   /** Cancellation stops the supervised scope before run settles. */
   readonly signal?: AbortSignal;
@@ -41,10 +46,26 @@ export interface ProcessResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly timedOut: boolean;
-  /** Output beyond maxOutputBytes was dropped; what was kept is still returned. */
+  /** Output exceeded the requested capture bounds; retained bytes are still returned. */
   readonly truncated: boolean;
   readonly durationMs: number;
+  /** Present when capture was requested. Digests include every observed raw byte. */
+  readonly outputEvidence?: {
+    readonly stdout: ProcessOutputEvidence;
+    readonly stderr: ProcessOutputEvidence;
+  };
   readonly supervision?: ProcessSupervisionReport;
+}
+
+export interface ProcessOutputEvidence {
+  /** Raw preview bytes, encoded without loss at UTF-8 boundaries. */
+  readonly head: string;
+  readonly tail: string;
+  readonly encoding: "base64";
+  readonly totalBytes: number;
+  readonly digest: string;
+  /** False if the pipes did not finish draining before their cleanup deadline. */
+  readonly complete: boolean;
 }
 
 export interface ResolvedExecutable {
