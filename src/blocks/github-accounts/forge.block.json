@@ -1,0 +1,140 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/github-accounts",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "configSchema": "schemas/config.json",
+  "requires": [
+    {
+      "slot": "process",
+      "interface": "forge.process@1"
+    },
+    {
+      "slot": "files",
+      "interface": "forge.files@1"
+    },
+    {
+      "slot": "environment",
+      "interface": "forge.environment@1"
+    },
+    {
+      "slot": "crypto",
+      "interface": "forge.crypto@1"
+    }
+  ],
+  "operations": {
+    "github-account.bind": {
+      "input": "schemas/bind.input.json",
+      "output": "schemas/status.output.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "external:process",
+        "environment:read",
+        "files:read",
+        "files:write",
+        "github-account:write"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["login"]
+    },
+    "github-account.unbind": {
+      "input": "schemas/empty.json",
+      "output": "schemas/unbind.output.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "external:process",
+        "environment:read",
+        "files:read",
+        "files:write",
+        "github-account:write"
+      ],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "github-account.status": {
+      "input": "schemas/empty.json",
+      "output": "schemas/status.output.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": ["external:process", "environment:read", "files:read"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "github-account.doctor": {
+      "input": "schemas/empty.json",
+      "output": "schemas/status.output.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": ["external:process", "environment:read", "files:read"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "github-account.check": {
+      "input": "schemas/check.input.json",
+      "output": "schemas/check.output.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": ["external:process", "environment:read", "files:read"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "github-account.message": {
+      "input": "schemas/message.input.json",
+      "output": "schemas/message.output.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "external:process",
+        "environment:read",
+        "files:read",
+        "files:write",
+        "github-account:write"
+      ],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "github-account.hook": {
+      "input": "schemas/hook.input.json",
+      "output": "schemas/hook.output.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "external:process",
+        "environment:read",
+        "files:read",
+        "files:write",
+        "github-account:write"
+      ],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "github-account.run": {
+      "input": "schemas/run.input.json",
+      "output": "schemas/run.output.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "external:process",
+        "environment:read",
+        "files:read",
+        "external:write"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    }
+  },
+  "docs": "docs.json"
+}

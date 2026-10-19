@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "forge.docs/1",
+  "operations": {
+    "github-account.bind": {
+      "title": "GitHub account bind",
+      "summary": "Bind a stored GitHub account and its verified clone-local commit identity."
+    },
+    "github-account.unbind": {
+      "title": "GitHub account unbind",
+      "summary": "Restore saved clone settings and remove owned account artifacts."
+    },
+    "github-account.status": {
+      "title": "GitHub account status",
+      "summary": "Read clone binding, effective identity, worktree mismatches and router health."
+    },
+    "github-account.doctor": {
+      "title": "GitHub account doctor",
+      "summary": "Diagnose binding, identity, helper and hook mismatches across linked worktrees."
+    },
+    "github-account.check": {
+      "title": "GitHub account check",
+      "summary": "Refuse commit ranges with a wrong author or committer or refused AI co-author trailer."
+    },
+    "github-account.message": {
+      "title": "GitHub account message",
+      "summary": "Apply the configured AI co-author trailer policy before a commit."
+    },
+    "github-account.hook": {
+      "title": "GitHub account hook",
+      "summary": "Opt in to a generated pre-push identity guard, or remove its owned installation."
+    },
+    "github-account.run": {
+      "title": "GitHub account run",
+      "summary": "Run a repository GitHub command with this clone's stored account."
+    }
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "bound": {
+      "type": "boolean"
+    },
+    "account": {
+      "type": ["string", "null"]
+    },
+    "automatic": {
+      "type": "boolean"
+    },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": ["string", "null"]
+        },
+        "email": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["name", "email"],
+      "additionalProperties": false
+    },
+    "mismatches": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "worktrees": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "name": {
+            "type": ["string", "null"]
+          },
+          "email": {
+            "type": ["string", "null"]
+          },
+          "matches": {
+            "type": "boolean"
+          }
+        },
+        "required": ["path", "name", "email", "matches"],
+        "additionalProperties": false
+      }
+    },
+    "routerPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  },
+  "required": [
+    "bound",
+    "account",
+    "automatic",
+    "identity",
+    "mismatches",
+    "worktrees"
+  ],
+  "additionalProperties": false
+}

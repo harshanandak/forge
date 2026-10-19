@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "checked": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "trigger": {
+      "enum": ["push", "merge"]
+    },
+    "tip": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  },
+  "required": ["checked", "trigger", "tip"],
+  "additionalProperties": false
+}

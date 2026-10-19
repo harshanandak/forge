@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "environmentNames": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "uniqueItems": true,
+      "maxItems": 128
+    },
+    "gitProgram": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "ghProgram": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "ghArgs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      },
+      "maxItems": 100
+    },
+    "commandTimeoutMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 300000
+    },
+    "maxOutputBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
+    "maxFileBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
+    "maxCommits": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000
+    },
+    "coauthorPolicy": {
+      "enum": ["allow", "refuse", "strip"]
+    },
+    "aiCoauthorPatterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "maxItems": 100
+    },
+    "forgeCommand": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      },
+      "minItems": 1,
+      "maxItems": 100
+    },
+    "shellProgram": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "allowedGhCommands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z-]* [^\\s\\x00-\\x1f]+$",
+        "maxLength": 1000
+      },
+      "maxItems": 100
+    },
+    "identityName": {
+      "enum": ["profile", "login"]
+    },
+    "identityEmail": {
+      "enum": ["noreply", "primary"]
+    }
+  },
+  "required": [
+    "environmentNames",
+    "gitProgram",
+    "ghProgram",
+    "ghArgs",
+    "commandTimeoutMs",
+    "maxOutputBytes",
+    "maxFileBytes",
+    "maxCommits",
+    "coauthorPolicy",
+    "aiCoauthorPatterns",
+    "forgeCommand",
+    "shellProgram",
+    "allowedGhCommands",
+    "identityName",
+    "identityEmail"
+  ],
+  "additionalProperties": false
+}

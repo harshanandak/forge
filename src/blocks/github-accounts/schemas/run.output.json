@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "exitCode": {
+      "type": "integer"
+    },
+    "stdout": {
+      "type": "string"
+    }
+  },
+  "required": ["exitCode", "stdout"],
+  "additionalProperties": false
+}

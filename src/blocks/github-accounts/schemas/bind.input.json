@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "login": {
+      "type": "string",
+      "pattern": "^(?=.{1,39}$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "email": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "auto": {
+      "type": "boolean"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  },
+  "required": ["login", "auto"],
+  "additionalProperties": false
+}
