@@ -2,12 +2,7 @@ import { basename, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { StateOwner } from "../core/state/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
-import type {
-  Actor,
-  BoundContext,
-  Caller,
-  InvocationRequest,
-} from "../generated/types.ts";
+import type { Actor, BoundContext, Caller } from "../generated/types.ts";
 import type { ExtendedStateClient } from "../ports/state.ts";
 import type { OwnedHandle } from "../ports/lifetime.ts";
 import { refuse } from "../core/trust/index.ts";
@@ -49,16 +44,20 @@ export type PeerLookup =
     };
 
 /**
- * What a device-context state client may reach besides the device store. The caller's project
- * opens only when asked; other projects open read-only, by the stable id or the name the device
- * registered them under, and never by a path.
+ * The forge.project-state@1 capability: this host's project store and, read-only, other projects
+ * on the device. A block gets it by declaring the slot. The project is the one the host was
+ * assembled for, never one named in a request, so an operation's declared context alone decides
+ * what it may read. The project store opens only when asked; other projects open read-only, by the
+ * stable id or the name the device registered them under, and never by a path.
  */
+export const PROJECT_STATE = "forge.project-state@1.0.0";
 export interface StoreLevels {
+  /** The kind of the declared actor. */
   readonly caller: Caller;
-  /** True when the request names this assembly's project. Nothing is opened to answer it. */
+  /** True when this host serves a project. Nothing is opened to answer it. */
   readonly inProject: boolean;
   /**
-   * The caller's project store. A writing operation mints the project's identity on first use and
+   * The host's project store. A writing operation mints the project's identity on first use and
    * records the project on the device; a reading one never creates a store and gets undefined when
    * the project has no identity yet.
    */
@@ -101,22 +100,24 @@ function registered(
 export function openLevels(options: {
   readonly root: string;
   readonly projectState: LocalState;
-  /** The device store this invocation already holds. */
-  readonly device: StateOwner | undefined;
+  readonly deviceState: LocalState;
   readonly namespace: string;
   readonly actor: Actor;
-  readonly caller: Caller;
-  readonly inProject: boolean;
-  /** The operation declared its record write effect. */
+  /** The operation declared its record write effect; its stores open writable. */
   readonly write: boolean;
-  /** The operation declared any effect, so its stores open writable. */
-  readonly writable: boolean;
   readonly requestId: string;
 }): { readonly levels: StoreLevels; close(): Promise<void> } {
   const { root, actor, namespace, requestId } = options;
   const handles: OwnedHandle<unknown>[] = [];
   const peers: LocalState[] = [];
   let own: Promise<ProjectStore | undefined> | undefined;
+  let device: Promise<StateOwner | undefined> | undefined;
+  /** The device store, opened once and only when a registration or a lookup needs it. */
+  const deviceOwner = (): Promise<StateOwner | undefined> =>
+    (device ??= options.deviceState.acquire(options.write).then((lease) => {
+      handles.push(lease);
+      return lease.value;
+    }));
   const context = (projectRoot: string): BoundContext => ({
     variant: "project",
     actor,
@@ -144,8 +145,8 @@ export function openLevels(options: {
     }
   }
   /** Record where the project lives, skipping the write when nothing changed. */
-  function register(id: string, name: string): void {
-    const device = options.device;
+  async function register(id: string, name: string): Promise<void> {
+    const device = await deviceOwner();
     if (!device)
       refuse("PROVIDER_MISSING", "The device store is not open for writing");
     const key = `${REGISTRY_PREFIX}${id}`;
@@ -157,14 +158,14 @@ export function openLevels(options: {
     });
   }
   async function openOwn(): Promise<ProjectStore | undefined> {
-    const lease = await options.projectState.acquire(options.writable);
+    const lease = await options.projectState.acquire(options.write);
     handles.push(lease);
     const owner = lease.value;
     const name = projectName(root);
     let id = identityOf(owner);
-    if (options.writable && owner) {
+    if (options.write && owner) {
       id = mint(owner);
-      register(id, name);
+      await register(id, name);
     }
     if (!id) return undefined;
     return {
@@ -178,12 +179,13 @@ export function openLevels(options: {
       }),
     };
   }
-  function lookup(
+  async function lookup(
     ref: string,
-  ):
+  ): Promise<
     | PeerLookup
-    | { status: "registered"; identity: ProjectIdentity; root: string } {
-    const device = options.device;
+    | { status: "registered"; identity: ProjectIdentity; root: string }
+  > {
+    const device = await deviceOwner();
     if (PROJECT_ID.test(ref)) {
       const entry = registered(
         device?.get(REGISTRY_NAMESPACE, `${REGISTRY_PREFIX}${ref}`)?.value,
@@ -224,15 +226,14 @@ export function openLevels(options: {
   }
 
   const levels: StoreLevels = {
-    caller: options.caller,
-    inProject: options.inProject,
+    caller: actor.kind,
+    inProject: true,
     project() {
-      if (!options.inProject) return Promise.resolve(undefined);
       own ??= openOwn();
       return own;
     },
     async peer(ref: string): Promise<PeerLookup> {
-      const found = lookup(ref);
+      const found = await lookup(ref);
       if (found.status !== "registered") return found;
       if (peers.length >= MAX_PEERS)
         refuse(
@@ -275,46 +276,4 @@ export function openLevels(options: {
         throw new AggregateError(errors, "Level stores failed to close");
     },
   };
-}
-
-/**
- * Give a device-context state client its levels. The handle that closes the stores it opens joins
- * the invocation's leases, so they close when the invocation settles.
- */
-export function attachLevels<Client extends object>(
-  client: Client,
-  options: {
-    readonly root: string;
-    readonly projectState: LocalState;
-    readonly device: StateOwner | undefined;
-    readonly namespace: string;
-    readonly actor: Actor;
-    readonly request: InvocationRequest;
-    /** The operation declared its record write effect; its stores open writable. */
-    readonly write: boolean;
-    readonly leases: OwnedHandle<unknown>[];
-  },
-): Client & StoreLevels {
-  const { request } = options;
-  const named = request.context.project;
-  if (named !== undefined && named.id !== options.root)
-    refuse("INPUT_CONFLICT", "State context belongs to another project");
-  const opened = openLevels({
-    root: options.root,
-    projectState: options.projectState,
-    device: options.device,
-    namespace: options.namespace,
-    actor: options.actor,
-    caller: request.caller,
-    inProject: named !== undefined,
-    write: options.write,
-    writable: options.write,
-    requestId: request.requestId,
-  });
-  options.leases.push({
-    ownership: "owned",
-    value: undefined,
-    close: () => opened.close(),
-  });
-  return Object.freeze({ ...client, ...opened.levels });
 }

@@ -58,7 +58,7 @@ async function backup(count: number, length: number) {
     reset(source.counts);
     const chunk = (await entry["memory.export"]!({
       input: after === 0 ? { level: "device" } : { level: "device", after },
-      services: { state: source },
+      services: { state: source, levels: source },
     })) as ExportChunk;
     chunks += 1;
     // A call reads one page of records, whatever the store holds.
@@ -72,7 +72,7 @@ async function backup(count: number, length: number) {
     reset(target.counts);
     const result = (await entry["memory.restore"]!({
       input: chunk,
-      services: { state: target },
+      services: { state: target, levels: target },
     })) as { added: number; conflicts: string[] };
     // The whole page is one batch write; only the counter is written separately.
     expect(target.counts.putMany).toBe(1);
@@ -97,7 +97,7 @@ test("every export, however many notes, restores: no size cliff for large or man
   const entry = loadEntry("memory");
   const shown = (await entry["memory.show"]!({
     input: { id: "device/note-230" },
-    services: { state: many.target },
+    services: { state: many.target, levels: many.target },
   })) as { note: { text: { text: string } } };
   expect(shown.note.text.text.startsWith("note 230")).toBe(true);
 }, 60_000);
@@ -113,7 +113,7 @@ test("a restore page costs one batch write, not one write per note", async () =>
   }));
   await entry["memory.restore"]!({
     input: { format: "forge.memory.export/2", level: "device", notes },
-    services: { state },
+    services: { state, levels: state },
   });
   // Before: 25 single writes (25 transactions, 25 syncs) plus one for the counter. After: one
   // transaction holds the 25 notes and the counter.
@@ -156,7 +156,7 @@ async function searchWork(notes: number, words: number) {
   tally.operations = 0;
   const page = (await entry["memory.search"]!({
     input: { query: vocabulary.slice(0, words).join(" "), limit: 5 },
-    services: { state },
+    services: { state, levels: state },
   })) as SearchPage;
   expect(page.hits).toHaveLength(5);
   return { operations: tally.operations, counts: state.counts };
@@ -202,14 +202,14 @@ test("other calls read a bounded page too: decision list, export and a single no
   reset(state.counts);
   await entry["memory.show"]!({
     input: { id: "device/note-1500" },
-    services: { state },
+    services: { state, levels: state },
   });
   expect(state.counts.listedRecords).toBe(0);
   expect(state.counts.get).toBe(1);
   reset(state.counts);
   await entry["memory.export"]!({
     input: { level: "device" },
-    services: { state },
+    services: { state, levels: state },
   });
   expect(state.counts.listedRecords).toBeLessThanOrEqual(100);
 }, 60_000);
@@ -221,12 +221,12 @@ test("a note added after thousands of forgotten ones is still found by an exact 
   seedRecords(state, 5001, () => undefined);
   const added = (await entry["memory.add"]!({
     input: { text: "the quokka sanctuary opens in spring", level: "device" },
-    services: { state },
+    services: { state, levels: state },
   })) as { id: string };
   expect(added.id).toBe("device/note-5002");
   const found = (await entry["memory.search"]!({
     input: { query: "quokka sanctuary" },
-    services: { state },
+    services: { state, levels: state },
   })) as Page;
   expect(found.hits.map((hit) => hit.id)).toEqual(["device/note-5002"]);
 }, 60_000);
@@ -248,7 +248,7 @@ test("a cursor walk of a search reaches every matching note, however many there 
         cursor === undefined
           ? { query: "shared", limit: 50 }
           : { query: "shared", limit: 50, cursor },
-      services: { state },
+      services: { state, levels: state },
     })) as SearchPage;
     pages += 1;
     for (const hit of page.hits) {
@@ -280,7 +280,7 @@ test("a decision list is bounded and continues from a cursor, so it always fits 
     await entry["decision.propose"]!({
       input: { title: `Decision ${index} ${"x".repeat(150)}`, text: "t" },
       config,
-      services: { state },
+      services: { state, levels: state },
     });
   const seen: string[] = [];
   let after: number | undefined;
@@ -288,7 +288,7 @@ test("a decision list is bounded and continues from a cursor, so it always fits 
     reset(state.counts);
     const page = (await entry["decision.list"]!({
       input: after === undefined ? {} : { after },
-      services: { state },
+      services: { state, levels: state },
     })) as {
       truncated: boolean;
       next?: number;
@@ -320,14 +320,14 @@ test("every write operation is exactly one transaction, so one durable commit pe
     async () =>
       await entry["memory.add"]!({
         input: { text: "first", level: "device" },
-        services: { state },
+        services: { state, levels: state },
       }),
   );
   const edit = await measure(
     async () =>
       await entry["memory.add"]!({
         input: { text: "second", id: "device/note-1", expectRevision: 1 },
-        services: { state },
+        services: { state, levels: state },
       }),
   );
   const propose = await measure(
@@ -335,14 +335,14 @@ test("every write operation is exactly one transaction, so one durable commit pe
       await entry["decision.propose"]!({
         input: { title: "t", text: "x" },
         config,
-        services: { state },
+        services: { state, levels: state },
       }),
   );
   const adopt = await measure(
     async () =>
       await entry["decision.adopt"]!({
         input: { id: "D-001" },
-        services: { state },
+        services: { state, levels: state },
       }),
   );
   const restore = await measure(
@@ -360,14 +360,14 @@ test("every write operation is exactly one transaction, so one durable commit pe
             },
           ],
         },
-        services: { state },
+        services: { state, levels: state },
       }),
   );
   const forget = await measure(
     async () =>
       await entry["memory.forget"]!({
         input: { id: "device/note-1" },
-        services: { state },
+        services: { state, levels: state },
       }),
   );
   expect({ add, edit, propose, adopt, restore, forget }).toEqual({
@@ -389,16 +389,16 @@ test("a note response never waits on the event log: add and edit read no history
   };
   await entry["memory.add"]!({
     input: { text: "one", level: "device" },
-    services: { state },
+    services: { state, levels: state },
   });
   await entry["memory.add"]!({
     input: { text: "two", id: "device/note-1", expectRevision: 1 },
-    services: { state },
+    services: { state, levels: state },
   });
   noHistory();
   const shown = (await entry["memory.show"]!({
     input: { id: "device/note-1" },
-    services: { state },
+    services: { state, levels: state },
   })) as { note: { versions: { revision: number }[] } };
   // One page, not the whole log; the kept versions come from the record itself.
   expect(state.counts.history).toBe(1);
@@ -427,7 +427,7 @@ test("a failing history lookup cannot turn a committed add into a failed call", 
   };
   const added = (await entry["memory.add"]!({
     input: { text: "kept", level: "device" },
-    services: { state: broken },
+    services: { state: broken, levels: broken },
   })) as { status: string; id: string };
   expect(added).toMatchObject({ status: "added", id: "device/note-1" });
   // The note exists exactly once: a caller who saw a response has nothing to retry.
@@ -447,7 +447,7 @@ test("a search walk is pinned to where it started: a note added between pages ne
         cursor === undefined
           ? { query: "shared", limit: 50 }
           : { query: "shared", limit: 50, cursor },
-      services: { state },
+      services: { state, levels: state },
     })) as SearchPage;
   const seen: string[] = [];
   let page = await search();
@@ -455,11 +455,11 @@ test("a search walk is pinned to where it started: a note added between pages ne
   // An agent adds notes while another is mid-walk.
   await entry["memory.add"]!({
     input: { text: "shared word added during the walk", level: "device" },
-    services: { state },
+    services: { state, levels: state },
   });
   await entry["memory.add"]!({
     input: { text: "shared word added again", level: "device" },
-    services: { state },
+    services: { state, levels: state },
   });
   let pages = 1;
   while (page.next !== undefined) {
@@ -475,7 +475,7 @@ test("a search walk is pinned to where it started: a note added between pages ne
   // A new walk sees them.
   const fresh = (await entry["memory.search"]!({
     input: { query: "added", limit: 50 },
-    services: { state },
+    services: { state, levels: state },
   })) as SearchPage;
   expect(fresh.hits.map((hit) => hit.id).sort()).toEqual([
     `device/note-${total + 1}`,

@@ -202,37 +202,68 @@ test("an agent must say the level; a person gets the configured default", async 
   expect(refused.message).toContain('level "device"');
   expect(refused.message).toContain('level "project"');
 
-  // A person inside a project gets the project; with no project, the device.
+  // A person on a host that serves a project gets the project.
   const person = done(
     await alpha.call("memory.add", { text: "by a person" }),
   ) as {
     id: string;
   };
   expect(person.id).toMatch(/^project\//);
-  const away = done(
+}, 60_000);
+
+test("on a host with no project, nearest is the device and a project level is refused", async () => {
+  const entry = loadEntry("memory");
+  const state = memoryState(undefined, { caller: "human", inProject: false });
+  const services = { state, levels: state };
+  const config = { levels: { human: "nearest", agent: "required" } };
+  const added = (await entry["memory.add"]!({
+    input: { text: "a person with no project" },
+    config,
+    services,
+  })) as { id: string };
+  expect(added.id).toBe("device/note-1");
+  let refused: unknown;
+  try {
+    await entry["memory.add"]!({
+      input: { text: "x", level: "project" },
+      config,
+      services,
+    });
+  } catch (error) {
+    refused = error;
+  }
+  expect(JSON.stringify(refused)).toContain("LEVEL_UNAVAILABLE");
+}, 30_000);
+
+test("a device call works whatever project the caller's ambient context names, and touches only the device", async () => {
+  const { alpha } = await twoProjects();
+  const elsewhere = join(alpha.work, "somewhere-else");
+  // The binder drops the project from a device operation's context; nothing may read it back.
+  const stale = {
+    caller: "agent" as const,
+    context: {
+      actor: { kind: "agent" as const, id: "agent-one" },
+      device: { id: alpha.deviceRoot },
+      project: { id: elsewhere, root: elsewhere },
+    },
+  };
+  const added = done(
     await alpha.call(
       "memory.add",
-      { text: "a person with no project" },
-      {
-        caller: "human",
-        context: {
-          actor: { kind: "human", id: "tester" },
-          device: { id: alpha.deviceRoot },
-        },
-      },
+      { text: "noted from a stale project", level: "device" },
+      stale,
     ),
   ) as { id: string };
-  expect(away.id).toBe("device/note-1");
-
-  // A project level needs a project.
-  const nowhere = failed(
-    await alpha.call(
-      "memory.add",
-      { text: "x", level: "project" },
-      { caller: "agent", context: alpha.deviceOnly() },
-    ),
-  );
-  expect(nowhere.code).toBe("LEVEL_UNAVAILABLE");
+  expect(added.id).toBe("device/note-1");
+  const found = done(
+    await alpha.call("memory.search", { query: "stale" }, stale),
+  ) as { hits: Hit[] };
+  expect(found.hits.map((hit) => hit.id)).toEqual(["device/note-1"]);
+  expect(
+    done(await alpha.call("memory.show", { id: added.id }, stale)),
+  ).toMatchObject({ status: "found" });
+  expect(existsSync(join(alpha.root, ".forge", "state.sqlite"))).toBe(false);
+  expect(existsSync(join(elsewhere, ".forge"))).toBe(false);
 }, 60_000);
 
 test("with no level policy configured, nobody's level is guessed", async () => {
@@ -332,7 +363,7 @@ function crashStores() {
       Promise.resolve({ status: "not_found" as const, ref }),
   };
   return {
-    services: { state },
+    services: { state, levels: state },
     device,
     project,
     crashNextDeviceWrite: () => {

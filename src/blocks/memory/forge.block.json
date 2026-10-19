@@ -121,6 +121,10 @@
     {
       "slot": "state",
       "interface": "forge.state@1"
+    },
+    {
+      "slot": "levels",
+      "interface": "forge.project-state@1"
     }
   ],
   "docs": "docs/records.json"

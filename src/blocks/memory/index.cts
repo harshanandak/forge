@@ -22,7 +22,10 @@ declare const fail: (code: string, message: string) => never;
 
 type Level = "device" | "project";
 interface Services {
-  readonly state: ExtendedStateClient & StoreLevels;
+  /** The store of the operation's declared context: the device's, or the project's for decisions. */
+  readonly state: ExtendedStateClient;
+  /** The declared forge.project-state@1 slot: this host's project, and other projects read-only. */
+  readonly levels: StoreLevels;
 }
 interface Untrusted {
   kind: "untrusted";
@@ -225,7 +228,7 @@ function projectSource(
 }
 /** The caller's own project, or undefined when it has none (or, on a read, no notes yet). */
 async function ownProject(services: Services): Promise<Source | undefined> {
-  const own = await services.state.project();
+  const own = await services.levels.project();
   return own && projectSource(own.identity, own.state, false);
 }
 type Unreached =
@@ -245,7 +248,7 @@ async function pulled(
   services: Services,
   ref: string,
 ): Promise<Source | Unreached> {
-  const found: PeerLookup = await services.state.peer(ref);
+  const found: PeerLookup = await services.levels.peer(ref);
   switch (found.status) {
     case "found":
       return projectSource(found.identity, found.state, true);
@@ -280,7 +283,9 @@ async function sourceFor(
   if (!ref) return { ref: id, status: "not_found" };
   if (ref.level === "device")
     return { source: deviceSource(services.state), number: ref.number };
-  const own = services.state.inProject ? await ownProject(services) : undefined;
+  const own = services.levels.inProject
+    ? await ownProject(services)
+    : undefined;
   if (
     own &&
     own.origin.level === "project" &&
@@ -296,10 +301,10 @@ function unreached(found: object): found is Unreached {
 /** The store for a level this call writes to; a project level needs a project in the request. */
 async function writeTarget(services: Services, level: Level): Promise<Source> {
   if (level === "device") return deviceSource(services.state);
-  if (!services.state.inProject)
+  if (!services.levels.inProject)
     fail(
       "LEVEL_UNAVAILABLE",
-      'This call has no project, so it cannot use level "project". Use level "device", or call from inside a project.',
+      'This host serves no project, so it cannot use level "project". Use level "device", or call from a host inside a project.',
     );
   const own = await ownProject(services);
   if (!own) fail("LEVEL_UNAVAILABLE", "The project store did not open");
@@ -312,10 +317,10 @@ function chooseLevel(
   services: Services,
 ): Level {
   if (requested !== undefined) return requested;
-  const policy = config.levels?.[services.state.caller] ?? "required";
+  const policy = config.levels?.[services.levels.caller] ?? "required";
   if (policy === "device" || policy === "project") return policy;
   if (policy === "nearest")
-    return services.state.inProject ? "project" : "device";
+    return services.levels.inProject ? "project" : "device";
   return fail(
     "LEVEL_REQUIRED",
     'Say which level this note belongs to: level "device" (this device, visible from every project) or level "project" (this project only).',
@@ -588,7 +593,7 @@ module.exports = {
     const sources: Source[] = [];
     const unreachable: Unreached[] = [];
     if (input.level !== "project") sources.push(deviceSource(services.state));
-    if (input.level !== "device" && services.state.inProject) {
+    if (input.level !== "device" && services.levels.inProject) {
       const own = await ownProject(services);
       if (own) sources.push(own);
     }
@@ -950,11 +955,11 @@ module.exports = {
     const source =
       input.level === "device"
         ? deviceSource(services.state)
-        : services.state.inProject
+        : services.levels.inProject
           ? await ownProject(services)
           : fail(
               "LEVEL_UNAVAILABLE",
-              'This call has no project, so it cannot export level "project".',
+              'This host serves no project, so it cannot export level "project".',
             );
     const origin =
       source?.origin.level === "project"

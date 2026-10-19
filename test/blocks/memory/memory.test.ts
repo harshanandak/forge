@@ -497,7 +497,7 @@ test("a writer that loses the race for a note id retries and gets the next one",
   });
   const added = (await entry["memory.add"]!({
     input: { text: "mine", level: "device" },
-    services: { state },
+    services: { state, levels: state },
   })) as {
     id: string;
   };
@@ -523,7 +523,7 @@ test("without the retry the same lost race surfaces as a failed write", async ()
   try {
     await entry["memory.add"]!({
       input: { text: "mine", level: "device" },
-      services: { state },
+      services: { state, levels: state },
     });
   } catch (error) {
     lost = error;

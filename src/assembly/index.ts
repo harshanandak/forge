@@ -44,7 +44,7 @@ import { version } from "../version.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
 import { LocalState } from "./state.ts";
-import { attachLevels } from "./levels.ts";
+import { openLevels, PROJECT_STATE } from "./levels.ts";
 import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
@@ -633,6 +633,33 @@ export async function createAssembly(
                   continue;
                 }
                 const namespace = current.blocks.get(instance)!.manifest.id;
+                // This host's project and, read-only, other projects: a declared capability,
+                // bound to the host's project and never to a project named in the request.
+                if (interfaceSatisfies(PROJECT_STATE, binding.interface)) {
+                  if (context.variant === "stateless")
+                    refuse(
+                      "CONTEXT_MISSING",
+                      "Project state needs an actor in the operation's context",
+                    );
+                  const opened = openLevels({
+                    root,
+                    projectState,
+                    deviceState,
+                    namespace,
+                    actor: context.actor,
+                    write: scope.effects.includes(
+                      `${current.catalog.resolve(scope.op).operation.declaredOp.split(".")[0]!}:write`,
+                    ),
+                    requestId: request.requestId,
+                  });
+                  leases.push({
+                    ownership: "owned",
+                    value: undefined,
+                    close: () => opened.close(),
+                  });
+                  clients[binding.slot] = opened.levels;
+                  continue;
+                }
                 const storage =
                   context.variant === "device" ? deviceState : projectState;
                 const noun = current.catalog
@@ -650,18 +677,6 @@ export async function createAssembly(
                   write: scope.effects.includes(`${noun}:write`),
                   requestId: request.requestId,
                 });
-                // A device operation may also reach its project and, read-only, other projects.
-                if (context.variant === "device")
-                  clients[binding.slot] = attachLevels(clients[binding.slot]!, {
-                    root,
-                    projectState,
-                    device: owner,
-                    namespace,
-                    actor: context.actor,
-                    request,
-                    write: scope.effects.includes(`${noun}:write`),
-                    leases,
-                  });
               }
               return {
                 ownership: "owned",

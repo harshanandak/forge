@@ -46,8 +46,8 @@ export const counterfactuals: readonly Counterfactual[] = [
   {
     // The assembly would hand the device store over as the project's.
     file: "assembly/index.js",
-    from: "projectState,\n device: owner,",
-    to: "projectState: deviceState,\n device: owner,",
+    from: "projectState,\n deviceState,\n namespace,",
+    to: "projectState: deviceState,\n deviceState,\n namespace,",
     journey: "levels",
     evidence: "a project note's id names its project",
   },
@@ -62,7 +62,7 @@ export const counterfactuals: readonly Counterfactual[] = [
   {
     // A missing level would be guessed for an agent instead of refused.
     file: "blocks/memory/index.cjs",
-    from: 'const policy = config.levels?.[services.state.caller] ?? "required";',
+    from: 'const policy = config.levels?.[services.levels.caller] ?? "required";',
     to: 'const policy = "nearest";',
     journey: "policy",
     evidence: "an agent that omits the level is refused",
