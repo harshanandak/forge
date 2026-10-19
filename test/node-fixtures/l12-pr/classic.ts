@@ -1,0 +1,41 @@
+// Independent snapshot of the documented BranchProtectionRule surface.
+export function classicRule() {
+  return {
+    allowsDeletions: false,
+    allowsForcePushes: false,
+    blocksCreations: false,
+    branchProtectionRuleConflicts: { totalCount: 0 },
+    bypassForcePushAllowances: { totalCount: 0 },
+    bypassPullRequestAllowances: { totalCount: 0 },
+    dismissesStaleReviews: false,
+    isAdminEnforced: true,
+    lockAllowsFetchAndMerge: false,
+    lockBranch: false,
+    pushAllowances: { totalCount: 0 },
+    requireLastPushApproval: false,
+    requiredApprovingReviewCount: 0,
+    requiredDeploymentEnvironments: [],
+    requiredStatusCheckContexts: ["tests"],
+    requiredStatusChecks: [{ context: "tests", app: { databaseId: 7 } }],
+    requiresApprovingReviews: false,
+    requiresCodeOwnerReviews: false,
+    requiresCommitSignatures: false,
+    requiresConversationResolution: false,
+    requiresDeployments: false,
+    requiresLinearHistory: false,
+    requiresStatusChecks: true,
+    requiresStrictStatusChecks: false,
+    restrictsPushes: false,
+    restrictsReviewDismissals: false,
+    reviewDismissalAllowances: { totalCount: 0 },
+  };
+}
+export const classicFields = [
+  ...Object.keys(classicRule()),
+  "creator",
+  "databaseId",
+  "id",
+  "matchingRefs",
+  "pattern",
+  "repository",
+];

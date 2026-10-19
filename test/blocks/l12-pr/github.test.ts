@@ -1,5 +1,9 @@
 import { expect, test, setDefaultTimeout } from "bun:test";
 import {
+  classicRule,
+  classicFields,
+} from "../../node-fixtures/l12-pr/classic.ts";
+import {
   base,
   call,
   rejection,
@@ -33,12 +37,13 @@ function fixture(query: string): Json {
       updatedAt: "2026-10-18T00:00:00Z",
       baseRef: {
         branchProtectionRule: {
+          ...classicRule(),
           requiresStrictStatusChecks: false,
           requiresApprovingReviews: false,
           requiresCodeOwnerReviews: false,
           restrictsPushes: false,
           requiresCommitSignatures: false,
-          requiredStatusChecks: [{ context: "tests", appId: 7 }],
+          requiredStatusChecks: [{ context: "tests", app: { databaseId: 7 } }],
         },
       },
     };
@@ -105,6 +110,7 @@ function harness(
     comparison?: Json;
     thread?: Json | null;
     run?: Json;
+    schema?: unknown;
   } = {},
 ) {
   const args: readonly string[][] = [];
@@ -122,6 +128,17 @@ function harness(
       expect(input.variables).toBeObject();
       const variables = input.variables as Json;
       const query = String(input.query);
+      if (query.includes("ForgeClassicSchema"))
+        return {
+          data: {
+            definition: {
+              fields:
+                options.schema === undefined
+                  ? classicFields.map((name) => ({ name }))
+                  : options.schema,
+            },
+          },
+        };
       if (query.includes("ForgeThreadMembership"))
         return {
           data: {
@@ -234,7 +251,7 @@ for (const policy of ["classic approval", "unsupported ruleset"])
         .map((input) => String(input.query));
       expect(
         queries.some((query) =>
-          /ForgePRCore|ForgePRChecks|ForgePRReviews|ForgePRLabels|branchProtectionRule|mergeable/.test(
+          /ForgeClassicSchema|ForgePRCore|ForgePRChecks|ForgePRReviews|ForgePRLabels|branchProtectionRule|mergeable/.test(
             query,
           ),
         ),
@@ -377,6 +394,153 @@ test("GitHub SHA input and wire boundaries canonicalize accepted hashes without 
       payload: { ...reference, runId: 123 },
     }),
   ).toMatchObject({ accepted: true });
+});
+
+test("classic deployment requirements without successful head deployments are incomplete", async () => {
+  const h = harness({
+    mutate(value, query) {
+      if (!query.includes("ForgePRCore")) return value;
+      const rule = (value.baseRef as Json).branchProtectionRule as Json;
+      return {
+        ...value,
+        baseRef: {
+          branchProtectionRule: {
+            ...rule,
+            requiresDeployments: true,
+            requiredDeploymentEnvironments: ["production"],
+          },
+        },
+      };
+    },
+  });
+  expect(await rejection(h.invoke("read"))).toMatchObject({
+    code: "INCOMPLETE",
+  });
+});
+
+test("classic query covers the documented requirement surface and rejects unknown schema or response fields", async () => {
+  const h = harness();
+  await h.invoke("read");
+  const query = String(
+    h.inputs.find((value) => String(value.query).includes("ForgePRCore"))!
+      .query,
+  );
+  for (const name of Object.keys(classicRule()))
+    expect(query).toMatch(new RegExp(`\\b${name}\\b`));
+  expect(
+    h.inputs.filter((value) =>
+      String(value.query).includes("ForgeClassicSchema"),
+    ),
+  ).toHaveLength(1);
+  for (const schema of [
+    null,
+    [],
+    [
+      ...classicFields.map((name) => ({ name })),
+      { name: "requiresFutureProof" },
+    ],
+    classicFields.slice(1).map((name) => ({ name })),
+  ])
+    expect(await rejection(harness({ schema }).invoke("read"))).toMatchObject({
+      code: "INCOMPLETE",
+    });
+  const unknown = harness({
+    mutate(value, query) {
+      if (!query.includes("ForgePRCore")) return value;
+      const rule = (value.baseRef as Json).branchProtectionRule as Json;
+      return {
+        ...value,
+        baseRef: {
+          branchProtectionRule: { ...rule, requiresFutureProof: true },
+        },
+      };
+    },
+  });
+  expect(await rejection(unknown.invoke("read"))).toMatchObject({
+    code: "INCOMPLETE",
+  });
+});
+
+test("every unsupported active classic requirement and unreadable value fails closed", async () => {
+  const active: Json[] = [
+    ...[
+      "dismissesStaleReviews",
+      "lockBranch",
+      "requireLastPushApproval",
+      "requiresApprovingReviews",
+      "requiresCodeOwnerReviews",
+      "requiresCommitSignatures",
+      "requiresConversationResolution",
+      "requiresDeployments",
+      "restrictsPushes",
+      "restrictsReviewDismissals",
+    ].map((name) => ({ [name]: true })),
+    { requiredApprovingReviewCount: 1 },
+    { requiredDeploymentEnvironments: ["production"] },
+    ...[
+      "branchProtectionRuleConflicts",
+      "bypassForcePushAllowances",
+      "bypassPullRequestAllowances",
+      "pushAllowances",
+      "reviewDismissalAllowances",
+    ].map((name) => ({ [name]: { totalCount: 1 } })),
+    { requiresDeployments: undefined },
+    { requiresDeployments: "false" },
+    { requiredDeploymentEnvironments: null, requiresDeployments: true },
+    { requiredApprovingReviewCount: -1 },
+    { requiredDeploymentEnvironments: [null] },
+    { requiredStatusCheckContexts: [null] },
+    {
+      requiresStatusChecks: true,
+      requiredStatusChecks: [],
+      requiredStatusCheckContexts: [],
+    },
+  ];
+  for (const fields of active) {
+    const h = harness({
+      mutate(value, query) {
+        if (!query.includes("ForgePRCore")) return value;
+        const rule = (value.baseRef as Json).branchProtectionRule as Json;
+        return {
+          ...value,
+          baseRef: { branchProtectionRule: { ...rule, ...fields } },
+        };
+      },
+    });
+    expect(await rejection(h.invoke("read"))).toMatchObject({
+      code: "INCOMPLETE",
+    });
+  }
+});
+
+test("classic required checks read the documented nullable app object rather than an appId field", async () => {
+  for (const app of [null, { databaseId: 7 }]) {
+    const h = harness({
+      mutate(value, query) {
+        if (!query.includes("ForgePRCore")) return value;
+        const rule = (value.baseRef as Json).branchProtectionRule as Json;
+        return {
+          ...value,
+          baseRef: {
+            branchProtectionRule: {
+              ...rule,
+              requiredStatusChecks: [{ context: "tests", app }],
+            },
+          },
+        };
+      },
+    });
+    expect(await h.invoke("read")).toMatchObject({
+      requiredChecks: [{ name: "tests", appId: app?.databaseId ?? null }],
+    });
+    const query = String(
+      h.inputs.find((value) => String(value.query).includes("ForgePRCore"))!
+        .query,
+    );
+    expect(query).toMatch(
+      /requiredStatusChecks\s*\{\s*context\s+app\s*\{\s*databaseId\s*\}/,
+    );
+  }
 });
 
 test("provider collects exact-head complete paginated evidence through read-only API commands", async () => {

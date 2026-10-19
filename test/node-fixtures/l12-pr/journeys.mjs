@@ -215,6 +215,7 @@ try {
     for (const policy of [
       { rules: [{ type: "merge_queue", parameters: {} }] },
       { classicUnsupported: true },
+      { futureClassicSchema: true },
     ]) {
       save(
         {
@@ -577,6 +578,52 @@ try {
   if (["all", "unsupported-classic"].includes(mode)) {
     save(ready(), { classicUnsupported: true });
     await status("INCOMPLETE");
+  }
+  if (["all", "classic-deployments", "classic-future"].includes(mode)) {
+    const policies =
+      mode === "classic-future"
+        ? [{ futureClassicSchema: true }]
+        : mode === "classic-deployments"
+          ? [
+              {
+                classic: {
+                  requiresDeployments: true,
+                  requiredDeploymentEnvironments: ["production"],
+                },
+              },
+            ]
+          : [
+              {
+                classic: {
+                  requiresDeployments: true,
+                  requiredDeploymentEnvironments: ["production"],
+                },
+              },
+              { futureClassicSchema: true },
+            ];
+    for (const policy of policies) {
+      save(ready(), policy);
+      await status("INCOMPLETE");
+      const held = await good("claim", reference, "acquire");
+      error(
+        await invoke(
+          "merge",
+          {
+            ...reference,
+            expectHead: head,
+            expectRevision: state.get("forge/pr", subject)?.revision ?? 0,
+          },
+          held.generation,
+        ),
+        "HEAD_MOVED",
+      );
+      assert.equal(
+        JSON.parse(readFileSync(file, "utf8")).evidence.state,
+        "OPEN",
+        "unevaluated classic requirement must not merge",
+      );
+      await good("release", reference, held.generation);
+    }
   }
   if (["all", "merge", "head", "fence", "accepted"].includes(mode)) {
     save();

@@ -270,8 +270,82 @@ async function graphql(
   );
   return obj(result.data);
 }
-const coreFields =
-  "headRefOid baseRefOid baseRefName state isDraft mergeable updatedAt baseRef { branchProtectionRule { requiredStatusChecks { context appId } requiresStrictStatusChecks requiresApprovingReviews requiresCodeOwnerReviews restrictsPushes requiresCommitSignatures } }";
+// Every documented requirement has an explicit evaluator or an unsupported disposition.
+const classicRequirements = {
+  allowsDeletions: "primitive",
+  allowsForcePushes: "primitive",
+  blocksCreations: "primitive",
+  branchProtectionRuleConflicts: "connection",
+  bypassForcePushAllowances: "connection",
+  bypassPullRequestAllowances: "connection",
+  dismissesStaleReviews: "unsupported",
+  isAdminEnforced: "primitive",
+  lockAllowsFetchAndMerge: "primitive",
+  lockBranch: "unsupported",
+  pushAllowances: "connection",
+  requireLastPushApproval: "unsupported",
+  requiredApprovingReviewCount: "count",
+  requiredDeploymentEnvironments: "environments",
+  requiredStatusCheckContexts: "contexts",
+  requiredStatusChecks: "checks",
+  requiresApprovingReviews: "unsupported",
+  requiresCodeOwnerReviews: "unsupported",
+  requiresCommitSignatures: "unsupported",
+  requiresConversationResolution: "unsupported",
+  requiresDeployments: "unsupported",
+  requiresLinearHistory: "primitive",
+  requiresStatusChecks: "primitive",
+  requiresStrictStatusChecks: "primitive",
+  restrictsPushes: "unsupported",
+  restrictsReviewDismissals: "unsupported",
+  reviewDismissalAllowances: "connection",
+} as const;
+const classicMetadata = [
+  "creator",
+  "databaseId",
+  "id",
+  "matchingRefs",
+  "pattern",
+  "repository",
+];
+const classicSelection = Object.entries(classicRequirements)
+  .map(([name, kind]) =>
+    kind === "connection"
+      ? `${name}{totalCount}`
+      : kind === "checks"
+        ? `${name}{context app{databaseId}}`
+        : name,
+  )
+  .join(" ");
+const coreFields = `headRefOid baseRefOid baseRefName state isDraft mergeable updatedAt baseRef { branchProtectionRule { ${classicSelection} } }`;
+async function classicSchema(call: Call, s: Selected): Promise<void> {
+  const data = await graphql(
+    call,
+    s,
+    'query ForgeClassicSchema{definition:__type(name:"BranchProtectionRule"){fields(includeDeprecated:true){name}}}',
+    {},
+  );
+  const fields = obj(data.definition).fields;
+  if (
+    !Array.isArray(fields) ||
+    !fields.every((value) => object(value) && text(value.name))
+  )
+    fail("INCOMPLETE", "Classic protection schema is unreadable");
+  const names = fields.map((value) => String(obj(value).name));
+  const expected = new Set([
+    ...Object.keys(classicRequirements),
+    ...classicMetadata,
+  ]);
+  const known =
+    names.length === expected.size &&
+    new Set(names).size === names.length &&
+    names.every((name) => expected.has(name));
+  if (!known)
+    fail(
+      "INCOMPLETE",
+      "Classic protection schema has missing or unrecognized fields; its requirements need evaluation",
+    );
+}
 async function prQuery(
   call: Call,
   s: Selected,
@@ -512,46 +586,82 @@ async function requirements(
   const required: Json[] = [];
   if (rule !== null) {
     const classic = obj(rule);
-    for (const flag of [
-      "requiresStrictStatusChecks",
-      "requiresApprovingReviews",
-      "requiresCodeOwnerReviews",
-      "restrictsPushes",
-      "requiresCommitSignatures",
-    ])
-      if (typeof classic[flag] !== "boolean")
-        fail(
-          "INCOMPLETE",
-          "Classic branch-protection requirements are unreadable",
-        );
     if (
-      [
-        "requiresApprovingReviews",
-        "requiresCodeOwnerReviews",
-        "restrictsPushes",
-        "requiresCommitSignatures",
-      ].some((flag) => classic[flag] === true)
+      Object.keys(classic).some(
+        (name) => !Object.hasOwn(classicRequirements, name),
+      )
     )
       fail(
         "INCOMPLETE",
-        "Classic branch protection has an unsupported review, identity or signature requirement",
+        "Classic protection returned an unrecognized requirement",
       );
+    for (const [name, kind] of Object.entries(classicRequirements)) {
+      if (!Object.hasOwn(classic, name))
+        fail("INCOMPLETE", "A classic protection requirement is missing");
+      const value = classic[name];
+      if (kind === "primitive" || kind === "unsupported") {
+        if (typeof value !== "boolean")
+          fail("INCOMPLETE", "A classic protection flag is unreadable");
+        if (kind === "unsupported" && value)
+          fail(
+            "INCOMPLETE",
+            "An active classic protection requirement has no complete evaluator",
+          );
+      } else if (kind === "count") {
+        if (
+          value !== null &&
+          (!Number.isSafeInteger(value) || Number(value) < 0)
+        )
+          fail("INCOMPLETE", "Classic approval count is unreadable");
+        if (value !== null && Number(value) > 0)
+          fail(
+            "INCOMPLETE",
+            "Classic approval count has no complete evaluator",
+          );
+      } else if (kind === "connection") {
+        const count = obj(value).totalCount;
+        if (!Number.isSafeInteger(count) || Number(count) < 0)
+          fail("INCOMPLETE", "Classic protection connection is unreadable");
+        if (Number(count) > 0)
+          fail(
+            "INCOMPLETE",
+            "Classic protection conflicts or actor restrictions have no complete evaluator",
+          );
+      } else if (kind === "environments" || kind === "contexts") {
+        if (value !== null && (!Array.isArray(value) || !value.every(text)))
+          fail(
+            "INCOMPLETE",
+            "Classic protection requirement list is unreadable",
+          );
+        if (kind === "environments" && Array.isArray(value) && value.length > 0)
+          fail("INCOMPLETE", "Required deployments have no complete evaluator");
+      }
+    }
     strictStatusChecks = classic.requiresStrictStatusChecks as boolean;
-    const checks = classic.requiredStatusChecks;
+    const checks =
+      classic.requiredStatusChecks === null && !classic.requiresStatusChecks
+        ? []
+        : classic.requiredStatusChecks;
     if (!Array.isArray(checks))
       fail("INCOMPLETE", "Protected required checks are unreadable");
     for (const v of checks) {
       const item = obj(v);
+      const appId = item.app === null ? null : obj(item.app).databaseId;
       if (
         !text(item.context) ||
-        !(
-          item.appId === null ||
-          (Number.isSafeInteger(item.appId) && Number(item.appId) > 0)
-        )
+        !(appId === null || (Number.isSafeInteger(appId) && Number(appId) > 0))
       )
         fail("INCOMPLETE", "Protected check identity is malformed");
-      required.push({ name: item.context, appId: item.appId });
+      required.push({ name: item.context, appId });
     }
+    const contexts = classic.requiredStatusCheckContexts;
+    if (Array.isArray(contexts))
+      for (const context of contexts) {
+        if (!required.some((value) => value.name === context))
+          required.push({ name: context, appId: null });
+      }
+    if (classic.requiresStatusChecks && required.length === 0)
+      fail("INCOMPLETE", "Classic required checks have no declared identities");
   }
   // Rulesets can add required checks beyond the classic branch-protection rule.
   for (let page = 1; page <= s.config.maxPages; page++) {
@@ -621,6 +731,7 @@ async function requirements(
   );
 }
 async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
+  await classicSchema(call, s);
   const before = await core(call, s, r);
   const checks = (await pages(call, s, r, "Checks", before.headRefOid)).map(
     (value) => check(value),
@@ -824,6 +935,7 @@ async function mutate(call: Call): Promise<Json> {
   const s = selected(call);
   await verify(call, s);
   if (action === "merge") {
+    await classicSchema(call, s);
     const current = await core(call, s, r);
     if (current.headRefOid !== payload.expectHead)
       fail("HEAD_MOVED", "Conditional merge head changed before launch");

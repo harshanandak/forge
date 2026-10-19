@@ -133,52 +133,59 @@ test("installed PR/GitHub blocks: all computed verdicts, exact head and both fen
         ),
       ),
     ];
-    const positives: Fixture[] = nodes.flatMap((runtime, index) => [
-      {
-        label: `journey-${index}`,
-        command: runtime,
-        args: [
-          journey,
-          installed,
-          join(work, `journey-${index}`),
-          "all",
-          provider,
-        ],
-        cwd: consumer,
-        env,
-      },
-      {
-        label: `actual-host-${index}`,
-        command: runtime,
-        args: [
-          join(root, "test/node-fixtures/l12-pr/assembly.mjs"),
-          installed,
-          join(work, `assembly-${index}`),
-        ],
-        cwd: consumer,
-        env,
-      },
-      {
-        label: `head-checks-${index}`,
-        command: runtime,
-        args: [
-          journey,
-          installed,
-          join(work, `head-checks-${index}`),
-          "head-checks",
-          provider,
-        ],
-        cwd: consumer,
-        env,
-      },
-    ]);
+    const journeys = [
+      "targeted-writes",
+      "verdicts",
+      "optional",
+      "stale-review",
+      "head-checks",
+      "head-review-state",
+      "head-mergeability",
+      "strict-base",
+      "strict-direct",
+      "unsupported-rules",
+      "unsupported-classic",
+      "classic-deployments",
+      "classic-future",
+      "head",
+      "fence",
+      "accepted",
+      "merge",
+      "uppercase-sha",
+    ];
+    const positives: (Fixture & { expected: string })[] = nodes.flatMap(
+      (runtime, index) => [
+        ...journeys.map((mode) => ({
+          label: `${mode}-${index}`,
+          command: runtime,
+          args: [
+            journey,
+            installed,
+            join(work, `${mode}-${index}`),
+            mode,
+            provider,
+          ],
+          cwd: consumer,
+          env,
+          expected: `PR journey ${mode}: passed`,
+        })),
+        {
+          label: `actual-host-${index}`,
+          command: runtime,
+          args: [
+            join(root, "test/node-fixtures/l12-pr/assembly.mjs"),
+            installed,
+            join(work, `assembly-${index}`),
+          ],
+          cwd: consumer,
+          env,
+          expected: "state.sqlite before=false, after=false",
+        },
+      ],
+    );
     const outputs = await runFixtures(positives, 2, "Packed PR/GitHub");
     for (const [index, fixture] of positives.entries())
-      expect(outputs[index]).toContain(
-        fixture.label.startsWith("actual-host")
-          ? "state.sqlite before=false, after=false"
-          : `PR journey ${fixture.label.startsWith("head-checks") ? "head-checks" : "all"}: passed`,
-      );
+      expect(outputs[index]).toContain(fixture.expected);
     const workers = Array.from(
       { length: Math.min(2, selected.length) },
       (_, index) => {

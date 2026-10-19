@@ -1,5 +1,19 @@
 export const counterfactuals = [
   {
+    file: "blocks/github/entry.cjs",
+    from: "const classic = obj(rule);",
+    to: "const classic = {...obj(rule), requiresDeployments: false, requiredDeploymentEnvironments: []};",
+    journey: "classic-deployments",
+    evidence: "expected verdict INCOMPLETE",
+  },
+  {
+    file: "blocks/github/entry.cjs",
+    from: "if (!known)",
+    to: "if (false)",
+    journey: "classic-future",
+    evidence: "expected verdict INCOMPLETE",
+  },
+  {
     file: "blocks/pr/entry.cjs",
     from: "const expectHead = call.input.expectHead.toLowerCase();",
     to: "const expectHead = call.input.expectHead;",
@@ -100,8 +114,8 @@ export const counterfactuals = [
   },
   {
     file: "blocks/github/entry.cjs",
-    from: "classic[flag] === true",
-    to: "false",
+    from: 'if (kind === "unsupported" && value)',
+    to: "if (false)",
     journey: "unsupported-classic",
     evidence: "expected verdict INCOMPLETE",
   },

@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { checkNodeId } from "./check-id.ts";
+import { classicRule, classicFields } from "./classic.ts";
 const [installed, file] = process.argv.slice(2);
 const load = (path) =>
   import(pathToFileURL(join(installed, "dist/src", path)).href);
@@ -52,15 +53,19 @@ const port = {
       updatedAt: new Date(e.lastActivityAt).toISOString(),
       baseRef: {
         branchProtectionRule: {
+          ...classicRule(),
           requiresStrictStatusChecks: e.protection.strictStatusChecks,
           requiresApprovingReviews: stored.classicUnsupported === true,
           requiresCodeOwnerReviews: false,
           restrictsPushes: false,
           requiresCommitSignatures: false,
+          requiresStatusChecks: e.requiredChecks.length > 0,
+          requiredStatusCheckContexts: e.requiredChecks.map((v) => v.name),
           requiredStatusChecks: e.requiredChecks.map((v) => ({
             context: v.name,
-            appId: v.appId,
+            app: v.appId === null ? null : { databaseId: v.appId },
           })),
+          ...stored.classic,
         },
       },
     });
@@ -72,7 +77,14 @@ const port = {
     if (args.includes("user")) value = { login: stored.login ?? "owner" };
     else if (args.includes("graphql")) {
       let pr;
-      if (input.query.includes("ForgeThreadMembership")) {
+      if (input.query.includes("ForgeClassicSchema")) {
+        const names = stored.futureClassicSchema
+          ? [...classicFields, "requiresFutureProof"]
+          : classicFields;
+        value = {
+          data: { definition: { fields: names.map((name) => ({ name })) } },
+        };
+      } else if (input.query.includes("ForgeThreadMembership")) {
         const thread = e.threads.find((v) => v.id === variables.threadId);
         value = {
           data: {

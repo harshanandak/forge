@@ -67,3 +67,7 @@ Repository casing is canonicalized for shared PR identity. Account routing
 and credential acquisition are intentionally owned by the separate accounts
 block. Installed fake-provider journeys exercise these mechanisms without
 live GitHub mutations.
+
+Classic protection collection uses one invocation-local schema check before gathering merge evidence or direct merge preflight. All documented requirement fields are requested from one catalog, including deployment environments, approval counts, conversation/last-push requirements, locks, conflicts and actor-allowance counts. A new, missing or unreadable schema field is incomplete; so is an unrecognized returned requirement or an active unsupported requirement. Required deployments remain incomplete until head-bound deployment evaluation is implemented. Known status checks and strict policy are evaluated; squash/no-force/no-delete/no-create behavior satisfies linear-history and operation restrictions, and protection is applied regardless of administrator bypass. Other active requirements and nonempty actor/conflict connections fail closed. Reply/resolve/rerun do not need this policy or introspection query.
+
+The schema coverage snapshot follows the [BranchProtectionRule reference](https://docs.github.com/en/graphql/reference/branches#branchprotectionrule). No persistent schema cache is added; unavailable introspection is incomplete.
