@@ -85,25 +85,28 @@ export async function killTree(
             "Process table inspection exceeded the cleanup deadline",
           );
       };
-      try {
-        let live = false;
+      const table = control.processTable;
+      const inventory = (): { live: boolean; zombies: boolean } => {
         let zombies = false;
-        for (const member of control.processTable.members(pid, checkBudget)) {
+        for (const member of table.members(pid, checkBudget)) {
           checkBudget();
           if (member.state === "Z") zombies = true;
-          else {
-            live = true;
-            break;
-          }
+          else return { live: true, zombies };
         }
         checkBudget();
+        return { live: false, zombies };
+      };
+      try {
+        const { live, zombies } = inventory();
         if (!live) {
           // An empty inventory can race a newly published child. A fresh group
           // probe must agree; Darwin reports EPERM when only dead members remain.
           try {
             control.signal(-pid, 0);
             checkBudget();
-            if (zombies) return;
+            // A successful probe cannot tell a retained zombie from a member
+            // published after enumeration; only a fresh zombie-only inventory can.
+            if (zombies && !inventory().live) return;
           } catch (error) {
             if (
               error !== null &&

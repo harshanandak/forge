@@ -83,3 +83,38 @@ test("a persistently empty snapshot with a present group fails at the configured
   expect(now).toBe(23);
   expect(waits).toEqual([10, 10, 3]);
 }, 5000);
+
+test("a zombie snapshot cannot hide a live descendant published before the probe", async () => {
+  let now = 0;
+  let kills = 0;
+  let snapshots = 0;
+  let descendant = false;
+  await killTree(
+    123,
+    { cleanupTimeoutMs: 30, pollIntervalMs: 10 },
+    {
+      signal(_pid, signal) {
+        // The retained zombie keeps every group probe successful.
+        if (signal === "SIGKILL") {
+          kills++;
+          descendant = false;
+        }
+      },
+      now: () => now,
+      pause(ms) {
+        now += ms;
+        return Promise.resolve();
+      },
+      processTable: {
+        *members() {
+          yield { pid: 124, state: "Z" };
+          if (descendant) yield { pid: 126, state: "R" };
+          // The live descendant becomes visible only after the first enumeration.
+          if (++snapshots === 1) descendant = true;
+        },
+      },
+    },
+  );
+  expect(descendant).toBe(false);
+  expect(kills).toBe(2);
+}, 5000);
