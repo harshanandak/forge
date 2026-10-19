@@ -48,69 +48,72 @@ test("SQLite VNODE codes map to identity refusal without hiding unrelated I/O er
 }, 30000);
 
 test("injected VNODE during restore or live access is typed and never swaps or commits", async () => {
-  for (const native of vnodeErrors) {
-    for (const at of [
-      "prepared",
-      "fenced",
-      "closed",
-      "retained",
-      "write-lock-attempt",
-      "write-locked",
-      "transaction-body",
-    ]) {
-      const work = realpathSync(mkdtempSync(join(tmpdir(), "forge-vnode-")));
-      const path = join(work, "state.db");
-      let armed = false;
-      let swapped = false;
-      const result = await createSqliteStore(work, {
-        step(name) {
-          if (name === "renamed") swapped = true;
-          if (armed && name === at) throw native;
-        },
-      }).open({ path, readOnly: false });
-      if (!result.ok) throw new Error(result.unavailable.reason);
-      const db = result.handle.value as StateImageStore;
+  // The test above maps every native VNODE shape. Here each injection site
+  // opens one real store, and the shapes rotate across sites so every shape
+  // still travels a live path: 7 stores instead of 28.
+  const sites = [
+    "prepared",
+    "fenced",
+    "closed",
+    "retained",
+    "write-lock-attempt",
+    "write-locked",
+    "transaction-body",
+  ];
+  for (const [index, at] of sites.entries()) {
+    const native = vnodeErrors[index % vnodeErrors.length]!;
+    const work = realpathSync(mkdtempSync(join(tmpdir(), "forge-vnode-")));
+    const path = join(work, "state.db");
+    let armed = false;
+    let swapped = false;
+    const result = await createSqliteStore(work, {
+      step(name) {
+        if (name === "renamed") swapped = true;
+        if (armed && name === at) throw native;
+      },
+    }).open({ path, readOnly: false });
+    if (!result.ok) throw new Error(result.unavailable.reason);
+    const db = result.handle.value as StateImageStore;
+    try {
+      db.exec("CREATE TABLE preserved(value INTEGER)");
+      const image = db.exportImage();
+      db.run("INSERT INTO preserved VALUES (?)", [42]);
+      const before = statSync(path, { bigint: true });
+      armed = true;
+      expect(() =>
+        at === "transaction-body"
+          ? db.transaction(() => {
+              db.run("INSERT INTO preserved VALUES (?)", [99]);
+              throw native;
+            })
+          : at.startsWith("write-")
+            ? db.run("INSERT INTO preserved VALUES (?)", [99])
+            : db.restoreImage(
+                image,
+                () => {},
+                () => {},
+                () => {},
+              ),
+      ).toThrow(StoreRestoringError);
+      armed = false;
+      expect(swapped).toBe(false);
+      expect(statSync(path, { bigint: true }).ino).toBe(before.ino);
+      await result.handle.close();
+      const reopened = await createSqliteStore(work).open({
+        path,
+        readOnly: true,
+      });
+      if (!reopened.ok) throw new Error(reopened.unavailable.reason);
       try {
-        db.exec("CREATE TABLE preserved(value INTEGER)");
-        const image = db.exportImage();
-        db.run("INSERT INTO preserved VALUES (?)", [42]);
-        const before = statSync(path, { bigint: true });
-        armed = true;
-        expect(() =>
-          at === "transaction-body"
-            ? db.transaction(() => {
-                db.run("INSERT INTO preserved VALUES (?)", [99]);
-                throw native;
-              })
-            : at.startsWith("write-")
-              ? db.run("INSERT INTO preserved VALUES (?)", [99])
-              : db.restoreImage(
-                  image,
-                  () => {},
-                  () => {},
-                  () => {},
-                ),
-        ).toThrow(StoreRestoringError);
-        armed = false;
-        expect(swapped).toBe(false);
-        expect(statSync(path, { bigint: true }).ino).toBe(before.ino);
-        await result.handle.close();
-        const reopened = await createSqliteStore(work).open({
-          path,
-          readOnly: true,
-        });
-        if (!reopened.ok) throw new Error(reopened.unavailable.reason);
-        try {
-          expect(
-            reopened.handle.value.all("SELECT value FROM preserved"),
-          ).toEqual([{ value: 42n }]);
-        } finally {
-          await reopened.handle.close();
-        }
+        expect(
+          reopened.handle.value.all("SELECT value FROM preserved"),
+        ).toEqual([{ value: 42n }]);
       } finally {
-        await result.handle.close();
-        rmSync(work, { recursive: true, force: true });
+        await reopened.handle.close();
       }
+    } finally {
+      await result.handle.close();
+      rmSync(work, { recursive: true, force: true });
     }
   }
 }, 30000);

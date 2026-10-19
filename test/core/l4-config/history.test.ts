@@ -168,12 +168,26 @@ describe("damaged edit history", () => {
   });
 
   test("too many receipt files are refused before scanning their contents", () => {
-    const p = project();
+    // The listing reports limit+1 receipts without writing a thousand files;
+    // any read of one of them would mean the scan started.
+    const receipts = Array.from(
+      { length: MAX_HISTORY_FILES + 1 },
+      (_, i) => `${String(i + 1).padStart(6, "0")}.json`,
+    );
+    const scanned: string[] = [];
+    const p = projectWithFiles((real) => ({
+      ...real,
+      list: (dir) =>
+        dir.replaceAll("\\", "/").endsWith("config-history")
+          ? receipts
+          : real.list(dir),
+      read: (path, maxBytes) => {
+        if (path.replaceAll("\\", "/").includes("config-history/"))
+          scanned.push(path);
+        return real.read(path, maxBytes);
+      },
+    }));
     const revision = p.config.show().revision;
-    const dir = join(p.root, ".forge", "config-history");
-    mkdirSync(dir, { recursive: true });
-    for (let i = 1; i <= MAX_HISTORY_FILES + 1; i += 1)
-      writeFileSync(join(dir, `${String(i).padStart(6, "0")}.json`), "{}");
     const failure = failureOf(() =>
       p.config.set({
         path: "check.timeout",
@@ -182,6 +196,7 @@ describe("damaged edit history", () => {
       }),
     );
     expect(failure).toMatchObject({ code: "LIMIT_EXCEEDED" });
+    expect(scanned).toEqual([]);
     expect(p.read()).toBeUndefined();
   });
   test("a receipt whose prior bytes no longer match its from revision is never reverted to", () => {
