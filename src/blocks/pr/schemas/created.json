@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "properties": {
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "maxLength": 200
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "url": {
+      "type": "string",
+      "pattern": "^https://",
+      "maxLength": 2000
+    }
+  },
+  "required": ["repository", "number", "revision", "url"],
+  "additionalProperties": false
+}

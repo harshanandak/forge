@@ -1,0 +1,20 @@
+{
+  "operations": {
+    "github.status": {
+      "title": "GitHub status",
+      "summary": "Verify the authenticated login against the explicit selection without changing global authentication."
+    },
+    "github.use": {
+      "title": "GitHub use",
+      "summary": "Validate the explicit account and host; routing and credential acquisition belong to the accounts block."
+    },
+    "github.read": {
+      "title": "GitHub read",
+      "summary": "Read complete bounded pull request evidence using observational API queries only."
+    },
+    "github.call": {
+      "title": "GitHub call",
+      "summary": "Run only a declared mutation action. Exact-head merge is a low-level conditional provider primitive; pr.merge owns lease and verdict policy."
+    }
+  }
+}

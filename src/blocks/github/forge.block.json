@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/github",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "configSchema": "schemas/config.json",
+  "nouns": {
+    "github": {
+      "interface": "1.0.0"
+    }
+  },
+  "operations": {
+    "github.status": {
+      "input": "schemas/empty.json",
+      "output": "schemas/selection.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": ["external:process", "environment:read"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "github.use": {
+      "input": "schemas/empty.json",
+      "output": "schemas/selection.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": ["external:process", "environment:read"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "github.read": {
+      "input": "schemas/read.json",
+      "output": "schemas/evidence.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": ["external:process", "environment:read"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "github.call": {
+      "input": "schemas/call.json",
+      "output": "schemas/result.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "github:write",
+        "external:write",
+        "external:process",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    }
+  },
+  "docs": "docs.json",
+  "files": [
+    "schemas/call.json",
+    "schemas/config.json",
+    "schemas/create.json",
+    "schemas/empty.json",
+    "schemas/evidence.json",
+    "schemas/merge.json",
+    "schemas/read.json",
+    "schemas/ref.json",
+    "schemas/reply.json",
+    "schemas/rerun.json",
+    "schemas/resolve.json",
+    "schemas/result.json",
+    "schemas/selection.json"
+  ],
+  "requires": [
+    {
+      "slot": "process",
+      "interface": "forge.process@1"
+    },
+    {
+      "slot": "environment",
+      "interface": "forge.environment@1"
+    }
+  ]
+}

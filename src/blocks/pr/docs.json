@@ -1,0 +1,52 @@
+{
+  "operations": {
+    "pr.status": {
+      "title": "PR status",
+      "summary": "Read fresh provider evidence and compute the current merge verdict; no cached phase authorizes a merge."
+    },
+    "pr.checks": {
+      "title": "PR checks",
+      "summary": "Read exact-head check evidence with the same computed verdict as pr.status."
+    },
+    "pr.threads": {
+      "title": "PR threads",
+      "summary": "Read bounded, complete review-thread evidence and the current computed verdict."
+    },
+    "pr.create": {
+      "title": "PR create",
+      "summary": "Create a pull request using the configured provider and record its returned link."
+    },
+    "pr.link": {
+      "title": "PR link",
+      "summary": "Read and link an existing pull request at the expected state revision."
+    },
+    "pr.claim": {
+      "title": "PR claim",
+      "summary": "Acquire a pull request lease in the pr namespace; a work lease cannot authorize a PR merge."
+    },
+    "pr.renew": {
+      "title": "PR renew",
+      "summary": "Renew the current PR lease generation under a held lease context."
+    },
+    "pr.release": {
+      "title": "PR release",
+      "summary": "Release only the PR lease bound to this held context."
+    },
+    "pr.reply": {
+      "title": "PR reply",
+      "summary": "Reply to one explicitly named review thread."
+    },
+    "pr.resolve": {
+      "title": "PR resolve",
+      "summary": "Resolve one explicitly named review thread; resolve-all is not supported."
+    },
+    "pr.rerun": {
+      "title": "PR rerun",
+      "summary": "Rerun failed jobs in one explicitly named workflow run on this head."
+    },
+    "pr.merge": {
+      "title": "PR merge",
+      "summary": "Read exact-head evidence, compute the policy verdict, fence intent, squash-merge the pinned head, fence accepted evidence and read back the merged state."
+    }
+  }
+}

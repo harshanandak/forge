@@ -1,0 +1,113 @@
+{
+  "type": "object",
+  "properties": {
+    "provider": {
+      "type": "object",
+      "properties": {
+        "executable": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "readArgs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          },
+          "maxItems": 128
+        },
+        "writeArgs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          },
+          "maxItems": 128
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        },
+        "maxOutputBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 1048576
+        }
+      },
+      "required": [
+        "executable",
+        "readArgs",
+        "writeArgs",
+        "timeoutMs",
+        "maxOutputBytes"
+      ],
+      "additionalProperties": false
+    },
+    "minApprovals": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "settleMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86400000
+    },
+    "optionalChecks": {
+      "enum": ["ignore", "safe-terminal"]
+    },
+    "allowNoChecks": {
+      "type": "boolean"
+    },
+    "blockingLabels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "maxItems": 100
+    },
+    "leaseMs": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 86400000
+    },
+    "squashTitle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "squashBody": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 65536
+    },
+    "envNames": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,255}$"
+      }
+    }
+  },
+  "required": [
+    "provider",
+    "minApprovals",
+    "settleMs",
+    "optionalChecks",
+    "allowNoChecks",
+    "blockingLabels",
+    "leaseMs",
+    "squashTitle",
+    "squashBody",
+    "envNames"
+  ],
+  "additionalProperties": false
+}

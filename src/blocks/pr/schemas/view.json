@@ -1,0 +1,123 @@
+{
+  "type": "object",
+  "properties": {
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "maxLength": 200
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "evidence": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "evidence.json"
+        }
+      ]
+    },
+    "verdict": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "INCOMPLETE",
+            "DRAFT",
+            "CONFLICTING",
+            "CHECKS_FAILED",
+            "CHECKS_PENDING",
+            "REVIEW_BLOCKED",
+            "REVIEW_REQUIRED",
+            "SETTLING",
+            "MERGE_READY",
+            "CLOSED",
+            "MERGED"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "maxItems": 100
+        }
+      },
+      "required": ["status", "reasons"],
+      "additionalProperties": false
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "appId": {
+            "type": ["integer", "null"],
+            "minimum": 1
+          },
+          "headSha": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{40}$"
+          },
+          "status": {
+            "enum": ["QUEUED", "IN_PROGRESS", "PENDING", "COMPLETED"]
+          },
+          "conclusion": {
+            "enum": [
+              null,
+              "SUCCESS",
+              "NEUTRAL",
+              "SKIPPED",
+              "FAILURE",
+              "CANCELLED",
+              "TIMED_OUT",
+              "ACTION_REQUIRED",
+              "STALE",
+              "STARTUP_FAILURE"
+            ]
+          }
+        },
+        "required": ["name", "appId", "headSha", "status", "conclusion"],
+        "additionalProperties": false
+      },
+      "maxItems": 10000
+    },
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "resolved": {
+            "type": "boolean"
+          }
+        },
+        "required": ["id", "resolved"],
+        "additionalProperties": false
+      },
+      "maxItems": 10000
+    }
+  },
+  "required": ["repository", "number", "evidence", "verdict"],
+  "additionalProperties": false
+}

@@ -1,0 +1,57 @@
+{
+  "type": "object",
+  "properties": {
+    "executable": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "account": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+    },
+    "host": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]*$",
+      "maxLength": 253
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 300000
+    },
+    "maxOutputBytes": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 1048576
+    },
+    "pageSize": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "maxPages": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "envNames": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,255}$"
+      }
+    }
+  },
+  "required": [
+    "executable",
+    "timeoutMs",
+    "maxOutputBytes",
+    "pageSize",
+    "maxPages",
+    "envNames"
+  ],
+  "additionalProperties": false
+}

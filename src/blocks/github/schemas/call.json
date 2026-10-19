@@ -1,0 +1,69 @@
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "create"
+        },
+        "payload": {
+          "$ref": "create.json"
+        }
+      },
+      "required": ["action", "payload"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "reply"
+        },
+        "payload": {
+          "$ref": "reply.json"
+        }
+      },
+      "required": ["action", "payload"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "resolve"
+        },
+        "payload": {
+          "$ref": "resolve.json"
+        }
+      },
+      "required": ["action", "payload"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "rerun"
+        },
+        "payload": {
+          "$ref": "rerun.json"
+        }
+      },
+      "required": ["action", "payload"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "merge"
+        },
+        "payload": {
+          "$ref": "merge.json"
+        }
+      },
+      "required": ["action", "payload"],
+      "additionalProperties": false
+    }
+  ]
+}

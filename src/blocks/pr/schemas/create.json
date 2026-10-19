@@ -1,0 +1,35 @@
+{
+  "type": "object",
+  "properties": {
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "maxLength": 200
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "body": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 65536
+    },
+    "head": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "draft": {
+      "type": "boolean"
+    }
+  },
+  "required": ["repository", "title", "body", "head", "base", "draft"],
+  "additionalProperties": false
+}

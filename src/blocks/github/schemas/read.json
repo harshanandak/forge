@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "const": "status"
+    },
+    "payload": {
+      "$ref": "ref.json"
+    }
+  },
+  "required": ["action", "payload"],
+  "additionalProperties": false
+}

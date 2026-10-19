@@ -1,0 +1,196 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/pr",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "configSchema": "schemas/config.json",
+  "nouns": {
+    "pr": {
+      "interface": "1.0.0"
+    }
+  },
+  "requires": [
+    {
+      "slot": "process",
+      "interface": "forge.process@1"
+    },
+    {
+      "slot": "environment",
+      "interface": "forge.environment@1"
+    },
+    {
+      "slot": "state",
+      "interface": "forge.state@1"
+    }
+  ],
+  "operations": {
+    "pr.status": {
+      "input": "schemas/ref.json",
+      "output": "schemas/view.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": ["external:process", "environment:read"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "pr.checks": {
+      "input": "schemas/ref.json",
+      "output": "schemas/view.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": ["external:process", "environment:read"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "pr.threads": {
+      "input": "schemas/ref.json",
+      "output": "schemas/view.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": ["external:process", "environment:read"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "pr.create": {
+      "input": "schemas/create.json",
+      "output": "schemas/created.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "pr:write",
+        "external:write",
+        "external:process",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "pr.link": {
+      "input": "schemas/link.json",
+      "output": "schemas/view.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": ["pr:write", "external:process", "environment:read"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "pr.claim": {
+      "input": "schemas/ref.json",
+      "output": "schemas/lease.json",
+      "context": "leased",
+      "timeoutMs": 300000,
+      "effects": ["pr:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "leaseMode": "acquire"
+    },
+    "pr.renew": {
+      "input": "schemas/ref.json",
+      "output": "schemas/lease.json",
+      "context": "leased",
+      "timeoutMs": 300000,
+      "effects": ["pr:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "leaseMode": "held"
+    },
+    "pr.release": {
+      "input": "schemas/ref.json",
+      "output": "schemas/lease.json",
+      "context": "leased",
+      "timeoutMs": 300000,
+      "effects": ["pr:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "leaseMode": "held"
+    },
+    "pr.reply": {
+      "input": "schemas/reply.json",
+      "output": "schemas/accepted.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "pr:write",
+        "external:write",
+        "external:process",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "pr.resolve": {
+      "input": "schemas/resolve.json",
+      "output": "schemas/accepted.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "pr:write",
+        "external:write",
+        "external:process",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "pr.rerun": {
+      "input": "schemas/rerun.json",
+      "output": "schemas/accepted.json",
+      "context": "project",
+      "timeoutMs": 300000,
+      "effects": [
+        "pr:write",
+        "external:write",
+        "external:process",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "pr.merge": {
+      "input": "schemas/merge.json",
+      "output": "schemas/view.json",
+      "context": "leased",
+      "timeoutMs": 300000,
+      "effects": [
+        "pr:write",
+        "external:write",
+        "external:process",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "leaseMode": "held"
+    }
+  },
+  "docs": "docs.json",
+  "files": [
+    "schemas/accepted.json",
+    "schemas/config.json",
+    "schemas/create.json",
+    "schemas/created.json",
+    "schemas/empty.json",
+    "schemas/evidence.json",
+    "schemas/lease.json",
+    "schemas/link.json",
+    "schemas/merge.json",
+    "schemas/ref.json",
+    "schemas/reply.json",
+    "schemas/rerun.json",
+    "schemas/resolve.json",
+    "schemas/view.json"
+  ]
+}
