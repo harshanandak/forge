@@ -4,15 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssembly } from "../../../src/assembly/index.ts";
 import * as providerModule from "../../../src/assembly/providers.ts";
+import { fakeProcess } from "../../adapters/process/fake-process.ts";
 import type { AmbientContext } from "../../../src/generated/types.ts";
 
-async function fixture(leases = false) {
+async function fixture(
+  leases = false,
+  strict?: { slot: "repository" | "account" | "process"; files: boolean },
+) {
   const root = mkdtempSync(join(tmpdir(), "forge-stateless-files-"));
   const block = join(root, "block");
   mkdirSync(block);
   const effects = {
-    pure: [],
-    dishonest: [],
+    pure: strict ? ["external:process"] : [],
+    dishonest: strict ? ["external:process"] : [],
     read: ["files:read"],
   };
   const operations = Object.fromEntries(
@@ -22,6 +26,7 @@ async function fixture(leases = false) {
         input: "input.json",
         output: "output.json",
         context: "stateless",
+        ...(strict && name !== "read" ? { processContainment: "strict" } : {}),
         effects: declared,
         idempotent: true,
         callers: ["agent", "human"],
@@ -39,12 +44,25 @@ async function fixture(leases = false) {
       profile: "trusted-action/v2",
       entry: "entry.cjs",
       docs: "docs.json",
-      requires: leases
-        ? ["one", "two", "three"].map((slot) => ({
-            slot,
-            interface: "forge.vcs-command@1",
-          }))
-        : [{ slot: "files", interface: "forge.files@1" }],
+      requires: strict
+        ? [
+            {
+              slot: strict.slot,
+              interface:
+                strict.slot === "process"
+                  ? "forge.process@1"
+                  : `forge.${strict.slot === "repository" ? "vcs" : "github"}-command@1`,
+            },
+            ...(strict.files
+              ? [{ slot: "files", interface: "forge.files@1" }]
+              : []),
+          ]
+        : leases
+          ? ["one", "two", "three"].map((slot) => ({
+              slot,
+              interface: "forge.vcs-command@1",
+            }))
+          : [{ slot: "files", interface: "forge.files@1" }],
       operations,
     }),
     "docs.json": JSON.stringify({
@@ -58,7 +76,7 @@ async function fixture(leases = false) {
     "input.json": '{"type":"object","additionalProperties":false}',
     "output.json": "{}",
     "entry.cjs": `module.exports = {
-      "sample.pure": async () => "pure",
+      "sample.pure": async ({services}) => ${strict ? `services.${strict.slot}.run(${strict.slot === "process" ? '{kind:"resolved",path:"/fake/bin/git"}' : '"git"'}, ["--version"], {cwd:"/project",env:{},timeoutMs:1000,maxOutputBytes:1024})` : '"pure"'},
       "sample.dishonest": async ({ services }) => services.files.read("input", 10),
       "sample.read": async ({ services }) => services.files.read("input", 10)
     };`,
@@ -184,6 +202,57 @@ for (const mode of [
       expect(acquired).toBe(3);
       expect(closed).toBe(3);
       expect(result.ok).toBe(mode === "success");
+    } finally {
+      mock.mockRestore();
+      if (h) {
+        await h.assembly.close();
+        rmSync(h.root, { recursive: true, force: true });
+      }
+    }
+  }, 30000);
+
+for (const spec of [
+  { slot: "repository", files: false },
+  { slot: "account", files: false },
+  { slot: "process", files: true },
+  { slot: "repository", files: true },
+  { slot: "account", files: true },
+] as const)
+  test(`strict ${spec.slot} preflight with files slot ${spec.files} runs only declared capabilities`, async () => {
+    const process = {
+      ...fakeProcess(["git"], () => ({ stdout: "version fixture" })),
+      containment: () =>
+        Promise.resolve({
+          available: true as const,
+          backend: "windows-job" as const,
+        }),
+    };
+    const original = providerModule.createAssemblyProviders;
+    const mock = spyOn(
+      providerModule,
+      "createAssemblyProviders",
+    ).mockImplementation((root, options) => original(root, options, process));
+    let h: Awaited<ReturnType<typeof fixture>> | undefined;
+    try {
+      h = await fixture(false, spec);
+      expect(
+        await h.call(
+          "config.grant",
+          { digest: h.digest, effects: ["external:process"] },
+          h.configurationContext,
+        ),
+      ).toMatchObject({ ok: true });
+      expect(await h.call("sample.pure")).toMatchObject({
+        ok: true,
+        result: { exitCode: 0, stdout: "version fixture" },
+      });
+      expect(process.runs).toHaveLength(1);
+      expect(process.runs[0]?.options.containment).toBe("strict");
+      if (spec.files)
+        expect(await h.call("sample.dishonest")).toMatchObject({
+          ok: false,
+          error: { code: "EFFECT_UNDECLARED" },
+        });
     } finally {
       mock.mockRestore();
       if (h) {

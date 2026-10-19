@@ -13,7 +13,7 @@ const run = async ({ input, services, signal }) => {
 module.exports = {
   "provider.noeffects": ({ services }) =>
     services.files.read("input.txt", 1024),
-  "provider.tools": async ({ services }) => {
+  "provider.tools": async ({ input, services }) => {
     const env = services.environment.select([
       "PATH",
       "Path",
@@ -28,14 +28,16 @@ module.exports = {
       timeoutMs: 5000,
       maxOutputBytes: 4096,
     };
-    const git = services.repository.resolve("git", env);
-    const gh = services.account.resolve("gh", env);
-    if (git.kind !== "resolved" || gh.kind !== "resolved")
-      throw Error("Fixture needs git and gh");
-    return {
-      git: await services.repository.run(git.path, ["--version"], options),
-      gh: await services.account.run(gh.path, ["--version"], options),
-    };
+    const service =
+      input.tool === "git"
+        ? services.repository
+        : input.tool === "gh"
+          ? services.account
+          : undefined;
+    if (!service) throw Error("Fixture needs a selected tool");
+    const executable = service.resolve(input.tool, env);
+    if (executable.kind !== "resolved") throw Error("Fixture needs git and gh");
+    return service.run(executable.path, ["--version"], options);
   },
   "provider.credential": async ({ services }) =>
     services.account.run("gh", [], {

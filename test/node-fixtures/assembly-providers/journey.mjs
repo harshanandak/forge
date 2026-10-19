@@ -713,12 +713,32 @@ try {
     );
   }
   if (["all", "tools"].includes(mode)) {
-    const tools = cli("tools", {});
-    const direct = ok(await invoke("provider.tools"), "typed commands");
-    assert.equal(direct.git.exitCode, 0);
-    assert.equal(direct.gh.exitCode, 0);
-    assert.match(tools.git.stdout, /git version/i);
-    assert.match(tools.gh.stdout, /gh version/i);
+    for (const tool of ["git", "gh"]) {
+      const command = cli("tools", { tool });
+      const direct = ok(
+        await invoke("provider.tools", { tool }),
+        "typed command",
+      );
+      for (const result of [command, direct]) {
+        assert.equal(
+          result.exitCode,
+          0,
+          JSON.stringify({
+            tool,
+            exitCode: result.exitCode,
+            signal: result.signal,
+            timedOut: result.timedOut,
+            durationMs: result.durationMs,
+          }),
+        );
+        assert.equal(result.timedOut, false);
+        assert.equal(result.truncated, false);
+        assert.match(
+          result.stdout,
+          tool === "git" ? /git version/i : /gh version/i,
+        );
+      }
+    }
     assert.equal(
       (await invoke("provider.noeffects")).error?.message,
       "Clone files require files:read or files:write on this operation",

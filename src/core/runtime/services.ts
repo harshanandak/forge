@@ -120,7 +120,7 @@ export class InvocationServices {
   async prepare(value: unknown): Promise<void> {
     if (!this.#strict) return;
     const seen = new Set<object>();
-    const ports: ProcessPort[] = [];
+    const ports: Pick<ProcessPort, "containment">[] = [];
     const visit = (entry: unknown, depth: number): void => {
       if (typeof entry !== "object" || entry === null || seen.has(entry))
         return;
@@ -132,16 +132,21 @@ export class InvocationServices {
       seen.add(entry);
       if (
         "capability" in entry &&
-        entry.capability === "forge.process/v1" &&
+        (entry.capability === "forge.process/v1" ||
+          entry.capability === "forge.tool-command/v1") &&
         "run" in entry &&
         "resolve" in entry &&
         typeof entry.run === "function" &&
         typeof entry.resolve === "function"
       ) {
-        ports.push(entry as ProcessPort);
+        ports.push(entry as Pick<ProcessPort, "containment">);
         return;
       }
-      for (const child of Object.values(entry)) visit(child, depth + 1);
+      // Accessors enforce authority on use; discovery must not evaluate them.
+      for (const property of Object.values(
+        Object.getOwnPropertyDescriptors(entry),
+      ))
+        if ("value" in property) visit(property.value, depth + 1);
     };
     visit(value, 0);
     if (!ports.length)

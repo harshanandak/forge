@@ -69,6 +69,7 @@ contract("In-memory", (available) => {
   return {
     runs,
     port: {
+      capability: "forge.tool-command/v1",
       resolve: (program) =>
         available
           ? { kind: "resolved", path: `/fake/bin/${program}` }

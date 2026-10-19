@@ -6,6 +6,10 @@ export function createGithubCommandPort(
   process: ProcessPort,
 ): AccountCommandPort {
   return {
+    capability: "forge.tool-command/v1",
+    ...(process.containment
+      ? { containment: () => process.containment!() }
+      : {}),
     resolve: (program, env) => process.resolve(program, env),
     async run(program, args, options) {
       if (options.credential !== undefined)

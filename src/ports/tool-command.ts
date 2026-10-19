@@ -1,12 +1,16 @@
 import type { Unavailable } from "../generated/types.ts";
 import type {
   ProcessResult,
+  ContainmentCapability,
   ResolvedExecutable,
   SpawnOptions,
 } from "./process.ts";
 
 /** An adapter owns executable resolution and argv dispatch; the caller supplies every budget. */
 export interface ToolCommandPort {
+  /** Distinct from ProcessPort: run accepts a program string, not a resolved object. */
+  readonly capability: "forge.tool-command/v1";
+  containment?(): Promise<ContainmentCapability>;
   resolve(
     program: string,
     env: Readonly<Record<string, string>>,

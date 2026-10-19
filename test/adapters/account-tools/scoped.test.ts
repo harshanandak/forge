@@ -1,10 +1,12 @@
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { expect, setDefaultTimeout, test } from "bun:test";
 import {
   createAssemblyProviders,
   assemblyProvides,
 } from "../../../src/assembly/providers.ts";
 import type { ProcessPort, ProcessResult } from "../../../src/ports/process.ts";
-import { result } from "../process/fake-process.ts";
+import { fakeProcess, result } from "../process/fake-process.ts";
 
 setDefaultTimeout(5000);
 for (const kind of ["repository", "account"] as const) {
@@ -138,4 +140,67 @@ test("typed command interfaces are assembled at their declared versions", () => 
   expect(assemblyProvides("forge.vcs-command@1")).toBe(true);
   expect(assemblyProvides("forge.github-command@1")).toBe(true);
   expect(assemblyProvides("forge.github-command@2")).toBe(false);
+});
+
+test("packed command fixture gives each selected tool its own invocation budget", async () => {
+  const module = {
+    exports: {} as Record<string, (args: unknown) => Promise<unknown>>,
+  };
+  runInNewContext(
+    readFileSync(
+      new URL(
+        "../../node-fixtures/assembly-providers/entry.cjs",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    { module },
+  );
+  for (const tool of ["git", "gh"] as const) {
+    let deadline = Date.now() + 10000;
+    const process = fakeProcess(
+      ["git", "gh", "/fake/bin/git", "/fake/bin/gh"],
+      ({ options }) => {
+        // Model launch plus confirmed cleanup consuming most of the handler budget.
+        deadline = Date.now() + 4000;
+        return {
+          exitCode: options.timeoutMs === 5000 ? 0 : null,
+          timedOut: options.timeoutMs < 5000,
+        };
+      },
+    );
+    const providers = createAssemblyProviders(
+      "/project",
+      { env: { PATH: "/tools" } },
+      process,
+    );
+    const scope = {
+      op: "provider.tools",
+      effects: ["external:process", "environment:read"],
+      signal: new AbortController().signal,
+      get deadline() {
+        return deadline;
+      },
+      processContainment: "supervised" as const,
+    };
+    const repository = await providers.repository(scope);
+    const account = await providers.account(scope);
+    try {
+      const output = await module.exports["provider.tools"]!({
+        input: { tool },
+        services: {
+          repository: repository.value,
+          account: account.value,
+          environment: providers.environment(scope),
+          process: { cwd: "/project" },
+        },
+      });
+      expect(output).toMatchObject({ exitCode: 0, timedOut: false });
+      expect(process.runs.map((run) => run.args)).toEqual([["--version"]]);
+      expect(process.runs[0]?.executable).toEndWith(`/${tool}`);
+    } finally {
+      await repository.close();
+      await account.close();
+    }
+  }
 });
