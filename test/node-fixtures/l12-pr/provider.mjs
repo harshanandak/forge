@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { checkNodeId } from "./check-id.ts";
 const [installed, file] = process.argv.slice(2);
 const load = (path) =>
   import(pathToFileURL(join(installed, "dist/src", path)).href);
@@ -84,7 +85,7 @@ const port = {
                       e.checks.map((v, index) =>
                         v.appId === null
                           ? {
-                              id: `S:${v.name}:${v.headSha}:${index}`,
+                              id: checkNodeId(v, index),
                               __typename: "StatusContext",
                               context: v.name,
                               state:
@@ -96,7 +97,7 @@ const port = {
                               commit: { oid: v.headSha },
                             }
                           : {
-                              id: `C:${v.name}:${v.headSha}:${index}`,
+                              id: checkNodeId(v, index),
                               __typename: "CheckRun",
                               name: v.name,
                               status: v.status,
