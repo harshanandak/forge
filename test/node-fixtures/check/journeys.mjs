@@ -27,6 +27,11 @@ const { sqliteStore } = await load("adapters/store-sqlite/index.js");
 const { detectProject, createFolderFiles } = await load(
   "blocks/project/index.js",
 );
+// Cleanup confirms a group once only zombies remain, and a zombie still answers
+// kill(pid, 0) until it is reaped. The state-aware probe counts it as stopped.
+const probe = process.env.CHECK_LIVENESS_PROBE;
+assert.ok(probe, "CHECK_LIVENESS_PROBE names the transpiled liveness probe");
+const { isRunning } = await import(pathToFileURL(probe).href);
 const child = fileURLToPath(new URL("child.mjs", import.meta.url));
 const directory = realpathSync(mkdtempSync(join(tmpdir(), "check-journey-")));
 const opened = await sqliteStore.open({
@@ -226,8 +231,9 @@ const cases = {
       assert.equal(launches, 1, "cancellation starts no subsequent check");
       const pids = JSON.parse(readFileSync(marker, "utf8"));
       for (const pid of Object.values(pids))
-        assert.throws(
-          () => process.kill(pid, 0),
+        assert.equal(
+          isRunning(pid),
+          false,
           "cancellation stops every marked process",
         );
       assert.deepEqual(
@@ -328,17 +334,7 @@ const cases = {
     );
     const pid = Number(/descendant:(\d+)/.exec(receipt.runs[0].stdout)?.[1]);
     assert.ok(pid > 0, "descendant started");
-    let alive = true;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        alive = false;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    assert.equal(alive, false, "timeout reaps descendant");
+    assert.equal(isRunning(pid), false, "timeout reaps descendant");
   },
   async receipt() {
     const receipt = await check.run({ trigger: "manual" }, config("unknown"));

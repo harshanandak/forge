@@ -15,6 +15,9 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAssembly } from "forge-workflow/runtime";
+// Cleanup may settle while a stopped member is still an unreaped zombie, which
+// answers kill(pid, 0) on every POSIX platform. This probe reads its state.
+import { isRunning as alive } from "./liveness.mjs";
 
 const mode = process.argv[2] ?? "all";
 const packageUrl = import.meta.resolve("forge-workflow/package.json");
@@ -165,18 +168,6 @@ const launch = (source) => ({
   args: ["-e", source],
   names,
 });
-function alive(pid) {
-  try {
-    process.kill(pid, 0);
-    return (
-      process.platform !== "linux" ||
-      !readFileSync(`/proc/${pid}/stat`, "utf8").includes(") Z ")
-    );
-  } catch (error) {
-    if (["ESRCH", "ENOENT"].includes(error.code)) return false;
-    throw error;
-  }
-}
 async function mcpRun(input, name = "provider_run") {
   const child = spawn(process.execPath, [bin, "--mcp"], {
     cwd: root,
