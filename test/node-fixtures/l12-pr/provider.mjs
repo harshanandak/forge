@@ -81,10 +81,10 @@ const port = {
                   oid: e.headSha,
                   statusCheckRollup: {
                     contexts: connection(
-                      e.checks.map((v) =>
+                      e.checks.map((v, index) =>
                         v.appId === null
                           ? {
-                              id: `S:${v.name}`,
+                              id: `S:${v.name}:${v.headSha}:${index}`,
                               __typename: "StatusContext",
                               context: v.name,
                               state:
@@ -96,7 +96,7 @@ const port = {
                               commit: { oid: v.headSha },
                             }
                           : {
-                              id: `C:${v.name}`,
+                              id: `C:${v.name}:${v.headSha}:${index}`,
                               __typename: "CheckRun",
                               name: v.name,
                               status: v.status,
