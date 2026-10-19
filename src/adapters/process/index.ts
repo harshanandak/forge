@@ -7,12 +7,16 @@ import type {
 } from "../../ports/process.ts";
 import type { Platform } from "./platform.ts";
 import { type FileProbe, realFileProbe, resolveExecutable } from "./resolve.ts";
+import {
+  containmentCapability,
+  type ContainmentOptions,
+} from "./containment.ts";
 import { runProcess } from "./run.ts";
 
 export { type ProcessErrorCode, ProcessSpawnError } from "./errors.ts";
 export type { FileProbe } from "./resolve.ts";
 
-export interface ProcessAdapterOptions {
+export interface ProcessAdapterOptions extends ContainmentOptions {
   /** Defaults to the running platform; tests pass another to exercise its rules. */
   readonly platform?: Platform;
   readonly probe?: FileProbe;
@@ -25,6 +29,8 @@ export function createProcessPort(
   const platform = options.platform ?? process.platform;
   const probe = options.probe ?? realFileProbe;
   return {
+    capability: "forge.process/v1",
+    containment: () => containmentCapability(platform, options),
     resolve(
       executable: string,
       env: Readonly<Record<string, string>>,
@@ -36,7 +42,7 @@ export function createProcessPort(
       args: readonly string[],
       spawnOptions: SpawnOptions,
     ): Promise<ProcessResult> {
-      return runProcess(executable.path, args, spawnOptions, platform);
+      return runProcess(executable.path, args, spawnOptions, platform, options);
     },
   };
 }

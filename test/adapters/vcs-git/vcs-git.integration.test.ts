@@ -14,7 +14,14 @@ import { join } from "node:path";
 import { createProcessPort } from "../../../src/adapters/process/index.ts";
 import { createVcsPort } from "../../../src/adapters/vcs-git/index.ts";
 
-const processPort = createProcessPort();
+const processPort = createProcessPort({
+  supervision: {
+    cleanupTimeoutMs: 5000,
+    pollIntervalMs: 25,
+    drainTimeoutMs: 250,
+    maxConcurrent: 1,
+  },
+});
 const baseEnv: Record<string, string> = {};
 for (const [name, value] of Object.entries(process.env)) {
   if (value !== undefined) baseEnv[name] = value;

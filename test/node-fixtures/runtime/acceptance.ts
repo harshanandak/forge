@@ -132,7 +132,7 @@ try {
   });
   assert.partialDeepStrictEqual(
     await execute("return Promise.resolve(input)"),
-    { ok: false, error: { code: "BLOCK_ASYNC_UNSUPPORTED" } },
+    { ok: true, result: "hello" },
   );
   for (const [code, limit] of [
     ["while(true) {}", "timeoutMs"],
@@ -146,8 +146,15 @@ try {
     );
     assert.equal(result.ok, false);
     if (!result.ok) {
-      assert.equal(result.error.code, "LIMIT_EXCEEDED");
-      assert.ok(result.error.message.includes(limit!));
+      assert.equal(
+        result.error.code,
+        limit === "timeoutMs" ? "INVOCATION_TIMEOUT" : "LIMIT_EXCEEDED",
+      );
+      assert.ok(
+        result.error.message.includes(
+          limit === "timeoutMs" ? "deadline" : limit!,
+        ),
+      );
     }
   }
   const actor = { kind: "agent" as const, id: "a" };

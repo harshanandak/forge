@@ -35,7 +35,14 @@ test("a declared script runs with the user's real npm and returns its output and
     if (value !== undefined) env[name] = value;
   }
   const port = createPackageManagerPort({
-    process: createProcessPort(),
+    process: createProcessPort({
+      supervision: {
+        cleanupTimeoutMs: 5000,
+        pollIntervalMs: 25,
+        drainTimeoutMs: 250,
+        maxConcurrent: 1,
+      },
+    }),
     env,
     maxOutputBytes: 1_000_000,
   });

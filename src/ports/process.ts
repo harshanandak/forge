@@ -9,6 +9,29 @@ export interface SpawnOptions {
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
   readonly stdin?: string;
+  /** Cancellation stops the supervised scope before run settles. */
+  readonly signal?: AbortSignal;
+  readonly containment?: "supervised" | "strict";
+}
+
+export type ContainmentCapability =
+  | {
+      readonly available: true;
+      readonly backend: "windows-job" | "linux-cgroup";
+    }
+  | { readonly available: false; readonly reason: string };
+
+export interface ProcessSupervisionReport {
+  readonly mode: "supervised" | "strict";
+  readonly backend: "windows-job" | "linux-cgroup" | "process-group";
+  readonly supervisorPid: number;
+  readonly commandPid?: number;
+  /** Known associated PIDs terminated at cleanup; process-group cleanup addresses groupId. */
+  readonly stoppedPids: readonly number[];
+  readonly groupId?: number;
+  readonly confirmed: boolean;
+  readonly pidSnapshotComplete?: boolean;
+  readonly supervisorResidentBytes: number;
 }
 
 export interface ProcessResult {
@@ -21,6 +44,7 @@ export interface ProcessResult {
   /** Output beyond maxOutputBytes was dropped; what was kept is still returned. */
   readonly truncated: boolean;
   readonly durationMs: number;
+  readonly supervision?: ProcessSupervisionReport;
 }
 
 export interface ResolvedExecutable {
@@ -29,6 +53,10 @@ export interface ResolvedExecutable {
 }
 
 export interface ProcessPort {
+  /** Explicit capability identity; unrelated resolve/run clients are never rewritten. */
+  readonly capability: "forge.process/v1";
+  /** A host capability probe. Never launches the requested executable. */
+  containment?(): Promise<ContainmentCapability>;
   resolve(
     executable: string,
     env: Readonly<Record<string, string>>,

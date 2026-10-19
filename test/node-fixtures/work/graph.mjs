@@ -135,7 +135,10 @@ function call(operation, input = {}) {
       fail: (code, message) => {
         throw new Error(`${code}: ${message}`);
       },
-      timeoutMs: 1000,
+      timeoutMs: 15000,
+      deadline: Date.now() + 15000,
+      signal: new AbortController().signal,
+      settled: () => undefined,
     }),
   );
 }

@@ -22,10 +22,16 @@ for (const suite of ["integration", "integration-rest"] as const)
       const work = mkdtempSync(join(tmpdir(), "forge-suite-outcomes-"));
       try {
         mkdirSync(join(work, "tools"));
-        cpSync(
-          resolve(import.meta.dirname, "../../../tools/test-suite.ts"),
-          join(work, "tools/test-suite.ts"),
-        );
+        for (const file of [
+          "test-suite.ts",
+          "child-runner.ts",
+          "runner-policy.ts",
+          "runner-policy.json",
+        ])
+          cpSync(
+            resolve(import.meta.dirname, `../../../tools/${file}`),
+            join(work, "tools", file),
+          );
         for (const lane of ["packed", "first-slice", "serial"] as const) {
           const path = join(
             work,
@@ -69,7 +75,7 @@ test("${lane}", async () => {
           },
         );
         expect(result.error).toBeUndefined();
-        expect(result.status).toBe(
+        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(
           failing === "serial" ||
             ((failing === "packed" || failing === "first-slice") &&
               suite === "integration")

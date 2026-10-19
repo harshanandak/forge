@@ -19,7 +19,7 @@
     "id": { "$ref": "common.json#/$defs/BlockId" },
     "version": { "$ref": "common.json#/$defs/SemVer" },
     "forgeVersion": { "$ref": "common.json#/$defs/VersionRange" },
-    "authorAbi": { "const": "forge.author/v1" },
+    "authorAbi": { "enum": ["forge.author/v1", "forge.author/v2"] },
     "profile": { "$ref": "#/$defs/ExecutionProfile" },
     "entry": { "$ref": "common.json#/$defs/RelativePath" },
     "files": {
@@ -32,7 +32,7 @@
     "runtimeDependencies": {
       "type": "array",
       "maxItems": 0,
-      "description": "Outside sync blocks ship one self-contained file; runtime dependencies are not allowed in this profile."
+      "description": "Outside blocks ship one self-contained file; runtime dependencies are not allowed in this profile."
     },
     "configSchema": {
       "description": "JSON Schema for this block's per-instance config.",
@@ -70,8 +70,8 @@
   "additionalProperties": false,
   "$defs": {
     "ExecutionProfile": {
-      "description": "trusted-action-sync/v1: a sync handler gets {input, config, services} and returns one JSON value; a Promise is refused.",
-      "enum": ["trusted-action-sync/v1"]
+      "description": "trusted-action/v2: handlers receive {input, config, services, signal, deadline} and return JSON or a Promise of JSON. Legacy v1 manifests use the same runtime.",
+      "enum": ["trusted-action-sync/v1", "trusted-action/v2"]
     },
     "NounDeclaration": {
       "type": "object",

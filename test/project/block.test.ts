@@ -48,23 +48,33 @@ test("the block manifest and docs record satisfy the contract and declare exactl
   expect(declared).toEqual(Object.keys(operations));
 }, 30_000);
 
-test("project.detect returns the report for the folder the runtime binds", () => {
+test("project.detect returns the report for the folder the runtime binds", async () => {
   const files = createMemoryFiles({
     "package.json": JSON.stringify({ scripts: { test: "t" } }),
     "package-lock.json": "{}",
   });
-  const out = operations["project.detect"]({ input: {}, services: { files } });
+  const out = await operations["project.detect"]({
+    input: {},
+    services: { files },
+    signal: new AbortController().signal,
+    deadline: Date.now() + 1000,
+  });
   expect(out.failures).toEqual([]);
   expect(out.observations.map((o) => o.key)).toContain(
     "/blocks/check/config/commands/test",
   );
 }, 30_000);
 
-test("project.detect without a project folder fails with a coded, non-retryable error", () => {
+test("project.detect without a project folder fails with a coded, non-retryable error", async () => {
   for (const services of [undefined, {}, { files: {} }]) {
     let failure: unknown;
     try {
-      operations["project.detect"]({ input: {}, services });
+      await operations["project.detect"]({
+        input: {},
+        services,
+        signal: new AbortController().signal,
+        deadline: Date.now() + 1000,
+      });
     } catch (error) {
       failure = error;
     }

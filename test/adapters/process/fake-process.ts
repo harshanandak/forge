@@ -39,6 +39,7 @@ export function fakeProcess(
 ): FakeProcess {
   const runs: RecordedRun[] = [];
   return {
+    capability: "forge.process/v1",
     runs,
     resolve(executable: string): ResolvedExecutable | Unavailable {
       return known.includes(executable)
