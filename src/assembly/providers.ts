@@ -90,6 +90,7 @@ export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.environment@1.0.0",
   "forge.crypto@1.0.0",
   "forge.runner-output@1.0.0",
+  "forge.project-state@1.0.0",
 ];
 export function assemblyProvides(required: string): boolean {
   return ASSEMBLY_PROVIDES.some((provided) =>

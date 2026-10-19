@@ -30,6 +30,21 @@
         }
       },
       "additionalProperties": false
+    },
+    "levels": {
+      "type": "object",
+      "description": "The level a new note gets when the caller does not say one. required: refuse and name both levels. nearest: project when the call is inside a project, device otherwise. project or device: always that level. Left out, a level is required.",
+      "properties": {
+        "human": {
+          "enum": ["required", "nearest", "project", "device"],
+          "description": "For a person (CLI)."
+        },
+        "agent": {
+          "enum": ["required", "nearest", "project", "device"],
+          "description": "For an agent (MCP, skills, hooks, any non-interactive caller)."
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
