@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
@@ -640,7 +640,8 @@ try {
         await opened.handle.close();
       }
     }
-    for (const context of ["leased", "stateless"]) {
+    // Leased bindings are covered by the generic lease journey; stateless writes remain unsupported.
+    for (const context of ["stateless"]) {
       const unsupported = join(root, `unsupported-${context}`),
         bad = block(unsupported, `unsupported-${context}`);
       bad.requires = [{ slot: "state", interface: "forge.state@1" }];
@@ -648,8 +649,6 @@ try {
       bad.operations[`unsupported-${context}.echo`].effects = [
         "unsupported:write",
       ];
-      if (context === "leased")
-        bad.operations[`unsupported-${context}.echo`].leaseMode = "held";
       rewrite(unsupported, "forge.block.json", bad);
       const refused = cli(
         root,
