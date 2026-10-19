@@ -25,7 +25,7 @@ const env = {
 const envNames = Object.keys(env).filter((name) =>
   /^(?:path|pathext|systemroot|windir|temp|tmp|home)$/i.test(name),
 );
-function cli(args, expected = 0, input) {
+function cli(args, expected = 0, input, label = "") {
   const result = spawnSync(process.execPath, [bin, ...args], {
     cwd: root,
     env,
@@ -37,7 +37,7 @@ function cli(args, expected = 0, input) {
   assert.equal(
     result.status,
     expected,
-    `${args.slice(0, 2).join(" ")}: ${result.error?.code ?? result.signal ?? "exit"} ${result.stdout} ${result.stderr}`,
+    `${label} ${args.slice(0, 2).join(" ")}: ${result.error?.code ?? result.signal ?? "exit"} ${result.stdout} ${result.stderr}`,
   );
   return JSON.parse(result.stdout);
 }
@@ -270,7 +270,12 @@ async function review() {
   for (const command of ["tool && other", 'tool "unterminated']) {
     configure({ commands: { test: command } });
     assert.equal(
-      cli(["check", "run"], 6).error.code,
+      cli(
+        ["check", "run"],
+        6,
+        undefined,
+        "invalid command string has a typed error",
+      ).error.code,
       "INPUT_INVALID",
       "invalid command string has a typed error",
     );
