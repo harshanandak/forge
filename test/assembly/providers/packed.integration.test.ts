@@ -19,6 +19,8 @@ import {
   packedCoverage,
   selectShard,
 } from "../../node-fixtures/state/counterfactuals.ts";
+import { providerCounterfactuals } from "../../node-fixtures/assembly-providers/counterfactuals.ts";
+import { runFixtures } from "../../integration/fixtures/run.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 function run(
@@ -28,13 +30,23 @@ function run(
   env: NodeJS.ProcessEnv,
   timeout = 90000,
 ) {
-  return spawnSync(command, args, {
-    cwd,
-    env,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout,
-  });
+  const started = performance.now();
+  try {
+    return spawnSync(command, args, {
+      cwd,
+      env,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout,
+    });
+  } finally {
+    const label = args[0]?.endsWith("journey.mjs")
+      ? (args[1] ?? "all")
+      : (args[1] ?? args[0] ?? command);
+    console.log(
+      `Packed providers child ${label}: ${Math.round(performance.now() - started)} ms`,
+    );
+  }
 }
 function withoutBun(): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -52,8 +64,17 @@ function withoutBun(): NodeJS.ProcessEnv {
   delete env.BUN_INSTALL;
   return env;
 }
-test("packed stock providers: declared capabilities, generated CLI/MCP, bounded clone files, snapshot and scoped processes", () => {
-  const shared = process.env.FORGE_PACKED_CONSUMER;
+test("packed stock providers: declared capabilities, generated CLI/MCP, bounded clone files, snapshot and scoped processes", async () => {
+  const started = performance.now();
+  let phaseStarted = started;
+  function phase(name: string, detail = "") {
+    console.log(
+      `Packed providers ${name}: ${Math.round(performance.now() - phaseStarted)} ms${detail}`,
+    );
+    phaseStarted = performance.now();
+  }
+  const shared =
+    process.env.PROVIDERS_PACKED_CONSUMER ?? process.env.FORGE_PACKED_CONSUMER;
   const work = mkdtempSync(
     join(shared ?? tmpdir(), shared ? "ap-" : "forge-providers-"),
   );
@@ -82,6 +103,7 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
     );
     if (!shared) {
       successful(process.execPath, ["run", "build"], root, process.env);
+      phase("build");
       const npm = [
         ...(process.env.FORGE_SMOKE_NPM_CLI
           ? [process.env.FORGE_SMOKE_NPM_CLI]
@@ -104,6 +126,7 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
           root,
         ),
       ) as { filename: string }[];
+      phase("pack");
       successful(
         node,
         [
@@ -115,20 +138,38 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
         ],
         consumer,
       );
+      phase("install");
+    } else {
+      phase("build", " (shared consumer)");
+      phase("pack", " (shared consumer)");
+      phase("install", " (shared consumer)");
     }
-    for (const file of ["journey.mjs", "entry.cjs"])
-      copyFileSync(
-        join(root, "test/node-fixtures/assembly-providers", file),
-        join(consumer, file),
-      );
-    for (const runtime of new Set(
-      [node, process.env.FORGE_NODE26].filter((value): value is string =>
-        Boolean(value),
+    const runtimes = [
+      ...new Set(
+        [node, process.env.FORGE_NODE26].filter((value): value is string =>
+          Boolean(value),
+        ),
       ),
-    ))
-      expect(
-        successful(runtime, [join(consumer, "journey.mjs")], consumer),
-      ).toContain("PASS assembly-providers all");
+    ];
+    const positives = runtimes.map((runtime) => {
+      const cwd = mkdtempSync(join(consumer, "p-"));
+      for (const file of ["journey.mjs", "entry.cjs"])
+        copyFileSync(
+          join(root, "test/node-fixtures/assembly-providers", file),
+          join(cwd, file),
+        );
+      return {
+        label: `all (${runtime})`,
+        command: runtime,
+        args: [join(cwd, "journey.mjs")],
+        cwd,
+        env,
+      };
+    });
+    const outputs = await runFixtures(positives, 2, "Packed providers");
+    for (const output of outputs)
+      expect(output).toContain("PASS assembly-providers all");
+    phase("positive fixtures");
 
     const installed = join(shared ?? consumer, "node_modules/forge-workflow");
     const isolated = join(
@@ -140,93 +181,17 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
       filter: (file) => !file.endsWith(".map") && !file.endsWith(".ts"),
     });
     for (const file of ["journey.mjs", "entry.cjs"])
-      copyFileSync(join(consumer, file), join(isolated, file));
+      copyFileSync(
+        join(root, "test/node-fixtures/assembly-providers", file),
+        join(isolated, file),
+      );
     copyFileSync(
       join(root, "test/integration/fixtures/mutation-proof.mjs"),
       join(isolated, "mutation-proof.mjs"),
     );
-    const mutations = [
-      {
-        file: "assembly/providers.js",
-        from: '"forge.runner-output@1.0.0",',
-        to: "",
-        mode: "runner-output",
-        evidence: "runner-output requirement must compose",
-      },
-      {
-        file: "assembly/index.js",
-        from: "clients[binding.slot] = providers.runnerOutput(scope);",
-        to: "clients[binding.slot] = {};",
-        mode: "runner-output",
-        evidence: "runner-output service must bind and parse",
-      },
-      {
-        file: "adapters/fs/clone-files.js",
-        from: "if (!sameCapturedFile(",
-        to: "if (false && !sameCapturedFile(",
-        mode: "conditional-race",
-        evidence: "a concurrent target replacement must be refused",
-      },
-      {
-        file: "assembly/index.js",
-        from: 'declaration.effects.includes(`${op.split(".")[0]}:write`)',
-        to: "declaration.effects.length > 0",
-        mode: "stateless",
-        evidence:
-          "a stateless operation with only non-state effects must compose",
-      },
-      {
-        file: "assembly/index.js",
-        from: "storage.acquire(scope.effects.includes(`${noun}:write`))",
-        to: "storage.acquire(scope.effects.length > 0)",
-        mode: "state-read",
-        evidence: "non-state effects must not open writable project state",
-      },
-      {
-        file: "assembly/providers.js",
-        from: '!scope.effects.includes("external:process")',
-        to: "false",
-        mode: "process-effect",
-        evidence: "process launch must require a declared launch effect",
-      },
-      {
-        file: "assembly/providers.js",
-        from: '!scope.effects.includes("environment:read")',
-        to: "false",
-        mode: "environment-effect",
-        evidence: "environment selection must require its declared effect",
-      },
-      {
-        file: "adapters/fs/clone-files.js",
-        from: "if (!options.read)",
-        to: "if (false)",
-        mode: "files-effect",
-        evidence: "file reads must require their declared effect",
-      },
-      {
-        file: "adapters/fs/clone-files.js",
-        from: "condition.expected",
-        to: "undefined",
-        mode: "files-cas",
-        evidence: "compare before replace must preserve user content",
-      },
-      {
-        file: "adapters/fs/clone-files.js",
-        from: "bytes?.byteLength ?? null",
-        to: "bytes?.byteLength ?? 0",
-        mode: "snapshot",
-        evidence: "missing and empty selected inputs have different identities",
-      },
-      {
-        file: "adapters/fs/clone-files.js",
-        from: "hash.update(bytes);",
-        to: "hash.update(new Uint8Array(bytes.byteLength));",
-        mode: "snapshot",
-        evidence: "snapshot hashes actual selected input bytes",
-      },
-    ];
+    phase("copy");
     for (const mutation of selectShard(
-      mutations,
+      providerCounterfactuals,
       packedCoverage(process.env.STATE_NODE_LEG).shard,
     )) {
       const file = join(isolated, "dist/src", mutation.file);
@@ -279,7 +244,13 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
         writeFileSync(file, original);
       }
     }
+    phase("mutations");
   } finally {
+    phaseStarted = performance.now();
     rmSync(work, { recursive: true, force: true });
+    phase("cleanup");
+    console.log(
+      `Packed providers total: ${Math.round(performance.now() - started)} ms`,
+    );
   }
 }, 180000);
