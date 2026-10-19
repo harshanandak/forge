@@ -185,6 +185,40 @@ test("approval authority belongs to the latest current-head review per author", 
   });
 });
 
+test("non-authorizing review order cannot block a ready pull request", async () => {
+  const h = harness();
+  const outside = {
+    id: "outside-1",
+    author: "outsider",
+    authorizing: false,
+    state: "CHANGES_REQUESTED",
+    headSha: head,
+    updatedAt: 1000,
+  };
+  h.set({
+    ...ready(),
+    reviews: [
+      ...(ready().reviews as Json[]),
+      outside,
+      { ...outside, id: "outside-2", state: "PENDING" },
+    ],
+  });
+  expect(await h.invoke("status")).toMatchObject({
+    verdict: { status: "MERGE_READY" },
+  });
+  h.set({
+    ...ready(),
+    reviews: [
+      ...(ready().reviews as Json[]),
+      { ...outside, authorizing: true },
+      { ...outside, id: "outside-2", state: "APPROVED", authorizing: true },
+    ],
+  });
+  expect(await h.invoke("status")).toMatchObject({
+    verdict: { status: "INCOMPLETE" },
+  });
+});
+
 test("uppercase expectHead is canonicalized before merge comparison, provider launch and state writes", async () => {
   const h = harness();
   const input = {

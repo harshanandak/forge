@@ -549,7 +549,11 @@ function compute(
     const actor = review.author.toLowerCase(),
       prior = latest.get(actor);
     if (!prior || review.updatedAt > prior.updatedAt) latest.set(actor, review);
-    else if (review.updatedAt === prior.updatedAt && review.id !== prior.id)
+    else if (
+      review.updatedAt === prior.updatedAt &&
+      review.id !== prior.id &&
+      (review.authorizing || prior.authorizing)
+    )
       return result("INCOMPLETE", "Review order is ambiguous");
   }
   let approvals = 0;

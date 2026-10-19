@@ -260,8 +260,28 @@ try {
     assert.equal(merged.result.merged, mode === "contract-merge");
   }
   if (["all", "contracts"].includes(mode)) {
+    const contractEvidence = ready();
+    contractEvidence.reviews.push({
+      id: "deleted-author",
+      author: null,
+      authorizing: true,
+      state: "CHANGES_REQUESTED",
+      headSha: head,
+      updatedAt: now - 10000,
+    });
+    contractEvidence.reviews.push({
+      id: "ghost-author",
+      author: "ghost",
+      authorizing: true,
+      state: "PENDING",
+      headSha: head,
+      updatedAt: now - 10000,
+    });
     save(
-      { ...ready(), threads: [{ id: "T1", resolved: false, headSha: head }] },
+      {
+        ...contractEvidence,
+        threads: [{ id: "T1", resolved: false, headSha: head }],
+      },
       { contractGuard: true },
     );
     const direct = async (operation, input) => {
@@ -388,11 +408,17 @@ try {
         headSha: head,
         updatedAt: now - 10000,
       });
+      if (author === "outsider")
+        value.reviews.push({
+          ...value.reviews[1],
+          id: "outside-tie",
+          state: "PENDING",
+        });
       save(value);
       const view = await status("MERGE_READY");
       assert.equal(
         view.evidence.reviews.length,
-        2,
+        value.reviews.length,
         "unknown/ghost review remains visible",
       );
       assert.equal(view.evidence.reviews[1].authorizing, false);

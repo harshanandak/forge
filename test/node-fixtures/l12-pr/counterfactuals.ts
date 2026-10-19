@@ -182,4 +182,11 @@ export const counterfactuals = [
     journey: "strict-direct",
     evidence: "strict direct provider merge must be refused",
   },
+  {
+    file: "blocks/pr/entry.cjs",
+    from: "(review.authorizing || prior.authorizing)",
+    to: "true",
+    journey: "review-contract",
+    evidence: "expected verdict MERGE_READY",
+  },
 ] as const;
