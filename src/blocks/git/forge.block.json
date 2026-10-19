@@ -45,7 +45,9 @@
         "worktree:write",
         "external:write",
         "external:process",
-        "environment:read"
+        "environment:read",
+        "files:read",
+        "files:write"
       ],
       "idempotent": false,
       "callers": ["agent", "human"],
@@ -87,6 +89,7 @@
         "external:write",
         "external:process",
         "environment:read",
+        "files:read",
         "files:write"
       ],
       "idempotent": false,

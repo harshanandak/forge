@@ -93,6 +93,7 @@ let abortAfterCreate = false;
 let invocationController;
 let namespace = "forge/git";
 let beforeBatch;
+let failNextWorktreeAdd = false;
 const processPort = {
   capability: "forge.process/v1",
   get cwd() {
@@ -126,6 +127,18 @@ const processPort = {
       const effect = beforePush;
       beforePush = undefined;
       effect();
+    }
+    if (args[0] === "worktree" && args[1] === "add" && failNextWorktreeAdd) {
+      failNextWorktreeAdd = false;
+      return record({
+        exitCode: 1,
+        signal: null,
+        stdout: "",
+        stderr: "controlled add failure",
+        timedOut: false,
+        truncated: false,
+        durationMs: 0,
+      });
     }
     if (supervised) {
       const result = await realProcess.run(executable, args, options);
@@ -496,6 +509,396 @@ function safeCommands() {
   }
 }
 try {
+  if (["all", "failed-create", "failed-create-process"].includes(mode)) {
+    const variants =
+      mode === "all"
+        ? ["existing", "process"]
+        : [mode === "failed-create" ? "existing" : "process"];
+    for (const variant of variants) {
+      namespace = `forge/git-failed-create-${variant}`;
+      for (let index = 0; index < 5; ++index) {
+        const name = `failed-${variant}-${index}`;
+        const target = join(repo, ".worktrees", name);
+        if (variant === "existing") {
+          mkdirSync(target, { recursive: true });
+          writeFileSync(join(target, "user.txt"), "keep user files\n");
+        } else failNextWorktreeAdd = true;
+        await error("GIT_FAILED", () =>
+          create(name, { base: initial }, { maxWorktrees: 3 }),
+        );
+        assert.equal(
+          owner.get(namespace, `worktree:.worktrees/${name}`),
+          undefined,
+          "failed creation with no Git registration must retire its reservation",
+        );
+        if (variant === "existing")
+          assert.equal(
+            readFileSync(join(target, "user.txt"), "utf8"),
+            "keep user files\n",
+            "reconciliation must preserve files at an unregistered path",
+          );
+      }
+      await call(
+        "worktree.clean",
+        { dryRun: false },
+        { maxWorktrees: 3, fetchBeforeClean: false },
+      );
+      await call("worktree.list", {}, { maxWorktrees: 3 });
+      assert.equal(
+        owner.list(namespace, "worktree:").length,
+        0,
+        "failed add churn must not exhaust bounded reservation capacity",
+      );
+    }
+    namespace = "forge/git";
+    console.log(
+      `PASS ${mode === "failed-create-process" ? "failed-create-process" : "failed-create"}: repeated failed adds retire absent registrations without deleting user files`,
+    );
+    if (mode === "all")
+      console.log(
+        "PASS failed-create-process: injected Git failures leave no exhausted reservations",
+      );
+  }
+  if (["all", "reconcile-absent", "reconcile-adopt"].includes(mode)) {
+    namespace = "forge/git-reconcile";
+    const binding = (name, status) => ({
+      path: `.worktrees/${name}`,
+      branch: `feature/${name}`,
+      base: initial,
+      baseSha: initial,
+      status,
+    });
+    const seed = (name, status) =>
+      owner.put(
+        namespace,
+        `worktree:.worktrees/${name}`,
+        binding(name, status),
+        { kind: "agent", id: "crashed-creator" },
+        { expectRevision: 0 },
+      );
+    if (mode !== "reconcile-adopt") {
+      for (const status of ["creating", "uncertain"]) {
+        const name = `orphan-${status}`;
+        const target = join(repo, ".worktrees", name);
+        mkdirSync(target, { recursive: true });
+        writeFileSync(join(target, "user.txt"), "unregistered user files\n");
+        seed(name, status);
+        const before = owner.get(namespace, `worktree:.worktrees/${name}`);
+        const events = owner.events(namespace).length;
+        await call(
+          "worktree.clean",
+          { dryRun: true },
+          { fetchBeforeClean: false },
+        );
+        assert.deepEqual(
+          owner.get(namespace, `worktree:.worktrees/${name}`),
+          before,
+          "dry run must not retire an interrupted creation",
+        );
+        assert.equal(
+          owner.events(namespace).length,
+          events,
+          "dry run reconciliation must not emit state events",
+        );
+        await call(
+          "worktree.clean",
+          { dryRun: false },
+          { fetchBeforeClean: false },
+        );
+        assert.equal(
+          owner.get(namespace, `worktree:.worktrees/${name}`),
+          undefined,
+          "absent Git registration must retire crashed creation binding",
+        );
+        assert.equal(
+          readFileSync(join(target, "user.txt"), "utf8"),
+          "unregistered user files\n",
+        );
+      }
+      console.log(
+        "PASS reconcile-absent: creating and uncertain absent registrations retire without deleting user content",
+      );
+    }
+    if (mode !== "reconcile-absent") {
+      for (const status of ["creating", "uncertain"]) {
+        const name = `adopt-${status}`;
+        const target = join(repo, ".worktrees", name);
+        git(["worktree", "add", "-b", `feature/${name}`, target, initial]);
+        seed(name, status);
+        if (status === "uncertain")
+          writeFileSync(
+            join(target, "user.txt"),
+            "dirty interrupted work survives\n",
+          );
+        const before = owner.get(namespace, `worktree:.worktrees/${name}`);
+        await call(
+          "worktree.clean",
+          { dryRun: true },
+          { fetchBeforeClean: false },
+        );
+        assert.deepEqual(
+          owner.get(namespace, `worktree:.worktrees/${name}`),
+          before,
+          "dry run must not adopt a registered interrupted creation",
+        );
+        await call(
+          "worktree.clean",
+          { dryRun: false },
+          { fetchBeforeClean: false },
+        );
+        const accepted = owner.get(namespace, `worktree:.worktrees/${name}`);
+        assert.equal(
+          accepted?.value.status,
+          "active",
+          "matching registered creation must be adopted into active binding",
+        );
+        assert.equal(accepted.value.baseSha, initial);
+        assert.equal(git(["rev-parse", "HEAD"], target), initial);
+        assert.ok(
+          existsSync(target),
+          "adopted unstarted worktree must never be reaped",
+        );
+        if (status === "uncertain") {
+          assert.equal(
+            readFileSync(join(target, "user.txt"), "utf8"),
+            "dirty interrupted work survives\n",
+          );
+          unlinkSync(join(target, "user.txt"));
+        }
+        await call("worktree.remove", {
+          path: `.worktrees/${name}`,
+          expectedHead: initial,
+          expectRevision: accepted.revision,
+        });
+      }
+      const name = "adopt-mismatch";
+      const target = join(repo, ".worktrees", name);
+      git(["worktree", "add", "-b", `feature/${name}`, target, parentWip]);
+      seed(name, "creating");
+      writeFileSync(join(target, "user.txt"), "dirty mismatch survives\n");
+      await call(
+        "worktree.clean",
+        { dryRun: false },
+        { fetchBeforeClean: false },
+      );
+      assert.notEqual(
+        owner.get(namespace, `worktree:.worktrees/${name}`)?.value.status,
+        "active",
+        "mismatched creation head must not be adopted",
+      );
+      assert.equal(
+        readFileSync(join(target, "user.txt"), "utf8"),
+        "dirty mismatch survives\n",
+      );
+      unlinkSync(join(target, "user.txt"));
+      git(["reset", "--hard", initial], target);
+      await call(
+        "worktree.clean",
+        { dryRun: false },
+        { fetchBeforeClean: false },
+      );
+      const fixed = owner.get(namespace, `worktree:.worktrees/${name}`);
+      assert.equal(
+        fixed?.value.status,
+        "active",
+        "uncertain creation must reconcile after external identity is repaired",
+      );
+      await call("worktree.remove", {
+        path: `.worktrees/${name}`,
+        expectedHead: initial,
+        expectRevision: fixed.revision,
+      });
+      const branchName = "adopt-branch-mismatch";
+      const branchTarget = join(repo, ".worktrees", branchName);
+      git([
+        "worktree",
+        "add",
+        "-b",
+        "feature/other-owner",
+        branchTarget,
+        initial,
+      ]);
+      seed(branchName, "uncertain");
+      await call(
+        "worktree.clean",
+        { dryRun: false },
+        { fetchBeforeClean: false },
+      );
+      assert.notEqual(
+        owner.get(namespace, `worktree:.worktrees/${branchName}`)?.value.status,
+        "active",
+        "matching head with a different branch must not be adopted",
+      );
+      assert.equal(
+        git(["symbolic-ref", "--short", "HEAD"], branchTarget),
+        "feature/other-owner",
+      );
+      git(["branch", "-m", `feature/${branchName}`], branchTarget);
+      await call(
+        "worktree.clean",
+        { dryRun: false },
+        { fetchBeforeClean: false },
+      );
+      const corrected = owner.get(
+        namespace,
+        `worktree:.worktrees/${branchName}`,
+      );
+      assert.equal(
+        corrected?.value.status,
+        "active",
+        "corrected branch identity must permit explicit reconciliation",
+      );
+      await call("worktree.remove", {
+        path: `.worktrees/${branchName}`,
+        expectedHead: initial,
+        expectRevision: corrected.revision,
+      });
+      console.log(
+        "PASS reconcile-adopt: matching creation adopts; mismatched dirty work survives and reconciles after repair",
+      );
+    }
+    namespace = "forge/git";
+  }
+  if (["all", "reconcile-live"].includes(mode)) {
+    namespace = "forge/git-live-create";
+    const path = ".worktrees/live-creating";
+    owner.put(
+      namespace,
+      `worktree:${path}`,
+      {
+        path,
+        branch: "feature/live-creating",
+        base: initial,
+        baseSha: initial,
+        status: "creating",
+      },
+      { kind: "agent", id: "live-creator" },
+      { expectRevision: 0 },
+    );
+    const record = owner.get(namespace, `worktree:${path}`);
+    const lock = join(repo, ".git/forge-worktree-create.lock");
+    const held = "another invocation owns creation\n";
+    writeFileSync(lock, held, { flag: "wx" });
+    try {
+      await assert.rejects(
+        () =>
+          call(
+            "worktree.clean",
+            { dryRun: false },
+            { fetchBeforeClean: false },
+          ),
+        "reconciliation must refuse another invocation's live creation lock",
+      );
+      assert.deepEqual(
+        owner.get(namespace, `worktree:${path}`),
+        record,
+        "live creation reservation must not be retired",
+      );
+      assert.equal(
+        readFileSync(lock, "utf8"),
+        held,
+        "reconciliation must not reap another invocation's lock",
+      );
+      await assert.rejects(
+        () => create("live-competing", { base: initial }),
+        "create must share the reconciliation exclusion lock",
+      );
+      assert.equal(existsSync(join(repo, ".worktrees/live-competing")), false);
+    } finally {
+      unlinkSync(lock);
+    }
+    await call(
+      "worktree.clean",
+      { dryRun: false },
+      { fetchBeforeClean: false },
+    );
+    assert.equal(
+      owner.get(namespace, `worktree:${path}`),
+      undefined,
+      "released creation lock must permit explicit reconciliation",
+    );
+    namespace = "forge/git";
+    console.log(
+      "PASS reconcile-live: held clone creation lock excludes cleanup and creation without stealing ownership",
+    );
+  }
+  if (["all", "squash-dryrun", "squash-no-author"].includes(mode)) {
+    namespace = "forge/git-squash-readonly";
+    const tree = await create("squash-readonly");
+    commit(
+      join(repo, tree.path),
+      "readonly-first.txt",
+      "first readonly change\n",
+    );
+    const sha = commit(
+      join(repo, tree.path),
+      "readonly-second.txt",
+      "second readonly change\n",
+    );
+    git(["merge", "--squash", tree.branch]);
+    git(["commit", "-m", "actual combined readonly patch"]);
+    git(["push", "origin", "trunk"]);
+    git(["merge-base", "--is-ancestor", sha, "trunk"], repo, [1]);
+    const check = async (withoutAuthor) => {
+      if (withoutAuthor) {
+        git(["config", "--local", "--unset", "user.name"]);
+        git(["config", "--local", "--unset", "user.email"]);
+        git(["config", "--local", "user.useConfigOnly", "true"]);
+      }
+      const before = git(["count-objects", "-v"]);
+      let preview;
+      try {
+        await assert.doesNotReject(async () => {
+          preview = await call(
+            "worktree.clean",
+            { dryRun: true },
+            { fetchBeforeClean: false },
+          );
+        }, "squash dry run must not require an author identity");
+        assert.equal(
+          git(["count-objects", "-v"]),
+          before,
+          "squash dry run must not create Git objects",
+        );
+        assert.equal(
+          preview.outcomes.find((row) => row.path === tree.path)?.wouldRemove,
+          true,
+          "read-only squash detection must preserve multi-commit eligibility",
+        );
+        assert.ok(
+          existsSync(join(repo, tree.path)),
+          "dry run must preserve squash merged worktree",
+        );
+      } finally {
+        if (withoutAuthor) {
+          git(["config", "--local", "user.name", "Fixture Author"]);
+          git(["config", "--local", "user.email", "fixture@example.invalid"]);
+          git(["config", "--local", "--unset", "user.useConfigOnly"]);
+        }
+      }
+    };
+    if (mode !== "squash-no-author") await check(false);
+    if (mode !== "squash-dryrun") await check(true);
+    const cleaned = await call(
+      "worktree.clean",
+      { dryRun: false },
+      { fetchBeforeClean: false },
+    );
+    assert.equal(
+      cleaned.outcomes.find((row) => row.path === tree.path)?.removed,
+      true,
+      "actual cleanup must agree with read-only squash eligibility",
+    );
+    namespace = "forge/git";
+    if (mode !== "squash-no-author")
+      console.log(
+        "PASS squash-dryrun: multi-commit squash eligibility leaves object count unchanged",
+      );
+    if (mode !== "squash-dryrun")
+      console.log(
+        "PASS squash-no-author: squash preview needs no author and agrees with cleanup",
+      );
+  }
   if (["all", "churn"].includes(mode)) {
     namespace = "forge/git-churn";
     for (let index = 0; index < 5; ++index) {
@@ -869,7 +1272,7 @@ try {
     );
     assert.equal(existsSync(join(repo, tree.path)), false);
     console.log(
-      "PASS squash: combined synthetic patch detects multi-commit squash merge",
+      "PASS squash: read-only combined patch detects multi-commit squash merge",
     );
   }
   if (["all", "removal-race"].includes(mode)) {

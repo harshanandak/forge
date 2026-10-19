@@ -455,6 +455,50 @@ function reserve(
     fail("INTERNAL", "Reserved binding did not read back; reconcile state");
   return accepted;
 }
+function creationLock(c: Call<unknown>) {
+  live(c);
+  return c.services.clone.lock([
+    `${c.services.clone.roots.common}/forge-worktree-create.lock`,
+  ]);
+}
+async function reconcile(c: Call<unknown>, record: StateRecord) {
+  const binding = record.value as Binding;
+  const path = relativePath(binding.path);
+  if (
+    record.key !== key(path) ||
+    !path.startsWith(relativePath(c.config.worktreeRoot) + "/")
+  )
+    fail("INPUT_CONFLICT", "Incomplete binding path is outside its owned root");
+  const absolute = `${c.services.clone.root}/${path}`;
+  const tree = (await list(c)).find((item) =>
+    samePath(item.path, absolute, c.services.clone.platform),
+  );
+  const present = c.services.clone.inspect(path);
+  if (!tree) {
+    // Retire only the reservation; pre-existing files and branches are never removed.
+    retire(c, record.key, record.revision);
+    return undefined;
+  }
+  if (
+    !present ||
+    present.regular ||
+    tree.bare ||
+    tree.locked ||
+    tree.branch !== binding.branch ||
+    tree.head !== binding.baseSha ||
+    (await revision(c, "HEAD", absolute)) !== binding.baseSha ||
+    (
+      await git(c, ["symbolic-ref", "--quiet", "--short", "HEAD"], absolute)
+    ).stdout.trim() !== binding.branch
+  )
+    return record;
+  return write(
+    c,
+    record.key,
+    { ...binding, status: "active" },
+    record.revision,
+  );
+}
 async function base(
   c: Call<unknown>,
   fetch: boolean,
@@ -611,22 +655,44 @@ async function merged(
   );
   if (ancestor.exitCode === 0) return true;
   const common = (await git(c, ["merge-base", target, head])).stdout.trim();
-  const tree = (await git(c, ["rev-parse", `${head}^{tree}`])).stdout.trim();
-  // A synthetic single patch preserves squash equivalence without changing a ref or checkout.
-  const synthetic = (
+  const diff = (
     await git(c, [
-      "commit-tree",
-      tree,
-      "-p",
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--binary",
       common,
-      "-m",
-      "Compare worktree patch",
+      head,
+      "--",
     ])
-  ).stdout.trim();
-  return (
-    (await git(c, ["cherry", target, synthetic])).stdout.trim() ===
-    `- ${synthetic}`
-  );
+  ).stdout;
+  if (!diff.trim()) return false;
+  const combined = (
+    await git(c, ["patch-id", "--stable"], undefined, [0], diff)
+  ).stdout
+    .trim()
+    .split(/\s+/)[0];
+  if (!combined || !/^[a-f0-9]{40,64}$/.test(combined))
+    fail("EVIDENCE_INVALID", "Git returned an invalid combined patch identity");
+  const history = (
+    await git(c, [
+      "log",
+      "--no-merges",
+      "--format=medium",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--binary",
+      "-p",
+      `${common}..${target}`,
+      "--",
+    ])
+  ).stdout;
+  const patches = (
+    await git(c, ["patch-id", "--stable"], undefined, [0], history)
+  ).stdout;
+  return patches
+    .split(/\r?\n/)
+    .some((line) => line.split(/\s+/)[0] === combined);
 }
 function bytes(value: string): Uint8Array {
   const result: number[] = [];
@@ -754,87 +820,94 @@ const operations: Operations<Types> = {
     const path = `${relativePath(c.config.worktreeRoot)}/${relativePath(input.name)}`;
     const branch = ref(input.branch);
     await git(c, ["check-ref-format", "--branch", branch]);
-    const all = await list(c);
-    if (
-      all.length >= c.config.maxWorktrees ||
-      all.some(
-        (t) =>
-          samePath(
-            t.path,
-            `${c.services.clone.root}/${path}`,
-            c.services.clone.platform,
-          ) || t.branch === branch,
-      )
-    )
-      fail(
-        "INPUT_CONFLICT",
-        "Worktree path or branch is already checked out, or the configured limit was reached",
-      );
-    const chosen =
-      input.base === undefined
-        ? await base(c, true)
-        : { ref: ref(input.base), sha: await revision(c, input.base) };
-    // An existing branch must never be reset to another base.
-    const exists = await git(
-      c,
-      ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-      undefined,
-      [0, 1],
-    );
-    if (exists.exitCode === 0)
-      fail("INPUT_CONFLICT", "Branch already exists; choose an unused branch");
-    const binding: Binding = {
-      path,
-      branch,
-      base: chosen.ref,
-      baseSha: chosen.sha,
-      status: "creating",
-      ...(input.issue === undefined ? {} : { issue: input.issue }),
-      ...(input.run === undefined ? {} : { run: input.run }),
-    };
-    const reserved = reserve(c, key(path), binding, input.expectRevision);
+    const exclusion = creationLock(c);
     try {
-      await git(c, [
-        "worktree",
-        "add",
-        "-b",
-        branch,
-        "--",
-        `${c.services.clone.root}/${path}`,
-        chosen.sha,
-      ]);
-      const head = await revision(
-        c,
-        "HEAD",
-        `${c.services.clone.root}/${path}`,
-      );
-      if (head !== chosen.sha)
+      const all = await list(c);
+      if (
+        all.length >= c.config.maxWorktrees ||
+        all.some(
+          (t) =>
+            samePath(
+              t.path,
+              `${c.services.clone.root}/${path}`,
+              c.services.clone.platform,
+            ) || t.branch === branch,
+        )
+      )
         fail(
-          "SUBJECT_VERSION_CONFLICT",
-          "Created worktree head differs from its selected base",
+          "INPUT_CONFLICT",
+          "Worktree path or branch is already checked out, or the configured limit was reached",
         );
-      const accepted = write(
+      const chosen =
+        input.base === undefined
+          ? await base(c, true)
+          : { ref: ref(input.base), sha: await revision(c, input.base) };
+      // An existing branch must never be reset to another base.
+      const exists = await git(
         c,
-        key(path),
-        { ...binding, status: "active" },
-        reserved.revision,
+        ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+        undefined,
+        [0, 1],
       );
-      return {
+      if (exists.exitCode === 0)
+        fail(
+          "INPUT_CONFLICT",
+          "Branch already exists; choose an unused branch",
+        );
+      const binding: Binding = {
         path,
         branch,
         base: chosen.ref,
         baseSha: chosen.sha,
-        head,
-        revision: accepted.revision,
+        status: "creating",
+        ...(input.issue === undefined ? {} : { issue: input.issue }),
+        ...(input.run === undefined ? {} : { run: input.run }),
       };
-    } catch (error) {
-      write(
-        c,
-        key(path),
-        { ...binding, status: "uncertain" },
-        reserved.revision,
-      );
-      throw error;
+      const reserved = reserve(c, key(path), binding, input.expectRevision);
+      try {
+        await git(c, [
+          "worktree",
+          "add",
+          "-b",
+          branch,
+          "--",
+          `${c.services.clone.root}/${path}`,
+          chosen.sha,
+        ]);
+        const head = await revision(
+          c,
+          "HEAD",
+          `${c.services.clone.root}/${path}`,
+        );
+        if (head !== chosen.sha)
+          fail(
+            "SUBJECT_VERSION_CONFLICT",
+            "Created worktree head differs from its selected base",
+          );
+        const accepted = write(
+          c,
+          key(path),
+          { ...binding, status: "active" },
+          reserved.revision,
+        );
+        return {
+          path,
+          branch,
+          base: chosen.ref,
+          baseSha: chosen.sha,
+          head,
+          revision: accepted.revision,
+        };
+      } catch (error) {
+        try {
+          await reconcile(c, reserved);
+        } catch {
+          // Expired capabilities or incomplete observations leave a reservation for cleanup.
+        }
+        throw error;
+      }
+    } finally {
+      exclusion.release();
     }
   },
   async "worktree.list"(args) {
@@ -874,9 +947,44 @@ const operations: Operations<Types> = {
     const all = await list(c);
     const outcomes: Output[] = [];
     const owned = bindings(c, !c.input.dryRun);
-    for (const record of owned) {
-      const binding = record.value as Binding;
-      if (binding.status !== "active") continue;
+    for (const original of owned) {
+      let record = original;
+      let binding = record.value as Binding;
+      if (binding.status !== "active") {
+        if (c.input.dryRun) {
+          outcomes.push({
+            path: binding.path,
+            removed: false,
+            reason: "reconcile-required",
+          });
+          continue;
+        }
+        const exclusion = creationLock(c);
+        let accepted: StateRecord | undefined;
+        try {
+          accepted = await reconcile(c, record);
+        } finally {
+          exclusion.release();
+        }
+        if (!accepted) {
+          outcomes.push({
+            path: binding.path,
+            removed: false,
+            reason: "retired-unregistered",
+          });
+          continue;
+        }
+        record = accepted;
+        binding = record.value as Binding;
+        if (binding.status !== "active") {
+          outcomes.push({
+            path: binding.path,
+            removed: false,
+            reason: "identity-changed",
+          });
+          continue;
+        }
+      }
       const tree = all.find((t) =>
         samePath(
           t.path,
