@@ -147,6 +147,28 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
     );
     const mutations = [
       {
+        file: "adapters/fs/clone-files.js",
+        from: "if (!sameCapturedFile(",
+        to: "if (false && !sameCapturedFile(",
+        mode: "conditional-race",
+        evidence: "a concurrent target replacement must be refused",
+      },
+      {
+        file: "assembly/index.js",
+        from: 'declaration.effects.includes(`${op.split(".")[0]}:write`)',
+        to: "declaration.effects.length > 0",
+        mode: "stateless",
+        evidence:
+          "a stateless operation with only non-state effects must compose",
+      },
+      {
+        file: "assembly/index.js",
+        from: "storage.acquire(scope.effects.includes(`${noun}:write`))",
+        to: "storage.acquire(scope.effects.length > 0)",
+        mode: "state-read",
+        evidence: "non-state effects must not open writable project state",
+      },
+      {
         file: "assembly/providers.js",
         from: '!scope.effects.includes("external:process")',
         to: "false",
@@ -169,8 +191,8 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
       },
       {
         file: "adapters/fs/clone-files.js",
-        from: "condition.expected !== undefined && current !== condition.expected",
-        to: "false",
+        from: "condition.expected",
+        to: "undefined",
         mode: "files-cas",
         evidence: "compare before replace must preserve user content",
       },

@@ -3,8 +3,10 @@ import {
   fchmodSync,
   fsyncSync,
   mkdirSync,
+  linkSync,
   openSync,
   renameSync,
+  rmdirSync,
   unlinkSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -25,8 +27,12 @@ export function createPrivateDirectory(path: string): void {
   syncParentDirectory(path);
 }
 
-export function createPrivateFile(path: string, executable: boolean): number {
-  const fd = openSync(path, "wx", executable ? 0o700 : 0o600);
+export function createPrivateFile(
+  path: string,
+  executable: boolean,
+  flags: "wx" | "wx+" = "wx",
+): number {
+  const fd = openSync(path, flags, executable ? 0o700 : 0o600);
   try {
     if (process.platform !== "win32")
       fchmodSync(fd, executable ? 0o700 : 0o600);
@@ -46,6 +52,17 @@ export function createPrivateFile(path: string, executable: boolean): number {
 export function replaceDurable(from: string, to: string): void {
   renameSync(from, to);
   syncParentDirectory(to);
+  if (dirname(from) !== dirname(to)) syncParentDirectory(from);
+}
+
+export function publishExclusive(from: string, to: string): void {
+  linkSync(from, to);
+  syncParentDirectory(to);
+}
+
+export function removePrivateDirectory(path: string): void {
+  rmdirSync(path);
+  syncParentDirectory(path);
 }
 
 export function removeDurable(path: string): void {
