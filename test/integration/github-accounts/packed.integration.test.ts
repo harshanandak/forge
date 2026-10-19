@@ -283,8 +283,8 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
         evidence: "marked clone router",
       },
       {
-        from: 'removeOverlays(original, overlays, ["binding", "hook"])',
-        to: "original",
+        from: "result = before + after;",
+        to: "result = before + overlay.text + after;",
         mode: "restore",
         evidence:
           "unbind must restore every prior identity, helper and hook configuration value",
