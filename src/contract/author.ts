@@ -17,6 +17,8 @@ export type {
 export type {
   BatchEntry,
   BatchOptions,
+  DeleteOptions,
+  DeletableStateClient,
   ExtendedStateClient,
   HistoryOptions,
   PutOptions,
