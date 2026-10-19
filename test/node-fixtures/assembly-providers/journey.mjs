@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -90,10 +91,12 @@ const manifest = {
   profile: "trusted-action/v2",
   entry: "entry.cjs",
   docs: "docs.json",
-  requires: ["process", "files", "environment", "crypto"].map((slot) => ({
-    slot,
-    interface: `forge.${slot}@1`,
-  })),
+  requires: ["process", "files", "environment", "crypto", "state"].map(
+    (slot) => ({
+      slot,
+      interface: `forge.${slot}@1`,
+    }),
+  ),
   operations,
 };
 writeFileSync(join(block, "forge.block.json"), JSON.stringify(manifest));
@@ -276,6 +279,105 @@ try {
     "all declared provider slots must bind",
   );
 
+  if (["all", "conditional-race"].includes(mode)) {
+    const { createCloneFiles } = await import(
+      new URL("dist/src/adapters/fs/clone-files.js", packageUrl)
+    );
+    writeFileSync(join(root, "race.txt"), "expected");
+    const files = createCloneFiles(
+      {
+        projectRoot: realpathSync(root),
+        gitDirectory: realpathSync(join(root, ".git")),
+        commonDirectory: realpathSync(join(root, ".git")),
+        read: true,
+        write: true,
+        signal: new AbortController().signal,
+        deadline: Date.now() + 10000,
+      },
+      {
+        beforeCommit() {
+          writeFileSync(join(root, "replacement.txt"), "user replacement");
+          renameSync(join(root, "replacement.txt"), join(root, "race.txt"));
+        },
+      },
+    );
+    assert.throws(
+      () => files.write("race.txt", "new bytes", { expected: "expected" }),
+      /INPUT_CONFLICT/,
+      "a concurrent target replacement must be refused",
+    );
+    assert.equal(
+      readFileSync(join(root, "race.txt"), "utf8"),
+      "user replacement",
+      "the user's replacement survives the refused mutation",
+    );
+  }
+  if (["all", "stateless"].includes(mode)) {
+    const directory = join(root, "stateless");
+    mkdirSync(directory);
+    const operation = {
+      ...operations["provider.run"],
+      context: "stateless",
+      effects: ["external:process", "environment:read"],
+    };
+    writeFileSync(
+      join(directory, "forge.block.json"),
+      JSON.stringify({
+        ...manifest,
+        id: "example.org/toolbox",
+        requires: manifest.requires.filter(
+          (slot) => slot.slot !== "files" && slot.slot !== "crypto",
+        ),
+        operations: { "toolbox.probe": operation },
+      }),
+    );
+    writeFileSync(
+      join(directory, "docs.json"),
+      JSON.stringify({
+        operations: {
+          "toolbox.probe": {
+            title: "Probe",
+            summary: "Stateless process with a bound state reader.",
+          },
+        },
+      }),
+    );
+    writeFileSync(join(directory, "input.json"), '{"type":"object"}');
+    writeFileSync(join(directory, "output.json"), "{}");
+    writeFileSync(
+      join(directory, "entry.cjs"),
+      `module.exports={"toolbox.probe":async({input,services})=>{
+      services.state.get("absent");
+      const env=services.environment.select(input.names);
+      const executable=services.process.resolve(input.executable,env);
+      return services.process.run(executable,["-e","process.stdout.write('stateless-ok')"],{cwd:services.process.cwd,env,timeoutMs:5000,maxOutputBytes:1024});
+    }};`,
+    );
+    const added = await invoke("block.add", { path: "./stateless" });
+    assert.equal(
+      added.error?.code,
+      "ADMISSION_REQUIRED",
+      "a stateless operation with only non-state effects must compose",
+    );
+    const digest = ok(
+      await invoke("block.check", { path: "./stateless" }),
+      "check stateless",
+    ).digest;
+    ok(await invoke("block.admit", { digest }), "admit stateless");
+    ok(
+      await invoke("config.grant", { digest, effects: operation.effects }),
+      "grant stateless",
+    );
+    assert.equal(
+      ok(
+        await invoke("toolbox.probe", { executable: process.execPath, names }),
+        "stateless process",
+      ).stdout,
+      "stateless-ok",
+      "stateless process with a bound state reader must run",
+    );
+  }
+
   if (["all", "process-effect"].includes(mode)) {
     const refused = await invoke(
       "provider.deniedprocess",
@@ -292,6 +394,12 @@ try {
       (await invoke("provider.deniedenv")).error?.code,
       "EFFECT_UNDECLARED",
       "environment selection must require its declared effect",
+    );
+  }
+  if (["all", "state-read"].includes(mode)) {
+    ok(
+      await invoke("provider.env", { names: [] }),
+      "non-state capability with bound state",
     );
   }
   if (["all", "files-effect"].includes(mode)) {
@@ -508,6 +616,11 @@ try {
       "normal return must stop descendants before settling",
     );
   }
+  assert.equal(
+    existsSync(join(root, ".forge", "state.sqlite")),
+    false,
+    "non-state effects must not open writable project state",
+  );
   console.log(`PASS assembly-providers ${mode}`);
 } finally {
   await assembly.close();
