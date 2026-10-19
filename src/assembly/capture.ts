@@ -5,6 +5,8 @@ import { nodeFileCapture } from "../adapters/node-runtime/capture.ts";
 import type { FileCapturePort } from "../core/catalog/index.ts";
 import type { BlockSource } from "../generated/types.ts";
 import { refuse } from "../core/trust/index.ts";
+import { fileURLToPath } from "node:url";
+import { firstPartyBlocks } from "./first-party.ts";
 
 /** The plan's authoring filename is mapped at capture, before any code is loaded. */
 export const blockCapture: FileCapturePort = {
@@ -46,6 +48,8 @@ export function resolveBlock(root: string, source: BlockSource): string {
       `Package ${source.package} is not installed; install it or repair the block source`,
     );
   }
+  const builtin = firstPartyBlocks[source.builtin];
+  if (builtin) return fileURLToPath(builtin);
   refuse(
     "PROVIDER_MISSING",
     `Built-in block ${source.builtin} is not registered`,
