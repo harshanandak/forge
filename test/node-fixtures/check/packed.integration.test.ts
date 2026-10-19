@@ -10,17 +10,24 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { counterfactuals } from "./counterfactuals.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
-function run(executable: string, args: string[], cwd: string, timeout = 30000) {
+function run(
+  executable: string,
+  args: string[],
+  cwd: string,
+  timeout = 30000,
+  env = process.env,
+) {
   return spawnSync(executable, args, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
     timeout,
+    env,
   });
 }
 function success(result: ReturnType<typeof run>): string {
@@ -84,6 +91,23 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       );
     }
     const installed = join(consumer, "node_modules/forge-workflow");
+    const artifactEnv = { ...process.env };
+    const pathKey =
+      Object.keys(artifactEnv).find((key) => key.toLowerCase() === "path") ??
+      "PATH";
+    artifactEnv[pathKey] = (artifactEnv[pathKey] ?? "")
+      .split(delimiter)
+      .filter(
+        (directory) =>
+          !["bun", "bun.exe", "bunx", "bunx.exe"].some((name) =>
+            existsSync(join(directory, name)),
+          ),
+      )
+      .join(delimiter);
+    delete artifactEnv.BUN_INSTALL;
+    expect(
+      run("bun", ["--version"], consumer, 5000, artifactEnv).error,
+    ).toBeDefined();
     const fixture = join(import.meta.dirname, "journeys.mjs");
     console.log(
       success(
@@ -91,11 +115,13 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
           node,
           [join(import.meta.dirname, "surfaces.mjs"), installed],
           consumer,
+          30000,
+          artifactEnv,
         ),
       ),
     );
     const report = JSON.parse(
-      success(run(node, [fixture, installed], consumer)),
+      success(run(node, [fixture, installed], consumer, 30000, artifactEnv)),
     ) as {
       passed: string[];
       ecosystem: { passed: string[]; skipped: string[] };
@@ -144,6 +170,8 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
             ? [join(import.meta.dirname, "surfaces.mjs"), isolated]
             : [fixture, isolated, mutation.journey],
           consumer,
+          30000,
+          artifactEnv,
         );
         expect(result.error).toBeUndefined();
         expect(result.status).not.toBe(0);
