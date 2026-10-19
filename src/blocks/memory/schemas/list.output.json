@@ -6,8 +6,16 @@
       "type": "integer",
       "minimum": 0
     },
+    "truncated": {
+      "type": "boolean"
+    },
+    "next": {
+      "type": "integer",
+      "minimum": 1
+    },
     "decisions": {
       "type": "array",
+      "maxItems": 200,
       "items": {
         "type": "object",
         "properties": {
@@ -40,5 +48,5 @@
     }
   },
   "additionalProperties": false,
-  "required": ["total", "decisions"]
+  "required": ["total", "truncated", "decisions"]
 }

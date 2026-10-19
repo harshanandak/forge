@@ -10,10 +10,16 @@
       "minimum": 0
     },
     "truncated": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "More notes follow; pass next as after to read them."
+    },
+    "next": {
+      "type": "integer",
+      "minimum": 1
     },
     "notes": {
       "type": "array",
+      "maxItems": 50,
       "items": {
         "type": "object",
         "properties": {

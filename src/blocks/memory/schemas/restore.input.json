@@ -12,9 +12,13 @@
     "truncated": {
       "type": "boolean"
     },
+    "next": {
+      "type": "integer",
+      "minimum": 1
+    },
     "notes": {
       "type": "array",
-      "maxItems": 1000,
+      "maxItems": 50,
       "items": {
         "type": "object",
         "properties": {

@@ -4,6 +4,11 @@
   "properties": {
     "scope": {
       "$ref": "defs.json#/$defs/Scope"
+    },
+    "after": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Continue after this note number: the next value of the previous chunk."
     }
   },
   "additionalProperties": false

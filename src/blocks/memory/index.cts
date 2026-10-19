@@ -53,6 +53,11 @@ const NOTE_COUNTER = "meta/note-counter";
 const DECISION_PREFIX = "decision/";
 const DECISION_COUNTER = "meta/decision-counter";
 const MAX_SCAN = 5000;
+// The runtime stops a block after one second and refuses output over 1 MiB. A write costs a few
+// milliseconds, so a restore takes few notes; an export chunk is never larger than a restore.
+const CHUNK_NOTES = 50;
+const CHUNK_CHARS = 250_000;
+const LIST_LIMIT = 200;
 const MAX_VERSIONS = 5;
 const MAX_RETRIES = 8;
 const DEFAULT_LIMIT = 10;
@@ -137,16 +142,24 @@ function noteOf(record: StateRecord): { id: string; value: NoteValue } {
     value: record.value as NoteValue,
   };
 }
-function liveNotes(state: StateClient): {
+/** Live notes in number order. `cap` bounds how many records are read; export reads them all. */
+function liveNotes(
+  state: StateClient,
+  cap = Number.POSITIVE_INFINITY,
+): {
   notes: { id: string; value: NoteValue; record: StateRecord }[];
   truncated: boolean;
 } {
-  const records = state.list(NOTE_PREFIX);
+  const records = [...state.list(NOTE_PREFIX)].sort(
+    (a, b) =>
+      Number(a.key.slice(NOTE_PREFIX.length)) -
+      Number(b.key.slice(NOTE_PREFIX.length)),
+  );
   const notes = records
-    .slice(0, MAX_SCAN)
+    .slice(0, cap)
     .map((record) => ({ ...noteOf(record), record }))
     .filter((note) => note.value.deleted !== true);
-  return { notes, truncated: records.length > MAX_SCAN };
+  return { notes, truncated: records.length > cap };
 }
 function versionsOf(
   state: StateClient,
@@ -289,7 +302,7 @@ module.exports = {
   }) => {
     const { state } = services;
     const wanted = [...new Set(terms(input.query).map(stem))];
-    const { notes, truncated } = liveNotes(state);
+    const { notes, truncated } = liveNotes(state, MAX_SCAN);
     const candidates = notes.filter(
       (note) =>
         (input.scope === undefined || note.value.scope === input.scope) &&
@@ -308,6 +321,14 @@ module.exports = {
       return { note, counts, length };
     });
     const total = documents.length;
+    // Corpus-wide facts are worked out once per query word, not once per note.
+    const holders = new Map<string, number>();
+    for (const term of wanted) {
+      let count = 0;
+      for (const document of documents)
+        if (document.counts.has(term)) count += 1;
+      holders.set(term, count);
+    }
     const average =
       documents.reduce((sum, document) => sum + document.length, 0) /
       Math.max(1, total);
@@ -319,12 +340,8 @@ module.exports = {
         for (const term of wanted) {
           const frequency = document.counts.get(term);
           if (frequency === undefined) continue;
-          const holders = documents.filter((other) =>
-            other.counts.has(term),
-          ).length;
-          const rarity = Math.log(
-            1 + (total - holders + 0.5) / (holders + 0.5),
-          );
+          const held = holders.get(term) ?? 0;
+          const rarity = Math.log(1 + (total - held + 0.5) / (held + 0.5));
           const norm =
             1.2 * (0.25 + (0.75 * document.length) / Math.max(1, average));
           score += (rarity * frequency * 2.2) / (frequency + norm);
@@ -415,17 +432,34 @@ module.exports = {
     input,
     services,
   }: {
-    input: { scope?: string };
+    input: { scope?: string; after?: number };
     services: Services;
   }) => {
-    const { notes, truncated } = liveNotes(services.state);
-    const chosen = notes.filter(
-      (note) => input.scope === undefined || note.value.scope === input.scope,
+    const { notes } = liveNotes(services.state);
+    const remaining = notes.filter(
+      (note) =>
+        noteNumber(note.id) > (input.after ?? 0) &&
+        (input.scope === undefined || note.value.scope === input.scope),
     );
+    // One chunk is what a single restore accepts and what the runtime lets one call return.
+    const chosen: typeof remaining = [];
+    let chars = 0;
+    for (const note of remaining) {
+      if (
+        chosen.length >= CHUNK_NOTES ||
+        (chosen.length > 0 && chars + note.value.text.length > CHUNK_CHARS)
+      )
+        break;
+      chosen.push(note);
+      chars += note.value.text.length;
+    }
+    const last = chosen[chosen.length - 1];
+    const more = chosen.length < remaining.length;
     return {
       format: "forge.memory.export/1" as const,
       count: chosen.length,
-      truncated,
+      truncated: more,
+      ...(more && last ? { next: noteNumber(last.id) } : {}),
       notes: chosen.map((note) => ({
         id: note.id,
         revision: note.record.revision,
@@ -573,7 +607,7 @@ module.exports = {
     input,
     services,
   }: {
-    input: { status?: "proposed" | "adopted" };
+    input: { status?: "proposed" | "adopted"; after?: number };
     services: Services;
   }) => {
     const records = services.state
@@ -584,9 +618,17 @@ module.exports = {
           decisionOf(record).status === input.status,
       )
       .sort((a, b) => decisionOf(a).number - decisionOf(b).number);
+    const remaining = records.filter(
+      (record) => decisionOf(record).number > (input.after ?? 0),
+    );
+    const page = remaining.slice(0, LIST_LIMIT);
+    const lastPage = page[page.length - 1];
+    const more = page.length < remaining.length;
     return {
       total: records.length,
-      decisions: records.slice(0, MAX_SCAN).map((record) => {
+      truncated: more,
+      ...(more && lastPage ? { next: decisionOf(lastPage).number } : {}),
+      decisions: page.map((record) => {
         const value = decisionOf(record);
         return {
           id: value.id,

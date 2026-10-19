@@ -32,7 +32,7 @@
     "memory.export": {
       "title": "Export notes",
       "summary": "Read every note out as one document for backup.",
-      "description": "Bounded to the first 5000 notes; truncated says when more exist."
+      "description": "Returns up to 50 notes at a time, the most one restore accepts. When truncated is true, call again with after set to next."
     },
     "memory.restore": {
       "title": "Restore notes",
@@ -50,7 +50,8 @@
     },
     "decision.list": {
       "title": "List decisions",
-      "summary": "List recorded decisions in number order."
+      "summary": "List recorded decisions in number order, 200 at a time.",
+      "description": "When truncated is true, call again with after set to next."
     }
   }
 }
