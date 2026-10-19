@@ -484,3 +484,49 @@ test("integration: a backup made by main's memory block restores through the run
     await fresh.close();
   }
 }, 60_000);
+
+test("integration: on a host that serves no project, a person's note goes to the device and project memory is unavailable", async () => {
+  const bare = await openHarness(["memory"], POLICY, {
+    ...{ deviceRoot: alpha.deviceRoot },
+    project: "bare",
+  });
+  const host = await createAssembly({
+    root: bare.root,
+    deviceRoot: bare.deviceRoot,
+    project: false,
+  });
+  try {
+    let count = 0;
+    const call = (input: unknown, op: string, caller: "human" | "agent") =>
+      host.catalog.invoke({
+        schemaVersion: "forge.invocation/1",
+        requestId: `bare-${++count}`,
+        op,
+        input,
+        caller,
+        context: {
+          actor: { kind: caller, id: `bare-${caller}` },
+          device: { id: host.deviceRoot },
+        },
+      });
+    const person = done(
+      await call(
+        { text: "a person away from any project" },
+        "memory.add",
+        "human",
+      ),
+    ) as { id: string };
+    expect(person.id).toMatch(/^device\//);
+    expect(
+      failed(await call({ text: "x", level: "project" }, "memory.add", "agent"))
+        .code,
+    ).toBe("LEVEL_UNAVAILABLE");
+    expect(
+      failed(await call({ level: "project" }, "memory.export", "agent")).code,
+    ).toBe("LEVEL_UNAVAILABLE");
+    expect(existsSync(join(bare.root, ".forge", "state.sqlite"))).toBe(false);
+  } finally {
+    await host.close();
+    await bare.close();
+  }
+}, 60_000);

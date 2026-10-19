@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   createConfig,
@@ -97,6 +98,11 @@ const grantCandidate: McpCandidate = {
 export interface AssemblyOptions {
   readonly root: string;
   readonly deviceRoot: string;
+  /**
+   * Whether this host serves a project. Left out, it does when its root holds the project's Forge
+   * config (.forge/config.yaml), checked on each call; a host with no project says false.
+   */
+  readonly project?: boolean;
   readonly providers?: ProviderOptions;
 }
 export interface UnavailableBlock {
@@ -647,6 +653,9 @@ export async function createAssembly(
                     deviceState,
                     namespace,
                     actor: context.actor,
+                    servesProject:
+                      options.project ??
+                      existsSync(join(root, ".forge", "config.yaml")),
                     // The authenticated caller, never the actor kind a caller put in its context.
                     caller: request.caller,
                     write: scope.effects.includes(

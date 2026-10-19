@@ -1059,6 +1059,7 @@ module.exports = {
     input: {
       format: "forge.memory.export/1" | "forge.memory.export/2";
       level?: Level;
+      project?: ProjectIdentity;
       notes: readonly {
         id: string;
         scope?: string;
@@ -1077,6 +1078,18 @@ module.exports = {
         : (input.level ?? "device");
     const target = await writeTarget(services, level);
     const { state } = target;
+    // Links between the exported project's notes move with them to the restoring project; links
+    // to the device or to any other project stay as they are.
+    const exported =
+      level === "project" && input.project !== undefined
+        ? `project/${input.project.id}/`
+        : undefined;
+    const relinked = (links: readonly string[]) =>
+      qualifiedLinks(links).map((link) =>
+        exported !== undefined && link.startsWith(exported)
+          ? `${target.prefix}/${link.slice(exported.length)}`
+          : link,
+      );
     // One transaction for the whole page and the counter that must stay ahead of it.
     return committed(() => {
       let skipped = 0;
@@ -1111,7 +1124,7 @@ module.exports = {
             text: note.text.text,
             ...(note.scope === undefined ? {} : { scope: note.scope }),
             tags: note.tags,
-            links: qualifiedLinks(note.links),
+            links: relinked(note.links),
             previous: [],
           },
           expectRevision: 0,

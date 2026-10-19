@@ -255,3 +255,70 @@ test("a new copy of a changed source over a changed copy is a conflict, not a re
     expect(writes() - before).toBe(0);
   }
 }, 30_000);
+
+test("a project export restored under another project identity keeps its links between its own notes", async () => {
+  const entry = loadEntry("memory");
+  const project = (id: string) => {
+    const device = memoryState();
+    const store = memoryState();
+    const levels = {
+      ...device,
+      caller: "human" as const,
+      inProject: true,
+      project: () =>
+        Promise.resolve({ identity: { id, name: "app" }, state: store }),
+      peer: (ref: string) =>
+        Promise.resolve({ status: "not_found" as const, ref }),
+    };
+    return { services: { state: device, levels }, store };
+  };
+  const OLD = "aaaaaaaaaaaaaaaa";
+  const NEW = "bbbbbbbbbbbbbbbb";
+  const first = project(OLD);
+  const target = (await entry["memory.add"]!({
+    input: { text: "the linked target", level: "project" },
+    services: first.services,
+  })) as { id: string };
+  await entry["memory.add"]!({
+    input: {
+      text: "points at the target and elsewhere",
+      level: "project",
+      links: [target.id, "device/note-7", "project/cccccccccccccccc/note-9"],
+    },
+    services: first.services,
+  });
+  const exported = JSON.parse(
+    JSON.stringify(
+      await entry["memory.export"]!({
+        input: { level: "project" },
+        services: first.services,
+      }),
+    ),
+  ) as unknown;
+  // A new clone of the project, or another project, has its own identity.
+  const clone = project(NEW);
+  expect(
+    await entry["memory.restore"]!({
+      input: exported,
+      services: clone.services,
+    }),
+  ).toEqual({ added: 2, skipped: 0, conflicts: [] });
+  const shown = (await entry["memory.show"]!({
+    input: { id: `project/${NEW}/note-2` },
+    services: clone.services,
+  })) as { note: { links: string[] } };
+  expect(shown.note.links).toEqual([
+    `project/${NEW}/note-1`,
+    "device/note-7",
+    "project/cccccccccccccccc/note-9",
+  ]);
+  expect(
+    await entry["memory.show"]!({
+      input: { id: shown.note.links[0]! },
+      services: clone.services,
+    }),
+  ).toMatchObject({
+    status: "found",
+    note: { text: { text: "the linked target" } },
+  });
+}, 30_000);

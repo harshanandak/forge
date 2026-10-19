@@ -103,6 +103,8 @@ export function openLevels(options: {
   readonly deviceState: LocalState;
   readonly namespace: string;
   readonly actor: Actor;
+  /** Whether the host serves a project: a host signal, never assumed. */
+  readonly servesProject: boolean;
   /** The invocation's authenticated caller, from the runtime-validated request. */
   readonly caller: Caller;
   /** The operation declared its record write effect; its stores open writable. */
@@ -229,8 +231,9 @@ export function openLevels(options: {
 
   const levels: StoreLevels = {
     caller: options.caller,
-    inProject: true,
+    inProject: options.servesProject,
     project() {
+      if (!options.servesProject) return Promise.resolve(undefined);
       own ??= openOwn();
       return own;
     },
