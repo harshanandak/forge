@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "truncated": {
+      "type": "boolean",
+      "description": "More decisions follow; pass next as after to read them."
+    },
+    "next": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "decisions": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "enum": ["proposed", "adopted"]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "$ref": "defs.json#/$defs/Untrusted"
+          },
+          "updatedAt": {
+            "type": "string",
+            "maxLength": 40
+          }
+        },
+        "additionalProperties": false,
+        "required": ["id", "number", "status", "revision", "title", "updatedAt"]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": ["truncated", "decisions"]
+}
