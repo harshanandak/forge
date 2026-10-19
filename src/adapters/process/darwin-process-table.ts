@@ -105,6 +105,7 @@ export function createDarwinProcessTable(
         api.errno(0);
         // Live-only lookup reports retained zombies as ESRCH. Including them can
         // enter XNU's unbounded zombie-reference wait during concurrent reaping.
+        // A listed member it cannot see is dead, so it counts as a zombie, not absent.
         const bytes = api.pidInfo(
           pid,
           PROC_PIDT_SHORTBSDINFO,
@@ -115,7 +116,10 @@ export function createDarwinProcessTable(
         const infoError = api.errno();
         checkBudget();
         if (bytes === 0) {
-          if (infoError === DARWIN_ESRCH) continue;
+          if (infoError === DARWIN_ESRCH) {
+            yield { pid, state: "Z" };
+            continue;
+          }
           throw new Error("Could not inspect Darwin process");
         }
         if (bytes !== SHORT_BSD_INFO_BYTES)

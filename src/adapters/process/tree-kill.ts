@@ -35,26 +35,26 @@ export async function killTree(
   },
   control: GroupControl = realGroupControl,
 ): Promise<void> {
-  try {
-    control.signal(-pid, "SIGKILL");
-  } catch (error) {
-    // Darwin may return EPERM for zombie-only groups. Member states must prove
-    // termination; a permission response alone never counts as success.
-    if (!(
-      error !== null &&
-      typeof error === "object" &&
-      "code" in error &&
-      (error.code === "ESRCH" ||
-        (error.code === "EPERM" && control.processTable !== undefined))
-    ))
-      throw new ProcessSpawnError(
-        "TREE_KILL_FAILED",
-        "Could not stop process group",
-        error,
-      );
-  }
   const deadline = control.now() + timing.cleanupTimeoutMs;
   while (true) {
+    // Group signalling snapshots membership on Darwin. A descendant published
+    // after one signal must receive the next one, within the same cleanup budget.
+    try {
+      control.signal(-pid, "SIGKILL");
+    } catch (error) {
+      if (!(
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error.code === "ESRCH" ||
+          (error.code === "EPERM" && control.processTable !== undefined))
+      ))
+        throw new ProcessSpawnError(
+          "TREE_KILL_FAILED",
+          "Could not stop process group",
+          error,
+        );
+    }
     try {
       control.signal(-pid, 0);
     } catch (error) {
@@ -85,17 +85,40 @@ export async function killTree(
             "Process table inspection exceeded the cleanup deadline",
           );
       };
-      try {
-        let live = false;
-        for (const member of control.processTable.members(pid, checkBudget)) {
+      const table = control.processTable;
+      const inventory = (): { live: boolean; zombies: boolean } => {
+        let zombies = false;
+        for (const member of table.members(pid, checkBudget)) {
           checkBudget();
-          if (member.state !== "Z") {
-            live = true;
-            break;
-          }
+          if (member.state === "Z") zombies = true;
+          else return { live: true, zombies };
         }
         checkBudget();
-        if (!live) return;
+        return { live: false, zombies };
+      };
+      try {
+        const { live, zombies } = inventory();
+        if (!live) {
+          // An empty inventory can race a newly published child. A fresh group
+          // probe must agree; Darwin reports EPERM when only dead members remain.
+          try {
+            control.signal(-pid, 0);
+            checkBudget();
+          } catch (error) {
+            if (
+              error !== null &&
+              typeof error === "object" &&
+              "code" in error &&
+              (error.code === "ESRCH" || error.code === "EPERM")
+            )
+              return;
+            throw error;
+          }
+          // A successful probe cannot tell a retained zombie from a member
+          // published after enumeration; only a fresh zombie-only inventory can.
+          // Its errors stay outside the probe fallback and fail cleanup.
+          if (zombies && !inventory().live) return;
+        }
       } catch (error) {
         throw new ProcessSpawnError(
           "TREE_KILL_FAILED",
