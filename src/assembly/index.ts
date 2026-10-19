@@ -45,6 +45,7 @@ import { version } from "../version.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
 import { LocalState } from "./state.ts";
+import { openLevels } from "./levels.ts";
 
 const TRUST_NAMESPACE = "forge/core-trust";
 const grantCandidate: McpCandidate = {
@@ -584,12 +585,46 @@ export async function createAssembly(
                 const noun = current.catalog
                   .resolve(scope.op)
                   .operation.declaredOp.split(".")[0]!;
-                clients[binding.slot] = createStateClient({
+                const write = scope.effects.includes(`${noun}:write`);
+                const client = createStateClient({
                   owner,
                   namespace,
                   context,
-                  write: scope.effects.includes(`${noun}:write`),
+                  write,
                   requestId: request.requestId,
+                });
+                if (context.variant !== "device") {
+                  clients[binding.slot] = client;
+                  continue;
+                }
+                // A device operation may also reach the caller's project, and other projects
+                // read-only, but only when it asks; see levels.ts.
+                const named = request.context.project;
+                if (named !== undefined && named.id !== root)
+                  refuse(
+                    "INPUT_CONFLICT",
+                    "State context belongs to another project",
+                  );
+                const opened = openLevels({
+                  root,
+                  projectState,
+                  device: owner,
+                  namespace,
+                  actor: context.actor,
+                  caller: request.caller,
+                  inProject: named !== undefined,
+                  write,
+                  writable: scope.effects.length > 0,
+                  requestId: request.requestId,
+                });
+                leases.push({
+                  ownership: "owned",
+                  value: undefined,
+                  close: () => opened.close(),
+                });
+                clients[binding.slot] = Object.freeze({
+                  ...client,
+                  ...opened.levels,
                 });
               }
               return {
