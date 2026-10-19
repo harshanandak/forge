@@ -169,7 +169,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       try {
         const result = run(
           node,
-          ["surfaces", "mcp", "bindings"].includes(mutation.journey)
+          ["surfaces", "mcp", "bindings", "review"].includes(mutation.journey)
             ? [
                 join(import.meta.dirname, "surfaces.mjs"),
                 isolated,

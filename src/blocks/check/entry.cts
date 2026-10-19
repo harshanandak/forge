@@ -35,6 +35,8 @@ function canonical(value: unknown): string {
 }
 
 const HASH_LIMIT = 1_048_576;
+// The longest supported HEAD is 64 hex bytes followed by up to two newline bytes.
+const SNAPSHOT_HEAD_OUTPUT_BYTES = 66;
 function utf8Bytes(text: string): number {
   let size = 0;
   for (const char of text) {
@@ -432,7 +434,7 @@ function createCheck(
           : undefined;
         const argv =
           typeof command === "string"
-            ? commandArguments(command, invalid)
+            ? commandArguments(command)
             : [...(command?.argv ?? [])];
         if (
           command !== undefined &&
@@ -461,7 +463,6 @@ function createCheck(
         environmentDigest: hash(env),
         config: frozenConfig,
         trigger: frozenInput.trigger ?? null,
-        invocationDeadline: scope?.deadline ?? null,
         declarations: declarations.map(
           ({ name, argv, executable, report }) => ({
             name,
@@ -623,12 +624,8 @@ function createCheck(
 }
 
 /** Split a declared executable invocation, never evaluate shell syntax. */
-function commandArguments(
-  text: string,
-  invalid: (message: string) => never = (message) => {
-    throw new Error(message);
-  },
-): string[] {
+function commandArguments(text: string): string[] {
+  const invalid = (message: string): never => failure("INPUT_INVALID", message);
   const args: string[] = [];
   let value = "",
     quote = "",
@@ -683,7 +680,7 @@ const operations = {
           paths: config.inputs,
           maxBytes: config.maxInputBytes,
           timeoutMs: config.timeoutMs,
-          maxOutputBytes: config.maxOutputBytes,
+          maxOutputBytes: SNAPSHOT_HEAD_OUTPUT_BYTES,
         }),
     });
     return await engine.run(args.input, config, {

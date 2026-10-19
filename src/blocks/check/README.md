@@ -26,7 +26,8 @@ the operation's declared effects before opening these services.
 
 Receipts hash the input snapshot, working directory, commands and their resolved paths,
 report selection, budgets, trigger and environment digest. Environment values are not
-stored. A separate content digest covers the receipt. `verifyReceipt(receipt, digest)`
+stored. Invocation deadlines control execution but do not change the input binding.
+A separate content digest covers the receipt. `verifyReceipt(receipt, digest)`
 checks its schema, content integrity and expected input binding. Accepted state supplies
 provenance; an unkeyed content digest alone is not an authenticity signature.
 
@@ -58,14 +59,16 @@ to the replaceable output adapter. No particular command, parser mode or stop po
 selected by the engine. The ordinary instance `operationTimeouts` map overrides the
 manifest's operation budgets; command timeouts remain bounded by that invocation deadline.
 
-Safety ceilings: 256 named checks (names 1?200 characters), 1024 arguments per command,
-1?2147483647 ms per command, and 1?262144 bytes per output stream. Input configuration
-selects at most 1024 paths, a 1?67108864 byte aggregate snapshot budget, and at most
+Safety ceilings: 256 named checks (names 1–200 characters), 1024 arguments per command,
+1–2147483647 ms per command, and 1–262144 bytes per output stream. Input configuration
+selects at most 1024 paths, a 1–67108864 byte aggregate snapshot budget, and at most
 256 explicit environment names. Missing selected variables are omitted. The child inherits
 nothing else. The snapshot provider reads exact selected file bytes (including dirty and
 untracked selected inputs) and HEAD. It refuses escapes, unsafe file types and over-budget
 snapshots rather than returning partial evidence. Select inputs deliberately: command
 outputs and Forge state should not be inputs unless a changed-input result is intended.
+Internal HEAD lookups reserve 66 output bytes for a complete 64-character object id and
+CRLF, independently of the declared command output cap.
 
 Packed fixtures run the installed engine and generated surfaces on Node. A fresh shared
 packed consumer may be passed as `CHECK_PACKED_CONSUMER`; all counterfactuals mutate only

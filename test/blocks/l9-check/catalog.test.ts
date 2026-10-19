@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { rejects, throws } from "node:assert/strict";
 import entry from "../../../src/blocks/check/entry.cts";
 import { checkCrypto } from "../../../src/blocks/check/support.ts";
 import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts";
@@ -14,6 +15,11 @@ import schema from "../../../src/blocks/check/schemas/config.json" with { type: 
 import manifest from "../../../src/blocks/check/forge.block.json" with { type: "json" };
 import { validateBlockManifest } from "../../../src/contract/index.ts";
 import { captured } from "./fakes.ts";
+import {
+  createCheck,
+  validateBudgets,
+} from "../../../src/blocks/check/index.ts";
+import { commandArguments } from "../../../src/blocks/check/command.ts";
 
 test("the check manifest uses locked major interface references in every slot", () => {
   expect(validateBlockManifest(manifest).ok).toBe(true);
@@ -161,4 +167,97 @@ test("declared config rejects missing choices and out-of-range budgets", () => {
     delete missing[key];
     expect(validateWithSchema(schema, missing).length).toBeGreaterThan(0);
   }
+}, 1000);
+
+test("snapshot HEAD lookups have enough output independently of command retention", async () => {
+  for (const width of [40, 64]) {
+    for (const cap of [1, 40, 64]) {
+      const { services, records } = fixture();
+      const head = "a".repeat(width);
+      services.files.snapshot = (input) => {
+        // Windows may emit CRLF; the complete longest supported object id must fit.
+        expect(input.maxOutputBytes).toBeGreaterThanOrEqual(66);
+        return Promise.resolve({
+          head,
+          filesDigest: "sha256:" + "b".repeat(64),
+        });
+      };
+      const run = services.process.run.bind(services.process);
+      services.process.run = (executable, args, options) => {
+        expect(options.maxOutputBytes).toBe(cap);
+        return run(executable, args, options);
+      };
+      const receipt = await handlers["check.run"]({
+        input: {},
+        services,
+        config: {
+          ...config,
+          maxOutputBytes: cap,
+          outputHeadBytes: cap,
+          outputTailBytes: 0,
+        },
+        signal: new AbortController().signal,
+        deadline: Date.now() + 10000,
+      });
+      expect(receipt.subject).toBe(head);
+      expect(records.size).toBe(1);
+    }
+  }
+}, 1000);
+
+test("every command-string parser path rejects with INPUT_INVALID before service access", async () => {
+  for (const command of ["tool && other", 'tool "unterminated', " "]) {
+    const invalidConfig = { ...config, commands: { test: command } };
+    expect(validateWithSchema(schema, invalidConfig)).toEqual([]);
+    throws(() => commandArguments(command), { code: "INPUT_INVALID" });
+    throws(() => validateBudgets(invalidConfig), { code: "INPUT_INVALID" });
+    const { services, observed } = fixture();
+    await rejects(
+      handlers["check.run"]({
+        input: {},
+        config: invalidConfig,
+        get services(): CatalogServices {
+          throw Error("must not access services");
+        },
+        signal: new AbortController().signal,
+        deadline: Date.now() + 10000,
+      }),
+      { code: "INPUT_INVALID" },
+    );
+    await rejects(
+      createCheck({
+        ...services,
+        root: "/clone",
+        environment: {},
+        clock: { now: () => 0 },
+        snapshot: () => {
+          throw Error("must not snapshot");
+        },
+      }).run({}, invalidConfig),
+      { code: "INPUT_INVALID" },
+    );
+    expect(observed).toEqual([]);
+  }
+}, 1000);
+
+test("captured input bindings ignore invocation deadlines while deadline enforcement remains active", async () => {
+  const { services, records } = fixture();
+  const now = Date.now();
+  const args = {
+    input: {},
+    config,
+    services,
+    signal: new AbortController().signal,
+  };
+  const first = await handlers["check.run"]({ ...args, deadline: now + 10000 });
+  const second = await handlers["check.run"]({
+    ...args,
+    deadline: now + 20000,
+  });
+  expect(first.inputsDigest).toBe(second.inputsDigest);
+  expect(first.id).not.toBe(second.id);
+  await rejects(handlers["check.run"]({ ...args, deadline: now - 1 }), {
+    code: "INVOCATION_TIMEOUT",
+  });
+  expect(records.size).toBe(2);
 }, 1000);

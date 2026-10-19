@@ -8,6 +8,27 @@ export interface Counterfactual {
 export const counterfactuals: readonly Counterfactual[] = [
   {
     file: "blocks/check/entry.cjs",
+    from: "maxOutputBytes: SNAPSHOT_HEAD_OUTPUT_BYTES,",
+    to: "maxOutputBytes: config.maxOutputBytes,",
+    journey: "review",
+    evidence: "Snapshot requires an exact Git HEAD",
+  },
+  {
+    file: "blocks/check/entry.cjs",
+    from: 'function commandArguments(text) {\n    const invalid = (message) => failure("INPUT_INVALID", message);',
+    to: "function commandArguments(text) {\n    const invalid = (message) => { throw new Error(message); };",
+    journey: "review",
+    evidence: "invalid command string has a typed error",
+  },
+  {
+    file: "blocks/check/entry.cjs",
+    from: "environmentDigest: hash(env),",
+    to: "environmentDigest: hash(env), invocationDeadline: scope?.deadline ?? null,",
+    journey: "review",
+    evidence: "repeated CLI input binding is stable",
+  },
+  {
+    file: "blocks/check/entry.cjs",
     from: "if (bytes <= HASH_LIMIT)",
     to: "if (true)",
     journey: "bindings",

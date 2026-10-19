@@ -14,6 +14,7 @@ import { join } from "node:path";
 const installed = process.argv[2];
 const mcpOnly = process.argv[3] === "mcp";
 const bindingsOnly = process.argv[3] === "bindings";
+const reviewOnly = process.argv[3] === "review";
 const root = realpathSync(mkdtempSync(join(tmpdir(), "check-surfaces-")));
 const bin = join(installed, "dist/bin/forge.js");
 const env = {
@@ -236,6 +237,48 @@ async function mcp(expectedStatus = "PASS", expectedCommands = ["test"]) {
     }
   }
 }
+async function review() {
+  configure({
+    ...config,
+    maxOutputBytes: 1,
+    outputHeadBytes: 1,
+    outputTailBytes: 0,
+  });
+  const first = cli(["check", "run"]).result;
+  assert.equal(
+    first.runs.length,
+    1,
+    "one-byte command budget returns a receipt",
+  );
+  assert.equal(
+    first.runs[0].stdoutEvidence.head,
+    "cA==",
+    "command retention stays at one byte",
+  );
+  const second = cli(["check", "run"]).result;
+  assert.equal(
+    first.inputsDigest,
+    second.inputsDigest,
+    "repeated CLI input binding is stable",
+  );
+  const wire = await mcp("INCOMPLETE");
+  assert.equal(
+    first.inputsDigest,
+    wire.inputsDigest,
+    "CLI and MCP input binding is stable",
+  );
+  for (const command of ["tool && other", 'tool "unterminated']) {
+    configure({ commands: { test: command } });
+    assert.equal(
+      cli(["check", "run"], 2).error.code,
+      "INPUT_INVALID",
+      "invalid command string has a typed error",
+    );
+  }
+  console.log(
+    "PASS packed final review: one-byte command cap, stable CLI/MCP bindings, typed parser errors",
+  );
+}
 try {
   git(["init", "-q"]);
   writeFileSync(join(root, "input.txt"), "exact input\n");
@@ -283,7 +326,9 @@ try {
   const digest = checked.result.digest;
   cli(["block", "admit", digest]);
   cli(["config", "grant", "--input", JSON.stringify({ digest, effects })]);
-  if (mcpOnly) {
+  if (reviewOnly) {
+    await review();
+  } else if (mcpOnly) {
     await mcp();
     console.log(
       "PASS packed generated MCP: list, awaited run, receipt readback",
@@ -346,6 +391,7 @@ try {
     maximumReceipt(cli(["check", "run"]).result);
     maximumReceipt(await mcp("INCOMPLETE", ["first", "second"]));
     bindings();
+    await review();
     console.log(
       "PASS packed generated CLI/MCP: admission, list, outcomes, env, input binding, receipt readback",
     );
