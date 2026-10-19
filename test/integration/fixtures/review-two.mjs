@@ -1,4 +1,5 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
+import { runInNewContext } from "node:vm";
 import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
@@ -10,18 +11,84 @@ import {
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { createAssembly, localContext } from "forge-workflow/runtime";
+import {
+  createAssembly,
+  localContext,
+  Runtime,
+  Catalog,
+  TrustStore,
+  captureBlock,
+  nodeFileCapture,
+} from "forge-workflow/runtime";
 import { StateOwner } from "forge-workflow/state";
 import { sqliteStore } from "forge-workflow/adapters/sqlite";
 const packageUrl = import.meta.resolve("forge-workflow/package.json");
 const { LocalState } = await import(
   new URL("dist/src/assembly/state.js", packageUrl)
 );
+const { createStateClient } = await import(
+  new URL("dist/src/assembly/state-client.js", packageUrl)
+);
+async function normalization() {
+  const opened = await sqliteStore.open({
+    path: join(work, "normalization.sqlite"),
+    readOnly: false,
+  });
+  assert.ok(opened.ok);
+  try {
+    const owner = new StateOwner(opened.handle.value, { now: () => 1000 });
+    owner.initialize();
+    const client = createStateClient({
+      owner,
+      namespace: "example.org/normalization",
+      context: {
+        variant: "project",
+        actor: { kind: "agent", id: "normalization" },
+        project: { id: work },
+      },
+      write: true,
+      requestId: "normalization",
+    });
+    // Exercise this public assembly seam without the runtime's independent snapshot layer.
+    const value = runInNewContext("({version: '1.0.0'})");
+    const written = client.put("record", value, { expectRevision: 0 });
+    assert.equal(written.revision, 1);
+    assert.equal(
+      owner.get("example.org/normalization", "record").value.version,
+      "1.0.0",
+    );
+    console.log(
+      "PASS normalization: cross-realm JSON reaches durable state through the state client",
+    );
+  } finally {
+    await opened.handle.close();
+  }
+}
 const bin = fileURLToPath(new URL("dist/bin/forge.js", packageUrl));
 const mode = process.argv[2] ?? "all";
 const work = mkdtempSync(join(process.cwd(), "review-two-"));
+let cliCalls = 0;
+let cliTime = 0;
+function spawnCli(args, options) {
+  const started = performance.now();
+  try {
+    return spawnSync(process.execPath, [bin, ...args], options);
+  } finally {
+    cliCalls++;
+    cliTime += performance.now() - started;
+  }
+}
+function phase(name) {
+  const started = performance.now();
+  const calls = cliCalls;
+  const time = cliTime;
+  return () =>
+    console.log(
+      `Second review ${name}: ${Math.round(performance.now() - started)} ms; ${cliCalls - calls} CLI calls, ${Math.round(cliTime - time)} ms in CLI`,
+    );
+}
 function cli(root, args, expected = 0) {
-  const result = spawnSync(process.execPath, [bin, ...args], {
+  const result = spawnCli(args, {
     cwd: root,
     env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
     encoding: "utf8",
@@ -51,6 +118,7 @@ function block(path, noun) {
         output: "output.json",
         args: ["value"],
         context: "stateless",
+        timeoutMs: 15000,
         effects: [],
         idempotent: true,
         callers: ["human", "agent"],
@@ -365,15 +433,79 @@ async function directories() {
     "PASS directories: every parent synced before acknowledgement, including retries after sync failure",
   );
 }
+async function declaredDeadline() {
+  const directory = join(work, "deadline");
+  const manifest = block(directory, "clock");
+  writeFileSync(join(directory, "block.json"), JSON.stringify(manifest));
+  const captured = captureBlock(directory, nodeFileCapture);
+  const catalog = new Catalog(
+    {
+      schemaVersion: "forge.config/1",
+      blocks: { clock: { source: { path: "./clock" } } },
+    },
+    new Map([["clock", captured]]),
+  );
+  const trust = new TrustStore();
+  trust.admit("human", captured.digest);
+  let now = 0;
+  const runtime = new Runtime(catalog, trust, {
+    clock: { now: () => now },
+    services: () => {
+      now += 2000;
+      return Promise.resolve({ ownership: "borrowed", value: {} });
+    },
+    isolation: {
+      open: () =>
+        Promise.resolve({
+          ok: true,
+          handle: {
+            ownership: "owned",
+            close: () => Promise.resolve(),
+            value: {
+              run(options) {
+                assert.equal(
+                  options.timeoutMs,
+                  15000,
+                  "declared budget must survive a write taking more than one second",
+                );
+                now += 2000;
+                return options.encode({ value: "written" });
+              },
+            },
+          },
+        }),
+    },
+  });
+  const request = {
+    schemaVersion: "forge.invocation/1",
+    requestId: "deadline",
+    op: "clock.echo",
+    caller: "agent",
+    context: {},
+    input: { value: "ok" },
+  };
+  assert.equal(
+    (await runtime.invoke(request)).ok,
+    true,
+    "declared durable budget must complete",
+  );
+  console.log("PASS declared deadlines with injected clock");
+}
 try {
-  if (["all", "directories", "directory-retry"].includes(mode))
+  if (["all", "normalization"].includes(mode)) await normalization();
+  if (["all", "deadline"].includes(mode)) await declaredDeadline();
+  if (["all", "directories", "directory-retry"].includes(mode)) {
+    const finished = phase("directories");
     await directories();
+    finished();
+  }
   if (mode === "all" || mode === "bootstrap") {
+    const finished = phase("bootstrap");
     const root = join(work, "bootstrap");
     mkdirSync(join(root, "device/trust.sqlite"), { recursive: true });
     const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") };
     for (const flag of ["--version", "-v"]) {
-      const result = spawnSync(process.execPath, [bin, flag], {
+      const result = spawnCli([flag], {
         cwd: root,
         env,
         encoding: "utf8",
@@ -384,7 +516,7 @@ try {
       assert.match(result.stdout, /^\d+\.\d+\.\d+[^\r\n]*\r?\n$/);
       assert.equal(result.stderr, "");
     }
-    const result = spawnSync(process.execPath, [bin, "config", "show"], {
+    const result = spawnCli(["config", "show"], {
       cwd: root,
       env,
       encoding: "utf8",
@@ -407,8 +539,10 @@ try {
     console.log(
       "PASS bootstrap: typed JSON failure and state-independent version",
     );
+    finished();
   }
   if (mode === "all" || mode === "implicit-bindings") {
+    const finished = phase("implicit-bindings");
     for (const order of ["unbound", "provider-first", "consumer-first"]) {
       const root = join(work, order);
       mkdirSync(root);
@@ -476,8 +610,10 @@ try {
     console.log(
       "PASS implicit-bindings: resolved optional providers checked in both config orders",
     );
+    finished();
   }
   if (["all", "per-block", "bad-docs"].includes(mode)) {
+    const finished = phase("per-block");
     for (const [name, breakBlock] of cases.filter(
       ([name]) => mode !== "bad-docs" || name === "invalid-docs",
     )) {
@@ -546,8 +682,10 @@ try {
     console.log(
       "PASS per-block: nine source, manifest, docs, config and capture failure kinds remain repairable",
     );
+    finished();
   }
   if (mode === "all" || mode === "bindings") {
+    const finished = phase("bindings");
     const root = join(work, "bindings");
     mkdirSync(root);
     writeFileSync(
@@ -640,7 +778,8 @@ try {
         await opened.handle.close();
       }
     }
-    for (const context of ["leased", "stateless"]) {
+    // Leased bindings are covered by the generic lease journey; stateless writes remain unsupported.
+    for (const context of ["stateless"]) {
       const unsupported = join(root, `unsupported-${context}`),
         bad = block(unsupported, `unsupported-${context}`);
       bad.requires = [{ slot: "state", interface: "forge.state@1" }];
@@ -648,8 +787,6 @@ try {
       bad.operations[`unsupported-${context}.echo`].effects = [
         "unsupported:write",
       ];
-      if (context === "leased")
-        bad.operations[`unsupported-${context}.echo`].leaseMode = "held";
       rewrite(unsupported, "forge.block.json", bad);
       const refused = cli(
         root,
@@ -698,8 +835,13 @@ try {
     console.log(
       "PASS bindings: every advertised operation has required slots; device and project owners are isolated; unsupported contexts are refused",
     );
+    finished();
   }
-  if (mode === "all" || mode === "lifetime") await lifetime();
+  if (mode === "all" || mode === "lifetime") {
+    const finished = phase("lifetime");
+    await lifetime();
+    finished();
+  }
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

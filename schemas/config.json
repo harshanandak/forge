@@ -13,6 +13,7 @@
       "propertyNames": { "$ref": "common.json#/$defs/InstanceName" },
       "additionalProperties": { "$ref": "#/$defs/BlockInstance" }
     },
+    "runtime": { "$ref": "#/$defs/RuntimeBudget" },
     "mcp": { "$ref": "#/$defs/McpExposure" },
     "templates": {
       "description": "Templates imported into this config, with the exact version and digest imported.",
@@ -29,11 +30,31 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "RuntimeBudget": {
+      "description": "Optional host ceiling, or the fallback budget for operations without timeoutMs.",
+      "type": "object",
+      "required": ["timeoutMs"],
+      "properties": {
+        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 2147483647 }
+      },
+      "additionalProperties": false
+    },
     "BlockInstance": {
       "type": "object",
       "required": ["source"],
       "properties": {
         "source": { "$ref": "#/$defs/BlockSource" },
+        "operationTimeouts": {
+          "description": "Budget overrides keyed by the original declared operation name, before renames.",
+          "type": "object",
+          "maxProperties": 512,
+          "propertyNames": { "$ref": "common.json#/$defs/OperationName" },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
         "enabled": { "type": "boolean" },
         "config": {
           "description": "This instance's config; validated by the block's configSchema.",

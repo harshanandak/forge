@@ -1,44 +1,115 @@
-import { spawn } from "node:child_process";
-import { envValue } from "./env.ts";
-import { pathFor, type Platform } from "./platform.ts";
+import { setTimeout as sleep } from "node:timers/promises";
+import { ProcessSpawnError } from "./errors.ts";
+import {
+  linuxProcessTable,
+  type ProcessTablePort,
+} from "./linux-process-table.ts";
+import { darwinProcessTable } from "./darwin-process-table.ts";
 
-/**
- * Stop a process and everything it started. POSIX children run as the leader of their own process
- * group, so one signal to the group reaches them all. Windows has no groups; `taskkill /T` walks
- * the tree from the root pid.
- */
-export function killTree(
+interface GroupControl {
+  readonly processTable?: ProcessTablePort;
+  signal(pid: number, signal: "SIGKILL" | 0): void;
+  now(): number;
+  pause(ms: number): Promise<void>;
+}
+const realGroupControl: GroupControl = {
+  ...(process.platform === "linux" ? { processTable: linuxProcessTable } : {}),
+  ...(process.platform === "darwin"
+    ? { processTable: darwinProcessTable }
+    : {}),
+  signal(pid, signal) {
+    process.kill(pid, signal);
+  },
+  now: () => performance.now(),
+  pause: async (ms) => {
+    await sleep(ms);
+  },
+};
+
+/** A POSIX scope owns its helper's process group until command settlement. */
+export async function killTree(
   pid: number,
-  platform: Platform,
-  env: Readonly<Record<string, string>>,
-): void {
-  if (platform === "win32") {
-    const root =
-      envValue(env, "SystemRoot", platform) ??
-      process.env["SystemRoot"] ??
-      "C:\\Windows";
-    const taskkill = pathFor(platform).join(root, "System32", "taskkill.exe");
-    const killer = spawn(taskkill, ["/PID", String(pid), "/T", "/F"], {
-      stdio: "ignore",
-      windowsHide: true,
-      env: { SystemRoot: root },
-    });
-    killer.on("error", () => {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // already gone
-      }
-    });
-    return;
-  }
+  timing: {
+    readonly cleanupTimeoutMs: number;
+    readonly pollIntervalMs: number;
+  },
+  control: GroupControl = realGroupControl,
+): Promise<void> {
   try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
+    control.signal(-pid, "SIGKILL");
+  } catch (error) {
+    // Darwin may return EPERM for zombie-only groups. Member states must prove
+    // termination; a permission response alone never counts as success.
+    if (!(
+      error !== null &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error.code === "ESRCH" ||
+        (error.code === "EPERM" && control.processTable !== undefined))
+    ))
+      throw new ProcessSpawnError(
+        "TREE_KILL_FAILED",
+        "Could not stop process group",
+        error,
+      );
+  }
+  const deadline = control.now() + timing.cleanupTimeoutMs;
+  while (true) {
     try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // already gone
+      control.signal(-pid, 0);
+    } catch (error) {
+      if (
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "ESRCH"
+      )
+        return;
+      // EPERM is ambiguous while a signalled group is being reaped. Only ESRCH proves absence.
+      if (!(
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "EPERM"
+      ))
+        throw new ProcessSpawnError(
+          "TREE_KILL_FAILED",
+          "Could not confirm process group termination",
+          error,
+        );
     }
+    if (control.processTable !== undefined) {
+      const checkBudget = (): void => {
+        if (control.now() >= deadline)
+          throw new Error(
+            "Process table inspection exceeded the cleanup deadline",
+          );
+      };
+      try {
+        let live = false;
+        for (const member of control.processTable.members(pid, checkBudget)) {
+          checkBudget();
+          if (member.state !== "Z") {
+            live = true;
+            break;
+          }
+        }
+        checkBudget();
+        if (!live) return;
+      } catch (error) {
+        throw new ProcessSpawnError(
+          "TREE_KILL_FAILED",
+          "Could not inspect process group members",
+          error,
+        );
+      }
+    }
+    const remaining = deadline - control.now();
+    if (remaining <= 0)
+      throw new ProcessSpawnError(
+        "TREE_KILL_FAILED",
+        "Process group remained alive after termination",
+      );
+    await control.pause(Math.min(timing.pollIntervalMs, remaining));
   }
 }

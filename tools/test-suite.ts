@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { runChild } from "./child-runner.ts";
+import { inheritRunnerGroup, readRunnerPolicy } from "./runner-policy.ts";
 import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +19,13 @@ if (
   );
 }
 const timeout = process.argv[4]!;
+const policy = readRunnerPolicy();
+const scope = new AbortController();
+const stepDeadline = performance.now() + policy.stepTimeoutMs;
+const stepTimer = setTimeout(
+  () => scope.abort(new Error("test suite step deadline exceeded")),
+  policy.stepTimeoutMs,
+);
 
 function testFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -28,19 +36,24 @@ function testFiles(dir: string): string[] {
 }
 
 const files = testFiles(join(root, "test")).sort();
-function run(kind: "unit" | "integration" | "integration-rest"): void {
+async function run(
+  kind: "unit" | "integration" | "integration-rest",
+): Promise<void> {
   const selected = files.filter((file) =>
     kind === "unit"
       ? !file.endsWith(".integration.test.ts")
       : file.endsWith(".integration.test.ts") &&
         (kind !== "integration-rest" ||
-          !file
-            .replaceAll("\\", "/")
-            .endsWith("node-fixtures/state/packed.integration.test.ts")),
+          ![
+            "test/node-fixtures/state/packed.integration.test.ts",
+            "test/node-fixtures/memory/packed.integration.test.ts",
+            "test/integration/packed.integration.test.ts",
+          ].includes(file.replaceAll("\\", "/"))),
   );
   if (selected.length === 0) throw new Error(`the ${kind} test suite is empty`);
   console.log(`${kind}: ${selected.length} test files`);
-  const result = spawnSync(
+  await runChild(
+    `test suite ${kind}`,
     process.execPath,
     [
       "test",
@@ -49,11 +62,29 @@ function run(kind: "unit" | "integration" | "integration-rest"): void {
       ...(kind === "unit" ? ["--parallel"] : []),
       ...selected.map((file) => `./${file}`),
     ],
-    { cwd: root, stdio: "inherit", windowsHide: true },
+    {
+      cwd: root,
+      inheritProcessGroup: inheritRunnerGroup(),
+      timeoutMs: Math.max(
+        1,
+        Math.min(
+          policy.childTimeoutMs,
+          Math.floor(stepDeadline - performance.now()),
+        ),
+      ),
+      cleanupTimeoutMs: policy.cleanupTimeoutMs,
+      maxOutputBytes: policy.maxOutputBytes,
+      signal: scope.signal,
+    },
   );
-  if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
 }
-if (suite === "unit" || suite === "all") run("unit");
-if (suite === "integration" || suite === "all") run("integration");
-if (suite === "integration-rest") run("integration-rest");
+try {
+  if (suite === "unit" || suite === "all") await run("unit");
+  if (suite === "integration" || suite === "all") await run("integration");
+  if (suite === "integration-rest") await run("integration-rest");
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+} finally {
+  clearTimeout(stepTimer);
+}

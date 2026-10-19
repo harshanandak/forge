@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -125,6 +125,7 @@ function makeBlock() {
     input,
     output,
     context,
+    timeoutMs: 15000,
     effects,
     args,
     idempotent: effects.length === 0,
@@ -177,6 +178,7 @@ function makeBlock() {
       expectRevision: { type: "integer", minimum: 0 },
     }),
     "mark.output": schema({
+      writeDurationMs: { type: "integer", minimum: 0 },
       version: { type: "string" },
       revision: { type: "integer", minimum: 1 },
     }),
@@ -195,7 +197,7 @@ function makeBlock() {
     join(block, "index.cjs"),
     `module.exports = {
     "semver.bump": ({input}) => { const [a,b,c] = input.current.split('.').map(Number); return {next: input.part === 'major' ? (a+1)+'.0.0' : input.part === 'minor' ? a+'.'+(b+1)+'.0' : a+'.'+b+'.'+(c+1)}; },
-    "semver.mark": ({input,services}) => { const record = services.state.put('released', {version: input.version}, {expectRevision: input.expectRevision}); return {version: input.version, revision: record.revision}; }
+    "semver.mark": ({input,services}) => { const started = Date.now(); const record = services.state.put('released', {version: input.version}, {expectRevision: input.expectRevision}); return {version: input.version, revision: record.revision, writeDurationMs: Date.now() - started}; }
   };`,
   );
 }
@@ -371,14 +373,24 @@ try {
       ]);
       server = mcp();
       await server.initialize();
+      const markStarted = performance.now();
       const marked = await server.call("semver_mark", {
         version: "1.5.0",
         expectRevision: 0,
       });
+
+      const { writeDurationMs, ...markedValue } = marked.result ?? {};
       assert.deepEqual(
-        marked.result,
+        markedValue,
         { version: "1.5.0", revision: 1 },
         JSON.stringify(marked),
+      );
+      assert.ok(
+        Number.isInteger(writeDurationMs) && writeDurationMs >= 0,
+        "durable write timing must be measured",
+      );
+      console.log(
+        `DEADLINE_MEASUREMENT platform=${process.platform} operation=semver.mark durationMs=${writeDurationMs} roundTripMs=${Math.ceil(performance.now() - markStarted)} declaredMs=15000 scope=durable-state-put`,
       );
       if (mode === "race") await race();
       else {

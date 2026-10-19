@@ -107,6 +107,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
+          cache: ${{ runner.os == 'Windows' && 'npm' || '' }}
+          cache-dependency-path: bun.lock
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -124,23 +126,15 @@ jobs:
       - run: bun run build
       - name: Unit tests
         run: bun run test:unit
-      # Pack once: Node-only smoke checks and packed state share its temporary npm install.
+      # Pack once: host smoke, first slice, state and memory share its temporary npm install.
       # Other integration files stay serial alongside it, after the parallel unit lane.
       - name: Process integration tests and pack smoke
         env:
           # Node legs split counterfactuals; Bun keeps the full set on Node 24 only.
           STATE_NODE_LEG: ${{ matrix.node }}
-        run: |
-          smoke_log="$RUNNER_TEMP/pack-smoke.log"
-          node tools/pack-smoke/run.ts --state-test "$(command -v bun)" > "$smoke_log" 2>&1 &
-          smoke_pid=$!
-          status=0
-          bun tools/test-suite.ts integration-rest --timeout 30000 || status=1
-          wait "$smoke_pid" || status=1
-          echo "::group::pack smoke"
-          cat "$smoke_log"
-          echo "::endgroup::"
-          exit "$status"
+        # The external step ceiling also covers a stalled parent event loop.
+        timeout-minutes: 6
+        run: node tools/integration-step.ts "$(command -v bun)"
 
   # The one required check. Skipped heavy legs pass only when the change is documentation-only.
   ci-gate:

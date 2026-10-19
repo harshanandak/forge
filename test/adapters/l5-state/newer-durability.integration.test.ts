@@ -51,7 +51,7 @@ test("newer ledgers and schema versions refuse initialization without writes", a
       }
       expect(caught).toMatchObject({
         name: "NewerStoreError",
-        newestKnownVersion: "001_state_010",
+        newestKnownVersion: "002_state_events_key_index",
         foundVersion: future === "schema" ? "schema:999" : future,
       });
       expect(String(caught)).toContain("Store written by a newer Forge");

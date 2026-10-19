@@ -1,3 +1,10 @@
+import {
+  invocationDeadline,
+  validateTimeout,
+  TIMEOUT_BOUNDS,
+} from "./deadline.ts";
+import type { ClockPort } from "../../ports/clock.ts";
+import { InvocationServices } from "./services.ts";
 import { bindContext } from "../../contract/context.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
@@ -16,13 +23,12 @@ import { TrustStore, refuse } from "../trust/index.ts";
 import type { Handle, LifetimeProvider } from "../../ports/lifetime.ts";
 
 export interface RuntimeLimits {
-  readonly timeoutMs: number;
+  readonly timeoutMs?: number;
   readonly maxOutputBytes: number;
   readonly parse: ParseLimits;
 }
 
 export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
-  timeoutMs: 1000,
   maxOutputBytes: 1_048_576,
   parse: DEFAULT_PARSE_LIMITS,
 };
@@ -32,9 +38,12 @@ export type ServiceHandle = Handle<unknown>;
 export interface ServiceScope {
   readonly op: string;
   readonly effects: readonly string[];
+  readonly signal: AbortSignal;
+  readonly deadline: number;
+  readonly processContainment: "supervised" | "strict";
 }
 
-/** Sync evaluation is supplied by the embedding through the L1 lifetime port. */
+/** Value-or-Promise evaluation is supplied by the embedding through the L1 lifetime port. */
 export interface RunIsolation {
   run(options: {
     readonly source: string;
@@ -44,12 +53,16 @@ export interface RunIsolation {
     readonly encode: (output: unknown) => string;
     readonly fail: typeof refuse;
     readonly timeoutMs: number;
+    readonly signal: AbortSignal;
+    readonly deadline: number;
+    readonly settled: () => void;
   }): unknown;
 }
 
 export type RunIsolationPort = LifetimeProvider<RunIsolation, void>;
 
 export interface RuntimeOptions {
+  readonly clock?: ClockPort;
   readonly isolation?: RunIsolationPort;
   readonly limits?: Partial<RuntimeLimits>;
   /** Constructs clients exposing only scope.effects, never block-wide grants.
@@ -168,7 +181,7 @@ function freezeData(value: unknown): unknown {
   return value;
 }
 
-/** One shared API for all transports. The sync profile is trusted code, never a security sandbox. */
+/** One shared API for all transports. The trusted profile is trusted code, never a security sandbox. */
 export class Runtime {
   readonly #catalog: Catalog;
   readonly #trust: TrustStore;
@@ -190,9 +203,10 @@ export class Runtime {
         ...(options.limits?.parse ?? DEFAULT_RUNTIME_LIMITS.parse),
       }),
     });
+    if (this.#limits.timeoutMs !== undefined)
+      validateTimeout(this.#limits.timeoutMs);
     const parse = this.#limits.parse;
     for (const limit of [
-      this.#limits.timeoutMs,
       this.#limits.maxOutputBytes,
       parse.maxBytes,
       parse.maxDepth,
@@ -204,15 +218,24 @@ export class Runtime {
     }
   }
 
-  async invokeText(text: string | Uint8Array): Promise<ResultEnvelope> {
+  async invokeText(
+    text: string | Uint8Array,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<ResultEnvelope> {
     const parsed = parseUntrustedJson(text, this.#limits.parse);
     if (!parsed.ok)
       return { ok: false, status: "FAIL", error: parsed.error, warnings: [] };
-    return this.invoke(parsed.value);
+    return this.invoke(parsed.value, options);
   }
 
   /** Parsed values from embeddings are trusted objects; outside text uses invokeText. */
-  async invoke(value: unknown): Promise<ResultEnvelope> {
+  async invoke(
+    value: unknown,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<ResultEnvelope> {
+    let invocation: InvocationServices | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancel: (() => void) | undefined;
     let handle: ServiceHandle | undefined;
     let request: InvocationRequest | undefined;
     let started = false;
@@ -226,10 +249,7 @@ export class Runtime {
       if (!declaration.callers.includes(request.caller))
         refuse("GRANT_REQUIRED", "caller is not permitted");
       if (request.dryRun === true)
-        refuse(
-          "UNAVAILABLE",
-          "this sync profile has no dry-run execution contract",
-        );
+        refuse("UNAVAILABLE", "this profile has no dry-run execution contract");
       const bound = bindContext(declaration, request.context);
       if (!bound.ok) throw new ForgeFailure(bound.error);
       if (!block.validate(declaration.input, request.input))
@@ -247,42 +267,129 @@ export class Runtime {
         this.#options.services === undefined
       )
         refuse("PROVIDER_MISSING", "bound clients need a service provider");
-      handle = await this.#options.services?.(
-        operation.instance,
-        bound.context,
-        Object.freeze({
-          op: request.op,
-          effects: Object.freeze([...declaration.effects]),
-        }),
+      const clock = this.#options.clock ?? { now: () => Date.now() };
+      const budget = invocationDeadline(
+        {
+          declared: declaration.timeoutMs,
+          configured:
+            this.#catalog.config.blocks[operation.instance]
+              ?.operationTimeouts?.[operation.declaredOp],
+          host: this.#catalog.config.runtime?.timeoutMs,
+          embedding: this.#limits.timeoutMs,
+        },
+        clock,
       );
+      const preparationTimeoutMs = Math.min(
+        this.#catalog.config.runtime?.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
+        this.#limits.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
+      );
+      invocation = new InvocationServices(
+        clock.now() + preparationTimeoutMs,
+        () => {
+          this.#trust.check(block.digest, declaration.effects);
+        },
+        declaration.processContainment === "strict",
+        clock,
+        this.#limits.parse,
+      );
+      const scope = invocation;
+      cancel = () =>
+        scope.controller.abort(
+          new ForgeFailure({
+            code: "INVOCATION_CANCELLED",
+            message: "Invocation cancelled",
+            retry: "reconcile_first",
+          }),
+        );
+      options.signal?.addEventListener("abort", cancel, { once: true });
+      if (options.signal?.aborted) cancel();
+      const armDeadline = (timeoutMs: number): void => {
+        if (timer !== undefined) clearTimeout(timer);
+        timer = setTimeout(
+          () =>
+            scope.controller.abort(
+              new ForgeFailure({
+                code: "INVOCATION_TIMEOUT",
+                message: "Invocation deadline exceeded",
+                retry: "reconcile_first",
+              }),
+            ),
+          timeoutMs,
+        );
+      };
+      armDeadline(preparationTimeoutMs);
+      scope.check();
+      handle = await scope.wait(
+        Promise.resolve(
+          this.#options.services?.(
+            operation.instance,
+            bound.context,
+            Object.freeze({
+              op: request.op,
+              effects: Object.freeze([...declaration.effects]),
+              signal: scope.controller.signal,
+              get deadline() {
+                return scope.deadline;
+              },
+              processContainment:
+                declaration.processContainment ?? "supervised",
+            }),
+          ),
+        ),
+        async (late) => {
+          if (late?.ownership === "owned") await late.close();
+        },
+      );
+      await scope.prepare(handle?.value);
+      scope.check();
       // Opening clients may yield; trust must still hold immediately before execution.
       this.#trust.check(block.digest, declaration.effects);
       if (this.#options.isolation === undefined)
-        refuse(
-          "PROVIDER_MISSING",
-          "sync execution needs an isolation provider",
-        );
-      const opened = await this.#options.isolation.open();
+        refuse("PROVIDER_MISSING", "execution needs an isolation provider");
+      const opened = await scope.wait(
+        this.#options.isolation.open(),
+        async (late) => {
+          if (late.ok) await late.handle.close();
+        },
+      );
       if (!opened.ok) refuse("PROVIDER_MISSING", opened.unavailable.reason);
       let encoded: unknown;
       try {
+        // Host preparation has its own ceiling; the handler receives its whole declared budget.
+        const handlerStartedAt = clock.now();
+        scope.startHandler(handlerStartedAt + budget.remaining());
+        armDeadline(
+          Math.max(TIMEOUT_BOUNDS.minimum, scope.deadline - clock.now()),
+        );
         // Opening the evaluator may yield too; admission must still be current.
         this.#trust.check(block.digest, declaration.effects);
+        scope.check();
         started = true;
-        encoded = opened.handle.value.run({
-          source: block.text(block.manifest.entry),
-          filename: block.manifest.entry,
-          operation: operation.declaredOp,
-          args: Object.freeze({
-            input: freezeData(structuredClone(request.input)),
-            config: freezeData(structuredClone(config)),
-            services: handle?.value ?? Object.freeze({}),
-          }),
-          encode: (output: unknown) => encodeOutput(output, this.#limits),
-          fail: refuse,
-          timeoutMs: this.#limits.timeoutMs,
-        });
+        encoded = await scope.wait(
+          Promise.resolve(
+            opened.handle.value.run({
+              source: block.text(block.manifest.entry),
+              filename: block.manifest.entry,
+              operation: operation.declaredOp,
+              args: Object.freeze({
+                input: freezeData(structuredClone(request.input)),
+                config: freezeData(structuredClone(config)),
+                services: scope.wrap(handle?.value ?? Object.freeze({})),
+                signal: scope.controller.signal,
+                deadline: scope.deadline,
+              }),
+              encode: (output: unknown) => encodeOutput(output, this.#limits),
+              fail: refuse,
+              timeoutMs: Math.max(1, scope.deadline - clock.now()),
+              deadline: scope.deadline,
+              signal: scope.controller.signal,
+              settled: () => scope.expire(),
+            }),
+          ),
+        );
+        budget.remaining();
       } finally {
+        scope.stop();
         await opened.handle.close();
       }
       if (typeof encoded !== "string")
@@ -318,15 +425,30 @@ export class Runtime {
           failure.code === "ADMISSION_REQUIRED" ||
           failure.code === "GRANT_REQUIRED" ||
           failure.code === "LIMIT_EXCEEDED" ||
+          failure.code === "CONTAINMENT_UNAVAILABLE" ||
+          failure.code === "PROCESS_LIMIT_EXCEEDED" ||
           failure.code === "PROVIDER_MISSING"
             ? "INCOMPLETE"
             : "FAIL",
         error: {
           ...failure,
-          retry: started ? "reconcile_first" : failure.retry,
+          retry: started
+            ? "reconcile_first"
+            : failure.code === "INVOCATION_TIMEOUT"
+              ? "never"
+              : failure.retry,
         },
         warnings: [],
       };
+    }
+    if (timer !== undefined) clearTimeout(timer);
+    if (cancel) options.signal?.removeEventListener("abort", cancel);
+    invocation?.stop();
+    let processCleanupFailed = false;
+    try {
+      await invocation?.drain();
+    } catch {
+      processCleanupFailed = true;
     }
     try {
       if (handle?.ownership === "owned") await handle.close();
@@ -340,9 +462,24 @@ export class Runtime {
           message: "owned service cleanup failed",
           retry: "reconcile_first",
         },
-        warnings: [],
+        warnings: [...(invocation?.warnings() ?? [])],
       };
     }
-    return result;
+    if (processCleanupFailed)
+      return {
+        ok: false,
+        ...(request === undefined ? {} : { op: request.op }),
+        status: "INCOMPLETE",
+        error: {
+          code: "PROCESS_CLEANUP_FAILED",
+          message: "The process tree could not be confirmed stopped",
+          retry: "reconcile_first",
+        },
+        warnings: [...(invocation?.warnings() ?? [])],
+      };
+    return {
+      ...result,
+      warnings: [...result.warnings, ...(invocation?.warnings() ?? [])],
+    };
   }
 }

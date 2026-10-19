@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "required": ["records"],
+  "properties": {
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/state.json#/$defs/StateRecord"
+      }
+    }
+  },
+  "additionalProperties": false
+}

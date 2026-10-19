@@ -1,6 +1,6 @@
 // Owner/lifetime port for built-in stateful providers only (store, process supervisor, MCP
 // transport). A handle is either owned (the holder must close it) or borrowed (someone else will).
-// Outside sync block authors get no setup or dispose hooks.
+// Outside block authors get no setup or dispose hooks.
 import type { Unavailable } from "../generated/types.ts";
 
 export interface OwnedHandle<T> {

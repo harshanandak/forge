@@ -46,6 +46,7 @@ function fixture(
         input: "input.json",
         output: "output.json",
         context: "stateless",
+        timeoutMs: 1000,
         effects: [],
         idempotent: true,
         callers: ["human", "agent"],
@@ -261,15 +262,14 @@ test("changed entry bytes need fresh admission; matching captures reuse it", () 
 
 for (const [name, code, expected] of [
   ["invalid output", "return 3", "OUTPUT_INVALID"],
-  ["async output", "return Promise.resolve(input)", "BLOCK_ASYNC_UNSUPPORTED"],
   [
     "rejected async output",
     "return Promise.reject(Error('refused'))",
-    "BLOCK_ASYNC_UNSUPPORTED",
+    "BLOCK_EXECUTION_FAILED",
   ],
   ["non-JSON output", "return new Date()", "OUTPUT_INVALID"],
   ["hostile getter", "return {get x(){throw Error('bad')}}", "OUTPUT_INVALID"],
-  ["time limit", "while(true) {}", "LIMIT_EXCEEDED"],
+  ["time limit", "while(true) {}", "INVOCATION_TIMEOUT"],
   ["output limit", "return 'x'.repeat(10000)", "LIMIT_EXCEEDED"],
 ] as const)
   test(`${name} fails closed and closes owned services`, async () => {
@@ -705,7 +705,8 @@ test("clients are constructed for only the invoked operation effects", async () 
     const catalog = new Catalog(f.catalog.config, new Map([["sample", block]]));
     f.trust.admit("human", block.digest);
     f.trust.grant("human", block.digest, ["sample:write"]);
-    const scopes: unknown[] = [];
+    const scopes: import("../../../src/core/runtime/index.ts").ServiceScope[] =
+      [];
     const runtime = new Runtime(catalog, f.trust, {
       isolation: nodeRunIsolation,
       services: (_instance, _context, scope) => {
@@ -734,10 +735,13 @@ test("clients are constructed for only the invoked operation effects", async () 
       },
     );
     assert.equal(writes, 1);
-    assert.deepEqual(scopes, [
-      { op: "sample.read", effects: [] },
-      { op: "sample.write", effects: ["sample:write"] },
-    ]);
+    assert.deepEqual(
+      scopes.map(({ op, effects }) => ({ op, effects })),
+      [
+        { op: "sample.read", effects: [] },
+        { op: "sample.write", effects: ["sample:write"] },
+      ],
+    );
     for (const scope of scopes) {
       assert.ok(Object.isFrozen(scope));
       assert.ok(Object.isFrozen((scope as { effects: unknown }).effects));
@@ -820,6 +824,7 @@ test("runtime uses the injected evaluator and closes both owned handles on every
     try {
       f.trust.admit("human", f.block.digest);
       const runtime = new Runtime(f.catalog, f.trust, {
+        clock: { now: () => 0 },
         services: () =>
           Promise.resolve({
             ownership: "owned",
@@ -851,7 +856,9 @@ test("runtime uses the injected evaluator and closes both owned handles on every
                   run: (options) => {
                     events.push("ran");
                     assert.equal(options.operation, "sample.run");
-                    assert.equal(options.timeoutMs, 1000);
+                    assert.ok(
+                      options.timeoutMs > 0 && options.timeoutMs <= 1000,
+                    );
                     if (outcome === "throw") throw Error("evaluation failed");
                     return options.encode("injected result");
                   },
