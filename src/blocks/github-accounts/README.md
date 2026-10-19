@@ -1,7 +1,10 @@
 # GitHub accounts per clone
 
-`forge/github-accounts` is opt in. Add an instance and bind the process, files,
-environment and crypto requirements to `core`. Every operation is declared in
+`forge/github-accounts` is opt in. Add an instance and bind the repository
+(`forge.vcs-command@1`), account (`forge.github-command@1`), process, files,
+environment and crypto requirements to `core`. Native repository and account
+commands use their typed services. The generic process service only resolves
+system launchers; the block never launches commands through it. Every operation is declared in
 `forge.block.json`; the CLI and MCP tools come from the catalog. The async handlers
 have declared outer timeouts; the composition can lower them with operation
 timeouts. No credentials are stored by this block and it never switches gh's
@@ -21,17 +24,30 @@ and a clone-local HTTPS credential-helper reset and route. Prepend `routerPath` 
 status to PATH in the chosen session to route `gh` there. This does not change a
 global PATH or shell profile. Native gh and Git executable paths are resolved and
 pinned before script generation, so a router on PATH cannot recursively select
-itself. Each invocation obtains its account's stored credential, verifies the login
+itself. The environment launcher and configured shell are also resolved to absolute
+executable paths before automatic binding writes anything, and saved in binding
+metadata. The typed account adapter renders the scripts. Their absolute `/bin/sh`
+bootstrap invokes the pinned environment launcher and configured interpreter; the account tools
+and environment launcher never resolve through a later session's PATH. Each invocation obtains its account's stored credential, verifies the login
 before dispatch, and supplies the credential only to its child environment. The
 HTTPS helper emits credentials only through Git's credential protocol; it ignores
 store/erase and requests for other protocols or hosts. SSH identity selection stays
 with the user's SSH configuration.
 
-The generated router and hooks require a POSIX shell and `env` (Git Bash on
+The credential-helper command enters the owned executable script directly, so
+shell startup code cannot run before its environment-clean bootstrap. Generated
+shell launchers reject inherited startup variables such as `BASH_ENV` and `ENV`,
+even if the composition lists them in `environmentNames`.
+
+The generated router and hooks require a POSIX shell and environment launcher (Git Bash on
 Windows). Native PowerShell/cmd routing is not implemented. The provider-backed
 catalog operations work on Windows without that shell; automatic scripts and native
 Git hooks need the configured shell. Merely adding the block to a composition does
 not install scripts or hooks.
+
+An unavailable configured shell or environment launcher produces
+`ACCOUNT_SHELL_UNAVAILABLE` before automatic binding or hook installation writes
+anything. Binding with `auto: false` does not resolve or require either launcher.
 
 `github-account.check` accepts `tip`, optional exclusive `base`, and `trigger`
 (`push` or `merge`). It resolves commits, checks **every** commit in the range, and
@@ -100,7 +116,7 @@ value creates provider authority. Declared effects still require admission.
 | Key                       | Meaning                                                                                                                                                                                                                                                                                            |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `environmentNames`        | Exact environment names passed to native tools. Include PATH/PATHEXT, home/config locations, and shell/OS essentials needed by the selected programs. Auth overrides and all `GIT_*` overrides are removed. Generated scripts refer to these names at invocation time and never save their values. |
-| `gitProgram`, `ghProgram` | Executable names or paths resolved through the process provider.                                                                                                                                                                                                                                   |
+| `gitProgram`, `ghProgram` | Executable names or paths resolved through their typed repository/account adapters.                                                                                                                                                                                                                |
 | `ghArgs`                  | Explicit argument prefix, usually empty; supports a supervised executable wrapper without shell parsing.                                                                                                                                                                                           |
 | `identityName`            | `profile` (GitHub display name, falling back to login) or `login`. Explicit bind input overrides it.                                                                                                                                                                                               |
 | `identityEmail`           | `noreply` or verified `primary`. Explicit verified bind input overrides it.                                                                                                                                                                                                                        |
@@ -113,6 +129,7 @@ value creates provider authority. Declared effects still require admission.
 | `aiCoauthorPatterns`      | Literal markers identifying AI co-author trailers; an empty list identifies none.                                                                                                                                                                                                                  |
 | `forgeCommand`            | Executable and fixed arguments used by generated hooks to invoke the same installed catalog CLI.                                                                                                                                                                                                   |
 | `shellProgram`            | POSIX shell executable used for the clone-local credential helper.                                                                                                                                                                                                                                 |
+| `envProgram`              | Environment launcher executable resolved to an absolute path and recorded in metadata before automatic binding or hook installation; never resolved through session PATH.                                                                                                                          |
 
 The maxima above are bounded resource ceilings. Compositions should choose limits
 appropriate to their repository and explicitly include this block's effects in

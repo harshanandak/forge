@@ -1,6 +1,12 @@
 import { realpathSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { createProcessPort } from "../adapters/process/index.ts";
+import { createVcsCommandPort } from "../adapters/vcs-git/commands.ts";
+import { createGithubCommandPort } from "../adapters/github-cli/index.ts";
+import type {
+  AccountCommandPort,
+  ToolCommandPort,
+} from "../ports/tool-command.ts";
 import { createRunnerOutput } from "../adapters/runner-output/index.ts";
 import type { RunnerOutputPort } from "../ports/runner-output.ts";
 import type { SupervisionOptions } from "../adapters/process/supervision.ts";
@@ -54,6 +60,8 @@ export interface ProviderOptions {
 }
 export interface AssemblyProviders {
   process(scope: ServiceScope): ProcessService;
+  repository(scope: ServiceScope): Promise<OwnedHandle<ToolCommandPort>>;
+  account(scope: ServiceScope): Promise<OwnedHandle<AccountCommandPort>>;
   environment(scope: ServiceScope): EnvironmentService;
   crypto(scope: ServiceScope): CryptoService;
   runnerOutput(scope: ServiceScope): RunnerOutputPort;
@@ -76,6 +84,8 @@ const CLEANUP: SupervisionOptions = {
 export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.state@1.0.0",
   "forge.process@1.0.0",
+  "forge.vcs-command@1.0.0",
+  "forge.github-command@1.0.0",
   "forge.files@1.0.0",
   "forge.environment@1.0.0",
   "forge.crypto@1.0.0",
@@ -158,7 +168,87 @@ export function createAssemblyProviders(
     createProcessPort({
       supervision: options.supervision ?? CLEANUP,
     });
+  async function commands<T>(
+    scope: ServiceScope,
+    factory: (process: ProcessPort, check: () => void) => T,
+  ): Promise<OwnedHandle<T>> {
+    active(scope);
+    if (scope.processContainment === "strict") {
+      const capability = await port.containment?.();
+      active(scope);
+      if (!capability?.available)
+        refuse(
+          "CONTAINMENT_UNAVAILABLE",
+          "Strict containment is unavailable for tool commands",
+        );
+    }
+    const controller = new AbortController();
+    const signal = AbortSignal.any([scope.signal, controller.signal]);
+    const boundScope: ServiceScope = {
+      ...scope,
+      signal,
+      get deadline() {
+        return scope.deadline;
+      },
+    };
+    const scoped = createProcessService(port, boundScope, root);
+    const pending = new Set<Promise<ProcessResult>>();
+    const cleanupErrors: unknown[] = [];
+    const tracked: ProcessPort = {
+      ...scoped,
+      run(executable, args, options) {
+        const result = scoped.run(executable, args, options);
+        pending.add(result);
+        void result.then(
+          () => pending.delete(result),
+          (error: unknown) => {
+            pending.delete(result);
+            if (
+              error !== null &&
+              typeof error === "object" &&
+              "code" in error &&
+              error.code === "TREE_KILL_FAILED"
+            )
+              cleanupErrors.push(error);
+          },
+        );
+        return result;
+      },
+    };
+    return {
+      ownership: "owned",
+      value: factory(tracked, () => active(boundScope)),
+      async close() {
+        controller.abort();
+        await Promise.allSettled([...pending]);
+        if (cleanupErrors.length)
+          throw new AggregateError(
+            cleanupErrors,
+            "Tool command cleanup failed",
+          );
+      },
+    };
+  }
   const providers: InternalProviders = {
+    repository(scope: ServiceScope): Promise<OwnedHandle<ToolCommandPort>> {
+      return commands(scope, createVcsCommandPort);
+    },
+    account(scope: ServiceScope): Promise<OwnedHandle<AccountCommandPort>> {
+      return commands(scope, (process, check) => {
+        const account = createGithubCommandPort(process);
+        return {
+          ...account,
+          scripts(options) {
+            check();
+            return account.scripts(options);
+          },
+          bootstrap(options) {
+            check();
+            return account.bootstrap(options);
+          },
+        };
+      });
+    },
     runnerOutput(scope: ServiceScope): RunnerOutputPort {
       const output = createRunnerOutput();
       return {

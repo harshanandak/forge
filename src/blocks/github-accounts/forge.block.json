@@ -8,6 +8,14 @@
   "configSchema": "schemas/config.json",
   "requires": [
     {
+      "slot": "repository",
+      "interface": "forge.vcs-command@1"
+    },
+    {
+      "slot": "account",
+      "interface": "forge.github-command@1"
+    },
+    {
       "slot": "process",
       "interface": "forge.process@1"
     },

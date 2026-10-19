@@ -6,6 +6,10 @@ import type {
   CryptoService,
 } from "../../assembly/providers.ts";
 import type { ProcessResult } from "../../ports/process.ts";
+import type {
+  ToolCommandPort,
+  AccountCommandPort,
+} from "../../ports/tool-command.ts";
 
 declare const fail: (code: string, message: string) => never;
 interface Config {
@@ -21,6 +25,7 @@ interface Config {
   aiCoauthorPatterns: string[];
   forgeCommand: string[];
   shellProgram: string;
+  envProgram: string;
   allowedGhCommands: string[];
   identityName: "profile" | "login";
   identityEmail: "noreply" | "primary";
@@ -30,6 +35,13 @@ interface Services {
   files: FilesService;
   environment: EnvironmentService;
   crypto: CryptoService;
+  repository: ToolCommandPort;
+  account: AccountCommandPort;
+}
+interface Launchers {
+  env: string;
+  shell: string;
+  forge?: string;
 }
 interface Binding {
   version: 1;
@@ -42,6 +54,8 @@ interface Binding {
   installed: Record<string, string[]>;
   artifacts: Record<string, string>;
   hooks: boolean;
+  launchers?: Launchers;
+  hookLaunchers?: Launchers;
 }
 type Empty = Record<string, never>;
 type Bind = {
@@ -168,32 +182,70 @@ function context(
 ): { s: Services; c: Config; env: Record<string, string> } {
   const s = raw as Services;
   const c = config as Config;
-  if (!s?.process || !s.files || !s.environment || !s.crypto)
+  if (
+    !s?.process ||
+    !s.files ||
+    !s.environment ||
+    !s.crypto ||
+    !s.repository ||
+    !s.account
+  )
     fail(
       "SERVICE_MISSING",
-      "GitHub accounts requires process, files, environment and crypto services",
+      "GitHub accounts requires repository, account, process, files, environment and crypto services",
     );
   return { s, c, env: envFor(s, c) };
+}
+function absoluteProgram(path: string): boolean {
+  return /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(path);
+}
+function pinLaunchers(
+  s: Services,
+  c: Config,
+  env: Record<string, string>,
+  hook = false,
+): Launchers {
+  const pin = (program: string | undefined): string => {
+    if (!program)
+      fail(
+        "ACCOUNT_SHELL_UNAVAILABLE",
+        "Configure an available shell and environment launcher before enabling scripts",
+      );
+    const executable = s.process.resolve(program, env);
+    if (executable.kind !== "resolved" || !absoluteProgram(executable.path))
+      fail(
+        "ACCOUNT_SHELL_UNAVAILABLE",
+        "Configured shell or launcher is unavailable; choose an executable before enabling scripts",
+      );
+    return executable.path;
+  };
+  return {
+    shell: pin(c.shellProgram),
+    env: pin(c.envProgram),
+    ...(hook ? { forge: pin(c.forgeCommand[0]) } : {}),
+  };
 }
 async function command(
   s: Services,
   c: Config,
   env: Record<string, string>,
+  tool: "repository" | "account",
   program: string,
   args: readonly string[],
-  cwd = s.process.cwd,
+  cwd = s.files.root,
   allowed: number[] = [0],
   stdin?: string,
 ): Promise<ProcessResult> {
-  const executable = s.process.resolve(program, env);
+  const port = s[tool];
+  const executable = port.resolve(program, env);
   if (executable.kind !== "resolved")
     fail(
       "PROGRAM_UNAVAILABLE",
       "Required executable is unavailable; configure its executable path",
     );
-  let result: ProcessResult;
+  let outcome: Awaited<ReturnType<ToolCommandPort["run"]>>;
   try {
-    result = await s.process.run(executable, args, {
+    outcome = await port.run(executable.path, args, {
       cwd,
       env,
       timeoutMs: c.commandTimeoutMs,
@@ -206,6 +258,12 @@ async function command(
       "Account command failed; command output is withheld",
     );
   }
+  if ("kind" in outcome)
+    fail(
+      "PROGRAM_UNAVAILABLE",
+      "Required typed command service is unavailable; configure its executable path",
+    );
+  const result = outcome;
   if (
     result.timedOut ||
     result.truncated ||
@@ -218,7 +276,7 @@ async function command(
     );
   return result;
 }
-async function git(
+async function repository(
   s: Services,
   c: Config,
   env: Record<string, string>,
@@ -226,7 +284,9 @@ async function git(
   cwd?: string,
   allowed?: number[],
 ): Promise<string> {
-  return (await command(s, c, env, c.gitProgram, args, cwd, allowed)).stdout;
+  return (
+    await command(s, c, env, "repository", c.gitProgram, args, cwd, allowed)
+  ).stdout;
 }
 function parse<T>(text: string): T {
   try {
@@ -269,6 +329,7 @@ async function values(
     s,
     c,
     env,
+    "repository",
     c.gitProgram,
     [
       "config",
@@ -293,6 +354,7 @@ async function effective(
     s,
     c,
     env,
+    "repository",
     c.gitProgram,
     ["config", "--get", key],
     cwd,
@@ -323,7 +385,7 @@ async function stageConfig(
   const absolute = `${s.files.roots.common}/${path}`;
   try {
     for (const [key, list] of Object.entries(changes)) {
-      await git(
+      await repository(
         s,
         c,
         env,
@@ -332,7 +394,7 @@ async function stageConfig(
         [0, 5],
       );
       for (const value of list)
-        await git(s, c, env, [
+        await repository(s, c, env, [
           "config",
           "--file",
           absolute,
@@ -381,7 +443,7 @@ async function authenticate(
   user: { login: string; id: number; name?: string };
 }> {
   login(account);
-  const result = await command(s, c, env, c.ghProgram, [
+  const result = await command(s, c, env, "account", c.ghProgram, [
     ...c.ghArgs,
     "auth",
     "token",
@@ -394,7 +456,7 @@ async function authenticate(
   if (!token || /[\r\n\0]/.test(token))
     fail("ACCOUNT_AUTH_FAILED", "Stored GitHub credential is unavailable");
   const child = { ...env, GH_TOKEN: token, GH_HOST: "github.com" };
-  const response = await command(s, c, child, c.ghProgram, [
+  const response = await command(s, c, child, "account", c.ghProgram, [
     ...c.ghArgs,
     "api",
     "user",
@@ -439,42 +501,6 @@ function allowedCommand(args: readonly string[], c: Config): void {
       "ACCOUNT_COMMAND_REFUSED",
       "Host, identity and repository overrides are not accepted by the account router",
     );
-}
-function scriptEnvironment(c: Config, windows: boolean): string {
-  const names = c.environmentNames.filter(
-    (name) =>
-      /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) &&
-      !SECRET_NAMES.includes(name.toLowerCase()) &&
-      !name.toLowerCase().startsWith("git_"),
-  );
-  return `env -i ${names
-    .map((name) => {
-      const target = windows ? name.toUpperCase() : name;
-      const value =
-        target === name ? `\${${name}-}` : `\${${name}-\${${target}-}}`;
-      return `${target}="${value}"`;
-    })
-    .join(" ")} GIT_TERMINAL_PROMPT=0 GH_PROMPT_DISABLED=1`;
-}
-function router(c: Config, account: string, windows: boolean): string {
-  const native = [c.ghProgram, ...c.ghArgs].map(shell).join(" ");
-  const allowed =
-    c.allowedGhCommands
-      .filter(
-        (prefix) =>
-          !["auth", "alias", "config", "extension", "secret"].includes(
-            prefix.split(" ")[0]!,
-          ),
-      )
-      .map((prefix) => shell(prefix.replace(" ", ":")))
-      .join("|") || "''";
-  const clean = scriptEnvironment(c, windows);
-  return `#!/bin/sh\n${MARKER}\nset -eu\naccount=$(${clean} ${shell(c.gitProgram)} config --local --get ${shell(ACCOUNT)})\n[ "$account" = ${shell(account)} ] || exit 1\ncase "\${1:-}:\${2:-}" in ${allowed}) ;; *) exit 1;; esac\nfor argument in "$@"; do case "$argument" in --hostname|--hostname=*|--repo|--repo=*|--header|--header=*|-R*|-H*) exit 1;; esac; done\nGH_TOKEN=$(${clean} ${native} auth token --hostname github.com --user "$account" 2>/dev/null) || exit 1\n[ -n "$GH_TOKEN" ] || exit 1\nverified=$(${clean} GH_TOKEN="$GH_TOKEN" GH_HOST=github.com ${native} api user --hostname github.com --jq .login 2>/dev/null) || exit 1\n[ "$verified" = "$account" ] || exit 1\nexec ${clean} GH_TOKEN="$GH_TOKEN" GH_HOST=github.com ${native} "$@"\n`;
-}
-function credential(c: Config, account: string, windows: boolean): string {
-  const native = [c.ghProgram, ...c.ghArgs].map(shell).join(" ");
-  const clean = scriptEnvironment(c, windows);
-  return `#!/bin/sh\n${MARKER}\nset -eu\n[ "\${1:-}" = get ] || exit 0\nprotocol=; host=\nwhile IFS= read -r line && [ -n "$line" ]; do case "$line" in protocol=*) protocol=\${line#protocol=};; host=*) host=\${line#host=};; esac; done\n[ "$protocol" = https ] && [ "$host" = github.com ] || exit 0\naccount=$(${clean} ${shell(c.gitProgram)} config --local --get ${shell(ACCOUNT)})\n[ "$account" = ${shell(account)} ] || exit 1\nGH_TOKEN=$(${clean} ${native} auth token --hostname github.com --user "$account" 2>/dev/null) || exit 1\n[ -n "$GH_TOKEN" ] || exit 1\nverified=$(${clean} GH_TOKEN="$GH_TOKEN" GH_HOST=github.com ${native} api user --hostname github.com --jq .login 2>/dev/null) || exit 1\n[ "$verified" = "$account" ] || exit 1\nprintf 'username=%s\\npassword=%s\\n\\n' "$account" "$GH_TOKEN"\n`;
 }
 function checkRef(ref: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9_./~^@{}+-]*$/.test(ref) || ref.includes(".."))
@@ -560,7 +586,7 @@ async function status(
     for (const [key, wanted] of Object.entries(bound.installed))
       if (!same(await values(s, c, env, key), wanted))
         mismatches.push(`config:${key}`);
-  const output = await git(s, c, env, [
+  const output = await repository(s, c, env, [
     "worktree",
     "list",
     "--porcelain",
@@ -618,12 +644,16 @@ async function check(
   checkRef(input.tip);
   if (input.base) checkRef(input.base);
   const tip = (
-    await git(s, c, env, ["rev-parse", "--verify", `${input.tip}^{commit}`])
+    await repository(s, c, env, [
+      "rev-parse",
+      "--verify",
+      `${input.tip}^{commit}`,
+    ])
   ).trim();
   const base =
     input.base && !/^0+$/.test(input.base)
       ? (
-          await git(s, c, env, [
+          await repository(s, c, env, [
             "rev-parse",
             "--verify",
             `${input.base}^{commit}`,
@@ -631,7 +661,11 @@ async function check(
         ).trim()
       : undefined;
   const revs = (
-    await git(s, c, env, ["rev-list", tip, ...(base ? [`^${base}`] : [])])
+    await repository(s, c, env, [
+      "rev-list",
+      tip,
+      ...(base ? [`^${base}`] : []),
+    ])
   )
     .trim()
     .split(/\r?\n/)
@@ -643,7 +677,7 @@ async function check(
     );
   for (const revision of revs) {
     const author = (
-      await git(s, c, env, [
+      await repository(s, c, env, [
         "show",
         "-s",
         "--format=%ae%x00%ce%x00%B",
@@ -667,7 +701,11 @@ async function check(
   }
   if (
     (
-      await git(s, c, env, ["rev-parse", "--verify", `${input.tip}^{commit}`])
+      await repository(s, c, env, [
+        "rev-parse",
+        "--verify",
+        `${input.tip}^{commit}`,
+      ])
     ).trim() !== tip
   )
     fail(
@@ -676,16 +714,27 @@ async function check(
     );
   return { checked: revs.length, trigger: input.trigger, tip };
 }
-function hookScript(c: Config): string {
-  const call = c.forgeCommand.map(shell).join(" ");
-  return `#!/bin/sh\n${MARKER}\nset -eu\nwhile read -r local_ref local_sha remote_ref remote_sha; do\n case "$local_sha" in 0000000000000000000000000000000000000000|0000000000000000000000000000000000000000000000000000000000000000) continue;; esac\n case "$local_sha$remote_sha" in *[!0-9a-fA-F]*) exit 1;; esac\n ${call} github-account check --input "{\\"tip\\":\\"$local_sha\\",\\"base\\":\\"$remote_sha\\",\\"trigger\\":\\"push\\"}" >/dev/null || exit 1\ndone\n`;
+function hookScript(c: Config, launchers: Launchers, s: Services): string {
+  const call = [launchers.forge!, ...c.forgeCommand.slice(1)]
+    .map(shell)
+    .join(" ");
+  const body = `set -eu\nwhile read -r local_ref local_sha remote_ref remote_sha; do\n case "$local_sha" in 0000000000000000000000000000000000000000|0000000000000000000000000000000000000000000000000000000000000000) continue;; esac\n case "$local_sha$remote_sha" in *[!0-9a-fA-F]*) exit 1;; esac\n ${call} github-account check --input "{\\"tip\\":\\"$local_sha\\",\\"base\\":\\"$remote_sha\\",\\"trigger\\":\\"push\\"}" >/dev/null || exit 1\ndone\n`;
+  return s.account.bootstrap({
+    body,
+    envPath: launchers.env,
+    shellPath: launchers.shell,
+    environmentNames: c.environmentNames,
+    marker: MARKER,
+    windows: s.environment.platform === "win32",
+  });
 }
 const operations: Operations<AccountOperations> = {
   async "github-account.bind"({ input, services, config }) {
     const { s, c, env } = context(services, config);
     login(input.login);
+    const launchers = input.auto ? pinLaunchers(s, c, env) : undefined;
     const auth = await authenticate(s, c, env, input.login);
-    const emailsResult = await command(s, c, auth.env, c.ghProgram, [
+    const emailsResult = await command(s, c, auth.env, "account", c.ghProgram, [
       ...c.ghArgs,
       "api",
       "user/emails",
@@ -730,25 +779,25 @@ const operations: Operations<AccountOperations> = {
         "ACCOUNT_EMAIL_UNVERIFIED",
         "Chosen commit email is not verified for the selected account",
       );
-    let repository = input.repository;
-    if (!repository)
-      repository = (
-        await git(s, c, env, ["remote", "get-url", "origin"])
+    let targetRepository = input.repository;
+    if (!targetRepository)
+      targetRepository = (
+        await repository(s, c, env, ["remote", "get-url", "origin"])
       ).trim();
     if (
-      !repository ||
-      repository.startsWith("-") ||
-      /[\0\r\n]/.test(repository)
+      !targetRepository ||
+      targetRepository.startsWith("-") ||
+      /[\0\r\n]/.test(targetRepository)
     )
       fail(
         "INPUT_INVALID",
         "Repository must identify the target GitHub repository",
       );
-    await command(s, c, auth.env, c.ghProgram, [
+    await command(s, c, auth.env, "account", c.ghProgram, [
       ...c.ghArgs,
       "repo",
       "view",
-      repositoryTarget(repository),
+      repositoryTarget(targetRepository),
       "--json",
       "nameWithOwner",
     ]);
@@ -775,24 +824,37 @@ const operations: Operations<AccountOperations> = {
       if (input.auto) {
         const routerPath = `${DIRECTORY}/bin/gh`,
           helperPath = `${DIRECTORY}/credential-helper`;
-        const nativeGh = s.process.resolve(c.ghProgram, env),
-          nativeGit = s.process.resolve(c.gitProgram, env);
-        if (nativeGh.kind !== "resolved" || nativeGit.kind !== "resolved")
+        const nativeGh = s.account.resolve(c.ghProgram, env),
+          nativeGit = s.repository.resolve(c.gitProgram, env);
+        if (
+          nativeGh.kind !== "resolved" ||
+          nativeGit.kind !== "resolved" ||
+          !absoluteProgram(nativeGh.path) ||
+          !absoluteProgram(nativeGit.path)
+        )
           fail(
             "PROGRAM_UNAVAILABLE",
             "Native GitHub and Git executable paths must resolve before installing routing",
           );
-        const pinned = {
-          ...c,
-          ghProgram: nativeGh.path,
-          gitProgram: nativeGit.path,
-        };
         const windows = s.environment.platform === "win32";
-        artifacts[routerPath] = router(pinned, auth.user.login, windows);
-        artifacts[helperPath] = credential(pinned, auth.user.login, windows);
+        const scripts = s.account.scripts({
+          account: auth.user.login,
+          gitPath: nativeGit.path,
+          ghPath: nativeGh.path,
+          ghArgs: c.ghArgs,
+          envPath: launchers!.env,
+          shellPath: launchers!.shell,
+          environmentNames: c.environmentNames,
+          allowedGhCommands: c.allowedGhCommands,
+          accountKey: ACCOUNT,
+          marker: MARKER,
+          windows,
+        });
+        artifacts[routerPath] = scripts.router;
+        artifacts[helperPath] = scripts.credential;
         installed[HELPER] = [
           "",
-          `!${shell(c.shellProgram)} ${shell(`${s.files.roots.common}/${helperPath}`)}`,
+          `!${shell(`${s.files.roots.common}/${helperPath}`)}`,
         ];
       }
       const previous: Record<string, string[]> = {};
@@ -810,6 +872,7 @@ const operations: Operations<AccountOperations> = {
         installed,
         artifacts,
         hooks: false,
+        ...(launchers ? { launchers } : {}),
       };
       const written: string[] = [];
       let metadata: string | undefined;
@@ -934,6 +997,7 @@ const operations: Operations<AccountOperations> = {
   },
   async "github-account.hook"({ input, services, config }) {
     const { s, c, env } = context(services, config);
+    const launchers = input.enabled ? pinLaunchers(s, c, env, true) : undefined;
     return transaction(s, async () => {
       const bound = binding(s, c);
       if (!bound)
@@ -945,7 +1009,7 @@ const operations: Operations<AccountOperations> = {
       const metadata = s.files.read(META, c.maxFileBytes, "common")!;
       const key = "core.hooksPath",
         path = `${DIRECTORY}/hooks/pre-push`,
-        text = hookScript(c);
+        text = launchers ? hookScript(c, launchers, s) : "";
       const original = s.files.read("config", c.maxFileBytes, "common")!;
       if (input.enabled) {
         if (await effective(s, c, env, key))
@@ -953,7 +1017,7 @@ const operations: Operations<AccountOperations> = {
             "INPUT_CONFLICT",
             "An existing hooks path is configured; integrate the catalog check in that hook instead",
           );
-        const native = await git(s, c, env, [
+        const native = await repository(s, c, env, [
           "rev-parse",
           "--path-format=absolute",
           "--git-path",
@@ -1017,6 +1081,7 @@ const operations: Operations<AccountOperations> = {
           [key]: bound.installed[key],
         });
         bound.hooks = true;
+        bound.hookLaunchers = launchers!;
         const updated = JSON.stringify(bound);
         boundedText(updated, c);
         boundedText(text, c);
@@ -1057,6 +1122,7 @@ const operations: Operations<AccountOperations> = {
         delete bound.installed[key];
         delete bound.artifacts[path];
         bound.hooks = false;
+        delete bound.hookLaunchers;
         const updated = JSON.stringify(bound);
         boundedText(updated, c);
         s.files.write(META, updated, { area: "common", expected: metadata });
@@ -1083,7 +1149,7 @@ const operations: Operations<AccountOperations> = {
     if ((await effective(s, c, env, ACCOUNT)) !== bound.account)
       fail("ACCOUNT_MISMATCH", "Clone binding does not match its metadata");
     const auth = await authenticate(s, c, env, bound.account);
-    const result = await command(s, c, auth.env, c.ghProgram, [
+    const result = await command(s, c, auth.env, "account", c.ghProgram, [
       ...c.ghArgs,
       ...input.args,
     ]);

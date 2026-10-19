@@ -8,6 +8,7 @@ test("a hard step deadline cancels every stuck child and drains only bounded cle
   const timers: { ms: number; fire: () => void; cancelled: boolean }[] = [];
   const stopped: string[] = [];
   const disposed: string[] = [];
+  const output: [string, string][] = [];
   const port: ChildRunnerPort = {
     schedule(ms, fire) {
       const timer = { ms, fire, cancelled: false };
@@ -49,7 +50,12 @@ test("a hard step deadline cancels every stuck child and drains only bounded cle
       maxOutputBytes: 100,
     },
     port,
+    (stream, value) => output.push([stream, value]),
   );
+  expect(output).toEqual([
+    ["stdout", "pack last output"],
+    ["stdout", "tests last output"],
+  ]);
   timers[0]!.fire();
   expect(stopped).toEqual(["pack", "tests"]);
   for (const timer of timers) if (timer.ms === 10) timer.fire();

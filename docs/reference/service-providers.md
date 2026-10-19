@@ -36,6 +36,38 @@ assembly.
 
 ## Process
 
+### Typed external-tool adapters
+
+Blocks that use a specific tool declare its adapter interface in addition to their
+operation effects. `forge.vcs-command@1` binds the existing version-control adapter;
+`forge.github-command@1` binds the optional account-provider CLI adapter. Their host
+provisions are version `1.0.0`. Slot names remain composition-owned.
+
+Both expose `resolve(program, env)` returning a resolved executable or typed
+`Unavailable`, and `run(program, argv, options)` returning `ProcessResult | Unavailable`.
+The options are the existing `SpawnOptions`: explicit cwd, full environment,
+timeout, output cap, and optional stdin/signal. Blocks select configured executables
+or wrappers; resolution and dispatch stay in the respective tool adapter. Missing
+tools never trigger installation or a global account switch.
+
+Execution uses the same scoped process service and `external:process` grant as a
+generic launch. Each binding owns its pending calls, aborts and drains them on
+invocation close, preserves the live deadline, and checks strict containment before
+activation. No tool call can survive merely because its handler forgot to await it.
+
+The account-provider adapter additionally renders marked router and credential
+scripts from explicit options through `scripts(options)`. Rendering is pure: it
+receives the selected account, pinned executable/launcher paths, explicit environment
+names and configured command prefixes, and returns text. It neither reads credentials
+nor chooses an account. The accounts block verifies and records the paths before
+publishing those scripts.
+
+Its `bootstrap(options)` method renders the same isolated environment/interpreter
+entry for a caller-supplied body. Both rendering paths use verified absolute launcher
+paths and exclude credentials, location overrides and shell startup variables.
+Credentials acquired inside generated scripts are exported only after isolation;
+they are never supplied as environment-launcher arguments.
+
 `forge.process@1` implements the existing `ProcessPort` unchanged and adds `cwd`, the
 host project root. `resolve(program, env)` probes PATH/PATHEXT without launching.
 `run(resolved, argv, options)` requires `external:process` on the current operation and

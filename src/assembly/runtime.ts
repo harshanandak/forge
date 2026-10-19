@@ -1,5 +1,11 @@
 ﻿export { Runtime, type RuntimeOptions } from "../core/runtime/index.ts";
 export { BlockCatalog } from "../core/runtime/catalog.ts";
+export type {
+  ToolCommandPort,
+  AccountCommandPort,
+  AccountScriptsOptions,
+  AccountBootstrapOptions,
+} from "../ports/tool-command.ts";
 export {
   Catalog,
   captureBlock,

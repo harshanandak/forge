@@ -14,6 +14,12 @@ export async function runStep(
   env: NodeJS.ProcessEnv,
   policy: RunnerPolicy,
   port?: ChildRunnerPort,
+  output: (stream: "stdout" | "stderr", value: string) => void = (
+    stream,
+    value,
+  ) => {
+    (stream === "stdout" ? process.stdout : process.stderr).write(value);
+  },
 ): Promise<void> {
   const scope = new AbortController();
   const expired = () =>
@@ -45,6 +51,7 @@ export async function runStep(
               cleanupTimeoutMs: policy.cleanupTimeoutMs,
               maxOutputBytes: policy.maxOutputBytes,
               signal: scope.signal,
+              onOutput: output,
             },
             port,
           );

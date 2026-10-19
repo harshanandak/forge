@@ -78,6 +78,17 @@ Each one gets an entry here and an adapter in the same pull request.
 
 ## Platform adapters
 
+#### Optional GitHub CLI
+
+- **Saves:** implementing the installed CLI's account credential integration and provider command protocol.
+- **Maintenance:** supplied and maintained by the user; Forge does not download or install it.
+- **Transitive packages:** no npm dependency is added.
+- **Fit:** optional on Node 24/26, including Windows. A missing executable returns typed `Unavailable`; automatic account scripts additionally require verified configured launchers.
+- **Licence:** the separately installed tool has its own licence; no tool binary is bundled.
+- **Trust:** the composition selects the executable or wrapper. Credentials remain transient in explicitly scoped child environments and are never stored by this adapter.
+- **Swap proof:** the shared command-port contract runs against both tool factories and an in-memory implementation; packed account acceptance uses a fake executable instead of live credentials.
+- **Adapter:** `src/adapters/github-cli/` implements the local `AccountCommandPort`. Git command execution extends the existing `src/adapters/vcs-git/` owner rather than introducing another Git adapter.
+
 #### Node filesystem capture
 
 - **Saves:** platform file descriptors, canonical paths and regular-file identity checks.

@@ -19,16 +19,20 @@ import {
   git,
   good,
   hashTree,
+  identitySnapshot,
   localState,
+  localValues,
   mcp,
   ok,
   parallelCommand,
+  plantedEnvironment,
 } from "./harness.mjs";
 
 const mode = process.argv[2] ?? "all";
 const root = mkdtempSync(join(process.cwd(), "ga-"));
 const opened = [];
 const failures = [];
+let preparedState;
 let checkpointAt = performance.now();
 function checkpoint(label) {
   const now = performance.now();
@@ -48,30 +52,6 @@ async function settled(tasks) {
   if (errors.length)
     throw new AggregateError(errors, "parallel account sessions failed");
   return results.map((result) => result.value);
-}
-function localValues(clone, key) {
-  const result = command(
-    "git",
-    ["-C", clone.root, "config", "--local", "--null", "--get-all", key],
-    clone.root,
-    clone.env,
-  );
-  assert.ok(
-    result.status === 0 || result.status === 1,
-    "read local configuration values",
-  );
-  return result.status === 1 ? [] : result.stdout.split("\0").slice(0, -1);
-}
-function identitySnapshot(clone) {
-  return Object.fromEntries(
-    [
-      "user.name",
-      "user.email",
-      "credential.https://github.com.helper",
-      "core.hooksPath",
-      "forge.githubAccount",
-    ].map((key) => [key, localValues(clone, key)]),
-  );
 }
 function assertNoStoredCredentials(clone) {
   const data = [readFileSync(join(clone.root, ".git/config"), "utf8")];
@@ -121,14 +101,14 @@ function commit(clone, message, overrides = {}) {
   return git(clone.root, clone.env, "rev-parse", "HEAD");
 }
 try {
+  const alpha = await make("a", "alpha-user");
+  const original = identitySnapshot(alpha);
+  let beta;
+  let betaOriginal;
   if (["all", "auth-order"].includes(mode)) {
     for (const scenario of ["auth-failure", "login-mismatch", "repo-denied"]) {
-      const failed = await make(
-        `failure-${scenario}`,
-        "alpha-user",
-        "refuse",
-        scenario,
-      );
+      const failed = alpha;
+      await failed.reopen(scenario);
       const before = localState(failed);
       const global = hashTree(join(root, "home"));
       const result = await failed.call("bind", {
@@ -153,9 +133,8 @@ try {
       );
     }
   }
+  await alpha.reopen("ready");
   checkpoint("failure preflights");
-  const alpha = await make("a", "alpha-user");
-  const original = identitySnapshot(alpha);
   const outsideBefore = hashTree(alpha.root, new Set([".git"]));
   const globalBefore = hashTree(join(root, "home"));
   const selected = await alpha.bind();
@@ -179,8 +158,10 @@ try {
   checkpoint("clone binding");
 
   if (["all", "route"].includes(mode)) {
-    const beta = await make("b", "beta-user");
+    beta = await make("b", "beta-user");
+    betaOriginal = identitySnapshot(beta);
     const betaSelected = await beta.bind();
+    const planted = [alpha, beta].map(plantedEnvironment);
     const routed = await settled(
       [alpha, beta].map(async (clone) => {
         const child = await parallelCommand(
@@ -219,7 +200,7 @@ try {
           clone.config.shellProgram,
           [path, "pr", "create", "--title", "fixture"],
           clone.root,
-          clone.env,
+          planted[index].env,
         );
         if (result.status !== 0) {
           const log = readFileSync(
@@ -228,7 +209,13 @@ try {
           );
           result.stderr += `\nSafe provider stages: ${log}`;
         }
-        return JSON.parse(good(result, "marked clone router")).account;
+        const output = JSON.parse(good(result, "marked clone router"));
+        assert.equal(
+          existsSync(planted[index].marker),
+          false,
+          "configured environment launcher must stay pinned when PATH changes",
+        );
+        return output.account;
       }),
     );
     assert.deepEqual(
@@ -236,12 +223,12 @@ try {
       ["alpha-user", "beta-user"],
       "marked routers must preserve account selection across parallel sessions",
     );
-    for (const clone of [alpha, beta]) {
+    for (const [index, clone] of [alpha, beta].entries()) {
       const credentials = command(
         "git",
         ["-C", clone.root, "credential", "fill"],
         clone.root,
-        clone.env,
+        planted[index].startupEnv,
         "protocol=https\nhost=github.com\n\n",
       );
       assert.equal(
@@ -263,6 +250,16 @@ try {
           fields.password === credentialFor(clone.login),
         true,
         "push credentials must match the clone-bound account",
+      );
+      assert.equal(
+        existsSync(planted[index].marker),
+        false,
+        "credential helper must use the pinned environment launcher",
+      );
+      assert.equal(
+        existsSync(planted[index].startupMarker),
+        false,
+        "credential helper must isolate shell startup carriers before the configured interpreter starts",
       );
       assertNoStoredCredentials(clone);
       const log = readFileSync(join(clone.root, ".git/fake-gh.jsonl"), "utf8")
@@ -398,11 +395,42 @@ try {
       diagnosed.mismatches.some((value) => value.startsWith("worktree:")),
     );
     git(linked, alpha.env, "config", "--worktree", "--unset-all", "user.email");
+    git(alpha.root, alpha.env, "worktree", "remove", linked);
   }
   checkpoint("worktree diagnosis");
   if (["all", "hook"].includes(mode)) {
     const guarded = await make("guard", "alpha-user", "refuse", "ready", false);
-    await guarded.bind();
+    const validShell = guarded.config.shellProgram;
+    await guarded.configure({
+      shellProgram: join(guarded.root, "missing-shell"),
+    });
+    const missingShellBefore = localState(guarded);
+    assert.equal(
+      (
+        await guarded.call("bind", {
+          login: guarded.login,
+          auto: true,
+          repository: "fixture/project",
+        })
+      ).error?.code,
+      "ACCOUNT_SHELL_UNAVAILABLE",
+      "automatic binding must refuse a missing configured shell before writing",
+    );
+    assert.deepEqual(localState(guarded), missingShellBefore);
+    const manual = await guarded.bind({ auto: false });
+    assert.equal(
+      manual.automatic,
+      false,
+      "explicit binding without automatic routing must not require a shell",
+    );
+    const beforeMissingHook = localState(guarded);
+    assert.equal(
+      (await guarded.call("hook", { enabled: true })).error?.code,
+      "ACCOUNT_SHELL_UNAVAILABLE",
+      "guard installation must refuse a missing configured shell before writing",
+    );
+    assert.deepEqual(localState(guarded), beforeMissingHook);
+    await guarded.configure({ shellProgram: validShell });
     const nativeHook = join(guarded.root, ".git/hooks/pre-push");
     writeFileSync(nativeHook, "#!/bin/sh\nexit 0\n");
     chmodSync(nativeHook, 0o755);
@@ -508,6 +536,21 @@ try {
     assertNoStoredCredentials(alpha);
   }
   checkpoint("native restoration");
+  if (mode === "all")
+    preparedState = {
+      alpha: {
+        root: alpha.root,
+        login: alpha.login,
+        baseline: alpha.baseline,
+        original,
+      },
+      beta: {
+        root: beta.root,
+        login: beta.login,
+        baseline: beta.baseline,
+        original: betaOriginal,
+      },
+    };
   console.log(`PASS github-accounts ${mode}`);
 } catch (error) {
   failures.push(error);
@@ -516,12 +559,22 @@ const closed = await Promise.allSettled(opened.map((clone) => clone.close()));
 for (const result of closed)
   if (result.status === "rejected") failures.push(result.reason);
 try {
-  rmSync(root, {
-    recursive: true,
-    force: true,
-    maxRetries: 3,
-    retryDelay: 100,
-  });
+  if (
+    process.env.FORGE_ACCOUNTS_PREPARED &&
+    preparedState &&
+    failures.length === 0
+  )
+    writeFileSync(
+      process.env.FORGE_ACCOUNTS_PREPARED,
+      JSON.stringify(preparedState),
+    );
+  else
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 100,
+    });
 } catch (error) {
   failures.push(error);
 }

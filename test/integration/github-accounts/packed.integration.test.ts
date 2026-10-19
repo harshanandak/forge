@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   copyFileSync,
   cpSync,
@@ -8,30 +8,101 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   packedCoverage,
   selectShard,
 } from "../../node-fixtures/state/counterfactuals.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
+type Mutation = {
+  from: string;
+  to: string;
+  mode: string;
+  evidence: string;
+  file?: string;
+};
 function run(
   program: string,
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
-  timeout = 300000,
-) {
-  return spawnSync(program, args, {
-    cwd,
-    env,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout,
+  timeout = 120000,
+  label = "child",
+  maxStdoutBytes = 65536,
+): Promise<{
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stdoutTruncated: boolean;
+  stderr: string;
+  error: Error | undefined;
+}> {
+  const started = performance.now();
+  console.log(`Accounts packed ${label}: running`);
+  return new Promise((resolve) => {
+    const child = spawn(program, args, {
+      cwd,
+      env,
+      windowsHide: true,
+      timeout,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const safeTail: string[] = [];
+    let stdout = "",
+      stderr = "",
+      phase = "",
+      lines = 0;
+    let error: Error | undefined;
+    let stdoutBytes = 0;
+    const bounded = (value: string, limit = 65536): string =>
+      Buffer.from(value).subarray(-limit).toString("utf8");
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdoutBytes += Buffer.byteLength(chunk);
+      stdout = bounded(stdout + chunk, maxStdoutBytes);
+      phase += chunk;
+      while (phase.includes("\n")) {
+        const end = phase.indexOf("\n");
+        const line = phase.slice(0, end).trim();
+        phase = phase.slice(end + 1);
+        if (lines < 64 && /^Accounts [a-z -]{1,80}: [0-9]+ ms$/.test(line)) {
+          console.log(`[${label}] ${line}`);
+          safeTail.push(line);
+          if (safeTail.length > 8) safeTail.shift();
+          lines++;
+        }
+      }
+      phase = phase.slice(-4096);
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr = bounded(stderr + chunk);
+    });
+    child.once("error", (cause) => {
+      error = cause;
+    });
+    child.once("close", (status, signal) => {
+      console.log(
+        `Accounts packed ${label}: status=${String(status)} signal=${String(signal)} ${Math.round(performance.now() - started)} ms`,
+      );
+      if (status !== 0)
+        console.log(
+          `Accounts packed ${label} last safe phases:\n${safeTail.join("\n") || "No phase output"}`,
+        );
+      resolve({
+        status,
+        signal,
+        stdout,
+        stdoutTruncated: stdoutBytes > maxStdoutBytes,
+        stderr,
+        error,
+      });
+    });
   });
 }
 function withoutBun(): NodeJS.ProcessEnv {
@@ -50,7 +121,7 @@ function withoutBun(): NodeJS.ProcessEnv {
   delete env.BUN_INSTALL;
   return env;
 }
-test("packed accounts: parallel clone routing, Git identity guards, trailer policy, scoped writes and exact native restoration", () => {
+test("packed accounts: parallel clone routing, Git identity guards, trailer policy, scoped writes and exact native restoration", async () => {
   const shared = process.env.FORGE_PACKED_CONSUMER;
   const work = mkdtempSync(
     join(shared ?? tmpdir(), shared ? "ga-" : "forge-accounts-"),
@@ -58,17 +129,32 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
   const node = Bun.which("node");
   if (!node) throw Error("Node is required");
   const env = withoutBun();
-  const successful = (
+  const successful = async (
     program: string,
     args: string[],
     cwd: string,
     childEnv = env,
-  ): string => {
-    const result = run(program, args, cwd, childEnv);
+    label = "setup",
+    maxStdoutBytes = 65536,
+  ): Promise<string> => {
+    const result = await run(
+      program,
+      args,
+      cwd,
+      childEnv,
+      120000,
+      label,
+      maxStdoutBytes,
+    );
     expect(
       result.status,
       `${result.error?.message ?? ""} ${result.stdout} ${result.stderr}`,
     ).toBe(0);
+    if (maxStdoutBytes > 65536)
+      expect(
+        result.stdoutTruncated,
+        `${label}: machine-readable stdout exceeds its declared byte budget`,
+      ).toBe(false);
     return result.stdout;
   };
   try {
@@ -79,7 +165,13 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
       '{"private":true,"type":"module"}',
     );
     if (!shared) {
-      successful(process.execPath, ["run", "build"], root, process.env);
+      await successful(
+        process.execPath,
+        ["run", "build"],
+        root,
+        process.env,
+        "build",
+      );
       const npm = [
         ...(process.env.FORGE_SMOKE_NPM_CLI
           ? [process.env.FORGE_SMOKE_NPM_CLI]
@@ -89,7 +181,7 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
       ].find(existsSync);
       if (!npm) throw Error("npm CLI is required");
       const packed = JSON.parse(
-        successful(
+        await successful(
           node,
           [
             npm,
@@ -100,9 +192,12 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
             work,
           ],
           root,
+          env,
+          "npm pack",
+          1048576,
         ),
       ) as { filename: string }[];
-      successful(
+      await successful(
         node,
         [
           npm,
@@ -112,18 +207,28 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
           "--no-fund",
         ],
         consumer,
+        env,
+        "npm install",
       );
     }
-    const fixtures = ["journey.mjs", "harness.mjs", "fake-gh.mjs"];
+    const fixtures = [
+      "journey.mjs",
+      "harness.mjs",
+      "fake-gh.mjs",
+      "counterfactual.mjs",
+    ];
     for (const file of fixtures)
       copyFileSync(
         join(root, "test/node-fixtures/github-accounts", file),
         join(consumer, file),
       );
-    const positive = successful(
+    const prepared = join(consumer, "prepared-clones.json");
+    const positive = await successful(
       node,
       [join(consumer, "journey.mjs")],
       consumer,
+      { ...env, FORGE_ACCOUNTS_PREPARED: prepared },
+      "positive journeys",
     );
     expect(positive).toContain("PASS github-accounts all");
     const installed = join(shared ?? consumer, "node_modules/forge-workflow");
@@ -137,7 +242,11 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
     });
     for (const file of fixtures)
       copyFileSync(join(consumer, file), join(isolated, file));
-    const mutations = [
+    copyFileSync(
+      join(root, "test/integration/fixtures/mutation-proof.mjs"),
+      join(isolated, "mutation-proof.mjs"),
+    );
+    const mutations: readonly Mutation[] = [
       {
         from: "user.login.toLowerCase() !== account.toLowerCase()",
         to: "false",
@@ -163,6 +272,7 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
         evidence: "refuse policy must reject AI co-author trailers",
       },
       {
+        file: "adapters/github-cli/scripts.js",
         from: '--user "$account"',
         to: "",
         mode: "route",
@@ -175,46 +285,105 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
         evidence:
           "unbind must restore every prior identity, helper and hook configuration value",
       },
+      {
+        file: "adapters/github-cli/scripts.js",
+        from: "shell(options.envPath)",
+        to: '"env"',
+        mode: "environment",
+        evidence:
+          "configured environment launcher must stay pinned when PATH changes",
+      },
     ];
-    const file = join(isolated, "dist/src/blocks/github-accounts/entry.cjs");
-    const original = readFileSync(file, "utf8");
     for (const mutation of selectShard(
       mutations,
       packedCoverage(process.env.STATE_NODE_LEG).shard,
     )) {
+      const target = mutation.file ?? "blocks/github-accounts/entry.cjs";
+      const file = join(isolated, "dist/src", target);
+      const original = readFileSync(file, "utf8");
       expect(original, mutation.mode).toContain(mutation.from);
       try {
         const changed = original.replaceAll(mutation.from, mutation.to);
         writeFileSync(file, changed);
         const hash = createHash("sha256").update(changed).digest("hex");
         const proof = join(isolated, "capture-proof.jsonl");
+        const moduleProof = join(isolated, "module-proof.jsonl");
         writeFileSync(proof, "");
-        const result = run(
+        writeFileSync(moduleProof, "");
+        const entryHash = createHash("sha256")
+          .update(
+            readFileSync(
+              join(isolated, "dist/src/blocks/github-accounts/entry.cjs"),
+            ),
+          )
+          .digest("hex");
+        const childEnv = {
+          ...env,
+          FORGE_MUTATION_HASH: hash,
+          FORGE_MUTATION_TARGET: file,
+          FORGE_ACCOUNTS_CAPTURE_PROOF: proof,
+          ...(mutation.file === undefined
+            ? {}
+            : {
+                NODE_OPTIONS:
+                  `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(join(isolated, "mutation-proof.mjs")).href}`.trim(),
+                FORGE_MUTATION_PROOF: moduleProof,
+              }),
+        };
+        const result = await run(
           node,
-          [join(isolated, "journey.mjs"), mutation.mode],
+          [join(isolated, "counterfactual.mjs"), mutation.mode, prepared],
           consumer,
-          { ...env, FORGE_MUTATION_HASH: hash, FORGE_MUTATION_PROOF: proof },
+          childEnv,
+          60000,
+          `counterfactual ${mutation.mode}`,
         );
         const captured = readFileSync(proof, "utf8")
           .trim()
           .split("\n")
           .filter(Boolean)
-          .map((line) => JSON.parse(line) as { hash: string; digest: string });
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                hash: string;
+                entryHash: string;
+                digest: string;
+              },
+          );
         expect(
           captured.some(
             (entry) =>
-              entry.hash === hash && /^sha256:[a-f0-9]{64}$/.test(entry.digest),
+              entry.hash === hash &&
+              entry.entryHash === entryHash &&
+              /^sha256:[a-f0-9]{64}$/.test(entry.digest),
           ),
           "counterfactual must admit and execute the captured mutated bytes",
         ).toBe(true);
+        if (mutation.file !== undefined) {
+          const loaded = readFileSync(moduleProof, "utf8")
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map(
+              (line) => JSON.parse(line) as { target: string; hash: string },
+            );
+          expect(
+            loaded.some(
+              (entry) =>
+                entry.target === realpathSync(file) && entry.hash === hash,
+            ),
+            "adapter counterfactual must load the private mutated module bytes",
+          ).toBe(true);
+        }
         expect(
-          readFileSync(
-            join(installed, "dist/src/blocks/github-accounts/entry.cjs"),
-            "utf8",
-          ),
+          readFileSync(join(installed, "dist/src", target), "utf8"),
           "the shared installation must remain unchanged",
         ).toBe(original);
         expect(result.status, mutation.mode).not.toBe(0);
+        expect(
+          result.stdout,
+          "the private invocation and fixture rollback must complete before a counterfactual counts",
+        ).toContain(`Accounts restored ${mutation.mode}:`);
         expect(`${result.stdout} ${result.stderr}`, mutation.mode).toContain(
           mutation.evidence,
         );

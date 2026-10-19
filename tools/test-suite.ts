@@ -49,6 +49,7 @@ async function run(
             "test/node-fixtures/memory/packed.integration.test.ts",
             "test/integration/packed.integration.test.ts",
             "test/assembly/providers/packed.integration.test.ts",
+            "test/integration/github-accounts/packed.integration.test.ts",
           ].includes(file.replaceAll("\\", "/"))),
   );
   if (selected.length === 0) throw new Error(`the ${kind} test suite is empty`);
@@ -76,6 +77,9 @@ async function run(
       cleanupTimeoutMs: policy.cleanupTimeoutMs,
       maxOutputBytes: policy.maxOutputBytes,
       signal: scope.signal,
+      onOutput: (stream, value) => {
+        (stream === "stdout" ? process.stdout : process.stderr).write(value);
+      },
     },
   );
 }

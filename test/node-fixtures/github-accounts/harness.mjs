@@ -8,9 +8,10 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAssembly } from "forge-workflow/runtime";
 
@@ -117,24 +118,32 @@ export function localState(clone) {
     managed: hashTree(join(clone.root, ".git/.forge-github-accounts")),
   };
 }
-export async function cloneFixture(
-  parent,
-  name,
-  login,
-  policy = "refuse",
-  mode = "ready",
-  nativeHooks = true,
-) {
-  const root = join(parent, name);
-  mkdirSync(root);
+export function localValues(clone, key) {
+  const result = command(
+    "git",
+    ["-C", clone.root, "config", "--local", "--null", "--get-all", key],
+    clone.root,
+    clone.env,
+  );
+  assert.ok(
+    result.status === 0 || result.status === 1,
+    "read local configuration values",
+  );
+  return result.status === 1 ? [] : result.stdout.split("\0").slice(0, -1);
+}
+export function identitySnapshot(clone) {
+  return Object.fromEntries(
+    [
+      "user.name",
+      "user.email",
+      "credential.https://github.com.helper",
+      "core.hooksPath",
+      "forge.githubAccount",
+    ].map((key) => [key, localValues(clone, key)]),
+  );
+}
+function fixtureEnvironment(parent, root, login, mode) {
   const home = join(parent, "home");
-  mkdirSync(home, { recursive: true });
-  const global = join(home, "globalconfig");
-  if (!existsSync(global))
-    writeFileSync(
-      global,
-      "[user]\n\tname = Global Fixture\n\temail = global@example.invalid\n",
-    );
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) =>
@@ -142,108 +151,71 @@ export async function cloneFixture(
         !/^(?:GH|GITHUB)_(?:TOKEN|HOST|REPO|CONFIG_DIR)$/i.test(key),
     ),
   );
-  Object.assign(env, {
+  return {
+    ...env,
     HOME: home,
     USERPROFILE: home,
     XDG_CONFIG_HOME: join(home, "xdg"),
     GH_CONFIG_DIR: join(home, "gh"),
     GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: global,
+    GIT_CONFIG_GLOBAL: join(home, "globalconfig"),
     GIT_TERMINAL_PROMPT: "0",
     GIT_OPTIONAL_LOCKS: "0",
     FAKE_GH_MODE: mode,
     FAKE_GH_LOG: join(root, ".git/fake-gh.jsonl"),
+    FORGE_DEVICE_ROOT: join(root, ".git/fixture-device"),
     GH_TOKEN: credentialFor(
       login === "alpha-user" ? "beta-user" : "alpha-user",
     ),
+  };
+}
+export function environmentLauncher(shellProgram) {
+  const candidates =
+    process.platform === "win32"
+      ? [
+          join(dirname(shellProgram), "env.exe"),
+          join(dirname(shellProgram), "../usr/bin/env.exe"),
+        ]
+      : ["/usr/bin/env", "/bin/env"];
+  const resolved = candidates.find(existsSync);
+  assert.ok(
+    resolved,
+    "a trusted POSIX environment launcher is required for the shell fixture",
+  );
+  return resolved;
+}
+export function plantedEnvironment(clone) {
+  const directory = join(clone.root, ".git/planted-programs");
+  mkdirSync(directory, { recursive: true });
+  const marker = join(directory, "env-called");
+  const startupMarker = join(directory, "startup-called");
+  const startupFile = join(directory, "startup");
+  rmSync(marker, { force: true });
+  rmSync(startupMarker, { force: true });
+  const quote = (value) => `'${value.replace(/'/g, `'"'"'`)}'`;
+  writeFileSync(
+    join(directory, "env"),
+    `#!/bin/sh\nprintf 'called' > ${quote(marker)}\nexec ${quote(clone.config.envProgram)} "$@"\n`,
+    { mode: 0o700 },
+  );
+  writeFileSync(startupFile, `printf 'called' > ${quote(startupMarker)}\n`, {
+    mode: 0o600,
   });
-  git(root, env, "init", "--quiet");
-  const account = accounts[login];
-  git(
-    root,
+  const key =
+    Object.keys(clone.env).find((name) => name.toLowerCase() === "path") ??
+    "PATH";
+  const env = {
+    ...clone.env,
+    [key]: `${directory}${delimiter}${clone.env[key] ?? ""}`,
+  };
+  return {
+    marker,
+    startupMarker,
     env,
-    "-c",
-    `user.name=${account.name}`,
-    "-c",
-    `user.email=${account.email}`,
-    "commit",
-    "--quiet",
-    "--allow-empty",
-    "-m",
-    "baseline",
-  );
-  const baseline = git(root, env, "rev-parse", "HEAD");
-  for (const [key, values] of Object.entries({
-    "user.name": ["Native First", "Native Last"],
-    "user.email": [
-      "native-first@example.invalid",
-      "native-last@example.invalid",
-    ],
-    "credential.https://github.com.helper": ["", "fixture-native-helper"],
-    ...(nativeHooks ? { "core.hooksPath": [".git/native-hooks"] } : {}),
-  }))
-    for (const value of values)
-      git(root, env, "config", "--local", "--add", key, value);
-  mkdirSync(join(root, ".git/native-hooks"));
-  const deviceRoot = join(root, ".git/fixture-device");
-  env.FORGE_DEVICE_ROOT = deviceRoot;
-  const config = {
-    environmentNames: Object.keys(env).filter((name) =>
-      /^(?:path|pathext|systemroot|windir|comspec|home|userprofile|xdg_config_home|gh_config_dir|tmp|temp|GIT_CONFIG_NOSYSTEM|GIT_CONFIG_GLOBAL|GIT_TERMINAL_PROMPT|GIT_OPTIONAL_LOCKS|FAKE_GH_MODE|FAKE_GH_LOG|GH_TOKEN|FORGE_DEVICE_ROOT)$/i.test(
-        name,
-      ),
-    ),
-    gitProgram: "git",
-    ghProgram: process.execPath,
-    ghArgs: [join(fixture, "fake-gh.mjs")],
-    commandTimeoutMs: 10000,
-    maxOutputBytes: 65536,
-    maxFileBytes: 1048576,
-    maxCommits: 100,
-    coauthorPolicy: policy,
-    aiCoauthorPatterns: ["codex", "claude", "copilot", "openai"],
-    allowedGhCommands: ["repo view", "pr create", "pr list", "pr view"],
-    identityName: "profile",
-    identityEmail: "noreply",
-    forgeCommand: [process.execPath, bin],
-    shellProgram: shell(root, env),
+    startupEnv: { ...env, BASH_ENV: startupFile, ENV: startupFile },
   };
-  const assembly = await createAssembly({
-    root,
-    deviceRoot,
-    providers: { env },
-  });
-  const context = {
-    actor: { kind: "human", id: "packed-fixture" },
-    session: { id: `${name}-session` },
-    device: { id: deviceRoot },
-    project: { id: root, root },
-  };
-  let sequence = 0;
-  const call = (verb, input = {}) =>
-    assembly.catalog.invoke({
-      schemaVersion: "forge.invocation/1",
-      requestId: `${name}-${++sequence}`,
-      op: verb.includes(".") ? verb : `github-account.${verb}`,
-      input,
-      caller: "human",
-      context,
-    });
-  const shown = ok(await call("config.show"), "show initial composition");
-  ok(
-    await call("config.apply", {
-      expectRevision: shown.revision,
-      patch: [
-        { op: "set", path: "/mcp", value: { expose: ["github-account"] } },
-        {
-          op: "set",
-          path: "/blocks/github-accounts",
-          value: { source: { builtin: "forge/github-accounts" }, config },
-        },
-      ],
-    }),
-    "configure account block",
-  );
+}
+async function authorise(call, root) {
   cpSync(
     join(installed, "dist/src/blocks/github-accounts"),
     join(root, "fixture-block"),
@@ -254,17 +226,23 @@ export async function cloneFixture(
     "capture account block",
   );
   if (process.env.FORGE_MUTATION_HASH) {
-    const hash = createHash("sha256")
+    const entryHash = createHash("sha256")
       .update(readFileSync(join(root, "fixture-block/entry.cjs")))
+      .digest("hex");
+    const target =
+      process.env.FORGE_MUTATION_TARGET ??
+      join(installed, "dist/src/blocks/github-accounts/entry.cjs");
+    const hash = createHash("sha256")
+      .update(readFileSync(target))
       .digest("hex");
     assert.equal(
       hash,
       process.env.FORGE_MUTATION_HASH,
-      "capture must use the private mutated entry bytes",
+      "capture must use the private mutated bytes",
     );
     appendFileSync(
-      process.env.FORGE_MUTATION_PROOF,
-      JSON.stringify({ hash, digest: checked.digest }) + "\n",
+      process.env.FORGE_ACCOUNTS_CAPTURE_PROOF,
+      JSON.stringify({ hash, entryHash, digest: checked.digest }) + "\n",
     );
   }
   ok(
@@ -285,48 +263,248 @@ export async function cloneFixture(
     await call("config.grant", { digest: checked.digest, effects }),
     "grant account block effects",
   );
-  assert.deepEqual(
-    assembly.catalog.unavailable(),
-    [],
-    "account block must have every provider bound",
-  );
-  return {
+}
+export async function reuseFixture(descriptor, mode = "ready") {
+  const { root, login, baseline } = descriptor;
+  const env = fixtureEnvironment(dirname(root), root, login, mode);
+  const deviceRoot = env.FORGE_DEVICE_ROOT;
+  const assembly = await createAssembly({
+    root,
+    deviceRoot,
+    providers: { env },
+  });
+  const context = {
+    actor: { kind: "human", id: "packed-fixture" },
+    session: { id: `${basename(root)}-mutation` },
+    device: { id: deviceRoot },
+    project: { id: root, root },
+  };
+  let sequence = 0;
+  const call = (verb, input = {}) =>
+    assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: `mutant-${++sequence}`,
+      op: verb.includes(".") ? verb : `github-account.${verb}`,
+      input,
+      caller: "human",
+      context,
+    });
+  try {
+    const shown = ok(await call("config.show"), "read prepared composition");
+    const config = shown.effective.blocks["github-accounts"].config;
+    await authorise(call, root);
+    assert.deepEqual(
+      assembly.catalog.unavailable(),
+      [],
+      "prepared block providers must bind",
+    );
+    return {
+      root,
+      env,
+      login,
+      baseline,
+      account: accounts[login],
+      config,
+      call,
+      close: () => assembly.close(),
+    };
+  } catch (error) {
+    await assembly.close();
+    throw error;
+  }
+}
+export async function cloneFixture(
+  parent,
+  name,
+  login,
+  policy = "refuse",
+  mode = "ready",
+  nativeHooks = true,
+) {
+  const root = join(parent, name);
+  mkdirSync(root);
+  const home = join(parent, "home");
+  mkdirSync(home, { recursive: true });
+  const global = join(home, "globalconfig");
+  if (!existsSync(global))
+    writeFileSync(
+      global,
+      "[user]\n\tname = Global Fixture\n\temail = global@example.invalid\n",
+    );
+  let env = fixtureEnvironment(parent, root, login, mode);
+  git(root, env, "init", "--quiet");
+  const account = accounts[login];
+  git(
     root,
     env,
-    login,
-    account,
-    config,
-    assembly,
-    call,
-    baseline,
-    cli(verb, input = {}, expected = 0) {
-      const result = command(
-        process.execPath,
-        [bin, "github-account", verb, "--input", JSON.stringify(input)],
-        root,
-        env,
-      );
-      assert.equal(
-        result.status,
-        expected,
-        `generated ${verb}: ${result.stdout} ${result.stderr}`,
-      );
-      return JSON.parse(result.stdout);
-    },
-    async bind() {
-      return ok(
-        await call("bind", {
-          login,
-          auto: true,
-          repository: "fixture/project",
-        }),
-        `bind ${login}`,
-      );
-    },
-    async close() {
-      await assembly.close();
-    },
+    "-c",
+    `user.name=${account.name}`,
+    "-c",
+    `user.email=${account.email}`,
+    "commit",
+    "--quiet",
+    "--allow-empty",
+    "-m",
+    "baseline",
+  );
+  const baseline = git(root, env, "rev-parse", "HEAD");
+  // Seed fixture-owned native configuration once; real Git reads it back in the
+  // identity/restoration assertions. This removes seven setup subprocesses per clone.
+  const configPath = join(root, ".git/config");
+  writeFileSync(
+    configPath,
+    readFileSync(configPath, "utf8") +
+      '\n[user]\n\tname = Native First\n\tname = Native Last\n\temail = native-first@example.invalid\n\temail = native-last@example.invalid\n[credential "https://github.com"]\n\thelper = ""\n\thelper = fixture-native-helper\n' +
+      (nativeHooks ? "[core]\n\thooksPath = .git/native-hooks\n" : ""),
+  );
+  mkdirSync(join(root, ".git/native-hooks"));
+  const deviceRoot = join(root, ".git/fixture-device");
+  env.FORGE_DEVICE_ROOT = deviceRoot;
+  const shellProgram = shell(root, env);
+  const config = {
+    environmentNames: Object.keys(env).filter((name) =>
+      /^(?:path|pathext|systemroot|windir|comspec|home|userprofile|xdg_config_home|gh_config_dir|tmp|temp|GIT_CONFIG_NOSYSTEM|GIT_CONFIG_GLOBAL|GIT_TERMINAL_PROMPT|GIT_OPTIONAL_LOCKS|FAKE_GH_MODE|FAKE_GH_LOG|GH_TOKEN|FORGE_DEVICE_ROOT)$/i.test(
+        name,
+      ),
+    ),
+    gitProgram: "git",
+    ghProgram: process.execPath,
+    ghArgs: [join(fixture, "fake-gh.mjs")],
+    commandTimeoutMs: 10000,
+    maxOutputBytes: 65536,
+    maxFileBytes: 1048576,
+    maxCommits: 100,
+    coauthorPolicy: policy,
+    aiCoauthorPatterns: ["codex", "claude", "copilot", "openai"],
+    allowedGhCommands: ["repo view", "pr create", "pr list", "pr view"],
+    identityName: "profile",
+    identityEmail: "noreply",
+    forgeCommand: [process.execPath, bin],
+    shellProgram,
+    envProgram: environmentLauncher(shellProgram),
   };
+  let assembly = await createAssembly({
+    root,
+    deviceRoot,
+    providers: { env },
+  });
+  const context = {
+    actor: { kind: "human", id: "packed-fixture" },
+    session: { id: `${name}-session` },
+    device: { id: deviceRoot },
+    project: { id: root, root },
+  };
+  let sequence = 0;
+  const call = (verb, input = {}) =>
+    assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: `${name}-${++sequence}`,
+      op: verb.includes(".") ? verb : `github-account.${verb}`,
+      input,
+      caller: "human",
+      context,
+    });
+  try {
+    const shown = ok(await call("config.show"), "show initial composition");
+    ok(
+      await call("config.apply", {
+        expectRevision: shown.revision,
+        patch: [
+          { op: "set", path: "/mcp", value: { expose: ["github-account"] } },
+          {
+            op: "set",
+            path: "/blocks/github-accounts",
+            value: { source: { builtin: "forge/github-accounts" }, config },
+          },
+        ],
+      }),
+      "configure account block",
+    );
+    await authorise(call, root);
+    assert.deepEqual(
+      assembly.catalog.unavailable(),
+      [],
+      "account block must have every provider bound",
+    );
+    return {
+      root,
+      get env() {
+        return env;
+      },
+      login,
+      account,
+      config,
+      get assembly() {
+        return assembly;
+      },
+      call,
+      baseline,
+      cli(verb, input = {}, expected = 0) {
+        const result = command(
+          process.execPath,
+          [bin, "github-account", verb, "--input", JSON.stringify(input)],
+          root,
+          env,
+        );
+        assert.equal(
+          result.status,
+          expected,
+          `generated ${verb}: ${result.stdout} ${result.stderr}`,
+        );
+        return JSON.parse(result.stdout);
+      },
+      async bind(options = {}) {
+        return ok(
+          await call("bind", {
+            login,
+            auto: true,
+            repository: "fixture/project",
+            ...options,
+          }),
+          `bind ${login}`,
+        );
+      },
+      async reopen(nextMode) {
+        await assembly.close();
+        env = fixtureEnvironment(parent, root, login, nextMode);
+        assembly = await createAssembly({
+          root,
+          deviceRoot,
+          providers: { env },
+        });
+      },
+      async configure(values) {
+        const shown = ok(
+          await call("config.show"),
+          "read configuration revision",
+        );
+        ok(
+          await call("config.apply", {
+            expectRevision: shown.revision,
+            patch: Object.entries(values).map(([key, value]) => ({
+              op: "set",
+              path: `/blocks/github-accounts/config/${key}`,
+              value,
+            })),
+          }),
+          "configure fixture capability",
+        );
+        Object.assign(config, values);
+      },
+      async close() {
+        await assembly.close();
+      },
+    };
+  } catch (error) {
+    const [closed] = await Promise.allSettled([assembly.close()]);
+    if (closed.status === "rejected")
+      throw new AggregateError(
+        [error, closed.reason],
+        "fixture setup and cleanup failed",
+        { cause: error },
+      );
+    throw error;
+  }
 }
 export async function mcp(clone, op, input = {}) {
   const child = spawn(process.execPath, [bin, "--mcp"], {

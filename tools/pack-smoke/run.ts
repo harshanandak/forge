@@ -125,7 +125,12 @@ async function packedIntegration(
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
   await timed(label, () =>
-    runChild(label, bun, ["test", `./${file}`], childOptions(root, env)),
+    runChild(label, bun, ["test", `./${file}`], {
+      ...childOptions(root, env),
+      onOutput: (stream, value) => {
+        (stream === "stdout" ? process.stdout : process.stderr).write(value);
+      },
+    }),
   );
 }
 
@@ -350,6 +355,12 @@ async function main(): Promise<void> {
       // The suites read the base install and mutate private copies. Drain all
       // children before cleanup, including when either suite fails.
       const results = await Promise.allSettled([
+        packedIntegration(
+          stateBun,
+          "test/integration/github-accounts/packed.integration.test.ts",
+          "packed GitHub accounts",
+          { ...process.env, FORGE_PACKED_CONSUMER: consumer },
+        ),
         packedIntegration(
           stateBun,
           "test/assembly/providers/packed.integration.test.ts",

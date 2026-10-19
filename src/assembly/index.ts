@@ -593,6 +593,28 @@ export async function createAssembly(
                 }
                 if (
                   interfaceSatisfies(
+                    "forge.vcs-command@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  const lease = await providers.repository(scope);
+                  leases.push(lease);
+                  clients[binding.slot] = lease.value;
+                  continue;
+                }
+                if (
+                  interfaceSatisfies(
+                    "forge.github-command@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  const lease = await providers.account(scope);
+                  leases.push(lease);
+                  clients[binding.slot] = lease.value;
+                  continue;
+                }
+                if (
+                  interfaceSatisfies(
                     "forge.environment@1.0.0",
                     binding.interface,
                   )

@@ -2,6 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
+    "envProgram": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
     "environmentNames": {
       "type": "array",
       "items": {
@@ -94,6 +99,7 @@
     }
   },
   "required": [
+    "envProgram",
     "environmentNames",
     "gitProgram",
     "ghProgram",

@@ -36,3 +36,12 @@ Execution and cleanup timers are independent. Even a missing exit event, held
 pipe, or cleanup helper that never returns produces a bounded failure. Streams,
 timers and helper handles are released when the runner settles. The runner adds
 no idle process, worker or cache; retained output is bounded by the declared cap.
+
+Packed accounts acceptance runs with the other consumers of smoke's single npm
+installation, outside the serial `integration-rest` child. Its fixture reuses prepared
+clones across independent private-package counterfactuals, verifies each captured
+digest, and restores fixture-owned state before continuing. It streams only bounded
+phase labels; failures include the child name, status, signal and retained tails.
+The standalone npm manifest has a separate 1 MiB capture cap and refuses truncation
+before parsing; other fixture streams retain at most 64 KiB each. Parent suite and
+step runners forward progress immediately while retaining their bounded failure tails.
