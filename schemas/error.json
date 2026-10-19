@@ -4,87 +4,43 @@
   "title": "ForgeError",
   "description": "An actionable error: what was expected, what was observed, how to repair it, and whether a retry is ever safe.",
   "type": "object",
-  "required": [
-    "code",
-    "message",
-    "retry"
-  ],
+  "required": ["code", "message", "retry"],
   "properties": {
-    "code": {
-      "$ref": "common.json#/$defs/ErrorCode"
-    },
-    "message": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 4000
-    },
-    "retry": {
-      "$ref": "#/$defs/RetryPosture"
-    },
-    "pointer": {
-      "$ref": "common.json#/$defs/JsonPointer"
-    },
-    "flag": {
-      "type": "string",
-      "maxLength": 100
-    },
+    "code": { "$ref": "common.json#/$defs/ErrorCode" },
+    "message": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "retry": { "$ref": "#/$defs/RetryPosture" },
+    "pointer": { "$ref": "common.json#/$defs/JsonPointer" },
+    "flag": { "type": "string", "maxLength": 100 },
     "expected": {},
     "observed": {},
-    "repair": {
-      "type": "string",
-      "maxLength": 2000
-    },
+    "repair": { "type": "string", "maxLength": 2000 },
     "suggest": {
       "type": "array",
       "maxItems": 8,
-      "items": {
-        "type": "string",
-        "maxLength": 200
-      }
+      "items": { "type": "string", "maxLength": 200 }
     },
     "missing": {
       "description": "Context fields the declared variant needs and the request did not supply.",
       "type": "array",
       "maxItems": 8,
-      "items": {
-        "$ref": "#/$defs/ContextField"
-      }
+      "items": { "$ref": "#/$defs/ContextField" }
     },
-    "lease": {
-      "$ref": "#/$defs/LeaseConflict"
-    },
-    "currentRevision": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "reconcileWith": {
-      "$ref": "common.json#/$defs/OperationName"
-    }
+    "lease": { "$ref": "#/$defs/LeaseConflict" },
+    "currentRevision": { "type": "integer", "minimum": 0 },
+    "reconcileWith": { "$ref": "common.json#/$defs/OperationName" }
   },
   "additionalProperties": false,
   "allOf": [
     {
       "if": {
-        "required": [
-          "code"
-        ],
-        "properties": {
-          "code": {
-            "const": "CONTEXT_MISSING"
-          }
-        }
+        "required": ["code"],
+        "properties": { "code": { "const": "CONTEXT_MISSING" } }
       },
-      "then": {
-        "required": [
-          "missing"
-        ]
-      }
+      "then": { "required": ["missing"] }
     },
     {
       "if": {
-        "required": [
-          "code"
-        ],
+        "required": ["code"],
         "properties": {
           "code": {
             "enum": [
@@ -96,11 +52,7 @@
           }
         }
       },
-      "then": {
-        "required": [
-          "lease"
-        ]
-      }
+      "then": { "required": ["lease"] }
     }
   ],
   "$defs": {
@@ -125,26 +77,21 @@
         "BINDING_AMBIGUOUS",
         "INTERFACE_INCOMPATIBLE",
         "BLOCK_EXECUTION_FAILED",
-        "BLOCK_ASYNC_UNSUPPORTED",
         "INVOCATION_TIMEOUT",
-        "EFFECT_UNCERTAIN",
-        "LIMIT_EXCEEDED",
-        "UNAVAILABLE",
-        "INTERNAL",
         "INVOCATION_CANCELLED",
         "SERVICE_EXPIRED",
         "PROCESS_CLEANUP_FAILED",
         "CONTAINMENT_UNAVAILABLE",
-        "PROCESS_LIMIT_EXCEEDED"
+        "PROCESS_LIMIT_EXCEEDED",
+        "EFFECT_UNCERTAIN",
+        "LIMIT_EXCEEDED",
+        "UNAVAILABLE",
+        "INTERNAL"
       ]
     },
     "RetryPosture": {
       "description": "never: do not repeat the request; reconcile_first: read the current state through reconcileWith or the named data, then decide; safe: the request had no effect and may be repeated.",
-      "enum": [
-        "never",
-        "reconcile_first",
-        "safe"
-      ]
+      "enum": ["never", "reconcile_first", "safe"]
     },
     "ContextField": {
       "enum": [
@@ -159,25 +106,12 @@
     "LeaseConflict": {
       "description": "What a caller needs to reconcile a lease conflict by reading, never by retrying blindly.",
       "type": "object",
-      "required": [
-        "subject"
-      ],
+      "required": ["subject"],
       "properties": {
-        "subject": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 500
-        },
-        "holder": {
-          "$ref": "state.json#/$defs/LeaseHolder"
-        },
-        "generation": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "expiresAt": {
-          "$ref": "common.json#/$defs/Timestamp"
-        }
+        "subject": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "holder": { "$ref": "state.json#/$defs/LeaseHolder" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "expiresAt": { "$ref": "common.json#/$defs/Timestamp" }
       },
       "additionalProperties": false
     }

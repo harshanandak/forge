@@ -281,7 +281,6 @@ export async function createAssembly(
     };
   }
   function snapshot(): {
-    document: ConfigDocument;
     catalog: Catalog;
     blocks: ReadonlyMap<string, CapturedBlock>;
     candidates: readonly McpCandidate[];
@@ -363,7 +362,6 @@ export async function createAssembly(
     );
     const executable = new Set(active.list());
     return {
-      document,
       catalog: active,
       blocks,
       candidates: candidates.filter((entry) => executable.has(entry.op)),
@@ -545,9 +543,6 @@ export async function createAssembly(
         const current = snapshot();
         return await new Runtime(current.catalog, trust, {
           isolation: nodeRunIsolation,
-          ...(current.document.runtime === undefined
-            ? {}
-            : { limits: current.document.runtime }),
           async services(instance, context, scope) {
             const clients: Record<string, LeaseStateClient> = {};
             const leases: import("../ports/lifetime.ts").OwnedHandle<

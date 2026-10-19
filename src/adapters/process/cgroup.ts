@@ -1,3 +1,4 @@
+import { stopCgroupScope } from "./cgroup-stop.ts";
 import {
   accessSync,
   closeSync,
@@ -369,32 +370,16 @@ class OwnedLinuxCgroup implements LinuxCgroup {
 
   async stop(): Promise<readonly number[]> {
     this.assertOwned();
-    let stopped: readonly number[];
-    try {
-      stopped = snapshotPids(this.path);
-      writeFileSync(join(this.path, "cgroup.kill"), "1", "utf8");
-    } catch (cause) {
-      throw killFailure("The owned cgroup could not be terminated.", cause);
-    }
-
-    const deadline = performance.now() + this.timing.cleanupTimeoutMs;
-    while (true) {
-      try {
-        if (!cgroupPopulated(this.path)) return stopped;
-      } catch (cause) {
-        throw killFailure(
-          "The owned cgroup termination could not be confirmed.",
-          cause,
-        );
-      }
-      const remaining = deadline - performance.now();
-      if (remaining <= 0) {
-        throw killFailure(
-          "The owned cgroup remained populated after termination.",
-        );
-      }
-      await sleep(Math.min(this.timing.pollIntervalMs, remaining));
-    }
+    return stopCgroupScope(
+      {
+        snapshot: () => snapshotPids(this.path),
+        kill: () => writeFileSync(join(this.path, "cgroup.kill"), "1", "utf8"),
+        populated: () => cgroupPopulated(this.path),
+        now: () => performance.now(),
+        pause: (ms) => sleep(ms),
+      },
+      this.timing,
+    );
   }
 
   close(): void {
@@ -442,7 +427,7 @@ export function openLinuxCgroup(options: LinuxCgroupOptions): LinuxCgroup {
     accessSync(join(path, "cgroup.events"), constants.R_OK);
     accessSync(join(path, "cgroup.kill"), constants.W_OK);
 
-    // Killing an empty group is harmless and verifies the kernel operation before any spawn.
+    // Killing an empty group is harmless and verifies the OS operation before any spawn.
     writeFileSync(join(path, "cgroup.kill"), "1", "utf8");
     if (cgroupPopulated(path)) {
       throw new Error("new private cgroup was unexpectedly populated");

@@ -7,7 +7,11 @@ import type {
 /** Trusted code, not a security sandbox. VM microtasks are pumped under the same deadline. */
 const evaluator: RunIsolation = {
   run(options) {
-    return new Promise<unknown>((resolve, reject) => {
+    let synchronous = true;
+    let completed = false;
+    let result: unknown;
+    let failure: unknown;
+    const pending = new Promise<unknown>((resolve, reject) => {
       let done = false;
       let pump: ReturnType<typeof setInterval> | undefined;
       const finish = (error: unknown, output?: string): void => {
@@ -16,6 +20,11 @@ const evaluator: RunIsolation = {
         if (pump !== undefined) clearInterval(pump);
         options.signal.removeEventListener("abort", abort);
         options.settled();
+        if (synchronous) {
+          completed = true;
+          result = output;
+          failure = error;
+        }
         if (error !== undefined)
           reject(
             error instanceof Error
@@ -84,6 +93,16 @@ const evaluator: RunIsolation = {
         pump = setInterval(() => tick(drain), 1);
       }
     });
+    synchronous = false;
+    if (completed) {
+      void pending.catch(() => undefined);
+      if (failure !== undefined)
+        throw failure instanceof Error
+          ? failure
+          : new Error("Block execution failed", { cause: failure });
+      return result;
+    }
+    return pending;
   },
 };
 

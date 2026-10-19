@@ -199,7 +199,8 @@ export class Runtime {
         ...(options.limits?.parse ?? DEFAULT_RUNTIME_LIMITS.parse),
       }),
     });
-    if (this.#limits.timeoutMs !== undefined) validateTimeout(this.#limits.timeoutMs);
+    if (this.#limits.timeoutMs !== undefined)
+      validateTimeout(this.#limits.timeoutMs);
     const parse = this.#limits.parse;
     for (const limit of [
       this.#limits.maxOutputBytes,
@@ -262,14 +263,28 @@ export class Runtime {
         this.#options.services === undefined
       )
         refuse("PROVIDER_MISSING", "bound clients need a service provider");
-      const clock = this.#options.clock ?? {now:()=>Date.now()};
-      const budget = invocationDeadline({declared:declaration.timeoutMs,
-        configured:this.#catalog.config.blocks[operation.instance]?.operationTimeouts?.[operation.declaredOp],
-        host:this.#catalog.config.runtime?.timeoutMs,embedding:this.#limits.timeoutMs},clock);
+      const clock = this.#options.clock ?? { now: () => Date.now() };
+      const budget = invocationDeadline(
+        {
+          declared: declaration.timeoutMs,
+          configured:
+            this.#catalog.config.blocks[operation.instance]
+              ?.operationTimeouts?.[operation.declaredOp],
+          host: this.#catalog.config.runtime?.timeoutMs,
+          embedding: this.#limits.timeoutMs,
+        },
+        clock,
+      );
       const timeoutMs = budget.remaining();
-      invocation = new InvocationServices(clock.now() + timeoutMs, () => {
-        this.#trust.check(block.digest,declaration.effects);
-      }, declaration.processContainment === "strict", clock);
+      invocation = new InvocationServices(
+        clock.now() + timeoutMs,
+        () => {
+          this.#trust.check(block.digest, declaration.effects);
+        },
+        declaration.processContainment === "strict",
+        clock,
+        this.#limits.parse,
+      );
       const scope = invocation;
       cancel = () =>
         scope.controller.abort(
@@ -303,7 +318,8 @@ export class Runtime {
               effects: Object.freeze([...declaration.effects]),
               signal: scope.controller.signal,
               deadline: scope.deadline,
-              processContainment: declaration.processContainment ?? "supervised",
+              processContainment:
+                declaration.processContainment ?? "supervised",
             }),
           ),
         ),
@@ -391,12 +407,17 @@ export class Runtime {
           failure.code === "GRANT_REQUIRED" ||
           failure.code === "LIMIT_EXCEEDED" ||
           failure.code === "CONTAINMENT_UNAVAILABLE" ||
+          failure.code === "PROCESS_LIMIT_EXCEEDED" ||
           failure.code === "PROVIDER_MISSING"
             ? "INCOMPLETE"
             : "FAIL",
         error: {
           ...failure,
-          retry: started ? "reconcile_first" : failure.code === "INVOCATION_TIMEOUT" ? "never" : failure.retry,
+          retry: started
+            ? "reconcile_first"
+            : failure.code === "INVOCATION_TIMEOUT"
+              ? "never"
+              : failure.retry,
         },
         warnings: [],
       };
@@ -437,7 +458,9 @@ export class Runtime {
         },
         warnings: [...(invocation?.warnings() ?? [])],
       };
-    return { ...result, warnings: [...result.warnings, ...(invocation?.warnings() ?? [])] };
+    return {
+      ...result,
+      warnings: [...result.warnings, ...(invocation?.warnings() ?? [])],
+    };
   }
 }
-

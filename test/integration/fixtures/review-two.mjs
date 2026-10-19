@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { runInNewContext } from "node:vm";
 import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
@@ -25,6 +26,44 @@ const packageUrl = import.meta.resolve("forge-workflow/package.json");
 const { LocalState } = await import(
   new URL("dist/src/assembly/state.js", packageUrl)
 );
+const { createStateClient } = await import(
+  new URL("dist/src/assembly/state-client.js", packageUrl)
+);
+async function normalization() {
+  const opened = await sqliteStore.open({
+    path: join(work, "normalization.sqlite"),
+    readOnly: false,
+  });
+  assert.ok(opened.ok);
+  try {
+    const owner = new StateOwner(opened.handle.value, { now: () => 1000 });
+    owner.initialize();
+    const client = createStateClient({
+      owner,
+      namespace: "example.org/normalization",
+      context: {
+        variant: "project",
+        actor: { kind: "agent", id: "normalization" },
+        project: { id: work },
+      },
+      write: true,
+      requestId: "normalization",
+    });
+    // Exercise this public assembly seam without the runtime's independent snapshot layer.
+    const value = runInNewContext("({version: '1.0.0'})");
+    const written = client.put("record", value, { expectRevision: 0 });
+    assert.equal(written.revision, 1);
+    assert.equal(
+      owner.get("example.org/normalization", "record").value.version,
+      "1.0.0",
+    );
+    console.log(
+      "PASS normalization: cross-realm JSON reaches durable state through the state client",
+    );
+  } finally {
+    await opened.handle.close();
+  }
+}
 const bin = fileURLToPath(new URL("dist/bin/forge.js", packageUrl));
 const mode = process.argv[2] ?? "all";
 const work = mkdtempSync(join(process.cwd(), "review-two-"));
@@ -453,6 +492,7 @@ async function declaredDeadline() {
   console.log("PASS declared deadlines with injected clock");
 }
 try {
+  if (["all", "normalization"].includes(mode)) await normalization();
   if (["all", "deadline"].includes(mode)) await declaredDeadline();
   if (["all", "directories", "directory-retry"].includes(mode)) {
     const finished = phase("directories");

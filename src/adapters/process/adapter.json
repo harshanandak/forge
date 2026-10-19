@@ -1,7 +1,1 @@
-{
-  "port": "process",
-  "executable": [
-    "taskkill"
-  ],
-  "package": "koffi"
-}
+{ "port": "process", "package": "koffi" }

@@ -2,6 +2,52 @@ import { expect, test } from "bun:test";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { fixture } from "./fixture.ts";
 
+for (const code of [
+  "CONTAINMENT_UNAVAILABLE",
+  "PROCESS_LIMIT_EXCEEDED",
+] as const)
+  test(`process capability refusal remains typed across the async boundary: ${code}`, async () => {
+    const f = fixture(
+      "async ({services}) => { await services.process.run({kind:'resolved',path:'fake'},[],{cwd:'/',env:{},timeoutMs:100,maxOutputBytes:100}); return 'unexpected'; }",
+      { processContainment: "strict" },
+    );
+    let attempts = 0;
+    const result = await f
+      .runtime({
+        services: () =>
+          Promise.resolve({
+            ownership: "borrowed",
+            value: {
+              process: {
+                capability: "forge.process/v1",
+                containment: () =>
+                  Promise.resolve({
+                    available: true as const,
+                    backend: "windows-job" as const,
+                  }),
+                resolve: () => ({ kind: "resolved" as const, path: "fake" }),
+                run: () => {
+                  attempts++;
+                  return Promise.reject(
+                    Object.assign(
+                      Error("capability unavailable before spawn"),
+                      { code },
+                    ),
+                  );
+                },
+              },
+            },
+          }),
+      })
+      .invoke(f.request);
+    expect(result).toMatchObject({
+      ok: false,
+      status: "INCOMPLETE",
+      error: { code },
+    });
+    expect(attempts).toBe(1);
+  }, 5000);
+
 for (const legacy of [true, false]) {
   for (const source of [
     "({ input }) => input",
@@ -26,6 +72,7 @@ test("handlers and service factories receive the same runtime signal and declare
   expect(
     await f
       .runtime({
+        clock: { now: () => before },
         services: (_instance, _context, scope) =>
           Promise.resolve({
             ownership: "borrowed",
@@ -236,6 +283,7 @@ test("settlement cancels and drains a process the handler did not await", async 
   );
   let stopped = false;
   const port = {
+    capability: "forge.process/v1",
     resolve: () => ({ kind: "resolved" as const, path: "fake" }),
     run: (
       _executable: unknown,
@@ -388,6 +436,7 @@ test("failed process termination yields typed incomplete cleanup and still close
   );
   let closed = 0;
   const port = {
+    capability: "forge.process/v1",
     resolve: () => ({ kind: "resolved" as const, path: "fake" }),
     run: (
       _executable: unknown,

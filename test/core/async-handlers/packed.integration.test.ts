@@ -119,7 +119,7 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
         ? [
             {
               file: "adapters/process/windows-job.js",
-              from: "if (api.terminateJobObject(handle, 1) === 0)",
+              from: "if (api.terminateJobObject(job, 1) === 0)",
               to: "if (true)",
               mode: "job-termination",
               evidence: "typed interruption",
@@ -163,8 +163,8 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
       },
       {
         file: "core/runtime/services.js",
-        from: "const pending = port.run(executable, args, {",
-        to: "const pending = port.run(executable, args, {",
+        from: ".run(executable, args, {",
+        to: ".run(executable, args, {",
         mode: "timeout",
         evidence: "invocation must stop its entire process tree",
       },
@@ -194,8 +194,8 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
         const changed =
           mutation.mode === "timeout"
             ? original.replace(
-                /const pending = port.run\(executable, args, \{[\s\S]*?\}\);/,
-                "const pending = port.run(executable, args, options);",
+                /\.run\(executable, args, \{[\s\S]*?\}\)/,
+                ".run(executable, args, options)",
               )
             : original.replaceAll(mutation.from, mutation.to);
         expect(changed).not.toBe(original);

@@ -7,7 +7,10 @@ import type {
 } from "../../ports/process.ts";
 import type { Platform } from "./platform.ts";
 import { type FileProbe, realFileProbe, resolveExecutable } from "./resolve.ts";
-import { containmentCapability, type ContainmentOptions } from "./containment.ts";
+import {
+  containmentCapability,
+  type ContainmentOptions,
+} from "./containment.ts";
 import { runProcess } from "./run.ts";
 
 export { type ProcessErrorCode, ProcessSpawnError } from "./errors.ts";
@@ -26,6 +29,7 @@ export function createProcessPort(
   const platform = options.platform ?? process.platform;
   const probe = options.probe ?? realFileProbe;
   return {
+    capability: "forge.process/v1",
     containment: () => containmentCapability(platform, options),
     resolve(
       executable: string,

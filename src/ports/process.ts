@@ -15,7 +15,10 @@ export interface SpawnOptions {
 }
 
 export type ContainmentCapability =
-  | { readonly available: true; readonly backend: "windows-job" | "linux-cgroup" }
+  | {
+      readonly available: true;
+      readonly backend: "windows-job" | "linux-cgroup";
+    }
   | { readonly available: false; readonly reason: string };
 
 export interface ProcessSupervisionReport {
@@ -27,6 +30,7 @@ export interface ProcessSupervisionReport {
   readonly stoppedPids: readonly number[];
   readonly groupId?: number;
   readonly confirmed: boolean;
+  readonly pidSnapshotComplete?: boolean;
   readonly supervisorResidentBytes: number;
 }
 
@@ -49,6 +53,8 @@ export interface ResolvedExecutable {
 }
 
 export interface ProcessPort {
+  /** Explicit capability identity; unrelated resolve/run clients are never rewritten. */
+  readonly capability: "forge.process/v1";
   /** A host capability probe. Never launches the requested executable. */
   containment?(): Promise<ContainmentCapability>;
   resolve(

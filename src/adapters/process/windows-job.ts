@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { ProcessSpawnError } from "./errors.ts";
 
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1;
 const JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9;
 const PROCESS_SET_QUOTA = 0x0100;
@@ -107,7 +108,10 @@ function asNativeFunction<Arguments extends readonly unknown[], Result>(
   return value as NativeFunction<Arguments, Result>;
 }
 
+let nativeApi: NativeApi | undefined;
+
 function loadNativeApi(): NativeApi {
+  if (nativeApi !== undefined) return nativeApi;
   const require = createRequire(import.meta.url);
   const koffi = asKoffi(require("koffi") as unknown);
   const kernel32 = asLibrary(koffi.load("kernel32.dll"));
@@ -132,20 +136,17 @@ function loadNativeApi(): NativeApi {
     WriteTransferCount: "uint64_t",
     OtherTransferCount: "uint64_t",
   });
-  const extendedLimitType = koffi.struct(
-    "ForgeJobExtendedLimitInformation",
-    {
-      BasicLimitInformation: basicLimit,
-      IoInfo: ioCounters,
-      ProcessMemoryLimit: "uintptr_t",
-      JobMemoryLimit: "uintptr_t",
-      PeakProcessMemoryUsed: "uintptr_t",
-      PeakJobMemoryUsed: "uintptr_t",
-    },
-  );
+  const extendedLimitType = koffi.struct("ForgeJobExtendedLimitInformation", {
+    BasicLimitInformation: basicLimit,
+    IoInfo: ioCounters,
+    ProcessMemoryLimit: "uintptr_t",
+    JobMemoryLimit: "uintptr_t",
+    PeakProcessMemoryUsed: "uintptr_t",
+    PeakJobMemoryUsed: "uintptr_t",
+  });
   const byteOutput = koffi.out(koffi.pointer("uint8_t"));
 
-  return {
+  nativeApi = {
     createJobObject: asNativeFunction(
       kernel32.func("__stdcall", "CreateJobObjectW", handle, [
         "void *",
@@ -197,6 +198,7 @@ function loadNativeApi(): NativeApi {
     extendedLimitType,
     extendedLimitSize: koffi.sizeof(extendedLimitType),
   };
+  return nativeApi;
 }
 
 function isHandle(value: unknown): value is bigint {
@@ -204,7 +206,9 @@ function isHandle(value: unknown): value is bigint {
 }
 
 function nativeError(api: NativeApi, operation: string): Error {
-  return new Error(`${operation} failed with Windows error ${api.getLastError()}.`);
+  return new Error(
+    `${operation} failed with Windows error ${api.getLastError()}.`,
+  );
 }
 
 function emptyExtendedLimits(): Readonly<Record<string, unknown>> {
@@ -267,7 +271,9 @@ function processIds(api: NativeApi, job: bigint): readonly number[] {
       throw new ProcessSpawnError(
         "TREE_KILL_FAILED",
         "Could not snapshot the contained process tree.",
-        new Error(`QueryInformationJobObject failed with Windows error ${error}.`),
+        new Error(
+          `QueryInformationJobObject failed with Windows error ${error}.`,
+        ),
       );
     }
     const needed = Math.max(capacity + 1, assigned);
@@ -288,7 +294,7 @@ function activeProcesses(api: NativeApi, job: bigint): number {
   if (
     api.queryInformationJobObject(
       job,
-      1,
+      JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
       accounting,
       accounting.length,
       null,
@@ -300,7 +306,18 @@ function activeProcesses(api: NativeApi, job: bigint): number {
       nativeError(api, "QueryInformationJobObject"),
     );
   }
-  return accounting.readUInt32LE(36);
+  // Four LARGE_INTEGERs and two DWORDs precede ActiveProcesses (not TotalProcesses).
+  return accounting.readUInt32LE(40);
+}
+
+function terminateJob(api: NativeApi, job: bigint): void {
+  if (api.terminateJobObject(job, 1) === 0) {
+    throw new ProcessSpawnError(
+      "TREE_KILL_FAILED",
+      "Could not stop the contained process tree.",
+      nativeError(api, "TerminateJobObject"),
+    );
+  }
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -421,16 +438,10 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
         try {
           stopped = processIds(api, handle);
         } catch (cause) {
-          api.terminateJobObject(handle, 1);
+          terminateJob(api, handle);
           throw cause;
         }
-        if (api.terminateJobObject(handle, 1) === 0) {
-          throw new ProcessSpawnError(
-            "TREE_KILL_FAILED",
-            "Could not stop the contained process tree.",
-            nativeError(api, "TerminateJobObject"),
-          );
-        }
+        terminateJob(api, handle);
         const deadline = performance.now() + options.cleanupTimeoutMs;
         while (activeProcesses(api, handle) !== 0) {
           const remaining = deadline - performance.now();
@@ -450,7 +461,6 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
     close(): void {
       if (job === undefined) return;
       const handle = job;
-      job = undefined;
       if (api.closeHandle(handle) === 0) {
         throw new ProcessSpawnError(
           "TREE_KILL_FAILED",
@@ -458,6 +468,7 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
           nativeError(api, "CloseHandle"),
         );
       }
+      job = undefined;
     },
   };
 }

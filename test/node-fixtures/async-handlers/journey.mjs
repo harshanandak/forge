@@ -38,7 +38,7 @@ const supervision = {
   cleanupTimeoutMs: 5000,
   pollIntervalMs: 25,
   drainTimeoutMs: 250,
-  maxConcurrent: 2,
+  maxConcurrent: 1,
 };
 const processPort = (options = {}) =>
   createProcessPort({ supervision, ...options });
@@ -136,7 +136,11 @@ function report(result, containment, descendantPid) {
   assert.ok(value.stoppedCount >= value.stoppedPids.length);
   assert.equal(alive(value.supervisorPid), false, "supervisor must be stopped");
   if (process.platform === "win32")
-    assert.equal(value.backend, "windows-job", "Windows defaults to Job Objects");
+    assert.equal(
+      value.backend,
+      "windows-job",
+      "Windows defaults to Job Objects",
+    );
   if (containment === "strict" && process.platform === "linux")
     assert.equal(value.backend, "linux-cgroup");
   if (descendantPid !== undefined) {
@@ -152,7 +156,9 @@ function report(result, containment, descendantPid) {
   );
 }
 async function refusal(port, label) {
-  let activations = 0, spawns = 0, opens = 0;
+  let activations = 0,
+    spawns = 0,
+    opens = 0;
   const f = fixture(
     "({ services }) => { services.activate(); return 'unexpected'; }",
     5000,
@@ -160,16 +166,30 @@ async function refusal(port, label) {
     "strict",
   );
   const tracked = {
+    capability: port.capability,
     resolve: port.resolve,
     ...(port.containment ? { containment: () => port.containment() } : {}),
-    run(...args) { spawns++; return port.run(...args); },
+    run(...args) {
+      spawns++;
+      return port.run(...args);
+    },
   };
-  const result = await f.runtime({
-    process: tracked,
-    activate() { activations++; },
-  }, {
-    open() { opens++; return nodeRunIsolation.open(); },
-  }).invoke(f.request);
+  const result = await f
+    .runtime(
+      {
+        process: tracked,
+        activate() {
+          activations++;
+        },
+      },
+      {
+        open() {
+          opens++;
+          return nodeRunIsolation.open();
+        },
+      },
+    )
+    .invoke(f.request);
   assert.equal(
     result.error?.code,
     "CONTAINMENT_UNAVAILABLE",
@@ -177,7 +197,11 @@ async function refusal(port, label) {
   );
   assert.equal(result.status, "INCOMPLETE", label);
   assert.equal(opens, 0, "unavailable containment must not open isolation");
-  assert.equal(activations, 0, "unavailable containment must not activate handler");
+  assert.equal(
+    activations,
+    0,
+    "unavailable containment must not activate handler",
+  );
   assert.equal(spawns, 0, "unavailable containment must not spawn a command");
 }
 async function tree(kind, containment = "supervised") {
@@ -185,7 +209,7 @@ async function tree(kind, containment = "supervised") {
   const ready = join(root, `${containment}-${kind}.ready`);
   const late = join(root, `${containment}-${kind}.late`);
   const grandchild = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)},String(process.pid)); setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'escaped'),6000); setInterval(()=>{},1000);`;
-  const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:${strict},stdio:${JSON.stringify(strict ? "ignore" : "inherit")},env:${JSON.stringify(env)}}); c.unref(); ${kind === "rootexit" ? `const check=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(check);process.exit(0);}},5);` : "setInterval(()=>{},1000);"}`;
+  const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:${strict || process.platform === "win32"},stdio:${JSON.stringify(strict ? "ignore" : "inherit")},env:${JSON.stringify(env)}}); c.unref(); ${kind === "rootexit" ? `const check=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(check);process.exit(0);}},5);` : "setInterval(()=>{},1000);"}`;
   const f = fixture(
     "async ({ input, services }) => { const result = await services.process.run(input.executable, input.args, input.options); if (result.exitCode !== 0) throw Error('child failed'); return 'root-exited'; }",
     kind === "timeout" ? 2000 : 6000,
@@ -198,7 +222,8 @@ async function tree(kind, containment = "supervised") {
     options: { cwd: root, env, timeoutMs: 8000, maxOutputBytes: 1024 },
   };
   const controller = new AbortController();
-  const pending = f.runtime({ process: processPort() })
+  const pending = f
+    .runtime({ process: processPort() })
     .invoke(f.request, { signal: controller.signal });
   if (kind === "cancel") {
     const deadline = Date.now() + 4000;
@@ -219,8 +244,16 @@ async function tree(kind, containment = "supervised") {
   }
   assert.ok(existsSync(ready), "grandchild must have started");
   const pid = Number(readFileSync(ready, "utf8"));
-  assert.equal(alive(pid), false, "invocation must stop its entire process tree");
-  assert.equal(existsSync(late), false, "invocation must stop its entire process tree");
+  assert.equal(
+    alive(pid),
+    false,
+    "invocation must stop its entire process tree",
+  );
+  assert.equal(
+    existsSync(late),
+    false,
+    "invocation must stop its entire process tree",
+  );
   report(result, containment, pid);
 }
 try {
@@ -238,9 +271,15 @@ try {
       ],
       options: { cwd: root, env, timeoutMs: 2000, maxOutputBytes: 1024 },
     };
-    const result = await f.runtime({ process: processPort() }).invoke(f.request);
+    const result = await f
+      .runtime({ process: processPort() })
+      .invoke(f.request);
     assert.equal(result.ok, true, "async child process must complete");
-    assert.equal(result.result, "child-complete", "async child process must complete");
+    assert.equal(
+      result.result,
+      "child-complete",
+      "async child process must complete",
+    );
     report(result, "supervised");
   }
   if (["all", "cpu"].includes(mode)) {
@@ -258,26 +297,38 @@ try {
     );
   }
   for (const kind of ["timeout", "cancel", "rootexit"])
-    if (["all", kind, kind === "rootexit" ? "default-cleanup" : ""].includes(mode))
+    if (
+      ["all", kind, kind === "rootexit" ? "default-cleanup" : ""].includes(mode)
+    )
       await tree(kind);
   if (mode === "job-termination") await tree("cancel");
   if (["all", "strict-refusal"].includes(mode)) {
     await refusal(processPort({ strictContainment: false }), "host disabled");
     const actual = processPort();
-    await refusal({ resolve: actual.resolve, run: actual.run }, "legacy provider");
-    if (process.platform === "darwin") await refusal(actual, "macOS capability");
+    await refusal(
+      { resolve: actual.resolve, run: actual.run },
+      "legacy provider",
+    );
+    if (process.platform === "darwin")
+      await refusal(actual, "macOS capability");
   }
   if (["all", "strict"].includes(mode)) {
     const actual = processPort();
     const capability = await actual.containment();
     if (process.platform === "win32")
-      assert.equal(capability.available, true, "Windows Job Object capability must be available");
+      assert.equal(
+        capability.available,
+        true,
+        "Windows Job Object capability must be available",
+      );
     if (capability.available) {
       for (const kind of ["rootexit", "timeout", "cancel"])
         await tree(kind, "strict");
     } else {
       await refusal(actual, "host capability unavailable");
-      console.log(`NOT_EXERCISED strict process containment: ${capability.reason}`);
+      console.log(
+        `NOT_EXERCISED strict process containment: ${capability.reason}`,
+      );
     }
   }
   if (["all", "scope"].includes(mode)) {
@@ -530,6 +581,7 @@ try {
           idempotent: false,
           callers: ["human", "agent"],
           stability: "stable",
+          timeoutMs: 15000,
         },
       ]),
     );

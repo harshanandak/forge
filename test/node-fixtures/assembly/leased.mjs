@@ -148,32 +148,6 @@ try {
     ).ok,
     true,
   );
-  assert.equal((await invoke("counter.show")).error.code, "INPUT_INVALID");
-  for (const runtime of [
-    {},
-    { timeoutMs: 0 },
-    { timeoutMs: 1.5 },
-    { timeoutMs: 2147483648 },
-    { timeoutMs: 1000, unknown: true },
-  ]) {
-    const current = await invoke("config.show");
-    const invalid = await invoke("config.apply", {
-      expectRevision: current.result.revision,
-      patch: [{ op: "set", path: "/runtime", value: runtime }],
-    });
-    assert.equal(invalid.error.code, "INPUT_INVALID");
-    assert.equal(
-      (await invoke("config.show")).result.revision,
-      current.result.revision,
-      "invalid budgets must leave the composition unchanged",
-    );
-  }
-  const current = await invoke("config.show");
-  const budget = await invoke("config.apply", {
-    expectRevision: current.result.revision,
-    patch: [{ op: "set", path: "/runtime", value: { timeoutMs: 1000 } }],
-  });
-  assert.equal(budget.ok, true, JSON.stringify(budget));
   assert.equal((await invoke("counter.show")).result, null);
   assert.equal(
     existsSync(join(root, ".forge/state.sqlite")),

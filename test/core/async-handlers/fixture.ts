@@ -75,6 +75,10 @@ export function fixture(
     trust,
     request,
     runtime: (options: RuntimeOptions = {}) =>
-      new Runtime(catalog, trust, { isolation: nodeRunIsolation, ...options }),
+      new Runtime(catalog, trust, {
+        isolation: nodeRunIsolation,
+        limits: { timeoutMs: 1000 },
+        ...options,
+      }),
   };
 }

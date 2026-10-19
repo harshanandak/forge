@@ -1,51 +1,14 @@
-import { spawn } from "node:child_process";
-import { pathFor, type Platform } from "./platform.ts";
+import { setTimeout as sleep } from "node:timers/promises";
 import { ProcessSpawnError } from "./errors.ts";
 
-/** POSIX uses an owned process group; Windows taskkill must come from the host, never child env. */
-export function killTree(pid: number, platform: Platform): Promise<void> {
-  if (platform === "win32") {
-    const root = process.env.SystemRoot ?? "C:/Windows";
-    const taskkill = pathFor(platform).join(root, "System32", "taskkill.exe");
-    return new Promise((resolve, reject) => {
-      const killer = spawn(taskkill, ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-        env: { SystemRoot: root },
-      });
-      let settled = false;
-      const finish = (failure?: unknown): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (failure === undefined) {
-          resolve();
-          return;
-        }
-        // Best effort still stops the root, but cannot be reported as a confirmed tree kill.
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          /* the root has exited */
-        }
-        reject(
-          new ProcessSpawnError(
-            "TREE_KILL_FAILED",
-            "Could not confirm process tree termination",
-            failure,
-          ),
-        );
-      };
-      const timer = setTimeout(() => {
-        killer.kill();
-        finish(new Error("Tree termination timed out"));
-      }, 4000);
-      killer.once("error", finish);
-      killer.once("close", (code) =>
-        finish(code === 0 ? undefined : new Error("Tree termination failed")),
-      );
-    });
-  }
+/** A POSIX scope owns its helper's process group until command settlement. */
+export async function killTree(
+  pid: number,
+  timing: {
+    readonly cleanupTimeoutMs: number;
+    readonly pollIntervalMs: number;
+  },
+): Promise<void> {
   try {
     process.kill(-pid, "SIGKILL");
   } catch (error) {
@@ -55,13 +18,36 @@ export function killTree(pid: number, platform: Platform): Promise<void> {
       "code" in error &&
       error.code === "ESRCH"
     ))
-      return Promise.reject(
-        new ProcessSpawnError(
-          "TREE_KILL_FAILED",
-          "Could not stop process group",
-          error,
-        ),
+      throw new ProcessSpawnError(
+        "TREE_KILL_FAILED",
+        "Could not stop process group",
+        error,
       );
   }
-  return Promise.resolve();
+  const deadline = performance.now() + timing.cleanupTimeoutMs;
+  while (true) {
+    try {
+      process.kill(-pid, 0);
+    } catch (error) {
+      if (
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "ESRCH"
+      )
+        return;
+      throw new ProcessSpawnError(
+        "TREE_KILL_FAILED",
+        "Could not confirm process group termination",
+        error,
+      );
+    }
+    const remaining = deadline - performance.now();
+    if (remaining <= 0)
+      throw new ProcessSpawnError(
+        "TREE_KILL_FAILED",
+        "Process group remained alive after termination",
+      );
+    await sleep(Math.min(timing.pollIntervalMs, remaining));
+  }
 }

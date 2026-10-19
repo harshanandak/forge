@@ -1,0 +1,317 @@
+import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+
+assert.equal(
+  process.versions.bun,
+  undefined,
+  "footprint must be measured on Node",
+);
+const env = Object.fromEntries(
+  Object.entries(process.env).filter(([name]) =>
+    ["path", "pathext", "systemroot", "windir", "home", "tmp", "temp"].includes(
+      name.toLowerCase(),
+    ),
+  ),
+);
+const root = mkdtempSync(join(tmpdir(), "forge-footprint-"));
+const pause = (milliseconds) =>
+  new Promise((done) => setTimeout(done, milliseconds));
+let supervisorStarts = 0;
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  supervisorStarts += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
+const moduleUrl =
+  process.argv[2] === "built"
+    ? new URL("../../../dist/src/adapters/process/index.js", import.meta.url)
+    : process.argv[2] === undefined
+      ? new URL("../../../src/adapters/process/index.ts", import.meta.url)
+      : new URL(process.argv[2]);
+const artifact = moduleUrl.pathname.endsWith(".js") ? "built" : "source";
+const { createProcessPort } = await import(moduleUrl);
+
+function snapshot() {
+  if (process.platform !== "win32") {
+    return {
+      hostResidentBytes: process.memoryUsage().rss,
+      hostThreads: "NOT_MEASURED",
+      helpers: [],
+    };
+  }
+  const powershell = join(
+    process.env.SystemRoot ?? "C:/Windows",
+    "System32/WindowsPowerShell/v1.0/powershell.exe",
+  );
+  const script = `
+    $ErrorActionPreference = 'Stop'
+    $hostProcess = Get-Process -Id ${process.pid}
+    $helpers = @(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${process.pid}' |
+      Where-Object { $_.Name -ieq '${basename(process.execPath)}' -and $_.ProcessId -ne $PID } | ForEach-Object {
+        $helper = Get-Process -Id $_.ProcessId
+        [pscustomobject]@{
+          pid = [int]$helper.Id
+          residentBytes = [long]$helper.WorkingSet64
+          threads = [int]$helper.Threads.Count
+        }
+      })
+    [pscustomobject]@{
+      hostResidentBytes = [long]$hostProcess.WorkingSet64
+      hostThreads = [int]$hostProcess.Threads.Count
+      helpers = $helpers
+    } | ConvertTo-Json -Compress -Depth 4
+  `;
+  const measured = childProcess.spawnSync(
+    powershell,
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { encoding: "utf8", timeout: 10_000, windowsHide: true, env },
+  );
+  assert.equal(measured.status, 0, measured.stderr || measured.error?.message);
+  return JSON.parse(measured.stdout);
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    if (process.platform === "linux") {
+      return !readFileSync(`/proc/${pid}/stat`, "utf8").includes(") Z ");
+    }
+    return true;
+  } catch (error) {
+    if (["ESRCH", "ENOENT"].includes(error.code)) return false;
+    throw error;
+  }
+}
+
+async function ready(paths) {
+  const deadline = performance.now() + 10_000;
+  while (!paths.every(existsSync)) {
+    assert.ok(
+      performance.now() < deadline,
+      "supervised commands did not become ready",
+    );
+    await pause(10);
+  }
+  return paths.map((path) => {
+    const pid = Number(readFileSync(path, "utf8"));
+    assert.ok(Number.isInteger(pid) && pid > 0, "invalid workload PID");
+    return pid;
+  });
+}
+
+function dependencyDisk() {
+  const require = createRequire(import.meta.url);
+  try {
+    const packageRoot = dirname(require.resolve("koffi"));
+    const metadata = JSON.parse(
+      readFileSync(join(packageRoot, "package.json"), "utf8"),
+    );
+    const optionalRoots = Object.keys(metadata.optionalDependencies ?? {})
+      .map((name) => join(dirname(packageRoot), name))
+      .filter(existsSync);
+    const roots = [packageRoot, ...optionalRoots].map((path) =>
+      realpathSync(path),
+    );
+    let fileCount = 0;
+    let installedBytes = 0;
+    let nativeBytes = 0;
+    let nativeFileCount = 0;
+    const pending = roots.map((path) => ({ path, depth: 0 }));
+    while (pending.length > 0) {
+      const directory = pending.pop();
+      assert.ok(
+        directory.depth <= 16,
+        "dependency disk walk exceeded its depth bound",
+      );
+      for (const entry of readdirSync(directory.path, {
+        withFileTypes: true,
+      })) {
+        const path = join(directory.path, entry.name);
+        if (entry.isDirectory()) {
+          pending.push({ path, depth: directory.depth + 1 });
+          assert.ok(
+            pending.length <= 4096,
+            "dependency disk walk exceeded its directory bound",
+          );
+        } else if (entry.isFile()) {
+          fileCount += 1;
+          assert.ok(
+            fileCount <= 4096,
+            "dependency disk walk exceeded its file bound",
+          );
+          const bytes = statSync(path).size;
+          installedBytes += bytes;
+          if (entry.name.endsWith(".node")) {
+            nativeBytes += bytes;
+            nativeFileCount += 1;
+          }
+        }
+      }
+    }
+    return {
+      status: "MEASURED",
+      installedBytes,
+      nativeBytes,
+      nativeFileCount,
+      fileCount,
+      optionalPackageCount: optionalRoots.length,
+    };
+  } catch (error) {
+    return { status: "NOT_MEASURED", reason: error.code ?? error.name };
+  }
+}
+
+const controllers = [new AbortController()];
+let settled = Promise.resolve([]);
+try {
+  const port = createProcessPort({
+    supervision: {
+      cleanupTimeoutMs: 5000,
+      pollIntervalMs: 25,
+      drainTimeoutMs: 250,
+      maxConcurrent: 1,
+    },
+  });
+  const before = snapshot();
+  assert.equal(
+    before.helpers.length,
+    0,
+    "a fresh host must have no idle helpers",
+  );
+  const capability = await port.containment();
+  if (process.platform === "win32") {
+    assert.deepEqual(capability, { available: true, backend: "windows-job" });
+  }
+  const markers = controllers.map((_, index) => join(root, `ready-${index}`));
+  const command = `
+    const { writeFileSync, renameSync } = require('node:fs');
+    const marker = process.argv[1];
+    writeFileSync(marker + '.tmp', String(process.pid));
+    renameSync(marker + '.tmp', marker);
+    setInterval(() => {}, 1000);
+  `;
+  const executable = { kind: "resolved", path: process.execPath };
+  const options = {
+    cwd: root,
+    env,
+    timeoutMs: 30_000,
+    maxOutputBytes: 1024,
+    containment: "supervised",
+  };
+  settled = Promise.allSettled(
+    controllers.map((controller, index) =>
+      port.run(executable, ["-e", command, markers[index]], {
+        ...options,
+        signal: controller.signal,
+      }),
+    ),
+  );
+  const targetPids = await ready(markers);
+  const during = snapshot();
+  const startsBeforeRefusal = supervisorStarts;
+  const refusedMarker = join(root, "must-not-run");
+  await assert.rejects(
+    port.run(executable, ["-e", command, refusedMarker], {
+      ...options,
+      timeoutMs: 3000,
+    }),
+    { code: "PROCESS_LIMIT_EXCEEDED" },
+  );
+  assert.equal(
+    supervisorStarts,
+    startsBeforeRefusal,
+    "refusal must precede helper spawn",
+  );
+  assert.equal(
+    existsSync(refusedMarker),
+    false,
+    "the refused workload must not run",
+  );
+  assert.equal(supervisorStarts, 1, "only one helper may be started");
+  if (process.platform === "win32") {
+    assert.equal(during.helpers.length, 1, "the helper must be measured");
+    assert.ok(
+      during.helpers.every((helper) => !targetPids.includes(helper.pid)),
+    );
+  }
+  for (const controller of controllers) controller.abort();
+  const outcomes = await settled;
+  const reports = outcomes.map((outcome) => {
+    assert.equal(
+      outcome.status,
+      "fulfilled",
+      "cancellation cleanup must settle successfully",
+    );
+    assert.equal(outcome.value.supervision?.confirmed, true);
+    return outcome.value.supervision;
+  });
+  const supervisorPids = reports.map((report) => report.supervisorPid);
+  assert.ok(
+    [...supervisorPids, ...targetPids].every((pid) => !alive(pid)),
+    "cleanup must leave no owned process alive",
+  );
+  const after = snapshot();
+  assert.equal(after.helpers.length, 0, "cleanup must leave no idle helpers");
+  if (process.platform !== "win32") {
+    during.helpers = reports.map((report) => ({
+      pid: report.supervisorPid,
+      residentBytes: report.supervisorResidentBytes,
+      threads: "NOT_MEASURED",
+    }));
+  }
+  const helperResidentBytes = during.helpers.reduce(
+    (total, helper) => total + helper.residentBytes,
+    0,
+  );
+  const addedResidentBytes =
+    Math.max(0, during.hostResidentBytes - before.hostResidentBytes) +
+    helperResidentBytes;
+  console.log(
+    JSON.stringify({
+      schemaVersion: "forge.process-footprint/1",
+      platform: process.platform,
+      nodeVersion: process.versions.node,
+      artifact,
+      method:
+        process.platform === "win32"
+          ? "Windows working sets and Get-Process threads"
+          : "Node RSS and supervisor readiness reports; threads NOT_MEASURED",
+      before,
+      during,
+      after,
+      addedResidentBytes,
+      supervisorStarts,
+      rejectedBeforeHelperSpawn: true,
+      supervisorPids,
+      targetPids,
+      allStopped: true,
+      dependencyDisk: dependencyDisk(),
+    }),
+  );
+  assert.ok(
+    addedResidentBytes < 100_000_000,
+    `supervision added ${addedResidentBytes} resident bytes, above the approved 100 MB budget`,
+  );
+} finally {
+  for (const controller of controllers) controller.abort();
+  await settled;
+  childProcess.spawn = originalSpawn;
+  syncBuiltinESMExports();
+  const temporaryParent = resolve(tmpdir());
+  assert.equal(dirname(resolve(root)), temporaryParent);
+  assert.ok(basename(root).startsWith("forge-footprint-"));
+  rmSync(root, { recursive: true, force: true });
+}
