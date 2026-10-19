@@ -74,6 +74,13 @@ export function runProcess(
   platform: Platform,
 ): Promise<ProcessResult> {
   validate(options);
+  if (options.signal?.aborted)
+    return Promise.reject(
+      new ProcessSpawnError(
+        "INVALID_OPTIONS",
+        "Process invocation is cancelled.",
+      ),
+    );
   const plan = planSpawn(executable, args, options.env, platform);
   const started = performance.now();
 
@@ -125,6 +132,7 @@ export function runProcess(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", cancel);
       if (killWait !== undefined) clearTimeout(killWait);
       if (drain !== undefined) clearTimeout(drain);
       child.stdout?.destroy();
@@ -140,19 +148,29 @@ export function runProcess(
       });
     };
 
+    const stop = (): void => {
+      if (settled || killWait !== undefined) return;
+      if (child.pid !== undefined) killTree(child.pid, platform, options.env);
+      killWait = setTimeout(finish, KILL_WAIT_MS);
+    };
+    const cancel = (): void => {
+      stop();
+    };
     const timeout = setTimeout(
       () => {
         timedOut = true;
-        if (child.pid !== undefined) killTree(child.pid, platform, options.env);
-        killWait = setTimeout(finish, KILL_WAIT_MS);
+        stop();
       },
       Math.min(options.timeoutMs, MAX_TIMER_MS),
     );
+    options.signal?.addEventListener("abort", cancel, { once: true });
+    if (options.signal?.aborted) cancel();
 
     child.once("error", (cause) => {
       if (child.pid === undefined && !settled) {
         settled = true;
         clearTimeout(timeout);
+        options.signal?.removeEventListener("abort", cancel);
         rejectRun(
           new ProcessSpawnError(
             "SPAWN_FAILED",

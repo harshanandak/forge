@@ -9,6 +9,8 @@ export interface SpawnOptions {
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
   readonly stdin?: string;
+  /** Cancellation stops the entire process tree before run settles. */
+  readonly signal?: AbortSignal;
 }
 
 export interface ProcessResult {

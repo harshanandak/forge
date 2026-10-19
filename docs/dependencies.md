@@ -78,12 +78,12 @@ Each one gets an entry here and an adapter in the same pull request.
 - **Swap proof:** injected capture test reproduces the exact byte digest.
 - **Adapter:** src/adapters/node-runtime/, using catalog-local FileCapturePort and L1 borrowed handle. The manifest names the Node runtime; it spawns no process.
 
-#### Node synchronous evaluation
+#### Node bounded evaluation
 
-- **Saves:** synchronous execution deadlines and isolated evaluation contexts.
+- **Saves:** execution deadlines, isolated evaluation contexts and bounded microtask pumping.
 - **Maintenance:** built into the supported Node runtime.
 - **Transitive packages:** 0.
-- **Fit:** Node 24/26; trusted synchronous blocks only, not a security sandbox.
+- **Fit:** Node 24/26; trusted value-or-Promise blocks only, not a security sandbox.
 - **Licence:** Node runtime licence.
 - **Trust:** the same runtime already required by the package.
 - **Swap proof:** runtime acceptance injects the evaluator through L1 LifetimeProvider; admission, output limits and owned-service cleanup stay in core.

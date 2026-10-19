@@ -1,66 +1,84 @@
 import { Script, createContext } from "node:vm";
-import { isPromise } from "node:util/types";
 import type {
   RunIsolation,
   RunIsolationPort,
 } from "../../core/runtime/index.ts";
 
-/** Trusted synchronous code with a deadline, never a security sandbox. */
+/** Trusted code, not a security sandbox. VM microtasks are pumped under the same deadline. */
 const evaluator: RunIsolation = {
   run(options) {
-    const context = createContext(
-      {
-        args: options.args,
-        encode: options.encode,
-        fail: options.fail,
-        operation: options.operation,
-        discardPromise: (output: unknown): void => {
-          if (isPromise(output)) {
-            void Promise.prototype.then.call(
-              output,
-              undefined,
-              () => undefined,
-            );
-          }
+    return new Promise<unknown>((resolve, reject) => {
+      let done = false;
+      let pump: ReturnType<typeof setInterval> | undefined;
+      const finish = (error: unknown, output?: string): void => {
+        if (done) return;
+        done = true;
+        if (pump !== undefined) clearInterval(pump);
+        options.signal.removeEventListener("abort", abort);
+        options.settled();
+        if (error !== undefined) reject(error);
+        else resolve(output);
+      };
+      const abort = (): void => finish(options.signal.reason);
+      if (options.signal.aborted) {
+        abort();
+        return;
+      }
+      options.signal.addEventListener("abort", abort, { once: true });
+      const context = createContext(
+        {
+          args: options.args,
+          encode: options.encode,
+          fail: options.fail,
+          operation: options.operation,
+          completed: (output: string) => finish(undefined, output),
+          failed: (error: unknown) => finish(error),
         },
-      },
-      { microtaskMode: "afterEvaluate" },
-    );
-    const script = new Script(
-      `
+        { microtaskMode: "afterEvaluate" },
+      );
+      const script = new Script(
+        `
         const module = { exports: {} };
         const exports = module.exports;
         (function(module, exports) { "use strict";\n${options.source}\n})(module, exports);
         const handler = module.exports[operation];
         if (typeof handler !== 'function') fail('BLOCK_EXECUTION_FAILED', 'declared handler is missing');
-        const output = handler(args);
-        if (output != null && typeof output.then === 'function') {
-          discardPromise(output);
-          fail('BLOCK_ASYNC_UNSUPPORTED', 'sync handler returned a thenable');
-        }
-        encode(output);
+        Promise.resolve(handler(args)).then(output => {
+          completed(encode(output));
+        }).catch(failed);
       `,
-      { filename: options.filename },
-    );
-    try {
-      const encoded: unknown = script.runInContext(context, {
-        timeout: options.timeoutMs,
-      });
-      return encoded;
-    } catch (error) {
-      if (
-        error !== null &&
-        typeof error === "object" &&
-        "code" in error &&
-        error.code === "ERR_SCRIPT_EXECUTION_TIMEOUT"
-      ) {
-        options.fail(
-          "LIMIT_EXCEEDED",
-          `execution exceeds timeoutMs ${options.timeoutMs}`,
-        );
+        { filename: options.filename },
+      );
+      const tick = (script: Script): void => {
+        try {
+          const remaining = options.deadline - Date.now();
+          if (remaining <= 0)
+            options.fail("INVOCATION_TIMEOUT", "Invocation deadline exceeded");
+          script.runInContext(context, { timeout: Math.max(1, remaining) });
+        } catch (error) {
+          if (
+            error !== null &&
+            typeof error === "object" &&
+            "code" in error &&
+            error.code === "ERR_SCRIPT_EXECUTION_TIMEOUT"
+          ) {
+            try {
+              options.fail(
+                "INVOCATION_TIMEOUT",
+                "Invocation deadline exceeded",
+              );
+            } catch (failure) {
+              finish(failure);
+            }
+          } else finish(error);
+        }
+      };
+      tick(script);
+      if (!done) {
+        const drain = new Script("");
+        pump = setInterval(() => tick(drain), 1);
       }
-      throw error;
-    }
+    });
   },
 };
 
