@@ -1,5 +1,10 @@
 export const packedSuites = [
   {
+    file: "test/node-fixtures/check/packed.integration.test.ts",
+    label: "packed check integration",
+    consumerEnv: "CHECK_PACKED_CONSUMER",
+  },
+  {
     file: "test/blocks/l12-git/packed.integration.test.ts",
     label: "packed Git integration",
     consumerEnv: "GIT_PACKED_CONSUMER",
