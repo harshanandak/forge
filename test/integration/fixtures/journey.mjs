@@ -1,4 +1,4 @@
-ï»¿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -382,7 +382,7 @@ try {
         `DEADLINE_MEASUREMENT platform=${process.platform} operation=semver.mark durationMs=${marked.result.writeDurationMs} roundTripMs=${Math.ceil(performance.now() - markStarted)} declaredMs=15000 scope=durable-state-put`,
       );
       assert.deepEqual(
-        {version: marked.result.version, revision: marked.result.revision},
+        { version: marked.result.version, revision: marked.result.revision },
         { version: "1.5.0", revision: 1 },
         JSON.stringify(marked),
       );
