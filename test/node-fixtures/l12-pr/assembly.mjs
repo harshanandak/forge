@@ -57,7 +57,7 @@ writeFileSync(
 writeFileSync(
   join(root, "api"),
   `
-  const assert=require('node:assert/strict');
+  import assert from 'node:assert/strict';
   assert.equal(process.env.FORGE_L12_FIXTURE,${JSON.stringify(marker)});
   assert.deepEqual(process.argv.slice(2),['--hostname','github.com','--method','GET','user']);
   process.stdout.write(JSON.stringify({login:'owner'}));
