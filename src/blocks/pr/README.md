@@ -19,7 +19,7 @@ only `observedAt`: re-reading unchanged state must not invalidate authorization.
 ## Pure evaluation
 
 `pr.evaluate` consumes Evidence and returns Verdict without a host read or mutation.
-The named consumer is the pull request guard (Kernel 70849576). CLI and MCP expose
+The named consumer is the pull request guard (tracker issue 70849576). CLI and MCP expose
 this catalog operation. `verdict(evidence, policy, now)` is the pure API; its rules
 live in the captured entry, which cannot import modules. Runtime conformance checks
 its canonical digest against the shared contract. The host crypto slot supplies hashing.
