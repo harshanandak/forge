@@ -304,6 +304,12 @@ async function core(call: Call, s: Selected, r: Ref): Promise<Json> {
   stamp(value.updatedAt);
   return value;
 }
+async function currentHead(call: Call, s: Selected, r: Ref): Promise<string> {
+  const value = await prQuery(call, s, r, "ForgePRHead", "headRefOid");
+  if (!sha(value.headRefOid))
+    fail("INCOMPLETE", "Current pull request head is missing or malformed");
+  return value.headRefOid;
+}
 type ConnectionKind = "Checks" | "Reviews" | "Threads" | "Labels";
 const connectionFields: Record<ConnectionKind, string> = {
   Checks:
@@ -867,12 +873,23 @@ async function mutate(call: Call): Promise<Json> {
       url: result.html_url,
     };
   }
-  const evidence = await gather(call, s, r);
   if (action === "reply" || action === "resolve") {
+    const membership = await graphql(
+      call,
+      s,
+      "query ForgeThreadMembership($threadId:ID!){node(id:$threadId){__typename ... on PullRequestReviewThread{id pullRequest{number repository{nameWithOwner}}}}}",
+      { threadId: payload.threadId },
+    );
+    const thread = membership.node;
     if (
-      !(evidence.threads as Json[]).some(
-        (value) => value.id === payload.threadId,
-      )
+      !object(thread) ||
+      thread.__typename !== "PullRequestReviewThread" ||
+      thread.id !== payload.threadId ||
+      !object(thread.pullRequest) ||
+      thread.pullRequest.number !== r.number ||
+      !object(thread.pullRequest.repository) ||
+      !text(thread.pullRequest.repository.nameWithOwner) ||
+      thread.pullRequest.repository.nameWithOwner.toLowerCase() !== r.repository
     )
       fail(
         "INPUT_INVALID",
@@ -903,6 +920,7 @@ async function mutate(call: Call): Promise<Json> {
       fail("EFFECT_UNCERTAIN", "GitHub did not confirm the review reply");
     return { ...r, threadId: payload.threadId, accepted: true };
   }
+  const head = await currentHead(call, s, r);
   const run = obj(
     await command(
       call,
@@ -913,7 +931,7 @@ async function mutate(call: Call): Promise<Json> {
   );
   if (
     run.id !== payload.runId ||
-    run.head_sha !== evidence.headSha ||
+    run.head_sha !== head ||
     !Array.isArray(run.pull_requests) ||
     !run.pull_requests.some(
       (value) => object(value) && value.number === r.number,
@@ -923,6 +941,8 @@ async function mutate(call: Call): Promise<Json> {
       "INPUT_INVALID",
       "The workflow run does not belong to this pull request head",
     );
+  if ((await currentHead(call, s, r)) !== head)
+    fail("HEAD_MOVED", "Pull request head changed during rerun validation");
   await command(
     call,
     s,

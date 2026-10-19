@@ -21,6 +21,7 @@ const githubConfig = {
   maxPages: 4,
 };
 function fixture(query: string): Json {
+  if (query.includes("ForgePRHead")) return { headRefOid: head };
   if (query.includes("ForgePRCore"))
     return {
       headRefOid: head,
@@ -102,6 +103,8 @@ function harness(
     config?: Json;
     rules?: readonly Json[];
     comparison?: Json;
+    thread?: Json | null;
+    run?: Json;
   } = {},
 ) {
   const args: readonly string[][] = [];
@@ -119,9 +122,26 @@ function harness(
       expect(input.variables).toBeObject();
       const variables = input.variables as Json;
       const query = String(input.query);
+      if (query.includes("ForgeThreadMembership"))
+        return {
+          data: {
+            node:
+              options.thread === undefined
+                ? {
+                    __typename: "PullRequestReviewThread",
+                    id: "T1",
+                    pullRequest: {
+                      number: reference.number,
+                      repository: { nameWithOwner: reference.repository },
+                    },
+                  }
+                : options.thread,
+          },
+        };
       if (query.includes("mutation"))
         return {
           data: {
+            addPullRequestReviewThreadReply: { comment: { id: "reply-1" } },
             resolveReviewThread: {
               thread: { id: variables.threadId, isResolved: true },
             },
@@ -148,6 +168,14 @@ function harness(
         sha: "d".repeat(40),
         message: "Pull Request successfully merged",
       };
+    if (argv.some((v) => /\/actions\/runs\/\d+$/.test(v)))
+      return (
+        options.run ?? {
+          id: 123,
+          head_sha: head,
+          pull_requests: [{ number: reference.number }],
+        }
+      );
     return { id: 1 };
   });
   const handlers = load("github");
@@ -170,6 +198,142 @@ function harness(
     },
   };
 }
+for (const policy of ["classic approval", "unsupported ruleset"])
+  for (const action of ["reply", "resolve", "rerun"])
+    test(`${action} validates its target without merge policy on a ${policy} repository`, async () => {
+      const h = harness({
+        rules:
+          policy === "unsupported ruleset"
+            ? [{ type: "merge_queue", parameters: {} }]
+            : [],
+        mutate(value, query) {
+          if (policy !== "classic approval" || !query.includes("ForgePRCore"))
+            return value;
+          const rule = (value.baseRef as Json).branchProtectionRule as Json;
+          return {
+            ...value,
+            baseRef: {
+              branchProtectionRule: { ...rule, requiresApprovingReviews: true },
+            },
+          };
+        },
+      });
+      expect(
+        await h.invoke("call", {
+          action,
+          payload: {
+            ...reference,
+            threadId: "T1",
+            body: "Targeted reply",
+            runId: 123,
+          },
+        }),
+      ).toMatchObject({ accepted: true });
+      const queries = h.inputs
+        .filter((input) => typeof input.query === "string")
+        .map((input) => String(input.query));
+      expect(
+        queries.some((query) =>
+          /ForgePRCore|ForgePRChecks|ForgePRReviews|ForgePRLabels|branchProtectionRule|mergeable/.test(
+            query,
+          ),
+        ),
+      ).toBe(false);
+      expect(
+        h.calls.some((args) =>
+          args.some(
+            (arg) =>
+              arg.includes("/rules/branches/") || arg.includes("/compare/"),
+          ),
+        ),
+      ).toBe(false);
+      if (action === "rerun") expect(h.calls.at(-1)).toContain("POST");
+      else expect(h.inputs.at(-1)!.variables).toMatchObject({ threadId: "T1" });
+    });
+
+test("targeted writes refuse foreign threads, stale runs and a moving head", async () => {
+  for (const thread of [
+    null,
+    { __typename: "Issue", id: "T1" },
+    {
+      __typename: "PullRequestReviewThread",
+      id: "T1",
+      pullRequest: {
+        number: reference.number + 1,
+        repository: { nameWithOwner: reference.repository },
+      },
+    },
+    {
+      __typename: "PullRequestReviewThread",
+      id: "T1",
+      pullRequest: {
+        number: reference.number,
+        repository: { nameWithOwner: "other/repository" },
+      },
+    },
+  ]) {
+    const h = harness({ thread });
+    expect(
+      await rejection(
+        h.invoke("call", {
+          action: "resolve",
+          payload: { ...reference, threadId: "T1" },
+        }),
+      ),
+    ).toMatchObject({ code: "INPUT_INVALID" });
+    expect(
+      h.inputs.some((input) => String(input.query).includes("mutation")),
+    ).toBe(false);
+  }
+  for (const run of [
+    {
+      id: 123,
+      head_sha: "c".repeat(40),
+      pull_requests: [{ number: reference.number }],
+    },
+    {
+      id: 123,
+      head_sha: head,
+      pull_requests: [{ number: reference.number + 1 }],
+    },
+  ]) {
+    const h = harness({ run });
+    expect(
+      await rejection(
+        h.invoke("call", {
+          action: "rerun",
+          payload: { ...reference, runId: 123 },
+        }),
+      ),
+    ).toMatchObject({ code: "INPUT_INVALID" });
+    expect(
+      h.calls.some((args) =>
+        args.some((arg) => arg.endsWith("/rerun-failed-jobs")),
+      ),
+    ).toBe(false);
+  }
+  let reads = 0;
+  const moving = harness({
+    mutate: (value, query) =>
+      query.includes("ForgePRHead") && ++reads > 1
+        ? { headRefOid: "c".repeat(40) }
+        : value,
+  });
+  expect(
+    await rejection(
+      moving.invoke("call", {
+        action: "rerun",
+        payload: { ...reference, runId: 123 },
+      }),
+    ),
+  ).toMatchObject({ code: "HEAD_MOVED" });
+  expect(
+    moving.calls.some((args) =>
+      args.some((arg) => arg.endsWith("/rerun-failed-jobs")),
+    ),
+  ).toBe(false);
+});
+
 test("provider collects exact-head complete paginated evidence through read-only API commands", async () => {
   const h = harness();
   const evidence = await h.invoke("read");

@@ -1,5 +1,13 @@
 export const counterfactuals = [
   {
+    file: "blocks/github/entry.cjs",
+    from: 'if (action === "reply" || action === "resolve") {',
+    to: 'await gather(call, s, r); if (action === "reply" || action === "resolve") {',
+    journey: "targeted-writes",
+    evidence:
+      "targeted reply must remain available without complete merge policy",
+  },
+  {
     file: "blocks/pr/entry.cjs",
     from: "view.evidence.headSha !== call.input.expectHead",
     to: "false",

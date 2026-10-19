@@ -26,6 +26,8 @@ returned as unresolved findings; `forge/pr` supplies their merge policy.
 `github.call` declares `github:write` and `external:write`. It accepts only
 these catalog-described actions:
 
+Reply and resolution query only the named thread's type, repository and pull-request membership. Rerun queries only the current head and the named run, then rechecks the head before mutation. These targeted writes remain available when classic approvals or an unsupported ruleset make merge evidence incomplete. Full merge-policy collection remains required for status verdicts and merge validation.
+
 | Action    | Behavior                                                                                                                                                                                                                                       |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `create`  | Create with explicit title, body, head, base and draft selection; return a validated PR link.                                                                                                                                                  |

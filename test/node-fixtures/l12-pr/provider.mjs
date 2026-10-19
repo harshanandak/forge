@@ -72,7 +72,25 @@ const port = {
     if (args.includes("user")) value = { login: stored.login ?? "owner" };
     else if (args.includes("graphql")) {
       let pr;
-      if (input.query.includes("ForgePRCore")) pr = core();
+      if (input.query.includes("ForgeThreadMembership")) {
+        const thread = e.threads.find((v) => v.id === variables.threadId);
+        value = {
+          data: {
+            node: thread
+              ? {
+                  __typename: "PullRequestReviewThread",
+                  id: thread.id,
+                  pullRequest: {
+                    number: e.number,
+                    repository: { nameWithOwner: e.repository },
+                  },
+                }
+              : null,
+          },
+        };
+      } else if (input.query.includes("ForgePRHead"))
+        pr = { headRefOid: e.headSha };
+      else if (input.query.includes("ForgePRCore")) pr = core();
       else if (input.query.includes("ForgePRChecks"))
         pr = {
           commits: {
@@ -160,12 +178,18 @@ const port = {
             },
           },
         };
-      } else if (input.query.includes("ForgeReply"))
+      } else if (input.query.includes("ForgeReply")) {
+        stored.replies = [
+          ...(stored.replies ?? []),
+          { threadId: variables.threadId, body: variables.body },
+        ];
+        writeFileSync(file, JSON.stringify(stored));
         value = {
           data: {
             addPullRequestReviewThreadReply: { comment: { id: "reply-1" } },
           },
         };
+      }
       if (pr) {
         if (stored.malformed && input.query.includes("ForgePRThreads"))
           delete pr.reviewThreads.pageInfo;
@@ -218,7 +242,11 @@ const port = {
         head_sha: e.headSha,
         pull_requests: [{ number: e.number }],
       };
-    else value = {};
+    else if (args.some((v) => v.endsWith("/rerun-failed-jobs"))) {
+      stored.reruns = [...(stored.reruns ?? []), 123];
+      writeFileSync(file, JSON.stringify(stored));
+      value = {};
+    } else value = {};
     return {
       exitCode: 0,
       stdout: JSON.stringify(value),

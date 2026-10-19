@@ -211,6 +211,57 @@ async function status(expected) {
   return value;
 }
 try {
+  if (["all", "targeted-writes"].includes(mode)) {
+    for (const policy of [
+      { rules: [{ type: "merge_queue", parameters: {} }] },
+      { classicUnsupported: true },
+    ]) {
+      save(
+        {
+          ...ready(),
+          threads: [
+            { id: "T1", resolved: false, headSha: head },
+            { id: "T2", resolved: false, headSha: head },
+          ],
+        },
+        policy,
+      );
+      await status("INCOMPLETE");
+      const reply = await invoke("reply", {
+        ...reference,
+        threadId: "T1",
+        body: "Specific protected-repo reply",
+      });
+      assert.equal(
+        reply.ok,
+        true,
+        "targeted reply must remain available without complete merge policy",
+      );
+      await good("resolve", { ...reference, threadId: "T1" });
+      await good("rerun", { ...reference, runId: 123 });
+      error(
+        await invoke("resolve", { ...reference, threadId: "foreign" }),
+        "PROVIDER_FAILED",
+      );
+      error(
+        await invoke("rerun", { ...reference, runId: 124 }),
+        "PROVIDER_FAILED",
+      );
+      const observed = JSON.parse(readFileSync(file, "utf8"));
+      assert.deepEqual(observed.replies, [
+        { threadId: "T1", body: "Specific protected-repo reply" },
+      ]);
+      assert.deepEqual(observed.reruns, [123]);
+      assert.deepEqual(
+        observed.evidence.threads.map((t) => [t.id, t.resolved]),
+        [
+          ["T1", true],
+          ["T2", false],
+        ],
+      );
+      await status("INCOMPLETE");
+    }
+  }
   if (["all", "verdicts"].includes(mode)) {
     const cases = [
       ["MERGE_READY", ready()],
