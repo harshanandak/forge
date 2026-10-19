@@ -1,0 +1,418 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/blocks/pr/schemas/pr.json",
+  "$defs": {
+    "Text": { "type": "string", "minLength": 1 },
+    "Sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "Digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "Time": { "type": "string", "format": "date-time" },
+    "NullableTime": {
+      "anyOf": [{ "$ref": "#/$defs/Time" }, { "type": "null" }]
+    },
+    "Repository": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9._-]*$"
+    },
+    "PullRequestRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "number"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/Repository" },
+        "number": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "Check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "appId",
+        "headSha",
+        "status",
+        "conclusion",
+        "startedAt"
+      ],
+      "properties": {
+        "name": { "$ref": "#/$defs/Text" },
+        "runId": { "$ref": "#/$defs/Text" },
+        "appId": { "type": ["integer", "null"], "minimum": 1 },
+        "headSha": { "$ref": "#/$defs/Sha" },
+        "status": { "$ref": "#/$defs/Text" },
+        "conclusion": { "type": ["string", "null"] },
+        "startedAt": { "$ref": "#/$defs/NullableTime" }
+      }
+    },
+    "RequiredCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "appId", "strict"],
+      "properties": {
+        "name": { "$ref": "#/$defs/Text" },
+        "appId": { "type": ["integer", "null"], "minimum": 1 },
+        "strict": { "type": "boolean" }
+      }
+    },
+    "Review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "author",
+        "authorizing",
+        "state",
+        "commitSha",
+        "submittedAt",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/Text" },
+        "author": { "type": ["string", "null"] },
+        "authorizing": { "type": "boolean" },
+        "state": {
+          "enum": [
+            "APPROVED",
+            "CHANGES_REQUESTED",
+            "PENDING",
+            "COMMENTED",
+            "DISMISSED"
+          ]
+        },
+        "commitSha": { "$ref": "#/$defs/Sha" },
+        "submittedAt": { "$ref": "#/$defs/NullableTime" },
+        "createdAt": { "$ref": "#/$defs/Time" },
+        "updatedAt": { "$ref": "#/$defs/Time" }
+      }
+    },
+    "Thread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "resolved"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Text" },
+        "resolved": { "type": "boolean" }
+      }
+    },
+    "Label": { "$ref": "#/$defs/Text" },
+    "Requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source", "enforcedBy", "state", "reason"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/Text" },
+        "source": { "enum": ["classic", "ruleset"] },
+        "enforcedBy": { "enum": ["host", "forge"] },
+        "state": { "enum": ["satisfied", "unsatisfied", "pending", "unknown"] },
+        "reason": { "$ref": "#/$defs/Text" }
+      }
+    },
+    "Gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["area", "code"],
+      "properties": {
+        "area": {
+          "enum": ["core", "checks", "reviews", "threads", "labels", "policy"]
+        },
+        "code": {
+          "enum": [
+            "UNREADABLE",
+            "BUDGET_EXCEEDED",
+            "MALFORMED",
+            "CHANGED_DURING_READ"
+          ]
+        }
+      }
+    },
+    "HostState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mergeStateStatus",
+        "reviewDecision",
+        "allowedMergeMethods",
+        "canBypass"
+      ],
+      "properties": {
+        "mergeStateStatus": {
+          "enum": [
+            "BEHIND",
+            "BLOCKED",
+            "CLEAN",
+            "DIRTY",
+            "DRAFT",
+            "HAS_HOOKS",
+            "UNKNOWN",
+            "UNSTABLE"
+          ]
+        },
+        "reviewDecision": {
+          "enum": ["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", null]
+        },
+        "allowedMergeMethods": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["squash", "merge", "rebase"] }
+        },
+        "canBypass": { "type": ["boolean", "null"] }
+      }
+    },
+    "CoreState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "headSha",
+        "baseSha",
+        "baseBranch",
+        "state",
+        "draft",
+        "mergeable",
+        "updatedAt",
+        "host"
+      ],
+      "properties": {
+        "headSha": { "$ref": "#/$defs/Sha" },
+        "baseSha": { "$ref": "#/$defs/Sha" },
+        "baseBranch": { "$ref": "#/$defs/Text" },
+        "state": { "enum": ["OPEN", "CLOSED", "MERGED"] },
+        "draft": { "type": "boolean" },
+        "mergeable": { "enum": ["MERGEABLE", "CONFLICTING", "UNKNOWN"] },
+        "updatedAt": { "$ref": "#/$defs/Time" },
+        "host": { "$ref": "#/$defs/HostState" }
+      }
+    },
+    "Evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "observedAt",
+        "core",
+        "checks",
+        "requiredChecks",
+        "reviews",
+        "threads",
+        "labels",
+        "requirements",
+        "gaps"
+      ],
+      "properties": {
+        "ref": { "$ref": "#/$defs/PullRequestRef" },
+        "observedAt": { "$ref": "#/$defs/Time" },
+        "core": {
+          "anyOf": [{ "$ref": "#/$defs/CoreState" }, { "type": "null" }]
+        },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/Check" } },
+        "requiredChecks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RequiredCheck" }
+        },
+        "reviews": { "type": "array", "items": { "$ref": "#/$defs/Review" } },
+        "threads": { "type": "array", "items": { "$ref": "#/$defs/Thread" } },
+        "labels": { "type": "array", "items": { "$ref": "#/$defs/Label" } },
+        "requirements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Requirement" }
+        },
+        "gaps": { "type": "array", "items": { "$ref": "#/$defs/Gap" } }
+      }
+    },
+    "Blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "enum": [
+            "CORE_UNREADABLE",
+            "EVIDENCE_GAP",
+            "REQUIREMENT_UNKNOWN",
+            "HOST_BLOCKED",
+            "BYPASS_CAPABLE",
+            "MERGEABILITY_UNKNOWN",
+            "CHECK_STATE_UNKNOWN",
+            "REVIEW_ORDER_AMBIGUOUS",
+            "CHECK_ORDER_AMBIGUOUS",
+            "DRAFT",
+            "CONFLICTING",
+            "CHECK_FAILED",
+            "CHECK_PENDING",
+            "NO_CHECKS",
+            "REVIEW_BLOCKED",
+            "REVIEW_REQUIRED",
+            "REQUIREMENT_UNSATISFIED",
+            "REQUIREMENT_PENDING",
+            "MERGE_METHOD_UNAVAILABLE",
+            "BLOCKING_LABEL",
+            "SETTLING"
+          ]
+        },
+        "message": { "$ref": "#/$defs/Text" },
+        "ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "maxProperties": 1,
+          "properties": {
+            "threadId": { "$ref": "#/$defs/Text" },
+            "runId": { "$ref": "#/$defs/Text" },
+            "checkName": { "$ref": "#/$defs/Text" },
+            "reviewId": { "$ref": "#/$defs/Text" },
+            "label": { "$ref": "#/$defs/Text" },
+            "requirementKind": { "$ref": "#/$defs/Text" }
+          }
+        }
+      }
+    },
+    "Verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "blockers", "ignored", "evidenceDigest"],
+      "properties": {
+        "status": {
+          "enum": [
+            "INCOMPLETE",
+            "MERGED",
+            "CLOSED",
+            "DRAFT",
+            "CONFLICTING",
+            "CHECKS_FAILED",
+            "CHECKS_PENDING",
+            "REVIEW_BLOCKED",
+            "REVIEW_REQUIRED",
+            "BLOCKED",
+            "SETTLING",
+            "MERGE_READY"
+          ]
+        },
+        "blockers": { "type": "array", "items": { "$ref": "#/$defs/Blocker" } },
+        "ignored": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["category", "ref", "reason"],
+            "properties": {
+              "category": { "enum": ["checks", "reviews"] },
+              "ref": { "$ref": "#/$defs/Text" },
+              "reason": { "$ref": "#/$defs/Text" }
+            }
+          }
+        },
+        "evidenceDigest": { "$ref": "#/$defs/Digest" }
+      }
+    },
+    "MergeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "expectHead",
+        "expectBase",
+        "evidenceDigest",
+        "method",
+        "title",
+        "body"
+      ],
+      "properties": {
+        "ref": { "$ref": "#/$defs/PullRequestRef" },
+        "expectHead": { "$ref": "#/$defs/Sha" },
+        "expectBase": { "$ref": "#/$defs/Sha" },
+        "evidenceDigest": { "$ref": "#/$defs/Digest" },
+        "method": { "enum": ["squash"] },
+        "title": { "$ref": "#/$defs/Text" },
+        "body": { "type": "string" }
+      }
+    },
+    "MergeResult": {
+      "oneOf": [
+        { "$ref": "#/$defs/MergeSuccess" },
+        { "$ref": "#/$defs/MergeRefusal" }
+      ]
+    },
+    "ThreadReply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "threadId", "body"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/PullRequestRef" },
+        "threadId": { "$ref": "#/$defs/Text" },
+        "body": { "$ref": "#/$defs/Text" }
+      }
+    },
+    "ThreadResolve": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "threadId"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/PullRequestRef" },
+        "threadId": { "$ref": "#/$defs/Text" }
+      }
+    },
+    "Rerun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "runId", "expectHead"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/PullRequestRef" },
+        "runId": { "$ref": "#/$defs/Text" },
+        "expectHead": { "$ref": "#/$defs/Sha" }
+      }
+    },
+    "CreateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "head", "base", "title", "body", "draft"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/Repository" },
+        "head": { "$ref": "#/$defs/Text" },
+        "base": { "$ref": "#/$defs/Text" },
+        "title": { "$ref": "#/$defs/Text" },
+        "body": { "type": "string" },
+        "draft": { "type": "boolean" }
+      }
+    },
+    "CreatedLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "url"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/PullRequestRef" },
+        "url": { "type": "string", "pattern": "^https://[^\\s]+$" }
+      }
+    },
+    "WriteResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted"],
+      "properties": { "accepted": { "const": true } }
+    },
+    "MergeRefusal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["merged", "reason"],
+      "properties": {
+        "merged": { "const": false },
+        "reason": { "enum": ["EVIDENCE_CHANGED", "HOST_REFUSED"] },
+        "evidence": { "$ref": "#/$defs/Evidence" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "reason": { "const": "EVIDENCE_CHANGED" } } },
+          "then": { "required": ["evidence"] }
+        }
+      ]
+    },
+    "MergeSuccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["merged", "headSha", "mergeSha"],
+      "properties": {
+        "merged": { "const": true },
+        "headSha": { "$ref": "#/$defs/Sha" },
+        "mergeSha": { "$ref": "#/$defs/Sha" }
+      }
+    }
+  }
+}
