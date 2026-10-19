@@ -7,6 +7,13 @@ export interface Counterfactual {
 }
 export const counterfactuals: readonly Counterfactual[] = [
   {
+    file: "blocks/check/entry.cjs",
+    from: "function status(value) {",
+    to: "function status(value) { if (Array.isArray(value)) return true;",
+    journey: "receipt",
+    evidence: "coercible receipt status is invalid",
+  },
+  {
     file: "assembly/first-party.js",
     from: '"forge/check": new URL("../blocks/check/", import.meta.url),',
     to: "",

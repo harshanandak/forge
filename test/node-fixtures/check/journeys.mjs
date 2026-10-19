@@ -18,6 +18,7 @@ const mode = process.argv[3] ?? "all";
 const load = (path) =>
   import(pathToFileURL(join(installed, "dist/src", path)).href);
 const { createCheck, verifyReceipt } = await load("blocks/check/index.js");
+const { hash } = await load("blocks/check/receipt.js");
 const { operations } = await load("blocks/check/operations.js");
 const { createRunnerOutput } = await load("adapters/runner-output/index.js");
 const { createProcessPort } = await load("adapters/process/index.js");
@@ -220,7 +221,7 @@ const cases = {
     assert.equal(process.env.CHECK_PARENT_ONLY, "must not leak");
   },
   async timeout() {
-    const receipt = await check.run({}, config("timeout", 800));
+    const receipt = await check.run({}, config("timeout", 3000));
     assert.equal(receipt.status, "INCOMPLETE", "timeout never passes");
     assert.match(
       receipt.runs[0].stdout,
@@ -243,6 +244,16 @@ const cases = {
   },
   async receipt() {
     const receipt = await check.run({ trigger: "manual" }, config("unknown"));
+    const { digest: _digest, ...body } = receipt;
+    const invalid = { ...body, status: ["PASS"] };
+    assert.equal(
+      verifyReceipt(
+        { ...invalid, digest: hash(invalid) },
+        receipt.inputsDigest,
+      ),
+      false,
+      "coercible receipt status is invalid",
+    );
     assert.equal(verifyReceipt(receipt, receipt.inputsDigest), true);
     assert.equal(
       verifyReceipt({ ...receipt, status: "FAIL" }, receipt.inputsDigest),
