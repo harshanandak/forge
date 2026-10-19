@@ -35,26 +35,26 @@ export async function killTree(
   },
   control: GroupControl = realGroupControl,
 ): Promise<void> {
-  try {
-    control.signal(-pid, "SIGKILL");
-  } catch (error) {
-    // Darwin may return EPERM for zombie-only groups. Member states must prove
-    // termination; a permission response alone never counts as success.
-    if (!(
-      error !== null &&
-      typeof error === "object" &&
-      "code" in error &&
-      (error.code === "ESRCH" ||
-        (error.code === "EPERM" && control.processTable !== undefined))
-    ))
-      throw new ProcessSpawnError(
-        "TREE_KILL_FAILED",
-        "Could not stop process group",
-        error,
-      );
-  }
   const deadline = control.now() + timing.cleanupTimeoutMs;
   while (true) {
+    // Group signalling snapshots membership on Darwin. A descendant published
+    // after one signal must receive the next one, within the same cleanup budget.
+    try {
+      control.signal(-pid, "SIGKILL");
+    } catch (error) {
+      if (!(
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error.code === "ESRCH" ||
+          (error.code === "EPERM" && control.processTable !== undefined))
+      ))
+        throw new ProcessSpawnError(
+          "TREE_KILL_FAILED",
+          "Could not stop process group",
+          error,
+        );
+    }
     try {
       control.signal(-pid, 0);
     } catch (error) {
@@ -87,15 +87,34 @@ export async function killTree(
       };
       try {
         let live = false;
+        let zombies = false;
         for (const member of control.processTable.members(pid, checkBudget)) {
           checkBudget();
-          if (member.state !== "Z") {
+          if (member.state === "Z") zombies = true;
+          else {
             live = true;
             break;
           }
         }
         checkBudget();
-        if (!live) return;
+        if (!live) {
+          // An empty inventory can race a newly published child. A fresh group
+          // probe must agree; Darwin reports EPERM when only dead members remain.
+          try {
+            control.signal(-pid, 0);
+            checkBudget();
+            if (zombies) return;
+          } catch (error) {
+            if (
+              error !== null &&
+              typeof error === "object" &&
+              "code" in error &&
+              (error.code === "ESRCH" || error.code === "EPERM")
+            )
+              return;
+            throw error;
+          }
+        }
       } catch (error) {
         throw new ProcessSpawnError(
           "TREE_KILL_FAILED",
