@@ -10,7 +10,7 @@ import { assertConformance } from "../../../tools/conformance/assert.ts";
 function fixture(withRefusal = true) {
   const declaration = {
     input: "input.json",
-    output: "output.json",
+    output: "schemas/output.json",
     context: "stateless" as const,
     timeoutMs: 1000,
     effects: [],
@@ -31,7 +31,7 @@ function fixture(withRefusal = true) {
   const files = new Map([
     ["input.json", '{"type":"string"}'],
     [
-      "output.json",
+      "schemas/output.json",
       JSON.stringify({
         "x-conformance-refusals": withRefusal ? ["refusal.json"] : [],
         oneOf: [
@@ -40,7 +40,7 @@ function fixture(withRefusal = true) {
         ],
       }),
     ],
-    ["refusal.json", '{"const":false}'],
+    ["schemas/refusal.json", '{"const":false}'],
     [
       "entry.cjs",
       "module.exports={'sample.read':({input})=>{if(input==='error')throw Error('failure');return input==='refuse'?false:input},'sample.write':()=>false}",

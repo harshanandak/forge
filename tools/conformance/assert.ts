@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import type { CapturedBlock } from "../../src/core/catalog/index.ts";
 import { isSchemaObject } from "../../src/contract/schema.ts";
 import { validateResultEnvelope } from "../../src/generated/validators.ts";
@@ -67,7 +68,13 @@ export function assertConformance(
       if (!contract.block.validate(contract.output, outcome.result))
         fail("output");
       for (const ref of contract.refusals)
-        if (contract.block.validate(ref, outcome.result)) refused.add(ref);
+        if (
+          contract.block.validate(
+            posix.join(posix.dirname(contract.output), ref),
+            outcome.result,
+          )
+        )
+          refused.add(ref);
     }
   }
   for (const [operation, contract] of contracts) {
