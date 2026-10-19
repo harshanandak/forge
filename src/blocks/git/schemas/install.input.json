@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "expectRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "adoptExisting": {
+      "type": "boolean",
+      "description": "Explicitly adopt exact reserved hook bytes after interrupted creation. Read hook.status first."
+    }
+  },
+  "required": ["name", "expectRevision"],
+  "additionalProperties": false
+}

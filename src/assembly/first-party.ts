@@ -1,5 +1,6 @@
 /** Shipped blocks are opt-in sources; registration never enables or admits one. */
 export const firstPartyBlocks: Readonly<Record<string, URL>> = {
+  "forge/git": new URL("../blocks/git/", import.meta.url),
   "forge/github-accounts": new URL(
     "../blocks/github-accounts/",
     import.meta.url,

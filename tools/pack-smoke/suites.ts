@@ -1,5 +1,10 @@
 export const packedSuites = [
   {
+    file: "test/blocks/l12-git/packed.integration.test.ts",
+    label: "packed Git integration",
+    consumerEnv: "GIT_PACKED_CONSUMER",
+  },
+  {
     file: "test/integration/github-accounts/packed.integration.test.ts",
     label: "packed accounts integration",
     consumerEnv: "ACCOUNTS_PACKED_CONSUMER",

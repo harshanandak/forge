@@ -19,7 +19,8 @@ import type { ClockPort } from "../../ports/clock.ts";
 import type {
   BatchEntry,
   BatchOptions,
-  ExtendedStateClient,
+  DeleteOptions,
+  DeletableStateClient,
   HistoryOptions,
   PutOptions,
   RangeOptions,
@@ -63,6 +64,9 @@ export interface WriteOptions extends PutOptions {
 export interface BatchWriteOptions {
   readonly fence?: Fence;
   readonly readSet?: WriteOptions["readSet"];
+}
+export interface DeleteWriteOptions extends DeleteOptions {
+  readonly fence?: Fence;
 }
 export interface Snapshot {
   readonly image: string;
@@ -171,6 +175,20 @@ function recordEvent(record: StateRecord, requestId?: string): StateEvent {
     data: record.value,
   };
 }
+function deletionEvent(
+  record: StateRecord,
+  actor: Actor,
+  at: string,
+): StateEvent {
+  return {
+    type: `${record.namespace}:record.deleted@1`,
+    namespace: record.namespace,
+    key: record.key,
+    revision: record.revision + 1,
+    at,
+    actor,
+  };
+}
 function acquisitionEvent(
   namespace: string,
   lease: LeaseRecord,
@@ -245,6 +263,15 @@ function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
   if (input.kind === "put") {
     const record = result as StateRecord;
     const readSet = copyReadSet(input.readSet);
+    const revisions = new Map<string, number>();
+    for (const prior of events) {
+      if (prior === event) break;
+      if (prior.namespace !== event.namespace) continue;
+      if (prior.type === `${event.namespace}:record.updated@1`)
+        revisions.set(prior.key, prior.revision);
+      else if (prior.type === `${event.namespace}:record.deleted@1`)
+        revisions.delete(prior.key);
+    }
     if (
       !validateStateRecord(record).ok ||
       !Number.isSafeInteger(record.revision) ||
@@ -264,22 +291,13 @@ function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
           key: event.key,
           value: event.data,
           actor: event.actor,
-          revision: event.revision - 1,
+          revision: revisions.get(event.key) ?? 0,
           fence: input.fence,
           ...(readSet === undefined ? {} : { readSet }),
         })
     )
       invalid("Imported put receipt does not match its operation");
     if (readSet !== undefined) {
-      const revisions = new Map<string, number>();
-      for (const prior of events) {
-        if (prior === event) break;
-        if (
-          prior.namespace === event.namespace &&
-          prior.type === `${event.namespace}:record.updated@1`
-        )
-          revisions.set(prior.key, prior.revision);
-      }
       for (const read of readSet)
         if ((revisions.get(read.key) ?? 0) !== read.expectRevision)
           invalid("Imported request read set does not match accepted history");
@@ -402,6 +420,7 @@ function verifyEventDerivedState(
   if (!Number.isSafeInteger(highWaterMark) || highWaterMark < 0)
     throw new RestoreConsistencyFailure("state_events", "high-water mark");
   const records = new Map<string, StateRecord>();
+  const recordRevisions = new Map<string, number>();
   const leases = new Map<string, LeaseRecord>();
   const requests = new Map<string, StateEvent>();
   const events: StateEvent[] = [];
@@ -442,7 +461,7 @@ function verifyEventDerivedState(
         requests.set(request, event);
       }
       if (event.type === `${event.namespace}:record.updated@1`) {
-        if (event.revision !== (records.get(id)?.revision ?? 0) + 1)
+        if (event.revision !== (recordRevisions.get(id) ?? 0) + 1)
           reject("state_records", id);
         const record: StateRecord = {
           namespace: event.namespace,
@@ -455,6 +474,16 @@ function verifyEventDerivedState(
         if (json(event) !== json(recordEvent(record, event.requestId)))
           reject("state_events", id);
         records.set(id, record);
+        recordRevisions.set(id, record.revision);
+      } else if (event.type === `${event.namespace}:record.deleted@1`) {
+        const previous = records.get(id);
+        if (
+          !previous ||
+          json(event) !== json(deletionEvent(previous, event.actor, event.at))
+        )
+          reject("state_records", id);
+        records.delete(id);
+        recordRevisions.set(id, event.revision);
       } else {
         const prior = leases.get(id);
         let lease: LeaseRecord;
@@ -673,7 +702,7 @@ export class StateOwner {
     ]);
   }
 
-  client(namespace: string, actor: Actor): ExtendedStateClient {
+  client(namespace: string, actor: Actor): DeletableStateClient {
     namespaceValid(namespace);
     if (!validateActor(actor).ok) invalid("Invalid actor");
     const boundActor = Object.freeze(JSON.parse(json(actor)) as Actor);
@@ -681,6 +710,8 @@ export class StateOwner {
       get: (key: string) => this.get(namespace, key),
       put: (key: string, value: unknown, options: PutOptions) =>
         this.put(namespace, key, value, { ...boundActor }, options),
+      delete: (key: string, options: DeleteOptions) =>
+        this.delete(namespace, key, { ...boundActor }, options),
       putMany: (entries: readonly BatchEntry[], options?: BatchOptions) =>
         this.putMany(
           namespace,
@@ -887,6 +918,46 @@ export class StateOwner {
     });
   }
 
+  delete(
+    namespace: string,
+    key: string,
+    actor: Actor,
+    options: DeleteWriteOptions,
+  ): StateEvent {
+    namespaceValid(namespace);
+    keyValid(key);
+    if (
+      !validateActor(actor).ok ||
+      !Number.isSafeInteger(options.expectRevision) ||
+      options.expectRevision <= 0
+    )
+      invalid("Deletion requires an actor and a positive expected revision");
+    const readSet = copyReadSet(options.readSet) ?? [];
+    return this.#db.transaction(() => {
+      const now = this.#now();
+      if (options.fence) this.#held(namespace, options.fence, now);
+      this.#readSetHolds(namespace, key, options.expectRevision, readSet);
+      const current = this.get(namespace, key)!;
+      const event = deletionEvent(current, actor, new Date(now).toISOString());
+      if (
+        !validateStateEvent(event).ok ||
+        !Number.isSafeInteger(event.revision)
+      )
+        invalid("Invalid deletion event");
+      const removed = this.#db.run(
+        "DELETE FROM state_records WHERE namespace=? AND key=? AND revision=?",
+        [namespace, key, current.revision],
+      );
+      if (removed.changes !== 1)
+        this.#stale(
+          { key, expectRevision: options.expectRevision },
+          this.get(namespace, key)?.revision ?? 0,
+        );
+      this.#event(event);
+      return event;
+    });
+  }
+
   /**
    * Write several records in one transaction. Every guard a single put has applies to the whole
    * batch and is checked inside that transaction before anything is written: each entry's
@@ -980,7 +1051,22 @@ export class StateOwner {
     requestId: string | undefined,
   ): StateRecord {
     const current = this.get(namespace, key);
-    const revision = current?.revision ?? 0;
+    // An absent row can have history. Keep its last revision so recreation never revives an old
+    // reader's compare-and-set token. The existing key index bounds this lookup to one key.
+    const revision =
+      current?.revision ??
+      body<StateEvent>(
+        this.#db.get(
+          "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
+          [
+            namespace,
+            key,
+            `${namespace}:record.updated@1`,
+            `${namespace}:record.deleted@1`,
+          ],
+        ),
+      )?.revision ??
+      0;
     const record: StateRecord = {
       namespace,
       key,
