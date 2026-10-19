@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "description": "What to remember."
+    },
+    "scope": {
+      "$ref": "defs.json#/$defs/Scope"
+    },
+    "tags": {
+      "$ref": "defs.json#/$defs/Tags"
+    },
+    "links": {
+      "$ref": "defs.json#/$defs/Links"
+    },
+    "id": {
+      "$ref": "defs.json#/$defs/NoteId",
+      "description": "Edit this note instead of adding a new one."
+    },
+    "expectRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The revision you last read; required with id."
+    }
+  },
+  "additionalProperties": false,
+  "required": ["text"],
+  "if": {
+    "required": ["id"]
+  },
+  "then": {
+    "required": ["expectRevision"]
+  },
+  "else": {
+    "not": {
+      "required": ["expectRevision"]
+    }
+  }
+}

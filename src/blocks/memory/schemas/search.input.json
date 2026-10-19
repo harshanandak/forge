@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "scope": {
+      "$ref": "defs.json#/$defs/Scope"
+    },
+    "tag": {
+      "$ref": "defs.json#/$defs/Tag"
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50,
+      "description": "At most this many hits; 10 when absent."
+    },
+    "cursor": {
+      "type": "string",
+      "pattern": "^[0-9]{1,9}:[0-9]{1,9}$",
+      "maxLength": 19,
+      "description": "Continue from the previous result: its next value."
+    }
+  },
+  "additionalProperties": false,
+  "required": ["query"]
+}

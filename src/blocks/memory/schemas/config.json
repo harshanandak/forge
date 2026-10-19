@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "decisions": {
+      "type": "object",
+      "properties": {
+        "idPattern": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z][A-Za-z0-9]*-)?N{1,8}$",
+          "maxLength": 24,
+          "description": "The project's record id shape, N for each digit: D-NNN, ADR-NNNN."
+        },
+        "highest": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The highest number the project already uses."
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "layout": {
+          "enum": ["file-per-record", "single-file"]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 260
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

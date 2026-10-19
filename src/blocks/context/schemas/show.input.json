@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "current": {
+      "type": "object",
+      "properties": {
+        "head": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+          "description": "A full commit id."
+        },
+        "uncommittedDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": ["head"],
+      "description": "Where this session stands now, to compare with the handoff."
+    },
+    "earlier": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 15,
+      "description": "How many earlier handoffs to summarise; 3 when absent."
+    }
+  },
+  "additionalProperties": false
+}
