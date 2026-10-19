@@ -2,7 +2,12 @@ import { basename, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { StateOwner } from "../core/state/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
-import type { Actor, BoundContext, Caller } from "../generated/types.ts";
+import type {
+  Actor,
+  BoundContext,
+  Caller,
+  InvocationRequest,
+} from "../generated/types.ts";
 import type { ExtendedStateClient } from "../ports/state.ts";
 import type { OwnedHandle } from "../ports/lifetime.ts";
 import { refuse } from "../core/trust/index.ts";
@@ -270,4 +275,46 @@ export function openLevels(options: {
         throw new AggregateError(errors, "Level stores failed to close");
     },
   };
+}
+
+/**
+ * Give a device-context state client its levels. The handle that closes the stores it opens joins
+ * the invocation's leases, so they close when the invocation settles.
+ */
+export function attachLevels<Client extends object>(
+  client: Client,
+  options: {
+    readonly root: string;
+    readonly projectState: LocalState;
+    readonly device: StateOwner | undefined;
+    readonly namespace: string;
+    readonly actor: Actor;
+    readonly request: InvocationRequest;
+    /** The operation declared its record write effect; its stores open writable. */
+    readonly write: boolean;
+    readonly leases: OwnedHandle<unknown>[];
+  },
+): Client & StoreLevels {
+  const { request } = options;
+  const named = request.context.project;
+  if (named !== undefined && named.id !== options.root)
+    refuse("INPUT_CONFLICT", "State context belongs to another project");
+  const opened = openLevels({
+    root: options.root,
+    projectState: options.projectState,
+    device: options.device,
+    namespace: options.namespace,
+    actor: options.actor,
+    caller: request.caller,
+    inProject: named !== undefined,
+    write: options.write,
+    writable: options.write,
+    requestId: request.requestId,
+  });
+  options.leases.push({
+    ownership: "owned",
+    value: undefined,
+    close: () => opened.close(),
+  });
+  return Object.freeze({ ...client, ...opened.levels });
 }
