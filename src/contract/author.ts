@@ -12,6 +12,7 @@ export type {
 } from "../generated/types.ts";
 export type {
   BatchEntry,
+  BatchOptions,
   ExtendedStateClient,
   PutOptions,
   RangeOptions,

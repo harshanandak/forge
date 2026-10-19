@@ -20,6 +20,18 @@ export interface StateClient {
   events(key?: string): readonly StateEvent[];
 }
 
+export interface BatchOptions {
+  /**
+   * Revisions of records the batch depends on, including ones it does not write; 0 asserts a key
+   * stays absent. Checked with the entries' own expectRevision, inside the same transaction: any
+   * mismatch fails the whole batch.
+   */
+  readonly readSet?: readonly {
+    readonly key: string;
+    readonly expectRevision: number;
+  }[];
+}
+
 export interface RangeOptions {
   /** Smallest key to read, inclusive. */
   readonly from?: string;
@@ -38,6 +50,9 @@ export interface RangeOptions {
  * or reverse, without loading the rest of the namespace.
  */
 export interface ExtendedStateClient extends StateClient {
-  putMany(entries: readonly BatchEntry[]): readonly StateRecord[];
+  putMany(
+    entries: readonly BatchEntry[],
+    options?: BatchOptions,
+  ): readonly StateRecord[];
   listRange(options: RangeOptions): readonly StateRecord[];
 }

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
+import { createStateClient } from "../../../src/assembly/state-client.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
 
@@ -152,6 +153,150 @@ test("listRange reads one bounded page of keys, in order or reverse, and refuses
     for (const limit of [0, 1001, 1.5])
       expect(() => owner.listRange(ns, { limit })).toThrow();
     expect(keys(owner.list(ns, "r/02"))).toHaveLength(10);
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+test("a batch fails as a whole when a record in its read set changed", async () => {
+  const { owner, close } = await open();
+  try {
+    owner.put(ns, "dep", "v1", actor, { expectRevision: 0 });
+    const entries = [
+      { key: "w/1", value: 1, expectRevision: 0 },
+      { key: "w/2", value: 2, expectRevision: 0 },
+    ];
+    // The dependency moves between the reader's read and its batch.
+    owner.put(ns, "dep", "v2", actor, { expectRevision: 1 });
+    const events = owner.events(ns).length;
+    let refused: unknown;
+    try {
+      owner.putMany(ns, entries, actor, {
+        readSet: [{ key: "dep", expectRevision: 1 }],
+      });
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toMatchObject({
+      error: { code: "REVISION_CONFLICT", currentRevision: 2 },
+    });
+    expect(String((refused as Error).message)).toContain("dep");
+    // Neither record, and no event, was written.
+    expect(owner.get(ns, "w/1")).toBeUndefined();
+    expect(owner.get(ns, "w/2")).toBeUndefined();
+    expect(owner.events(ns)).toHaveLength(events);
+    // With the current revision the same batch commits, and absence can be a dependency too.
+    expect(
+      owner.putMany(ns, entries, actor, {
+        readSet: [
+          { key: "dep", expectRevision: 2 },
+          { key: "never", expectRevision: 0 },
+        ],
+      }),
+    ).toHaveLength(2);
+    expect(() =>
+      owner.putMany(ns, [{ key: "w/3", value: 3, expectRevision: 0 }], actor, {
+        readSet: [{ key: "never", expectRevision: 1 }],
+      }),
+    ).toThrow(/Read-set key never/);
+    expect(owner.get(ns, "w/3")).toBeUndefined();
+    // The bound client carries the same guard.
+    const client = owner.client(ns, actor);
+    expect(() =>
+      client.putMany([{ key: "w/4", value: 4, expectRevision: 0 }], {
+        readSet: [{ key: "dep", expectRevision: 1 }],
+      }),
+    ).toThrow(/Read-set key dep/);
+    expect(client.get("w/4")).toBeUndefined();
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+test("a batch under a lease is fenced: a superseded holder writes nothing", async () => {
+  const { owner, close } = await open();
+  try {
+    const first = {
+      actor,
+      session: { id: "one" },
+    };
+    const second = { actor, session: { id: "two" } };
+    const lease = owner.acquire(ns, "subject", first, 1000, "claim-1");
+    const fence = {
+      subject: "subject",
+      holder: first,
+      generation: lease.generation,
+    };
+    expect(
+      owner.putMany(ns, [{ key: "f/1", value: 1, expectRevision: 0 }], actor, {
+        fence,
+      }),
+    ).toHaveLength(1);
+    owner.release(ns, fence);
+    owner.acquire(ns, "subject", second, 1000, "claim-2");
+    expect(() =>
+      owner.putMany(
+        ns,
+        [
+          { key: "f/2", value: 2, expectRevision: 0 },
+          { key: "f/3", value: 3, expectRevision: 0 },
+        ],
+        actor,
+        { fence },
+      ),
+    ).toThrow();
+    expect(owner.get(ns, "f/2")).toBeUndefined();
+    expect(owner.get(ns, "f/3")).toBeUndefined();
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+test("the assembly's client fences a leased batch to a named subject and refuses a stale one whole", async () => {
+  const { owner, close } = await open();
+  try {
+    const session = { id: "s1" };
+    const holder = { actor, session };
+    const lease = owner.acquire(ns, "subject", holder, 1000, "claim");
+    const leased = (leaseGeneration: number) =>
+      createStateClient({
+        owner,
+        namespace: ns,
+        write: true,
+        requestId: "request",
+        context: {
+          variant: "leased",
+          actor,
+          session,
+          project: { id: "p" },
+          leaseMode: "held",
+          leaseGeneration,
+        },
+      });
+    const entries = [
+      { key: "l/1", value: 1, expectRevision: 0 },
+      { key: "l/2", value: 2, expectRevision: 0 },
+    ];
+    // A leased batch must say which lease fences it.
+    expect(() => leased(lease.generation).putMany(entries)).toThrow(
+      /names the subject/,
+    );
+    // A generation that is not current writes nothing, however many entries.
+    expect(() =>
+      leased(lease.generation + 1).putMany(entries, { subject: "subject" }),
+    ).toThrow();
+    expect(owner.get(ns, "l/1")).toBeUndefined();
+    expect(
+      leased(lease.generation).putMany(entries, { subject: "subject" }),
+    ).toHaveLength(2);
+    const stateless = createStateClient({
+      owner,
+      namespace: ns,
+      write: true,
+      requestId: "request",
+      context: { variant: "stateless" },
+    });
+    expect(() => stateless.putMany(entries)).toThrow();
   } finally {
     await close();
   }

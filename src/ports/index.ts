@@ -25,6 +25,7 @@ export type {
 } from "./process.ts";
 export type {
   BatchEntry,
+  BatchOptions,
   ExtendedStateClient,
   PutOptions,
   RangeOptions,

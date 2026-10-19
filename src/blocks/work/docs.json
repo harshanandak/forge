@@ -1,0 +1,76 @@
+{
+  "operations": {
+    "issue.create": {
+      "title": "Issue create",
+      "summary": "Issue create."
+    },
+    "issue.show": {
+      "title": "Issue show",
+      "summary": "Read the issue and only its live lease."
+    },
+    "issue.list": {
+      "title": "Issue list",
+      "summary": "List issues; ready means open, dependencies closed and no live lease."
+    },
+    "issue.update": {
+      "title": "Issue update",
+      "summary": "Issue update."
+    },
+    "issue.comment": {
+      "title": "Issue comment",
+      "summary": "Append a plain comment. Read it back with issue.comments."
+    },
+    "issue.claim": {
+      "title": "Issue claim",
+      "summary": "Acquire an open issue lease; supply actor, session and project through catalog.call. Replay uses the invocation request ID."
+    },
+    "issue.renew": {
+      "title": "Issue renew",
+      "summary": "Renew a live lease at its current generation; expired leases must be acquired again."
+    },
+    "issue.release": {
+      "title": "Issue release",
+      "summary": "Issue release."
+    },
+    "issue.close": {
+      "title": "Issue close",
+      "summary": "Issue close."
+    },
+    "issue.ready": {
+      "title": "Issue ready",
+      "summary": "Open issues with closed dependencies and no live lease; expired or released leases never hide ready work."
+    },
+    "issue.blocked": {
+      "title": "Issue blocked",
+      "summary": "Open issues with dependencies that are missing or not closed."
+    },
+    "issue.stale": {
+      "title": "Issue stale",
+      "summary": "Open issues with an expired, unreleased lease."
+    },
+    "issue.comments": {
+      "title": "Issue comments",
+      "summary": "Read issue comments."
+    },
+    "issue.events": {
+      "title": "Issue events",
+      "summary": "Read accepted issue and lease history."
+    },
+    "issue.dep": {
+      "title": "Issue dep",
+      "summary": "Add or remove a dependency at an expected revision while holding the issue lease."
+    },
+    "issue.link": {
+      "title": "Issue link",
+      "summary": "Attach a typed external link while holding the issue lease."
+    },
+    "issue.links": {
+      "title": "Issue links",
+      "summary": "Read issue links."
+    },
+    "issue.lint": {
+      "title": "Issue lint",
+      "summary": "Report invalid kinds, missing references and dependency cycles."
+    }
+  }
+}
