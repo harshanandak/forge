@@ -263,9 +263,9 @@ export class Runtime {
         declaration.timeoutMs ?? this.#limits.timeoutMs,
         this.#limits.timeoutMs,
       );
-      invocation = new InvocationServices(Date.now() + timeoutMs, () =>
-        this.#trust.check(block.digest, declaration.effects),
-      );
+      invocation = new InvocationServices(Date.now() + timeoutMs, () => {
+        this.#trust.check(block.digest, declaration.effects);
+      });
       const scope = invocation;
       cancel = () =>
         scope.controller.abort(
@@ -396,7 +396,12 @@ export class Runtime {
     if (timer !== undefined) clearTimeout(timer);
     if (cancel) options.signal?.removeEventListener("abort", cancel);
     invocation?.stop();
-    await invocation?.drain();
+    let processCleanupFailed = false;
+    try {
+      await invocation?.drain();
+    } catch {
+      processCleanupFailed = true;
+    }
     try {
       if (handle?.ownership === "owned") await handle.close();
     } catch {
@@ -412,6 +417,18 @@ export class Runtime {
         warnings: [],
       };
     }
+    if (processCleanupFailed)
+      return {
+        ok: false,
+        ...(request === undefined ? {} : { op: request.op }),
+        status: "INCOMPLETE",
+        error: {
+          code: "PROCESS_CLEANUP_FAILED",
+          message: "The process tree could not be confirmed stopped",
+          retry: "reconcile_first",
+        },
+        warnings: [],
+      };
     return result;
   }
 }

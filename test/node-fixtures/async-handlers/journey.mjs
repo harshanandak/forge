@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
+  readdirSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -8,7 +9,7 @@ import {
   existsSync,
   rmSync,
 } from "node:fs";
-import { join, basename } from "node:path";
+import { join, basename, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   Runtime,
@@ -144,18 +145,27 @@ try {
       "CPU after a native Promise must remain under deadline",
     );
   }
-  for (const kind of ["timeout", "cancel"])
+  for (const kind of ["timeout", "cancel", "child-env"])
     if (["all", kind].includes(mode)) {
       const ready = join(root, `${kind}.ready`),
         late = join(root, `${kind}.late`);
       // The root remains alive while its grandchild owns a delayed write. A live descendant
       // would create the marker even if the runtime returned a timeout successfully.
-      const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'escaped'), 800); setInterval(() => {}, 1000);`)}], {stdio:'inherit'}); setInterval(()=>{},1000);`;
+      const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'escaped'), 800); setInterval(() => {}, 1000);`)}], {stdio:'inherit',env:${JSON.stringify(env)}}); setInterval(()=>{},1000);`;
       const f = fixture(
         "async ({ input, services }) => { await services.process.run(input.executable, input.args, input.options); return 'unexpected'; }",
         kind === "timeout" ? 400 : 3000,
       );
-      const port = createProcessPort();
+      const actual = createProcessPort();
+      const childEnv = { ...env };
+      const port =
+        kind === "child-env"
+          ? {
+              resolve: actual.resolve,
+              run: (executable, args, options) =>
+                actual.run(executable, args, { ...options, env: childEnv }),
+            }
+          : actual;
       f.request.input = {
         executable: { kind: "resolved", path: process.execPath },
         args: ["-e", childSource],
@@ -165,12 +175,16 @@ try {
       const pending = f
         .runtime({ process: port })
         .invoke(f.request, { signal: controller.signal });
-      if (kind === "cancel") {
+      if (kind !== "timeout") {
         for (let i = 0; i < 100 && !existsSync(ready); i++) await pause(10);
         assert.ok(
           existsSync(ready),
           "grandchild must start before cancellation",
         );
+        // Spawn cloned the normal child environment; the mutable options object can still
+        // change before cancellation. It must never select the supervisor executable.
+        if (kind === "child-env")
+          childEnv.SystemRoot = "Z:/forge-missing-system-root";
         controller.abort();
       }
       const result = await pending;
@@ -552,5 +566,28 @@ try {
   }
   console.log(`PASS async-handlers ${mode}`);
 } finally {
+  // Failed counterfactuals must not leave the very descendant they exposed running.
+  for (const file of readdirSync(root).filter((name) =>
+    name.endsWith(".ready"),
+  )) {
+    const pid = Number(readFileSync(join(root, file), "utf8"));
+    if (process.platform === "win32")
+      spawnSync(
+        win32.join(
+          process.env.SystemRoot ?? "C:/Windows",
+          "System32",
+          "taskkill.exe",
+        ),
+        ["/PID", String(pid), "/T", "/F"],
+        { windowsHide: true, stdio: "ignore", timeout: 5000 },
+      );
+    else {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already stopped */
+      }
+    }
+  }
   rmSync(root, { recursive: true, force: true });
 }

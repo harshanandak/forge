@@ -124,12 +124,17 @@ export function runProcess(
 
     let timedOut = false;
     let settled = false;
+    let killing = false;
+    let closeObserved = false;
+    let killFailure: unknown;
     let exit: { code: number | null; signal: string | null } | undefined;
     let killWait: ReturnType<typeof setTimeout> | undefined;
     let drain: ReturnType<typeof setTimeout> | undefined;
 
     const finish = (): void => {
       if (settled) return;
+      closeObserved = true;
+      if (killing) return;
       settled = true;
       clearTimeout(timeout);
       options.signal?.removeEventListener("abort", cancel);
@@ -137,6 +142,18 @@ export function runProcess(
       if (drain !== undefined) clearTimeout(drain);
       child.stdout?.destroy();
       child.stderr?.destroy();
+      if (killFailure !== undefined) {
+        rejectRun(
+          killFailure instanceof Error
+            ? killFailure
+            : new ProcessSpawnError(
+                "TREE_KILL_FAILED",
+                "Process termination failed",
+                killFailure,
+              ),
+        );
+        return;
+      }
       resolveRun({
         exitCode: timedOut ? null : (exit?.code ?? null),
         signal: timedOut ? (exit?.signal ?? "SIGKILL") : (exit?.signal ?? null),
@@ -150,8 +167,30 @@ export function runProcess(
 
     const stop = (): void => {
       if (settled || killWait !== undefined) return;
-      if (child.pid !== undefined) killTree(child.pid, platform, options.env);
-      killWait = setTimeout(finish, KILL_WAIT_MS);
+      killing = true;
+      killWait = setTimeout(() => {
+        killFailure = new ProcessSpawnError(
+          "TREE_KILL_FAILED",
+          "Process termination did not settle",
+        );
+        killing = false;
+        finish();
+      }, KILL_WAIT_MS);
+      const stopped =
+        child.pid === undefined
+          ? Promise.resolve()
+          : killTree(child.pid, platform);
+      void stopped.then(
+        () => {
+          killing = false;
+          if (closeObserved) finish();
+        },
+        (error: unknown) => {
+          killFailure = error;
+          killing = false;
+          finish();
+        },
+      );
     };
     const cancel = (): void => {
       stop();

@@ -115,6 +115,17 @@ test("installed async ABI: child completion, tree interruption, service revocati
       join(privateCopy, "mutation-proof.mjs"),
     );
     const mutations = [
+      ...(process.platform === "win32"
+        ? [
+            {
+              file: "adapters/process/tree-kill.js",
+              from: 'const root = process.env.SystemRoot ?? "C:/Windows";',
+              to: 'const root = "Z:/forge-missing-system-root";',
+              mode: "child-env",
+              evidence: "typed interruption",
+            },
+          ]
+        : []),
       {
         file: "adapters/node-runtime/isolation.js",
         from: "Promise.resolve(handler(args))",

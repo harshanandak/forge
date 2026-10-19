@@ -356,3 +356,75 @@ test("bound service methods stay revoked and shared class methods keep their rec
   expect(result).toMatchObject({ ok: true, result: "aba" });
   expect(() => bound!()).toThrow(ForgeFailure);
 }, 5000);
+
+test("legacy presence checks find provided and absent services and revoke after settlement", async () => {
+  const f = fixture(
+    "({services}) => { services.retain(services); return ('state' in services) && !('missing' in services) ? 'present' : 'missing'; }",
+    {},
+    true,
+  );
+  let retained: object | undefined;
+  const result = await f
+    .runtime({
+      services: () =>
+        Promise.resolve({
+          ownership: "borrowed",
+          value: {
+            state: {},
+            retain: (client: object) => {
+              retained = client;
+            },
+          },
+        }),
+    })
+    .invoke(f.request);
+  expect(result).toMatchObject({ ok: true, result: "present" });
+  expect(() => "state" in retained!).toThrow(ForgeFailure);
+}, 5000);
+
+test("failed process termination yields typed incomplete cleanup and still closes state", async () => {
+  const f = fixture(
+    "({services,input}) => { services.process.run({kind:'resolved',path:'fake'}, [], {cwd:'/',env:{},timeoutMs:10000,maxOutputBytes:100}); return input; }",
+  );
+  let closed = 0;
+  const port = {
+    resolve: () => ({ kind: "resolved" as const, path: "fake" }),
+    run: (
+      _executable: unknown,
+      _args: readonly string[],
+      options: import("../../../src/ports/process.ts").SpawnOptions,
+    ) =>
+      new Promise((_resolve, reject) => {
+        options.signal!.addEventListener(
+          "abort",
+          () =>
+            reject(
+              Object.assign(new Error("tree failed"), {
+                code: "TREE_KILL_FAILED",
+              }),
+            ),
+          { once: true },
+        );
+      }),
+  };
+  expect(
+    await f
+      .runtime({
+        services: () =>
+          Promise.resolve({
+            ownership: "owned",
+            value: { process: port },
+            close: () => {
+              closed++;
+              return Promise.resolve();
+            },
+          }),
+      })
+      .invoke(f.request),
+  ).toMatchObject({
+    ok: false,
+    status: "INCOMPLETE",
+    error: { code: "PROCESS_CLEANUP_FAILED" },
+  });
+  expect(closed).toBe(1);
+}, 5000);

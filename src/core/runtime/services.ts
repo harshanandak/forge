@@ -8,6 +8,7 @@ export class InvocationServices {
   readonly deadline: number;
   readonly #pending = new Set<Promise<unknown>>();
   #active = true;
+  readonly #cleanupErrors: unknown[] = [];
   readonly #authorize: () => void;
   constructor(deadline: number, authorize: () => void) {
     this.deadline = deadline;
@@ -86,6 +87,8 @@ export class InvocationServices {
   }
   async drain(): Promise<void> {
     await Promise.allSettled([...this.#pending]);
+    if (this.#cleanupErrors.length)
+      throw new AggregateError(this.#cleanupErrors, "Process cleanup failed");
   }
   wrap(value: unknown): unknown {
     const seen = new WeakMap<object, Map<object | undefined, unknown>>();
@@ -136,7 +139,16 @@ export class InvocationServices {
             this.#pending.add(pending);
             void pending.then(
               () => this.#pending.delete(pending),
-              () => this.#pending.delete(pending),
+              (error: unknown) => {
+                this.#pending.delete(pending);
+                if (
+                  error !== null &&
+                  typeof error === "object" &&
+                  "code" in error &&
+                  error.code === "TREE_KILL_FAILED"
+                )
+                  this.#cleanupErrors.push(error);
+              },
             );
             return pending;
           };
@@ -144,6 +156,10 @@ export class InvocationServices {
       };
       const proxy = new Proxy(target, {
         get: (_target, key) => read(key),
+        has: (_target, key) => {
+          this.check();
+          return Reflect.has(entry, key);
+        },
         ownKeys: () => {
           this.check();
           return Reflect.ownKeys(entry);
