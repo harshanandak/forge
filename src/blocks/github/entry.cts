@@ -58,6 +58,9 @@ function enumValue(value: unknown, values: readonly string[]): value is string {
 function sha(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{40}$/i.test(value);
 }
+function canonicalSha(value: unknown): string | undefined {
+  return sha(value) ? value.toLowerCase() : undefined;
+}
 function stamp(value: unknown): number {
   if (
     !text(value) ||
@@ -302,13 +305,17 @@ async function core(call: Call, s: Selected, r: Ref): Promise<Json> {
   )
     fail("INCOMPLETE", "GitHub core evidence is incomplete");
   stamp(value.updatedAt);
-  return value;
+  return {
+    ...value,
+    headRefOid: value.headRefOid.toLowerCase(),
+    baseRefOid: value.baseRefOid.toLowerCase(),
+  };
 }
 async function currentHead(call: Call, s: Selected, r: Ref): Promise<string> {
   const value = await prQuery(call, s, r, "ForgePRHead", "headRefOid");
   if (!sha(value.headRefOid))
     fail("INCOMPLETE", "Current pull request head is missing or malformed");
-  return value.headRefOid;
+  return value.headRefOid.toLowerCase();
 }
 type ConnectionKind = "Checks" | "Reviews" | "Threads" | "Labels";
 const connectionFields: Record<ConnectionKind, string> = {
@@ -340,7 +347,7 @@ function connection(
   if (!Array.isArray(commits) || commits.length !== 1)
     fail("INCOMPLETE", "Exact-head commit evidence is missing");
   const commit = obj(obj(commits[0]).commit);
-  if (commit.oid !== expectedHead)
+  if (canonicalSha(commit.oid) !== expectedHead)
     fail("INCOMPLETE", "Check evidence belongs to a different head");
   // A null rollup is the provider's explicit statement that this commit has no checks.
   if (commit.statusCheckRollup === null)
@@ -426,12 +433,13 @@ async function pages(
 function check(value: Json): Json {
   if (value.__typename === "CheckRun") {
     const suite = obj(value.checkSuite),
-      app = obj(suite.app);
+      app = obj(suite.app),
+      headSha = canonicalSha(obj(suite.commit).oid);
     if (
       !text(value.name) ||
       !Number.isSafeInteger(app.databaseId) ||
       Number(app.databaseId) < 1 ||
-      !sha(obj(suite.commit).oid) ||
+      !headSha ||
       !enumValue(value.status, [
         "QUEUED",
         "IN_PROGRESS",
@@ -459,7 +467,7 @@ function check(value: Json): Json {
     return {
       name: value.name,
       appId: app.databaseId,
-      headSha: obj(suite.commit).oid,
+      headSha,
       status: enumValue(value.status, ["WAITING", "REQUESTED"])
         ? "PENDING"
         : value.status,
@@ -482,7 +490,7 @@ function check(value: Json): Json {
     return {
       name: value.context,
       appId: null,
-      headSha: obj(value.commit).oid,
+      headSha: canonicalSha(obj(value.commit).oid),
       status: pending ? "PENDING" : "COMPLETED",
       conclusion: pending
         ? null
@@ -630,8 +638,8 @@ async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
       ),
     );
     if (
-      obj(compared.base_commit).sha !== before.baseRefOid ||
-      !sha(obj(compared.merge_base_commit).sha) ||
+      canonicalSha(obj(compared.base_commit).sha) !== before.baseRefOid ||
+      !canonicalSha(obj(compared.merge_base_commit).sha) ||
       !Number.isSafeInteger(compared.behind_by) ||
       Number(compared.behind_by) < 0 ||
       !Number.isSafeInteger(compared.ahead_by) ||
@@ -658,11 +666,12 @@ async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
     (value) => {
       const author = obj(value.author),
         commit = obj(value.commit),
+        headSha = canonicalSha(commit.oid),
         updatedAt = stamp(value.updatedAt);
       if (
         !text(value.id) ||
         !text(author.login) ||
-        !sha(commit.oid) ||
+        !headSha ||
         !enumValue(value.state, [
           "APPROVED",
           "CHANGES_REQUESTED",
@@ -672,13 +681,13 @@ async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
         ])
       )
         fail("INCOMPLETE", "Review identity, state or head is malformed");
-      if (commit.oid === before.headRefOid)
+      if (headSha === before.headRefOid)
         lastActivityAt = Math.max(lastActivityAt, updatedAt);
       return {
         id: value.id,
         author: author.login,
         state: value.state,
-        headSha: commit.oid,
+        headSha,
         updatedAt,
       };
     },
@@ -757,7 +766,19 @@ function protocol(
     !object(input.payload)
   )
     fail("INPUT_INVALID", "Unsupported provider action or missing payload");
-  return { action: input.action, payload: input.payload };
+  const payload =
+    input.action === "merge"
+      ? {
+          ...input.payload,
+          ...(sha(input.payload.expectHead)
+            ? { expectHead: input.payload.expectHead.toLowerCase() }
+            : {}),
+          ...(sha(input.payload.expectBase)
+            ? { expectBase: input.payload.expectBase.toLowerCase() }
+            : {}),
+        }
+      : input.payload;
+  return { action: input.action, payload };
 }
 function squash(payload: Json): void {
   if (
@@ -832,12 +853,13 @@ async function mutate(call: Call): Promise<Json> {
         true,
       ),
     );
-    if (result.merged !== true || !sha(result.sha))
+    const mergeSha = canonicalSha(result.sha);
+    if (result.merged !== true || !mergeSha)
       fail(
         "EFFECT_UNCERTAIN",
         "GitHub did not confirm a merge; read and reconcile before retrying",
       );
-    return { merged: true, headSha: payload.expectHead, mergeSha: result.sha };
+    return { merged: true, headSha: payload.expectHead, mergeSha };
   }
   if (action === "create") {
     const result = obj(
@@ -931,7 +953,7 @@ async function mutate(call: Call): Promise<Json> {
   );
   if (
     run.id !== payload.runId ||
-    run.head_sha !== head ||
+    canonicalSha(run.head_sha) !== head ||
     !Array.isArray(run.pull_requests) ||
     !run.pull_requests.some(
       (value) => object(value) && value.number === r.number,

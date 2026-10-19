@@ -679,6 +679,28 @@ try {
       await good("release", reference, held.generation);
     }
   }
+  if (["all", "uppercase-sha"].includes(mode)) {
+    save();
+    const held = await good("claim", reference, "acquire");
+    const result = await invoke(
+      "merge",
+      {
+        ...reference,
+        expectHead: head.toUpperCase(),
+        expectRevision: state.get("forge/pr", subject)?.revision ?? 0,
+      },
+      held.generation,
+    );
+    assert.equal(
+      result.ok,
+      true,
+      "uppercase expected head must identify the same pinned commit",
+    );
+    assert.equal(result.result.evidence.headSha, head);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).mergeInput.sha, head);
+    assert.equal(state.get("forge/pr", subject).value.headSha, head);
+    await good("release", reference, held.generation);
+  }
   console.log(
     `PR journey ${mode}: passed; supervised provider calls=${spawns}`,
   );

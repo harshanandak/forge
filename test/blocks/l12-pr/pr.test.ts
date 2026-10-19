@@ -22,13 +22,16 @@ function harness(mutation?: { from: string; to: string }) {
   let stealAtResolve = 0;
   const timeouts: number[] = [];
   const effects: string[] = [];
+  const requests: { action: string; payload: Json }[] = [];
+  const writes: Json[] = [];
+  let mergeReply: Json = { merged: true, headSha: head };
   const state = {
     now: () => 10000,
     lease: () => ({ expiresAt: new Date(leaseUntil).toISOString() }),
     get: () => (revision ? { revision } : undefined),
     put: (
       _key: string,
-      _value: unknown,
+      value: Json,
       options: { expectRevision: number; subject?: string },
     ) => {
       if (options.subject && !fence)
@@ -36,6 +39,7 @@ function harness(mutation?: { from: string; to: string }) {
       if (revision !== options.expectRevision)
         throw new Error("revision conflict");
       effects.push("put");
+      writes.push(value);
       return { revision: ++revision };
     },
   };
@@ -45,11 +49,12 @@ function harness(mutation?: { from: string; to: string }) {
       payload: Json;
     };
     effects.push(request.action);
+    requests.push(request);
     timeouts.push(options.timeoutMs);
     if (request.action === "status") return { ok: true, result: current };
     if (request.action === "merge") {
       current = { ...ready(), state: "MERGED" };
-      return { ok: true, result: { merged: true, headSha: head } };
+      return { ok: true, result: mergeReply };
     }
     return { ok: true, result: { accepted: true } };
   });
@@ -61,6 +66,11 @@ function harness(mutation?: { from: string; to: string }) {
   const services = { state, process, environment: { select: () => ({}) } };
   return {
     effects,
+    requests,
+    writes,
+    setMergeReply(value: Json) {
+      mergeReply = value;
+    },
     timeouts,
     setLeaseExpiry(value: number) {
       leaseUntil = value;
@@ -85,6 +95,84 @@ function harness(mutation?: { from: string; to: string }) {
     },
   };
 }
+test("uppercase expectHead is canonicalized before merge comparison, provider launch and state writes", async () => {
+  const h = harness();
+  const input = {
+    ...reference,
+    expectHead: head.toUpperCase(),
+    expectRevision: 0,
+  };
+  const result = await h.invoke("merge", input);
+  expect(result.verdict).toMatchObject({ status: "MERGED" });
+  expect(
+    h.requests.find((request) => request.action === "merge")!.payload
+      .expectHead,
+  ).toBe(head);
+  expect(h.writes.every((value) => value.headSha === head)).toBe(true);
+  expect(input.expectHead).toBe(head.toUpperCase());
+});
+
+test("all accepted provider evidence and merge-result SHAs are canonicalized at their boundaries", async () => {
+  const h = harness(),
+    e = ready();
+  h.set({
+    ...e,
+    headSha: head.toUpperCase(),
+    baseSha: "B".repeat(40),
+    mergeableHeadSha: head,
+    protection: {
+      headSha: head,
+      baseSha: "B".repeat(40),
+      strictStatusChecks: true,
+      atomicBaseCondition: true,
+      baseComparison: {
+        headSha: head.toUpperCase(),
+        baseSha: "b".repeat(40),
+        behindBy: 0,
+      },
+    },
+    checks: (e.checks as Json[]).map((value) => ({
+      ...value,
+      headSha: head.toUpperCase(),
+    })),
+    reviews: (e.reviews as Json[]).map((value) => ({
+      ...value,
+      headSha: head.toUpperCase(),
+    })),
+    threads: [{ id: "T1", resolved: true, headSha: head.toUpperCase() }],
+    findings: [{ label: "P1", resolved: true, headSha: head.toUpperCase() }],
+  });
+  const view = await h.invoke("status");
+  expect(view.verdict).toMatchObject({ status: "MERGE_READY" });
+  expect(view.evidence).toMatchObject({
+    headSha: head,
+    baseSha: "b".repeat(40),
+    protection: {
+      headSha: head,
+      baseSha: "b".repeat(40),
+      baseComparison: { headSha: head, baseSha: "b".repeat(40) },
+    },
+    checks: [{ headSha: head }],
+    reviews: [{ headSha: head }],
+    threads: [{ headSha: head }],
+    findings: [{ headSha: head }],
+  });
+  h.setMergeReply({
+    merged: true,
+    headSha: head.toUpperCase(),
+    mergeSha: "D".repeat(40),
+  });
+  await h.invoke("merge", {
+    ...reference,
+    expectHead: head,
+    expectRevision: 0,
+  });
+  expect(h.writes.at(-1)!.merge).toMatchObject({
+    headSha: head,
+    mergeSha: "d".repeat(40),
+  });
+});
+
 test("verdict is computed from each fresh provider observation, never a persisted phase", async () => {
   const h = harness();
   const cases: [string, Json][] = [

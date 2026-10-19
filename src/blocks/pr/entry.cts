@@ -351,23 +351,23 @@ function evidence(value: unknown, r: Ref): Evidence | undefined {
   return {
     repository: r.repository,
     number: r.number,
-    headSha: e.headSha,
-    baseSha: e.baseSha,
+    headSha: e.headSha.toLowerCase(),
+    baseSha: e.baseSha.toLowerCase(),
     state: e.state,
     draft: e.draft,
     mergeable: e.mergeable,
-    mergeableHeadSha: e.mergeableHeadSha,
+    mergeableHeadSha: e.mergeableHeadSha.toLowerCase(),
     protection: {
-      headSha: e.protection.headSha,
-      baseSha: e.protection.baseSha,
+      headSha: e.protection.headSha.toLowerCase(),
+      baseSha: e.protection.baseSha.toLowerCase(),
       strictStatusChecks: e.protection.strictStatusChecks,
       atomicBaseCondition: e.protection.atomicBaseCondition,
       baseComparison:
         e.protection.baseComparison === null
           ? null
           : {
-              headSha: e.protection.baseComparison.headSha,
-              baseSha: e.protection.baseComparison.baseSha,
+              headSha: e.protection.baseComparison.headSha.toLowerCase(),
+              baseSha: e.protection.baseComparison.baseSha.toLowerCase(),
               behindBy: e.protection.baseComparison.behindBy,
             },
     },
@@ -375,7 +375,7 @@ function evidence(value: unknown, r: Ref): Evidence | undefined {
     checks: e.checks.map((v) => ({
       name: v.name,
       appId: v.appId,
-      headSha: v.headSha,
+      headSha: v.headSha.toLowerCase(),
       status: v.status,
       conclusion: v.conclusion,
     })),
@@ -387,18 +387,18 @@ function evidence(value: unknown, r: Ref): Evidence | undefined {
       id: v.id,
       author: v.author,
       state: v.state,
-      headSha: v.headSha,
+      headSha: v.headSha.toLowerCase(),
       updatedAt: v.updatedAt,
     })),
     threads: e.threads.map((v) => ({
       id: v.id,
       resolved: v.resolved,
-      headSha: v.headSha,
+      headSha: v.headSha.toLowerCase(),
     })),
     findings: e.findings.map((v) => ({
       label: v.label,
       resolved: v.resolved,
-      headSha: v.headSha,
+      headSha: v.headSha.toLowerCase(),
     })),
     lastActivityAt: e.lastActivityAt,
   };
@@ -656,6 +656,16 @@ async function provider(
       "PROVIDER_FAILED",
       "Provider did not return a successful Forge result envelope",
     );
+  if (action === "merge" && object(value.result)) {
+    const merged = value.result;
+    return {
+      ...merged,
+      ...(sha(merged.headSha) ? { headSha: merged.headSha.toLowerCase() } : {}),
+      ...(sha(merged.mergeSha)
+        ? { mergeSha: merged.mergeSha.toLowerCase() }
+        : {}),
+    };
+  }
   return value.result;
 }
 async function read(call: Call, c: Config, s: Services, r: Ref) {
@@ -830,6 +840,7 @@ const operations = {
       );
     if (!sha(call.input.expectHead))
       fail("INPUT_INVALID", "Merge requires the exact expected head SHA");
+    const expectHead = call.input.expectHead.toLowerCase();
     const title = template(
         typeof call.input.title === "string" ? call.input.title : c.squashTitle,
         r,
@@ -842,7 +853,7 @@ const operations = {
     noTrailers(title);
     noTrailers(body);
     const view = await read(call, c, s, r);
-    if (!view.evidence || view.evidence.headSha !== call.input.expectHead)
+    if (!view.evidence || view.evidence.headSha !== expectHead)
       fail(
         "HEAD_MOVED",
         "The pull request head no longer matches the caller's pinned head",
@@ -861,7 +872,7 @@ const operations = {
         "merge",
         {
           ...r,
-          expectHead: call.input.expectHead,
+          expectHead,
           expectBase: view.evidence.baseSha,
           title,
           body,
@@ -873,7 +884,7 @@ const operations = {
             {
               ...r,
               phase: "merging",
-              headSha: call.input.expectHead,
+              headSha: expectHead,
               evidence: view.evidence,
             },
             {
@@ -890,7 +901,7 @@ const operations = {
     );
     if (intentRevision === undefined)
       fail("LEASE_STALE", "Merge launched without a fenced intent");
-    if (merged.merged !== true || merged.headSha !== call.input.expectHead)
+    if (merged.merged !== true || merged.headSha !== expectHead)
       fail(
         "INCOMPLETE",
         "Provider did not confirm merging the pinned head; reconcile before retrying",
@@ -900,10 +911,10 @@ const operations = {
       {
         ...r,
         phase: "merged",
-        headSha: call.input.expectHead,
+        headSha: expectHead,
         merge: {
           merged: true,
-          headSha: call.input.expectHead,
+          headSha: expectHead,
           ...(sha(merged.mergeSha) ? { mergeSha: merged.mergeSha } : {}),
         },
       },
@@ -912,7 +923,7 @@ const operations = {
     const fresh = await read(call, c, s, r);
     if (
       fresh.verdict.status !== "MERGED" ||
-      fresh.evidence?.headSha !== call.input.expectHead
+      fresh.evidence?.headSha !== expectHead
     )
       fail(
         "INCOMPLETE",

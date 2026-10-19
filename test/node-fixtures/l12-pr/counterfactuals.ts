@@ -1,5 +1,12 @@
 export const counterfactuals = [
   {
+    file: "blocks/pr/entry.cjs",
+    from: "const expectHead = call.input.expectHead.toLowerCase();",
+    to: "const expectHead = call.input.expectHead;",
+    journey: "uppercase-sha",
+    evidence: "uppercase expected head must identify the same pinned commit",
+  },
+  {
     file: "blocks/github/entry.cjs",
     from: 'if (action === "reply" || action === "resolve") {',
     to: 'await gather(call, s, r); if (action === "reply" || action === "resolve") {',
@@ -9,7 +16,7 @@ export const counterfactuals = [
   },
   {
     file: "blocks/pr/entry.cjs",
-    from: "view.evidence.headSha !== call.input.expectHead",
+    from: "view.evidence.headSha !== expectHead",
     to: "false",
     journey: "head",
     evidence: "HEAD_MOVED",

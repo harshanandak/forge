@@ -15,6 +15,7 @@ does not authorize `pr.merge`. The subject is
 `expectRevision`. It gathers fresh evidence, computes the verdict, checks the
 pinned head, writes a lease-fenced intent, invokes the conditional provider
 merge, writes lease-fenced accepted evidence, then reads the provider again.
+Validated SHAs are canonical lowercase at the input and provider boundaries. Uppercase hexadecimal remains valid input; comparisons, provider payloads and accepted evidence use the canonical value, including nested checks, reviews and protection proof.
 The intent is fenced after executable resolution, immediately before process launch with no intervening await; the process timeout is capped by the remaining held lease. An expired or replaced lease stops acceptance even when the external merge
 succeeded. A timeout or uncertain provider result requires reading and
 reconciling before another mutation; the block does not retry mutations.

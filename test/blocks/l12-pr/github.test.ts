@@ -334,6 +334,51 @@ test("targeted writes refuse foreign threads, stale runs and a moving head", asy
   ).toBe(false);
 });
 
+test("GitHub SHA input and wire boundaries canonicalize accepted hashes without changing squash text", async () => {
+  const h = harness({
+    mutate: (value) =>
+      JSON.parse(
+        JSON.stringify(value).replace(/[a-f0-9]{40}/gi, (value) =>
+          value.toUpperCase(),
+        ),
+      ) as Json,
+    run: {
+      id: 123,
+      head_sha: head.toUpperCase(),
+      pull_requests: [{ number: reference.number }],
+    },
+  });
+  expect(await h.invoke("read")).toMatchObject({
+    headSha: head,
+    baseSha: base,
+    mergeableHeadSha: head,
+    checks: [{ headSha: head }],
+    reviews: [{ headSha: head }],
+  });
+  expect(
+    await h.invoke("call", {
+      action: "merge",
+      payload: {
+        ...reference,
+        expectHead: head.toUpperCase(),
+        expectBase: base.toUpperCase(),
+        title: head.toUpperCase(),
+        body: "Explicit text",
+      },
+    }),
+  ).toMatchObject({ headSha: head });
+  expect(h.inputs.at(-1)).toMatchObject({
+    sha: head,
+    commit_title: head.toUpperCase(),
+  });
+  expect(
+    await h.invoke("call", {
+      action: "rerun",
+      payload: { ...reference, runId: 123 },
+    }),
+  ).toMatchObject({ accepted: true });
+});
+
 test("provider collects exact-head complete paginated evidence through read-only API commands", async () => {
   const h = harness();
   const evidence = await h.invoke("read");

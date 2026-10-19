@@ -6,6 +6,8 @@ process port, argv arrays and JSON stdin. The host supplies the canonical
 project root through `process.cwd` and selects only the configured environment names; this block does not discover credentials, infer
 an account or change global `gh` authentication.
 
+Accepted SHA fields are normalized to lowercase at the request and API boundaries, including expected head/base, commit observations, rerun heads and merge receipts. Other text, including explicit squash messages, is preserved.
+
 `github.status` and `github.use` verify `/user` against an explicit account
 and host from config or host `identity`. They are observational validation
 operations. A different authenticated login is `IDENTITY_MISMATCH` before
