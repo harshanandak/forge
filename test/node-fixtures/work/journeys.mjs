@@ -109,7 +109,10 @@ function call(
     fail: (code, message) => {
       throw new ForgeFailure({ code, message, retry: "never" });
     },
-    timeoutMs: 1000,
+    timeoutMs: 15000,
+    deadline: Date.now() + 15000,
+    signal: new AbortController().signal,
+    settled: () => undefined,
   });
   return JSON.parse(encoded);
 }

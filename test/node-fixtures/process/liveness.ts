@@ -1,32 +1,89 @@
-// Whether a process is still running. process.kill(pid, 0) only says the pid exists: a killed process
-// whose parent has not collected it is a zombie, still "there" but no longer running anything.
+// A PID may remain after termination. Inspection is bounded and unknown states never prove success.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-function stateOf(pid: number): string | undefined {
-  if (process.platform === "linux") {
-    // /proc/<pid>/stat is "pid (comm) S ..."; comm may hold spaces and parentheses, so cut at the last ")".
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
-  }
-  if (process.platform === "win32") return undefined;
-  const ps = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], {
-    encoding: "utf8",
-  });
-  // No state printed: the pid was collected between the kill probe and this read, so it is gone.
-  return ps.stdout.trim().slice(0, 1);
+interface LivenessPort {
+  readonly platform: string;
+  probe(pid: number): void;
+  readStat(pid: number): string;
+  inspect(
+    pid: number,
+    options: {
+      readonly timeout: number;
+      readonly killSignal: "SIGKILL";
+      readonly maxBuffer: number;
+    },
+  ): {
+    readonly stdout: string;
+    readonly status: number | null;
+    readonly error?: Error | undefined;
+  };
 }
 
-export function isRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return false;
-  }
-  try {
-    const state = stateOf(pid);
-    return state !== "Z" && state !== "";
-  } catch {
-    return false;
-  }
+function hasCode(error: unknown, code: string): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === code
+  );
 }
+
+export function createLivenessProbe(
+  port: LivenessPort,
+): (pid: number) => boolean {
+  return (pid) => {
+    try {
+      port.probe(pid);
+    } catch (error) {
+      if (hasCode(error, "ESRCH")) return false;
+      throw error;
+    }
+    if (port.platform === "win32") return true;
+    if (port.platform === "linux") {
+      let stat: string;
+      try {
+        stat = port.readStat(pid);
+      } catch (error) {
+        if (hasCode(error, "ENOENT") || hasCode(error, "ESRCH")) return false;
+        throw error;
+      }
+      const end = stat.lastIndexOf(")");
+      const state = stat.slice(end + 2, end + 3);
+      if (end < 0 || !/^[A-Z]$/.test(state))
+        throw new Error(`Invalid process state for PID ${pid}`);
+      return state !== "Z";
+    }
+    const result = port.inspect(pid, {
+      timeout: 1000,
+      killSignal: "SIGKILL",
+      maxBuffer: 4096,
+    });
+    if (result.error !== undefined)
+      throw new Error(`Process state inspection failed for PID ${pid}`, {
+        cause: result.error,
+      });
+    const state = result.stdout.trim();
+    if (result.status === 1 && state === "") return false;
+    if (result.status !== 0 || !/^[A-Z]/.test(state))
+      throw new Error(`Could not confirm process state for PID ${pid}`);
+    return !state.startsWith("Z");
+  };
+}
+
+export const isRunning = createLivenessProbe({
+  platform: process.platform,
+  probe(pid) {
+    process.kill(pid, 0);
+  },
+  readStat(pid) {
+    return readFileSync(`/proc/${pid}/stat`, "utf8");
+  },
+  inspect(pid, options) {
+    return spawnSync("ps", ["-o", "stat=", "-p", String(pid)], {
+      ...options,
+      encoding: "utf8",
+      windowsHide: true,
+    });
+  },
+});

@@ -33,6 +33,17 @@ Each one gets an entry here and an adapter in the same pull request.
 - **Adapter:** `src/adapters/mcp-transport/` implements `src/ports/mcp-transport.ts`.
 - **Conformance shortfall:** the official `@modelcontextprotocol/conformance` 0.1.16 runner's `server --help` accepts only `--url`, with no stdio transport option. `list --server --spec-version 2026-07-28` exits 1: `Unknown spec version: 2026-07-28` (valid date versions stop at 2025-11-25). Consequently official conformance is **not proven on either era** for this stdio adapter. Local wire journeys are narrower evidence, not certification. No HTTP transport, substitute SDK, or custom protocol implementation was added to hide this gap. Host interoperability remains an integration acceptance item. [SDK stdio documentation](https://ts.sdk.modelcontextprotocol.io/v2/api/%40modelcontextprotocol/server/stdio/) describes the factory's dual-era selection.
 
+### koffi
+
+- **Saves:** maintained native FFI bindings for Windows Job Objects and Darwin process-member states. Node child-process APIs cannot attach a child to a job or retain ownership after its parent exits; this avoids maintaining a native addon and compiler toolchain.
+- **Maintenance:** maintained Koffi 3.x project; exact 3.3.3 released 2026-10-10. [Official documentation](https://koffi.dev/) and [changelog](https://koffi.dev/changelog).
+- **Transitive packages:** no ordinary runtime dependencies; optional prebuilt native packages select the current platform and architecture. No additional package is installed for another platform by a normal install.
+- **Fit:** lazy-loaded only inside the process adapter on Windows (Job Objects) or macOS (libproc member states). Supported Node 24/26 and Bun use the prebuilt native module; no compiler or service is required. Only synchronous FFI calls are used; bounded polling uses the existing event loop, with no FFI worker pool. Temporary Node supervisors have a declared concurrency limit and are released after every command.
+- **Licence:** MIT.
+- **Trust:** exact version and registry integrity pinned in bun.lock. Main package registry size is about 1.73 MB compressed; a platform binary is additionally installed. The package can build from source through an install script when a prebuilt binary is absent; Forge neither invokes a compiler nor enables blocked install scripts. An unavailable native module causes typed containment refusal before command spawning.
+- **Swap proof:** only src/adapters/process/ loads Koffi, behind ProcessPort. The Windows native integration and packed detached-descendant journey exercise lifetime, typed refusal and confirmed cleanup. Another Job Object binding changes only this adapter.
+- **Adapter:** src/adapters/process/ implements src/ports/process.ts. Linux delegated cgroups and Linux process-group inspection use Node built-ins and load no FFI library. Darwin uses libproc to distinguish live members from unreaped zombies; its injected native-binding tests and real POSIX zombie journey cover this use.
+
 ## Development dependencies
 
 ### typescript
@@ -78,12 +89,12 @@ Each one gets an entry here and an adapter in the same pull request.
 - **Swap proof:** injected capture test reproduces the exact byte digest.
 - **Adapter:** src/adapters/node-runtime/, using catalog-local FileCapturePort and L1 borrowed handle. The manifest names the Node runtime; it spawns no process.
 
-#### Node synchronous evaluation
+#### Node bounded evaluation
 
-- **Saves:** synchronous execution deadlines and isolated evaluation contexts.
+- **Saves:** execution deadlines, isolated evaluation contexts and bounded microtask pumping.
 - **Maintenance:** built into the supported Node runtime.
 - **Transitive packages:** 0.
-- **Fit:** Node 24/26; trusted synchronous blocks only, not a security sandbox.
+- **Fit:** Node 24/26; trusted value-or-Promise blocks only, not a security sandbox.
 - **Licence:** Node runtime licence.
 - **Trust:** the same runtime already required by the package.
 - **Swap proof:** runtime acceptance injects the evaluator through L1 LifetimeProvider; admission, output limits and owned-service cleanup stay in core.

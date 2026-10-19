@@ -17,7 +17,14 @@ import { pathToFileURL } from "node:url";
 import { isRunning } from "./liveness.ts";
 
 interface Adapter {
-  createProcessPort(): {
+  createProcessPort(options: {
+    supervision: {
+      cleanupTimeoutMs: number;
+      pollIntervalMs: number;
+      drainTimeoutMs: number;
+      maxConcurrent: number;
+    };
+  }): {
     resolve(
       executable: string,
       env: Record<string, string>,
@@ -42,7 +49,14 @@ const entry =
     join(import.meta.dirname, "../../../src/adapters/process/index.ts"),
   ).href;
 const adapter = (await import(entry)) as Adapter;
-const port = adapter.createProcessPort();
+const port = adapter.createProcessPort({
+  supervision: {
+    cleanupTimeoutMs: 5000,
+    pollIntervalMs: 25,
+    drainTimeoutMs: 250,
+    maxConcurrent: 1,
+  },
+});
 const windows = process.platform === "win32";
 
 const work = realpathSync.native(mkdtempSync(join(tmpdir(), "forge-proc-")));

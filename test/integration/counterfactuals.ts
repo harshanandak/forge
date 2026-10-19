@@ -139,7 +139,8 @@ export const firstSliceMutations: readonly FirstSliceMutation[] = [
     file: "src/assembly/state-client.js",
     from: "structuredClone(value)",
     to: "value",
-    mode: "all",
+    mode: "normalization",
+    fixture: "review-two",
     evidence: "State values must be plain JSON",
   },
   ...["all", "race"].map((mode) => ({

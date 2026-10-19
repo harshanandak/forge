@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 import {
   ForgeFailure,
   type Operations,
+  type HandlerArgs,
   type StateClient,
   type StateRecord,
 } from "../../src/contract/author.ts";
@@ -44,10 +45,7 @@ const operations = {
   "semver.mark"({
     input,
     services,
-  }: {
-    input: MarkInput;
-    services: { state: StateClient };
-  }): MarkOutput {
+  }: HandlerArgs<MarkInput, unknown, { state: StateClient }>): MarkOutput {
     const rec = services.state.put(
       "released",
       { version: input.version },
@@ -61,9 +59,8 @@ const operations = {
 }>;
 
 const asyncOperations: Operations<{
-  "slow.run": [BumpInput, Promise<BumpOutput>];
+  "slow.run": [BumpInput, BumpOutput];
 }> = {
-  // @ts-expect-error a handler that returns a Promise is refused (trusted-action-sync/v1)
   "slow.run": () => Promise.resolve({ next: "1.0.0" }),
 };
 
@@ -106,6 +103,9 @@ test("the §4 handlers run against the author types and a state client", () => {
     operations["semver.mark"]({
       input: { version: "1.5.0", expectRevision },
       services: { state },
+      config: {},
+      signal: new AbortController().signal,
+      deadline: Date.now() + 1000,
     });
   expect(mark(0)).toEqual({ version: "1.5.0", revision: 1 });
   expect(() => mark(0)).toThrow(ForgeFailure);

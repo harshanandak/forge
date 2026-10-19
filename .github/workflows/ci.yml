@@ -132,17 +132,9 @@ jobs:
         env:
           # Node legs split counterfactuals; Bun keeps the full set on Node 24 only.
           STATE_NODE_LEG: ${{ matrix.node }}
-        run: |
-          smoke_log="$RUNNER_TEMP/pack-smoke.log"
-          node tools/pack-smoke/run.ts --state-test "$(command -v bun)" > "$smoke_log" 2>&1 &
-          smoke_pid=$!
-          status=0
-          bun tools/test-suite.ts integration-rest --timeout 30000 || status=1
-          wait "$smoke_pid" || status=1
-          echo "::group::pack smoke"
-          cat "$smoke_log"
-          echo "::endgroup::"
-          exit "$status"
+        # The external step ceiling also covers a stalled parent event loop.
+        timeout-minutes: 6
+        run: node tools/integration-step.ts "$(command -v bun)"
 
   # The one required check. Skipped heavy legs pass only when the change is documentation-only.
   ci-gate:
