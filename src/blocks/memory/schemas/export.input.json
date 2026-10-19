@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "scope": {
+      "$ref": "defs.json#/$defs/Scope"
+    },
+    "after": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Continue after this note number: the next value of the previous chunk."
+    }
+  },
+  "additionalProperties": false
+}

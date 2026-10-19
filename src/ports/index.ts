@@ -23,7 +23,15 @@ export type {
   ResolvedExecutable,
   SpawnOptions,
 } from "./process.ts";
-export type { PutOptions, StateClient } from "./state.ts";
+export type {
+  BatchEntry,
+  BatchOptions,
+  ExtendedStateClient,
+  HistoryOptions,
+  PutOptions,
+  RangeOptions,
+  StateClient,
+} from "./state.ts";
 export type {
   SqlDatabase,
   SqlRow,
