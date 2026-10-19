@@ -17,6 +17,14 @@ export const baseline: Migration = {
   ],
 };
 
+/** Reading one key's history must not scan the whole event log. */
+export const eventKeyIndex: Migration = {
+  id: "002_state_events_key_index",
+  statements: [
+    "CREATE INDEX IF NOT EXISTS state_events_by_key ON state_events (namespace, key, sequence)",
+  ],
+};
+
 export function identifier(value: string): string {
   if (!/^[a-z][a-z0-9_]*$/.test(value))
     throw new Error("Invalid SQL identifier");

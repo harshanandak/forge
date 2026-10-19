@@ -10,7 +10,15 @@ export type {
   StateEvent,
   StateRecord,
 } from "../generated/types.ts";
-export type { PutOptions, StateClient } from "../ports/state.ts";
+export type {
+  BatchEntry,
+  BatchOptions,
+  ExtendedStateClient,
+  HistoryOptions,
+  PutOptions,
+  RangeOptions,
+  StateClient,
+} from "../ports/state.ts";
 export type { TrackerOperations, TrackerVerbs } from "../ports/tracker.ts";
 export { ForgeFailure } from "./failure.ts";
 

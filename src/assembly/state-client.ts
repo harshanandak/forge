@@ -1,15 +1,24 @@
 import type { StateOwner, WriteOptions } from "../core/state/index.ts";
 import type { BoundContext, LeaseRecord } from "../generated/types.ts";
-import type { StateClient, PutOptions } from "../ports/state.ts";
+import type {
+  BatchEntry,
+  BatchOptions,
+  ExtendedStateClient,
+  HistoryOptions,
+  PutOptions,
+  RangeOptions,
+  StateClient,
+} from "../ports/state.ts";
 import { refuse } from "../core/trust/index.ts";
 
 type ClientPutOptions = PutOptions &
   Pick<WriteOptions, "readSet"> & { readonly subject?: string };
+type ClientBatchOptions = BatchOptions & { readonly subject?: string };
 
 /** Assembly capability extension; the outside-block forge.state@1 contract is unchanged.
  * Held puts fence the supplied subject (the record key by default) in the owner's transaction.
  */
-export interface LeaseStateClient extends StateClient {
+export interface LeaseStateClient extends ExtendedStateClient {
   now(): number;
   lease(subject: string): LeaseRecord | undefined;
   acquire(subject: string, durationMs: number): LeaseRecord;
@@ -20,6 +29,11 @@ export interface LeaseStateClient extends StateClient {
     value: unknown,
     options: ClientPutOptions,
   ): ReturnType<StateClient["put"]>;
+  /** Under a held lease a batch names the subject it is fenced to; there is no default. */
+  putMany(
+    entries: readonly BatchEntry[],
+    options?: ClientBatchOptions,
+  ): ReturnType<ExtendedStateClient["putMany"]>;
 }
 
 export function createStateClient(options: {
@@ -58,6 +72,10 @@ export function createStateClient(options: {
     now: () => Date.now(),
     get: (key: string) => owner?.get(namespace, key),
     list: (prefix?: string) => owner?.list(namespace, prefix) ?? [],
+    listRange: (range: RangeOptions) =>
+      owner?.listRange(namespace, range) ?? [],
+    history: (options: HistoryOptions) =>
+      owner?.history(namespace, options) ?? [],
     events: (key?: string) => owner?.events(namespace, key) ?? [],
     lease: (subject: string) => owner?.lease(namespace, subject),
     put(key: string, value: unknown, put: ClientPutOptions) {
@@ -75,6 +93,34 @@ export function createStateClient(options: {
           ? { fence: fence(put.subject ?? key) }
           : {}),
       });
+    },
+    putMany(entries: readonly BatchEntry[], batch?: ClientBatchOptions) {
+      const state = writable();
+      if (context.variant === "stateless")
+        refuse("CONTEXT_MISSING", "Missing actor");
+      if (context.variant === "leased" && context.leaseMode !== "held")
+        refuse("CONTEXT_MISSING", "Acquisition cannot mutate records");
+      if (context.variant === "leased" && batch?.subject === undefined)
+        refuse(
+          "CONTEXT_MISSING",
+          "A batch write under a lease names the subject it is fenced to",
+        );
+      return state.putMany(
+        namespace,
+        entries.map((entry) => ({
+          ...entry,
+          value: structuredClone(entry.value),
+        })),
+        context.actor,
+        {
+          ...(batch?.readSet === undefined
+            ? {}
+            : { readSet: structuredClone(batch.readSet) }),
+          ...(context.variant === "leased" && batch?.subject !== undefined
+            ? { fence: fence(batch.subject) }
+            : {}),
+        },
+      );
     },
     acquire(subject: string, durationMs: number) {
       const state = writable();

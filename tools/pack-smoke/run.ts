@@ -320,9 +320,9 @@ async function main(): Promise<void> {
     );
     if (stateBun) {
       step(
-        "running packed first slice and state checks against the same npm install",
+        "running packed first slice, state and memory checks against the same npm install",
       );
-      // Both suites read the base install and mutate private copies. Drain both
+      // The suites read the base install and mutate private copies. Drain all
       // children before cleanup, including when either suite fails.
       const results = await Promise.allSettled([
         packedIntegration(
@@ -336,6 +336,12 @@ async function main(): Promise<void> {
           "test/node-fixtures/state/packed.integration.test.ts",
           "packed state integration",
           { ...process.env, STATE_PACKED_CONSUMER: consumer },
+        ),
+        packedIntegration(
+          stateBun,
+          "test/node-fixtures/memory/packed.integration.test.ts",
+          "packed memory integration",
+          { ...process.env, MEMORY_PACKED_CONSUMER: consumer },
         ),
       ]);
       for (const result of results)

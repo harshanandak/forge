@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "hits": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "defs.json#/$defs/NoteId"
+          },
+          "score": {
+            "type": "number"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "scope": {
+            "$ref": "defs.json#/$defs/Scope"
+          },
+          "tags": {
+            "$ref": "defs.json#/$defs/Tags"
+          },
+          "snippet": {
+            "$ref": "defs.json#/$defs/Untrusted"
+          },
+          "updatedAt": {
+            "type": "string",
+            "maxLength": 40
+          }
+        },
+        "additionalProperties": false,
+        "required": ["id", "score", "revision", "tags", "snippet", "updatedAt"]
+      }
+    },
+    "matched": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "scanned": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "More notes or matches follow; pass next as cursor to read them."
+    },
+    "next": {
+      "type": "string",
+      "pattern": "^[0-9]{1,9}:[0-9]{1,9}$"
+    }
+  },
+  "additionalProperties": false,
+  "required": ["hits", "matched", "scanned", "truncated"]
+}
