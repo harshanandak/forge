@@ -9,7 +9,7 @@ afterEach(async () => {
   harness = undefined;
 });
 
-test("both blocks are registered first-party sources that resolve to their folders", () => {
+test("forge/memory is a registered first-party source that resolves to its folder", () => {
   expect(Object.keys(firstPartyBlocks)).toContain("forge/memory");
   expect(
     resolveBlock("/unused", { builtin: "forge/memory" }).replaceAll("\\", "/"),
