@@ -26,8 +26,9 @@
     },
     "NoteId": {
       "type": "string",
-      "pattern": "^note-[0-9]{1,9}$",
-      "maxLength": 14
+      "pattern": "^(?:device|project/[0-9a-f]{16})/note-[0-9]{1,9}$",
+      "maxLength": 40,
+      "description": "A note's level and origin are part of its id: device/note-3 lives on this device, project/<project id>/note-3 in that project."
     },
     "Scope": {
       "type": "string",
@@ -79,6 +80,15 @@
         "id": {
           "$ref": "defs.json#/$defs/NoteId"
         },
+        "level": {
+          "$ref": "defs.json#/$defs/Level"
+        },
+        "origin": {
+          "$ref": "defs.json#/$defs/Origin"
+        },
+        "readOnly": {
+          "$ref": "defs.json#/$defs/ReadOnly"
+        },
         "revision": {
           "type": "integer",
           "minimum": 1
@@ -104,11 +114,17 @@
           "items": {
             "$ref": "defs.json#/$defs/Version"
           }
+        },
+        "from": {
+          "$ref": "defs.json#/$defs/NoteId",
+          "description": "The note this one was moved or copied from."
         }
       },
       "additionalProperties": false,
       "required": [
         "id",
+        "level",
+        "origin",
         "revision",
         "tags",
         "links",
@@ -116,6 +132,94 @@
         "updatedAt",
         "versions"
       ]
+    },
+    "Level": {
+      "enum": ["device", "project"],
+      "description": "device: this device, visible from every project on it. project: the caller's project, visible only inside it."
+    },
+    "ProjectId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "ProjectRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "description": "Another project on this device: its id, or the name it is registered under (its folder name)."
+    },
+    "Project": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "defs.json#/$defs/ProjectId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": ["id", "name"]
+    },
+    "Origin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "level": {
+              "const": "device"
+            }
+          },
+          "additionalProperties": false,
+          "required": ["level"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "level": {
+              "const": "project"
+            },
+            "project": {
+              "$ref": "defs.json#/$defs/Project"
+            }
+          },
+          "additionalProperties": false,
+          "required": ["level", "project"]
+        }
+      ],
+      "description": "Where a note lives."
+    },
+    "ReadOnly": {
+      "const": true,
+      "description": "Present on notes pulled from another project: they are read, never changed, from here."
+    },
+    "Unreached": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "status": {
+          "enum": ["not_found", "unavailable", "ambiguous"]
+        },
+        "project": {
+          "$ref": "defs.json#/$defs/Project"
+        },
+        "candidates": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "defs.json#/$defs/Project"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": ["ref", "status"],
+      "description": "A named project that was not read: unknown on this device, its folder moved or no longer holds it, or the name fits several projects (use an id)."
     }
   }
 }

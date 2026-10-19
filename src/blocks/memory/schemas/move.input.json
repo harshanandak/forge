@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "defs.json#/$defs/NoteId"
+    },
+    "to": {
+      "$ref": "defs.json#/$defs/Level",
+      "description": "The level the note goes to."
+    },
+    "expectRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The revision you last read."
+    },
+    "keep": {
+      "type": "boolean",
+      "description": "Copy instead of move: the source note stays."
+    }
+  },
+  "additionalProperties": false,
+  "required": ["id", "to", "expectRevision"]
+}

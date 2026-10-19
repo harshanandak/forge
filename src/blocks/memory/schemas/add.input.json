@@ -8,6 +8,10 @@
       "maxLength": 8000,
       "description": "What to remember."
     },
+    "level": {
+      "$ref": "defs.json#/$defs/Level",
+      "description": "Where a new note goes. Agents always say; a person on the CLI may leave it out to get the configured default."
+    },
     "scope": {
       "anyOf": [
         {

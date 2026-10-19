@@ -2,6 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
+    "level": {
+      "$ref": "defs.json#/$defs/Level",
+      "description": "Which level to export: the device's notes or this project's."
+    },
     "scope": {
       "$ref": "defs.json#/$defs/Scope"
     },
@@ -11,5 +15,6 @@
       "description": "Continue after this note number: the next value of the previous chunk."
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "required": ["level"]
 }
