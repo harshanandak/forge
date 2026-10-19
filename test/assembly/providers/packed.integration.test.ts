@@ -22,6 +22,10 @@ import {
 import { providerCounterfactuals } from "../../node-fixtures/assembly-providers/counterfactuals.ts";
 import { runFixtures } from "../../integration/fixtures/run.ts";
 
+function assertInstrumentation(source: string): void {
+  expect(source).toContain("value: factory(tracked)");
+  expect(source).toContain("controller.abort();");
+}
 const root = resolve(import.meta.dirname, "../../..");
 function run(
   command: string,
@@ -189,6 +193,62 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
       join(root, "test/integration/fixtures/mutation-proof.mjs"),
       join(isolated, "mutation-proof.mjs"),
     );
+    const commandProvider = join(isolated, "dist/src/assembly/providers.js");
+    const commandBytes = readFileSync(commandProvider, "utf8");
+    assertInstrumentation(commandBytes);
+    try {
+      writeFileSync(
+        commandProvider,
+        commandBytes
+          .replace(
+            "value: factory(tracked)",
+            "value: (globalThis.__commandLeases = (globalThis.__commandLeases ?? 0) + 1, factory(tracked))",
+          )
+          .replace(
+            "controller.abort();",
+            "globalThis.__commandLeases--; controller.abort();",
+          ),
+      );
+      expect(
+        successful(node, [join(isolated, "journey.mjs"), "tools"], consumer),
+      ).toContain("PASS assembly-providers tools");
+    } finally {
+      writeFileSync(commandProvider, commandBytes);
+    }
+    for (const [relative, from, to, evidence] of [
+      [
+        "assembly/index.js",
+        '!scope.effects.includes("files:read") &&',
+        "false &&",
+        "Clone files require files:read",
+      ],
+      [
+        "adapters/github-cli/index.js",
+        "options.credential !== undefined",
+        "false",
+        "ACCOUNT_CREDENTIAL_UNSUPPORTED",
+      ],
+    ]) {
+      const file = join(isolated, "dist/src", relative!);
+      const original = readFileSync(file, "utf8");
+      expect(original).toContain(from!);
+      try {
+        writeFileSync(file, original.replace(from!, to!));
+        const result = run(
+          node,
+          [join(isolated, "journey.mjs"), "tools"],
+          consumer,
+          env,
+        );
+        expect(result.status).not.toBe(0);
+        expect(`${result.stdout} ${result.stderr}`).toContain(evidence!);
+        console.log(
+          `Command counterfactual ${evidence}: expected failure observed`,
+        );
+      } finally {
+        writeFileSync(file, original);
+      }
+    }
     phase("copy");
     for (const mutation of selectShard(
       providerCounterfactuals,

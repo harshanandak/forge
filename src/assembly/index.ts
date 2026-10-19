@@ -47,6 +47,7 @@ import { LocalState } from "./state.ts";
 import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
+  releaseServiceLeases,
   createAssemblyProviders,
   type ProviderOptions,
 } from "./providers.ts";
@@ -593,6 +594,28 @@ export async function createAssembly(
                 }
                 if (
                   interfaceSatisfies(
+                    "forge.vcs-command@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  const lease = await providers.repository(scope);
+                  leases.push(lease);
+                  clients[binding.slot] = lease.value;
+                  continue;
+                }
+                if (
+                  interfaceSatisfies(
+                    "forge.github-command@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  const lease = await providers.account(scope);
+                  leases.push(lease);
+                  clients[binding.slot] = lease.value;
+                  continue;
+                }
+                if (
+                  interfaceSatisfies(
                     "forge.environment@1.0.0",
                     binding.interface,
                   )
@@ -618,6 +641,21 @@ export async function createAssembly(
                 if (
                   interfaceSatisfies("forge.files@1.0.0", binding.interface)
                 ) {
+                  if (
+                    !scope.effects.includes("files:read") &&
+                    !scope.effects.includes("files:write")
+                  ) {
+                    Object.defineProperty(clients, binding.slot, {
+                      enumerable: true,
+                      get() {
+                        return refuse(
+                          "EFFECT_UNDECLARED",
+                          "Clone files require files:read or files:write on this operation",
+                        );
+                      },
+                    });
+                    continue;
+                  }
                   if (
                     context.variant !== "project" &&
                     context.variant !== "leased"
@@ -654,16 +692,13 @@ export async function createAssembly(
                 ownership: "owned",
                 value: Object.freeze(clients),
                 async close() {
-                  await Promise.all(leases.map((lease) => lease.close()));
+                  const errors = await releaseServiceLeases(leases);
+                  if (errors.length)
+                    throw new AggregateError(errors, "Service cleanup failed");
                 },
               };
             } catch (error) {
-              const cleaned = await Promise.allSettled(
-                leases.map((lease) => lease.close()),
-              );
-              const errors = cleaned.flatMap((result) =>
-                result.status === "rejected" ? [result.reason as unknown] : [],
-              );
+              const errors = await releaseServiceLeases(leases);
               if (errors.length)
                 throw new AggregateError(
                   [error, ...errors],

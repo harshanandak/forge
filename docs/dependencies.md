@@ -99,3 +99,14 @@ Each one gets an entry here and an adapter in the same pull request.
 - **Trust:** the same runtime already required by the package.
 - **Swap proof:** runtime acceptance injects the evaluator through L1 LifetimeProvider; admission, output limits and owned-service cleanup stay in core.
 - **Adapter:** src/adapters/node-runtime/ implements runtime-local RunIsolationPort using src/ports/lifetime.ts; no L1 contract change.
+
+#### gh (external executable)
+
+- **Saves:** GitHub CLI command execution without implementing another API client.
+- **Maintenance:** maintained by the GitHub CLI project; supplied by the user.
+- **Transitive packages:** no npm packages added.
+- **Fit:** optional executable through ProcessPort on Node and Bun; missing is Unavailable.
+- **Licence:** MIT (GitHub CLI).
+- **Trust:** user-installed executable resolved to an absolute path; no downloaded launcher.
+- **Swap proof:** the command contract suite in test/adapters/account-tools/commands.test.ts runs against both adapters and an in-memory fake.
+- **Adapter:** src/adapters/github-cli/ implements AccountCommandPort. Credential mode refuses until its isolation boundary is implemented.

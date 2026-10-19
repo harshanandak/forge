@@ -1,5 +1,11 @@
 import { realpathSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
+import { createVcsCommandPort } from "../adapters/vcs-git/commands.ts";
+import { createGithubCommandPort } from "../adapters/github-cli/index.ts";
+import type {
+  ToolCommandPort,
+  AccountCommandPort,
+} from "../ports/tool-command.ts";
 import { createProcessPort } from "../adapters/process/index.ts";
 import { createRunnerOutput } from "../adapters/runner-output/index.ts";
 import type { RunnerOutputPort } from "../ports/runner-output.ts";
@@ -53,6 +59,8 @@ export interface ProviderOptions {
   readonly env?: Readonly<Record<string, string>>;
 }
 export interface AssemblyProviders {
+  repository(scope: ServiceScope): Promise<OwnedHandle<ToolCommandPort>>;
+  account(scope: ServiceScope): Promise<OwnedHandle<AccountCommandPort>>;
   process(scope: ServiceScope): ProcessService;
   environment(scope: ServiceScope): EnvironmentService;
   crypto(scope: ServiceScope): CryptoService;
@@ -76,6 +84,8 @@ const CLEANUP: SupervisionOptions = {
 export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.state@1.0.0",
   "forge.process@1.0.0",
+  "forge.vcs-command@1.0.0",
+  "forge.github-command@1.0.0",
   "forge.files@1.0.0",
   "forge.environment@1.0.0",
   "forge.crypto@1.0.0",
@@ -84,6 +94,17 @@ export const ASSEMBLY_PROVIDES: readonly string[] = [
 export function assemblyProvides(required: string): boolean {
   return ASSEMBLY_PROVIDES.some((provided) =>
     interfaceSatisfies(provided, required),
+  );
+}
+/** Invoke every closer, including when a closer throws before returning a promise. */
+export async function releaseServiceLeases(
+  leases: readonly OwnedHandle<unknown>[],
+): Promise<unknown[]> {
+  const results = await Promise.allSettled(
+    leases.map(async (lease) => lease.close()),
+  );
+  return results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason as unknown] : [],
   );
 }
 function refuse(code: string, message: string): never {
@@ -158,7 +179,70 @@ export function createAssemblyProviders(
     createProcessPort({
       supervision: options.supervision ?? CLEANUP,
     });
+  async function commands<T>(
+    scope: ServiceScope,
+    factory: (process: ProcessPort) => T,
+  ): Promise<OwnedHandle<T>> {
+    active(scope);
+    if (scope.processContainment === "strict") {
+      const capability = await port.containment?.();
+      active(scope);
+      if (!capability?.available)
+        refuse(
+          "CONTAINMENT_UNAVAILABLE",
+          "Strict containment is unavailable for tool commands",
+        );
+    }
+    const controller = new AbortController();
+    const signal = AbortSignal.any([scope.signal, controller.signal]);
+    const boundScope: ServiceScope = {
+      ...scope,
+      signal,
+      get deadline() {
+        return scope.deadline;
+      },
+    };
+    const scoped = createProcessService(port, boundScope, root);
+    const pending = new Set<Promise<ProcessResult>>();
+    const cleanupErrors: unknown[] = [];
+    const tracked: ProcessPort = {
+      ...scoped,
+      run(executable, args, options) {
+        const result = scoped.run(executable, args, options);
+        pending.add(result);
+        void result.then(
+          () => pending.delete(result),
+          (error: unknown) => {
+            pending.delete(result);
+            if (
+              error !== null &&
+              typeof error === "object" &&
+              "code" in error &&
+              error.code === "TREE_KILL_FAILED"
+            )
+              cleanupErrors.push(error);
+          },
+        );
+        return result;
+      },
+    };
+    return {
+      ownership: "owned",
+      value: factory(tracked),
+      async close() {
+        controller.abort();
+        await Promise.allSettled([...pending]);
+        if (cleanupErrors.length)
+          throw new AggregateError(
+            cleanupErrors,
+            "Tool command cleanup failed",
+          );
+      },
+    };
+  }
   const providers: InternalProviders = {
+    repository: (scope) => commands(scope, createVcsCommandPort),
+    account: (scope) => commands(scope, createGithubCommandPort),
     runnerOutput(scope: ServiceScope): RunnerOutputPort {
       const output = createRunnerOutput();
       return {

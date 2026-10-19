@@ -11,6 +11,45 @@ const run = async ({ input, services, signal }) => {
   });
 };
 module.exports = {
+  "provider.noeffects": ({ services }) =>
+    services.files.read("input.txt", 1024),
+  "provider.tools": async ({ services }) => {
+    const env = services.environment.select([
+      "PATH",
+      "Path",
+      "PATHEXT",
+      "SystemRoot",
+      "HOME",
+      "USERPROFILE",
+    ]);
+    const options = {
+      cwd: services.process.cwd,
+      env,
+      timeoutMs: 5000,
+      maxOutputBytes: 4096,
+    };
+    const git = services.repository.resolve("git", env);
+    const gh = services.account.resolve("gh", env);
+    if (git.kind !== "resolved" || gh.kind !== "resolved")
+      throw Error("Fixture needs git and gh");
+    return {
+      git: await services.repository.run(git.path, ["--version"], options),
+      gh: await services.account.run(gh.path, ["--version"], options),
+    };
+  },
+  "provider.credential": async ({ services }) =>
+    services.account.run("gh", [], {
+      cwd: services.process.cwd,
+      env: {},
+      timeoutMs: 5000,
+      maxOutputBytes: 4096,
+      credential: {
+        token: "fixture-only",
+        pinnedGit: "/git",
+        ownedConfigDir: "/empty",
+        ownedDataDir: "/empty",
+      },
+    }),
   "provider.run": run,
   "provider.timeout": run,
   "provider.deniedprocess": run,

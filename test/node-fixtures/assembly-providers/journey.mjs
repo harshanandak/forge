@@ -62,12 +62,15 @@ const effects = {
   env: ["environment:read"],
   deniedenv: [],
   read: ["files:read"],
-  deniedfiles: [],
-  deniedwrite: [],
+  deniedfiles: ["files:write"],
+  deniedwrite: ["files:read"],
   write: ["files:write"],
   remove: ["files:write"],
   snapshot: ["files:read"],
-  crypto: [],
+  crypto: ["files:read"],
+  noeffects: [],
+  tools: ["external:process", "environment:read"],
+  credential: ["external:process"],
 };
 for (const [verb, declaredEffects] of Object.entries(effects)) {
   operations[`provider.${verb}`] = {
@@ -91,12 +94,14 @@ const manifest = {
   profile: "trusted-action/v2",
   entry: "entry.cjs",
   docs: "docs.json",
-  requires: ["process", "files", "environment", "crypto", "state"].map(
-    (slot) => ({
+  requires: [
+    ...["process", "files", "environment", "crypto", "state"].map((slot) => ({
       slot,
       interface: `forge.${slot}@1`,
-    }),
-  ),
+    })),
+    { slot: "repository", interface: "forge.vcs-command@1" },
+    { slot: "account", interface: "forge.github-command@1" },
+  ],
   operations,
 };
 writeFileSync(join(block, "forge.block.json"), JSON.stringify(manifest));
@@ -705,6 +710,24 @@ try {
       alive(Number(readFileSync(descendant, "utf8"))),
       false,
       "normal return must stop descendants before settling",
+    );
+  }
+  if (["all", "tools"].includes(mode)) {
+    const tools = cli("tools", {});
+    const direct = ok(await invoke("provider.tools"), "typed commands");
+    assert.equal(direct.git.exitCode, 0);
+    assert.equal(direct.gh.exitCode, 0);
+    assert.match(tools.git.stdout, /git version/i);
+    assert.match(tools.gh.stdout, /gh version/i);
+    assert.equal(
+      (await invoke("provider.noeffects")).error?.message,
+      "Clone files require files:read or files:write on this operation",
+    );
+    if (globalThis.__commandLeases !== undefined)
+      assert.equal(globalThis.__commandLeases, 0, "all command leases closed");
+    assert.equal(
+      (await invoke("provider.credential")).error?.code,
+      "ACCOUNT_CREDENTIAL_UNSUPPORTED",
     );
   }
   assert.equal(

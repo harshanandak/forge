@@ -1,4 +1,4 @@
-﻿export { Runtime, type RuntimeOptions } from "../core/runtime/index.ts";
+export { Runtime, type RuntimeOptions } from "../core/runtime/index.ts";
 export { BlockCatalog } from "../core/runtime/catalog.ts";
 export {
   Catalog,
@@ -29,3 +29,8 @@ export {
   type AssemblyOptions,
   type UnavailableBlock,
 } from "./index.ts";
+
+export type {
+  ToolCommandPort,
+  AccountCommandPort,
+} from "../ports/tool-command.ts";
