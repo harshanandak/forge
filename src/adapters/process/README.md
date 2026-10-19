@@ -1,5 +1,13 @@
 # Invocation process supervision
 
+`run` optionally accepts `capture: {headBytes, tailBytes}`. Both are non-negative
+integers and their sum must fit `maxOutputBytes`; invalid combinations refuse before
+spawning. Capture retains non-overlapping raw head/tail bytes, hashes every arriving
+byte incrementally, and returns `outputEvidence` with lossless base64 previews, byte
+counts and SHA-256 digests. `complete` is false when pipes did not finish draining
+within the cleanup deadline. Without this option, prefix capture and the result shape
+are unchanged. Retention stays bounded regardless of the emitted stream length.
+
 `createProcessPort({supervision, strictContainment?, cgroupRoot?})` takes host-declared policy. Resolution can be used without supervision config; execution refuses `INVALID_OPTIONS` until every supervision key is declared and validated. Nothing inherits the target command's loader options or environment into the supervisor.
 
 | Host key                       | Meaning                                                                                                    | Validated bounds                                                                                                             |
