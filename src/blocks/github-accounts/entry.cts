@@ -850,18 +850,30 @@ async function hookRoutes(
         "ACCOUNT_DATA_INVALID",
         "Effective hook configuration is incomplete",
       );
-    const resolved = await repository(
+    const resolved = await command(
       s,
       c,
       env,
+      "repository",
+      c.gitProgram,
       ["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push"],
       worktree,
+      [0, 1, 128],
     );
+    if (resolved.exitCode !== 0)
+      fail(
+        configured.exitCode === 0
+          ? parts[0] === "worktree"
+            ? "ACCOUNT_HOOKS_CONFLICT"
+            : "INPUT_CONFLICT"
+          : "ACCOUNT_COMMAND_FAILED",
+        `Cannot resolve guard hooks in worktree ${worktree}: core.hooksPath=${JSON.stringify(configured.exitCode === 0 ? parts[1] : null)}`,
+      );
     routes.push({
       worktree,
       scope: configured.exitCode === 0 ? parts[0]! : null,
       override: configured.exitCode === 0 ? parts[1]! : null,
-      hook: hookPath(resolved.replace(/\r?\n$/, "")),
+      hook: hookPath(resolved.stdout.replace(/\r?\n$/, "")),
     });
   }
   if (!routes.length)

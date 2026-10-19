@@ -222,6 +222,9 @@ try {
   await conflict(s, config, custom);
   git(linked, "config", "--worktree", "core.hooksPath", "");
   await conflict(s, config, "");
+  const unresolved = ".git/foreign-worktree-hooks";
+  git(linked, "config", "--worktree", "core.hooksPath", unresolved);
+  await conflict(s, config, unresolved);
   git(linked, "config", "--worktree", "--unset", "core.hooksPath");
   const beforeLateOverride = snapshot();
   let injected = false;
