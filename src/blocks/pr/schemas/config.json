@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "minApprovals",
+    "settleMs",
+    "optionalChecks",
+    "allowNoChecks",
+    "blockingLabels",
+    "mergeMethod"
+  ],
+  "properties": {
+    "minApprovals": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "settleMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "optionalChecks": {
+      "enum": ["ignore", "safe-terminal"]
+    },
+    "allowNoChecks": {
+      "type": "boolean"
+    },
+    "blockingLabels": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 10000,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "mergeMethod": {
+      "enum": ["squash"]
+    }
+  }
+}

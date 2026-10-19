@@ -1,0 +1,8 @@
+{
+  "operations": {
+    "pr.evaluate": {
+      "title": "Evaluate pull request evidence",
+      "summary": "Compute all typed blockers from supplied evidence and explicit policy without a host call or mutation."
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/pr",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "configSchema": "schemas/config.json",
+  "docs": "docs.json",
+  "requires": [{ "slot": "crypto", "interface": "forge.crypto@1" }],
+  "operations": {
+    "pr.evaluate": {
+      "input": "schemas/evaluate.input.json",
+      "output": "schemas/evaluate.output.json",
+      "context": "stateless",
+      "timeoutMs": 5000,
+      "effects": [],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    }
+  },
+  "files": ["schemas/pr.json"]
+}
