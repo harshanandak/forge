@@ -6,7 +6,7 @@ export interface Counterfactual {
   readonly to: string;
   /** Replace every occurrence rather than the first. */
   readonly all?: true;
-  readonly journey: "device" | "fence" | "levels" | "policy" | "move";
+  readonly journey: "device" | "fence" | "levels";
   readonly evidence: string;
 }
 
@@ -64,7 +64,7 @@ export const counterfactuals: readonly Counterfactual[] = [
     file: "blocks/memory/index.cjs",
     from: 'const policy = config.levels?.[services.levels.caller] ?? "required";',
     to: 'const policy = "nearest";',
-    journey: "policy",
+    journey: "levels",
     evidence: "an agent that omits the level is refused",
   },
   {
@@ -72,7 +72,7 @@ export const counterfactuals: readonly Counterfactual[] = [
     file: "blocks/memory/index.cjs",
     from: "const made = target.state.get(marker);",
     to: "const made = undefined;",
-    journey: "move",
+    journey: "levels",
     evidence: "the retried move finishes with one copy",
   },
 ];

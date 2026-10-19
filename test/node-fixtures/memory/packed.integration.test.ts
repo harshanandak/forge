@@ -17,7 +17,7 @@ import { counterfactuals } from "./counterfactuals.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 const fixture = join(import.meta.dirname, "journeys.mjs");
-const JOURNEYS = ["device", "fence", "levels", "policy", "move"] as const;
+const JOURNEYS = ["device", "fence", "levels"] as const;
 
 function timing(label: string, started: number): void {
   console.log(
@@ -167,8 +167,11 @@ test("integration: packed memory journeys, each failing with its fix removed", a
     const passed = await timedAsync("positives", () =>
       runFixtures(positives, 3, "Packed memory"),
     );
-    for (const [index, journey] of JOURNEYS.entries())
+    for (const [index, journey] of JOURNEYS.entries()) {
       expect(passed[index]).toContain(`PASS ${journey}`);
+      for (const line of passed[index]!.split(/\r?\n/))
+        if (line.startsWith("STEP ")) console.log(`Packed memory ${line}`);
+    }
 
     // Each worker mutates its own copy; only its selected counterfactuals are sequential.
     const workers = timed("copy", () =>

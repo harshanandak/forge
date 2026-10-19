@@ -143,11 +143,11 @@ function setup(name, effects, at = root, config) {
     0,
     at,
   );
-  const probe = ["memory", "search", "x"];
+  const search = ["memory", "search", "x"];
   // Admission is per device: a second project on an admitting device is already admitted.
   if (at === root)
     assert.equal(
-      cli(probe, 2, at).error.code,
+      cli(search, 2, at).error.code,
       "ADMISSION_REQUIRED",
       "the registered block is not admitted until a human admits it",
     );
@@ -158,7 +158,7 @@ function setup(name, effects, at = root, config) {
     at,
   );
   assert.equal(
-    cli(probe, 0, at).ok,
+    cli(search, 0, at).ok,
     true,
     "the registered block runs once admitted",
   );
@@ -290,165 +290,236 @@ async function fence() {
 
 const EFFECTS = ["memory:write", "decision:write"];
 const POLICY = { levels: { human: "nearest", agent: "required" } };
-/** Project alpha (the journey root) and project beta, on one device. */
-function twoProjects() {
-  const beta = join(work, "beta");
-  rmSync(beta, { recursive: true, force: true });
-  mkdirSync(beta);
-  setup("memory", EFFECTS, root, POLICY);
-  setup("memory", EFFECTS, beta, POLICY);
-  return beta;
+
+/** Time one step of a journey; the packed suite prints these. */
+async function step(name, action) {
+  const started = performance.now();
+  try {
+    return await action();
+  } finally {
+    console.log(
+      `STEP levels/${name}: ${Math.round(performance.now() - started)} ms`,
+    );
+  }
 }
-function add(input, at = root) {
-  return cli(["memory", "add", "--input", JSON.stringify(input)], 0, at).result;
+/**
+ * A host for one project through the installed package's own assembly API, in this process: no
+ * process start per call. The CLI and MCP surfaces are proved by the device and fence journeys and
+ * by this journey's own CLI and MCP steps.
+ */
+async function host(at) {
+  const { createAssembly, localContext } = await import(
+    pathToFileURL(join(installed, "dist/src/assembly/runtime.js")).href
+  );
+  const assembly = await createAssembly({ root: at, deviceRoot });
+  let count = 0;
+  const call = (op, input, caller = "human") =>
+    assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: `levels-${++count}`,
+      op,
+      input,
+      caller,
+      context: localContext(assembly, {
+        kind: caller,
+        id: `journey-${caller}`,
+      }),
+    });
+  const ok = async (op, input, caller) => {
+    const result = await call(op, input, caller);
+    assert.equal(result.ok, true, `${op}: ${JSON.stringify(result)}`);
+    return result.result;
+  };
+  return { call, ok, close: () => assembly.close() };
 }
+/** Select the block with the level policy; the first project also admits and grants it. */
+async function enable(project, admit) {
+  if (admit) {
+    mkdirSync(join(project.at, "blocks"), { recursive: true });
+    cpSync(
+      join(installed, "dist/src/blocks/memory"),
+      join(project.at, "blocks/memory"),
+      { recursive: true, filter: (path) => !path.endsWith(".map") },
+    );
+  }
+  const digest = admit
+    ? (await project.ok("block.check", { path: "./blocks/memory" })).digest
+    : undefined;
+  const shown = await project.ok("config.show", {});
+  await project.ok("config.apply", {
+    expectRevision: shown.revision,
+    patch: [
+      {
+        op: "set",
+        path: "/blocks/memory",
+        value: { source: { builtin: "forge/memory" }, config: POLICY },
+      },
+    ],
+  });
+  if (!admit) return;
+  // Admission and grants are per device, so the second project needs neither.
+  await project.ok("block.admit", { digest });
+  await project.ok("config.grant", { digest, effects: EFFECTS });
+}
+/**
+ * Device and project levels end to end on the installed package: two projects on one device,
+ * set up once, each behaviour proved once. The finer cases (ids by number, repeats, unknown and
+ * ambiguous names, settled transfers) are proved in the unit and integration suites.
+ */
 async function levels() {
-  const beta = twoProjects();
-  const device = add({ text: "shared release checklist", level: "device" });
-  const own = add({ text: "alpha release secret", level: "project" });
-  assert.equal(device.id, "device/note-1");
+  const betaRoot = join(work, "beta");
+  mkdirSync(betaRoot, { recursive: true });
+  /** Run with an in-process host that is closed again before any process starts. */
+  const within = async (at, work) => {
+    const project = { at, ...(await host(at)) };
+    try {
+      return await work(project);
+    } finally {
+      await project.close();
+    }
+  };
+  const agent = (project) => (op, input) => project.ok(op, input, "agent");
+
+  // Calls run on in-process hosts, each closed straight after: an open host keeps stores open
+  // that a new process would wait on, and the person step starts the CLI.
+  const { device, own } = await step("setup", async () => {
+    const notes = await within(root, async (alpha) => {
+      await enable(alpha, true);
+      const device = await agent(alpha)("memory.add", {
+        text: "shared release checklist",
+        level: "device",
+      });
+      const own = await agent(alpha)("memory.add", {
+        text: "alpha release secret",
+        level: "project",
+      });
+      return { device, own };
+    });
+    await within(betaRoot, (beta) => enable(beta, false));
+    return notes;
+  });
   assert.match(
     own.id,
     /^project\/[0-9a-f]{16}\/note-1$/,
     "a project note's id names its project",
   );
-  const fromAlpha = cli(["memory", "search", "release"]).result.hits;
-  assert.deepEqual(
-    fromAlpha.map((hit) => `${hit.level}:${hit.id}`).sort(),
-    [`device:${device.id}`, `project:${own.id}`].sort(),
-    "inside alpha a search covers alpha and the device, each hit labelled",
+
+  await step("pull", () =>
+    within(betaRoot, async (beta) => {
+      // An agent in beta reaches alpha's note only by naming alpha. The MCP surface itself is
+      // proved by the fence journey.
+      const [hit] = (
+        await agent(beta)("memory.search", {
+          query: "secret",
+          projects: [own.note.origin.project.name],
+        })
+      ).hits;
+      assert.equal(hit?.id, own.id, "the named project's note is found");
+      assert.equal(hit.readOnly, true, "pulled notes are read-only");
+      assert.deepEqual(
+        hit.origin,
+        {
+          level: "project",
+          project: { id: own.id.split("/")[1], name: "project" },
+        },
+        "a pulled note is labelled with its project",
+      );
+      assert.equal(hit.snippet.kind, "untrusted", "a pulled note is fenced");
+      assert.equal(hit.snippet.source, `memory:${own.id}`);
+    }),
   );
-  const fromBeta = cli(["memory", "search", "release"], 0, beta).result.hits;
-  assert.deepEqual(
-    fromBeta.map((hit) => hit.id),
-    [device.id],
-    "beta sees the device note and not alpha's project note",
-  );
-  // An agent in beta pulls alpha's note only by naming alpha.
-  const server = await connect(beta);
-  try {
-    const pulled = await server.call("memory_search", {
-      query: "secret",
-      projects: [own.note.origin.project.name],
-    });
-    assert.equal(pulled.ok, true, JSON.stringify(pulled));
-    const [hit] = pulled.result.hits;
-    assert.equal(hit?.id, own.id, "the named project's note is found");
-    assert.equal(hit.readOnly, true, "pulled notes are read-only");
+
+  await step("person", async () => {
+    // A person on the CLI gets the configured default: the project.
+    const person = cli([
+      "memory",
+      "add",
+      "--input",
+      JSON.stringify({ text: "a person's note" }),
+    ]).result;
+    assert.match(
+      person.id,
+      /^project\//,
+      "a person inside a project gets the project",
+    );
+  });
+
+  await step("visibility", async () => {
+    const fromAlpha = await within(root, (alpha) =>
+      agent(alpha)("memory.search", { query: "release" }),
+    );
     assert.deepEqual(
-      hit.origin,
-      {
-        level: "project",
-        project: { id: own.id.split("/")[1], name: "project" },
-      },
-      "a pulled note is labelled with its project",
+      fromAlpha.hits.map((hit) => `${hit.level}:${hit.id}`).sort(),
+      [`device:${device.id}`, `project:${own.id}`].sort(),
+      "inside alpha a search covers alpha and the device, each hit labelled",
     );
-    assert.equal(hit.snippet.kind, "untrusted", "a pulled note is fenced");
-    assert.equal(hit.snippet.source, `memory:${own.id}`);
-    const edit = await server.call("memory_add", {
-      id: own.id,
-      expectRevision: 1,
-      text: "changed from beta",
+    await within(betaRoot, async (beta) => {
+      const fromBeta = await agent(beta)("memory.search", { query: "release" });
+      assert.deepEqual(
+        fromBeta.hits.map((hit) => hit.id),
+        [device.id],
+        "beta sees the device note and not alpha's project note",
+      );
+      const edit = await agent(beta)("memory.add", {
+        id: own.id,
+        expectRevision: 1,
+        text: "changed from beta",
+      });
+      assert.equal(edit.status, "read_only", "pulled notes are read-only");
+      const refused = await beta.call(
+        "memory.add",
+        { text: "no level given" },
+        "agent",
+      );
+      assert.equal(
+        refused.error?.code,
+        "LEVEL_REQUIRED",
+        `an agent that omits the level is refused: ${JSON.stringify(refused)}`,
+      );
+      assert.match(refused.error.message, /level "device"/);
+      assert.match(refused.error.message, /level "project"/);
     });
-    assert.equal(
-      edit.result?.status,
-      "read_only",
-      "pulled notes are read-only",
-    );
-  } finally {
-    await server.close();
-  }
-  assert.equal(
-    cli(["memory", "show", own.id]).result.note.text.text,
-    "alpha release secret",
-    "alpha's note is unchanged",
+  });
+
+  await step("move", () =>
+    within(root, async (alpha) => {
+      const note = await agent(alpha)("memory.add", {
+        text: "move me to the project",
+        level: "device",
+      });
+      const request = { id: note.id, to: "project", expectRevision: 1 };
+      // A keep copy leaves exactly what a move that stopped between the two stores leaves: the
+      // copy and its transfer record in the project, the source still live on the device.
+      const stopped = await agent(alpha)("memory.move", {
+        ...request,
+        keep: true,
+      });
+      assert.equal(stopped.status, "copied");
+      const retried = await alpha.call("memory.move", request, "agent");
+      assert.equal(
+        retried.ok,
+        true,
+        `the retried move finishes with one copy: ${JSON.stringify(retried)}`,
+      );
+      assert.equal(retried.result.status, "moved");
+      assert.equal(
+        retried.result.to,
+        stopped.to,
+        "the retried move finishes with one copy",
+      );
+      assert.deepEqual(
+        (await agent(alpha)("memory.search", { query: "move" })).hits.map(
+          (hit) => hit.id,
+        ),
+        [stopped.to],
+        "the retried move finishes with one copy and no device duplicate",
+      );
+    }),
   );
   console.log("PASS levels");
 }
 
-async function policy() {
-  setup("memory", EFFECTS, root, POLICY);
-  const server = await connect();
-  try {
-    const refused = await server.call("memory_add", { text: "no level given" });
-    assert.equal(
-      refused.error?.code,
-      "LEVEL_REQUIRED",
-      `an agent that omits the level is refused: ${JSON.stringify(refused)}`,
-    );
-    assert.match(refused.error.message, /level "device"/);
-    assert.match(refused.error.message, /level "project"/);
-  } finally {
-    await server.close();
-  }
-  const person = add({ text: "a person's note" });
-  assert.match(
-    person.id,
-    /^project\//,
-    "a person inside a project gets the project",
-  );
-  console.log("PASS policy");
-}
-
-async function move() {
-  setup("memory", EFFECTS, root, POLICY);
-  const server = await connect();
-  try {
-    const call = async (name, args) => {
-      const result = await server.call(name, args);
-      assert.equal(result.ok, true, `${name}: ${JSON.stringify(result)}`);
-      return result.result;
-    };
-    const note = await call("memory_add", {
-      text: "move me to the project",
-      level: "device",
-    });
-    const request = { id: note.id, to: "project", expectRevision: 1 };
-    // A keep copy leaves exactly what a move that stopped between the two stores leaves: the
-    // copy and its transfer record in the project, the source still live on the device.
-    const stopped = await call("memory_move", { ...request, keep: true });
-    assert.equal(stopped.status, "copied");
-    assert.equal(
-      (await call("memory_show", { id: note.id })).status,
-      "found",
-      "the source is still there after the interruption",
-    );
-    const retried = await server.call("memory_move", request);
-    assert.equal(
-      retried.ok,
-      true,
-      `the retried move finishes with one copy: ${JSON.stringify(retried)}`,
-    );
-    const finished = retried.result;
-    assert.equal(finished.status, "moved");
-    assert.equal(
-      finished.to,
-      stopped.to,
-      "the retried move finishes with one copy",
-    );
-    assert.deepEqual(
-      (await call("memory_search", { query: "move" })).hits.map(
-        (hit) => hit.id,
-      ),
-      [stopped.to],
-      "the retried move finishes with one copy and no device duplicate",
-    );
-    assert.deepEqual(
-      await call("memory_move", request),
-      finished,
-      "repeating a finished move returns the same result",
-    );
-    assert.deepEqual(await call("memory_show", { id: note.id }), {
-      status: "moved",
-      to: stopped.to,
-    });
-  } finally {
-    await server.close();
-  }
-  console.log("PASS move");
-}
-
-const journeys = { device, fence, levels, policy, move };
+const journeys = { device, fence, levels };
 
 // Each journey has its own deadline; a journey spawns the CLI a dozen or so times.
 let deadline;
