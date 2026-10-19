@@ -41,6 +41,11 @@ export interface Fence {
 export interface WriteOptions extends PutOptions {
   readonly requestId?: string;
   readonly fence?: Fence;
+  /** Revisions used to validate this write; 0 asserts that a key remains absent. */
+  readonly readSet?: readonly {
+    readonly key: string;
+    readonly expectRevision: number;
+  }[];
 }
 export interface Snapshot {
   readonly image: string;
@@ -113,6 +118,24 @@ function body<T>(row: SqlRow | undefined): T | undefined {
 function keyValid(key: string): void {
   if (key.length === 0 || key.length > 500)
     invalid("Key must contain 1 to 500 characters");
+}
+function copyReadSet(value: unknown): WriteOptions["readSet"] {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return invalid("Invalid read set");
+  return value.map((entry: unknown) => {
+    if (!entry || typeof entry !== "object")
+      return invalid("Invalid read-set revision");
+    const read = entry as Record<string, unknown>;
+    if (
+      typeof read.key !== "string" ||
+      typeof read.expectRevision !== "number" ||
+      !Number.isSafeInteger(read.expectRevision) ||
+      read.expectRevision < 0
+    )
+      return invalid("Invalid read-set revision");
+    keyValid(read.key);
+    return { key: read.key, expectRevision: read.expectRevision };
+  });
 }
 function namespaceValid(namespace: string): void {
   if (!validateBlockId(namespace).ok) invalid("Invalid namespace");
@@ -204,6 +227,7 @@ function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
   const event = matches[0]!;
   if (input.kind === "put") {
     const record = result as StateRecord;
+    const readSet = copyReadSet(input.readSet);
     if (
       !validateStateRecord(record).ok ||
       !Number.isSafeInteger(record.revision) ||
@@ -225,9 +249,24 @@ function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
           actor: event.actor,
           revision: event.revision - 1,
           fence: input.fence,
+          ...(readSet === undefined ? {} : { readSet }),
         })
     )
       invalid("Imported put receipt does not match its operation");
+    if (readSet !== undefined) {
+      const revisions = new Map<string, number>();
+      for (const prior of events) {
+        if (prior === event) break;
+        if (
+          prior.namespace === event.namespace &&
+          prior.type === `${event.namespace}:record.updated@1`
+        )
+          revisions.set(prior.key, prior.revision);
+      }
+      for (const read of readSet)
+        if ((revisions.get(read.key) ?? 0) !== read.expectRevision)
+          invalid("Imported request read set does not match accepted history");
+    }
     if (input.fence !== null) {
       const fence = input.fence as Fence;
       if (
@@ -733,6 +772,7 @@ export class StateOwner {
       options.expectRevision < 0
     )
       invalid("Invalid actor or expected revision");
+    const readSet = copyReadSet(options.readSet) ?? [];
     const stored = JSON.parse(json(value)) as unknown;
     return this.#db.transaction(() => {
       const now = this.#now();
@@ -747,6 +787,7 @@ export class StateOwner {
           actor,
           revision: options.expectRevision,
           fence: options.fence ?? null,
+          ...(options.readSet === undefined ? {} : { readSet }),
         },
         () => {
           const current = this.get(namespace, key);
@@ -758,6 +799,17 @@ export class StateOwner {
               retry: "reconcile_first",
               currentRevision: revision,
             });
+          for (const read of readSet) {
+            const currentRevision =
+              this.get(namespace, read.key)?.revision ?? 0;
+            if (currentRevision !== read.expectRevision)
+              throw new ForgeFailure({
+                code: "REVISION_CONFLICT",
+                message: `Read-set key ${read.key}: expected revision ${read.expectRevision}; current revision is ${currentRevision}`,
+                retry: "reconcile_first",
+                currentRevision,
+              });
+          }
           const record: StateRecord = {
             namespace,
             key,

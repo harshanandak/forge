@@ -119,10 +119,15 @@ function persist(
   value: unknown,
   expectRevision: number,
   subject?: string,
+  readSet?: readonly {
+    readonly key: string;
+    readonly expectRevision: number;
+  }[],
 ): StateRecord {
   const written = state.put(recordKey, value, {
     expectRevision,
     ...(subject === undefined ? {} : { subject }),
+    ...(readSet === undefined ? {} : { readSet }),
   });
   const read = state.get(recordKey);
   if (canonical(read) !== canonical(written))
@@ -143,15 +148,19 @@ function validateDependencies(
   state: LeaseStateClient,
   id: string,
   dependencies: readonly string[],
-): void {
+): readonly { readonly key: string; readonly expectRevision: number }[] {
+  const readSet: { key: string; expectRevision: number }[] = [];
   const walk = (dependency: string, path: Set<string>): void => {
     if (dependency === id || path.has(dependency))
       fail("INPUT_CONFLICT", "Dependencies must not contain a cycle");
-    const value = stored(get(state, dependency));
+    const record = get(state, dependency);
+    readSet.push({ key: record.key, expectRevision: record.revision });
+    const value = stored(record);
     for (const next of value.dependsOn)
       walk(next, new Set([...path, dependency]));
   };
   for (const dependency of dependencies) walk(dependency, new Set());
+  return readSet;
 }
 function blocked(state: LeaseStateClient, value: Stored): boolean {
   return value.dependsOn.some((id) => {
@@ -193,12 +202,33 @@ function list(
 function update(state: LeaseStateClient, input: UpdateItemInput): TrackerItem {
   const record = get(state, input.id);
   const value = stored(record);
-  if (input.dependsOn) validateDependencies(state, input.id, input.dependsOn);
+  const readSet = input.dependsOn
+    ? validateDependencies(state, input.id, input.dependsOn)
+    : undefined;
   const { id: _id, expectRevision, ...patch } = input;
   return item(
     state,
-    persist(state, key(input.id), { ...value, ...patch }, expectRevision),
+    persist(
+      state,
+      key(input.id),
+      { ...value, ...patch },
+      expectRevision,
+      undefined,
+      readSet,
+    ),
   );
+}
+function appended(
+  state: LeaseStateClient,
+  prefix: string,
+): readonly StateRecord[] {
+  // Successful create-if-absent appends allocate successive numeric suffixes.
+  return state
+    .list(prefix)
+    .toSorted(
+      (a, b) =>
+        Number(a.key.slice(prefix.length)) - Number(b.key.slice(prefix.length)),
+    );
 }
 function grant(
   state: LeaseStateClient,
@@ -227,7 +257,7 @@ const operations: Operations<WorkOperations> = {
         0,
       ) + 1;
     const id = `work-${sequence}`;
-    validateDependencies(state, id, input.dependsOn ?? []);
+    const readSet = validateDependencies(state, id, input.dependsOn ?? []);
     if (input.parent) get(state, input.parent);
     const value: Stored = {
       id,
@@ -240,7 +270,7 @@ const operations: Operations<WorkOperations> = {
       ...(input.body === undefined ? {} : { body: input.body }),
       ...(input.parent === undefined ? {} : { parent: input.parent }),
     };
-    return item(state, persist(state, key(id), value, 0));
+    return item(state, persist(state, key(id), value, 0, undefined, readSet));
   },
   "issue.show": ({ input, services }) => {
     const state = client(services);
@@ -315,7 +345,7 @@ const operations: Operations<WorkOperations> = {
   "issue.comments": ({ input, services }) => {
     const state = client(services);
     get(state, input.id);
-    return { records: state.list(`comment:${input.id}:`) };
+    return { records: appended(state, `comment:${input.id}:`) };
   },
   "issue.events": ({ input, services }) => {
     const state = client(services);
@@ -354,7 +384,7 @@ const operations: Operations<WorkOperations> = {
   "issue.links": ({ input, services }) => {
     const state = client(services);
     get(state, input.id);
-    return { records: state.list(`link:${input.id}:`) };
+    return { records: appended(state, `link:${input.id}:`) };
   },
   "issue.lint": ({ services }) => {
     const state = client(services);

@@ -28,6 +28,7 @@ assert.ok(isolation.ok);
 let sequence = 0;
 let readbackFault = false;
 let closeDuringAcquire = false;
+let beforePut;
 const actor = (name) => ({ kind: "agent", id: name });
 const context = (who, generation, session = who) => ({
   variant: "leased",
@@ -70,6 +71,12 @@ function call(
         state: {
           ...client,
           now: () => now,
+          put: (key, value, options) => {
+            const resume = beforePut;
+            beforePut = undefined;
+            resume?.();
+            return client.put(key, value, options);
+          },
           acquire: (subject, durationMs) => {
             if (closeDuringAcquire) {
               closeDuringAcquire = false;
@@ -180,6 +187,71 @@ try {
     }
     console.log(
       "PASS records: create, comment readback, update CAS, links, close readback, unknown kind",
+    );
+  }
+  if (["all", "dependency-race"].includes(mode)) {
+    for (const outer of ["update", "dep"])
+      for (const inner of ["update", "dep"]) {
+        const a = create("Race A"),
+          b = create("Race B");
+        call("claim", { id: a.id }, context("alice", "acquire"));
+        call("claim", { id: b.id }, context("bob", "acquire"));
+        const edge = (op, id, target, who) =>
+          call(
+            op,
+            op === "update"
+              ? { id, expectRevision: 1, dependsOn: [target] }
+              : { id, expectRevision: 1, target, action: "add" },
+            context(who, 1),
+          );
+        // Both validators can read the old graph; this barrier commits the competing edge before the outer write.
+        beforePut = () => edge(inner, b.id, a.id, "bob");
+        error("REVISION_CONFLICT", () => edge(outer, a.id, b.id, "alice"));
+        assert.deepEqual(call("show", { id: a.id }).dependsOn, []);
+        assert.deepEqual(call("show", { id: b.id }).dependsOn, [a.id]);
+        assert.equal(
+          state
+            .events("forge/work", `issue:${a.id}`)
+            .filter((event) => event.type === "forge/work:record.updated@1")
+            .length,
+          1,
+        );
+      }
+    assert.deepEqual(call("lint").problems, []);
+    console.log(
+      "PASS dependency-race: competing update/dep edges cannot both commit",
+    );
+  }
+  if (["all", "append-order"].includes(mode)) {
+    const issue = create("Append order");
+    call("claim", { id: issue.id }, context("alice", "acquire"));
+    const bodies = Array.from({ length: 12 }, (_, i) => `Comment ${i + 1}`);
+    const urls = Array.from(
+      { length: 12 },
+      (_, i) => `https://example.com/link/${i + 1}`,
+    );
+    for (let i = 0; i < 12; i++) {
+      call("comment", { id: issue.id, body: bodies[i] });
+      call(
+        "link",
+        { id: issue.id, relation: "source", url: urls[i] },
+        context("alice", 1),
+      );
+    }
+    assert.deepEqual(
+      call("comments", { id: issue.id }).records.map(
+        (record) => record.value.body,
+      ),
+      bodies,
+      "comments must retain append order beyond nine",
+    );
+    assert.deepEqual(
+      call("links", { id: issue.id }).records.map((record) => record.value.url),
+      urls,
+      "links must retain append order beyond nine",
+    );
+    console.log(
+      "PASS append-order: twelve comments and links read in write order",
     );
   }
   if (["all", "closed-claim"].includes(mode)) {

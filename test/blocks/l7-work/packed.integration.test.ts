@@ -105,6 +105,8 @@ test("installed work block: CLI readback, lease fixtures and remove-the-fix chec
       expect(output).toContain("PASS records");
       expect(output).toContain("PASS leases");
       expect(output).toContain("PASS dependencies");
+      expect(output).toContain("PASS dependency-race");
+      expect(output).toContain("PASS append-order");
     }
     for (const [index, runtime] of nodes.entries())
       expect(
