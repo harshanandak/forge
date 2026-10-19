@@ -268,7 +268,7 @@ async function graphql(
   return obj(result.data);
 }
 const coreFields =
-  "headRefOid baseRefOid baseRefName state isDraft mergeable updatedAt baseRef { branchProtectionRule { requiredStatusChecks { context appId } } }";
+  "headRefOid baseRefOid baseRefName state isDraft mergeable updatedAt baseRef { branchProtectionRule { requiredStatusChecks { context appId } requiresStrictStatusChecks requiresApprovingReviews requiresCodeOwnerReviews restrictsPushes requiresCommitSignatures } }";
 async function prQuery(
   call: Call,
   s: Selected,
@@ -417,7 +417,7 @@ async function pages(
     "GitHub evidence exceeds the configured pagination budget",
   );
 }
-function check(value: Json, expectedHead: unknown): Json {
+function check(value: Json): Json {
   if (value.__typename === "CheckRun") {
     const suite = obj(value.checkSuite),
       app = obj(suite.app);
@@ -425,7 +425,7 @@ function check(value: Json, expectedHead: unknown): Json {
       !text(value.name) ||
       !Number.isSafeInteger(app.databaseId) ||
       Number(app.databaseId) < 1 ||
-      obj(suite.commit).oid !== expectedHead ||
+      !sha(obj(suite.commit).oid) ||
       !enumValue(value.status, [
         "QUEUED",
         "IN_PROGRESS",
@@ -453,7 +453,7 @@ function check(value: Json, expectedHead: unknown): Json {
     return {
       name: value.name,
       appId: app.databaseId,
-      headSha: expectedHead,
+      headSha: obj(suite.commit).oid,
       status: enumValue(value.status, ["WAITING", "REQUESTED"])
         ? "PENDING"
         : value.status,
@@ -463,7 +463,7 @@ function check(value: Json, expectedHead: unknown): Json {
   if (
     value.__typename === "StatusContext" &&
     text(value.context) &&
-    obj(value.commit).oid === expectedHead &&
+    sha(obj(value.commit).oid) &&
     enumValue(value.state, [
       "SUCCESS",
       "EXPECTED",
@@ -476,7 +476,7 @@ function check(value: Json, expectedHead: unknown): Json {
     return {
       name: value.context,
       appId: null,
-      headSha: expectedHead,
+      headSha: obj(value.commit).oid,
       status: pending ? "PENDING" : "COMPLETED",
       conclusion: pending
         ? null
@@ -487,16 +487,43 @@ function check(value: Json, expectedHead: unknown): Json {
   }
   fail("INCOMPLETE", "A GitHub status context is malformed or unreadable");
 }
-async function required(
+async function requirements(
   call: Call,
   s: Selected,
   r: Ref,
   before: Json,
-): Promise<Json[]> {
+): Promise<{ checks: Json[]; strictStatusChecks: boolean }> {
   const rule = obj(before.baseRef).branchProtectionRule;
+  let strictStatusChecks = false;
   const required: Json[] = [];
   if (rule !== null) {
-    const checks = obj(rule).requiredStatusChecks;
+    const classic = obj(rule);
+    for (const flag of [
+      "requiresStrictStatusChecks",
+      "requiresApprovingReviews",
+      "requiresCodeOwnerReviews",
+      "restrictsPushes",
+      "requiresCommitSignatures",
+    ])
+      if (typeof classic[flag] !== "boolean")
+        fail(
+          "INCOMPLETE",
+          "Classic branch-protection requirements are unreadable",
+        );
+    if (
+      [
+        "requiresApprovingReviews",
+        "requiresCodeOwnerReviews",
+        "restrictsPushes",
+        "requiresCommitSignatures",
+      ].some((flag) => classic[flag] === true)
+    )
+      fail(
+        "INCOMPLETE",
+        "Classic branch protection has an unsupported review, identity or signature requirement",
+      );
+    strictStatusChecks = classic.requiresStrictStatusChecks as boolean;
+    const checks = classic.requiredStatusChecks;
     if (!Array.isArray(checks))
       fail("INCOMPLETE", "Protected required checks are unreadable");
     for (const v of checks) {
@@ -526,8 +553,27 @@ async function required(
       const item = obj(value);
       if (!text(item.type))
         fail("INCOMPLETE", "Repository ruleset evidence is malformed");
-      if (item.type !== "required_status_checks") continue;
-      const checks = obj(item.parameters).required_status_checks;
+      if (item.type !== "required_status_checks") {
+        // Squash merge already satisfies linear history and does not force-push or delete.
+        if (
+          ["required_linear_history", "non_fast_forward", "deletion"].includes(
+            String(item.type),
+          )
+        )
+          continue;
+        fail(
+          "INCOMPLETE",
+          "An active GitHub merge rule has no complete evaluator",
+        );
+      }
+      const parameters = obj(item.parameters);
+      if (typeof parameters.strict_required_status_checks_policy !== "boolean")
+        fail(
+          "INCOMPLETE",
+          "Ruleset strict required-check policy is unreadable",
+        );
+      strictStatusChecks ||= parameters.strict_required_status_checks_policy;
+      const checks = parameters.required_status_checks;
       if (!Array.isArray(checks))
         fail("INCOMPLETE", "Ruleset required checks are unreadable");
       for (const raw of checks) {
@@ -545,12 +591,15 @@ async function required(
       }
     }
     if (rules.length < s.config.pageSize)
-      return required.filter(
-        (item, index) =>
-          required.findIndex(
-            (v) => v.name === item.name && v.appId === item.appId,
-          ) === index,
-      );
+      return {
+        strictStatusChecks,
+        checks: required.filter(
+          (item, index) =>
+            required.findIndex(
+              (v) => v.name === item.name && v.appId === item.appId,
+            ) === index,
+        ),
+      };
   }
   fail(
     "INCOMPLETE",
@@ -560,9 +609,44 @@ async function required(
 async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
   const before = await core(call, s, r);
   const checks = (await pages(call, s, r, "Checks", before.headRefOid)).map(
-    (value) => check(value, before.headRefOid),
+    (value) => check(value),
   );
-  const requiredChecks = await required(call, s, r, before);
+  const policy = await requirements(call, s, r, before);
+  const requiredChecks = policy.checks;
+  let baseComparison: Json | null = null;
+  if (policy.strictStatusChecks) {
+    const compared = obj(
+      await command(
+        call,
+        s,
+        `repos/${r.repository}/compare/${String(before.baseRefOid)}...${String(before.headRefOid)}`,
+        "GET",
+      ),
+    );
+    if (
+      obj(compared.base_commit).sha !== before.baseRefOid ||
+      !sha(obj(compared.merge_base_commit).sha) ||
+      !Number.isSafeInteger(compared.behind_by) ||
+      Number(compared.behind_by) < 0 ||
+      !Number.isSafeInteger(compared.ahead_by) ||
+      Number(compared.ahead_by) < 0
+    )
+      fail("INCOMPLETE", "Strict base comparison is missing or malformed");
+    const ahead = Number(compared.ahead_by),
+      behind = Number(compared.behind_by);
+    const consistent =
+      (compared.status === "identical" && ahead === 0 && behind === 0) ||
+      (compared.status === "ahead" && ahead > 0 && behind === 0) ||
+      (compared.status === "behind" && ahead === 0 && behind > 0) ||
+      (compared.status === "diverged" && ahead > 0 && behind > 0);
+    if (!consistent)
+      fail("INCOMPLETE", "Strict base comparison is inconsistent");
+    baseComparison = {
+      headSha: before.headRefOid,
+      baseSha: before.baseRefOid,
+      behindBy: behind,
+    };
+  }
   let lastActivityAt = stamp(before.updatedAt);
   const reviews = (await pages(call, s, r, "Reviews", before.headRefOid)).map(
     (value) => {
@@ -582,7 +666,8 @@ async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
         ])
       )
         fail("INCOMPLETE", "Review identity, state or head is malformed");
-      lastActivityAt = Math.max(lastActivityAt, updatedAt);
+      if (commit.oid === before.headRefOid)
+        lastActivityAt = Math.max(lastActivityAt, updatedAt);
       return {
         id: value.id,
         author: author.login,
@@ -606,20 +691,24 @@ async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
         lastActivityAt,
         stamp(obj(comments[0]).updatedAt),
       );
-      return { id: value.id, resolved: value.isResolved };
+      return {
+        id: value.id,
+        resolved: value.isResolved,
+        headSha: before.headRefOid,
+      };
     },
   );
   const findings = (await pages(call, s, r, "Labels", before.headRefOid)).map(
     (value) => {
       if (!text(value.name)) fail("INCOMPLETE", "Label evidence is malformed");
-      return { label: value.name, resolved: false };
+      return { label: value.name, resolved: false, headSha: before.headRefOid };
     },
   );
   const after = await core(call, s, r);
   if (
     JSON.stringify(before) !== JSON.stringify(after) ||
-    JSON.stringify(requiredChecks) !==
-      JSON.stringify(await required(call, s, r, after))
+    JSON.stringify(policy) !==
+      JSON.stringify(await requirements(call, s, r, after))
   )
     fail(
       "INCOMPLETE",
@@ -632,6 +721,14 @@ async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
     state: before.state,
     draft: before.isDraft,
     mergeable: before.mergeable,
+    mergeableHeadSha: before.headRefOid,
+    protection: {
+      headSha: before.headRefOid,
+      baseSha: before.baseRefOid,
+      strictStatusChecks: policy.strictStatusChecks,
+      atomicBaseCondition: false,
+      baseComparison,
+    },
     checks,
     requiredChecks,
     reviews,
@@ -659,6 +756,7 @@ function protocol(
 function squash(payload: Json): void {
   if (
     !sha(payload.expectHead) ||
+    !sha(payload.expectBase) ||
     !text(payload.title) ||
     !payload.title.trim() ||
     typeof payload.body !== "string" ||
@@ -699,6 +797,20 @@ async function mutate(call: Call): Promise<Json> {
   const s = selected(call);
   await verify(call, s);
   if (action === "merge") {
+    const current = await core(call, s, r);
+    if (current.headRefOid !== payload.expectHead)
+      fail("HEAD_MOVED", "Conditional merge head changed before launch");
+    if (current.baseRefOid !== payload.expectBase)
+      fail("BASE_MOVED", "Merge base changed before launch");
+    const policy = await requirements(call, s, r, current);
+    if (policy.strictStatusChecks)
+      fail(
+        "INCOMPLETE",
+        "GitHub direct merge cannot atomically condition on the base; strict direct merge is unavailable",
+      );
+    const after = await core(call, s, r);
+    if (JSON.stringify(current) !== JSON.stringify(after))
+      fail("INCOMPLETE", "Pull request changed during merge preflight");
     const result = obj(
       await command(
         call,

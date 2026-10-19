@@ -24,8 +24,19 @@
       "type": "string",
       "minLength": 0,
       "maxLength": 65536
+    },
+    "expectBase": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{40}$"
     }
   },
-  "required": ["repository", "number", "expectHead", "title", "body"],
+  "required": [
+    "repository",
+    "number",
+    "expectHead",
+    "title",
+    "body",
+    "expectBase"
+  ],
   "additionalProperties": false
 }

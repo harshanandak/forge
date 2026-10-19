@@ -110,9 +110,13 @@
           },
           "resolved": {
             "type": "boolean"
+          },
+          "headSha": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{40}$"
           }
         },
-        "required": ["id", "resolved"],
+        "required": ["id", "resolved", "headSha"],
         "additionalProperties": false
       },
       "maxItems": 10000

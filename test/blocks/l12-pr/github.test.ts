@@ -32,6 +32,11 @@ function fixture(query: string): Json {
       updatedAt: "2026-10-18T00:00:00Z",
       baseRef: {
         branchProtectionRule: {
+          requiresStrictStatusChecks: false,
+          requiresApprovingReviews: false,
+          requiresCodeOwnerReviews: false,
+          restrictsPushes: false,
+          requiresCommitSignatures: false,
           requiredStatusChecks: [{ context: "tests", appId: 7 }],
         },
       },
@@ -95,6 +100,8 @@ function harness(
     login?: string;
     mutate?: (value: Json, query: string) => Json;
     config?: Json;
+    rules?: readonly Json[];
+    comparison?: Json;
   } = {},
 ) {
   const args: readonly string[][] = [];
@@ -123,7 +130,18 @@ function harness(
       const pr = options.mutate?.(fixture(query), query) ?? fixture(query);
       return { data: { repository: { pullRequest: pr } } };
     }
-    if (argv.some((v) => v.includes("/rules/branches/"))) return [];
+    if (argv.some((v) => v.includes("/rules/branches/")))
+      return options.rules ?? [];
+    if (argv.some((v) => v.includes("/compare/")))
+      return (
+        options.comparison ?? {
+          base_commit: { sha: base },
+          merge_base_commit: { sha: base },
+          status: "ahead",
+          ahead_by: 1,
+          behind_by: 0,
+        }
+      );
     if (argv.some((v) => v.endsWith("/merge")))
       return {
         merged: true,
@@ -158,10 +176,11 @@ test("provider collects exact-head complete paginated evidence through read-only
   expect(evidence).toMatchObject({
     ...reference,
     headSha: head,
+    mergeableHeadSha: head,
     baseSha: base,
     complete: true,
     requiredChecks: [{ name: "tests", appId: 7 }],
-    threads: [{ id: "T1", resolved: true }],
+    threads: [{ id: "T1", resolved: true, headSha: head }],
   });
   expect(
     h.calls.every((args) => args.includes("GET") || args.includes("graphql")),
@@ -181,7 +200,13 @@ test("wrong or absent account selection launches no mutation and never switches 
     await rejection(
       wrong.invoke("call", {
         action: "merge",
-        payload: { ...reference, expectHead: head, title: "Title", body: "" },
+        payload: {
+          ...reference,
+          expectHead: head,
+          expectBase: base,
+          title: "Title",
+          body: "",
+        },
       }),
     ),
   ).toMatchObject({ code: "IDENTITY_MISMATCH" });
@@ -227,6 +252,7 @@ test("provider exact-head merge primitive sends explicit squash title/body and r
       payload: {
         ...reference,
         expectHead: head,
+        expectBase: base,
         title: "Explicit title",
         body: "Explicit body",
       },
@@ -246,6 +272,7 @@ test("provider exact-head merge primitive sends explicit squash title/body and r
         payload: {
           ...reference,
           expectHead: head,
+          expectBase: base,
           title: "Title",
           body: "Co-authored-by: Tool <x@example.test>",
         },
@@ -303,4 +330,256 @@ test("coercible enum arrays at the GitHub wire boundary are incomplete", async (
   expect(await rejection(h.invoke("read"))).toMatchObject({
     code: "INCOMPLETE",
   });
+});
+
+test("GitHub preserves each check/review commit and binds aggregate mergeability to its bracketed core head", async () => {
+  const old = "c".repeat(40);
+  const h = harness({
+    mutate(value, query) {
+      if (query.includes("ForgePRChecks"))
+        return {
+          commits: {
+            nodes: [
+              {
+                commit: {
+                  oid: head,
+                  statusCheckRollup: {
+                    contexts: {
+                      nodes: [
+                        {
+                          id: "old-check",
+                          __typename: "CheckRun",
+                          name: "tests",
+                          status: "COMPLETED",
+                          conclusion: "SUCCESS",
+                          checkSuite: {
+                            app: { databaseId: 7 },
+                            commit: { oid: old },
+                          },
+                        },
+                      ],
+                      totalCount: 1,
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        };
+      if (query.includes("ForgePRReviews"))
+        return {
+          reviews: {
+            nodes: [
+              {
+                id: "old-review",
+                author: { login: "codex" },
+                state: "APPROVED",
+                commit: { oid: old },
+                updatedAt: "2026-10-18T00:00:00Z",
+              },
+            ],
+            totalCount: 1,
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        };
+      return value;
+    },
+  });
+  const observed = await h.invoke("read");
+  expect(observed).toMatchObject({
+    headSha: head,
+    mergeableHeadSha: head,
+    checks: [{ headSha: old }],
+    reviews: [{ author: "codex", headSha: old }],
+  });
+});
+
+test("GitHub collects classic and ruleset strict policy with a pinned base comparison", async () => {
+  for (const classic of [true, false]) {
+    const h = harness({
+      rules: classic
+        ? []
+        : [
+            {
+              type: "required_status_checks",
+              parameters: {
+                required_status_checks: [],
+                strict_required_status_checks_policy: true,
+              },
+            },
+          ],
+      mutate(value, query) {
+        if (!query.includes("ForgePRCore")) return value;
+        const baseRef = value.baseRef as Json,
+          rule = baseRef.branchProtectionRule as Json;
+        return {
+          ...value,
+          baseRef: {
+            branchProtectionRule: {
+              ...rule,
+              requiresStrictStatusChecks: classic,
+            },
+          },
+        };
+      },
+    });
+    expect((await h.invoke("read")).protection).toEqual({
+      headSha: head,
+      baseSha: base,
+      strictStatusChecks: true,
+      atomicBaseCondition: false,
+      baseComparison: { headSha: head, baseSha: base, behindBy: 0 },
+    });
+    expect(
+      h.calls.some((args) =>
+        args.includes(
+          `repos/${reference.repository}/compare/${base}...${head}`,
+        ),
+      ),
+    ).toBe(true);
+  }
+});
+test("unmodeled active deployment, queue and PR-review policies are incomplete", async () => {
+  for (const type of [
+    "required_deployments",
+    "merge_queue",
+    "pull_request",
+    "unrecognized_active_requirement",
+  ]) {
+    const h = harness({ rules: [{ type, parameters: {} }] });
+    expect(await rejection(h.invoke("read"))).toMatchObject({
+      code: "INCOMPLETE",
+    });
+  }
+  const classic = harness({
+    mutate(value, query) {
+      if (!query.includes("ForgePRCore")) return value;
+      const baseRef = value.baseRef as Json,
+        rule = baseRef.branchProtectionRule as Json;
+      return {
+        ...value,
+        baseRef: {
+          branchProtectionRule: { ...rule, requiresApprovingReviews: true },
+        },
+      };
+    },
+  });
+  expect(await rejection(classic.invoke("read"))).toMatchObject({
+    code: "INCOMPLETE",
+  });
+});
+
+test("strict policy refuses missing flags, stale bases and inconsistent comparison responses", async () => {
+  const strict = (value: Json, query: string): Json => {
+    if (!query.includes("ForgePRCore")) return value;
+    const rule = (value.baseRef as Json).branchProtectionRule as Json;
+    return {
+      ...value,
+      baseRef: {
+        branchProtectionRule: { ...rule, requiresStrictStatusChecks: true },
+      },
+    };
+  };
+  for (const comparison of [
+    {
+      base_commit: { sha: "d".repeat(40) },
+      merge_base_commit: { sha: base },
+      status: "ahead",
+      ahead_by: 1,
+      behind_by: 0,
+    },
+    {
+      base_commit: { sha: base },
+      merge_base_commit: { sha: base },
+      status: "behind",
+      ahead_by: 0,
+      behind_by: 0,
+    },
+    {
+      base_commit: { sha: base },
+      merge_base_commit: { sha: base },
+      status: "ahead",
+      ahead_by: 1,
+    },
+  ])
+    expect(
+      await rejection(harness({ comparison, mutate: strict }).invoke("read")),
+    ).toMatchObject({ code: "INCOMPLETE" });
+  const unknown = harness({
+    mutate(value, query) {
+      const result = strict(value, query);
+      if (query.includes("ForgePRCore"))
+        (
+          (result.baseRef as Json).branchProtectionRule as Json
+        ).requiresStrictStatusChecks = undefined;
+      return result;
+    },
+  });
+  expect(await rejection(unknown.invoke("read"))).toMatchObject({
+    code: "INCOMPLETE",
+  });
+  expect(
+    await rejection(
+      harness({
+        rules: [
+          {
+            type: "required_status_checks",
+            parameters: { required_status_checks: [] },
+          },
+        ],
+      }).invoke("read"),
+    ),
+  ).toMatchObject({ code: "INCOMPLETE" });
+  let cores = 0;
+  const moved = harness({
+    mutate(value, query) {
+      const result = strict(value, query);
+      return query.includes("ForgePRCore") && ++cores > 1
+        ? { ...result, baseRefOid: "d".repeat(40) }
+        : result;
+    },
+  });
+  expect(await rejection(moved.invoke("read"))).toMatchObject({
+    code: "INCOMPLETE",
+  });
+});
+
+test("GitHub direct merge refuses strict policy and changed base before issuing its mutation", async () => {
+  const input = {
+    action: "merge",
+    payload: {
+      ...reference,
+      expectHead: head,
+      expectBase: base,
+      title: "Explicit title",
+      body: "Explicit body",
+    },
+  };
+  const strict = harness({
+    mutate(value, query) {
+      if (!query.includes("ForgePRCore")) return value;
+      const rule = (value.baseRef as Json).branchProtectionRule as Json;
+      return {
+        ...value,
+        baseRef: {
+          branchProtectionRule: { ...rule, requiresStrictStatusChecks: true },
+        },
+      };
+    },
+  });
+  expect(await rejection(strict.invoke("call", input))).toMatchObject({
+    code: "INCOMPLETE",
+  });
+  expect(strict.calls.some((args) => args.includes("PUT"))).toBe(false);
+  const moved = harness({
+    mutate: (value, query) =>
+      query.includes("ForgePRCore")
+        ? { ...value, baseRefOid: "d".repeat(40) }
+        : value,
+  });
+  expect(await rejection(moved.invoke("call", input))).toMatchObject({
+    code: "BASE_MOVED",
+  });
+  expect(moved.calls.some((args) => args.includes("PUT"))).toBe(false);
 });

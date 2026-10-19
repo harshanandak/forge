@@ -71,6 +71,14 @@ export function ready(): Json {
     state: "OPEN",
     draft: false,
     mergeable: "MERGEABLE",
+    mergeableHeadSha: head,
+    protection: {
+      headSha: head,
+      baseSha: base,
+      strictStatusChecks: false,
+      atomicBaseCondition: false,
+      baseComparison: null,
+    },
     complete: true,
     checks: [
       {

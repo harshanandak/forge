@@ -23,6 +23,10 @@ The computed outcomes are `INCOMPLETE`, `DRAFT`, `CONFLICTING`,
 `CHECKS_FAILED`, `CHECKS_PENDING`, `REVIEW_BLOCKED`, `REVIEW_REQUIRED`,
 `SETTLING`, `MERGE_READY`, `CLOSED` and `MERGED`. Missing, malformed,
 unreadable, paginated-incomplete or future-dated evidence is incomplete.
+Every counted observation must identify the current head: check and review `headSha`, aggregate `mergeableHeadSha`, and thread/finding `headSha`. Historical observations remain visible in evidence but are ignored before existence, approval, settle and blocking policy; verdict reasons report each stale category. Missing head bindings are incomplete. Old-head-only checks cannot satisfy `allowNoChecks: false`, even when optional checks are ignored. Codex/review-state authority uses the declared review records (bot authors are ordinary review authors); unknown extra provider fields supply no authority.
+
+`protection` explicitly binds the required-check policy to both the current head and base. Its strict flag is mandatory. A strict policy additionally requires `baseComparison` for those exact SHAs; a behind head remains `CHECKS_PENDING`, and missing or stale comparison/policy evidence is `INCOMPLETE`. Strict `MERGE_READY` also requires the provider-reported `atomicBaseCondition` capability. GitHub reports false, so strict GitHub direct merges remain incomplete even when currently up to date. This protection is independent of configured optional-check and approval preferences.
+
 Required checks must identify the current head and finish with strict
 `SUCCESS`; optional runs may have the configured safe terminal conclusions.
 Only authorizing reviews carry approval/change-request authority. Historical

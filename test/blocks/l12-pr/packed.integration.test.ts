@@ -11,55 +11,54 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { runChild } from "../../../tools/child-runner.ts";
+import { runBounded } from "../../../tools/packed-pool.ts";
+import { inheritRunnerGroup } from "../../../tools/runner-policy.ts";
+import { runFixtures, type Fixture } from "../../integration/fixtures/run.ts";
 import {
   packedCoverage,
   selectShard,
 } from "../../node-fixtures/state/counterfactuals.ts";
 import { counterfactuals } from "../../node-fixtures/l12-pr/counterfactuals.ts";
 const root = resolve(import.meta.dirname, "../../..");
-function run(
-  command: string,
-  args: readonly string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-) {
-  return spawnSync(command, args, {
-    cwd,
-    env,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 120000,
-  });
-}
 function good(
   command: string,
   args: readonly string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): string {
-  const result = run(command, args, cwd, env);
+  const result = spawnSync(command, args, {
+    cwd,
+    env,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 120000,
+  });
   expect(result.status, result.stdout + result.stderr).toBe(0);
   return result.stdout;
 }
-test("installed PR/GitHub blocks: all computed verdicts, exact head and both fenced merge barriers", () => {
-  const shared = process.env.FORGE_PACKED_CONSUMER;
-  const work = mkdtempSync(
-    join(shared ?? tmpdir(), shared ? "pr-" : "forge-pr-packed-"),
+function pattern(text: string): RegExp {
+  return new RegExp(
+    text
+      .split(/\s+/)
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("\\s+"),
   );
+}
+
+test("installed PR/GitHub blocks: all computed verdicts, exact head and both fenced merge barriers", async () => {
+  const shared =
+    process.env.PR_PACKED_CONSUMER || process.env.FORGE_PACKED_CONSUMER;
+  const selected = selectShard(
+    counterfactuals,
+    packedCoverage(process.env.STATE_NODE_LEG).shard,
+  );
+  const work = mkdtempSync(join(shared ?? tmpdir(), "forge-pr-packed-"));
   try {
     const node = Bun.which("node");
     if (!node) throw new Error("Node is required");
-    const consumer = shared ? work : join(work, "consumer");
+    const consumer = shared ?? join(work, "consumer");
     if (!shared) mkdirSync(consumer);
-    writeFileSync(
-      join(consumer, "package.json"),
-      JSON.stringify({
-        name: "pr-packed-consumer",
-        version: "1.0.0",
-        private: true,
-        type: "module",
-      }),
-    );
     const env = { ...process.env };
     const path =
       Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
@@ -74,12 +73,23 @@ test("installed PR/GitHub blocks: all computed verdicts, exact head and both fen
       .join(delimiter);
     delete env.BUN_INSTALL;
     if (!shared) {
+      writeFileSync(
+        join(consumer, "package.json"),
+        JSON.stringify({
+          name: "pr-packed-consumer",
+          version: "1.0.0",
+          private: true,
+          type: "module",
+        }),
+      );
       good(process.execPath, ["run", "build"], root, process.env);
       const npm = [
         process.env.FORGE_SMOKE_NPM_CLI,
         join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
         join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-      ].find((value): value is string => Boolean(value) && existsSync(value!));
+      ].find(
+        (value): value is string => value !== undefined && existsSync(value),
+      );
       if (!npm) throw new Error("npm CLI is required");
       const packed = JSON.parse(
         good(
@@ -109,8 +119,11 @@ test("installed PR/GitHub blocks: all computed verdicts, exact head and both fen
         consumer,
         env,
       );
+    } else {
+      for (const phase of ["build", "pack", "install"])
+        console.log(`Packed PR/GitHub ${phase}: 0 ms (shared smoke)`);
     }
-    const installed = join(shared ?? consumer, "node_modules/forge-workflow");
+    const installed = join(consumer, "node_modules/forge-workflow");
     const journey = join(root, "test/node-fixtures/l12-pr/journeys.mjs"),
       provider = join(root, "test/node-fixtures/l12-pr/provider.mjs");
     const nodes = [
@@ -120,63 +133,114 @@ test("installed PR/GitHub blocks: all computed verdicts, exact head and both fen
         ),
       ),
     ];
-    for (const [index, runtime] of nodes.entries()) {
-      const output = good(
-        runtime,
-        [journey, installed, join(work, `journey-${index}`), "all", provider],
-        consumer,
+    const positives: Fixture[] = nodes.flatMap((runtime, index) => [
+      {
+        label: `journey-${index}`,
+        command: runtime,
+        args: [
+          journey,
+          installed,
+          join(work, `journey-${index}`),
+          "all",
+          provider,
+        ],
+        cwd: consumer,
         env,
-      );
-      expect(output).toContain("PR journey all: passed");
-      console.log(output.trim());
-      const assembly = good(
-        runtime,
-        [
+      },
+      {
+        label: `actual-host-${index}`,
+        command: runtime,
+        args: [
           join(root, "test/node-fixtures/l12-pr/assembly.mjs"),
           installed,
           join(work, `assembly-${index}`),
         ],
-        consumer,
+        cwd: consumer,
         env,
+      },
+      {
+        label: `head-checks-${index}`,
+        command: runtime,
+        args: [
+          journey,
+          installed,
+          join(work, `head-checks-${index}`),
+          "head-checks",
+          provider,
+        ],
+        cwd: consumer,
+        env,
+      },
+    ]);
+    const outputs = await runFixtures(positives, 2, "Packed PR/GitHub");
+    for (const [index, fixture] of positives.entries())
+      expect(outputs[index]).toContain(
+        fixture.label.startsWith("actual-host")
+          ? "state.sqlite before=false, after=false"
+          : `PR journey ${fixture.label.startsWith("head-checks") ? "head-checks" : "all"}: passed`,
       );
-      expect(assembly).toContain("state.sqlite before=false, after=false");
-      console.log(assembly.trim());
-    }
-    const isolated = join(consumer, "node_modules/forge-pr-counterfactual");
-    cpSync(installed, isolated, {
-      recursive: true,
-      filter: (path) => !path.endsWith(".map"),
-    });
-    const selected = selectShard(
-      counterfactuals,
-      packedCoverage(process.env.STATE_NODE_LEG).shard,
+    const workers = Array.from(
+      { length: Math.min(2, selected.length) },
+      (_, index) => {
+        const cwd = join(work, `worker-${index}`),
+          isolated = join(cwd, "node_modules/forge-pr-counterfactual");
+        cpSync(installed, isolated, {
+          recursive: true,
+          filter: (path) => !path.endsWith(".map") && !path.endsWith(".ts"),
+        });
+        return {
+          cwd,
+          isolated,
+          mutations: selected.filter((_, item) => item % 2 === index),
+        };
+      },
     );
-    for (const [index, mutation] of selected.entries()) {
-      const target = join(isolated, "dist/src", mutation.file),
-        original = readFileSync(target, "utf8");
-      expect(original).toContain(mutation.from);
-      try {
-        writeFileSync(target, original.replace(mutation.from, mutation.to));
-        const result = run(
-          node,
-          [
-            journey,
-            isolated,
-            join(work, `mutation-${index}`),
-            mutation.journey,
-            provider,
-          ],
-          consumer,
-          env,
+    // Both the pool and runChild wait for close/tree cleanup before this workspace is removed.
+    await runBounded(workers, 2, async ({ cwd, isolated, mutations }) => {
+      for (const [index, mutation] of mutations.entries()) {
+        const target = join(isolated, "dist/src", mutation.file),
+          original = readFileSync(target, "utf8"),
+          find = pattern(mutation.from);
+        expect(original, `counterfactual anchor ${mutation.journey}`).toMatch(
+          find,
         );
-        expect(result.status, result.stdout + result.stderr).not.toBe(0);
-        expect(result.stderr).toContain(mutation.evidence);
-      } finally {
-        writeFileSync(target, original);
+        try {
+          const changed = original.replace(find, mutation.to);
+          expect(changed).not.toBe(original);
+          writeFileSync(target, changed);
+          const result = await runChild(
+            `PR counterfactual ${mutation.journey}`,
+            node,
+            [
+              journey,
+              isolated,
+              join(cwd, `mutation-${index}`),
+              mutation.journey,
+              provider,
+            ],
+            {
+              cwd,
+              env,
+              inheritProcessGroup: inheritRunnerGroup(),
+              timeoutMs: 120000,
+              cleanupTimeoutMs: 5000,
+              maxOutputBytes: 1048576,
+              acceptableExitCodes: null,
+              onOutput: () => {},
+            },
+          );
+          expect(
+            result.status,
+            `counterfactual survived: ${mutation.journey}\n${result.stdout}\n${result.stderr}`,
+          ).not.toBe(0);
+          expect(result.stderr).toContain(mutation.evidence);
+        } finally {
+          writeFileSync(target, original);
+        }
       }
-    }
+    });
     console.log(
-      `Packed PR/GitHub: ${nodes.length} Node runtimes; ${selected.length} remove-the-fix journeys`,
+      `Packed PR/GitHub: ${nodes.length} Node runtimes; ${positives.length} independent positive fixtures; ${selected.length}/${counterfactuals.length} remove-the-fix journeys`,
     );
   } finally {
     rmSync(work, { recursive: true, force: true });

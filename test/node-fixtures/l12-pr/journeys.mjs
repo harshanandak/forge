@@ -28,6 +28,14 @@ function ready() {
     state: "OPEN",
     draft: false,
     mergeable: "MERGEABLE",
+    mergeableHeadSha: head,
+    protection: {
+      headSha: head,
+      baseSha: base,
+      strictStatusChecks: false,
+      atomicBaseCondition: false,
+      baseComparison: null,
+    },
     complete: true,
     checks: [
       {
@@ -74,7 +82,7 @@ const config = {
   },
   minApprovals: 1,
   settleMs: 100,
-  optionalChecks: "safe-terminal",
+  optionalChecks: mode === "head-checks" ? "ignore" : "safe-terminal",
   allowNoChecks: false,
   blockingLabels: ["P0", "P1"],
   leaseMs: 10000,
@@ -218,7 +226,7 @@ try {
       ],
       [
         "REVIEW_BLOCKED",
-        { ...ready(), threads: [{ id: "T1", resolved: false }] },
+        { ...ready(), threads: [{ id: "T1", resolved: false, headSha: head }] },
       ],
       ["REVIEW_REQUIRED", { ...ready(), reviews: [] }],
       ["SETTLING", { ...ready(), lastActivityAt: now }],
@@ -273,9 +281,251 @@ try {
           headSha: "c".repeat(40),
           updatedAt: now - 20000,
         },
+        {
+          id: "R-comment",
+          author: "comment-only",
+          state: "COMMENTED",
+          headSha: head,
+          updatedAt: now - 10000,
+        },
       ],
     });
     await status("MERGE_READY");
+  }
+  if (["all", "head-checks"].includes(mode)) {
+    const old = {
+      name: "old-only",
+      appId: 7,
+      headSha: "c".repeat(40),
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+    };
+    save({ ...ready(), requiredChecks: [], checks: [old] });
+    const view = await status("INCOMPLETE");
+    assert.ok(
+      view.verdict.reasons.some((value) => value.includes("stale check")),
+      "stale check must be reported",
+    );
+    const held = await good("claim", reference, "acquire");
+    error(
+      await invoke(
+        "merge",
+        { ...reference, expectHead: head, expectRevision: 0 },
+        held.generation,
+      ),
+      "MERGE_BLOCKED",
+    );
+    assert.equal(
+      JSON.parse(readFileSync(file, "utf8")).evidence.state,
+      "OPEN",
+      "stale-only checks must not merge",
+    );
+    await good("release", reference, held.generation);
+    save({
+      ...ready(),
+      checks: [
+        ...ready().checks,
+        { ...old, name: "tests", conclusion: "FAILURE" },
+      ],
+    });
+    await status("MERGE_READY");
+  }
+  if (["all", "head-review-state"].includes(mode)) {
+    const current = {
+      id: "R-current",
+      author: "codex",
+      state: "APPROVED",
+      headSha: head,
+      updatedAt: now - 10000,
+    };
+    const old = {
+      id: "R-old",
+      author: "codex",
+      state: "CHANGES_REQUESTED",
+      headSha: "c".repeat(40),
+      updatedAt: now - 5000,
+    };
+    save({ ...ready(), reviews: [current, old] });
+    const view = await status("MERGE_READY");
+    assert.ok(
+      view.verdict.reasons.some((value) => value.includes("stale review")),
+      "stale review state must be reported",
+    );
+    save({ ...ready(), reviews: [{ ...old, state: "APPROVED" }] });
+    await status("REVIEW_REQUIRED");
+    const held = await good("claim", reference, "acquire");
+    error(
+      await invoke(
+        "merge",
+        { ...reference, expectHead: head, expectRevision: 0 },
+        held.generation,
+      ),
+      "MERGE_BLOCKED",
+    );
+    assert.equal(
+      JSON.parse(readFileSync(file, "utf8")).evidence.state,
+      "OPEN",
+      "stale-only review state must not merge",
+    );
+    await good("release", reference, held.generation);
+  }
+  if (["all", "head-mergeability"].includes(mode)) {
+    save(
+      { ...ready(), mergeableHeadSha: "c".repeat(40) },
+      { directEvidence: true },
+    );
+    await status("INCOMPLETE");
+    const held = await good("claim", reference, "acquire");
+    error(
+      await invoke(
+        "merge",
+        { ...reference, expectHead: head, expectRevision: 0 },
+        held.generation,
+      ),
+      "MERGE_BLOCKED",
+    );
+    assert.equal(
+      JSON.parse(readFileSync(file, "utf8")).evidence.state,
+      "OPEN",
+      "stale-only mergeability must not merge",
+    );
+    await good("release", reference, held.generation);
+  }
+  if (["all", "strict-base"].includes(mode)) {
+    const protection = {
+      headSha: head,
+      baseSha: base,
+      strictStatusChecks: true,
+      atomicBaseCondition: true,
+      baseComparison: { headSha: head, baseSha: base, behindBy: 1 },
+    };
+    save({ ...ready(), protection });
+    await status("CHECKS_PENDING");
+    const held = await good("claim", reference, "acquire");
+    error(
+      await invoke(
+        "merge",
+        { ...reference, expectHead: head, expectRevision: 0 },
+        held.generation,
+      ),
+      "MERGE_BLOCKED",
+    );
+    assert.equal(
+      JSON.parse(readFileSync(file, "utf8")).evidence.state,
+      "OPEN",
+      "strict behind head must not merge",
+    );
+    await good("release", reference, held.generation);
+    save({
+      ...ready(),
+      protection: {
+        ...protection,
+        baseComparison: { ...protection.baseComparison, behindBy: 0 },
+      },
+    });
+    await status("INCOMPLETE");
+    save(
+      {
+        ...ready(),
+        protection: {
+          ...protection,
+          baseComparison: {
+            ...protection.baseComparison,
+            baseSha: "d".repeat(40),
+            behindBy: 0,
+          },
+        },
+      },
+      { directEvidence: true },
+    );
+    await status("INCOMPLETE");
+    save(
+      {
+        ...ready(),
+        protection: {
+          ...protection,
+          baseSha: "d".repeat(40),
+          strictStatusChecks: false,
+          atomicBaseCondition: false,
+          baseComparison: null,
+        },
+      },
+      { directEvidence: true },
+    );
+    await status("INCOMPLETE");
+  }
+  if (["all", "strict-direct"].includes(mode)) {
+    save({
+      ...ready(),
+      protection: {
+        headSha: head,
+        baseSha: base,
+        strictStatusChecks: true,
+        atomicBaseCondition: false,
+        baseComparison: { headSha: head, baseSha: base, behindBy: 0 },
+      },
+    });
+    const executable = port.resolve(process.execPath, env);
+    assert.equal(executable.kind, "resolved");
+    spawns++;
+    const result = await port.run(executable, [provider, installed, file], {
+      cwd: root,
+      env,
+      timeoutMs: 20000,
+      maxOutputBytes: 1048576,
+      stdin: JSON.stringify({
+        action: "merge",
+        payload: {
+          ...reference,
+          expectHead: head,
+          expectBase: base,
+          title: "Explicit title",
+          body: "Explicit body",
+        },
+      }),
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(
+      JSON.parse(result.stdout).ok,
+      false,
+      "strict direct provider merge must be refused",
+    );
+    assert.equal(
+      JSON.parse(readFileSync(file, "utf8")).evidence.state,
+      "OPEN",
+      "strict direct provider must not mutate",
+    );
+  }
+  if (["all", "unsupported-rules"].includes(mode)) {
+    const held = await good("claim", reference, "acquire");
+    for (const type of [
+      "required_deployments",
+      "merge_queue",
+      "pull_request",
+    ]) {
+      save(ready(), { rules: [{ type, parameters: {} }] });
+      await status("INCOMPLETE");
+      const rejected = await invoke(
+        "merge",
+        { ...reference, expectHead: head, expectRevision: 0 },
+        held.generation,
+      );
+      assert.equal(
+        rejected.ok,
+        false,
+        "unsupported active rule must refuse merge",
+      );
+      assert.equal(
+        JSON.parse(readFileSync(file, "utf8")).evidence.state,
+        "OPEN",
+        "unsupported active rule must not mutate provider",
+      );
+    }
+    await good("release", reference, held.generation);
+  }
+  if (["all", "unsupported-classic"].includes(mode)) {
+    save(ready(), { classicUnsupported: true });
+    await status("INCOMPLETE");
   }
   if (["all", "merge", "head", "fence", "accepted"].includes(mode)) {
     save();

@@ -14,6 +14,12 @@ for await (const chunk of process.stdin) body += chunk;
 const request = JSON.parse(body);
 const stored = JSON.parse(readFileSync(file, "utf8"));
 const e = stored.evidence;
+if (request.action === "status" && stored.directEvidence) {
+  await new Promise((resolve) =>
+    process.stdout.write(JSON.stringify({ ok: true, result: e }), resolve),
+  );
+  process.exit(0);
+}
 const iso = await nodeRunIsolation.open();
 if (!iso.ok) throw new Error("Missing isolation");
 const env = {};
@@ -45,6 +51,11 @@ const port = {
       updatedAt: new Date(e.lastActivityAt).toISOString(),
       baseRef: {
         branchProtectionRule: {
+          requiresStrictStatusChecks: e.protection.strictStatusChecks,
+          requiresApprovingReviews: stored.classicUnsupported === true,
+          requiresCodeOwnerReviews: false,
+          restrictsPushes: false,
+          requiresCommitSignatures: false,
           requiredStatusChecks: e.requiredChecks.map((v) => ({
             context: v.name,
             appId: v.appId,
@@ -159,8 +170,24 @@ const port = {
           delete pr.reviewThreads.pageInfo;
         value = { data: { repository: { pullRequest: pr } } };
       }
-    } else if (args.some((v) => v.includes("/rules/branches/"))) value = [];
-    else if (args.some((v) => v.endsWith("/merge"))) {
+    } else if (args.some((v) => v.includes("/rules/branches/")))
+      value = stored.rules ?? [];
+    else if (args.some((v) => v.includes("/compare/"))) {
+      if (
+        !args.includes(
+          `repos/${e.repository}/compare/${e.baseSha}...${e.headSha}`,
+        )
+      )
+        throw new Error("comparison must pin current base and head");
+      const behind = e.protection.baseComparison?.behindBy ?? 0;
+      value = {
+        base_commit: { sha: e.baseSha },
+        merge_base_commit: { sha: e.baseSha },
+        status: behind > 0 ? "diverged" : "ahead",
+        ahead_by: 1,
+        behind_by: behind,
+      };
+    } else if (args.some((v) => v.endsWith("/merge"))) {
       if (input.sha !== e.headSha)
         return {
           exitCode: 1,

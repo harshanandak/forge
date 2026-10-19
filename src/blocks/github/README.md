@@ -17,10 +17,10 @@ GraphQL queries collect core state, the exact-head check rollup, reviews,
 threads and labels. Every connection has validated page information, totals,
 unique node identities and bounded cursor progress. Missing/unreadable pages
 are `INCOMPLETE`; they never become an empty clean result. Required checks
-include classic branch protection and effective ruleset checks. The block
+include classic branch protection and effective ruleset checks. Both `requiresStrictStatusChecks` and `strict_required_status_checks_policy` are collected without defaults. Strict policy compares the immutable base/head SHAs and records the behind count, with core/policy readback refusing either moving ref. Active rules that lack a complete evaluator (including deployments, merge queues, pull-request review restrictions and unknown rule kinds) are `INCOMPLETE`; classic review, code-owner, restricted-push and signature requirements are likewise refused until fully supported. The only other accepted rule types are linear history, non-fast-forward protection and deletion protection, which conditional squash merge already respects. GitHub merge APIs provide an exact-head condition but no atomic base-SHA condition. This provider reports `atomicBaseCondition: false` and refuses strict direct merge before the REST mutation. Nonstrict direct merge requires `expectBase`, re-reads core and protection, and refuses observed base/head movement; that preflight is not an atomic base comparison-and-swap and makes no bypass-race guarantee. The block
 re-reads core/protection and required checks after collection and refuses
 changes during the observation. Review and latest-thread-comment edits
-contribute to the activity timestamp. Configured blocking labels are
+contribute to the activity timestamp when the review concerns the current head. Each check and review retains its actual commit SHA; aggregate mergeability, thread-resolution and label observations are stamped with the bracketed core head. `forge/pr` ignores and reports historical observations. Configured blocking labels are
 returned as unresolved findings; `forge/pr` supplies their merge policy.
 
 `github.call` declares `github:write` and `external:write`. It accepts only

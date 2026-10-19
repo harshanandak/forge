@@ -55,19 +55,34 @@ interface Review {
   readonly updatedAt: number;
 }
 interface Thread {
+  readonly headSha: string;
   readonly id: string;
   readonly resolved: boolean;
 }
 interface Finding {
+  readonly headSha: string;
   readonly label: string;
   readonly resolved: boolean;
 }
+interface Protection {
+  readonly headSha: string;
+  readonly baseSha: string;
+  readonly strictStatusChecks: boolean;
+  readonly atomicBaseCondition: boolean;
+  readonly baseComparison: {
+    readonly headSha: string;
+    readonly baseSha: string;
+    readonly behindBy: number;
+  } | null;
+}
 interface Evidence extends Ref {
+  readonly protection: Protection;
   readonly headSha: string;
   readonly baseSha: string;
   readonly state: "OPEN" | "CLOSED" | "MERGED";
   readonly draft: boolean;
   readonly mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  readonly mergeableHeadSha: string;
   readonly complete: boolean;
   readonly checks: readonly Check[];
   readonly requiredChecks: readonly {
@@ -219,6 +234,7 @@ function evidence(value: unknown, r: Ref): Evidence | undefined {
     !same(r, value as unknown as Ref) ||
     !sha(value.headSha) ||
     !sha(value.baseSha) ||
+    !sha(value.mergeableHeadSha) ||
     !enumValue(value.state, ["OPEN", "CLOSED", "MERGED"]) ||
     typeof value.draft !== "boolean" ||
     !enumValue(value.mergeable, ["MERGEABLE", "CONFLICTING", "UNKNOWN"]) ||
@@ -292,13 +308,38 @@ function evidence(value: unknown, r: Ref): Evidence | undefined {
     !Array.isArray(value.threads) ||
     !value.threads.every(
       (v: unknown) =>
-        object(v) && string(v.id) && typeof v.resolved === "boolean",
+        object(v) &&
+        string(v.id) &&
+        sha(v.headSha) &&
+        typeof v.resolved === "boolean",
     ) ||
     !Array.isArray(value.findings) ||
     !value.findings.every(
       (v: unknown) =>
-        object(v) && string(v.label) && typeof v.resolved === "boolean",
+        object(v) &&
+        string(v.label) &&
+        sha(v.headSha) &&
+        typeof v.resolved === "boolean",
     )
+  )
+    return undefined;
+  const protection = value.protection;
+  if (
+    !object(protection) ||
+    !sha(protection.headSha) ||
+    !sha(protection.baseSha) ||
+    typeof protection.strictStatusChecks !== "boolean" ||
+    typeof protection.atomicBaseCondition !== "boolean"
+  )
+    return undefined;
+  const comparison = protection.baseComparison;
+  if (
+    comparison !== null &&
+    (!object(comparison) ||
+      !sha(comparison.headSha) ||
+      !sha(comparison.baseSha) ||
+      !Number.isSafeInteger(comparison.behindBy) ||
+      Number(comparison.behindBy) < 0)
   )
     return undefined;
   const e = value as unknown as Evidence;
@@ -315,6 +356,21 @@ function evidence(value: unknown, r: Ref): Evidence | undefined {
     state: e.state,
     draft: e.draft,
     mergeable: e.mergeable,
+    mergeableHeadSha: e.mergeableHeadSha,
+    protection: {
+      headSha: e.protection.headSha,
+      baseSha: e.protection.baseSha,
+      strictStatusChecks: e.protection.strictStatusChecks,
+      atomicBaseCondition: e.protection.atomicBaseCondition,
+      baseComparison:
+        e.protection.baseComparison === null
+          ? null
+          : {
+              headSha: e.protection.baseComparison.headSha,
+              baseSha: e.protection.baseComparison.baseSha,
+              behindBy: e.protection.baseComparison.behindBy,
+            },
+    },
     complete: e.complete,
     checks: e.checks.map((v) => ({
       name: v.name,
@@ -334,8 +390,16 @@ function evidence(value: unknown, r: Ref): Evidence | undefined {
       headSha: v.headSha,
       updatedAt: v.updatedAt,
     })),
-    threads: e.threads.map((v) => ({ id: v.id, resolved: v.resolved })),
-    findings: e.findings.map((v) => ({ label: v.label, resolved: v.resolved })),
+    threads: e.threads.map((v) => ({
+      id: v.id,
+      resolved: v.resolved,
+      headSha: v.headSha,
+    })),
+    findings: e.findings.map((v) => ({
+      label: v.label,
+      resolved: v.resolved,
+      headSha: v.headSha,
+    })),
     lastActivityAt: e.lastActivityAt,
   };
 }
@@ -344,26 +408,73 @@ function compute(
   c: Config,
   now: number,
 ): { status: Status; reasons: string[] } {
+  const stale: string[] = [];
   const result = (status: Status, reason?: string) => ({
     status,
-    reasons: reason === undefined ? [] : [reason],
+    reasons: [...(reason === undefined ? [] : [reason]), ...stale],
   });
   if (!e || !e.complete || e.lastActivityAt > now)
     return result(
       "INCOMPLETE",
       "Provider evidence is missing, malformed, truncated or unreadable",
     );
+  // A provider may return historical observations; only this head contributes authority.
+  const checks = e.checks.filter((value) => value.headSha === e.headSha);
+  const reviews = e.reviews.filter((value) => value.headSha === e.headSha);
+  const threads = e.threads.filter((value) => value.headSha === e.headSha);
+  const findings = e.findings.filter((value) => value.headSha === e.headSha);
+  for (const [kind, count] of [
+    ["check", e.checks.length - checks.length],
+    ["review", e.reviews.length - reviews.length],
+    ["thread", e.threads.length - threads.length],
+    ["finding", e.findings.length - findings.length],
+  ] as const)
+    if (count > 0)
+      stale.push(
+        `Ignored ${count} stale ${kind} observation(s) for another head`,
+      );
   if (e.state === "MERGED" || e.state === "CLOSED") return result(e.state);
+  if (e.mergeableHeadSha !== e.headSha) {
+    stale.push("Ignored stale mergeability observation for another head");
+    return result(
+      "INCOMPLETE",
+      "Current-head mergeability evidence is missing",
+    );
+  }
+  const protection = e.protection;
+  if (protection.headSha !== e.headSha || protection.baseSha !== e.baseSha)
+    return result(
+      "INCOMPLETE",
+      "Required-check policy is stale for the current head or base",
+    );
+  if (protection.strictStatusChecks) {
+    const comparison = protection.baseComparison;
+    if (
+      !comparison ||
+      comparison.headSha !== e.headSha ||
+      comparison.baseSha !== e.baseSha
+    )
+      return result(
+        "INCOMPLETE",
+        "Strict required checks need a comparison bound to the current head and base",
+      );
+    if (comparison.behindBy > 0)
+      return result(
+        "CHECKS_PENDING",
+        "Strict required checks need the head to include the current base",
+      );
+    if (!protection.atomicBaseCondition)
+      return result(
+        "INCOMPLETE",
+        "Strict required checks need a provider with an atomic base condition; direct merge is unavailable",
+      );
+  }
   if (e.draft) return result("DRAFT", "Pull request is a draft");
   if (e.mergeable === "UNKNOWN")
     return result("INCOMPLETE", "Provider mergeability is unknown");
   if (e.mergeable === "CONFLICTING")
     return result("CONFLICTING", "Pull request conflicts with its base");
-  if (
-    !c.allowNoChecks &&
-    e.checks.length === 0 &&
-    e.requiredChecks.length === 0
-  )
+  if (!c.allowNoChecks && checks.length === 0 && e.requiredChecks.length === 0)
     return result(
       "INCOMPLETE",
       "No check evidence exists and the configured policy requires checks",
@@ -375,7 +486,7 @@ function compute(
     required.set(check.name, check.appId);
   }
   for (const check of e.requiredChecks) {
-    const found = e.checks.filter(
+    const found = checks.filter(
       (v) =>
         v.name === check.name &&
         (check.appId === null || v.appId === check.appId),
@@ -396,7 +507,7 @@ function compute(
       return result("CHECKS_PENDING", "A protected required check is pending");
   }
   if (c.optionalChecks === "safe-terminal")
-    for (const check of e.checks) {
+    for (const check of checks) {
       if (
         e.requiredChecks.some(
           (r) =>
@@ -422,8 +533,8 @@ function compute(
         );
     }
   if (
-    e.threads.some((t) => !t.resolved) ||
-    e.findings.some((f) => !f.resolved && c.blockingLabels.includes(f.label))
+    threads.some((t) => !t.resolved) ||
+    findings.some((f) => !f.resolved && c.blockingLabels.includes(f.label))
   )
     return result(
       "REVIEW_BLOCKED",
@@ -431,7 +542,7 @@ function compute(
     );
   const latest = new Map<string, Review>();
   // Historical comments carry no approval authority and cannot invalidate a later head.
-  for (const review of e.reviews) {
+  for (const review of reviews) {
     if (review.state === "COMMENTED" || review.state === "DISMISSED") continue;
     const actor = review.author.toLowerCase(),
       prior = latest.get(actor);
@@ -460,7 +571,7 @@ function compute(
     );
   const activityAt = Math.max(
     e.lastActivityAt,
-    ...e.reviews.map((v) => v.updatedAt),
+    ...reviews.map((v) => v.updatedAt),
   );
   if (activityAt > now)
     return result("INCOMPLETE", "Review activity is future-dated");
@@ -748,7 +859,13 @@ const operations = {
         c,
         s,
         "merge",
-        { ...r, expectHead: call.input.expectHead, title, body },
+        {
+          ...r,
+          expectHead: call.input.expectHead,
+          expectBase: view.evidence.baseSha,
+          title,
+          body,
+        },
         () => {
           // Fence after executable resolution, with no await before the external process launch.
           const intent = s.state.put(

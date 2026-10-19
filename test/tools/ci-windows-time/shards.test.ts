@@ -10,6 +10,7 @@ import { counterfactuals as memoryMutations } from "../../node-fixtures/memory/c
 import { asyncCounterfactuals } from "../../node-fixtures/async-handlers/counterfactuals.ts";
 import { providerCounterfactuals } from "../../node-fixtures/assembly-providers/counterfactuals.ts";
 import { counterfactuals as gitMutations } from "../../node-fixtures/l12-git/counterfactuals.ts";
+import { counterfactuals as prMutations } from "../../node-fixtures/l12-pr/counterfactuals.ts";
 
 function verifyShards<T>(cases: readonly T[]): readonly T[] {
   const left = selectShard(cases, packedCoverage("24").shard);
@@ -46,6 +47,7 @@ for (const { name, cases } of [
   { name: "memory", cases: memoryMutations },
   { name: "providers", cases: providerCounterfactuals },
   { name: "Git", cases: gitMutations },
+  { name: "PR/GitHub", cases: prMutations },
   { name: "async Windows", cases: asyncCounterfactuals("win32") },
   { name: "async Linux", cases: asyncCounterfactuals("linux") },
   { name: "async macOS", cases: asyncCounterfactuals("darwin") },
@@ -66,6 +68,7 @@ test("shards stay complete and balanced as mutations are added", () => {
       memoryMutations.length,
       providerCounterfactuals.length,
       gitMutations.length,
+      prMutations.length,
       asyncCounterfactuals("win32").length,
     ) +
       5;

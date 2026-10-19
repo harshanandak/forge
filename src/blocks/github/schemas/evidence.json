@@ -143,9 +143,13 @@
           },
           "resolved": {
             "type": "boolean"
+          },
+          "headSha": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{40}$"
           }
         },
-        "required": ["id", "resolved"],
+        "required": ["id", "resolved", "headSha"],
         "additionalProperties": false
       },
       "maxItems": 10000
@@ -162,9 +166,13 @@
           },
           "resolved": {
             "type": "boolean"
+          },
+          "headSha": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{40}$"
           }
         },
-        "required": ["label", "resolved"],
+        "required": ["label", "resolved", "headSha"],
         "additionalProperties": false
       },
       "maxItems": 10000
@@ -173,6 +181,64 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 9007199254740991
+    },
+    "mergeableHeadSha": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{40}$"
+    },
+    "protection": {
+      "type": "object",
+      "properties": {
+        "headSha": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "baseSha": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "strictStatusChecks": {
+          "type": "boolean"
+        },
+        "baseComparison": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "headSha": {
+                  "type": "string",
+                  "pattern": "^[a-fA-F0-9]{40}$"
+                },
+                "baseSha": {
+                  "type": "string",
+                  "pattern": "^[a-fA-F0-9]{40}$"
+                },
+                "behindBy": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["headSha", "baseSha", "behindBy"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "atomicBaseCondition": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "headSha",
+        "baseSha",
+        "strictStatusChecks",
+        "baseComparison",
+        "atomicBaseCondition"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
@@ -189,7 +255,9 @@
     "reviews",
     "threads",
     "findings",
-    "lastActivityAt"
+    "lastActivityAt",
+    "mergeableHeadSha",
+    "protection"
   ],
   "additionalProperties": false
 }

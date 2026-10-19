@@ -1,5 +1,10 @@
 export const packedSuites = [
   {
+    file: "test/blocks/l12-pr/packed.integration.test.ts",
+    label: "packed PR integration",
+    consumerEnv: "PR_PACKED_CONSUMER",
+  },
+  {
     file: "test/blocks/l12-git/packed.integration.test.ts",
     label: "packed Git integration",
     consumerEnv: "GIT_PACKED_CONSUMER",

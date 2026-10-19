@@ -110,7 +110,7 @@ test("verdict is computed from each fresh provider observation, never a persiste
     ],
     [
       "REVIEW_BLOCKED",
-      { ...ready(), threads: [{ id: "T1", resolved: false }] },
+      { ...ready(), threads: [{ id: "T1", resolved: false, headSha: head }] },
     ],
     ["REVIEW_REQUIRED", { ...ready(), reviews: [] }],
     ["SETTLING", { ...ready(), lastActivityAt: 9950 }],
@@ -373,8 +373,8 @@ test("duplicate provider review or thread IDs are incomplete and cannot inflate 
     {
       ...ready(),
       threads: [
-        { id: "T1", resolved: true },
-        { id: "T1", resolved: true },
+        { id: "T1", resolved: true, headSha: head },
+        { id: "T1", resolved: true, headSha: head },
       ],
     },
   ]) {
@@ -394,4 +394,183 @@ test("duplicate provider review or thread IDs are incomplete and cannot inflate 
     ).toMatchObject({ code: "HEAD_MOVED" });
   }
   expect(h.effects).not.toContain("merge");
+});
+
+function expectedVerdict(
+  view: Json,
+  status: string,
+  stale: readonly string[],
+): void {
+  expect(view.verdict).toMatchObject({ status });
+  const verdict = view.verdict as { reasons: string[] };
+  for (const term of stale)
+    expect(
+      verdict.reasons.some((reason) => reason.includes(`stale ${term}`)),
+    ).toBe(true);
+}
+test("only current-head checks satisfy existence and protected-check policy", async () => {
+  const h = harness();
+  const stale = {
+    name: "old",
+    appId: 7,
+    headSha: "c".repeat(40),
+    status: "COMPLETED",
+    conclusion: "SUCCESS",
+  };
+  const policy = {
+    ...prConfig,
+    allowNoChecks: false,
+    optionalChecks: "ignore",
+  };
+  h.set({ ...ready(), requiredChecks: [], checks: [stale] });
+  expectedVerdict(await h.invoke("status", reference, policy), "INCOMPLETE", [
+    "check",
+  ]);
+  expect(
+    await rejection(
+      h.invoke(
+        "merge",
+        { ...reference, expectHead: head, expectRevision: 0 },
+        policy,
+      ),
+    ),
+  ).toMatchObject({ code: "MERGE_BLOCKED" });
+  expect(h.effects).not.toContain("merge");
+  h.set({
+    ...ready(),
+    checks: [
+      ...(ready().checks as Json[]),
+      { ...stale, name: "tests", conclusion: "FAILURE" },
+    ],
+  });
+  expectedVerdict(await h.invoke("status"), "MERGE_READY", ["check"]);
+});
+test("stale Codex review state is ignored before latest-author selection and approval existence", async () => {
+  const h = harness();
+  const current = {
+    id: "current",
+    author: "codex",
+    state: "APPROVED",
+    headSha: head,
+    updatedAt: 1000,
+  };
+  const stale = {
+    id: "old",
+    author: "codex",
+    state: "CHANGES_REQUESTED",
+    headSha: "c".repeat(40),
+    updatedAt: 2000,
+  };
+  h.set({ ...ready(), reviews: [current, stale] });
+  expectedVerdict(await h.invoke("status"), "MERGE_READY", ["review"]);
+  h.set({ ...ready(), reviews: [{ ...stale, state: "APPROVED" }] });
+  expectedVerdict(await h.invoke("status"), "REVIEW_REQUIRED", ["review"]);
+  expect(
+    await rejection(
+      h.invoke("merge", { ...reference, expectHead: head, expectRevision: 0 }),
+    ),
+  ).toMatchObject({ code: "MERGE_BLOCKED" });
+  expect(h.effects).not.toContain("merge");
+});
+test("mergeability, thread and finding observations are explicitly bound to the current head", async () => {
+  const h = harness();
+  h.set({ ...ready(), mergeableHeadSha: "c".repeat(40) });
+  expectedVerdict(await h.invoke("status"), "INCOMPLETE", ["mergeability"]);
+  expect(
+    await rejection(
+      h.invoke("merge", { ...reference, expectHead: head, expectRevision: 0 }),
+    ),
+  ).toMatchObject({ code: "MERGE_BLOCKED" });
+  expect(h.effects).not.toContain("merge");
+  h.set({
+    ...ready(),
+    threads: [{ id: "old-thread", resolved: false, headSha: "c".repeat(40) }],
+    findings: [{ label: "P0", resolved: false, headSha: "c".repeat(40) }],
+  });
+  expectedVerdict(await h.invoke("status"), "MERGE_READY", [
+    "thread",
+    "finding",
+  ]);
+});
+
+test("strict required-check policy requires head/base-bound proof that the head includes the current base", async () => {
+  const h = harness(),
+    base = "b".repeat(40);
+  const protection = {
+    headSha: head,
+    baseSha: base,
+    strictStatusChecks: true,
+    atomicBaseCondition: true,
+    baseComparison: { headSha: head, baseSha: base, behindBy: 1 },
+  };
+  h.set({ ...ready(), protection });
+  expect((await h.invoke("status")).verdict).toMatchObject({
+    status: "CHECKS_PENDING",
+  });
+  expect(
+    await rejection(
+      h.invoke("merge", { ...reference, expectHead: head, expectRevision: 0 }),
+    ),
+  ).toMatchObject({ code: "MERGE_BLOCKED" });
+  h.set({
+    ...ready(),
+    protection: {
+      ...protection,
+      baseComparison: {
+        ...protection.baseComparison,
+        behindBy: 0,
+        baseSha: "d".repeat(40),
+      },
+    },
+  });
+  expect((await h.invoke("status")).verdict).toMatchObject({
+    status: "INCOMPLETE",
+  });
+  h.set({
+    ...ready(),
+    protection: {
+      ...protection,
+      baseSha: "d".repeat(40),
+      baseComparison: null,
+    },
+  });
+  expect((await h.invoke("status")).verdict).toMatchObject({
+    status: "INCOMPLETE",
+  });
+  expect(h.effects).not.toContain("merge");
+  h.set({
+    ...ready(),
+    protection: {
+      ...protection,
+      baseComparison: { ...protection.baseComparison, behindBy: 0 },
+    },
+  });
+  expect((await h.invoke("status")).verdict).toMatchObject({
+    status: "MERGE_READY",
+  });
+});
+
+test("strict providers without an atomic base condition never authorize direct merge", async () => {
+  const h = harness(),
+    base = "b".repeat(40);
+  h.set({
+    ...ready(),
+    protection: {
+      headSha: head,
+      baseSha: base,
+      strictStatusChecks: true,
+      atomicBaseCondition: false,
+      baseComparison: { headSha: head, baseSha: base, behindBy: 0 },
+    },
+  });
+  expect((await h.invoke("status")).verdict).toMatchObject({
+    status: "INCOMPLETE",
+  });
+  expect(
+    await rejection(
+      h.invoke("merge", { ...reference, expectHead: head, expectRevision: 0 }),
+    ),
+  ).toMatchObject({ code: "MERGE_BLOCKED" });
+  expect(h.effects).not.toContain("merge");
+  expect(h.effects).not.toContain("put");
 });
