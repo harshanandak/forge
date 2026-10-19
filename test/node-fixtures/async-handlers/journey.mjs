@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { closeChild } from "./deadline.mjs";
+import { isRunning as alive } from "./liveness.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import {
   readdirSync,
@@ -114,17 +115,6 @@ function fixture(source, timeoutMs = 3000, effects = [], processContainment) {
   };
 }
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-function alive(pid) {
-  try {
-    process.kill(pid, 0);
-    if (process.platform === "linux")
-      return !readFileSync(`/proc/${pid}/stat`, "utf8").includes(") Z ");
-    return true;
-  } catch (error) {
-    if (["ESRCH", "ENOENT"].includes(error.code)) return false;
-    throw error;
-  }
-}
 function report(result, containment, descendantPid) {
   const warnings = result.warnings.filter(
     (warning) => warning.code === "PROCESS_SUPERVISION",
@@ -248,7 +238,7 @@ async function tree(kind, containment = "supervised") {
   assert.equal(
     alive(pid),
     false,
-    "invocation must stop its entire process tree",
+    `invocation must stop its entire process tree (pid=${pid})`,
   );
   assert.equal(
     existsSync(late),

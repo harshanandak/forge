@@ -145,6 +145,17 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
       ["test/integration/fixtures/mutation-proof.mjs", "mutation-proof.mjs"],
     ] as const)
       copyFileSync(join(root, source), join(privateCopy, target));
+    // Run the same state-aware probe tested by the source fixtures, as plain JS
+    // inside the installed package where Node cannot strip TypeScript.
+    writeFileSync(
+      join(privateCopy, "liveness.mjs"),
+      new Bun.Transpiler({ loader: "ts" }).transformSync(
+        readFileSync(
+          join(root, "test/node-fixtures/process/liveness.ts"),
+          "utf8",
+        ),
+      ),
+    );
     phase("privatecopies");
     const journey = join(privateCopy, "async-journey.mjs");
     const runtimes = [
