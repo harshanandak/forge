@@ -1,6 +1,6 @@
 import { ForgeFailure } from "../../contract/failure.ts";
 import { refuse } from "../trust/index.ts";
-import type { ProcessPort, SpawnOptions } from "../../ports/process.ts";
+import type { ProcessPort, SpawnOptions, ProcessSupervisionReport } from "../../ports/process.ts";
 
 /** Revocation covers cached methods as well as clients; the embedding still owns effect checks. */
 export class InvocationServices {
@@ -10,9 +10,12 @@ export class InvocationServices {
   #active = true;
   readonly #cleanupErrors: unknown[] = [];
   readonly #authorize: () => void;
-  constructor(deadline: number, authorize: () => void) {
+  readonly #strict: boolean;
+  readonly #reports: ProcessSupervisionReport[] = [];
+  constructor(deadline: number, authorize: () => void, strict = false) {
     this.deadline = deadline;
     this.#authorize = authorize;
+    this.#strict = strict;
   }
   check(): void {
     if (!this.#active)
@@ -90,6 +93,29 @@ export class InvocationServices {
     if (this.#cleanupErrors.length)
       throw new AggregateError(this.#cleanupErrors, "Process cleanup failed");
   }
+  async prepare(value: unknown): Promise<void> {
+    if (!this.#strict) return;
+    const seen = new Set<object>();
+    const ports: ProcessPort[] = [];
+    const visit = (entry: unknown, depth: number): void => {
+      if (typeof entry !== "object" || entry === null || seen.has(entry)) return;
+      if (depth > 32 || seen.size >= 512) refuse("LIMIT_EXCEEDED", "Service graph exceeds containment preflight budget");
+      seen.add(entry);
+      if ("run" in entry && "resolve" in entry && typeof entry.run === "function" && typeof entry.resolve === "function") { ports.push(entry as ProcessPort); return; }
+      for (const child of Object.values(entry)) visit(child, depth + 1);
+    };
+    visit(value, 0);
+    if (!ports.length) refuse("CONTAINMENT_UNAVAILABLE", "Operation requires a containment-capable process provider");
+    for (const port of ports) {
+      this.check();
+      if (!port.containment) refuse("CONTAINMENT_UNAVAILABLE", "Process provider cannot enforce strict containment");
+      const capability = await this.wait(port.containment());
+      if (!capability.available) refuse("CONTAINMENT_UNAVAILABLE", capability.reason);
+    }
+  }
+  warnings(): readonly { readonly code: string; readonly message: string }[] {
+    return this.#reports.map(report => ({code:"PROCESS_SUPERVISION", message:JSON.stringify({...report, stoppedCount:report.stoppedPids.length,stoppedPids:report.stoppedPids.slice(0,32)})}));
+  }
   wrap(value: unknown): unknown {
     const seen = new WeakMap<object, Map<object | undefined, unknown>>();
     const visit = (entry: unknown, receiver?: object): unknown => {
@@ -131,6 +157,7 @@ export class InvocationServices {
             const pending = port.run(executable, args, {
               ...options,
               signal,
+              containment: this.#strict ? "strict" : "supervised",
               timeoutMs: Math.min(
                 options.timeoutMs,
                 Math.max(1, this.deadline - Date.now()),
@@ -138,7 +165,10 @@ export class InvocationServices {
             });
             this.#pending.add(pending);
             void pending.then(
-              () => this.#pending.delete(pending),
+              (result) => {
+                this.#pending.delete(pending);
+                if (result.supervision && this.#reports.length < 32) this.#reports.push(result.supervision);
+              },
               (error: unknown) => {
                 this.#pending.delete(pending);
                 if (

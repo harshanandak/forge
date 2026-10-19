@@ -14,6 +14,7 @@
       "additionalProperties": { "$ref": "#/$defs/BlockInstance" }
     },
     "mcp": { "$ref": "#/$defs/McpExposure" },
+    "runtime": { "$ref": "#/$defs/RuntimeBudget" },
     "templates": {
       "description": "Templates imported into this config, with the exact version and digest imported.",
       "type": "array",
@@ -29,6 +30,20 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "RuntimeBudget": {
+      "description": "The host's declared invocation deadline budget. An operation must declare timeoutMs or have this budget; when both exist, the shorter deadline applies.",
+      "type": "object",
+      "required": ["timeoutMs"],
+      "properties": {
+        "timeoutMs": {
+          "description": "Maximum invocation duration in milliseconds, from the 1 ms safety floor through the largest supported timer interval. No implicit deadline is supplied.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      },
+      "additionalProperties": false
+    },
     "BlockInstance": {
       "type": "object",
       "required": ["source"],

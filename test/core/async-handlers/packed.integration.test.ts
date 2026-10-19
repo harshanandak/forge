@@ -34,7 +34,7 @@ function run(
     timeout,
   });
 }
-test("installed async ABI: child completion, tree interruption, service revocation and CLI/MCP", () => {
+test("installed async ABI: supervised cleanup, strict containment, service revocation and CLI/MCP", () => {
   const work = mkdtempSync(join(root, ".async-packed-"));
   const node = Bun.which("node");
   if (!node) throw Error("Node required");
@@ -118,14 +118,28 @@ test("installed async ABI: child completion, tree interruption, service revocati
       ...(process.platform === "win32"
         ? [
             {
-              file: "adapters/process/tree-kill.js",
-              from: 'const root = process.env.SystemRoot ?? "C:/Windows";',
-              to: 'const root = "Z:/forge-missing-system-root";',
-              mode: "child-env",
+              file: "adapters/process/windows-job.js",
+              from: "if (api.terminateJobObject(handle, 1) === 0)",
+              to: "if (true)",
+              mode: "job-termination",
               evidence: "typed interruption",
             },
           ]
         : []),
+      {
+        file: "core/runtime/index.js",
+        from: "await scope.prepare(handle?.value);",
+        to: "void 0;",
+        mode: "strict-refusal",
+        evidence: "strict containment must refuse before activation",
+      },
+      {
+        file: "adapters/process/run.js",
+        from: "stoppedPids = await container.stop();",
+        to: "stoppedPids = [];",
+        mode: "default-cleanup",
+        evidence: "root exit must complete after tree cleanup",
+      },
       {
         file: "adapters/node-runtime/isolation.js",
         from: "Promise.resolve(handler(args))",

@@ -1,5 +1,5 @@
 export type ProcessErrorCode =
-  "INVALID_OPTIONS" | "UNSAFE_ARGUMENT" | "SPAWN_FAILED" | "TREE_KILL_FAILED";
+  "INVALID_OPTIONS" | "UNSAFE_ARGUMENT" | "SPAWN_FAILED" | "TREE_KILL_FAILED" | "CONTAINMENT_UNAVAILABLE" | "PROCESS_LIMIT_EXCEEDED";
 
 /** The command could not be started at all; a command that ran and failed is a ProcessResult. */
 export class ProcessSpawnError extends Error {

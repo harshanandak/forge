@@ -1,4 +1,4 @@
-import { InvocationServices } from "./services.ts";
+﻿import { InvocationServices } from "./services.ts";
 import { bindContext } from "../../contract/context.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
@@ -17,13 +17,12 @@ import { TrustStore, refuse } from "../trust/index.ts";
 import type { Handle, LifetimeProvider } from "../../ports/lifetime.ts";
 
 export interface RuntimeLimits {
-  readonly timeoutMs: number;
+  readonly timeoutMs?: number;
   readonly maxOutputBytes: number;
   readonly parse: ParseLimits;
 }
 
 export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
-  timeoutMs: 1000,
   maxOutputBytes: 1_048_576,
   parse: DEFAULT_PARSE_LIMITS,
 };
@@ -35,6 +34,7 @@ export interface ServiceScope {
   readonly effects: readonly string[];
   readonly signal: AbortSignal;
   readonly deadline: number;
+  readonly processContainment: "supervised" | "strict";
 }
 
 /** Value-or-Promise evaluation is supplied by the embedding through the L1 lifetime port. */
@@ -196,9 +196,14 @@ export class Runtime {
         ...(options.limits?.parse ?? DEFAULT_RUNTIME_LIMITS.parse),
       }),
     });
+    const timeoutMs = this.#limits.timeoutMs;
+    if (
+      timeoutMs !== undefined &&
+      (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647)
+    )
+      refuse("INPUT_INVALID", "limits.timeoutMs must be an integer between 1 and 2147483647");
     const parse = this.#limits.parse;
     for (const limit of [
-      this.#limits.timeoutMs,
       this.#limits.maxOutputBytes,
       parse.maxBytes,
       parse.maxDepth,
@@ -259,13 +264,18 @@ export class Runtime {
         this.#options.services === undefined
       )
         refuse("PROVIDER_MISSING", "bound clients need a service provider");
-      const timeoutMs = Math.min(
-        declaration.timeoutMs ?? this.#limits.timeoutMs,
-        this.#limits.timeoutMs,
-      );
+      const declaredTimeout = declaration.timeoutMs;
+      const hostTimeout = this.#limits.timeoutMs;
+      if (declaredTimeout === undefined && hostTimeout === undefined)
+        refuse("INPUT_INVALID", "Declare operation timeoutMs or runtime limits.timeoutMs before invocation");
+      const timeoutMs = declaredTimeout === undefined
+        ? hostTimeout!
+        : hostTimeout === undefined
+          ? declaredTimeout
+          : Math.min(declaredTimeout, hostTimeout);
       invocation = new InvocationServices(Date.now() + timeoutMs, () => {
         this.#trust.check(block.digest, declaration.effects);
-      });
+      }, declaration.processContainment === "strict");
       const scope = invocation;
       cancel = () =>
         scope.controller.abort(
@@ -299,6 +309,7 @@ export class Runtime {
               effects: Object.freeze([...declaration.effects]),
               signal: scope.controller.signal,
               deadline: scope.deadline,
+              processContainment: declaration.processContainment ?? "supervised",
             }),
           ),
         ),
@@ -306,6 +317,7 @@ export class Runtime {
           if (late?.ownership === "owned") await late.close();
         },
       );
+      await scope.prepare(handle?.value);
       scope.check();
       // Opening clients may yield; trust must still hold immediately before execution.
       this.#trust.check(block.digest, declaration.effects);
@@ -383,6 +395,7 @@ export class Runtime {
           failure.code === "ADMISSION_REQUIRED" ||
           failure.code === "GRANT_REQUIRED" ||
           failure.code === "LIMIT_EXCEEDED" ||
+          failure.code === "CONTAINMENT_UNAVAILABLE" ||
           failure.code === "PROVIDER_MISSING"
             ? "INCOMPLETE"
             : "FAIL",
@@ -429,6 +442,7 @@ export class Runtime {
         },
         warnings: [],
       };
-    return result;
+    return { ...result, warnings: [...result.warnings, ...(invocation?.warnings() ?? [])] };
   }
 }
+

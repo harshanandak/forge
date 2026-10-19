@@ -34,7 +34,15 @@ const env = Object.fromEntries(
   ),
 );
 const device = join(root, "device");
-function fixture(source, timeoutMs = 3000, effects = []) {
+const supervision = {
+  cleanupTimeoutMs: 5000,
+  pollIntervalMs: 25,
+  drainTimeoutMs: 250,
+  maxConcurrent: 2,
+};
+const processPort = (options = {}) =>
+  createProcessPort({ supervision, ...options });
+function fixture(source, timeoutMs = 3000, effects = [], processContainment) {
   const directory = join(root, `block-${Math.random().toString(36).slice(2)}`);
   mkdirSync(directory);
   const manifest = {
@@ -55,6 +63,7 @@ function fixture(source, timeoutMs = 3000, effects = []) {
         callers: ["human", "agent"],
         stability: "stable",
         timeoutMs,
+        ...(processContainment === undefined ? {} : { processContainment }),
       },
     },
   };
@@ -95,15 +104,125 @@ function fixture(source, timeoutMs = 3000, effects = []) {
     catalog,
     trust,
     request,
-    runtime: (services) =>
+    runtime: (services, isolation = nodeRunIsolation) =>
       new Runtime(catalog, trust, {
-        isolation: nodeRunIsolation,
-        limits: { timeoutMs: 5000 },
+        isolation,
+        limits: { timeoutMs: 10000 },
         services: async () => ({ ownership: "borrowed", value: services }),
       }),
   };
 }
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    if (process.platform === "linux")
+      return !readFileSync(`/proc/${pid}/stat`, "utf8").includes(") Z ");
+    return true;
+  } catch (error) {
+    if (["ESRCH", "ENOENT"].includes(error.code)) return false;
+    throw error;
+  }
+}
+function report(result, containment, descendantPid) {
+  const warnings = result.warnings.filter(
+    (warning) => warning.code === "PROCESS_SUPERVISION",
+  );
+  assert.equal(warnings.length, 1, "process outcome must report supervision");
+  const value = JSON.parse(warnings[0].message);
+  assert.equal(value.mode, containment);
+  assert.equal(value.confirmed, true, "supervised cleanup must be confirmed");
+  assert.ok(value.stoppedCount > 0, "supervision must report what stopped");
+  assert.ok(value.stoppedCount >= value.stoppedPids.length);
+  assert.equal(alive(value.supervisorPid), false, "supervisor must be stopped");
+  if (process.platform === "win32")
+    assert.equal(value.backend, "windows-job", "Windows defaults to Job Objects");
+  if (containment === "strict" && process.platform === "linux")
+    assert.equal(value.backend, "linux-cgroup");
+  if (descendantPid !== undefined) {
+    assert.equal(alive(descendantPid), false, "grandchild must be stopped");
+    if (value.backend !== "process-group")
+      assert.ok(
+        value.stoppedPids.includes(descendantPid),
+        "containment report must include the stopped grandchild",
+      );
+  }
+  console.log(
+    `SUPERVISION ${containment} ${value.backend}: stopped=${value.stoppedCount}, confirmed=${value.confirmed}`,
+  );
+}
+async function refusal(port, label) {
+  let activations = 0, spawns = 0, opens = 0;
+  const f = fixture(
+    "({ services }) => { services.activate(); return 'unexpected'; }",
+    5000,
+    [],
+    "strict",
+  );
+  const tracked = {
+    resolve: port.resolve,
+    ...(port.containment ? { containment: () => port.containment() } : {}),
+    run(...args) { spawns++; return port.run(...args); },
+  };
+  const result = await f.runtime({
+    process: tracked,
+    activate() { activations++; },
+  }, {
+    open() { opens++; return nodeRunIsolation.open(); },
+  }).invoke(f.request);
+  assert.equal(
+    result.error?.code,
+    "CONTAINMENT_UNAVAILABLE",
+    "strict containment must refuse before activation",
+  );
+  assert.equal(result.status, "INCOMPLETE", label);
+  assert.equal(opens, 0, "unavailable containment must not open isolation");
+  assert.equal(activations, 0, "unavailable containment must not activate handler");
+  assert.equal(spawns, 0, "unavailable containment must not spawn a command");
+}
+async function tree(kind, containment = "supervised") {
+  const strict = containment === "strict";
+  const ready = join(root, `${containment}-${kind}.ready`);
+  const late = join(root, `${containment}-${kind}.late`);
+  const grandchild = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)},String(process.pid)); setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'escaped'),6000); setInterval(()=>{},1000);`;
+  const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:${strict},stdio:${JSON.stringify(strict ? "ignore" : "inherit")},env:${JSON.stringify(env)}}); c.unref(); ${kind === "rootexit" ? `const check=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(check);process.exit(0);}},5);` : "setInterval(()=>{},1000);"}`;
+  const f = fixture(
+    "async ({ input, services }) => { const result = await services.process.run(input.executable, input.args, input.options); if (result.exitCode !== 0) throw Error('child failed'); return 'root-exited'; }",
+    kind === "timeout" ? 2000 : 6000,
+    [],
+    strict ? "strict" : undefined,
+  );
+  f.request.input = {
+    executable: { kind: "resolved", path: process.execPath },
+    args: ["-e", childSource],
+    options: { cwd: root, env, timeoutMs: 8000, maxOutputBytes: 1024 },
+  };
+  const controller = new AbortController();
+  const pending = f.runtime({ process: processPort() })
+    .invoke(f.request, { signal: controller.signal });
+  if (kind === "cancel") {
+    const deadline = Date.now() + 4000;
+    while (!existsSync(ready) && Date.now() < deadline) await pause(10);
+    assert.ok(existsSync(ready), "grandchild must start before cancellation");
+    controller.abort();
+  }
+  const result = await pending;
+  if (kind === "rootexit") {
+    assert.equal(result.ok, true, "root exit must complete after tree cleanup");
+    assert.equal(result.result, "root-exited");
+  } else {
+    assert.equal(
+      result.error?.code,
+      kind === "timeout" ? "INVOCATION_TIMEOUT" : "INVOCATION_CANCELLED",
+      "typed interruption",
+    );
+  }
+  assert.ok(existsSync(ready), "grandchild must have started");
+  const pid = Number(readFileSync(ready, "utf8"));
+  assert.equal(alive(pid), false, "invocation must stop its entire process tree");
+  assert.equal(existsSync(late), false, "invocation must stop its entire process tree");
+  report(result, containment, pid);
+}
 try {
   if (["all", "async"].includes(mode)) {
     const f = fixture(`async ({ input, services, signal, deadline }) => {
@@ -119,17 +238,10 @@ try {
       ],
       options: { cwd: root, env, timeoutMs: 2000, maxOutputBytes: 1024 },
     };
-    assert.deepEqual(
-      await f.runtime({ process: createProcessPort() }).invoke(f.request),
-      {
-        ok: true,
-        op: "sample.run",
-        status: "OK",
-        result: "child-complete",
-        warnings: [],
-      },
-      "async child process must complete",
-    );
+    const result = await f.runtime({ process: processPort() }).invoke(f.request);
+    assert.equal(result.ok, true, "async child process must complete");
+    assert.equal(result.result, "child-complete", "async child process must complete");
+    report(result, "supervised");
   }
   if (["all", "cpu"].includes(mode)) {
     const f = fixture(
@@ -145,76 +257,29 @@ try {
       "CPU after a native Promise must remain under deadline",
     );
   }
-  for (const kind of ["timeout", "cancel", "child-env"])
-    if (["all", kind].includes(mode)) {
-      const ready = join(root, `${kind}.ready`),
-        late = join(root, `${kind}.late`);
-      // The root remains alive while its grandchild owns a delayed write. A live descendant
-      // would create the marker even if the runtime returned a timeout successfully.
-      const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'escaped'), 800); setInterval(() => {}, 1000);`)}], {stdio:'inherit',env:${JSON.stringify(env)}}); setInterval(()=>{},1000);`;
-      const f = fixture(
-        "async ({ input, services }) => { await services.process.run(input.executable, input.args, input.options); return 'unexpected'; }",
-        kind === "timeout" ? 400 : 3000,
-      );
-      const actual = createProcessPort();
-      const childEnv = { ...env };
-      const port =
-        kind === "child-env"
-          ? {
-              resolve: actual.resolve,
-              run: (executable, args, options) =>
-                actual.run(executable, args, { ...options, env: childEnv }),
-            }
-          : actual;
-      f.request.input = {
-        executable: { kind: "resolved", path: process.execPath },
-        args: ["-e", childSource],
-        options: { cwd: root, env, timeoutMs: 2000, maxOutputBytes: 1024 },
-      };
-      const controller = new AbortController();
-      const pending = f
-        .runtime({ process: port })
-        .invoke(f.request, { signal: controller.signal });
-      if (kind !== "timeout") {
-        for (let i = 0; i < 100 && !existsSync(ready); i++) await pause(10);
-        assert.ok(
-          existsSync(ready),
-          "grandchild must start before cancellation",
-        );
-        // Spawn cloned the normal child environment; the mutable options object can still
-        // change before cancellation. It must never select the supervisor executable.
-        if (kind === "child-env")
-          childEnv.SystemRoot = "Z:/forge-missing-system-root";
-        controller.abort();
-      }
-      const result = await pending;
-      assert.equal(
-        result.error?.code,
-        kind === "timeout" ? "INVOCATION_TIMEOUT" : "INVOCATION_CANCELLED",
-        "typed interruption",
-      );
-      assert.ok(existsSync(ready), "grandchild must have started");
-      await pause(900);
-      assert.equal(
-        existsSync(late),
-        false,
-        "invocation must stop its entire process tree",
-      );
-      const pid = Number(readFileSync(ready, "utf8"));
-      // A reaped process is observable on all supported hosts; Linux may briefly retain a zombie.
-      let alive = false;
-      try {
-        process.kill(pid, 0);
-        alive = true;
-      } catch {
-        /* the descendant has exited */
-      }
-      if (alive && process.platform === "linux") {
-        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-        alive = !stat.includes(") Z ");
-      }
-      assert.equal(alive, false, "grandchild must be stopped");
+  for (const kind of ["timeout", "cancel", "rootexit"])
+    if (["all", kind, kind === "rootexit" ? "default-cleanup" : ""].includes(mode))
+      await tree(kind);
+  if (mode === "job-termination") await tree("cancel");
+  if (["all", "strict-refusal"].includes(mode)) {
+    await refusal(processPort({ strictContainment: false }), "host disabled");
+    const actual = processPort();
+    await refusal({ resolve: actual.resolve, run: actual.run }, "legacy provider");
+    if (process.platform === "darwin") await refusal(actual, "macOS capability");
+  }
+  if (["all", "strict"].includes(mode)) {
+    const actual = processPort();
+    const capability = await actual.containment();
+    if (process.platform === "win32")
+      assert.equal(capability.available, true, "Windows Job Object capability must be available");
+    if (capability.available) {
+      for (const kind of ["rootexit", "timeout", "cancel"])
+        await tree(kind, "strict");
+    } else {
+      await refusal(actual, "host capability unavailable");
+      console.log(`NOT_EXERCISED strict process containment: ${capability.reason}`);
     }
+  }
   if (["all", "scope"].includes(mode)) {
     const f = fixture(
       "({ services }) => { services.retain(services); return 'saved'; }",

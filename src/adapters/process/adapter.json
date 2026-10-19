@@ -1,4 +1,7 @@
 {
   "port": "process",
-  "executable": ["taskkill"]
+  "executable": [
+    "taskkill"
+  ],
+  "package": "koffi"
 }
