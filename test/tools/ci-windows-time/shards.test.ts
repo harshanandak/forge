@@ -8,6 +8,7 @@ import { firstSliceMutations } from "../../integration/counterfactuals.ts";
 import { counterfactuals as workMutations } from "../../node-fixtures/work/counterfactuals.ts";
 import { counterfactuals as memoryMutations } from "../../node-fixtures/memory/counterfactuals.ts";
 import { asyncCounterfactuals } from "../../node-fixtures/async-handlers/counterfactuals.ts";
+import { providerCounterfactuals } from "../../node-fixtures/assembly-providers/counterfactuals.ts";
 
 function verifyShards<T>(cases: readonly T[]): readonly T[] {
   const left = selectShard(cases, packedCoverage("24").shard);
@@ -42,6 +43,7 @@ test("Node first-slice shards cover every mutation exactly once", () => {
 for (const { name, cases } of [
   { name: "work", cases: workMutations },
   { name: "memory", cases: memoryMutations },
+  { name: "providers", cases: providerCounterfactuals },
   { name: "async Windows", cases: asyncCounterfactuals("win32") },
   { name: "async Linux", cases: asyncCounterfactuals("linux") },
   { name: "async macOS", cases: asyncCounterfactuals("darwin") },
@@ -60,6 +62,7 @@ test("shards stay complete and balanced as mutations are added", () => {
       firstSliceMutations.length,
       workMutations.length,
       memoryMutations.length,
+      providerCounterfactuals.length,
       asyncCounterfactuals("win32").length,
     ) +
       5;

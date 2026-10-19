@@ -24,4 +24,9 @@ export const packedSuites = [
     label: "packed async integration",
     consumerEnv: "ASYNC_PACKED_CONSUMER",
   },
+  {
+    file: "test/assembly/providers/packed.integration.test.ts",
+    label: "packed providers integration",
+    consumerEnv: "PROVIDERS_PACKED_CONSUMER",
+  },
 ] as const;
