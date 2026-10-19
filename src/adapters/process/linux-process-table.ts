@@ -27,11 +27,13 @@ export function parseProcessStat(
     .split(/\s+/);
   const state = fields[0];
   const group = fields[2];
+  // A task being released has left its PID namespace: Linux then reports
+  // ppid 0 and pgrp -1. It can belong to no group, so -1 never matches one.
   if (
     state === undefined ||
     !/^[A-Zt]$/.test(state) ||
     group === undefined ||
-    !/^\d+$/.test(group) ||
+    !/^(?:-1|\d+)$/.test(group) ||
     !Number.isSafeInteger(Number(group))
   )
     throw new Error("Invalid process stat fields");
