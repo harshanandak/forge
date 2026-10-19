@@ -94,6 +94,7 @@ export function ready(): Json {
       {
         id: "R1",
         author: "reviewer",
+        authorizing: true,
         state: "APPROVED",
         headSha: head,
         updatedAt: 1000,

@@ -8,6 +8,10 @@ an account or change global `gh` authentication.
 
 Accepted SHA fields are normalized to lowercase at the request and API boundaries, including expected head/base, commit observations, rerun heads and merge receipts. Other text, including explicit squash messages, is preserved.
 
+Review collection requests `authorCanPushToRepository` and exposes `authorizing: true` only for a literal true value. Unknown authority never supplies an approval. See the [PullRequestReview reference](https://docs.github.com/en/graphql/reference/pulls#pullrequestreview).
+
+Merge requires the exact complete `evidence` snapshot authorized by the caller's verdict, alongside expected head/base and explicit squash text. Its preflight reloads core state, checks, reviews and their authority, threads, labels and protection policy through the same bounded collector as status. If any observation differs, no mutation is launched; fresh evidence is returned so `forge/pr` can recompute the verdict and report blockers. Object-key order does not change snapshot identity. A matching snapshot proceeds with the exact expected head in the GitHub `sha` condition. This does not make mutable checks, labels or threads atomic with GitHub's merge operation.
+
 `github.status` and `github.use` verify `/user` against an explicit account
 and host from config or host `identity`. They are observational validation
 operations. A different authenticated login is `IDENTITY_MISMATCH` before

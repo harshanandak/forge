@@ -1,5 +1,26 @@
 export const counterfactuals = [
   {
+    file: "blocks/pr/entry.cjs",
+    from: "if (review.authorizing) approvals++;",
+    to: "approvals++;",
+    journey: "review-authority",
+    evidence: "expected verdict REVIEW_REQUIRED",
+  },
+  {
+    file: "blocks/github/entry.cjs",
+    from: "if (snapshot(current) !== snapshot(payload.evidence))",
+    to: "if (false)",
+    journey: "merge-preflight",
+    evidence: "expected rejection",
+  },
+  {
+    file: "blocks/pr/entry.cjs",
+    from: "const verdict = compute(fresh, c, s.state.now());",
+    to: "const verdict = compute(view.evidence, c, s.state.now());",
+    journey: "merge-preflight",
+    evidence: "fresh blockers must be recomputed",
+  },
+  {
     file: "blocks/github/entry.cjs",
     from: "const classic = obj(rule);",
     to: "const classic = {...obj(rule), requiresDeployments: false, requiredDeploymentEnvironments: []};",

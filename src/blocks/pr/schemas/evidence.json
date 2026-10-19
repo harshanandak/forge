@@ -107,6 +107,7 @@
             "minLength": 1,
             "maxLength": 500
           },
+          "authorizing": { "type": "boolean" },
           "state": {
             "enum": [
               "APPROVED",
@@ -126,7 +127,14 @@
             "maximum": 9007199254740991
           }
         },
-        "required": ["id", "author", "state", "headSha", "updatedAt"],
+        "required": [
+          "id",
+          "author",
+          "authorizing",
+          "state",
+          "headSha",
+          "updatedAt"
+        ],
         "additionalProperties": false
       },
       "maxItems": 10000

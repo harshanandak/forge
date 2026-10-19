@@ -5,6 +5,8 @@ configured provider for fresh observations on every `pr.status`, `pr.checks` and
 `pr.threads` call. These reads do not write. `evidence` and `verdict` travel
 together; no stored phase or previous verdict authorizes a merge.
 
+An approval counts only when the provider explicitly returns `authorizing: true` for the latest current-head review by that author. Missing, unknown or non-boolean authority does not count. GitHub derives this evidence from repository push access; provider-specific authority lookup stays in the provider block.
+
 The catalog describes all twelve operations and their input/output schemas.
 `pr.claim` acquires a lease in this block's namespace; `pr.renew` and
 `pr.release` require its held generation. A lease acquired by `forge/work`
@@ -62,8 +64,7 @@ is JSON `{ "action": "status", "payload": { "repository": "owner/repo",
 `{ "ok": true, "result": ... }`. The status result conforms to
 `schemas/evidence.json`. Mutation actions are `create`, `reply`, `resolve`,
 `rerun` and `merge`, with the payloads described by the catalog. Merge passes
-the pinned head and explicit squash title/body and requires
-`{ "merged": true, "headSha": "<pinned SHA>" }` in the result.
+the pinned head/base, explicit squash title/body and the exact complete `evidence` snapshot that computed MERGE_READY. Immediately before mutation, a provider must collect the full evidence again and compare it with the authorized snapshot. Any change refuses mutation and returns `{ "merged": false, "evidence": ... }`; the PR block recomputes the full verdict from that fresh evidence and reports its blockers. Even a changed snapshot that still computes MERGE_READY requires a new attempt. An unchanged snapshot requires `{ "merged": true, "headSha": "<pinned SHA>" }` in the result. This is a freshness preflight; the provider's atomic head condition remains mandatory, and mutable provider state may change after collection.
 
 One production configuration can execute the installed Node CLI with
 `--hook github.read` for reads and `--hook github.call` for writes, subject to

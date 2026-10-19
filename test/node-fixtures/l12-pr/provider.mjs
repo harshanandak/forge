@@ -151,6 +151,7 @@ const port = {
             e.reviews.map((v) => ({
               id: v.id,
               author: { login: v.author },
+              authorCanPushToRepository: v.authorizing,
               state: v.state,
               commit: { oid: v.headSha },
               updatedAt: new Date(v.updatedAt).toISOString(),

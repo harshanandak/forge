@@ -134,6 +134,8 @@ test("installed PR/GitHub blocks: all computed verdicts, exact head and both fen
       ),
     ];
     const journeys = [
+      "review-authority",
+      "merge-preflight",
       "targeted-writes",
       "verdicts",
       "optional",

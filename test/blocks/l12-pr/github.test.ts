@@ -10,6 +10,7 @@ import {
   head,
   load,
   processFake,
+  prConfig,
   reference,
   type Json,
 } from "./helpers.ts";
@@ -63,6 +64,7 @@ function fixture(query: string): Json {
           {
             id: "R1",
             author: { login: "reviewer" },
+            authorCanPushToRepository: true,
             state: "APPROVED",
             commit: { oid: head },
             updatedAt: "2026-10-18T00:00:00Z",
@@ -379,6 +381,7 @@ test("GitHub SHA input and wire boundaries canonicalize accepted hashes without 
         ...reference,
         expectHead: head.toUpperCase(),
         expectBase: base.toUpperCase(),
+        evidence: await h.invoke("read"),
         title: head.toUpperCase(),
         body: "Explicit text",
       },
@@ -578,6 +581,7 @@ test("wrong or absent account selection launches no mutation and never switches 
           expectHead: head,
           expectBase: base,
           title: "Title",
+          evidence: {},
           body: "",
         },
       }),
@@ -617,6 +621,126 @@ test("missing pageInfo, unfinished pages, API errors and head movement never bec
     });
   }
 });
+test("GitHub review authority requires an explicit current provider push-access boolean", async () => {
+  for (const authority of [true, false, null, undefined, "true"]) {
+    const h = harness({
+      mutate(value, query) {
+        if (!query.includes("ForgePRReviews")) return value;
+        const reviews = value.reviews as Json;
+        return {
+          ...value,
+          reviews: {
+            ...reviews,
+            nodes: (reviews.nodes as Json[]).map((review) => ({
+              ...review,
+              authorCanPushToRepository: authority,
+            })),
+          },
+        };
+      },
+    });
+    expect(await h.invoke("read")).toMatchObject({
+      reviews: [{ authorizing: authority === true }],
+    });
+    expect(
+      h.inputs.find((input) => String(input.query).includes("ForgePRReviews"))!
+        .query,
+    ).toContain("authorCanPushToRepository");
+  }
+});
+
+test("PR merge refuses mutable blockers introduced at the GitHub provider boundary", async () => {
+  for (const change of [
+    "label",
+    "failed check",
+    "rerun check",
+    "reopened thread",
+  ]) {
+    let changed = false;
+    const h = harness({
+      mutate(value, query) {
+        if (!changed) return value;
+        if (change === "label" && query.includes("ForgePRLabels")) {
+          const labels = value.labels as Json;
+          return {
+            ...value,
+            labels: { ...labels, totalCount: 1, nodes: [{ name: "P1" }] },
+          };
+        }
+        if (change.includes("check") && query.includes("ForgePRChecks")) {
+          const copy = JSON.parse(JSON.stringify(value)) as Json;
+          const commits = (copy.commits as Json).nodes as Json[];
+          const rollup = (
+            (commits[0]!.commit as Json).statusCheckRollup as Json
+          ).contexts as Json;
+          const check = (rollup.nodes as Json[])[0]!;
+          check.status = change === "rerun check" ? "IN_PROGRESS" : "COMPLETED";
+          check.conclusion = change === "rerun check" ? null : "FAILURE";
+          return copy;
+        }
+        if (change === "reopened thread" && query.includes("ForgePRThreads")) {
+          const threads = value.reviewThreads as Json;
+          return {
+            ...value,
+            reviewThreads: {
+              ...threads,
+              nodes: (threads.nodes as Json[]).map((v) => ({
+                ...v,
+                isResolved: false,
+              })),
+            },
+          };
+        }
+        return value;
+      },
+    });
+    const pr = load("pr");
+    let revision = 0;
+    const now = Date.now();
+    const services = {
+      state: {
+        now: () => now,
+        get: () => (revision ? { revision } : undefined),
+        put: () => ({ revision: ++revision }),
+        lease: () => ({ expiresAt: new Date(now + 60000).toISOString() }),
+      },
+      environment: { select: () => ({}) },
+      process: processFake(async (_args, options) => {
+        const request = JSON.parse(options.stdin!) as {
+          action: string;
+          payload: Json;
+        };
+        if (request.action === "merge") changed = true;
+        return {
+          ok: true,
+          result: await h.invoke(
+            request.action === "status" ? "read" : "call",
+            request,
+          ),
+        };
+      }),
+    };
+    const invoke = (op: string, input: Json) =>
+      pr[`pr.${op}`]!(call(input, prConfig, services)) as Promise<Json>;
+    expect(await invoke("status", reference)).toMatchObject({
+      verdict: { status: "MERGE_READY" },
+    });
+    const error = await rejection(
+      invoke("merge", { ...reference, expectHead: head, expectRevision: 0 }),
+    );
+    expect(error).toMatchObject({ code: "MERGE_BLOCKED" });
+    expect(String((error as Error).message)).toContain(
+      change === "failed check"
+        ? "CHECKS_FAILED"
+        : change === "rerun check"
+          ? "CHECKS_PENDING"
+          : "REVIEW_BLOCKED",
+    );
+    expect(h.calls.some((args) => args.includes("PUT"))).toBe(false);
+    expect(revision).toBe(1);
+  }
+});
+
 test("provider exact-head merge primitive sends explicit squash title/body and refuses trailers", async () => {
   const h = harness();
   expect(
@@ -627,6 +751,7 @@ test("provider exact-head merge primitive sends explicit squash title/body and r
         expectHead: head,
         expectBase: base,
         title: "Explicit title",
+        evidence: await h.invoke("read"),
         body: "Explicit body",
       },
     }),
@@ -926,6 +1051,7 @@ test("GitHub direct merge refuses strict policy and changed base before issuing 
       expectHead: head,
       expectBase: base,
       title: "Explicit title",
+      evidence: {},
       body: "Explicit body",
     },
   };

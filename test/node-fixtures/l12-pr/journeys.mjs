@@ -51,6 +51,7 @@ function ready() {
       {
         id: "R1",
         author: "reviewer",
+        authorizing: true,
         state: "APPROVED",
         headSha: head,
         updatedAt: now - 10000,
@@ -211,6 +212,80 @@ async function status(expected) {
   return value;
 }
 try {
+  if (["all", "review-authority"].includes(mode)) {
+    for (const authorizing of [false, null, undefined]) {
+      const value = ready();
+      value.requiredChecks = [];
+      value.reviews[0].author = "outside-account";
+      value.reviews[0].authorizing = authorizing;
+      save(value);
+      await status("REVIEW_REQUIRED");
+      const held = await good("claim", reference, "acquire");
+      error(
+        await invoke(
+          "merge",
+          {
+            ...reference,
+            expectHead: head,
+            expectRevision: state.get("forge/pr", subject)?.revision ?? 0,
+          },
+          held.generation,
+        ),
+        "MERGE_BLOCKED",
+      );
+      assert.equal(
+        JSON.parse(readFileSync(file, "utf8")).evidence.state,
+        "OPEN",
+        "outside approval must not merge",
+      );
+      await good("release", reference, held.generation);
+    }
+  }
+  if (["all", "merge-preflight"].includes(mode)) {
+    for (const change of ["label", "failed", "rerun", "thread"]) {
+      save();
+      await status("MERGE_READY");
+      const held = await good("claim", reference, "acquire");
+      const revision = state.get("forge/pr", subject)?.revision ?? 0;
+      afterProvider = () => {
+        const value = ready();
+        if (change === "label")
+          value.findings = [{ label: "P1", resolved: false, headSha: head }];
+        else if (change === "thread")
+          value.threads = [{ id: "reopened", resolved: false, headSha: head }];
+        else {
+          value.checks[0].status =
+            change === "rerun" ? "IN_PROGRESS" : "COMPLETED";
+          value.checks[0].conclusion = change === "rerun" ? null : "FAILURE";
+        }
+        save(value);
+      };
+      const refused = await invoke(
+        "merge",
+        { ...reference, expectHead: head, expectRevision: revision },
+        held.generation,
+      );
+      error(refused, "MERGE_BLOCKED");
+      assert.ok(
+        refused.error.message.includes(
+          `Fresh merge verdict is ${change === "failed" ? "CHECKS_FAILED" : change === "rerun" ? "CHECKS_PENDING" : "REVIEW_BLOCKED"}`,
+        ),
+        "fresh blockers must be recomputed",
+      );
+      const stored = JSON.parse(readFileSync(file, "utf8"));
+      assert.equal(
+        stored.evidence.state,
+        "OPEN",
+        "mutable blocker must refuse before merge",
+      );
+      assert.equal(
+        stored.mergeInput,
+        undefined,
+        "mutable blocker must launch no merge mutation",
+      );
+      await good("release", reference, held.generation);
+    }
+  }
   if (["all", "targeted-writes"].includes(mode)) {
     for (const policy of [
       { rules: [{ type: "merge_queue", parameters: {} }] },
@@ -386,6 +461,7 @@ try {
     const current = {
       id: "R-current",
       author: "codex",
+      authorizing: true,
       state: "APPROVED",
       headSha: head,
       updatedAt: now - 10000,
@@ -532,6 +608,7 @@ try {
           expectHead: head,
           expectBase: base,
           title: "Explicit title",
+          evidence: JSON.parse(readFileSync(file, "utf8")).evidence,
           body: "Explicit body",
         },
       }),

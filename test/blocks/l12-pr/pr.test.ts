@@ -95,6 +95,72 @@ function harness(mutation?: { from: string; to: string }) {
     },
   };
 }
+test("outsider or unknown-authority approvals never satisfy the configured approval count", async () => {
+  for (const authorizing of [false, undefined, "true"]) {
+    const h = harness();
+    const value = ready();
+    value.requiredChecks = [];
+    value.reviews = [
+      {
+        id: "outside",
+        author: "outsider",
+        state: "APPROVED",
+        headSha: head,
+        updatedAt: 1000,
+        authorizing,
+      },
+    ];
+    h.set(value);
+    expect(await h.invoke("status")).toMatchObject({
+      verdict: { status: "REVIEW_REQUIRED" },
+    });
+    expect(
+      await rejection(
+        h.invoke("merge", {
+          ...reference,
+          expectHead: head,
+          expectRevision: 0,
+        }),
+      ),
+    ).toMatchObject({ code: "MERGE_BLOCKED" });
+    expect(h.effects).not.toContain("merge");
+  }
+});
+
+test("approval authority belongs to the latest current-head review per author", async () => {
+  const h = harness();
+  const old = {
+    id: "old",
+    author: "Reviewer",
+    authorizing: true,
+    state: "APPROVED",
+    headSha: head,
+    updatedAt: 1000,
+  };
+  const latest = {
+    ...old,
+    id: "new",
+    author: "reviewer",
+    updatedAt: 2000,
+    authorizing: false,
+  };
+  h.set({ ...ready(), reviews: [old, latest] });
+  expect(await h.invoke("status")).toMatchObject({
+    verdict: { status: "REVIEW_REQUIRED" },
+  });
+  h.set({ ...ready(), reviews: [old, { ...latest, authorizing: true }] });
+  expect(await h.invoke("status")).toMatchObject({
+    verdict: { status: "MERGE_READY" },
+  });
+  h.set({
+    ...ready(),
+    reviews: [{ ...latest, authorizing: true, headSha: "c".repeat(40) }],
+  });
+  expect(await h.invoke("status")).toMatchObject({
+    verdict: { status: "REVIEW_REQUIRED" },
+  });
+});
+
 test("uppercase expectHead is canonicalized before merge comparison, provider launch and state writes", async () => {
   const h = harness();
   const input = {
@@ -538,6 +604,7 @@ test("stale Codex review state is ignored before latest-author selection and app
   const current = {
     id: "current",
     author: "codex",
+    authorizing: true,
     state: "APPROVED",
     headSha: head,
     updatedAt: 1000,

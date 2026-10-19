@@ -396,7 +396,7 @@ const connectionFields: Record<ConnectionKind, string> = {
   Checks:
     "commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:$first,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id __typename ... on CheckRun{name status conclusion checkSuite{app{databaseId} commit{oid}}} ... on StatusContext{context state commit{oid}}}}}}}}",
   Reviews:
-    "reviews(first:$first,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id author{login} state commit{oid} updatedAt}}",
+    "reviews(first:$first,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id author{login} authorCanPushToRepository state commit{oid} updatedAt}}",
   Threads:
     "reviewThreads(first:$first,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{updatedAt}}}}",
   Labels:
@@ -800,6 +800,7 @@ async function gather(call: Call, s: Selected, r: Ref): Promise<Json> {
         state: value.state,
         headSha,
         updatedAt,
+        authorizing: value.authorCanPushToRepository === true,
       };
     },
   );
@@ -895,6 +896,7 @@ function squash(payload: Json): void {
   if (
     !sha(payload.expectHead) ||
     !sha(payload.expectBase) ||
+    !object(payload.evidence) ||
     !text(payload.title) ||
     !payload.title.trim() ||
     typeof payload.body !== "string" ||
@@ -902,8 +904,20 @@ function squash(payload: Json): void {
   )
     fail(
       "INPUT_INVALID",
-      "Merge requires exact head, explicit squash text and no coauthor trailers",
+      "Merge requires exact head, authorized evidence, explicit squash text and no coauthor trailers",
     );
+}
+function snapshot(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(snapshot).join(",")}]`;
+  if (object(value))
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${snapshot(value[key])}`)
+      .join(",")}}`;
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined)
+    fail("INPUT_INVALID", "Merge evidence must be JSON");
+  return encoded;
 }
 async function mutate(call: Call): Promise<Json> {
   const { action, payload } = protocol(call, true),
@@ -935,21 +949,20 @@ async function mutate(call: Call): Promise<Json> {
   const s = selected(call);
   await verify(call, s);
   if (action === "merge") {
-    await classicSchema(call, s);
-    const current = await core(call, s, r);
-    if (current.headRefOid !== payload.expectHead)
+    const current = await gather(call, s, r);
+    if (current.headSha !== payload.expectHead)
       fail("HEAD_MOVED", "Conditional merge head changed before launch");
-    if (current.baseRefOid !== payload.expectBase)
+    if (current.baseSha !== payload.expectBase)
       fail("BASE_MOVED", "Merge base changed before launch");
-    const policy = await requirements(call, s, r, current);
+    const policy = obj(current.protection);
     if (policy.strictStatusChecks)
       fail(
         "INCOMPLETE",
         "GitHub direct merge cannot atomically condition on the base; strict direct merge is unavailable",
       );
-    const after = await core(call, s, r);
-    if (JSON.stringify(current) !== JSON.stringify(after))
-      fail("INCOMPLETE", "Pull request changed during merge preflight");
+    // The PR verdict authorizes this complete snapshot, never just unchanged SHAs.
+    if (snapshot(current) !== snapshot(payload.evidence))
+      return { merged: false, evidence: current };
     const result = obj(
       await command(
         call,

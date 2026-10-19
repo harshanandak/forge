@@ -53,6 +53,7 @@ interface Review {
   readonly state: string;
   readonly headSha: string;
   readonly updatedAt: number;
+  readonly authorizing: boolean;
 }
 interface Thread {
   readonly headSha: string;
@@ -389,6 +390,7 @@ function evidence(value: unknown, r: Ref): Evidence | undefined {
       state: v.state,
       headSha: v.headSha.toLowerCase(),
       updatedAt: v.updatedAt,
+      authorizing: v.authorizing === true,
     })),
     threads: e.threads.map((v) => ({
       id: v.id,
@@ -562,7 +564,7 @@ function compute(
         "REVIEW_BLOCKED",
         "A reviewer requested changes or has a pending review",
       );
-    approvals++;
+    if (review.authorizing) approvals++;
   }
   if (approvals < c.minApprovals)
     return result(
@@ -874,6 +876,7 @@ const operations = {
           ...r,
           expectHead,
           expectBase: view.evidence.baseSha,
+          evidence: view.evidence,
           title,
           body,
         },
@@ -901,6 +904,14 @@ const operations = {
     );
     if (intentRevision === undefined)
       fail("LEASE_STALE", "Merge launched without a fenced intent");
+    if (merged.merged === false) {
+      const fresh = evidence(merged.evidence, r);
+      const verdict = compute(fresh, c, s.state.now());
+      fail(
+        "MERGE_BLOCKED",
+        `Fresh merge verdict is ${verdict.status}: ${verdict.reasons.join("; ") || "Evidence changed at the provider boundary; read again"}`,
+      );
+    }
     if (merged.merged !== true || merged.headSha !== expectHead)
       fail(
         "INCOMPLETE",
