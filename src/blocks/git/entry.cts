@@ -48,7 +48,7 @@ interface Files {
     options: { area?: Area; expected: null; executable: boolean },
   ): void;
   remove(path: string, options: { area?: Area; expected: string }): void;
-  lock(paths: readonly FileLocation[]): { release(): void };
+  lock(paths: readonly string[]): { release(): void };
 }
 interface RawServices {
   readonly process: ProcessPort & { readonly cwd: string };
@@ -228,7 +228,7 @@ function call<I>(args: HandlerCall<I>): Call<I> {
           "PROVIDER_MISSING",
           "The clone file provider requires invocation-scoped Git locks for guarded removal",
         );
-      return s.files.lock(paths.map(location));
+      return s.files.lock(paths);
     },
   };
   return {
