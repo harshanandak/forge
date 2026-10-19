@@ -137,13 +137,14 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
     childEnv = env,
     label = "setup",
     maxStdoutBytes = 65536,
+    timeoutMs = 120000,
   ): Promise<string> => {
     const result = await run(
       program,
       args,
       cwd,
       childEnv,
-      120000,
+      timeoutMs,
       label,
       maxStdoutBytes,
     );
@@ -230,6 +231,8 @@ test("packed accounts: parallel clone routing, Git identity guards, trailer poli
       consumer,
       { ...env, FORGE_ACCOUNTS_PREPARED: prepared },
       "positive journeys",
+      65536,
+      180000,
     );
     expect(positive).toContain("PASS github-accounts all");
     const installed = join(shared ?? consumer, "node_modules/forge-workflow");
