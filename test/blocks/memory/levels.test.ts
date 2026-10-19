@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { createAssembly } from "../../../src/assembly/index.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import {
@@ -10,6 +10,9 @@ import {
   openHarness,
   type Harness,
 } from "./lib.ts";
+
+// Every test below also names its own timeout.
+setDefaultTimeout(60_000);
 
 const open: Harness[] = [];
 afterEach(async () => {
