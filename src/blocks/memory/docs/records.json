@@ -33,7 +33,7 @@
     "memory.move": {
       "title": "Move a note to another level",
       "summary": "Move a note between this device and this project, or copy it with keep.",
-      "description": "The source note's id is the transfer's identity: the destination records it with the copy and the revisions it was made at, then the source is retired with a pointer to the new id. If the call fails between the two stores, repeating it finishes the move without a second copy; repeating a finished move or copy returns the same result. Once the copy has been edited or forgotten, a repeat writes nothing: a copy is never overwritten or brought back. A move whose source and copy have both changed since is refused with TRANSFER_CONFLICT and writes nothing. Earlier versions stay in the source's history. Another project's notes cannot be moved from here."
+      "description": "The source note's id is the transfer's identity: the destination records it with the copy and the revisions it was made at, then the source is retired with a pointer to the new id. If the call fails between the two stores, repeating it finishes the move without a second copy; repeating a finished move or copy returns the same result. Once the copy has been edited or forgotten, a repeat writes nothing: a copy is never overwritten or brought back. Only the same transfer is a repeat: moving or copying a note again after its source changed is refused with TRANSFER_CONFLICT and writes nothing, and so is moving a note whose copy was forgotten. Earlier versions stay in the source's history. Another project's notes cannot be moved from here."
     },
     "memory.export": {
       "title": "Export notes",

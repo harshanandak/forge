@@ -900,22 +900,25 @@ module.exports = {
         const counter = readCounter(target.state, NOTE_COUNTER);
         const at = recorded?.number ?? counter.last + 1;
         const current = target.state.get(noteKey(at));
-        if (made && recorded && current) {
-          // Someone edited or forgot the copy since: the transfer is done and is never redone.
-          if (current.revision !== recorded.revision) {
+        if (made && recorded) {
+          // A transfer of another source revision is a different transfer, never a retry.
+          if (recorded.sourceRevision !== existing.revision)
+            return {
+              conflict: `${qualified(input.id)} was copied to ${idIn(target, at)} from revision ${recorded.sourceRevision}, not ${existing.revision}; nothing was written`,
+            };
+          // The same transfer again. Someone edited or forgot the copy since: it is never redone,
+          // and a move retires its source only while the copy still holds the note.
+          if (current && current.revision !== recorded.revision) {
             const live = (current.value as NoteValue).deleted !== true;
-            return input.keep === true ||
-              (live && recorded.sourceRevision === existing.revision)
+            return input.keep === true || live
               ? { at, settled: true }
               : {
-                  conflict: `${idIn(target, at)} changed after ${qualified(input.id)} was copied there; nothing was written`,
+                  conflict: `${idIn(target, at)} was forgotten after ${qualified(input.id)} was copied there; nothing was written`,
                 };
           }
-          // The copy is as the transfer left it and already holds this revision of the source.
-          if (recorded.sourceRevision === existing.revision)
-            return { at, settled: true };
+          if (current) return { at, settled: true };
         }
-        // The first copy, or a copy nobody has touched brought up to the source's later revision.
+        // The first copy, or a transfer record whose copy never landed.
         const written = (current?.revision ?? 0) + 1;
         target.state.putMany([
           ...(recorded

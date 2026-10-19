@@ -188,6 +188,25 @@ test("integration: an agent must say the level; a person gets the configured def
   expect(person.id).toMatch(/^project\//);
 }, 60_000);
 
+test("integration: an agent that claims a human actor is still held to the agent rule", async () => {
+  // The caller is what the transport authenticated; the actor kind is the caller's own claim.
+  const claimed = failed(
+    await alpha.call(
+      "memory.add",
+      { text: "a claimed human" },
+      {
+        caller: "agent",
+        context: {
+          actor: { kind: "human", id: "not-really-a-person" },
+          device: { id: alpha.deviceRoot },
+          project: { id: alpha.root, root: alpha.root },
+        },
+      },
+    ),
+  );
+  expect(claimed.code).toBe("LEVEL_REQUIRED");
+}, 60_000);
+
 test("integration: with no level policy configured, nobody's level is guessed", async () => {
   for (const caller of ["human", "agent"] as const)
     expect(

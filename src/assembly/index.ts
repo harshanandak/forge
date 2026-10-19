@@ -647,6 +647,8 @@ export async function createAssembly(
                     deviceState,
                     namespace,
                     actor: context.actor,
+                    // The authenticated caller, never the actor kind a caller put in its context.
+                    caller: request.caller,
                     write: scope.effects.includes(
                       `${current.catalog.resolve(scope.op).operation.declaredOp.split(".")[0]!}:write`,
                     ),

@@ -52,7 +52,7 @@ export type PeerLookup =
  */
 export const PROJECT_STATE = "forge.project-state@1.0.0";
 export interface StoreLevels {
-  /** The kind of the declared actor. */
+  /** The caller the transport authenticated for this invocation; never a caller-supplied field. */
   readonly caller: Caller;
   /** True when this host serves a project. Nothing is opened to answer it. */
   readonly inProject: boolean;
@@ -103,6 +103,8 @@ export function openLevels(options: {
   readonly deviceState: LocalState;
   readonly namespace: string;
   readonly actor: Actor;
+  /** The invocation's authenticated caller, from the runtime-validated request. */
+  readonly caller: Caller;
   /** The operation declared its record write effect; its stores open writable. */
   readonly write: boolean;
   readonly requestId: string;
@@ -226,7 +228,7 @@ export function openLevels(options: {
   }
 
   const levels: StoreLevels = {
-    caller: actor.kind,
+    caller: options.caller,
     inProject: true,
     project() {
       own ??= openOwn();

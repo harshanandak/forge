@@ -128,7 +128,7 @@ test("without the transfer record the same retry leaves a duplicate", async () =
 
 /** A settled transfer, from the copy's own record: the copy was made and is not redone. */
 const SETTLED_FIX = {
-  from: "if (made && recorded && current) {",
+  from: "if (made && recorded) {",
   to: "if (false) {",
 };
 
@@ -204,4 +204,54 @@ test("without the settled-transfer check the same retries overwrite the edit and
     "forget",
   );
   expect(forgotten.note.value).not.toMatchObject({ deleted: true });
+}, 30_000);
+
+test("a new copy of a changed source over a changed copy is a conflict, not a retry, and writes nothing", async () => {
+  for (const change of ["edit", "forget"] as const) {
+    const entry = loadEntry("memory");
+    const stores = crashStores();
+    await entry["memory.add"]!({
+      input: { text: "copy me", level: "device" },
+      services: stores.services,
+    });
+    const copy = (expectRevision: number) =>
+      entry["memory.move"]!({
+        input: {
+          id: "device/note-1",
+          to: "project",
+          expectRevision,
+          keep: true,
+        },
+        services: stores.services,
+      });
+    expect(await copy(1)).toMatchObject({ status: "copied" });
+    // Both sides change: the source is edited to revision 2, and the copy is edited or forgotten.
+    await entry["memory.add"]!({
+      input: {
+        id: "device/note-1",
+        expectRevision: 1,
+        text: "copy me, revised",
+      },
+      services: stores.services,
+    });
+    const copied = stores.project.get("note/000000001")!;
+    stores.project.put(
+      "note/000000001",
+      change === "edit"
+        ? { ...(copied.value as object), text: "edited copy" }
+        : { text: "", tags: [], links: [], previous: [], deleted: true },
+      { expectRevision: copied.revision },
+    );
+    const writes = () =>
+      stores.project.counts.put + stores.project.counts.putMany;
+    const before = writes();
+    let refused: unknown;
+    try {
+      await copy(2);
+    } catch (error) {
+      refused = error;
+    }
+    expect(JSON.stringify(refused)).toContain("TRANSFER_CONFLICT");
+    expect(writes() - before).toBe(0);
+  }
 }, 30_000);
