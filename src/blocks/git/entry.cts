@@ -396,27 +396,64 @@ function write(
     );
   return result;
 }
-function records(
+function retire(c: Call<unknown>, k: string, expectRevision: number) {
+  live(c);
+  const accepted = c.services.state.delete(k, { expectRevision });
+  if (c.services.state.get(k))
+    fail("INTERNAL", "Retired binding still reads back; reconcile state");
+  return accepted;
+}
+function bindings(c: Call<unknown>, reclaim = false): readonly StateRecord[] {
+  const result: StateRecord[] = [];
+  let from = "worktree:";
+  for (;;) {
+    live(c);
+    const page = c.services.state.listRange({
+      from,
+      to: "worktree;",
+      limit: c.config.maxWorktrees,
+    });
+    for (const record of page) {
+      if ((record.value as Binding).status === "removed") {
+        if (reclaim) retire(c, record.key, record.revision);
+      } else {
+        result.push(record);
+        if (result.length > c.config.maxWorktrees)
+          fail("LIMIT_EXCEEDED", "Owned binding count exceeds maxWorktrees");
+      }
+    }
+    if (page.length < c.config.maxWorktrees) return result;
+    from = page.at(-1)!.key + "\0";
+  }
+}
+function reserve(
   c: Call<unknown>,
-  from: string,
-  to: string,
-): readonly StateRecord[] {
-  const result = c.services.state.listRange({
-    from,
-    to,
-    limit: c.config.maxWorktrees,
-  });
-  const last = result.at(-1);
+  k: string,
+  value: Binding,
+  expectRevision: number,
+): StateRecord {
+  live(c);
+  // Read before scanning: every competing reservation changes this revision in its batch.
+  const capacity = c.services.state.get("capacity:worktree");
+  const stored = bindings(c, true);
+  if (!c.services.state.get(k) && stored.length >= c.config.maxWorktrees)
+    fail("LIMIT_EXCEEDED", "Stored worktree bindings reached maxWorktrees");
+  const accepted = c.services.state.putMany([
+    { key: k, value, expectRevision },
+    {
+      key: "capacity:worktree",
+      value: null,
+      expectRevision: capacity?.revision ?? 0,
+    },
+  ])[0]!;
+  const read = c.services.state.get(k);
   if (
-    result.length === c.config.maxWorktrees &&
-    last &&
-    c.services.state.listRange({ from: last.key + "\0", to, limit: 1 }).length
+    !read ||
+    read.revision !== accepted.revision ||
+    JSON.stringify(read.value) !== JSON.stringify(accepted.value)
   )
-    fail(
-      "LIMIT_EXCEEDED",
-      "Owned record count exceeds configured maxWorktrees; no partial scan is accepted",
-    );
-  return result;
+    fail("INTERNAL", "Reserved binding did not read back; reconcile state");
+  return accepted;
 }
 async function base(
   c: Call<unknown>,
@@ -439,7 +476,7 @@ async function base(
       "--no-tags",
       "--",
       remote,
-      `refs/heads/${branch}:refs/remotes/${remote}/${branch}`,
+      `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`,
     ]);
     await git(c, [
       "symbolic-ref",
@@ -555,12 +592,7 @@ async function remove(c: Call<unknown>, input: Ref): Promise<Output> {
     managed(c, input.path, record.revision);
     // Git's own HEAD/index/ref locks also exclude direct commits and branch switches.
     await git(c, ["worktree", "remove", "--", absolute]);
-    const accepted = write(
-      c,
-      key(input.path),
-      { ...binding, status: "removed" },
-      record.revision,
-    );
+    const accepted = retire(c, key(input.path), record.revision);
     return { removed: true, path: input.path, revision: accepted.revision };
   } finally {
     exclusion.release();
@@ -760,7 +792,7 @@ const operations: Operations<Types> = {
       ...(input.issue === undefined ? {} : { issue: input.issue }),
       ...(input.run === undefined ? {} : { run: input.run }),
     };
-    const reserved = write(c, key(path), binding, input.expectRevision);
+    const reserved = reserve(c, key(path), binding, input.expectRevision);
     try {
       await git(c, [
         "worktree",
@@ -808,10 +840,10 @@ const operations: Operations<Types> = {
   async "worktree.list"(args) {
     const c = call(args);
     const all = await list(c);
-    const bindings = records(c, "worktree:", "worktree;");
+    const owned = bindings(c);
     return {
       worktrees: all.map((tree) => {
-        const record = bindings.find((r) =>
+        const record = owned.find((r) =>
           samePath(
             `${c.services.clone.root}/${(r.value as Binding).path}`,
             tree.path,
@@ -841,8 +873,8 @@ const operations: Operations<Types> = {
     const target = await base(c, c.config.fetchBeforeClean);
     const all = await list(c);
     const outcomes: Output[] = [];
-    const bindings = records(c, "worktree:", "worktree;");
-    for (const record of bindings) {
+    const owned = bindings(c, !c.input.dryRun);
+    for (const record of owned) {
       const binding = record.value as Binding;
       if (binding.status !== "active") continue;
       const tree = all.find((t) =>
