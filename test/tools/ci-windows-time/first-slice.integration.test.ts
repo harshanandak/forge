@@ -1,40 +1,90 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runFixtures } from "../../integration/fixtures/run.ts";
 
-test("positive fixtures overlap and preserve each captured result", async () => {
+test("positive fixtures reach a shared barrier and preserve each captured result", async () => {
   const work = mkdtempSync(join(tmpdir(), "forge-positive-barrier-"));
+  const waiting = new Map<string, Socket>();
+  const sockets = new Set<Socket>();
+  let barrierError: Error | undefined;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.setEncoding("utf8");
+    let input = "";
+    socket.on("data", (chunk: string) => {
+      input += chunk;
+      if (!input.endsWith("\n")) return;
+      if (barrierError) {
+        socket.end("abort\n");
+        return;
+      }
+      waiting.set(input.trim(), socket);
+      if (waiting.size === 3) {
+        clearTimeout(watchdog);
+        // No fixture can finish until all three have reached the barrier.
+        for (const peer of waiting.values()) peer.end("release\n");
+      }
+    });
+  });
   try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("fixture barrier did not bind a TCP port");
     const script = join(work, "barrier.mjs");
     writeFileSync(
       script,
       `
-import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-const [root, index] = process.argv.slice(2);
-writeFileSync(join(root, index), "ready");
-const started = performance.now();
-while (!["0", "1", "2"].every(name => existsSync(join(root, name)))) {
-  if (performance.now() - started > 2000) throw new Error("fixtures did not overlap");
-  await new Promise(resolve => setTimeout(resolve, 10));
-}
+import { createConnection } from "node:net";
+const [port, index] = process.argv.slice(2);
+const release = await new Promise((resolve, reject) => {
+  const socket = createConnection({ host: "127.0.0.1", port: Number(port) });
+  let response = "";
+  socket.setEncoding("utf8");
+  socket.on("connect", () => socket.write(index + "\\n"));
+  socket.on("data", chunk => { response += chunk; });
+  socket.on("error", reject);
+  socket.on("end", () => resolve(response));
+});
+if (release !== "release\\n") throw new Error("fixture barrier aborted before all fixtures arrived");
 console.log(index);
 `,
     );
-    expect(
-      await runFixtures(
+    // A deadlock guard only: success depends on arrivals, never elapsed time.
+    watchdog = setTimeout(() => {
+      barrierError = new Error(
+        `fixture barrier deadlocked: ${waiting.size}/3 fixtures arrived; the runner must start all fixtures before waiting for one to finish`,
+      );
+      for (const peer of waiting.values()) peer.end("abort\n");
+    }, 5000);
+    let results: string[];
+    try {
+      results = await runFixtures(
         [0, 1, 2].map((index) => ({
           label: `barrier ${index}`,
           command: process.execPath,
-          args: [script, work, String(index)],
+          args: [script, String(address.port), String(index)],
           cwd: work,
           env: process.env,
         })),
-      ),
-    ).toEqual(["0\n", "1\n", "2\n"]);
+      );
+    } catch (error) {
+      throw barrierError ?? error;
+    }
+    expect([...waiting.keys()].sort()).toEqual(["0", "1", "2"]);
+    expect(results).toEqual(["0\n", "1\n", "2\n"]);
   } finally {
+    clearTimeout(watchdog);
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     rmSync(work, { recursive: true, force: true });
   }
 }, 10000);
