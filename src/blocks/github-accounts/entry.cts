@@ -362,6 +362,71 @@ async function effective(
   );
   return r.exitCode === 1 ? null : r.stdout.trimEnd();
 }
+function configKey(key: string): string {
+  const first = key.indexOf("."),
+    last = key.lastIndexOf(".");
+  return first === last
+    ? key.toLowerCase()
+    : key.slice(0, first + 1).toLowerCase() +
+        key.slice(first + 1, last) +
+        key.slice(last).toLowerCase();
+}
+function parseConfigValues(text: string): Map<string, string[]> {
+  const entries = new Map<string, string[]>();
+  if (text === "") return entries;
+  if (!text.endsWith("\0"))
+    fail("ACCOUNT_DATA_INVALID", "Configuration output is incomplete");
+  for (const record of text.slice(0, -1).split("\0")) {
+    const separator = record.indexOf("\n"),
+      key = configKey(separator < 0 ? record : record.slice(0, separator));
+    if (!key)
+      fail("ACCOUNT_DATA_INVALID", "Configuration output has an empty key");
+    const value = separator < 0 ? "" : record.slice(separator + 1),
+      values = entries.get(key) ?? [];
+    values.push(value);
+    entries.set(key, values);
+  }
+  return entries;
+}
+async function configValues(
+  s: Services,
+  c: Config,
+  env: Record<string, string>,
+  keys: readonly string[],
+  local = false,
+  cwd?: string,
+): Promise<Map<string, string[]>> {
+  if (keys.length === 0) return new Map();
+  const pattern =
+    "^(" +
+    [...new Set(keys.map(configKey))]
+      .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|") +
+    ")$";
+  const result = await command(
+    s,
+    c,
+    env,
+    "repository",
+    c.gitProgram,
+    [
+      "config",
+      ...(local ? ["--local"] : []),
+      "--null",
+      "--get-regexp",
+      pattern,
+    ],
+    cwd,
+    [0, 1],
+  );
+  return parseConfigValues(result.stdout);
+}
+function lastConfigValue(
+  entries: ReadonlyMap<string, readonly string[]>,
+  key: string,
+): string | null {
+  return entries.get(configKey(key))?.at(-1)?.trimEnd() ?? null;
+}
 async function stageConfig(
   s: Services,
   c: Config,
@@ -555,10 +620,15 @@ async function status(
   env: Record<string, string>,
 ): Promise<Status> {
   const bound = binding(s, c),
-    account = await effective(s, c, env, ACCOUNT),
+    configured = await configValues(s, c, env, [
+      ACCOUNT,
+      "user.name",
+      "user.email",
+    ]),
+    account = lastConfigValue(configured, ACCOUNT),
     identity = {
-      name: await effective(s, c, env, "user.name"),
-      email: await effective(s, c, env, "user.email"),
+      name: lastConfigValue(configured, "user.name"),
+      email: lastConfigValue(configured, "user.email"),
     };
   const mismatches: string[] = [];
   const worktrees: Status["worktrees"] = [];
@@ -582,24 +652,47 @@ async function status(
       )
         mismatches.push(`artifact:${path}`);
     }
-  if (bound)
+  if (bound) {
+    const local = await configValues(
+      s,
+      c,
+      env,
+      Object.keys(bound.installed),
+      true,
+    );
     for (const [key, wanted] of Object.entries(bound.installed))
-      if (!same(await values(s, c, env, key), wanted))
+      if (!same(local.get(configKey(key)) ?? [], wanted))
         mismatches.push(`config:${key}`);
+  }
   const output = await repository(s, c, env, [
     "worktree",
     "list",
     "--porcelain",
     "-z",
   ]);
+  const pathKey = (path: string): string =>
+    path.replace(/\\/g, "/").replace(/\/+$/, "");
   for (const record of output.split("\0\0")) {
     const path = record
       .split("\0")
       .find((line) => line.startsWith("worktree "))
       ?.slice(9);
     if (!path) continue;
-    const name = await effective(s, c, env, "user.name", path),
-      email = await effective(s, c, env, "user.email", path);
+    const selected =
+      pathKey(path) === pathKey(s.files.root)
+        ? identity
+        : await configValues(
+            s,
+            c,
+            env,
+            ["user.name", "user.email"],
+            false,
+            path,
+          ).then((entries) => ({
+            name: lastConfigValue(entries, "user.name"),
+            email: lastConfigValue(entries, "user.email"),
+          }));
+    const { name, email } = selected;
     worktrees.push({
       path,
       name,
@@ -718,7 +811,7 @@ function hookScript(c: Config, launchers: Launchers, s: Services): string {
   const call = [launchers.forge!, ...c.forgeCommand.slice(1)]
     .map(shell)
     .join(" ");
-  const body = `set -eu\nwhile read -r local_ref local_sha remote_ref remote_sha; do\n case "$local_sha" in 0000000000000000000000000000000000000000|0000000000000000000000000000000000000000000000000000000000000000) continue;; esac\n case "$local_sha$remote_sha" in *[!0-9a-fA-F]*) exit 1;; esac\n ${call} github-account check --input "{\\"tip\\":\\"$local_sha\\",\\"base\\":\\"$remote_sha\\",\\"trigger\\":\\"push\\"}" >/dev/null || exit 1\ndone\n`;
+  const body = `set -eu\nwhile read -r local_ref local_sha remote_ref remote_sha; do\n case "$local_sha" in 0000000000000000000000000000000000000000|0000000000000000000000000000000000000000000000000000000000000000) continue;; esac\n case "$local_sha$remote_sha" in *[!0-9a-fA-F]*) exit 1;; esac\n if output=$(${call} github-account check --input "{\\"tip\\":\\"$local_sha\\",\\"base\\":\\"$remote_sha\\",\\"trigger\\":\\"push\\"}"); then :; else printf '%s\\n' "$output" >&2; exit 1; fi\ndone\n`;
   return s.account.bootstrap({
     body,
     envPath: launchers.env,

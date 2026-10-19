@@ -475,6 +475,21 @@ try {
       guarded.root,
       guarded.env,
     );
+    assert.equal(
+      pushed.error,
+      undefined,
+      "native push must complete; a child timeout is not an identity refusal",
+    );
+    assert.notEqual(
+      pushed.status,
+      null,
+      "native push must return an exit code",
+    );
+    assert.match(
+      pushed.stderr,
+      /ACCOUNT_IDENTITY_MISMATCH/,
+      "native push must report the bound-account identity refusal",
+    );
     assert.notEqual(
       pushed.status,
       0,

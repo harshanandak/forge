@@ -507,3 +507,287 @@ test("repository and account commands cannot fall back to generic process dispat
   );
   expect(calls).toEqual({ repository: 1, account: 1, generic: 1 });
 }, 1000);
+function statusFixture(linked = false, currentRoot = "/clone") {
+  const h = harness(),
+    calls: { args: readonly string[]; cwd: string }[] = [];
+  const local: [string, string][] = [
+    ["forge.githubaccount", "alice"],
+    ["user.name", "Original"],
+    ["user.name", "Chosen"],
+    ["user.email", "alice@example.com"],
+    ["credential.https://github.com.helper", ""],
+    ["credential.https://github.com.helper", "!route\ncontinued"],
+    ["credential.https://github.com.helper", "!second"],
+  ];
+  const bound = {
+    version: 1,
+    account: "alice",
+    name: "Chosen",
+    email: "alice@example.com",
+    emails: ["alice@example.com"],
+    automatic: false,
+    previous: {},
+    installed: {
+      "forge.githubAccount": ["alice"],
+      "user.name": ["Original", "Chosen"],
+      "user.email": ["alice@example.com"],
+      "credential.https://github.com.helper": [
+        "",
+        "!second",
+        "!route\ncontinued",
+      ],
+      "core.hooksPath": ["/selected/hooks"],
+    },
+    artifacts: {},
+    hooks: false,
+  };
+  const services = {
+    ...h.services,
+    files: {
+      ...h.services.files,
+      root: currentRoot,
+      read: (path: string) =>
+        path.endsWith("metadata.json") ? JSON.stringify(bound) : undefined,
+    },
+    repository: {
+      ...h.services.repository,
+      run: (
+        _program: string,
+        args: readonly string[],
+        options: { cwd: string },
+      ) => {
+        calls.push({ args, cwd: options.cwd });
+        let stdout: string;
+        let exitCode = 0;
+        if (args[0] === "worktree")
+          stdout =
+            "worktree /clone\0HEAD deadbeef\0branch refs/heads/main\0\0" +
+            (linked ? "worktree /linked\0HEAD deadbeef\0detached\0\0" : "");
+        else {
+          const effective: [string, string][] = [
+            ["user.name", "Global"],
+            ["user.email", "global@example.com"],
+            ...local,
+            ...(options.cwd === "/linked"
+              ? ([
+                  ["user.name", "Linked Override"],
+                  ["user.email", "wrong@example.com"],
+                ] as [string, string][])
+              : options.cwd === "/Clone"
+                ? ([
+                    ["user.name", "Case Override"],
+                    ["user.email", "wrong@example.com"],
+                  ] as [string, string][])
+                : []),
+          ];
+          const records = args.includes("--local") ? local : effective;
+          if (args.includes("--get-regexp")) {
+            const pattern = new RegExp(args[args.length - 1]!);
+            stdout = records
+              .filter(([key]) => pattern.test(key))
+              .map(([key, value]) => key + "\n" + value + "\0")
+              .join("");
+          } else {
+            const key = args[args.length - 1]!.toLowerCase(),
+              selected = records
+                .filter(([name]) => name === key)
+                .map(([, value]) => value);
+            stdout = args.includes("--get-all")
+              ? selected.map((value) => value + "\0").join("")
+              : selected.at(-1) === undefined
+                ? ""
+                : selected.at(-1) + "\n";
+          }
+          if (stdout === "") exitCode = 1;
+        }
+        return Promise.resolve({
+          stdout,
+          stderr: "",
+          exitCode,
+          timedOut: false,
+          truncated: false,
+          signal: null,
+          durationMs: 0,
+        });
+      },
+    },
+  };
+  return {
+    services,
+    config: h.config,
+    calls,
+    changeName: (name: string) => {
+      local.push(["user.name", name]);
+    },
+  };
+}
+test("one-worktree status batches eleven launches into three without changing diagnostics", async () => {
+  const h = statusFixture();
+  expect(
+    await load()["github-account.status"]!({
+      input: {},
+      config: h.config,
+      services: h.services,
+    }),
+  ).toEqual({
+    bound: true,
+    account: "alice",
+    automatic: false,
+    identity: { name: "Chosen", email: "alice@example.com" },
+    mismatches: [
+      "config:credential.https://github.com.helper",
+      "config:core.hooksPath",
+    ],
+    worktrees: [
+      {
+        path: "/clone",
+        name: "Chosen",
+        email: "alice@example.com",
+        matches: true,
+      },
+    ],
+  });
+  expect(h.calls).toHaveLength(3);
+  expect(
+    h.calls.filter((call) => call.args.includes("--get-regexp")),
+  ).toHaveLength(2);
+  const requested = new RegExp(h.calls[0]!.args.at(-1)!);
+  expect(requested.test("userXname")).toBe(false);
+  expect(requested.test("user.name.extra")).toBe(false);
+}, 1000);
+test("status reads changed configuration again on every invocation", async () => {
+  const h = statusFixture(),
+    entry = load();
+  const input = { input: {}, config: h.config, services: h.services };
+  await entry["github-account.status"]!(input);
+  h.changeName("Changed \n");
+  expect(await entry["github-account.status"]!(input)).toEqual({
+    bound: true,
+    account: "alice",
+    automatic: false,
+    identity: { name: "Changed", email: "alice@example.com" },
+    mismatches: [
+      "identity",
+      "config:user.name",
+      "config:credential.https://github.com.helper",
+      "config:core.hooksPath",
+      "worktree:/clone",
+    ],
+    worktrees: [
+      {
+        path: "/clone",
+        name: "Changed",
+        email: "alice@example.com",
+        matches: false,
+      },
+    ],
+  });
+  expect(h.calls).toHaveLength(6);
+}, 1000);
+test("Windows paths differing only by case receive their own identity query", async () => {
+  const h = statusFixture(false, "/Clone");
+  const services = {
+    ...h.services,
+    environment: { ...h.services.environment, platform: "win32" },
+  };
+  const result = (await load()["github-account.status"]!({
+    input: {},
+    config: h.config,
+    services,
+  })) as { identity: unknown; worktrees: unknown };
+  expect(result.identity).toEqual({
+    name: "Case Override",
+    email: "wrong@example.com",
+  });
+  expect(result.worktrees).toEqual([
+    {
+      path: "/clone",
+      name: "Chosen",
+      email: "alice@example.com",
+      matches: true,
+    },
+  ]);
+  expect(h.calls).toHaveLength(4);
+}, 1000);
+test("null-delimited config parsing preserves multivalues, multiline and missing values", () => {
+  const source = readFileSync(
+    new URL("../../../src/blocks/github-accounts/entry.cts", import.meta.url),
+    "utf8",
+  );
+  const module = {
+    exports: {} as {
+      parseConfigValues: (text: string) => Map<string, string[]>;
+      lastConfigValue: (
+        values: Map<string, string[]>,
+        key: string,
+      ) => string | null;
+    },
+  };
+  runInNewContext(
+    new Bun.Transpiler({ loader: "ts" }).transformSync(
+      source + "\nmodule.exports = {parseConfigValues,lastConfigValue};",
+    ),
+    {
+      module,
+      fail: (code: string) => {
+        throw Object.assign(new Error(code), { code });
+      },
+    },
+  );
+  const values = module.exports.parseConfigValues(
+    "User.Name\nfirst\0user.name\nsecond\nline \n\0user.email\n\0core.bare\0credential.https://github.com.helper\n\0credential.https://github.com.helper\n!route\ncontinued\0",
+  );
+  expect(values.get("user.name")).toEqual(["first", "second\nline \n"]);
+  expect(module.exports.lastConfigValue(values, "USER.NAME")).toBe(
+    "second\nline",
+  );
+  expect(values.get("user.email")).toEqual([""]);
+  expect(values.get("core.bare")).toEqual([""]);
+  expect(
+    module.exports.lastConfigValue(values, "forge.githubAccount"),
+  ).toBeNull();
+  expect(values.get("credential.https://github.com.helper")).toEqual([
+    "",
+    "!route\ncontinued",
+  ]);
+  expect(module.exports.parseConfigValues("").size).toBe(0);
+  expect(() =>
+    module.exports.parseConfigValues("user.name\ntruncated"),
+  ).toThrow("ACCOUNT_DATA_INVALID");
+}, 1000);
+test("status distinguishes shared local config from effective linked-worktree overrides", async () => {
+  const h = statusFixture(true, "/linked");
+  expect(
+    await load()["github-account.status"]!({
+      input: {},
+      config: h.config,
+      services: h.services,
+    }),
+  ).toEqual({
+    bound: true,
+    account: "alice",
+    automatic: false,
+    identity: { name: "Linked Override", email: "wrong@example.com" },
+    mismatches: [
+      "identity",
+      "config:credential.https://github.com.helper",
+      "config:core.hooksPath",
+      "worktree:/linked",
+    ],
+    worktrees: [
+      {
+        path: "/clone",
+        name: "Chosen",
+        email: "alice@example.com",
+        matches: true,
+      },
+      {
+        path: "/linked",
+        name: "Linked Override",
+        email: "wrong@example.com",
+        matches: false,
+      },
+    ],
+  });
+  expect(h.calls).toHaveLength(4);
+}, 1000);

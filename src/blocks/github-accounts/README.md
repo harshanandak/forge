@@ -63,6 +63,8 @@ every pushed ref range to the catalog check. Existing hook configuration or an
 existing native hook causes refusal so its protection is preserved. Disabling the
 hook restores its saved local setting. Merge automation calls the same catalog
 check with `trigger: "merge"` and the exact proposed range.
+The hook keeps successful checks quiet and prints the catalog's typed refusal to
+stderr when it blocks a push.
 
 `github-account.message` accepts text or a Git-directory message path and applies
 `allow`, `refuse`, or `strip` to AI co-author trailers. AI markers are configured

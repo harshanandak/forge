@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { renderAccountScripts } from "../../../src/adapters/github-cli/scripts.ts";
-import type { AccountScriptsOptions } from "../../../src/ports/tool-command.ts";
+import type {
+  AccountBootstrapOptions,
+  AccountScriptsOptions,
+} from "../../../src/ports/tool-command.ts";
 
 test("Git Bash canonicalized OS names survive an isolated Windows child environment", () => {
   const config: AccountScriptsOptions = {
@@ -121,11 +124,11 @@ test("pre-push hook delegates interpreter startup to the isolated adapter bootst
     ),
     { module },
   );
-  let captured: unknown;
+  let captured: AccountBootstrapOptions | undefined;
   const services = {
     environment: { platform: "linux" },
     account: {
-      bootstrap: (options: unknown) => {
+      bootstrap: (options: AccountBootstrapOptions) => {
         captured = options;
         return "isolated bootstrap";
       },
@@ -146,4 +149,5 @@ test("pre-push hook delegates interpreter startup to the isolated adapter bootst
     shellPath: "/trusted/bash",
     windows: false,
   });
+  expect(captured?.body).toContain('"$output" >&2');
 }, 1000);
