@@ -45,7 +45,12 @@
       "minimum": 0
     },
     "truncated": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "More notes or matches follow; pass next as cursor to read them."
+    },
+    "next": {
+      "type": "string",
+      "pattern": "^[0-9]{1,9}:[0-9]{1,9}$"
     }
   },
   "additionalProperties": false,

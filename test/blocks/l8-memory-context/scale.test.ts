@@ -156,3 +156,87 @@ test("a decision list is bounded and continues from a cursor, so it always fits 
   expect(seen).toHaveLength(450);
   expect(new Set(seen).size).toBe(450);
 }, 30_000);
+
+/** Put note records straight into a state client, the way a long-lived store would hold them. */
+function seedRecords(
+  state: StateClient,
+  total: number,
+  live: (number: number) => string | undefined,
+): void {
+  for (let number = 1; number <= total; number += 1) {
+    const text = live(number);
+    state.put(
+      `note/${number}`,
+      text === undefined
+        ? { text: "", tags: [], links: [], previous: [], deleted: true }
+        : { text, tags: [], links: [], previous: [] },
+      { expectRevision: 0 },
+    );
+  }
+  state.put("meta/note-counter", { last: total }, { expectRevision: 0 });
+}
+interface SearchPage {
+  hits: { id: string }[];
+  matched: number;
+  scanned: number;
+  truncated: boolean;
+  next?: string;
+}
+
+test("a note added after thousands of forgotten ones is still found by an exact query", () => {
+  const entry = loadEntry("memory");
+  const state = memoryState();
+  // 5,001 old records, all forgotten, then one new note.
+  seedRecords(state, 5001, () => undefined);
+  const added = entry["memory.add"]!({
+    input: { text: "the quokka sanctuary opens in spring" },
+    services: { state },
+  }) as { id: string };
+  expect(added.id).toBe("note-5002");
+  const found = entry["memory.search"]!({
+    input: { query: "quokka sanctuary" },
+    services: { state },
+  }) as SearchPage;
+  expect(found.hits.map((hit) => hit.id)).toEqual(["note-5002"]);
+}, 60_000);
+
+test("a cursor walk of a search reaches every matching note, however many there are", () => {
+  const entry = loadEntry("memory");
+  const state = memoryState();
+  const total = 3200;
+  // Every note shares one word; some old ones are forgotten and must never appear.
+  seedRecords(state, total, (number) =>
+    number % 10 === 0 ? undefined : `shared word unique${number}`,
+  );
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  let pages = 0;
+  for (;;) {
+    const page = entry["memory.search"]!({
+      input:
+        cursor === undefined
+          ? { query: "shared", limit: 50 }
+          : { query: "shared", limit: 50, cursor },
+      services: { state },
+    }) as SearchPage;
+    pages += 1;
+    for (const hit of page.hits) {
+      expect(seen.has(hit.id)).toBe(false);
+      seen.add(hit.id);
+    }
+    if (page.next === undefined) {
+      expect(page.truncated).toBe(false);
+      break;
+    }
+    expect(page.truncated).toBe(true);
+    cursor = page.next;
+    expect(pages).toBeLessThan(200);
+  }
+  const live = Array.from({ length: total }, (_, i) => i + 1).filter(
+    (n) => n % 10 !== 0,
+  );
+  expect(seen.size).toBe(live.length);
+  expect(seen.has("note-10")).toBe(false);
+  expect(seen.has("note-3199")).toBe(true);
+  expect(seen.has("note-1")).toBe(true);
+}, 120_000);

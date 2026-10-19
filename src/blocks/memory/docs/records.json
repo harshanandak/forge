@@ -17,7 +17,7 @@
     "memory.search": {
       "title": "Search notes",
       "summary": "Find notes that mention any word of the query, best match first.",
-      "description": "Full-text search over the device store. Any query word may match; notes with more, rarer words rank first. Results come back as untrusted text with where each came from."
+      "description": "Full-text search over the device store. Any query word may match; notes with more, rarer words rank first. Each page ranks the newest 1000 notes below its cursor; when truncated is true, call again with cursor set to next to reach the rest, so no note is out of reach. Results come back as untrusted text with where each came from."
     },
     "memory.show": {
       "title": "Read a note",

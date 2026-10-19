@@ -52,7 +52,7 @@ const NOTE_PREFIX = "note/";
 const NOTE_COUNTER = "meta/note-counter";
 const DECISION_PREFIX = "decision/";
 const DECISION_COUNTER = "meta/decision-counter";
-const MAX_SCAN = 5000;
+const SEARCH_WINDOW = 1000;
 // The runtime stops a block after one second and refuses output over 1 MiB. A write costs a few
 // milliseconds, so a restore takes few notes; an export chunk is never larger than a restore.
 const CHUNK_NOTES = 50;
@@ -142,24 +142,20 @@ function noteOf(record: StateRecord): { id: string; value: NoteValue } {
     value: record.value as NoteValue,
   };
 }
-/** Live notes in number order. `cap` bounds how many records are read; export reads them all. */
-function liveNotes(
-  state: StateClient,
-  cap = Number.POSITIVE_INFINITY,
-): {
-  notes: { id: string; value: NoteValue; record: StateRecord }[];
-  truncated: boolean;
-} {
-  const records = [...state.list(NOTE_PREFIX)].sort(
-    (a, b) =>
-      Number(a.key.slice(NOTE_PREFIX.length)) -
-      Number(b.key.slice(NOTE_PREFIX.length)),
-  );
-  const notes = records
-    .slice(0, cap)
+/** Every live note, in number order. Nothing is dropped here: callers page, they never cut. */
+function liveNotes(state: StateClient): {
+  id: string;
+  value: NoteValue;
+  record: StateRecord;
+}[] {
+  return [...state.list(NOTE_PREFIX)]
+    .sort(
+      (a, b) =>
+        Number(a.key.slice(NOTE_PREFIX.length)) -
+        Number(b.key.slice(NOTE_PREFIX.length)),
+    )
     .map((record) => ({ ...noteOf(record), record }))
     .filter((note) => note.value.deleted !== true);
-  return { notes, truncated: records.length > cap };
 }
 function versionsOf(
   state: StateClient,
@@ -297,18 +293,35 @@ module.exports = {
     input,
     services,
   }: {
-    input: { query: string; scope?: string; tag?: string; limit?: number };
+    input: {
+      query: string;
+      scope?: string;
+      tag?: string;
+      limit?: number;
+      cursor?: string;
+    };
     services: Services;
   }) => {
     const { state } = services;
     const wanted = [...new Set(terms(input.query).map(stem))];
-    const { notes, truncated } = liveNotes(state, MAX_SCAN);
-    const candidates = notes.filter(
-      (note) =>
-        (input.scope === undefined || note.value.scope === input.scope) &&
-        (input.tag === undefined || note.value.tags.includes(input.tag)),
-    );
-    const documents = candidates.map((note) => {
+    // A page looks at the newest SEARCH_WINDOW matching-scope notes below the cursor's bound. The
+    // cursor continues inside the window (skip) and then on to the next older window, so every
+    // note can be reached; the window is chosen after tombstones and filters are applied.
+    const [bound = 0, skip = 0] = (input.cursor ?? "0:0")
+      .split(":")
+      .map(Number);
+    const candidates = liveNotes(state)
+      .filter(
+        (note) =>
+          (bound === 0 || noteNumber(note.id) < bound) &&
+          (input.scope === undefined || note.value.scope === input.scope) &&
+          (input.tag === undefined || note.value.tags.includes(input.tag)),
+      )
+      .reverse();
+    const window = candidates.slice(0, SEARCH_WINDOW);
+    const oldest = window[window.length - 1];
+    const older = candidates.length > window.length;
+    const documents = window.map((note) => {
       const counts = new Map<string, number>();
       let length = 0;
       for (const term of terms(
@@ -355,8 +368,14 @@ module.exports = {
           noteNumber(b.document.note.id) - noteNumber(a.document.note.id),
       );
     const limit = input.limit ?? DEFAULT_LIMIT;
+    const next =
+      skip + limit < scored.length
+        ? `${bound}:${skip + limit}`
+        : older && oldest
+          ? `${noteNumber(oldest.id)}:0`
+          : undefined;
     return {
-      hits: scored.slice(0, limit).map(({ document, score }) => {
+      hits: scored.slice(skip, skip + limit).map(({ document, score }) => {
         const { note } = document;
         return {
           id: note.id,
@@ -375,8 +394,9 @@ module.exports = {
         };
       }),
       matched: scored.length,
-      scanned: notes.length,
-      truncated,
+      scanned: documents.length,
+      truncated: next !== undefined,
+      ...(next === undefined ? {} : { next }),
     };
   },
 
@@ -435,7 +455,7 @@ module.exports = {
     input: { scope?: string; after?: number };
     services: Services;
   }) => {
-    const { notes } = liveNotes(services.state);
+    const notes = liveNotes(services.state);
     const remaining = notes.filter(
       (note) =>
         noteNumber(note.id) > (input.after ?? 0) &&
