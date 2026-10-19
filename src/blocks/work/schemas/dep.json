@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "required": ["id", "target", "action", "expectRevision"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "action": {
+      "enum": ["add", "remove"]
+    },
+    "expectRevision": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

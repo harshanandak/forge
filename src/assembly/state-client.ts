@@ -1,7 +1,10 @@
-import type { StateOwner } from "../core/state/index.ts";
+import type { StateOwner, WriteOptions } from "../core/state/index.ts";
 import type { BoundContext, LeaseRecord } from "../generated/types.ts";
 import type { StateClient, PutOptions } from "../ports/state.ts";
 import { refuse } from "../core/trust/index.ts";
+
+type ClientPutOptions = PutOptions &
+  Pick<WriteOptions, "readSet"> & { readonly subject?: string };
 
 /** Assembly capability extension; the outside-block forge.state@1 contract is unchanged.
  * Held puts fence the supplied subject (the record key by default) in the owner's transaction.
@@ -15,7 +18,7 @@ export interface LeaseStateClient extends StateClient {
   put(
     key: string,
     value: unknown,
-    options: PutOptions & { readonly subject?: string },
+    options: ClientPutOptions,
   ): ReturnType<StateClient["put"]>;
 }
 
@@ -57,11 +60,7 @@ export function createStateClient(options: {
     list: (prefix?: string) => owner?.list(namespace, prefix) ?? [],
     events: (key?: string) => owner?.events(namespace, key) ?? [],
     lease: (subject: string) => owner?.lease(namespace, subject),
-    put(
-      key: string,
-      value: unknown,
-      put: PutOptions & { readonly subject?: string },
-    ) {
+    put(key: string, value: unknown, put: ClientPutOptions) {
       const state = writable();
       if (context.variant === "stateless")
         refuse("CONTEXT_MISSING", "Missing actor");
@@ -69,6 +68,9 @@ export function createStateClient(options: {
         refuse("CONTEXT_MISSING", "Acquisition cannot mutate records");
       return state.put(namespace, key, structuredClone(value), context.actor, {
         expectRevision: put.expectRevision,
+        ...(put.readSet === undefined
+          ? {}
+          : { readSet: structuredClone(put.readSet) }),
         ...(context.variant === "leased"
           ? { fence: fence(put.subject ?? key) }
           : {}),

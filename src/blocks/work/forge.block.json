@@ -1,0 +1,209 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/work",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v1",
+  "profile": "trusted-action-sync/v1",
+  "entry": "entry.cjs",
+  "nouns": {
+    "issue": {
+      "interface": "1.0.0"
+    }
+  },
+  "provides": [
+    {
+      "interface": "forge.tracker@1.0.0",
+      "noun": "issue"
+    }
+  ],
+  "requires": [
+    {
+      "slot": "state",
+      "interface": "forge.state@1"
+    }
+  ],
+  "operations": {
+    "issue.create": {
+      "input": "schemas/CreateItemInput.json",
+      "output": "schemas/TrackerItem.json",
+      "context": "project",
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "issue.show": {
+      "input": "schemas/ItemRef.json",
+      "output": "schemas/TrackerItem.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.list": {
+      "input": "schemas/ListItemsInput.json",
+      "output": "schemas/ListItemsOutput.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "issue.update": {
+      "input": "schemas/UpdateItemInput.json",
+      "output": "schemas/TrackerItem.json",
+      "context": "leased",
+      "leaseMode": "held",
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.comment": {
+      "input": "schemas/CommentInput.json",
+      "output": "schemas/CommentOutput.json",
+      "context": "project",
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.claim": {
+      "input": "schemas/ClaimInput.json",
+      "output": "schemas/LeaseGrant.json",
+      "context": "leased",
+      "leaseMode": "acquire",
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.renew": {
+      "input": "schemas/ClaimInput.json",
+      "output": "schemas/LeaseGrant.json",
+      "context": "leased",
+      "leaseMode": "held",
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.release": {
+      "input": "schemas/ItemRef.json",
+      "output": "schemas/ItemRef.json",
+      "context": "leased",
+      "leaseMode": "held",
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.close": {
+      "input": "schemas/CloseInput.json",
+      "output": "schemas/TrackerItem.json",
+      "context": "leased",
+      "leaseMode": "held",
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.ready": {
+      "input": "schemas/ListItemsInput.json",
+      "output": "schemas/ListItemsOutput.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "issue.blocked": {
+      "input": "schemas/ListItemsInput.json",
+      "output": "schemas/ListItemsOutput.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "issue.stale": {
+      "input": "schemas/ListItemsInput.json",
+      "output": "schemas/ListItemsOutput.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "issue.comments": {
+      "input": "schemas/ItemRef.json",
+      "output": "schemas/records.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.events": {
+      "input": "schemas/ItemRef.json",
+      "output": "schemas/events.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.dep": {
+      "input": "schemas/dep.json",
+      "output": "schemas/TrackerItem.json",
+      "context": "leased",
+      "leaseMode": "held",
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.link": {
+      "input": "schemas/link.json",
+      "output": "schemas/record.json",
+      "context": "leased",
+      "leaseMode": "held",
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.links": {
+      "input": "schemas/ItemRef.json",
+      "output": "schemas/records.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.lint": {
+      "input": "schemas/ListItemsInput.json",
+      "output": "schemas/lint-result.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    }
+  },
+  "docs": "docs.json"
+}
