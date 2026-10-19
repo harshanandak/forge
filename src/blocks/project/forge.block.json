@@ -10,6 +10,7 @@
       "input": "schemas/detect.input.json",
       "output": "schemas/detect.output.json",
       "context": "project",
+      "timeoutMs": 5000,
       "effects": [],
       "idempotent": true,
       "callers": ["agent", "human"],

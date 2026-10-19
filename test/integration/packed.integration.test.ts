@@ -209,6 +209,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         join(consumer, `${name}.mjs`),
         join(isolated, `${name}.mjs`),
       );
+
     for (const mutation of mutations) {
       const path = join(isolated, "dist", mutation.file);
       const original = readFileSync(path, "utf8");

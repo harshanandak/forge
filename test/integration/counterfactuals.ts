@@ -9,6 +9,14 @@ export type FirstSliceMutation = {
 
 export const firstSliceMutations: readonly FirstSliceMutation[] = [
   {
+    file: "src/core/runtime/deadline.js",
+    from: "const timeoutMs = Math.min(...limits);",
+    to: "const timeoutMs = 1000;",
+    mode: "deadline",
+    fixture: "review-two",
+    evidence: "declared durable budget must complete",
+  },
+  {
     file: "src/assembly/state.js",
     from: "ensurePrivateDirectory(dirname(this.#path), this.#directories);",
     to: "void 0;",

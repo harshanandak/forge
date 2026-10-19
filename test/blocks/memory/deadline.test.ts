@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeFileCapture } from "../../../src/adapters/node-runtime/capture.ts";
-import { nodeRunIsolation } from "../../../src/adapters/node-runtime/isolation.ts";
 import { Catalog, captureBlock } from "../../../src/core/catalog/index.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
 import { TrustStore } from "../../../src/core/trust/index.ts";
@@ -13,7 +12,7 @@ import type { InvocationRequest } from "../../../src/generated/types.ts";
 // migrations) is the host's work, done before the handler starts, so a slow first open on a slow
 // disk can never be charged to it.
 
-function fixture() {
+function fixture(timeoutMs = 15000) {
   const root = mkdtempSync(join(tmpdir(), "deadline-"));
   const write = (name: string, value: unknown) =>
     writeFileSync(
@@ -33,6 +32,7 @@ function fixture() {
         input: "input.json",
         output: "output.json",
         context: "stateless",
+        timeoutMs,
         effects: [],
         idempotent: true,
         callers: ["agent"],
@@ -70,67 +70,95 @@ function fixture() {
   };
 }
 
-test("opening services finishes before the handler starts, and its time is not the handler's", async () => {
+test("store preparation and evaluator opening finish before the declared handler budget starts", async () => {
   const f = fixture();
   try {
     const events: string[] = [];
-    let clock = 0;
+    let now = 0;
     const runtime = new Runtime(f.catalog, f.trust, {
+      clock: { now: () => now },
       services: async () => {
-        // A first open on a slow disk: directory creation, fsyncs and migrations.
-        clock += 10_000;
+        // Directory creation, fsyncs and migrations may exceed the handler budget.
+        now += 30000;
         await Promise.resolve();
-        events.push(`services opened at ${clock}`);
+        events.push(`services opened at ${now}`);
         return { ownership: "borrowed", value: {} };
       },
       isolation: {
-        async open() {
-          const opened = await nodeRunIsolation.open();
-          if (!opened.ok) return opened;
-          return {
+        open: () => {
+          now += 2000;
+          return Promise.resolve({
             ok: true,
             handle: {
               ownership: "owned",
+              close: () => Promise.resolve(),
               value: {
                 run(options) {
                   events.push(
-                    `handler started at ${clock} with ${options.timeoutMs} ms`,
+                    `handler started at ${now} with ${options.timeoutMs} ms`,
                   );
-                  return opened.handle.value.run(options);
+                  return options.encode("hello");
                 },
               },
-              close: () => opened.handle.close(),
             },
-          };
+          });
         },
       },
     });
-    const result = await runtime.invoke(f.request);
-    expect(result.ok).toBe(true);
-    // The handler's whole budget starts after the 10,000 ms open, undiminished.
+    expect(await runtime.invoke(f.request)).toMatchObject({
+      ok: true,
+      result: "hello",
+    });
     expect(events).toEqual([
-      "services opened at 10000",
-      "handler started at 10000 with 1000 ms",
+      "services opened at 30000",
+      "handler started at 32000 with 15000 ms",
     ]);
   } finally {
     f.close();
   }
 }, 30_000);
 
-test("a store open slower than the handler deadline does not fail the operation", async () => {
-  const f = fixture();
+test("a store open longer than the declared handler budget leaves that whole budget for the handler", async () => {
+  const f = fixture(20);
   try {
+    let now = 0;
+    let closed = 0;
     const runtime = new Runtime(f.catalog, f.trust, {
-      limits: { timeoutMs: 20 },
-      services: async () => {
-        // Three times the handler's whole deadline spent opening.
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        return { ownership: "borrowed", value: {} };
+      clock: { now: () => now },
+      services: () => {
+        now += 60;
+        return Promise.resolve({
+          ownership: "owned",
+          value: {},
+          close: () => {
+            closed++;
+            return Promise.resolve();
+          },
+        });
       },
-      isolation: nodeRunIsolation,
+      isolation: {
+        open: () =>
+          Promise.resolve({
+            ok: true,
+            handle: {
+              ownership: "owned",
+              close: () => Promise.resolve(),
+              value: {
+                run(options) {
+                  expect(options.timeoutMs).toBe(20);
+                  now += 19;
+                  return options.encode("hello");
+                },
+              },
+            },
+          }),
+      },
     });
-    const result = await runtime.invoke(f.request);
-    expect(result.ok).toBe(true);
+    expect(await runtime.invoke(f.request)).toMatchObject({
+      ok: true,
+      result: "hello",
+    });
+    expect(closed).toBe(1);
   } finally {
     f.close();
   }

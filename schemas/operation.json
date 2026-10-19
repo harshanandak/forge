@@ -14,6 +14,12 @@
     "stability"
   ],
   "properties": {
+    "timeoutMs": {
+      "description": "Declared operation budget; adjustable by instance operationTimeouts. Integer safety bounds: 1..2147483647 ms.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
     "input": { "$ref": "common.json#/$defs/RelativePath" },
     "output": { "$ref": "common.json#/$defs/RelativePath" },
     "args": {
