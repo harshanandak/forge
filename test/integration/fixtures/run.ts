@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { runBounded } from "../../../tools/packed-pool.ts";
 
 export type Fixture = {
   label: string;
@@ -8,7 +9,7 @@ export type Fixture = {
   env: NodeJS.ProcessEnv;
 };
 
-async function runFixture(fixture: Fixture): Promise<string> {
+async function runFixture(fixture: Fixture, prefix: string): Promise<string> {
   const started = performance.now();
   try {
     return await new Promise<string>((resolve, reject) => {
@@ -43,22 +44,18 @@ async function runFixture(fixture: Fixture): Promise<string> {
     });
   } finally {
     console.log(
-      `Packed first slice ${fixture.label}: ${Math.round(performance.now() - started)} ms`,
+      `${prefix} ${fixture.label}: ${Math.round(performance.now() - started)} ms`,
     );
   }
 }
 
 export async function runFixtures(
   fixtures: readonly Fixture[],
+  concurrency = 3,
+  prefix = "Packed first slice",
 ): Promise<string[]> {
   // Every child must close before the caller can remove its fixture directories.
-  const results = await Promise.allSettled(fixtures.map(runFixture));
-  const failures = results.flatMap((result) =>
-    result.status === "rejected" ? [result.reason as unknown] : [],
-  );
-  if (failures.length)
-    throw new AggregateError(failures, "Packed positive fixtures failed");
-  return results.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : [],
+  return runBounded(fixtures, concurrency, (fixture) =>
+    runFixture(fixture, prefix),
   );
 }

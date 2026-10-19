@@ -11,6 +11,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve, delimiter } from "node:path";
@@ -18,6 +19,8 @@ import {
   packedCoverage,
   selectShard,
 } from "../../node-fixtures/state/counterfactuals.ts";
+import { asyncCounterfactuals } from "../../node-fixtures/async-handlers/counterfactuals.ts";
+import { runFixtures } from "../../integration/fixtures/run.ts";
 const root = resolve(import.meta.dirname, "../../..");
 function run(
   command: string,
@@ -34,15 +37,19 @@ function run(
     timeout,
   });
 }
-test("installed async ABI: supervised cleanup, strict containment, service revocation and CLI/MCP", () => {
+
+test("installed async ABI: supervised cleanup, strict containment, service revocation and CLI/MCP", async () => {
+  const started = performance.now();
+  let phaseStarted = started;
+  function phase(name: string, detail = "") {
+    console.log(
+      `Packed async ${name}: ${Math.round(performance.now() - phaseStarted)} ms${detail}`,
+    );
+    phaseStarted = performance.now();
+  }
   const work = mkdtempSync(join(root, ".async-packed-"));
   const node = Bun.which("node");
   if (!node) throw Error("Node required");
-  const npm = [
-    join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-    join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-  ].find(existsSync);
-  if (!npm) throw Error("npm required");
   const env = { ...process.env };
   const path =
     Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
@@ -70,125 +77,97 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
     return result.stdout;
   };
   try {
-    successful(process.execPath, ["run", "build"], root, process.env);
-    const packed = JSON.parse(
+    // The smoke keeps its real npm install alive until this process finishes.
+    const sharedConsumer = process.env.ASYNC_PACKED_CONSUMER;
+    const consumer = sharedConsumer ?? join(work, "consumer");
+    if (!sharedConsumer) {
+      const npm = [
+        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
+        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
+      ].find(existsSync);
+      if (!npm) throw Error("npm required");
+
+      successful(process.execPath, ["run", "build"], root, process.env);
+      phase("build");
+      const packed = JSON.parse(
+        successful(
+          node,
+          [
+            npm,
+            "pack",
+            "--json",
+            "--ignore-scripts",
+            "--pack-destination",
+            work,
+          ],
+          root,
+        ),
+      ) as { filename: string }[];
+      phase("pack");
+      mkdirSync(consumer);
+      writeFileSync(
+        join(consumer, "package.json"),
+        '{"private":true,"type":"module"}',
+      );
       successful(
         node,
-        [npm, "pack", "--json", "--ignore-scripts", "--pack-destination", work],
-        root,
-      ),
-    ) as { filename: string }[];
-    const consumer = join(work, "consumer");
-    mkdirSync(consumer);
-    writeFileSync(
-      join(consumer, "package.json"),
-      '{"private":true,"type":"module"}',
-    );
-    successful(
-      node,
-      [
-        npm,
-        "install",
-        join(work, packed[0]!.filename),
-        "--no-audit",
-        "--no-fund",
-      ],
-      consumer,
-    );
+        [
+          npm,
+          "install",
+          join(work, packed[0]!.filename),
+          "--no-audit",
+          "--no-fund",
+        ],
+        consumer,
+      );
+      phase("install");
+    } else {
+      phase("build", " (shared consumer)");
+      phase("pack", " (shared consumer)");
+      phase("install", " (shared consumer)");
+    }
     const installed = join(consumer, "node_modules/forge-workflow");
-    copyFileSync(
-      join(root, "test/node-fixtures/async-handlers/journey.mjs"),
-      join(installed, "async-journey.mjs"),
+    // Package self-references resolve here; dependency lookup borrows the install.
+    // All fixture files and mutations stay inside this suite's private workspace.
+    const privateCopy = join(work, "package");
+    cpSync(installed, privateCopy, {
+      recursive: true,
+      filter: (path) => !path.endsWith(".map") && !path.endsWith(".ts"),
+    });
+    symlinkSync(
+      resolve(consumer, "node_modules"),
+      join(work, "node_modules"),
+      process.platform === "win32" ? "junction" : "dir",
     );
-    copyFileSync(
-      join(root, "test/node-fixtures/async-handlers/deadline.mjs"),
-      join(installed, "deadline.mjs"),
-    );
-    for (const runtime of new Set(
-      [node, process.env.FORGE_NODE26].filter((value): value is string =>
-        Boolean(value),
+    for (const [source, target] of [
+      ["test/node-fixtures/async-handlers/journey.mjs", "async-journey.mjs"],
+      ["test/node-fixtures/async-handlers/deadline.mjs", "deadline.mjs"],
+      ["test/integration/fixtures/mutation-proof.mjs", "mutation-proof.mjs"],
+    ] as const)
+      copyFileSync(join(root, source), join(privateCopy, target));
+    phase("privatecopies");
+    const journey = join(privateCopy, "async-journey.mjs");
+    const runtimes = [
+      ...new Set(
+        [node, process.env.FORGE_NODE26].filter((value): value is string =>
+          Boolean(value),
+        ),
       ),
-    ))
-      expect(
-        successful(runtime, [join(installed, "async-journey.mjs")], consumer),
-      ).toContain("PASS async-handlers all");
-    const privateCopy = join(consumer, "node_modules/async-counterfactual");
-    cpSync(installed, privateCopy, { recursive: true });
-    copyFileSync(
-      join(root, "test/integration/fixtures/mutation-proof.mjs"),
-      join(privateCopy, "mutation-proof.mjs"),
-    );
-    const mutations = [
-      ...(process.platform === "win32"
-        ? [
-            {
-              file: "adapters/process/windows-job.js",
-              from: "if (api.terminateJobObject(job, 1) === 0)",
-              to: "if (true)",
-              mode: "job-termination",
-              evidence: "typed interruption",
-            },
-          ]
-        : []),
-      {
-        file: "core/runtime/index.js",
-        from: "await scope.prepare(handle?.value);",
-        to: "void 0;",
-        mode: "strict-refusal",
-        evidence: "strict containment must refuse before activation",
-      },
-      {
-        file: "adapters/process/run.js",
-        from: "stoppedPids = await container.stop();",
-        to: "stoppedPids = [];",
-        mode: "default-cleanup",
-        evidence: "root exit must complete after tree cleanup",
-      },
-      {
-        file: "adapters/node-runtime/isolation.js",
-        from: "Promise.resolve(handler(args))",
-        to: "Promise.reject(Error('sync-only ABI'))",
-        mode: "async",
-        evidence: "async child process must complete",
-      },
-      {
-        file: "core/runtime/services.js",
-        from: "this.check();",
-        to: "void 0;",
-        mode: "scope",
-        evidence: "settled services must refuse writes",
-      },
-      {
-        file: "core/runtime/index.js",
-        from: "this.#trust.check(block.digest, declaration.effects);",
-        to: "void 0;",
-        mode: "grants",
-        evidence: "async effect needs human grant",
-      },
-      {
-        file: "core/runtime/services.js",
-        from: ".run(executable, args, {",
-        to: ".run(executable, args, {",
-        mode: "timeout",
-        evidence: "invocation must stop its entire process tree",
-      },
-      {
-        file: "core/runtime/index.js",
-        from: 'code: "INVOCATION_CANCELLED"',
-        to: 'code: "INVOCATION_TIMEOUT"',
-        mode: "cancel",
-        evidence: "typed interruption",
-      },
-      {
-        file: "core/runtime/services.js",
-        from: "this.check();",
-        to: "void 0;",
-        mode: "leased",
-        evidence: "settled leased client must not write",
-      },
     ];
+    const positives = runtimes.map((runtime) => ({
+      label: `async all (${runtime})`,
+      command: runtime,
+      args: [journey],
+      cwd: work,
+      env,
+    }));
+    // Each process creates its own fixture root; drain both before mutating.
+    const outputs = await runFixtures(positives, 2, "Packed async");
+    for (const output of outputs)
+      expect(output).toContain("PASS async-handlers all");
+    phase("positives");
     for (const mutation of selectShard(
-      mutations,
+      asyncCounterfactuals(process.platform),
       packedCoverage(process.env.STATE_NODE_LEG).shard,
     )) {
       const file = join(privateCopy, "dist/src", mutation.file);
@@ -218,7 +197,7 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
         const result = run(
           node,
           [join(privateCopy, "async-journey.mjs"), mutation.mode],
-          consumer,
+          work,
           mutationEnv,
           15000,
         );
@@ -248,7 +227,13 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
         writeFileSync(file, original);
       }
     }
+    phase("mutations");
   } finally {
+    phaseStarted = performance.now();
     rmSync(work, { recursive: true, force: true });
+    phase("cleanup");
+    console.log(
+      `Packed async total: ${Math.round(performance.now() - started)} ms`,
+    );
   }
 }, 180000);

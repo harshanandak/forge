@@ -3,6 +3,7 @@ import { inheritRunnerGroup, readRunnerPolicy } from "./runner-policy.ts";
 import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packedSuites } from "./pack-smoke/suites.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const suite = process.argv[2];
@@ -44,12 +45,9 @@ async function run(
       ? !file.endsWith(".integration.test.ts")
       : file.endsWith(".integration.test.ts") &&
         (kind !== "integration-rest" ||
-          ![
-            "test/node-fixtures/state/packed.integration.test.ts",
-            "test/node-fixtures/memory/packed.integration.test.ts",
-            "test/integration/packed.integration.test.ts",
-            "test/assembly/providers/packed.integration.test.ts",
-          ].includes(file.replaceAll("\\", "/"))),
+          !packedSuites.some(
+            (suite) => suite.file === file.replaceAll("\\", "/"),
+          )),
   );
   if (selected.length === 0) throw new Error(`the ${kind} test suite is empty`);
   console.log(`${kind}: ${selected.length} test files`);
