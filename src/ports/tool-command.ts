@@ -20,6 +20,7 @@ export interface ToolCommandPort {
 export interface AccountScriptsOptions {
   readonly account: string;
   readonly gitPath: string;
+  readonly configPath: string;
   readonly ghPath: string;
   readonly ghArgs: readonly string[];
   readonly envPath: string;
@@ -39,6 +40,14 @@ export interface AccountBootstrapOptions {
   readonly windows: boolean;
 }
 export interface AccountCommandPort extends ToolCommandPort {
+  run(
+    program: string,
+    args: readonly string[],
+    options: SpawnOptions & {
+      readonly trustedGitPath?: string;
+      readonly trustedConfigPath?: string;
+    },
+  ): Promise<ProcessResult | Unavailable>;
   bootstrap(options: AccountBootstrapOptions): string;
   scripts(options: AccountScriptsOptions): {
     readonly router: string;

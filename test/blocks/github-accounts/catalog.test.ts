@@ -9,7 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Catalog, captureBlock } from "../../../src/core/catalog/index.ts";
-import { Runtime } from "../../../src/core/runtime/index.ts";
+import {
+  Runtime,
+  type RuntimeOptions,
+} from "../../../src/core/runtime/index.ts";
 import { TrustStore } from "../../../src/core/trust/index.ts";
 import { nodeRunIsolation } from "../../../src/adapters/node-runtime/isolation.ts";
 import { ASSEMBLY_PROVIDES } from "../../../src/assembly/providers.ts";
@@ -17,7 +20,7 @@ import { createAssembly } from "../../../src/assembly/index.ts";
 
 setDefaultTimeout(1000);
 
-function fixture() {
+function fixture(services?: RuntimeOptions["services"]) {
   const root = resolve(
     import.meta.dirname,
     "../../../src/blocks/github-accounts",
@@ -71,39 +74,47 @@ function fixture() {
   );
   const trust = new TrustStore();
   trust.admit("human", block.digest);
+  if (services)
+    trust.grant("human", block.digest, [
+      ...new Set(
+        Object.values(block.manifest.operations).flatMap((op) => op.effects),
+      ),
+    ]);
   const accessed: string[] = [];
   const runtime = new Runtime(catalog, trust, {
     isolation: nodeRunIsolation,
-    services: () =>
-      Promise.resolve({
-        ownership: "borrowed",
-        value: {
-          get files() {
-            accessed.push("files");
-            throw new Error("Pure policy accessed files");
+    services:
+      services ??
+      (() =>
+        Promise.resolve({
+          ownership: "borrowed",
+          value: {
+            get files() {
+              accessed.push("files");
+              throw new Error("Pure policy accessed files");
+            },
+            get environment() {
+              accessed.push("environment");
+              throw new Error("Pure policy accessed environment");
+            },
+            get process() {
+              accessed.push("process");
+              throw new Error("Pure policy accessed process");
+            },
+            get repository() {
+              accessed.push("repository");
+              throw new Error("Pure policy accessed repository");
+            },
+            get account() {
+              accessed.push("account");
+              throw new Error("Pure policy accessed account");
+            },
+            get crypto() {
+              accessed.push("crypto");
+              throw new Error("Pure policy accessed crypto");
+            },
           },
-          get environment() {
-            accessed.push("environment");
-            throw new Error("Pure policy accessed environment");
-          },
-          get process() {
-            accessed.push("process");
-            throw new Error("Pure policy accessed process");
-          },
-          get repository() {
-            accessed.push("repository");
-            throw new Error("Pure policy accessed repository");
-          },
-          get account() {
-            accessed.push("account");
-            throw new Error("Pure policy accessed account");
-          },
-          get crypto() {
-            accessed.push("crypto");
-            throw new Error("Pure policy accessed crypto");
-          },
-        },
-      }),
+        })),
   });
   return { runtime, accessed, config };
 }
@@ -232,4 +243,56 @@ test("message-file retains effect admission and the two operations reject mixed 
       error: { code: "INPUT_INVALID" },
     });
   expect(f.accessed).toEqual([]);
+});
+
+test("runtime closes owned services before every accounts handler settles, including refusal retries", async () => {
+  let acquired = 0;
+  let closed = 0;
+  const f = fixture(async () => {
+    acquired++;
+    return {
+      ownership: "owned",
+      value: {},
+      async close() {
+        // A microtask boundary ensures returning before cleanup is observable.
+        await Promise.resolve();
+        closed++;
+      },
+    };
+  });
+  const cases = [
+    ["github-account.bind", { login: "selected", auto: false }],
+    ["github-account.unbind", {}],
+    ["github-account.status", {}],
+    ["github-account.doctor", {}],
+    ["github-account.check", { tip: "HEAD", trigger: "push" }],
+    ["github-account.message-file", { path: "COMMIT_EDITMSG" }],
+    ["github-account.hook", { enabled: true }],
+    ["github-account.hook", { enabled: true }],
+    ["github-account.run", { args: ["api", "user"] }],
+    ["github-account.message", { text: "Change" }],
+  ] as const;
+  for (const [op, input] of cases) {
+    const before = acquired;
+    const result = await f.runtime.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: `owned-close-${acquired}`,
+      op,
+      input,
+      caller: "agent",
+      context: {
+        actor: { kind: "agent", id: "tester" },
+        project: { id: "/project", root: "/project" },
+      },
+    });
+    expect(acquired).toBe(before + 1);
+    expect(closed).toBe(acquired);
+    if (op === "github-account.message")
+      expect(result).toMatchObject({ ok: true });
+    else
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "SERVICE_MISSING" },
+      });
+  }
 });

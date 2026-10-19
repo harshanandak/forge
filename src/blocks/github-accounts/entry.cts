@@ -46,6 +46,7 @@ interface Launchers {
 interface Binding {
   version: 1 | 2;
   account: string;
+  nativeGitPath?: string;
   name: string;
   email: string;
   emails: string[];
@@ -120,6 +121,8 @@ const STAGING_MARKER = "# forge/github-accounts owned staging v1\n";
 const ACCOUNT = "forge.githubAccount";
 const HELPER = "credential.https://github.com.helper";
 const MARKER = "# forge/github-accounts v1; clone-owned; generated";
+const GH_CONFIG = `${DIRECTORY}/gh-config`;
+const GH_CONFIG_MARKER = `${GH_CONFIG}/.owned`;
 const SECRET_NAMES = [
   "gh_token",
   "github_token",
@@ -211,6 +214,31 @@ function context(
 function absoluteProgram(path: string): boolean {
   return /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(path);
 }
+function pinnedGit(s: Services, c: Config, env: Record<string, string>, path = c.gitProgram): string {
+  const resolved = s.repository.resolve(path, env);
+  if (
+    resolved.kind !== "resolved" ||
+    !absoluteProgram(resolved.path) ||
+    /[\0\r\n]/.test(resolved.path) ||
+    !/(?:^|[\\/])git(?:\.exe)?$/i.test(resolved.path)
+  ) fail("ACCOUNT_EXECUTABLE_UNTRUSTED", "Configure an absolute Git executable named git or git.exe before routing account commands");
+  return resolved.path;
+}
+function privateAccountConfig(s: Services, c: Config, bound: Binding | undefined): string {
+  if (!bound) {
+    const relative = `${DIRECTORY}/verify-${s.crypto.randomUUID()}`;
+    if (s.files.inspect(relative, "common") !== undefined)
+      fail("ACCOUNT_CONFIG_UNTRUSTED", "Cannot establish an empty account verification configuration");
+    return `${s.files.roots.common}/${relative}`;
+  }
+  const marker = bound.artifacts[GH_CONFIG_MARKER];
+  if (
+    marker !== MARKER + "\n" ||
+    s.files.read(GH_CONFIG_MARKER, c.maxFileBytes, "common") !== marker ||
+    !same(s.files.list(GH_CONFIG, 2, "common"), [".owned"])
+  ) fail("ACCOUNT_CONFIG_UNTRUSTED", "Owned GitHub configuration changed; reconcile or rebind before routing commands");
+  return `${s.files.roots.common}/${GH_CONFIG}`;
+}
 function pinLaunchers(
   s: Services,
   c: Config,
@@ -256,6 +284,16 @@ async function command(
       "Required executable is unavailable; configure its executable path",
     );
   let outcome: Awaited<ReturnType<ToolCommandPort["run"]>>;
+  let accountOptions: { trustedGitPath?: string; trustedConfigPath?: string } = {};
+  if (tool === "account") {
+    const bound = binding(s, c);
+    if (bound && !bound.nativeGitPath)
+      fail("ACCOUNT_EXECUTABLE_UNTRUSTED", "Rebind this clone to record its trusted Git installation before routing account commands");
+    accountOptions = {
+      trustedGitPath: pinnedGit(s, c, env, bound?.nativeGitPath ?? c.gitProgram),
+      ...(env.GH_TOKEN ? { trustedConfigPath: privateAccountConfig(s, c, bound) } : {}),
+    };
+  }
   try {
     outcome = await port.run(executable.path, args, {
       cwd,
@@ -263,6 +301,7 @@ async function command(
       timeoutMs: c.commandTimeoutMs,
       maxOutputBytes: c.maxOutputBytes,
       ...(stdin === undefined ? {} : { stdin }),
+      ...accountOptions,
     });
   } catch {
     return fail(
@@ -1145,6 +1184,7 @@ const operations: Operations<AccountOperations> = {
   async "github-account.bind"({ input, services, config }) {
     const { s, c, env } = context(services, config);
     login(input.login);
+    const nativeGitPath = pinnedGit(s, c, env);
     const launchers = input.auto ? pinLaunchers(s, c, env) : undefined;
     const auth = await authenticate(s, c, env, input.login);
     const emailsResult = await command(s, c, auth.env, "account", c.ghProgram, [
@@ -1229,7 +1269,7 @@ const operations: Operations<AccountOperations> = {
           "INPUT_CONFLICT",
           "Account configuration exists without owned metadata; reconcile it first",
         );
-      const artifacts: Record<string, string> = {};
+      const artifacts: Record<string, string> = { [GH_CONFIG_MARKER]: MARKER + "\n" };
       const installed: Record<string, string[]> = {
         [ACCOUNT]: [auth.user.login],
         "user.name": [name],
@@ -1254,6 +1294,7 @@ const operations: Operations<AccountOperations> = {
         const scripts = s.account.scripts({
           account: auth.user.login,
           gitPath: nativeGit.path,
+          configPath: `${s.files.roots.common}/${GH_CONFIG}`,
           ghPath: nativeGh.path,
           ghArgs: c.ghArgs,
           envPath: launchers!.env,
@@ -1284,6 +1325,7 @@ const operations: Operations<AccountOperations> = {
       const bound: Binding = {
         version: 2,
         account: auth.user.login,
+        nativeGitPath,
         name,
         email,
         emails: [...new Set(emails)],

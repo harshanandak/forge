@@ -1,6 +1,6 @@
 import type { ProcessPort } from "../../ports/process.ts";
 import type { AccountCommandPort } from "../../ports/tool-command.ts";
-import { renderAccountBootstrap, renderAccountScripts } from "./scripts.ts";
+import { accountEnvironment, renderAccountBootstrap, renderAccountScripts } from "./scripts.ts";
 
 export function createGithubCommandPort(
   process: ProcessPort,
@@ -8,9 +8,13 @@ export function createGithubCommandPort(
   return {
     resolve: (program, env) => process.resolve(program, env),
     async run(program, args, options) {
-      const executable = process.resolve(program, options.env);
+      const token = Object.entries(options.env).some(([name, value]) => /^(?:gh|github)(?:_enterprise)?_token$/i.test(name) && value !== "");
+      const env = options.trustedGitPath !== undefined || token
+        ? accountEnvironment(options.env, options.trustedGitPath!, options.trustedConfigPath)
+        : options.env;
+      const executable = process.resolve(program, env);
       return executable.kind === "resolved"
-        ? process.run(executable, args, options)
+        ? process.run(executable, args, { ...options, env })
         : executable;
     },
     scripts: renderAccountScripts,
