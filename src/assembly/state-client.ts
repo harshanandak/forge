@@ -1,12 +1,18 @@
 import type { StateOwner } from "../core/state/index.ts";
 import type { BoundContext, LeaseRecord } from "../generated/types.ts";
-import type { StateClient, PutOptions } from "../ports/state.ts";
+import type {
+  BatchEntry,
+  ExtendedStateClient,
+  PutOptions,
+  RangeOptions,
+  StateClient,
+} from "../ports/state.ts";
 import { refuse } from "../core/trust/index.ts";
 
 /** Assembly capability extension; the outside-block forge.state@1 contract is unchanged.
  * Held puts fence the supplied subject (the record key by default) in the owner's transaction.
  */
-export interface LeaseStateClient extends StateClient {
+export interface LeaseStateClient extends ExtendedStateClient {
   now(): number;
   lease(subject: string): LeaseRecord | undefined;
   acquire(subject: string, durationMs: number): LeaseRecord;
@@ -55,6 +61,8 @@ export function createStateClient(options: {
     now: () => Date.now(),
     get: (key: string) => owner?.get(namespace, key),
     list: (prefix?: string) => owner?.list(namespace, prefix) ?? [],
+    listRange: (range: RangeOptions) =>
+      owner?.listRange(namespace, range) ?? [],
     events: (key?: string) => owner?.events(namespace, key) ?? [],
     lease: (subject: string) => owner?.lease(namespace, subject),
     put(
@@ -73,6 +81,24 @@ export function createStateClient(options: {
           ? { fence: fence(put.subject ?? key) }
           : {}),
       });
+    },
+    putMany(entries: readonly BatchEntry[]) {
+      const state = writable();
+      if (context.variant === "stateless")
+        refuse("CONTEXT_MISSING", "Missing actor");
+      if (context.variant === "leased")
+        refuse(
+          "CONTEXT_MISSING",
+          "Batch writes are not available to leased operations",
+        );
+      return state.putMany(
+        namespace,
+        entries.map((entry) => ({
+          ...entry,
+          value: structuredClone(entry.value),
+        })),
+        context.actor,
+      );
     },
     acquire(subject: string, durationMs: number) {
       const state = writable();

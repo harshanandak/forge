@@ -389,7 +389,6 @@ test("decisions follow the project's own id format and numbering", async () => {
     status: "not_found",
   });
   const listed = done(await h.call("decision.list", {}, agent)) as {
-    total: number;
     decisions: { id: string; status: string; title: Fenced }[];
   };
   expect(listed.decisions.map((d) => [d.id, d.status])).toEqual([
@@ -403,10 +402,10 @@ test("decisions follow the project's own id format and numbering", async () => {
   expect(
     (
       done(await h.call("decision.list", { status: "proposed" }, agent)) as {
-        total: number;
+        decisions: unknown[];
       }
-    ).total,
-  ).toBe(1);
+    ).decisions,
+  ).toHaveLength(1);
 }, 60_000);
 
 test("decisions in one log file are appended in the log's own heading style", async () => {
@@ -447,10 +446,10 @@ test("without a configured format a decision is not invented", async () => {
   expect(
     (
       done(await h.call("decision.list", {}, { caller: "agent" })) as {
-        total: number;
+        decisions: unknown[];
       }
-    ).total,
-  ).toBe(0);
+    ).decisions,
+  ).toHaveLength(0);
 }, 30_000);
 
 test("a writer that loses the race for a note id retries and gets the next one", () => {

@@ -1,10 +1,15 @@
 // forge/memory: project and device knowledge. One self-contained file, because the sync profile runs
 // a block's entry alone: no imports at run time, no clock, no files, only the bound `state` client.
 // Notes live in the device store (`device` context); decisions live in the project store.
-import type { StateClient, StateRecord } from "../../contract/author.ts";
+import type {
+  BatchEntry,
+  ExtendedStateClient,
+  StateClient,
+  StateRecord,
+} from "../../contract/author.ts";
 
 interface Services {
-  readonly state: StateClient;
+  readonly state: ExtendedStateClient;
 }
 interface Untrusted {
   kind: "untrusted";
@@ -48,11 +53,17 @@ interface MemoryConfig {
   readonly decisions?: DecisionFormat;
 }
 
+// Keys carry zero-padded numbers, so key order is number order and a range of keys is a range of
+// numbers. Every call reads one page of that range, never the whole store.
 const NOTE_PREFIX = "note/";
+const NOTE_END = "note/\u{10FFFF}";
 const NOTE_COUNTER = "meta/note-counter";
 const DECISION_PREFIX = "decision/";
+const DECISION_END = "decision/\u{10FFFF}";
+const DECISION_ID_PREFIX = "decision-id/";
 const DECISION_COUNTER = "meta/decision-counter";
 const SEARCH_WINDOW = 1000;
+const EXPORT_READ = 100;
 // The runtime stops a block after one second and refuses output over 1 MiB. A write costs a few
 // milliseconds, so a restore takes few notes; an export chunk is never larger than a restore.
 const CHUNK_NOTES = 50;
@@ -133,8 +144,11 @@ function noteId(number: number): string {
 function noteNumber(id: string): number {
   return Number(id.slice("note-".length));
 }
+function numberKey(prefix: string, number: number): string {
+  return `${prefix}${String(number).padStart(9, "0")}`;
+}
 function noteKey(id: string): string {
-  return `${NOTE_PREFIX}${noteNumber(id)}`;
+  return numberKey(NOTE_PREFIX, noteNumber(id));
 }
 function noteOf(record: StateRecord): { id: string; value: NoteValue } {
   return {
@@ -142,20 +156,30 @@ function noteOf(record: StateRecord): { id: string; value: NoteValue } {
     value: record.value as NoteValue,
   };
 }
-/** Every live note, in number order. Nothing is dropped here: callers page, they never cut. */
-function liveNotes(state: StateClient): {
-  id: string;
-  value: NoteValue;
-  record: StateRecord;
-}[] {
-  return [...state.list(NOTE_PREFIX)]
-    .sort(
-      (a, b) =>
-        Number(a.key.slice(NOTE_PREFIX.length)) -
-        Number(b.key.slice(NOTE_PREFIX.length)),
-    )
-    .map((record) => ({ ...noteOf(record), record }))
-    .filter((note) => note.value.deleted !== true);
+/**
+ * One page of note records (tombstones included) from a range of note numbers. At most `limit`
+ * records are read from the store, whatever the store holds.
+ */
+function notePage(
+  state: ExtendedStateClient,
+  options: {
+    readonly after?: number;
+    readonly before?: number;
+    readonly limit: number;
+    readonly descending: boolean;
+  },
+): { id: string; value: NoteValue; record: StateRecord }[] {
+  return state
+    .listRange({
+      from: numberKey(NOTE_PREFIX, (options.after ?? 0) + 1),
+      to:
+        options.before === undefined
+          ? NOTE_END
+          : numberKey(NOTE_PREFIX, options.before),
+      limit: options.limit,
+      descending: options.descending,
+    })
+    .map((record) => ({ ...noteOf(record), record }));
 }
 function versionsOf(
   state: StateClient,
@@ -310,17 +334,21 @@ module.exports = {
     const [bound = 0, skip = 0] = (input.cursor ?? "0:0")
       .split(":")
       .map(Number);
-    const candidates = liveNotes(state)
-      .filter(
-        (note) =>
-          (bound === 0 || noteNumber(note.id) < bound) &&
-          (input.scope === undefined || note.value.scope === input.scope) &&
-          (input.tag === undefined || note.value.tags.includes(input.tag)),
-      )
-      .reverse();
-    const window = candidates.slice(0, SEARCH_WINDOW);
-    const oldest = window[window.length - 1];
-    const older = candidates.length > window.length;
+    // The window is the newest SEARCH_WINDOW records below the bound: that many are read, however
+    // many the store holds. Forgotten notes and other scopes are dropped after reading.
+    const records = notePage(state, {
+      ...(bound === 0 ? {} : { before: bound }),
+      limit: SEARCH_WINDOW,
+      descending: true,
+    });
+    const oldest = records[records.length - 1];
+    const older = records.length === SEARCH_WINDOW;
+    const window = records.filter(
+      (note) =>
+        note.value.deleted !== true &&
+        (input.scope === undefined || note.value.scope === input.scope) &&
+        (input.tag === undefined || note.value.tags.includes(input.tag)),
+    );
     const documents = window.map((note) => {
       const counts = new Map<string, number>();
       let length = 0;
@@ -455,31 +483,41 @@ module.exports = {
     input: { scope?: string; after?: number };
     services: Services;
   }) => {
-    const notes = liveNotes(services.state);
-    const remaining = notes.filter(
-      (note) =>
-        noteNumber(note.id) > (input.after ?? 0) &&
-        (input.scope === undefined || note.value.scope === input.scope),
-    );
+    // Read one page of records after the cursor; forgotten and out-of-scope ones are passed over
+    // but still move the cursor, so a long run of them never stalls a walk.
+    const records = notePage(services.state, {
+      after: input.after ?? 0,
+      limit: EXPORT_READ,
+      descending: false,
+    });
     // One chunk is what a single restore accepts and what the runtime lets one call return.
-    const chosen: typeof remaining = [];
+    const chosen: typeof records = [];
     let chars = 0;
-    for (const note of remaining) {
-      if (
-        chosen.length >= CHUNK_NOTES ||
-        (chosen.length > 0 && chars + note.value.text.length > CHUNK_CHARS)
-      )
-        break;
-      chosen.push(note);
-      chars += note.value.text.length;
+    let examined: number | undefined;
+    let stopped = false;
+    for (const note of records) {
+      const live =
+        note.value.deleted !== true &&
+        (input.scope === undefined || note.value.scope === input.scope);
+      if (live) {
+        if (
+          chosen.length >= CHUNK_NOTES ||
+          (chosen.length > 0 && chars + note.value.text.length > CHUNK_CHARS)
+        ) {
+          stopped = true;
+          break;
+        }
+        chosen.push(note);
+        chars += note.value.text.length;
+      }
+      examined = noteNumber(note.id);
     }
-    const last = chosen[chosen.length - 1];
-    const more = chosen.length < remaining.length;
+    const more = stopped || records.length === EXPORT_READ;
     return {
       format: "forge.memory.export/1" as const,
       count: chosen.length,
       truncated: more,
-      ...(more && last ? { next: noteNumber(last.id) } : {}),
+      ...(more && examined !== undefined ? { next: examined } : {}),
       notes: chosen.map((note) => ({
         id: note.id,
         revision: note.record.revision,
@@ -511,9 +549,10 @@ module.exports = {
     services: Services;
   }) => {
     const { state } = services;
-    let added = 0;
     let skipped = 0;
     const conflicts: string[] = [];
+    const entries: BatchEntry[] = [];
+    const queued = new Set<string>();
     let highest = 0;
     for (const note of input.notes) {
       const key = noteKey(note.id);
@@ -525,21 +564,27 @@ module.exports = {
         else conflicts.push(note.id);
         continue;
       }
-      state.put(
+      if (queued.has(key)) {
+        conflicts.push(note.id);
+        continue;
+      }
+      queued.add(key);
+      entries.push({
         key,
-        {
+        value: {
           text: note.text.text,
           ...(note.scope === undefined ? {} : { scope: note.scope }),
           tags: note.tags,
           links: note.links,
           previous: [],
         },
-        { expectRevision: 0 },
-      );
-      added += 1;
+        expectRevision: 0,
+      });
     }
+    // One transaction and one sync for the whole page, not one per note.
+    if (entries.length > 0) state.putMany(entries);
     raise(state, NOTE_COUNTER, highest);
-    return { added, skipped, conflicts };
+    return { added: entries.length, skipped, conflicts };
   },
 
   "decision.propose": ({
@@ -571,9 +616,16 @@ module.exports = {
         : { consequences: input.consequences }),
       status: "proposed",
     };
-    const record = state.put(`${DECISION_PREFIX}${number}`, value, {
-      expectRevision: 0,
-    });
+    // The record and the lookup by project id commit together.
+    const [record] = state.putMany([
+      { key: numberKey(DECISION_PREFIX, number), value, expectRevision: 0 },
+      {
+        key: `${DECISION_ID_PREFIX}${id}`,
+        value: { number },
+        expectRevision: 0,
+      },
+    ]);
+    if (!record) throw new Error("decision was not written");
     const rendered =
       format.path === undefined || format.layout === undefined
         ? undefined
@@ -604,9 +656,15 @@ module.exports = {
     services: Services;
   }) => {
     const { state } = services;
-    const match = state
-      .list(DECISION_PREFIX)
-      .find((record) => decisionOf(record).id === input.id);
+    const index = state.get(`${DECISION_ID_PREFIX}${input.id}`);
+    const match = index
+      ? state.get(
+          numberKey(
+            DECISION_PREFIX,
+            (index.value as { number: number }).number,
+          ),
+        )
+      : undefined;
     if (!match) return { status: "not_found" as const, id: input.id };
     const value = decisionOf(match);
     if (value.status === "adopted")
@@ -630,35 +688,35 @@ module.exports = {
     input: { status?: "proposed" | "adopted"; after?: number };
     services: Services;
   }) => {
-    const records = services.state
-      .list(DECISION_PREFIX)
-      .filter(
-        (record) =>
-          input.status === undefined ||
-          decisionOf(record).status === input.status,
-      )
-      .sort((a, b) => decisionOf(a).number - decisionOf(b).number);
-    const remaining = records.filter(
-      (record) => decisionOf(record).number > (input.after ?? 0),
-    );
-    const page = remaining.slice(0, LIST_LIMIT);
-    const lastPage = page[page.length - 1];
-    const more = page.length < remaining.length;
+    // Read one page after the cursor; the status filter runs on what was read.
+    const records = services.state.listRange({
+      from: numberKey(DECISION_PREFIX, (input.after ?? 0) + 1),
+      to: DECISION_END,
+      limit: LIST_LIMIT + 1,
+    });
+    const page = records.slice(0, LIST_LIMIT);
+    const last = page[page.length - 1];
+    const more = records.length > LIST_LIMIT;
     return {
-      total: records.length,
       truncated: more,
-      ...(more && lastPage ? { next: decisionOf(lastPage).number } : {}),
-      decisions: page.map((record) => {
-        const value = decisionOf(record);
-        return {
-          id: value.id,
-          number: value.number,
-          status: value.status,
-          revision: record.revision,
-          title: fence(value.title, `decision:${value.id}`, record.updatedAt),
-          updatedAt: record.updatedAt,
-        };
-      }),
+      ...(more && last ? { next: decisionOf(last).number } : {}),
+      decisions: page
+        .filter(
+          (record) =>
+            input.status === undefined ||
+            decisionOf(record).status === input.status,
+        )
+        .map((record) => {
+          const value = decisionOf(record);
+          return {
+            id: value.id,
+            number: value.number,
+            status: value.status,
+            revision: record.revision,
+            title: fence(value.title, `decision:${value.id}`, record.updatedAt),
+            updatedAt: record.updatedAt,
+          };
+        }),
     };
   },
 };

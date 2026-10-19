@@ -11,7 +11,17 @@ import { runInNewContext } from "node:vm";
 import { join, resolve } from "node:path";
 import { createAssembly, type Assembly } from "../../../src/assembly/index.ts";
 import { ForgeFailure } from "../../../src/contract/author.ts";
-import type { PutOptions, StateClient } from "../../../src/ports/state.ts";
+import {
+  SchemaRegistry,
+  type SchemaObject,
+} from "../../../src/contract/schema.ts";
+import type {
+  BatchEntry,
+  ExtendedStateClient,
+  PutOptions,
+  RangeOptions,
+  StateClient,
+} from "../../../src/ports/state.ts";
 import type {
   Actor,
   AmbientContext,
@@ -49,6 +59,7 @@ type Handler = (args: {
 export function loadEntry(
   name: BlockName,
   without?: { readonly from: string; readonly to: string },
+  globals: Record<string, unknown> = {},
 ): Record<string, Handler> {
   let source = readFileSync(
     join(repo, "src/blocks", name, "index.cts"),
@@ -63,6 +74,7 @@ export function loadEntry(
   const wrapped = runInNewContext(
     `(function (module, exports) {${transpiler.transformSync(source)}
 })`,
+    globals,
   ) as (module: unknown, exports: unknown) => void;
   wrapped(module, module.exports);
   return module.exports;
@@ -202,6 +214,123 @@ export function racing(
       } as StateRecord;
       records.set(key, record);
       return record;
+    },
+  };
+}
+
+/** Validate a value against one of a block's own schema files, as the runtime does. */
+export function blockSchema(
+  block: BlockName,
+  file: string,
+): (value: unknown) => string[] {
+  const base = `https://block.test/${block}/schemas/`;
+  const load = (name: string): SchemaObject => ({
+    ...(JSON.parse(
+      readFileSync(join(repo, "src/blocks", block, "schemas", name), "utf8"),
+    ) as SchemaObject),
+    $id: `${base}${name}`,
+  });
+  const registry = new SchemaRegistry([load("defs.json"), load(file)]);
+  return (value) =>
+    registry
+      .validate(`${base}${file}`, value)
+      .map(
+        (problem) => `${problem.pointer} ${problem.keyword} ${problem.message}`,
+      );
+}
+
+export interface Counts {
+  get: number;
+  put: number;
+  putMany: number;
+  puttedRecords: number;
+  list: number;
+  listedRecords: number;
+  events: number;
+}
+/** An in-memory state client that counts what the block asks of it. */
+export function memoryState(): ExtendedStateClient & {
+  readonly counts: Counts;
+} {
+  const records = new Map<string, StateRecord>();
+  const counts: Counts = {
+    get: 0,
+    put: 0,
+    putMany: 0,
+    puttedRecords: 0,
+    list: 0,
+    listedRecords: 0,
+    events: 0,
+  };
+  function write(key: string, value: unknown, expectRevision: number) {
+    const revision = (records.get(key)?.revision ?? 0) + 1;
+    if (revision - 1 !== expectRevision)
+      throw new ForgeFailure({
+        code: "REVISION_CONFLICT",
+        message: "stale",
+        retry: "reconcile_first",
+      });
+    const record = {
+      namespace: "forge/memory",
+      key,
+      revision,
+      value,
+      updatedAt: "2026-10-18T00:00:00Z",
+      updatedBy: { kind: "agent", id: "a" },
+    } as StateRecord;
+    records.set(key, record);
+    return record;
+  }
+  return {
+    counts,
+    get(key) {
+      counts.get += 1;
+      return records.get(key);
+    },
+    list(prefix = "") {
+      const found = [...records.values()].filter((record) =>
+        record.key.startsWith(prefix),
+      );
+      counts.list += 1;
+      counts.listedRecords += found.length;
+      return found;
+    },
+    listRange(options: RangeOptions) {
+      const found = [...records.values()]
+        .filter(
+          (record) =>
+            (options.from === undefined || record.key >= options.from) &&
+            (options.to === undefined || record.key < options.to),
+        )
+        .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+      if (options.descending === true) found.reverse();
+      const page = found.slice(0, options.limit);
+      counts.list += 1;
+      counts.listedRecords += page.length;
+      return page;
+    },
+    events() {
+      counts.events += 1;
+      return [];
+    },
+    put(key, value, options: PutOptions) {
+      counts.put += 1;
+      counts.puttedRecords += 1;
+      return write(key, value, options.expectRevision);
+    },
+    putMany(entries: readonly BatchEntry[]) {
+      counts.putMany += 1;
+      counts.puttedRecords += entries.length;
+      const before = new Map(records);
+      try {
+        return entries.map((entry) =>
+          write(entry.key, entry.value, entry.expectRevision),
+        );
+      } catch (error) {
+        records.clear();
+        for (const [key, record] of before) records.set(key, record);
+        throw error;
+      }
     },
   };
 }

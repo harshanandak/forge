@@ -16,7 +16,12 @@ import type {
   StateRecord,
 } from "../../generated/types.ts";
 import type { ClockPort } from "../../ports/clock.ts";
-import type { StateClient, PutOptions } from "../../ports/state.ts";
+import type {
+  BatchEntry,
+  ExtendedStateClient,
+  PutOptions,
+  RangeOptions,
+} from "../../ports/state.ts";
 import type { SqlDatabase, SqlRow } from "../../ports/store.ts";
 import type { Handle } from "../../ports/lifetime.ts";
 import { baseline, migrate, type Migration } from "./migrations.ts";
@@ -612,7 +617,7 @@ export class StateOwner {
     ]);
   }
 
-  client(namespace: string, actor: Actor): StateClient {
+  client(namespace: string, actor: Actor): ExtendedStateClient {
     namespaceValid(namespace);
     if (!validateActor(actor).ok) invalid("Invalid actor");
     const boundActor = Object.freeze(JSON.parse(json(actor)) as Actor);
@@ -620,7 +625,10 @@ export class StateOwner {
       get: (key: string) => this.get(namespace, key),
       put: (key: string, value: unknown, options: PutOptions) =>
         this.put(namespace, key, value, { ...boundActor }, options),
+      putMany: (entries: readonly BatchEntry[]) =>
+        this.putMany(namespace, entries, { ...boundActor }),
       list: (prefix?: string) => this.list(namespace, prefix),
+      listRange: (options: RangeOptions) => this.listRange(namespace, options),
       events: (key?: string) => this.events(namespace, key),
     });
   }
@@ -637,12 +645,40 @@ export class StateOwner {
   }
   list(namespace: string, prefix = ""): readonly StateRecord[] {
     namespaceValid(namespace);
+    // The prefix is a key range, so only those rows are read.
     return this.#db
-      .all("SELECT body FROM state_records WHERE namespace=? ORDER BY key", [
-        namespace,
-      ])
+      .all(
+        "SELECT body FROM state_records WHERE namespace=? AND key>=? AND key<? ORDER BY key",
+        [namespace, prefix, `${prefix}\u{10FFFF}`],
+      )
       .map((row) => body<StateRecord>(row)!)
       .filter((record) => record.key.startsWith(prefix));
+  }
+  /** One bounded page of records from a key range, in key order or reverse. */
+  listRange(namespace: string, options: RangeOptions): readonly StateRecord[] {
+    namespaceValid(namespace);
+    if (
+      !Number.isSafeInteger(options.limit) ||
+      options.limit < 1 ||
+      options.limit > 1000
+    )
+      invalid("Range limit must be an integer from 1 to 1000");
+    const bounds: string[] = [];
+    const params: string[] = [namespace];
+    if (options.from !== undefined) {
+      bounds.push("AND key>=?");
+      params.push(options.from);
+    }
+    if (options.to !== undefined) {
+      bounds.push("AND key<?");
+      params.push(options.to);
+    }
+    return this.#db
+      .all(
+        `SELECT body FROM state_records WHERE namespace=? ${bounds.join(" ")} ORDER BY key ${options.descending === true ? "DESC" : "ASC"} LIMIT ${options.limit}`,
+        params,
+      )
+      .map((row) => body<StateRecord>(row)!);
   }
   events(namespace: string, key?: string): readonly StateEvent[] {
     namespaceValid(namespace);
@@ -734,7 +770,56 @@ export class StateOwner {
     )
       invalid("Invalid actor or expected revision");
     const stored = JSON.parse(json(value)) as unknown;
-    return this.#db.transaction(() => {
+    return this.#db.transaction(() =>
+      this.#putRecord(namespace, key, stored, actor, options),
+    );
+  }
+
+  /** Write several records in one transaction; any failure leaves none of them written. */
+  putMany(
+    namespace: string,
+    entries: readonly BatchEntry[],
+    actor: Actor,
+  ): readonly StateRecord[] {
+    namespaceValid(namespace);
+    if (!validateActor(actor).ok) invalid("Invalid actor");
+    const keys = new Set<string>();
+    const prepared = entries.map((entry) => {
+      keyValid(entry.key);
+      if (
+        !Number.isSafeInteger(entry.expectRevision) ||
+        entry.expectRevision < 0 ||
+        keys.has(entry.key)
+      )
+        invalid("Invalid or repeated batch entry");
+      keys.add(entry.key);
+      return {
+        key: entry.key,
+        stored: JSON.parse(json(entry.value)) as unknown,
+        options: { expectRevision: entry.expectRevision },
+      };
+    });
+    return this.#db.transaction(() =>
+      prepared.map((entry) =>
+        this.#putRecord(
+          namespace,
+          entry.key,
+          entry.stored,
+          actor,
+          entry.options,
+        ),
+      ),
+    );
+  }
+
+  #putRecord(
+    namespace: string,
+    key: string,
+    stored: unknown,
+    actor: Actor,
+    options: WriteOptions,
+  ): StateRecord {
+    {
       const now = this.#now();
       if (options.fence) this.#held(namespace, options.fence, now);
       return this.#request(
@@ -792,7 +877,7 @@ export class StateOwner {
           return record;
         },
       );
-    });
+    }
   }
 
   acquire(
