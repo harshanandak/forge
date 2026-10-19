@@ -1,59 +1,125 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "properties": {
-    "format": {
-      "const": "forge.memory.export/2"
-    },
-    "level": {
-      "$ref": "defs.json#/$defs/Level",
-      "description": "The level the notes go back to: an export's own level."
-    },
-    "project": {
-      "$ref": "defs.json#/$defs/Project"
-    },
-    "count": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "truncated": {
-      "type": "boolean"
-    },
-    "next": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "notes": {
-      "type": "array",
-      "maxItems": 25,
-      "items": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "$ref": "defs.json#/$defs/NoteId"
-          },
-          "revision": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "scope": {
-            "$ref": "defs.json#/$defs/Scope"
-          },
-          "tags": {
-            "$ref": "defs.json#/$defs/Tags"
-          },
-          "links": {
-            "$ref": "defs.json#/$defs/Links"
-          },
-          "text": {
-            "$ref": "defs.json#/$defs/Untrusted"
-          }
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "forge.memory.export/2"
         },
-        "additionalProperties": false,
-        "required": ["id", "tags", "links", "text"]
-      }
+        "level": {
+          "$ref": "defs.json#/$defs/Level",
+          "description": "The level the notes go back to: an export's own level."
+        },
+        "project": {
+          "$ref": "defs.json#/$defs/Project"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "next": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "notes": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "defs.json#/$defs/NoteId"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "scope": {
+                "$ref": "defs.json#/$defs/Scope"
+              },
+              "tags": {
+                "$ref": "defs.json#/$defs/Tags"
+              },
+              "links": {
+                "$ref": "defs.json#/$defs/Links"
+              },
+              "text": {
+                "$ref": "defs.json#/$defs/Untrusted"
+              }
+            },
+            "additionalProperties": false,
+            "required": ["id", "tags", "links", "text"]
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": ["format", "level", "notes"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "forge.memory.export/1"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "next": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "notes": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^note-[0-9]{1,9}$",
+                "maxLength": 14
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "scope": {
+                "$ref": "defs.json#/$defs/Scope"
+              },
+              "tags": {
+                "$ref": "defs.json#/$defs/Tags"
+              },
+              "links": {
+                "type": "array",
+                "maxItems": 16,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^note-[0-9]{1,9}$",
+                  "maxLength": 14
+                }
+              },
+              "text": {
+                "$ref": "defs.json#/$defs/Untrusted"
+              }
+            },
+            "additionalProperties": false,
+            "required": ["id", "tags", "links", "text"]
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": ["format", "notes"],
+      "description": "An export written before notes had levels. Its notes are device notes."
     }
-  },
-  "additionalProperties": false,
-  "required": ["format", "level", "notes"]
+  ]
 }

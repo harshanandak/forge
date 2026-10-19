@@ -65,11 +65,12 @@ export function loadEntry(
     | { readonly from: string; readonly to: string }
     | readonly { readonly from: string; readonly to: string }[],
   globals: Record<string, unknown> = {},
+  /** Another version of the block's entry source, for upgrade tests. */
+  sourceOverride?: string,
 ): Record<string, Handler> {
-  let source = readFileSync(
-    join(repo, "src/blocks", name, "index.cts"),
-    "utf8",
-  );
+  let source =
+    sourceOverride ??
+    readFileSync(join(repo, "src/blocks", name, "index.cts"), "utf8");
   for (const fix of without === undefined
     ? []
     : "from" in without

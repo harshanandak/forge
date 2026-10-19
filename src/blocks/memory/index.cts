@@ -122,7 +122,9 @@ const MAX_VERSIONS = 5;
 const MAX_RETRIES = 8;
 const DEFAULT_LIMIT = 10;
 const SNIPPET_LENGTH = 200;
-const NOTE_REF = /^(device|project\/([0-9a-f]{16}))\/note-([0-9]{1,9})$/;
+// A bare note-N is a note written before notes had levels: every one of those is a device note.
+const NOTE_REF = /^(?:(device|project\/([0-9a-f]{16}))\/)?note-([0-9]{1,9})$/;
+const LEGACY_REF = /^note-[0-9]{1,9}$/;
 const STOPWORDS = new Set(
   "a an and are as at be but by do does for from how i if in is it its my of on or our so that the their then there these they this to was we were what when where which who why will with you your".split(
     " ",
@@ -189,6 +191,16 @@ function numberOf(record: StateRecord): number {
 }
 function idIn(source: Source, number: number): string {
   return `${source.prefix}/note-${number}`;
+}
+/**
+ * The one place an id from before levels is read: a bare note-N, stored in a link or given as
+ * input, is the device note of that number. Everything the block returns or writes is qualified.
+ */
+function qualified(id: string): string {
+  return LEGACY_REF.test(id) ? `device/${id}` : id;
+}
+function qualifiedLinks(links: readonly string[]): string[] {
+  return [...new Set(links.map(qualified))];
 }
 /** A note id split into where it lives and its number. */
 function parseRef(
@@ -396,7 +408,7 @@ function present(
     revision: record.revision,
     ...(value.scope === undefined ? {} : { scope: value.scope }),
     tags: [...value.tags],
-    links: [...value.links],
+    links: qualifiedLinks(value.links),
     ...(value.from === undefined ? {} : { from: value.from }),
     text: fence(text, `memory:${id}`, record.updatedAt),
     updatedAt: record.updatedAt,
@@ -500,24 +512,24 @@ module.exports = {
         text: input.text,
         ...(scope === undefined ? {} : { scope }),
         tags: input.tags ?? kept?.tags ?? [],
-        links: input.links ?? kept?.links ?? [],
+        links: qualifiedLinks(input.links ?? kept?.links ?? []),
         previous,
         ...(kept?.from === undefined ? {} : { from: kept.from }),
       };
     };
-    if (input.id !== undefined) {
+    const editing = input.id === undefined ? undefined : qualified(input.id);
+    if (editing !== undefined) {
       // The id says where the note lives; another project's notes are never changed from here.
-      const found = await sourceFor(services, input.id);
+      const found = await sourceFor(services, editing);
       if (unreached(found))
-        return { status: "not_found" as const, id: input.id };
+        return { status: "not_found" as const, id: editing };
       const { source, number } = found;
-      if (source.readOnly)
-        return { status: "read_only" as const, id: input.id };
+      if (source.readOnly) return { status: "read_only" as const, id: editing };
       const key = noteKey(number);
       const existing = source.state.get(key);
       const old = existing && (existing.value as NoteValue);
       if (!existing || !old || old.deleted === true)
-        return { status: "not_found" as const, id: input.id };
+        return { status: "not_found" as const, id: editing };
       const record = source.state.put(
         key,
         fields(
@@ -531,10 +543,10 @@ module.exports = {
       );
       return {
         status: "updated" as const,
-        id: input.id,
+        id: editing,
         note: present(
           source,
-          input.id,
+          editing,
           record,
           record.value as NoteValue,
           input.text,
@@ -761,7 +773,7 @@ module.exports = {
     input: { id: string; revision?: number };
     services: Services;
   }) => {
-    const found = await sourceFor(services, input.id);
+    const found = await sourceFor(services, qualified(input.id));
     if (unreached(found)) {
       if (found.status === "not_found") return { status: "not_found" as const };
       return { status: "unavailable" as const, project: found.ref };
@@ -779,7 +791,7 @@ module.exports = {
         status: "found" as const,
         note: present(
           source,
-          input.id,
+          qualified(input.id),
           record,
           value,
           value.text,
@@ -794,7 +806,7 @@ module.exports = {
       status: "found" as const,
       note: present(
         source,
-        input.id,
+        qualified(input.id),
         record,
         value,
         older.text,
@@ -810,19 +822,22 @@ module.exports = {
     input: { id: string; expectRevision?: number };
     services: Services;
   }) => {
-    const found = await sourceFor(services, input.id);
-    if (unreached(found)) return { status: "not_found" as const, id: input.id };
+    const found = await sourceFor(services, qualified(input.id));
+    if (unreached(found))
+      return { status: "not_found" as const, id: qualified(input.id) };
     const { source, number } = found;
-    if (source.readOnly) return { status: "read_only" as const, id: input.id };
+    if (source.readOnly)
+      return { status: "read_only" as const, id: qualified(input.id) };
     const key = noteKey(number);
     const existing = source.state.get(key);
-    if (!existing) return { status: "not_found" as const, id: input.id };
+    if (!existing)
+      return { status: "not_found" as const, id: qualified(input.id) };
     if ((existing.value as NoteValue).deleted === true)
-      return { status: "already_forgotten" as const, id: input.id };
+      return { status: "already_forgotten" as const, id: qualified(input.id) };
     source.state.put(key, TOMBSTONE, {
       expectRevision: input.expectRevision ?? existing.revision,
     });
-    return { status: "forgotten" as const, id: input.id };
+    return { status: "forgotten" as const, id: qualified(input.id) };
   },
 
   "memory.move": async ({
@@ -832,43 +847,46 @@ module.exports = {
     input: { id: string; to: Level; expectRevision: number; keep?: boolean };
     services: Services;
   }) => {
-    const found = await sourceFor(services, input.id);
-    if (unreached(found)) return { status: "not_found" as const, id: input.id };
+    const found = await sourceFor(services, qualified(input.id));
+    if (unreached(found))
+      return { status: "not_found" as const, id: qualified(input.id) };
     const { source, number } = found;
-    if (source.readOnly) return { status: "read_only" as const, id: input.id };
+    if (source.readOnly)
+      return { status: "read_only" as const, id: qualified(input.id) };
     if (source.level === input.to)
-      return { status: "same_level" as const, id: input.id };
+      return { status: "same_level" as const, id: qualified(input.id) };
     const key = noteKey(number);
     const existing = source.state.get(key);
-    if (!existing) return { status: "not_found" as const, id: input.id };
+    if (!existing)
+      return { status: "not_found" as const, id: qualified(input.id) };
     const value = existing.value as NoteValue;
     // A finished move answers the same way every time it is repeated.
     if (value.deleted === true)
       return value.movedTo === undefined
-        ? { status: "forgotten" as const, id: input.id }
+        ? { status: "forgotten" as const, id: qualified(input.id) }
         : {
             status: "moved" as const,
-            id: input.id,
+            id: qualified(input.id),
             to: value.movedTo,
-            transfer: input.id,
+            transfer: qualified(input.id),
           };
     if (existing.revision !== input.expectRevision)
       fail(
         "REVISION_CONFLICT",
-        `${input.id} is at revision ${existing.revision}; read it again and move that revision`,
+        `${qualified(input.id)} is at revision ${existing.revision}; read it again and move that revision`,
       );
     const target = await writeTarget(services, input.to);
     // The source's id is the transfer's identity. The destination records it beside the copy in
     // the same transaction, so a retry after a failure between the two stores finds the copy it
     // already made instead of making another.
-    const marker = `${TRANSFER_PREFIX}${input.id}`;
+    const marker = `${TRANSFER_PREFIX}${qualified(input.id)}`;
     const copy: NoteValue = {
       text: value.text,
       ...(value.scope === undefined ? {} : { scope: value.scope }),
       tags: value.tags,
-      links: value.links,
+      links: qualifiedLinks(value.links),
       previous: [],
-      from: input.id,
+      from: qualified(input.id),
     };
     // The transfer record names the copy and the revisions it was made at: the copy's own revision
     // and the source revision it was taken from. The copy and its record commit together, so a
@@ -890,7 +908,7 @@ module.exports = {
               (live && recorded.sourceRevision === existing.revision)
               ? { at, settled: true }
               : {
-                  conflict: `${idIn(target, at)} changed after ${input.id} was copied there; nothing was written`,
+                  conflict: `${idIn(target, at)} changed after ${qualified(input.id)} was copied there; nothing was written`,
                 };
           }
           // The copy is as the transfer left it and already holds this revision of the source.
@@ -932,9 +950,9 @@ module.exports = {
     if (input.keep === true)
       return {
         status: "copied" as const,
-        id: input.id,
+        id: qualified(input.id),
         to,
-        transfer: input.id,
+        transfer: qualified(input.id),
       };
     // Retiring the source comes last: until it commits, the source still holds the note.
     source.state.put(
@@ -942,7 +960,12 @@ module.exports = {
       { ...TOMBSTONE, movedTo: to },
       { expectRevision: existing.revision },
     );
-    return { status: "moved" as const, id: input.id, to, transfer: input.id };
+    return {
+      status: "moved" as const,
+      id: qualified(input.id),
+      to,
+      transfer: qualified(input.id),
+    };
   },
 
   "memory.export": async ({
@@ -1016,7 +1039,7 @@ module.exports = {
         revision: note.record.revision,
         ...(note.value.scope === undefined ? {} : { scope: note.value.scope }),
         tags: [...note.value.tags],
-        links: [...note.value.links],
+        links: qualifiedLinks(note.value.links),
         text: {
           kind: "untrusted" as const,
           source: `memory:${note.id}`,
@@ -1031,7 +1054,8 @@ module.exports = {
     services,
   }: {
     input: {
-      level: Level;
+      format: "forge.memory.export/1" | "forge.memory.export/2";
+      level?: Level;
       notes: readonly {
         id: string;
         scope?: string;
@@ -1043,8 +1067,12 @@ module.exports = {
     services: Services;
   }) => {
     // Notes go back to the level they were exported from, in the store this call reaches: the
-    // device, or the caller's own project.
-    const target = await writeTarget(services, input.level);
+    // device, or the caller's own project. An export from before levels holds device notes.
+    const level: Level =
+      input.format === "forge.memory.export/1"
+        ? "device"
+        : (input.level ?? "device");
+    const target = await writeTarget(services, level);
     const { state } = target;
     // One transaction for the whole page and the counter that must stay ahead of it.
     return committed(() => {
@@ -1055,8 +1083,8 @@ module.exports = {
       let highest = 0;
       for (const note of input.notes) {
         const ref = parseRef(note.id);
-        if (!ref || ref.level !== input.level) {
-          conflicts.push(note.id);
+        if (!ref || ref.level !== level) {
+          conflicts.push(qualified(note.id));
           continue;
         }
         const key = noteKey(ref.number);
@@ -1080,7 +1108,7 @@ module.exports = {
             text: note.text.text,
             ...(note.scope === undefined ? {} : { scope: note.scope }),
             tags: note.tags,
-            links: note.links,
+            links: qualifiedLinks(note.links),
             previous: [],
           },
           expectRevision: 0,

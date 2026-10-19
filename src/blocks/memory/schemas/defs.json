@@ -220,6 +220,20 @@
       "additionalProperties": false,
       "required": ["ref", "status"],
       "description": "A named project that was not read: unknown on this device, its folder moved or no longer holds it, or the name fits several projects (use an id)."
+    },
+    "NoteRef": {
+      "type": "string",
+      "pattern": "^(?:(?:device|project/[0-9a-f]{16})/)?note-[0-9]{1,9}$",
+      "maxLength": 40,
+      "description": "A note id as input. A bare note-3 is a device note, as ids were before notes had levels; every output id is qualified."
+    },
+    "LinkRefs": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "defs.json#/$defs/NoteRef"
+      }
     }
   }
 }

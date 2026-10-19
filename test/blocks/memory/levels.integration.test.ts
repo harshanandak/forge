@@ -1,9 +1,15 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { createAssembly } from "../../../src/assembly/index.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
-import { done, openHarness, type Harness } from "./lib.ts";
+import {
+  done,
+  loadEntry,
+  memoryState,
+  openHarness,
+  type Harness,
+} from "./lib.ts";
 
 // Level journeys on real stores, in the serial integration lane. The projects are opened once and
 // shared: every test uses its own words and asserts on the ids its own calls return, so no test
@@ -407,4 +413,55 @@ test("integration: a search cursor walks every level together and refuses a diff
     ),
   );
   expect(mismatched.code).toBe("INPUT_INVALID");
+}, 60_000);
+
+test("integration: a backup made by main's memory block restores through the runtime and reads back by its old ids", async () => {
+  const main = loadEntry(
+    "memory",
+    undefined,
+    {},
+    readFileSync(
+      join(
+        import.meta.dirname,
+        "../../node-fixtures/memory/main-memory-entry.cts.txt",
+      ),
+      "utf8",
+    ),
+  );
+  const old = memoryState();
+  await main["memory.add"]!({
+    input: { text: "the grebe runbook" },
+    services: { state: old },
+  });
+  await main["memory.add"]!({
+    input: { text: "grebe steps", links: ["note-1"] },
+    services: { state: old },
+  });
+  const backup = JSON.parse(
+    JSON.stringify(
+      await main["memory.export"]!({ input: {}, services: { state: old } }),
+    ),
+  ) as unknown;
+  const fresh = await openHarness(["memory"], POLICY, { project: "legacy" });
+  try {
+    expect(done(await fresh.call("memory.restore", backup))).toEqual({
+      added: 2,
+      skipped: 0,
+      conflicts: [],
+    });
+    const shown = done(
+      await fresh.call("memory.show", { id: "note-2" }, agent),
+    ) as { note: Note & { links: string[] } };
+    expect(shown.note).toMatchObject({
+      id: "device/note-2",
+      level: "device",
+      links: ["device/note-1"],
+    });
+    const exported = done(
+      await fresh.call("memory.export", { level: "device" }, agent),
+    ) as { notes: { links: string[] }[] };
+    expect(exported.notes[1]!.links).toEqual(["device/note-1"]);
+  } finally {
+    await fresh.close();
+  }
 }, 60_000);
