@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -84,6 +85,15 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
     }
     const installed = join(consumer, "node_modules/forge-workflow");
     const fixture = join(import.meta.dirname, "journeys.mjs");
+    console.log(
+      success(
+        run(
+          node,
+          [join(import.meta.dirname, "surfaces.mjs"), installed],
+          consumer,
+        ),
+      ),
+    );
     const report = JSON.parse(
       success(run(node, [fixture, installed], consumer)),
     ) as {
@@ -91,6 +101,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       ecosystem: { passed: string[]; skipped: string[] };
     };
     expect(report.passed).toEqual([
+      "cancellation",
       "handler",
       "unknown",
       "zero",
@@ -110,6 +121,11 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       recursive: true,
       filter: (path) => !path.endsWith(".map") && !path.endsWith(".ts"),
     });
+    symlinkSync(
+      join(consumer, "node_modules"),
+      join(isolated, "node_modules"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
     const leg = process.env.STATE_NODE_LEG;
     if (leg !== undefined && leg !== "24" && leg !== "26")
       throw new Error("STATE_NODE_LEG must be 24 or 26");
@@ -124,7 +140,9 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       try {
         const result = run(
           node,
-          [fixture, isolated, mutation.journey],
+          mutation.journey === "surfaces"
+            ? [join(import.meta.dirname, "surfaces.mjs"), isolated]
+            : [fixture, isolated, mutation.journey],
           consumer,
         );
         expect(result.error).toBeUndefined();

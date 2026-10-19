@@ -1,26 +1,26 @@
 import type { ProcessPort } from "../../ports/process.ts";
 import type { ClockPort } from "../../ports/clock.ts";
 import type { StateClient } from "../../ports/state.ts";
+import type { RunnerOutputPort } from "../../ports/runner-output.ts";
+export type {
+  RunnerOutputPort,
+  OutputReport,
+} from "../../ports/runner-output.ts";
 
 export type CheckStatus = "PASS" | "FAIL" | "INCOMPLETE" | "NOT_EXECUTED";
-export interface OutputReport {
-  readonly kind: "recognized" | "unknown" | "malformed";
-  readonly testCount: number | null;
-  readonly failed: number | null;
-  readonly detail: string;
-}
-/** The block knows outcomes; adapters know report formats. */
-export interface RunnerOutputPort {
-  parse(stdout: string, stderr: string, report: "auto" | "json"): OutputReport;
-}
 export interface CommandDeclaration {
   readonly argv: readonly string[];
-  readonly report?: "auto" | "json";
+  readonly report?: "auto" | "json" | "exit-code";
 }
 export interface CheckConfig {
   readonly commands: Readonly<Record<string, string | CommandDeclaration>>;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
+  readonly report: "auto" | "json" | "exit-code";
+  readonly stopOnFailure: boolean;
+  readonly inputs: readonly string[];
+  readonly maxInputBytes: number;
+  readonly environment: readonly string[];
 }
 export interface RunInput {
   readonly checks?: readonly string[];

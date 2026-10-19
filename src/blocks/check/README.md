@@ -7,8 +7,8 @@ project-owned script and invoke it, or use `{ argv: [...] }`. The engine never c
 a package manager, runner or lint command. Detection observations already populate
 `/blocks/check/config/commands`; explicit project config can override them.
 
-`run({ checks?, trigger? }, config)` executes declared checks in order and stops after
-the first result that does not pass. Remaining requested checks are `NOT_EXECUTED`.
+`run({ checks?, trigger? }, config)` executes declared checks in order. When the declared
+`stopOnFailure` is true, the first non-passing result leaves later checks `NOT_EXECUTED`.
 `list(config)` lists declarations; `show(id)` reads and verifies a stored receipt.
 Reads do not start commands or create state. State writes use the bound `StateClient`.
 
@@ -35,21 +35,39 @@ an unknown count. Malformed reports, killed processes and truncated output are i
 Timeout results retain captured output. The process adapter owns termination and tree
 cleanup. The runner-output adapter recognizes report formats and imports no runner package.
 
-## Pending async integration
+## Catalog services and configuration
 
-Async handlers for all blocks are owner-approved (tracking `51f33320`) and are being
-implemented in PR #27. The handlers here prepare for that single value-or-Promise ABI,
-including its signal and deadline, without editing the contract. Once it merges, merge
-the fetched main branch normally, add one entry to the first-party registry introduced
-by PR #23, and wire invocation-scoped services through the catalog for CLI/MCP parity.
-No parallel registry, alternate execution profile, or special CLI path is introduced.
+The first-party registration makes `check.run`, `check.list`, and `check.show` discoverable
+through the generated CLI and MCP. The captured `entry.cjs` contains the engine, command
+parser and receipt checks. It imports no runtime code. The host supplies the declared
+`process`, `files`, `environment`, `crypto`, `output` and `state` slots. The same pure
+engine is available to native embeddings through `createCheck`; it is not a second surface.
 
-Node acceptance fixtures exercise the packed, installed engine and real state owner.
-An embedding that already owns a fresh packed install can set `CHECK_PACKED_CONSUMER`
-to that consumer directory; the check fixture reads its base package and mutates only
-private copies. Shared CI wiring is tracked separately (`92574980`).
-Run the normal pack smoke first when running the packed check fixture alone. The full
-suite's earlier packed slice also seeds the package installer cache. This additional
-install is offline so it verifies the artifact without repeating registry requests.
-Optional ecosystem tools are checked before use and report an explicit skip reason when
-missing. Their local installations are test-only and are never shipped as dependencies.
+The shared process service enforces `external:process`. The run declaration also names
+`external:write`, `process:write`, `files:read`, `environment:read`, and `check:write`.
+Each call still needs human admission and effect grants. The runtime scopes and revokes
+services, owns cancellation, and drains the process tree before returning. The block
+starts no timer, supervisor, cache or persistent process.
+
+Every team choice is explicit configuration: `commands`, `timeoutMs`, `maxOutputBytes`,
+`report`, `stopOnFailure`, `inputs`, `maxInputBytes`, and `environment`. A command can
+select its own `report`; otherwise it uses the declared block report. `exit-code` disables
+report interpretation, `json` requires a structured report, and `auto` delegates recognition
+to the replaceable output adapter. No particular command, parser mode or stop policy is
+selected by the engine. The ordinary instance `operationTimeouts` map overrides the
+manifest's operation budgets; command timeouts remain bounded by that invocation deadline.
+
+Safety ceilings: 256 named checks (names 1?200 characters), 1024 arguments per command,
+1?2147483647 ms per command, and 1?262144 bytes per output stream. Input configuration
+selects at most 1024 paths, a 1?67108864 byte aggregate snapshot budget, and at most
+256 explicit environment names. Missing selected variables are omitted. The child inherits
+nothing else. The snapshot provider reads exact selected file bytes (including dirty and
+untracked selected inputs) and HEAD. It refuses escapes, unsafe file types and over-budget
+snapshots rather than returning partial evidence. Select inputs deliberately: command
+outputs and Forge state should not be inputs unless a changed-input result is intended.
+
+Packed fixtures run the installed engine and generated surfaces on Node. A fresh shared
+packed consumer may be passed as `CHECK_PACKED_CONSUMER`; all counterfactuals mutate only
+private copies. `CHECK_ECOSYSTEM_TOOLS` and `CHECK_PYTHON_PACKAGES` optionally select
+external test-only tool installations. Missing ecosystem executables are explicit skips,
+never simulated passes. The Make fixture requires actual recipe output.

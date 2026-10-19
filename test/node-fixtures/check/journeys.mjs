@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  readFileSync,
+  mkdtempSync,
+  rmSync,
+  watchFile,
+  unwatchFile,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -20,7 +27,7 @@ const { detectProject, createFolderFiles } = await load(
   "blocks/project/index.js",
 );
 const child = fileURLToPath(new URL("child.mjs", import.meta.url));
-const directory = mkdtempSync(join(tmpdir(), "check-journey-"));
+const directory = realpathSync(mkdtempSync(join(tmpdir(), "check-journey-")));
 const opened = await sqliteStore.open({
   path: mode === "all" ? join(directory, "state.sqlite") : ":memory:",
   readOnly: false,
@@ -55,7 +62,14 @@ const services = {
       "sha256:" +
       createHash("sha256").update(readFileSync(child)).digest("hex"),
   }),
-  process: createProcessPort(),
+  process: createProcessPort({
+    supervision: {
+      cleanupTimeoutMs: 5000,
+      pollIntervalMs: 25,
+      drainTimeoutMs: 250,
+      maxConcurrent: 1,
+    },
+  }),
   output: createRunnerOutput(),
 };
 const check = createCheck(services);
@@ -63,8 +77,69 @@ const config = (name, timeoutMs = 3000) => ({
   commands: { test: { argv: [process.execPath, child, name] } },
   timeoutMs,
   maxOutputBytes: 8192,
+  report: "auto",
+  stopOnFailure: true,
+  inputs: [],
+  maxInputBytes: 1048576,
+  environment: [],
 });
 const cases = {
+  async cancellation() {
+    const controller = new AbortController();
+    const marker = join(directory, "cancel-ready.json");
+    let observed;
+    let launches = 0;
+    watchFile(marker, { interval: 25, persistent: false }, (info) => {
+      if (info.size > 0) controller.abort();
+    });
+    try {
+      const command = { argv: [process.execPath, child, "cancel", marker] };
+      await assert.rejects(
+        operations["check.run"]({
+          input: {},
+          config: {
+            ...config("unknown", 3000),
+            commands: { first: command, second: command },
+          },
+          signal: controller.signal,
+          deadline: Date.now() + 10000,
+          services: {
+            ...services,
+            process: {
+              ...services.process,
+              async run(...args) {
+                launches++;
+                observed = await services.process.run(...args);
+                return observed;
+              },
+            },
+          },
+        }),
+        /INVOCATION_CANCELLED/,
+        "actual process cancellation rejects the handler",
+      );
+      assert.equal(
+        observed.timedOut,
+        false,
+        "cancellation stops the tree before command timeout",
+      );
+      assert.match(
+        observed.stdout,
+        /output before timeout/,
+        "cancellation retains output",
+      );
+      assert.equal(launches, 1, "cancellation starts no subsequent check");
+      const pids = JSON.parse(readFileSync(marker, "utf8"));
+      for (const pid of Object.values(pids))
+        assert.throws(
+          () => process.kill(pid, 0),
+          "cancellation stops every marked process",
+        );
+      assert.equal(state.list().length, 0, "cancellation persists no receipt");
+    } finally {
+      unwatchFile(marker);
+    }
+  },
   async handler() {
     const controller = new AbortController();
     const args = {

@@ -12,6 +12,7 @@ import type {
 import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts";
 import type { StateRecord } from "../../../src/generated/types.ts";
 import { operations } from "../../../src/blocks/check/operations.ts";
+import { hash } from "../../../src/blocks/check/receipt.ts";
 
 function fixture(result: Partial<ProcessResult> = {}) {
   const records = new Map<string, StateRecord>();
@@ -27,6 +28,7 @@ function fixture(result: Partial<ProcessResult> = {}) {
       }),
     output: createRunnerOutput(),
     process: {
+      capability: "forge.process/v1",
       resolve: (path) => ({ kind: "resolved", path }),
       run(
         _executable: ResolvedExecutable,
@@ -70,7 +72,34 @@ const config = {
   commands: { test: "declared-tool test" },
   timeoutMs: 1000,
   maxOutputBytes: 8192,
+  report: "auto" as const,
+  stopOnFailure: true,
+  inputs: [],
+  maxInputBytes: 1048576,
+  environment: [],
 };
+
+test("report parsing and stop behavior are declared choices", async () => {
+  const { check, environments } = fixture({ stdout: "Tests: 0 total" });
+  const receipt = await check.run(
+    {},
+    {
+      ...config,
+      report: "exit-code",
+      commands: { first: "a", second: "b" },
+      stopOnFailure: false,
+    },
+  );
+  expect(receipt.status).toBe("PASS");
+  expect(receipt.runs.map((run) => run.testCount)).toEqual([null, null]);
+  expect(environments).toHaveLength(2);
+  const failed = fixture({ exitCode: 1 });
+  await failed.check.run(
+    {},
+    { ...config, commands: { first: "a", second: "b" }, stopOnFailure: false },
+  );
+  expect(failed.environments).toHaveLength(2);
+}, 1000);
 
 test("recognized zero tests fail; unknown output uses the exit code and unknown count", async () => {
   expect(
@@ -136,6 +165,18 @@ test("receipts bind exact inputs and their content; stored evidence is verified 
   const record = records.get(`runs/${receipt.id}`)!;
   records.set(record.key, { ...record, value: { ...receipt, status: "FAIL" } });
   expect(() => check.show(receipt.id)).toThrow("integrity");
+}, 1000);
+
+test("receipt enum validation rejects coercible values even with a matching content digest", async () => {
+  const receipt = await fixture().check.run({}, config);
+  const { digest: _digest, ...body } = receipt;
+  const malformed = { ...body, status: ["PASS"] };
+  expect(
+    verifyReceipt(
+      { ...malformed, digest: hash(malformed) },
+      receipt.inputsDigest,
+    ),
+  ).toBe(false);
 }, 1000);
 
 test("command, head, environment, budgets and trigger each change the input binding", async () => {

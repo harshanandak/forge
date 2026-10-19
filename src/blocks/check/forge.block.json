@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/check",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "configSchema": "schemas/config.json",
+  "nouns": {
+    "check": {
+      "interface": "1.0.0"
+    }
+  },
+  "requires": [
+    {
+      "slot": "state",
+      "interface": "forge.state@^1.0.0"
+    },
+    {
+      "slot": "process",
+      "interface": "forge.process@^1.0.0"
+    },
+    {
+      "slot": "files",
+      "interface": "forge.files@^1.0.0"
+    },
+    {
+      "slot": "environment",
+      "interface": "forge.environment@^1.0.0"
+    },
+    {
+      "slot": "crypto",
+      "interface": "forge.crypto@^1.0.0"
+    },
+    {
+      "slot": "output",
+      "interface": "forge.runner-output@^1.0.0"
+    }
+  ],
+  "operations": {
+    "check.run": {
+      "input": "schemas/run.input.json",
+      "output": "schemas/run.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": [
+        "check:write",
+        "process:write",
+        "external:process",
+        "external:write",
+        "files:read",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
+    "check.list": {
+      "input": "schemas/list.input.json",
+      "output": "schemas/list.output.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": [],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
+    "check.show": {
+      "input": "schemas/show.input.json",
+      "output": "schemas/show.output.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": [],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental",
+      "args": ["id"]
+    }
+  },
+  "docs": "docs.json",
+  "files": ["schemas/receipt.json"]
+}

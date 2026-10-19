@@ -14,17 +14,19 @@ export async function ecosystems({
 }) {
   const passed = [],
     skipped = [];
+  const toolsRoot =
+    process.env.CHECK_ECOSYSTEM_TOOLS ??
+    fileURLToPath(new URL("local-tools/", import.meta.url));
   const pythonPackages = fileURLToPath(
     new URL("local-tools/node_modules/.python-packages", import.meta.url),
   );
-  if (existsSync(pythonPackages))
+  const pythonPath = process.env.CHECK_PYTHON_PACKAGES ?? pythonPackages;
+  if (existsSync(pythonPath))
     services = {
       ...services,
-      environment: { ...services.environment, PYTHONPATH: pythonPackages },
+      environment: { ...services.environment, PYTHONPATH: pythonPath },
     };
-  const local = createRequire(
-    new URL("local-tools/package.json", import.meta.url),
-  );
+  const local = createRequire(join(toolsRoot, "package.json"));
   const modules = (name) => {
     try {
       return dirname(local.resolve(`${name}/package.json`));
@@ -56,7 +58,16 @@ export async function ecosystems({
     const check = createCheck({ ...services, root });
     const receipt = await check.run(
       {},
-      { commands: { test: command }, timeoutMs: 10000, maxOutputBytes: 32768 },
+      {
+        commands: { test: command },
+        timeoutMs: 10000,
+        maxOutputBytes: 32768,
+        report: "auto",
+        stopOnFailure: true,
+        inputs: [],
+        maxInputBytes: 1048576,
+        environment: [],
+      },
     );
     assert.equal(
       receipt.status,
@@ -65,6 +76,12 @@ export async function ecosystems({
     );
     if (name !== "make")
       assert.equal(receipt.runs[0].testCount, 1, `${name} real test count`);
+    else
+      assert.match(
+        receipt.runs[0].stdout,
+        /declared-project-check/,
+        "real Makefile recipe executed",
+      );
     assert.equal(
       (
         await check.run(
@@ -73,6 +90,11 @@ export async function ecosystems({
             commands: { test: command },
             timeoutMs: 1000,
             maxOutputBytes: 8192,
+            report: "auto",
+            stopOnFailure: true,
+            inputs: [],
+            maxInputBytes: 1048576,
+            environment: [],
           },
         )
       ).status,
@@ -119,7 +141,6 @@ export async function ecosystems({
       {
         "package.json": JSON.stringify({
           name: "declared-project",
-          packageManager: "pnpm@10.0.0",
           scripts: {
             test: `node ${JSON.stringify(join(jest, "bin/jest.js"))} --runInBand`,
           },
@@ -130,6 +151,7 @@ export async function ecosystems({
         }),
         "example.test.cjs":
           "test('declared test', () => expect(1 + 1).toBe(2));",
+        "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
       },
       undefined,
       ["pnpm"],
@@ -164,7 +186,9 @@ export async function ecosystems({
   }
   await run(
     "make",
-    { Makefile: "test:\n\t@echo declared-project-check\n" },
+    {
+      Makefile: `test:\n\t@"${process.execPath.replaceAll("\\", "/")}" -e "console.log('declared-project-check')"\n`,
+    },
     undefined,
     ["make"],
   );

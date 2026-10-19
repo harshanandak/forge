@@ -1,7 +1,7 @@
 import type {
   OutputReport,
   RunnerOutputPort,
-} from "../../blocks/check/types.ts";
+} from "../../ports/runner-output.ts";
 import { stripVTControlCharacters } from "node:util";
 
 const unknown: OutputReport = {
@@ -50,6 +50,7 @@ function jsonReport(text: string): OutputReport {
 export function createRunnerOutput(): RunnerOutputPort {
   return {
     parse(stdout, stderr, format) {
+      if (format === "exit-code") return unknown;
       const text = stripVTControlCharacters(`${stdout}\n${stderr}`);
       const trimmed = stdout.trim();
       if (
