@@ -28,8 +28,28 @@ const { LocalState } = await import(
 const bin = fileURLToPath(new URL("dist/bin/forge.js", packageUrl));
 const mode = process.argv[2] ?? "all";
 const work = mkdtempSync(join(process.cwd(), "review-two-"));
+let cliCalls = 0;
+let cliTime = 0;
+function spawnCli(args, options) {
+  const started = performance.now();
+  try {
+    return spawnSync(process.execPath, [bin, ...args], options);
+  } finally {
+    cliCalls++;
+    cliTime += performance.now() - started;
+  }
+}
+function phase(name) {
+  const started = performance.now();
+  const calls = cliCalls;
+  const time = cliTime;
+  return () =>
+    console.log(
+      `Second review ${name}: ${Math.round(performance.now() - started)} ms; ${cliCalls - calls} CLI calls, ${Math.round(cliTime - time)} ms in CLI`,
+    );
+}
 function cli(root, args, expected = 0) {
-  const result = spawnSync(process.execPath, [bin, ...args], {
+  const result = spawnCli(args, {
     cwd: root,
     env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
     encoding: "utf8",
@@ -434,14 +454,18 @@ async function declaredDeadline() {
 }
 try {
   if (["all", "deadline"].includes(mode)) await declaredDeadline();
-  if (["all", "directories", "directory-retry"].includes(mode))
+  if (["all", "directories", "directory-retry"].includes(mode)) {
+    const finished = phase("directories");
     await directories();
+    finished();
+  }
   if (mode === "all" || mode === "bootstrap") {
+    const finished = phase("bootstrap");
     const root = join(work, "bootstrap");
     mkdirSync(join(root, "device/trust.sqlite"), { recursive: true });
     const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") };
     for (const flag of ["--version", "-v"]) {
-      const result = spawnSync(process.execPath, [bin, flag], {
+      const result = spawnCli([flag], {
         cwd: root,
         env,
         encoding: "utf8",
@@ -452,7 +476,7 @@ try {
       assert.match(result.stdout, /^\d+\.\d+\.\d+[^\r\n]*\r?\n$/);
       assert.equal(result.stderr, "");
     }
-    const result = spawnSync(process.execPath, [bin, "config", "show"], {
+    const result = spawnCli(["config", "show"], {
       cwd: root,
       env,
       encoding: "utf8",
@@ -475,8 +499,10 @@ try {
     console.log(
       "PASS bootstrap: typed JSON failure and state-independent version",
     );
+    finished();
   }
   if (mode === "all" || mode === "implicit-bindings") {
+    const finished = phase("implicit-bindings");
     for (const order of ["unbound", "provider-first", "consumer-first"]) {
       const root = join(work, order);
       mkdirSync(root);
@@ -544,8 +570,10 @@ try {
     console.log(
       "PASS implicit-bindings: resolved optional providers checked in both config orders",
     );
+    finished();
   }
   if (["all", "per-block", "bad-docs"].includes(mode)) {
+    const finished = phase("per-block");
     for (const [name, breakBlock] of cases.filter(
       ([name]) => mode !== "bad-docs" || name === "invalid-docs",
     )) {
@@ -614,8 +642,10 @@ try {
     console.log(
       "PASS per-block: nine source, manifest, docs, config and capture failure kinds remain repairable",
     );
+    finished();
   }
   if (mode === "all" || mode === "bindings") {
+    const finished = phase("bindings");
     const root = join(work, "bindings");
     mkdirSync(root);
     writeFileSync(
@@ -765,8 +795,13 @@ try {
     console.log(
       "PASS bindings: every advertised operation has required slots; device and project owners are isolated; unsupported contexts are refused",
     );
+    finished();
   }
-  if (mode === "all" || mode === "lifetime") await lifetime();
+  if (mode === "all" || mode === "lifetime") {
+    const finished = phase("lifetime");
+    await lifetime();
+    finished();
+  }
 } finally {
   rmSync(work, { recursive: true, force: true });
 }
