@@ -9,17 +9,27 @@
       "description": "What to remember."
     },
     "scope": {
-      "$ref": "defs.json#/$defs/Scope"
+      "anyOf": [
+        {
+          "$ref": "defs.json#/$defs/Scope"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "A label that groups notes. On an edit, leave it out to keep the stored scope, or send null to clear it."
     },
     "tags": {
-      "$ref": "defs.json#/$defs/Tags"
+      "$ref": "defs.json#/$defs/Tags",
+      "description": "On an edit, leave out to keep the stored tags, or send [] to clear them."
     },
     "links": {
-      "$ref": "defs.json#/$defs/Links"
+      "$ref": "defs.json#/$defs/Links",
+      "description": "On an edit, leave out to keep the stored links, or send [] to clear them."
     },
     "id": {
       "$ref": "defs.json#/$defs/NoteId",
-      "description": "Edit this note instead of adding a new one."
+      "description": "Edit this note instead of adding a new one. An edit changes only the fields you send."
     },
     "expectRevision": {
       "type": "integer",

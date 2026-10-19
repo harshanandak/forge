@@ -4,7 +4,7 @@
     "memory.add": {
       "title": "Remember a note",
       "summary": "Save a note to the device store, or edit one you have read.",
-      "description": "Notes live on this device and need no project or issue store. Give scope and tags to group them. With id and expectRevision the note is edited and the earlier text is kept as a version.",
+      "description": "Notes live on this device and need no project or issue store. Give scope and tags to group them. With id and expectRevision the note is edited and the earlier text is kept as a version. An edit is a partial update: scope, tags and links you leave out keep their stored values; clear the scope with null and tags or links with [] (send JSON, for example with --input).",
       "examples": [
         {
           "input": {

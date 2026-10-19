@@ -31,7 +31,8 @@ interface NoteValue {
 }
 interface NoteFields {
   readonly text: string;
-  readonly scope?: string;
+  /** On an edit, null clears the scope and absent keeps it. */
+  readonly scope?: string | null;
   readonly tags?: readonly string[];
   readonly links?: readonly string[];
 }
@@ -260,13 +261,22 @@ module.exports = {
     services: Services;
   }) => {
     const { state } = services;
-    const fields = (previous: readonly Version[]): NoteValue => ({
-      text: input.text,
-      ...(input.scope === undefined ? {} : { scope: input.scope }),
-      tags: input.tags ?? [],
-      links: input.links ?? [],
-      previous,
-    });
+    // An edit is a partial update: a field left out keeps its stored value, and clearing is said
+    // outright (null for the scope, an empty list for tags or links). A new note has nothing to keep.
+    const fields = (
+      previous: readonly Version[],
+      kept?: NoteValue,
+    ): NoteValue => {
+      const scope =
+        input.scope === undefined ? kept?.scope : (input.scope ?? undefined);
+      return {
+        text: input.text,
+        ...(scope === undefined ? {} : { scope }),
+        tags: input.tags ?? kept?.tags ?? [],
+        links: input.links ?? kept?.links ?? [],
+        previous,
+      };
+    };
     if (input.id !== undefined) {
       const key = noteKey(input.id);
       const existing = state.get(key);
@@ -280,6 +290,7 @@ module.exports = {
             ...old.previous,
             { revision: existing.revision, text: old.text },
           ].slice(-MAX_VERSIONS),
+          old,
         ),
         { expectRevision: input.expectRevision ?? existing.revision },
       );

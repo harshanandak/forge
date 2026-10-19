@@ -499,3 +499,104 @@ test("without the retry the same lost race surfaces as a failed write", () => {
     entry["memory.add"]!({ input: { text: "mine" }, services: { state } }),
   ).toThrow(/REVISION_CONFLICT/);
 }, 30_000);
+
+interface Meta {
+  status: string;
+  note: { scope?: string; tags: string[]; links: string[]; text: Fenced };
+}
+
+test("an edit is a partial update: omitted metadata is kept, and clearing is explicit", async () => {
+  const { h, agent } = await open();
+  done(await h.call("memory.add", { text: "linked target" }, agent));
+  done(
+    await h.call(
+      "memory.add",
+      {
+        text: "release notes live in the wiki",
+        scope: "repo:forge",
+        tags: ["release", "docs"],
+        links: ["note-1"],
+      },
+      agent,
+    ),
+  );
+  const shown = async () =>
+    (done(await h.call("memory.show", { id: "note-2" }, agent)) as Meta).note;
+  const found = async (extra: Record<string, unknown>) =>
+    (
+      done(
+        await h.call("memory.search", { query: "wiki", ...extra }, agent),
+      ) as { hits: unknown[] }
+    ).hits.length;
+
+  // A text-only edit changes the text and nothing else.
+  const edited = done(
+    await h.call(
+      "memory.add",
+      {
+        id: "note-2",
+        expectRevision: 1,
+        text: "release notes live in the handbook",
+      },
+      agent,
+    ),
+  ) as Meta;
+  expect(edited.note.text.text).toBe("release notes live in the handbook");
+  expect(edited.note).toMatchObject({
+    scope: "repo:forge",
+    tags: ["release", "docs"],
+    links: ["note-1"],
+  });
+  expect(await shown()).toMatchObject({
+    scope: "repo:forge",
+    tags: ["release", "docs"],
+    links: ["note-1"],
+  });
+  // So the note is still found by its scope and its tag.
+  expect(
+    (
+      done(
+        await h.call(
+          "memory.search",
+          { query: "handbook", scope: "repo:forge", tag: "docs" },
+          agent,
+        ),
+      ) as { hits: unknown[] }
+    ).hits,
+  ).toHaveLength(1);
+
+  // Changing one field leaves the others alone.
+  const retagged = done(
+    await h.call(
+      "memory.add",
+      { id: "note-2", expectRevision: 2, text: "handbook", tags: ["wiki"] },
+      agent,
+    ),
+  ) as Meta;
+  expect(retagged.note).toMatchObject({
+    scope: "repo:forge",
+    tags: ["wiki"],
+    links: ["note-1"],
+  });
+
+  // Clearing says so: null for the scope, an empty list for tags or links.
+  const cleared = done(
+    await h.call(
+      "memory.add",
+      {
+        id: "note-2",
+        expectRevision: 3,
+        text: "release notes live in the wiki",
+        scope: null,
+        tags: [],
+        links: [],
+      },
+      agent,
+    ),
+  ) as Meta;
+  expect(cleared.note.scope).toBeUndefined();
+  expect(cleared.note.tags).toEqual([]);
+  expect(cleared.note.links).toEqual([]);
+  expect(await found({ scope: "repo:forge" })).toBe(0);
+  expect(await found({})).toBe(1);
+}, 60_000);
