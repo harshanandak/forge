@@ -8,6 +8,10 @@
       "maxLength": 8000,
       "description": "What to remember."
     },
+    "level": {
+      "$ref": "defs.json#/$defs/Level",
+      "description": "Where a new note goes. Agents always say; a person on the CLI may leave it out to get the configured default."
+    },
     "scope": {
       "anyOf": [
         {
@@ -24,11 +28,11 @@
       "description": "On an edit, leave out to keep the stored tags, or send [] to clear them."
     },
     "links": {
-      "$ref": "defs.json#/$defs/Links",
+      "$ref": "defs.json#/$defs/LinkRefs",
       "description": "On an edit, leave out to keep the stored links, or send [] to clear them."
     },
     "id": {
-      "$ref": "defs.json#/$defs/NoteId",
+      "$ref": "defs.json#/$defs/NoteRef",
       "description": "Edit this note instead of adding a new one. An edit changes only the fields you send."
     },
     "expectRevision": {

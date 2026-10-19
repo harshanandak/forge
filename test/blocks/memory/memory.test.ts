@@ -40,11 +40,14 @@ interface Hits {
   truncated: boolean;
 }
 
+/** These tests are about notes, not levels: agents here write to the device, people to the nearest. */
+const LEVELS = { "memory.levels": { human: "nearest", agent: "device" } };
+
 async function open(settings: Record<string, unknown> = {}): Promise<{
   h: Harness;
   agent: { context: ReturnType<Harness["deviceOnly"]>; caller: "agent" };
 }> {
-  harness = await openHarness(["memory"], settings);
+  harness = await openHarness(["memory"], { ...LEVELS, ...settings });
   return {
     h: harness,
     agent: { context: harness.deviceOnly(), caller: "agent" },
@@ -60,14 +63,14 @@ test("notes are written, read, edited as versions and forgotten under the device
       agent,
     ),
   ) as Added;
-  expect(added).toMatchObject({ status: "added", id: "note-1" });
+  expect(added).toMatchObject({ status: "added", id: "device/note-1" });
   expect(added.note.revision).toBe(1);
 
   const edited = done(
     await h.call(
       "memory.add",
       {
-        id: "note-1",
+        id: "device/note-1",
         expectRevision: 1,
         text: "the release job needs a clean tree and a tag",
       },
@@ -79,32 +82,38 @@ test("notes are written, read, edited as versions and forgotten under the device
   expect(edited.note.versions.map((v) => v.revision)).toEqual([1, 2]);
 
   const old = done(
-    await h.call("memory.show", { id: "note-1", revision: 1 }, agent),
+    await h.call("memory.show", { id: "device/note-1", revision: 1 }, agent),
   ) as { status: string; note: Note };
   expect(old.note.text.text).toBe("the release job needs a clean tree");
   expect(
-    done(await h.call("memory.show", { id: "note-1", revision: 9 }, agent)),
+    done(
+      await h.call("memory.show", { id: "device/note-1", revision: 9 }, agent),
+    ),
   ).toEqual({ status: "version_unavailable" });
 
   const stale = await h.call(
     "memory.add",
-    { id: "note-1", expectRevision: 1, text: "stale edit" },
+    { id: "device/note-1", expectRevision: 1, text: "stale edit" },
     agent,
   );
   expect(stale.ok).toBe(false);
   expect(!stale.ok && stale.error?.code).toBe("REVISION_CONFLICT");
 
-  expect(done(await h.call("memory.forget", { id: "note-1" }))).toEqual({
+  expect(done(await h.call("memory.forget", { id: "device/note-1" }))).toEqual({
     status: "forgotten",
-    id: "note-1",
+    id: "device/note-1",
   });
-  expect(done(await h.call("memory.show", { id: "note-1" }, agent))).toEqual({
+  expect(
+    done(await h.call("memory.show", { id: "device/note-1" }, agent)),
+  ).toEqual({
     status: "forgotten",
   });
   expect(
     done(await h.call("memory.search", { query: "release" }, agent)),
   ).toMatchObject({ hits: [], matched: 0 });
-  expect(done(await h.call("memory.show", { id: "note-9" }, agent))).toEqual({
+  expect(
+    done(await h.call("memory.show", { id: "device/note-9" }, agent)),
+  ).toEqual({
     status: "not_found",
   });
 }, 30_000);
@@ -113,7 +122,7 @@ test("memory opens only the device store: no project store is created by writes 
   const { h, agent } = await open();
   done(await h.call("memory.add", { text: "device only" }, agent));
   done(await h.call("memory.search", { query: "device" }, agent));
-  done(await h.call("memory.export", {}, agent));
+  done(await h.call("memory.export", { level: "device" }, agent));
   expect(existsSync(join(h.deviceRoot, "records.sqlite"))).toBe(true);
   expect(existsSync(join(h.root, ".forge", "state.sqlite"))).toBe(false);
   // The project-scoped operations of the same block do need a project.
@@ -145,7 +154,10 @@ test("a natural-language prompt finds notes that match any of its words, best fi
     ),
   ) as Hits;
   // Every word of the prompt is not in any one note; any word may match.
-  expect(found.hits.map((hit) => hit.id)).toEqual(["note-1", "note-2"]);
+  expect(found.hits.map((hit) => hit.id)).toEqual([
+    "device/note-1",
+    "device/note-2",
+  ]);
   expect(found.hits[0]!.score).toBeGreaterThan(found.hits[1]!.score);
   expect(found.matched).toBe(2);
   expect(found.scanned).toBe(3);
@@ -182,9 +194,12 @@ test("search narrows by scope and tag and honours the limit", async () => {
     ).hits
       .map((hit) => hit.id)
       .sort();
-  expect(await ids({ scope: "repo:a" })).toEqual(["note-1", "note-3"]);
-  expect(await ids({ tag: "y" })).toEqual(["note-2", "note-3"]);
-  expect(await ids({ scope: "repo:a", tag: "y" })).toEqual(["note-3"]);
+  expect(await ids({ scope: "repo:a" })).toEqual([
+    "device/note-1",
+    "device/note-3",
+  ]);
+  expect(await ids({ tag: "y" })).toEqual(["device/note-2", "device/note-3"]);
+  expect(await ids({ scope: "repo:a", tag: "y" })).toEqual(["device/note-3"]);
   expect(await ids({ limit: 1 })).toHaveLength(1);
 }, 30_000);
 
@@ -196,19 +211,23 @@ test("a note that imitates a provenance marker is read back fenced as untrusted 
   const { h, agent } = await open();
   done(await h.call("memory.add", { text: FORGED, tags: ["release"] }, agent));
 
-  const shown = done(await h.call("memory.show", { id: "note-1" }, agent)) as {
+  const shown = done(
+    await h.call("memory.show", { id: "device/note-1" }, agent),
+  ) as {
     note: Note;
   };
   const searched = done(
     await h.call("memory.search", { query: "release instructions" }, agent),
   ) as Hits;
-  const exported = done(await h.call("memory.export", {}, agent)) as {
+  const exported = done(
+    await h.call("memory.export", { level: "device" }, agent),
+  ) as {
     notes: { text: Fenced }[];
   };
   for (const fenced of [shown.note.text, searched.hits[0]!.snippet]) {
     // The fence is ours and names where the text came from, not what the note claims.
     expect(fenced.kind).toBe("untrusted");
-    expect(fenced.source).toBe("memory:note-1");
+    expect(fenced.source).toBe("memory:device/note-1");
     // The note's own delimiter is defanged, and its fake marker stays inside the text value.
     expect(fenced.text).not.toContain("⟦");
     expect(fenced.text).not.toContain("⟧");
@@ -216,7 +235,7 @@ test("a note that imitates a provenance marker is read back fenced as untrusted 
   }
   expect(exported.notes[0]!.text).toMatchObject({
     kind: "untrusted",
-    source: "memory:note-1",
+    source: "memory:device/note-1",
   });
 }, 30_000);
 
@@ -270,14 +289,16 @@ test("export and restore round-trip notes and leave existing ones alone", async 
     ),
   );
   done(await h.call("memory.add", { text: "and this" }, agent));
-  const exported = done(await h.call("memory.export", {}, agent)) as {
+  const exported = done(
+    await h.call("memory.export", { level: "device" }, agent),
+  ) as {
     format: string;
     count: number;
     notes: unknown[];
   };
   expect(exported.count).toBe(2);
 
-  const second = await openHarness(["memory"]);
+  const second = await openHarness(["memory"], LEVELS);
   try {
     const target = { context: second.deviceOnly(), caller: "agent" as const };
     expect(done(await second.call("memory.restore", exported))).toEqual({
@@ -291,25 +312,25 @@ test("export and restore round-trip notes and leave existing ones alone", async 
       conflicts: [],
     });
     const found = done(
-      await second.call("memory.show", { id: "note-1" }, target),
+      await second.call("memory.show", { id: "device/note-1" }, target),
     ) as { note: Note };
     expect(found.note.text.text).toBe("keep this");
     // Restored ids are never handed out again.
     const next = done(
       await second.call("memory.add", { text: "after" }, target),
     ) as Added;
-    expect(next.id).toBe("note-3");
+    expect(next.id).toBe("device/note-3");
     // A different text under a restored id is a conflict, and is left alone.
     done(
       await second.call(
         "memory.add",
-        { id: "note-1", expectRevision: 1, text: "changed" },
+        { id: "device/note-1", expectRevision: 1, text: "changed" },
         target,
       ),
     );
     expect(done(await second.call("memory.restore", exported))).toMatchObject({
       added: 0,
-      conflicts: ["note-1"],
+      conflicts: ["device/note-1"],
     });
   } finally {
     await second.close();
@@ -320,8 +341,11 @@ test("destructive and bulk operations are human only", async () => {
   const { h, agent } = await open();
   done(await h.call("memory.add", { text: "x" }, agent));
   for (const [op, input] of [
-    ["memory.forget", { id: "note-1" }],
-    ["memory.restore", { format: "forge.memory.export/1", notes: [] }],
+    ["memory.forget", { id: "device/note-1" }],
+    [
+      "memory.restore",
+      { format: "forge.memory.export/2", level: "device", notes: [] },
+    ],
   ] as const) {
     const refused = await h.call(op, input, agent);
     expect(refused.ok).toBe(false);
@@ -333,7 +357,7 @@ test("input that does not fit the declared schema is refused before the block ru
   for (const input of [
     { text: "" },
     { text: "x", tags: ["Bad Tag"] },
-    { text: "x", id: "note-1" },
+    { text: "x", id: "device/note-1" },
     { text: "x", expectRevision: 1 },
     { text: "x", extra: true },
   ]) {
@@ -458,7 +482,7 @@ test("without a configured format a decision is not invented", async () => {
   ).toHaveLength(0);
 }, 30_000);
 
-test("a writer that loses the race for a note id retries and gets the next one", () => {
+test("a writer that loses the race for a note id retries and gets the next one", async () => {
   const entry = loadEntry("memory");
   const state = memoryState((records) => {
     // Another writer takes counter value 1 between this writer's read and its write.
@@ -471,16 +495,16 @@ test("a writer that loses the race for a note id retries and gets the next one",
       updatedBy: { kind: "agent", id: "b" },
     });
   });
-  const added = entry["memory.add"]!({
-    input: { text: "mine" },
-    services: { state },
-  }) as {
+  const added = (await entry["memory.add"]!({
+    input: { text: "mine", level: "device" },
+    services: { state, levels: state },
+  })) as {
     id: string;
   };
-  expect(added.id).toBe("note-2");
+  expect(added.id).toBe("device/note-2");
 }, 30_000);
 
-test("without the retry the same lost race surfaces as a failed write", () => {
+test("without the retry the same lost race surfaces as a failed write", async () => {
   const entry = loadEntry("memory", {
     from: "if (!conflict(error)) throw error;\n      last = error;",
     to: "throw error;",
@@ -495,9 +519,16 @@ test("without the retry the same lost race surfaces as a failed write", () => {
       updatedBy: { kind: "agent", id: "b" },
     });
   });
-  expect(() =>
-    entry["memory.add"]!({ input: { text: "mine" }, services: { state } }),
-  ).toThrow(/REVISION_CONFLICT/);
+  let lost: unknown;
+  try {
+    await entry["memory.add"]!({
+      input: { text: "mine", level: "device" },
+      services: { state, levels: state },
+    });
+  } catch (error) {
+    lost = error;
+  }
+  expect(JSON.stringify(lost)).toMatch(/REVISION_CONFLICT/);
 }, 30_000);
 
 interface Meta {
@@ -515,13 +546,14 @@ test("an edit is a partial update: omitted metadata is kept, and clearing is exp
         text: "release notes live in the wiki",
         scope: "repo:forge",
         tags: ["release", "docs"],
-        links: ["note-1"],
+        links: ["device/note-1"],
       },
       agent,
     ),
   );
   const shown = async () =>
-    (done(await h.call("memory.show", { id: "note-2" }, agent)) as Meta).note;
+    (done(await h.call("memory.show", { id: "device/note-2" }, agent)) as Meta)
+      .note;
   const found = async (extra: Record<string, unknown>) =>
     (
       done(
@@ -534,7 +566,7 @@ test("an edit is a partial update: omitted metadata is kept, and clearing is exp
     await h.call(
       "memory.add",
       {
-        id: "note-2",
+        id: "device/note-2",
         expectRevision: 1,
         text: "release notes live in the handbook",
       },
@@ -545,12 +577,12 @@ test("an edit is a partial update: omitted metadata is kept, and clearing is exp
   expect(edited.note).toMatchObject({
     scope: "repo:forge",
     tags: ["release", "docs"],
-    links: ["note-1"],
+    links: ["device/note-1"],
   });
   expect(await shown()).toMatchObject({
     scope: "repo:forge",
     tags: ["release", "docs"],
-    links: ["note-1"],
+    links: ["device/note-1"],
   });
   // So the note is still found by its scope and its tag.
   expect(
@@ -569,14 +601,19 @@ test("an edit is a partial update: omitted metadata is kept, and clearing is exp
   const retagged = done(
     await h.call(
       "memory.add",
-      { id: "note-2", expectRevision: 2, text: "handbook", tags: ["wiki"] },
+      {
+        id: "device/note-2",
+        expectRevision: 2,
+        text: "handbook",
+        tags: ["wiki"],
+      },
       agent,
     ),
   ) as Meta;
   expect(retagged.note).toMatchObject({
     scope: "repo:forge",
     tags: ["wiki"],
-    links: ["note-1"],
+    links: ["device/note-1"],
   });
 
   // Clearing says so: null for the scope, an empty list for tags or links.
@@ -584,7 +621,7 @@ test("an edit is a partial update: omitted metadata is kept, and clearing is exp
     await h.call(
       "memory.add",
       {
-        id: "note-2",
+        id: "device/note-2",
         expectRevision: 3,
         text: "release notes live in the wiki",
         scope: null,

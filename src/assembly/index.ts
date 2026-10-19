@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   createConfig,
@@ -44,6 +45,7 @@ import { version } from "../version.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
 import { LocalState } from "./state.ts";
+import { openLevels, PROJECT_STATE } from "./levels.ts";
 import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
@@ -96,6 +98,11 @@ const grantCandidate: McpCandidate = {
 export interface AssemblyOptions {
   readonly root: string;
   readonly deviceRoot: string;
+  /**
+   * Whether this host serves a project. Left out, it does when its root holds the project's Forge
+   * config (.forge/config.yaml), checked on each call; a host with no project says false.
+   */
+  readonly project?: boolean;
   readonly providers?: ProviderOptions;
 }
 export interface UnavailableBlock {
@@ -632,6 +639,38 @@ export async function createAssembly(
                   continue;
                 }
                 const namespace = current.blocks.get(instance)!.manifest.id;
+                // This host's project and, read-only, other projects: a declared capability,
+                // bound to the host's project and never to a project named in the request.
+                if (interfaceSatisfies(PROJECT_STATE, binding.interface)) {
+                  if (context.variant === "stateless")
+                    refuse(
+                      "CONTEXT_MISSING",
+                      "Project state needs an actor in the operation's context",
+                    );
+                  const opened = openLevels({
+                    root,
+                    projectState,
+                    deviceState,
+                    namespace,
+                    actor: context.actor,
+                    servesProject:
+                      options.project ??
+                      existsSync(join(root, ".forge", "config.yaml")),
+                    // The authenticated caller, never the actor kind a caller put in its context.
+                    caller: request.caller,
+                    write: scope.effects.includes(
+                      `${current.catalog.resolve(scope.op).operation.declaredOp.split(".")[0]!}:write`,
+                    ),
+                    requestId: request.requestId,
+                  });
+                  leases.push({
+                    ownership: "owned",
+                    value: undefined,
+                    close: () => opened.close(),
+                  });
+                  clients[binding.slot] = opened.levels;
+                  continue;
+                }
                 const storage =
                   context.variant === "device" ? deviceState : projectState;
                 const noun = current.catalog

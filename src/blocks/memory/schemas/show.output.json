@@ -3,10 +3,26 @@
   "type": "object",
   "properties": {
     "status": {
-      "enum": ["found", "not_found", "forgotten", "version_unavailable"]
+      "enum": [
+        "found",
+        "not_found",
+        "forgotten",
+        "moved",
+        "unavailable",
+        "version_unavailable"
+      ]
     },
     "note": {
       "$ref": "defs.json#/$defs/Note"
+    },
+    "to": {
+      "$ref": "defs.json#/$defs/NoteId",
+      "description": "Where a moved note went."
+    },
+    "project": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "The project that could not be read."
     }
   },
   "additionalProperties": false,
