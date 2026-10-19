@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { closeChild } from "./deadline.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import {
   readdirSync,
@@ -480,8 +481,13 @@ try {
         "MCP must await async handler",
       );
     } finally {
-      child.stdin.end();
-      await exited;
+      await closeChild(
+        child,
+        exited,
+        supervision.cleanupTimeoutMs,
+        "MCP shutdown",
+        () => errors,
+      );
     }
   }
   if (["all", "leased"].includes(mode)) {

@@ -141,6 +141,17 @@ export async function runProcess(
           : import.meta.url.endsWith(".ts")
             ? ["--v8-pool-size=1", helper]
             : ["--jitless", "--v8-pool-size=1", helper];
+      helperArgs.push(
+        String(
+          Math.min(
+            MAX_TIMER_MS,
+            Math.max(
+              1,
+              Math.ceil(options.timeoutMs - (performance.now() - started)),
+            ),
+          ),
+        ),
+      );
       const child = spawn(process.execPath, helperArgs, {
         cwd: options.cwd,
         env:

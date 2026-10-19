@@ -100,6 +100,10 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
       join(root, "test/node-fixtures/async-handlers/journey.mjs"),
       join(installed, "async-journey.mjs"),
     );
+    copyFileSync(
+      join(root, "test/node-fixtures/async-handlers/deadline.mjs"),
+      join(installed, "deadline.mjs"),
+    );
     for (const runtime of new Set(
       [node, process.env.FORGE_NODE26].filter((value): value is string =>
         Boolean(value),

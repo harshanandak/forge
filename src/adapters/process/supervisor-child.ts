@@ -1,10 +1,43 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createSupervisorDeadline } from "./supervisor-deadline.ts";
 
 // The host attaches this waiting helper to its group/job/cgroup before sending start.
 // No target environment, loader option or executable is inherited by the supervisor.
 let started = false;
+let child: ChildProcess | undefined;
+const stopOwnedScope = (): void => {
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-process.pid, "SIGKILL");
+    } catch {
+      // The group may already be gone; the helper must still exit.
+    }
+  } else {
+    // The host owns the Job handle and terminates its tree when this helper exits.
+    // Also stop the direct child if host progress or IPC has stalled.
+    try {
+      child?.kill("SIGKILL");
+    } catch {
+      // Already stopped; exiting still notifies the owning host.
+    }
+  }
+  process.exit(1);
+};
+const deadline = createSupervisorDeadline(process.argv[2], {
+  now: () => performance.now(),
+  schedule(action, ms) {
+    setTimeout(action, ms);
+  },
+  terminate: stopOwnedScope,
+});
 process.on("message", (value: unknown) => {
-  if (started || value === null || typeof value !== "object") return;
+  if (
+    !deadline.active() ||
+    started ||
+    value === null ||
+    typeof value !== "object"
+  )
+    return;
   const data = value as Record<string, unknown>;
   if (
     data.kind !== "start" ||
@@ -17,7 +50,7 @@ process.on("message", (value: unknown) => {
   )
     return;
   started = true;
-  const child = spawn(data.file, data.args, {
+  const command = spawn(data.file, data.args, {
     cwd: data.cwd,
     env: data.env as Record<string, string>,
     shell: false,
@@ -25,31 +58,23 @@ process.on("message", (value: unknown) => {
     windowsVerbatimArguments: data.verbatim === true,
     stdio: [typeof data.stdin === "string" ? "pipe" : "ignore", 1, 2],
   });
+  child = command;
   if (typeof data.stdin === "string") {
-    child.stdin?.on("error", () => undefined);
-    child.stdin?.end(data.stdin);
+    command.stdin?.on("error", () => undefined);
+    command.stdin?.end(data.stdin);
   }
-  child.once("spawn", () =>
-    process.send?.({ kind: "started", pid: child.pid }),
+  command.once("spawn", () =>
+    process.send?.({ kind: "started", pid: command.pid }),
   );
-  child.once("error", (error: NodeJS.ErrnoException) =>
+  command.once("error", (error: NodeJS.ErrnoException) =>
     process.send?.({
       kind: "failed",
       ...(typeof error.code === "string" ? { errno: error.code } : {}),
     }),
   );
-  child.once("exit", (code, signal) =>
+  command.once("exit", (code, signal) =>
     process.send?.({ kind: "exited", code, signal }),
   );
 });
-process.on("disconnect", () => {
-  // Parent death releases a Windows Job handle. POSIX needs to stop its owned group too.
-  if (process.platform !== "win32") {
-    try {
-      process.kill(-process.pid, "SIGKILL");
-    } catch {
-      process.exit(1);
-    }
-  } else process.exit(1);
-});
+process.on("disconnect", stopOwnedScope);
 process.send?.({ kind: "ready", residentBytes: process.memoryUsage().rss });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { awaitDeadline } from "./deadline.mjs";
 import { windowsFootprint } from "./windows-footprint.mjs";
 import childProcess from "node:child_process";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -153,16 +154,19 @@ function dependencyDisk() {
   }
 }
 
+const supervision = {
+  cleanupTimeoutMs: 5000,
+  pollIntervalMs: 25,
+  drainTimeoutMs: 250,
+  maxConcurrent: 1,
+};
+const cleanupBudget =
+  supervision.cleanupTimeoutMs * 2 + supervision.drainTimeoutMs;
 const controllers = [new AbortController()];
 let settled = Promise.resolve([]);
 try {
   const port = createProcessPort({
-    supervision: {
-      cleanupTimeoutMs: 5000,
-      pollIntervalMs: 25,
-      drainTimeoutMs: 250,
-      maxConcurrent: 1,
-    },
+    supervision,
   });
   const before = snapshot();
   before.hostResidentBytes = Math.min(
@@ -174,7 +178,11 @@ try {
     0,
     "a fresh host must have no idle helpers",
   );
-  const capability = await port.containment();
+  const capability = await awaitDeadline(
+    port.containment(),
+    supervision.cleanupTimeoutMs,
+    "footprint containment preflight",
+  );
   if (process.platform === "win32") {
     assert.deepEqual(capability, { available: true, backend: "windows-job" });
   }
@@ -231,7 +239,11 @@ try {
     );
   }
   for (const controller of controllers) controller.abort();
-  const outcomes = await settled;
+  const outcomes = await awaitDeadline(
+    settled,
+    cleanupBudget,
+    "footprint cancellation cleanup",
+  );
   const reports = outcomes.map((outcome) => {
     assert.equal(
       outcome.status,
@@ -290,11 +302,14 @@ try {
   );
 } finally {
   for (const controller of controllers) controller.abort();
-  await settled;
-  childProcess.spawn = originalSpawn;
-  syncBuiltinESMExports();
-  const temporaryParent = resolve(tmpdir());
-  assert.equal(dirname(resolve(root)), temporaryParent);
-  assert.ok(basename(root).startsWith("forge-footprint-"));
-  rmSync(root, { recursive: true, force: true });
+  try {
+    await awaitDeadline(settled, cleanupBudget, "footprint final cleanup");
+  } finally {
+    childProcess.spawn = originalSpawn;
+    syncBuiltinESMExports();
+    const temporaryParent = resolve(tmpdir());
+    assert.equal(dirname(resolve(root)), temporaryParent);
+    assert.ok(basename(root).startsWith("forge-footprint-"));
+    rmSync(root, { recursive: true, force: true });
+  }
 }

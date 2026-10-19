@@ -6,7 +6,11 @@ const posixTest = process.platform === "win32" ? test.skip : test;
 posixTest(
   "a real zombie-only group stops before its non-reaping parent collects it",
   () => {
-    const python = spawnSync("python3", ["--version"], { encoding: "utf8" });
+    const python = spawnSync("python3", ["--version"], {
+      encoding: "utf8",
+      timeout: 5000,
+      killSignal: "SIGKILL",
+    });
     if (python.status !== 0) {
       console.log(
         "NOT_EXERCISED: zombie-group fixture requires runner python3 for a non-reaping parent",
@@ -25,6 +29,7 @@ posixTest(
       {
         encoding: "utf8",
         timeout: 10_000,
+        killSignal: "SIGKILL",
       },
     );
     expect(result.status, result.stderr).toBe(0);

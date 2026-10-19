@@ -103,11 +103,12 @@ export function createDarwinProcessTable(
         const pid = pids.readInt32LE(index * 4);
         if (pid <= 0) throw new Error("Invalid Darwin process identity");
         api.errno(0);
-        // arg=1 includes zombie records; zero would report them as ESRCH.
+        // Live-only lookup reports retained zombies as ESRCH. Including them can
+        // enter XNU's unbounded zombie-reference wait during concurrent reaping.
         const bytes = api.pidInfo(
           pid,
           PROC_PIDT_SHORTBSDINFO,
-          1,
+          0,
           record,
           record.length,
         );

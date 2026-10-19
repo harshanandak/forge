@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -45,6 +46,10 @@ builtTest(
       );
       const fixture = join(directory, "journey.mjs");
       writeFileSync(fixture, source);
+      copyFileSync(
+        join(root, "test/node-fixtures/async-handlers/deadline.mjs"),
+        join(directory, "deadline.mjs"),
+      );
       const result = spawnSync(
         node,
         ["--disable-warning=ExperimentalWarning", fixture, "surfaces"],

@@ -1,4 +1,6 @@
+import assert from "node:assert/strict";
 import { expect, test } from "bun:test";
+import { killTree } from "../../../src/adapters/process/tree-kill.ts";
 import {
   createDarwinProcessTable,
   MAX_DARWIN_GROUP_MEMBERS,
@@ -23,7 +25,7 @@ function fakeApi(
     },
     pidInfo(pid, flavor, argument, buffer, bytes) {
       expect(flavor).toBe(13);
-      expect(argument).toBe(1);
+      expect(argument).toBe(0);
       expect(bytes).toBe(64);
       const member = statuses.find((item) => item.pid === pid);
       if (member === undefined) throw Error("Unexpected process");
@@ -39,7 +41,7 @@ function members(api: DarwinProcessApi) {
   return [...createDarwinProcessTable(() => api).members(123, () => {})];
 }
 
-test("Darwin preserves zombie and live member states rather than trusting signal probes", () => {
+test("Darwin preserves returned zombie and live states rather than trusting signal probes", () => {
   expect(
     members(
       fakeApi([
@@ -144,4 +146,44 @@ test("Darwin does not load native bindings until a group is inspected", () => {
   expect(loaded).toBe(0);
   expect([...iterator]).toEqual([]);
   expect(loaded).toBe(1);
+}, 5000);
+
+test("Darwin never acquires a retained zombie reference while confirming live membership", () => {
+  const api = fakeApi([{ pid: 124, state: 5 }]);
+  const argumentsSeen: number[] = [];
+  api.pidInfo = (_pid, _flavor, argument) => {
+    argumentsSeen.push(argument);
+    // XNU's zombie-reference path can wait on P_LIST_WAITING without a timeout.
+    // The live-only query excludes that zombie without taking its wait reference.
+    if (argument !== 0) throw Error("Unbounded zombie-reference lookup");
+    api.errno(3);
+    return 0;
+  };
+  expect(members(api)).toEqual([]);
+  expect(argumentsSeen).toEqual([0]);
+}, 5000);
+
+test("Darwin live-only inspection still refuses a live survivor at the cleanup deadline", async () => {
+  let now = 0;
+  const waits: number[] = [];
+  const api = fakeApi([{ pid: 124, state: 2 }]);
+  await assert.rejects(
+    killTree(
+      123,
+      { cleanupTimeoutMs: 23, pollIntervalMs: 10 },
+      {
+        signal() {},
+        now: () => now,
+        pause(ms) {
+          waits.push(ms);
+          now += ms;
+          return Promise.resolve();
+        },
+        processTable: createDarwinProcessTable(() => api),
+      },
+    ),
+    { code: "TREE_KILL_FAILED" },
+  );
+  expect(waits).toEqual([10, 10, 3]);
+  expect(now).toBe(23);
 }, 5000);
