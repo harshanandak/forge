@@ -607,6 +607,15 @@ export async function createAssembly(
                   continue;
                 }
                 if (
+                  interfaceSatisfies(
+                    "forge.runner-output@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  clients[binding.slot] = providers.runnerOutput(scope);
+                  continue;
+                }
+                if (
                   interfaceSatisfies("forge.files@1.0.0", binding.interface)
                 ) {
                   if (

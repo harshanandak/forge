@@ -147,6 +147,20 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
     );
     const mutations = [
       {
+        file: "assembly/providers.js",
+        from: '"forge.runner-output@1.0.0",',
+        to: "",
+        mode: "runner-output",
+        evidence: "runner-output requirement must compose",
+      },
+      {
+        file: "assembly/index.js",
+        from: "clients[binding.slot] = providers.runnerOutput(scope);",
+        to: "clients[binding.slot] = {};",
+        mode: "runner-output",
+        evidence: "runner-output service must bind and parse",
+      },
+      {
         file: "adapters/fs/clone-files.js",
         from: "if (!sameCapturedFile(",
         to: "if (false && !sameCapturedFile(",
