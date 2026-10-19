@@ -48,6 +48,8 @@ const moduleUrl =
 const artifact = moduleUrl.pathname.endsWith(".js") ? "built" : "source";
 const { createProcessPort } = await import(moduleUrl);
 
+// Include lazy native dependency loading in the incremental host cost.
+const baselineResidentBytes = process.memoryUsage().rss;
 const nativeSnapshot =
   process.platform === "win32" ? windowsFootprint() : undefined;
 function snapshot() {
@@ -163,6 +165,10 @@ try {
     },
   });
   const before = snapshot();
+  before.hostResidentBytes = Math.min(
+    before.hostResidentBytes,
+    baselineResidentBytes,
+  );
   assert.equal(
     before.helpers.length,
     0,
