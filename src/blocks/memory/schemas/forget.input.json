@@ -3,7 +3,7 @@
   "type": "object",
   "properties": {
     "id": {
-      "$ref": "defs.json#/$defs/NoteId"
+      "$ref": "defs.json#/$defs/NoteRef"
     },
     "expectRevision": {
       "type": "integer",

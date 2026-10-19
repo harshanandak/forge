@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {
+      "enum": [
+        "moved",
+        "copied",
+        "not_found",
+        "forgotten",
+        "read_only",
+        "same_level"
+      ]
+    },
+    "id": {
+      "$ref": "defs.json#/$defs/NoteId"
+    },
+    "to": {
+      "$ref": "defs.json#/$defs/NoteId"
+    },
+    "transfer": {
+      "type": "string",
+      "maxLength": 40,
+      "description": "The transfer's identity: the source note's id, recorded at the destination."
+    }
+  },
+  "additionalProperties": false,
+  "required": ["status", "id"]
+}

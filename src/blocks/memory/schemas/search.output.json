@@ -11,6 +11,15 @@
           "id": {
             "$ref": "defs.json#/$defs/NoteId"
           },
+          "level": {
+            "$ref": "defs.json#/$defs/Level"
+          },
+          "origin": {
+            "$ref": "defs.json#/$defs/Origin"
+          },
+          "readOnly": {
+            "$ref": "defs.json#/$defs/ReadOnly"
+          },
           "score": {
             "type": "number"
           },
@@ -33,7 +42,16 @@
           }
         },
         "additionalProperties": false,
-        "required": ["id", "score", "revision", "tags", "snippet", "updatedAt"]
+        "required": [
+          "id",
+          "level",
+          "origin",
+          "score",
+          "revision",
+          "tags",
+          "snippet",
+          "updatedAt"
+        ]
       }
     },
     "matched": {
@@ -50,7 +68,15 @@
     },
     "next": {
       "type": "string",
-      "pattern": "^[0-9]{1,9}:[0-9]{1,9}$"
+      "pattern": "^(?:[0-9]{1,9}|x)(?:\\.(?:[0-9]{1,9}|x)){0,9}:[0-9]{1,9}$",
+      "maxLength": 110
+    },
+    "unreachable": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "defs.json#/$defs/Unreached"
+      }
     }
   },
   "additionalProperties": false,
