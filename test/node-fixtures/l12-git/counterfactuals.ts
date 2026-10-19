@@ -20,11 +20,51 @@ export const counterfactuals: readonly Counterfactual[] = [
   {
     kind: "assertion",
     file: "blocks/git/entry.cjs",
-    from: '["cherry", target, synthetic]',
-    to: '["cherry", target, head]',
+    from: 'const common = (await git(c, ["merge-base", target, head])).stdout.trim();',
+    to: 'const common = (await git(c, ["rev-parse", `${head}^`])).stdout.trim();',
     journey: "squash",
     evidence:
       "combined patch from multiple commits must count as squash merged",
+  },
+  ...["squash-dryrun", "squash-no-author"].map((journey) => ({
+    kind: "assertion" as const,
+    file: "blocks/git/entry.cjs",
+    from: 'const common = (await git(c, ["merge-base", target, head])).stdout.trim();',
+    to: 'const common = (await git(c, ["merge-base", target, head])).stdout.trim(); await git(c, ["commit-tree", (await git(c, ["rev-parse", `${head}^{tree}`])).stdout.trim(), "-p", common, "-m", "Compare worktree patch"]);',
+    journey,
+    evidence:
+      journey === "squash-dryrun"
+        ? "squash dry run must not create Git objects"
+        : "squash dry run must not require an author identity",
+  })),
+  ...["failed-create", "failed-create-process"].map((journey) => ({
+    kind: "assertion" as const,
+    file: "blocks/git/entry.cjs",
+    from: "await reconcile(c, reserved);",
+    to: "void 0;",
+    journey,
+    evidence:
+      "failed creation with no Git registration must retire its reservation",
+  })),
+  ...["reconcile-absent", "reconcile-adopt"].map((journey) => ({
+    kind: "assertion" as const,
+    file: "blocks/git/entry.cjs",
+    from: "accepted = await reconcile(c, record);",
+    to: "accepted = record;",
+    journey,
+    evidence:
+      journey === "reconcile-absent"
+        ? "absent Git registration must retire crashed creation binding"
+        : "matching registered creation must be adopted into active binding",
+  })),
+  {
+    kind: "assertion",
+    file: "blocks/git/entry.cjs",
+    from: "forge-worktree-create.lock",
+    to: "forge-worktree-other.lock",
+    journey: "reconcile-live",
+    evidence:
+      "reconciliation must refuse another invocation's live creation lock",
   },
   {
     kind: "assertion",
