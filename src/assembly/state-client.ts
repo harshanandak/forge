@@ -3,6 +3,8 @@ import type { BoundContext, LeaseRecord } from "../generated/types.ts";
 import type {
   BatchEntry,
   BatchOptions,
+  DeleteOptions,
+  DeletableStateClient,
   ExtendedStateClient,
   HistoryOptions,
   PutOptions,
@@ -14,11 +16,16 @@ import { refuse } from "../core/trust/index.ts";
 type ClientPutOptions = PutOptions &
   Pick<WriteOptions, "readSet"> & { readonly subject?: string };
 type ClientBatchOptions = BatchOptions & { readonly subject?: string };
+type ClientDeleteOptions = DeleteOptions & { readonly subject?: string };
 
 /** Assembly capability extension; the outside-block forge.state@1 contract is unchanged.
  * Held puts fence the supplied subject (the record key by default) in the owner's transaction.
  */
-export interface LeaseStateClient extends ExtendedStateClient {
+export interface LeaseStateClient extends DeletableStateClient {
+  delete(
+    key: string,
+    options: ClientDeleteOptions,
+  ): ReturnType<DeletableStateClient["delete"]>;
   now(): number;
   lease(subject: string): LeaseRecord | undefined;
   acquire(subject: string, durationMs: number): LeaseRecord;
@@ -78,6 +85,22 @@ export function createStateClient(options: {
       owner?.history(namespace, options) ?? [],
     events: (key?: string) => owner?.events(namespace, key) ?? [],
     lease: (subject: string) => owner?.lease(namespace, subject),
+    delete(key: string, options: ClientDeleteOptions) {
+      const state = writable();
+      if (context.variant === "stateless")
+        refuse("CONTEXT_MISSING", "Missing actor");
+      if (context.variant === "leased" && context.leaseMode !== "held")
+        refuse("CONTEXT_MISSING", "Acquisition cannot mutate records");
+      return state.delete(namespace, key, context.actor, {
+        expectRevision: options.expectRevision,
+        ...(options.readSet === undefined
+          ? {}
+          : { readSet: structuredClone(options.readSet) }),
+        ...(context.variant === "leased"
+          ? { fence: fence(options.subject ?? key) }
+          : {}),
+      });
+    },
     put(key: string, value: unknown, put: ClientPutOptions) {
       const state = writable();
       if (context.variant === "stateless")

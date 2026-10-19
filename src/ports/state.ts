@@ -32,6 +32,8 @@ export interface BatchOptions {
   }[];
 }
 
+export interface DeleteOptions extends PutOptions, BatchOptions {}
+
 export interface HistoryOptions {
   /** The record key whose events to read. */
   readonly key: string;
@@ -67,4 +69,13 @@ export interface ExtendedStateClient extends StateClient {
   listRange(options: RangeOptions): readonly StateRecord[];
   /** One bounded page of a key's events, newest first, found through an index on the key. */
   history(options: HistoryOptions): readonly StateEvent[];
+}
+
+export interface DeletableStateClient extends ExtendedStateClient {
+  /**
+   * Remove an existing record, guarded like a put, and return its deletion event. Its positive
+   * revision advances once more; history remains, and recreation with expectRevision 0 continues
+   * that sequence. A missing record is refused, never a successful repeated deletion.
+   */
+  delete(key: string, options: DeleteOptions): StateEvent;
 }

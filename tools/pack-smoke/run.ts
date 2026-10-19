@@ -3,6 +3,8 @@
 // only Node and npm can install and run what we publish. Build first (`bun run build`).
 import { ChildRunError, runChild } from "../child-runner.ts";
 import { inheritRunnerGroup, readRunnerPolicy } from "../runner-policy.ts";
+import { runBounded } from "../packed-pool.ts";
+import { packedSuites } from "./suites.ts";
 import {
   copyFileSync,
   existsSync,
@@ -345,38 +347,16 @@ async function main(): Promise<void> {
     );
     if (stateBun) {
       step(
-        "running packed first slice, state and memory checks against the same npm install",
+        "running all packed suites against the same npm install (at most two suites at once)",
       );
       // The suites read the base install and mutate private copies. Drain all
       // children before cleanup, including when either suite fails.
-      const results = await Promise.allSettled([
-        packedIntegration(
-          stateBun,
-          "test/assembly/providers/packed.integration.test.ts",
-          "packed assembly providers",
-          { ...process.env, FORGE_PACKED_CONSUMER: consumer },
-        ),
-        packedIntegration(
-          stateBun,
-          "test/integration/packed.integration.test.ts",
-          "packed first slice integration",
-          { ...process.env, FORGE_PACKED_CONSUMER: consumer },
-        ),
-        packedIntegration(
-          stateBun,
-          "test/node-fixtures/state/packed.integration.test.ts",
-          "packed state integration",
-          { ...process.env, STATE_PACKED_CONSUMER: consumer },
-        ),
-        packedIntegration(
-          stateBun,
-          "test/node-fixtures/memory/packed.integration.test.ts",
-          "packed memory integration",
-          { ...process.env, MEMORY_PACKED_CONSUMER: consumer },
-        ),
-      ]);
-      for (const result of results)
-        if (result.status === "rejected") throw result.reason;
+      await runBounded(packedSuites, 2, (suite) =>
+        packedIntegration(stateBun, suite.file, suite.label, {
+          ...process.env,
+          [suite.consumerEnv]: consumer,
+        }),
+      );
     }
     console.log("pack-smoke: PASS");
   } finally {

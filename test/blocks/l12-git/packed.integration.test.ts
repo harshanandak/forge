@@ -114,6 +114,9 @@ test("installed git block: real clone journeys and remove-the-fix checks", () =>
         "removal-race",
         "hook-recovery",
         "hooks",
+        "churn",
+        "capacity",
+        "rewritten-default",
       ])
         expect(output).toContain(`PASS ${journey}:`);
       console.log(output.trim());

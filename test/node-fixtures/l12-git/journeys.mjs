@@ -91,6 +91,8 @@ let beforeLock;
 let afterLock;
 let abortAfterCreate = false;
 let invocationController;
+let namespace = "forge/git";
+let beforeBatch;
 const processPort = {
   capability: "forge.process/v1",
   get cwd() {
@@ -414,7 +416,7 @@ async function call(operation, input = {}, overrides = {}) {
   };
   const client = createStateClient({
     owner,
-    namespace: "forge/git",
+    namespace,
     context,
     write: !["worktree.list", "hook.status"].includes(operation),
     requestId: `git-${++sequence}`,
@@ -426,7 +428,20 @@ async function call(operation, input = {}, overrides = {}) {
     args: {
       input,
       config: { ...config, ...overrides },
-      services: { process: processPort, files, environment, state: client },
+      services: {
+        process: processPort,
+        files,
+        environment,
+        state: {
+          ...client,
+          putMany(entries, options) {
+            const effect = beforeBatch;
+            beforeBatch = undefined;
+            effect?.();
+            return client.putMany(entries, options);
+          },
+        },
+      },
       signal,
       deadline: Date.now() + 15000,
     },
@@ -448,13 +463,17 @@ async function error(code, action) {
     `expected ${code}`,
   );
 }
-const create = (name, extra = {}) =>
-  call("worktree.create", {
-    name,
-    branch: `feature/${name}`,
-    expectRevision: 0,
-    ...extra,
-  });
+const create = (name, extra = {}, overrides = {}) =>
+  call(
+    "worktree.create",
+    {
+      name,
+      branch: `feature/${name}`,
+      expectRevision: 0,
+      ...extra,
+    },
+    overrides,
+  );
 const head = (tree) => git(["rev-parse", "HEAD"], join(repo, tree.path));
 function safeCommands() {
   for (const args of calls) {
@@ -462,15 +481,263 @@ function safeCommands() {
       !args.some((arg) =>
         ["--force", "--force-with-lease", "--no-verify", "-f"].includes(arg),
       ),
-      "block commands must never force or bypass hooks",
+      "block commands must never pass force or hook-bypass flags",
     );
     assert.ok(
       !args.some((arg) => /(?:core\.hooksPath|commit\.gpgsign)=/.test(arg)),
       "block must never inject a hook bypass",
     );
+    if (args[0] === "fetch")
+      assert.match(
+        args.at(-1),
+        /^\+refs\/heads\/[^:]+:refs\/remotes\/[^:]+$/,
+        "fetch refresh must allow rewrites only in remote-tracking refs",
+      );
   }
 }
 try {
+  if (["all", "churn"].includes(mode)) {
+    namespace = "forge/git-churn";
+    for (let index = 0; index < 5; ++index) {
+      const tree = await create(
+        `churn-${index}`,
+        { base: initial },
+        { maxWorktrees: 3 },
+      );
+      await call(
+        "worktree.remove",
+        {
+          path: tree.path,
+          expectedHead: tree.head,
+          expectRevision: tree.revision,
+        },
+        { maxWorktrees: 3 },
+      );
+    }
+    await assert.doesNotReject(
+      () => call("worktree.list", {}, { maxWorktrees: 3 }),
+      "removed bindings must not exhaust bounded worktree scans",
+    );
+    assert.equal(
+      owner.list(namespace, "worktree:").length,
+      0,
+      "successful removal must retire active binding storage",
+    );
+    await assert.doesNotReject(
+      () =>
+        call(
+          "worktree.clean",
+          { dryRun: false },
+          { maxWorktrees: 3, fetchBeforeClean: false },
+        ),
+      "cleanup must remain usable after churn beyond maxWorktrees",
+    );
+    for (let index = 0; index < 5; ++index)
+      owner.put(
+        namespace,
+        `worktree:.worktrees/legacy-${index}`,
+        {
+          path: `.worktrees/legacy-${index}`,
+          branch: `feature/legacy-${index}`,
+          base: initial,
+          baseSha: initial,
+          status: "removed",
+        },
+        { kind: "agent", id: "legacy-fixture" },
+        { expectRevision: 0 },
+      );
+    const legacyEvents = owner.events(namespace).length;
+    await assert.doesNotReject(
+      () => call("worktree.list", {}, { maxWorktrees: 3 }),
+      "read-only listing must skip overflowing legacy removed bindings",
+    );
+    assert.equal(
+      owner.list(namespace, "worktree:").length,
+      5,
+      "read-only listing must preserve legacy records",
+    );
+    assert.equal(
+      owner.events(namespace).length,
+      legacyEvents,
+      "read-only legacy scans must emit no state mutations",
+    );
+    await call(
+      "worktree.clean",
+      { dryRun: false },
+      { maxWorktrees: 3, fetchBeforeClean: false },
+    );
+    assert.equal(
+      owner.list(namespace, "worktree:").length,
+      0,
+      "non-dry cleanup must retire all legacy removed records",
+    );
+    await call("worktree.list", {}, { maxWorktrees: 3 });
+    assert.equal(
+      git(["worktree", "list", "--porcelain"]).split("worktree ").length - 1,
+      1,
+    );
+    namespace = "forge/git";
+    console.log(
+      "PASS churn: five distinct create/remove paths keep bounded list/clean usable and retire bindings",
+    );
+  }
+  if (["all", "capacity", "capacity-race"].includes(mode)) {
+    namespace = "forge/git-capacity";
+    const binding = (name, status) => ({
+      path: `.worktrees/${name}`,
+      branch: `feature/${name}`,
+      base: initial,
+      baseSha: initial,
+      status,
+    });
+    const actor = { kind: "agent", id: "competing-fixture" };
+    if (mode !== "capacity-race") {
+      for (let index = 0; index < 3; ++index)
+        owner.put(
+          namespace,
+          `worktree:.worktrees/reserved-${index}`,
+          binding(`reserved-${index}`, index % 2 ? "uncertain" : "creating"),
+          actor,
+          { expectRevision: 0 },
+        );
+      await error("LIMIT_EXCEEDED", () =>
+        create("over-capacity", { base: initial }, { maxWorktrees: 3 }),
+      );
+      assert.equal(
+        existsSync(join(repo, ".worktrees/over-capacity")),
+        false,
+        "full reservation capacity must launch no worktree mutation",
+      );
+      git(
+        ["show-ref", "--verify", "--quiet", "refs/heads/feature/over-capacity"],
+        repo,
+        [1],
+      );
+      assert.equal(
+        owner.list(namespace, "worktree:").length,
+        3,
+        "denied reservation must leave bounded state unchanged",
+      );
+    }
+    namespace = "forge/git-capacity-race";
+    for (let index = 0; index < 2; ++index)
+      owner.put(
+        namespace,
+        `worktree:.worktrees/race-${index}`,
+        binding(`race-${index}`, "creating"),
+        actor,
+        { expectRevision: 0 },
+      );
+    beforeBatch = () => {
+      const sentinel = owner.get(namespace, "capacity:worktree");
+      owner.putMany(
+        namespace,
+        [
+          {
+            key: "worktree:.worktrees/race-winner",
+            value: binding("race-winner", "uncertain"),
+            expectRevision: 0,
+          },
+          {
+            key: "capacity:worktree",
+            value: null,
+            expectRevision: sentinel?.revision ?? 0,
+          },
+        ],
+        actor,
+      );
+    };
+    await error("REVISION_CONFLICT", () =>
+      create("race-loser", { base: initial }, { maxWorktrees: 3 }),
+    );
+    assert.equal(
+      beforeBatch,
+      undefined,
+      "reservation must atomically batch the binding with capacity evidence",
+    );
+    assert.equal(
+      owner.list(namespace, "worktree:").length,
+      3,
+      "competing distinct reservations must not exceed configured capacity",
+    );
+    assert.equal(
+      owner.get(namespace, "worktree:.worktrees/race-loser"),
+      undefined,
+    );
+    assert.equal(existsSync(join(repo, ".worktrees/race-loser")), false);
+    namespace = "forge/git";
+    console.log(
+      "PASS capacity: creating/uncertain reservations fill the limit; competing distinct reservation loses atomically",
+    );
+  }
+  if (["all", "rewritten-default"].includes(mode)) {
+    namespace = "forge/git-rewritten";
+    const localTrunk = git(["rev-parse", "refs/heads/trunk"]);
+    const tree = git(["rev-parse", `${initial}^{tree}`]);
+    const rewrite = (message) =>
+      git(
+        [
+          "-c",
+          "user.name=Fixture Author",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit-tree",
+          tree,
+          "-m",
+          message,
+        ],
+        remote,
+      );
+    const first = rewrite("rewritten remote root");
+    git(["update-ref", "refs/heads/trunk", first, initial], remote);
+    let created;
+    await assert.doesNotReject(async () => {
+      created = await create("rewritten-default");
+    }, "no-base create must follow a rewritten remote default");
+    assert.equal(
+      created.head,
+      first,
+      "created worktree must use rewritten remote SHA",
+    );
+    const second = rewrite("rewritten remote root again");
+    git(["update-ref", "refs/heads/trunk", second, first], remote);
+    let cleaned;
+    await assert.doesNotReject(async () => {
+      cleaned = await call(
+        "worktree.clean",
+        { dryRun: false },
+        { fetchBeforeClean: true },
+      );
+    }, "fetch-before-clean must follow a rewritten remote default");
+    assert.equal(cleaned.baseSha, second);
+    assert.equal(git(["rev-parse", "refs/remotes/origin/trunk"]), second);
+    assert.equal(
+      git(["rev-parse", "refs/heads/trunk"]),
+      localTrunk,
+      "refreshing tracking evidence must not move local trunk",
+    );
+    assert.equal(
+      git(["rev-parse", `refs/heads/${created.branch}`]),
+      first,
+      "refreshing tracking evidence must not move feature branches",
+    );
+    for (const args of calls.filter((args) => args[0] === "fetch"))
+      assert.match(
+        args.at(-1),
+        /^\+refs\/heads\/[^:]+:refs\/remotes\/[^:]+$/,
+        "fetch refresh must allow rewrites only in remote-tracking refs",
+      );
+    await call("worktree.remove", {
+      path: created.path,
+      expectedHead: created.head,
+      expectRevision: created.revision,
+    });
+    git(["update-ref", "refs/heads/trunk", initial, second], remote);
+    namespace = "forge/git";
+    console.log(
+      "PASS rewritten-default: no-base creation and fetch cleanup follow rewritten tracking refs without moving local branches",
+    );
+  }
   if (["all", "base"].includes(mode)) {
     const tree = await create("base");
     assert.equal(
@@ -573,8 +840,9 @@ try {
     );
     assert.equal(existsSync(join(repo, tree.path)), false);
     assert.equal(
-      owner.get("forge/git", `worktree:${tree.path}`).value.status,
-      "removed",
+      owner.get("forge/git", `worktree:${tree.path}`),
+      undefined,
+      "merged cleanup must retire its binding",
     );
     assert.equal(
       git(["rev-parse", `refs/heads/${tree.branch}`]),

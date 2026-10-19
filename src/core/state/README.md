@@ -1,8 +1,12 @@
 # State owner
 
-`StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns only the four methods in `StateClient`, with namespace and actor captured. It never exposes a connection.
+`StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.
 
 `put` atomically checks the expected revision, checks any lease fence on the owner's clock, writes the record, appends its event, and saves the idempotent result. A reused request ID with different input is refused. Acquisition takes a holder and request ID, without a generation. Renewal, release and fenced writes require the current generation and the same actor and session. Released and expired generations are never reused. A historical acquisition replay cannot revive authority.
+
+`delete(key, { expectRevision, readSet? })` removes an existing active record and appends a `record.deleted@1` event atomically. The event returns the next revision, timestamp and actor. It requires a positive matching revision, checks the same read-set and optional lease fence as `put` inside the transaction, and has no request ID or idempotent replay receipt. A repeated deletion is refused. Bound assembly clients additionally require a declared write effect and refuse acquisition contexts; held contexts fence the named subject, defaulting to the key.
+
+Deleted keys disappear from `get`, `list` and `listRange`; their indexed events and earlier receipts remain. A subsequent `put` or `putMany` uses `expectRevision: 0` to assert current absence, then resumes the historical revision sequence rather than reusing a previous token. Read-set revision 0 likewise asserts current absence. Snapshot validation replays both updates and deletions, checks deletion against an existing record, and reconstructs receipt guards against the active records at that point in history. No schema migration or new table is needed.
 
 The synchronous database adapter rejects nested and asynchronous transaction bodies. Both runtime bindings normalize an absent row to `undefined`. Native driver failures propagate; they are never blindly retried or swallowed.
 
