@@ -443,6 +443,58 @@ try {
     assert.deepEqual(localState(guarded), nativeBefore);
     assert.equal(readFileSync(nativeHook, "utf8"), "#!/bin/sh\nexit 0\n");
     rmSync(nativeHook);
+    const hookWorktree = join(root, "guard-linked");
+    git(
+      guarded.root,
+      guarded.env,
+      "worktree",
+      "add",
+      "--quiet",
+      "--detach",
+      hookWorktree,
+      "HEAD",
+    );
+    git(
+      guarded.root,
+      guarded.env,
+      "config",
+      "extensions.worktreeConfig",
+      "true",
+    );
+    const override = ".git/foreign-worktree-hooks";
+    git(
+      hookWorktree,
+      guarded.env,
+      "config",
+      "--worktree",
+      "core.hooksPath",
+      override,
+    );
+    const worktreeConfig = git(
+      hookWorktree,
+      guarded.env,
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-path",
+      "config.worktree",
+    );
+    const overrideBytes = readFileSync(worktreeConfig);
+    const beforeWorktreeConflict = localState(guarded);
+    const conflicted = await guarded.call("hook", { enabled: true });
+    assert.equal(conflicted.error?.code, "ACCOUNT_HOOKS_CONFLICT");
+    assert.ok(conflicted.error.message.includes("guard-linked"));
+    assert.ok(conflicted.error.message.includes(JSON.stringify(override)));
+    assert.deepEqual(
+      readFileSync(worktreeConfig),
+      overrideBytes,
+      "guard activation must preserve conflicting worktree configuration",
+    );
+    assert.deepEqual(
+      localState(guarded),
+      beforeWorktreeConflict,
+      "worktree hook conflicts must refuse before clone-local writes",
+    );
+    git(guarded.root, guarded.env, "worktree", "remove", hookWorktree);
     ok(
       await guarded.call("hook", { enabled: true }),
       "install opt-in pre-push guard",

@@ -65,6 +65,10 @@ hook restores its saved local setting. Merge automation calls the same catalog
 check with `trigger: "merge"` and the exact proposed range.
 The hook keeps successful checks quiet and prints the catalog's typed refusal to
 stderr when it blocks a push.
+Enabling checks Git's effective hook path in every listed worktree, including
+worktree-scoped configuration, and verifies the paths again after publication.
+A conflicting worktree override returns `ACCOUNT_HOOKS_CONFLICT` naming the
+worktree and value. It is preserved. Repeating enable rechecks the effective paths.
 
 `github-account.message` accepts text or a Git-directory message path and applies
 `allow`, `refuse`, or `strip` to AI co-author trailers. AI markers are configured

@@ -807,6 +807,84 @@ async function check(
     );
   return { checked: revs.length, trigger: input.trigger, tip };
 }
+interface HookRoute {
+  worktree: string;
+  scope: string | null;
+  override: string | null;
+  hook: string;
+}
+function hookPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+async function hookRoutes(
+  s: Services,
+  c: Config,
+  env: Record<string, string>,
+): Promise<HookRoute[]> {
+  const listed = await repository(s, c, env, [
+    "worktree",
+    "list",
+    "--porcelain",
+    "-z",
+  ]);
+  const routes: HookRoute[] = [];
+  for (const record of listed.split("\0\0")) {
+    const worktree = record
+      .split("\0")
+      .find((line) => line.startsWith("worktree "))
+      ?.slice(9);
+    if (!worktree) continue;
+    const configured = await command(
+      s,
+      c,
+      env,
+      "repository",
+      c.gitProgram,
+      ["config", "--null", "--show-scope", "--get", "core.hooksPath"],
+      worktree,
+      [0, 1],
+    );
+    const parts = configured.stdout.split("\0");
+    if (configured.exitCode === 0 && (parts.length !== 3 || parts[2] !== ""))
+      fail(
+        "ACCOUNT_DATA_INVALID",
+        "Effective hook configuration is incomplete",
+      );
+    const resolved = await repository(
+      s,
+      c,
+      env,
+      ["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push"],
+      worktree,
+    );
+    routes.push({
+      worktree,
+      scope: configured.exitCode === 0 ? parts[0]! : null,
+      override: configured.exitCode === 0 ? parts[1]! : null,
+      hook: hookPath(resolved.replace(/\r?\n$/, "")),
+    });
+  }
+  if (!routes.length)
+    fail(
+      "ACCOUNT_DATA_INVALID",
+      "Git returned no worktrees for guard verification",
+    );
+  return routes;
+}
+function verifyHookRoutes(
+  routes: readonly HookRoute[],
+  expected: string,
+  enabled: boolean,
+): void {
+  for (const route of routes)
+    if (route.hook !== expected && (enabled || route.override !== null))
+      fail(
+        enabled || route.scope === "worktree"
+          ? "ACCOUNT_HOOKS_CONFLICT"
+          : "INPUT_CONFLICT",
+        `Guard hook conflict in worktree ${route.worktree}: core.hooksPath=${JSON.stringify(route.override)} resolves to ${route.hook}; expected ${expected}`,
+      );
+}
 function hookScript(c: Config, launchers: Launchers, s: Services): string {
   const call = [launchers.forge!, ...c.forgeCommand.slice(1)]
     .map(shell)
@@ -1098,6 +1176,11 @@ const operations: Operations<AccountOperations> = {
           "ACCOUNT_UNBOUND",
           "Choose an account before installing its guard",
         );
+      const expectedHook = hookPath(
+        `${s.files.roots.common}/${DIRECTORY}/hooks/pre-push`,
+      );
+      const routes = input.enabled ? await hookRoutes(s, c, env) : [];
+      if (input.enabled) verifyHookRoutes(routes, expectedHook, bound.hooks);
       if (bound.hooks === input.enabled) return { enabled: input.enabled };
       const metadata = s.files.read(META, c.maxFileBytes, "common")!;
       const key = "core.hooksPath",
@@ -1105,19 +1188,7 @@ const operations: Operations<AccountOperations> = {
         text = launchers ? hookScript(c, launchers, s) : "";
       const original = s.files.read("config", c.maxFileBytes, "common")!;
       if (input.enabled) {
-        if (await effective(s, c, env, key))
-          fail(
-            "INPUT_CONFLICT",
-            "An existing hooks path is configured; integrate the catalog check in that hook instead",
-          );
-        const native = await repository(s, c, env, [
-          "rev-parse",
-          "--path-format=absolute",
-          "--git-path",
-          "hooks/pre-push",
-        ]);
-        const nativePath = native.trim().replace(/\\/g, "/");
-        const common = s.files.roots.common.replace(/\\/g, "/");
+        const common = hookPath(s.files.roots.common);
         const hookNames = [
           "applypatch-msg",
           "pre-applypatch",
@@ -1148,25 +1219,27 @@ const operations: Operations<AccountOperations> = {
           "p4-pre-submit",
           "post-index-change",
         ];
-        if (nativePath.startsWith(common + "/")) {
-          const directory = nativePath.slice(
-            common.length + 1,
-            -"pre-push".length,
-          );
-          if (
-            hookNames.some((name) =>
-              s.files.inspect(directory + name, "common"),
+        for (const nativePath of new Set(routes.map((route) => route.hook))) {
+          if (nativePath.startsWith(common + "/")) {
+            const directory = nativePath.slice(
+              common.length + 1,
+              -"pre-push".length,
+            );
+            if (
+              hookNames.some((name) =>
+                s.files.inspect(directory + name, "common"),
+              )
             )
-          )
+              fail(
+                "INPUT_CONFLICT",
+                "An existing native hook is present; integrate the catalog check there",
+              );
+          } else
             fail(
               "INPUT_CONFLICT",
-              "An existing native hook is present; integrate the catalog check there",
+              "Cannot establish ownership of the clone's native hook directory",
             );
-        } else
-          fail(
-            "INPUT_CONFLICT",
-            "Cannot establish ownership of the clone's native hook directory",
-          );
+        }
         bound.previous[key] = await values(s, c, env, key);
         bound.installed[key] = [`${s.files.roots.common}/${DIRECTORY}/hooks`];
         bound.artifacts[path] = text;
@@ -1183,13 +1256,21 @@ const operations: Operations<AccountOperations> = {
           expected: null,
           executable: true,
         });
+        let published = false;
         try {
           s.files.write(META, updated, { area: "common", expected: metadata });
           s.files.write("config", replacement, {
             area: "common",
             expected: original,
           });
+          published = true;
+          verifyHookRoutes(await hookRoutes(s, c, env), expectedHook, true);
         } catch (error) {
+          if (published)
+            s.files.write("config", original, {
+              area: "common",
+              expected: replacement,
+            });
           if (s.files.read(META, c.maxFileBytes, "common") === updated)
             s.files.write(META, metadata, {
               area: "common",
