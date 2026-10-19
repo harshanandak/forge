@@ -378,13 +378,19 @@ try {
         version: "1.5.0",
         expectRevision: 0,
       });
-      console.log(
-        `DEADLINE_MEASUREMENT platform=${process.platform} operation=semver.mark durationMs=${marked.result.writeDurationMs} roundTripMs=${Math.ceil(performance.now() - markStarted)} declaredMs=15000 scope=durable-state-put`,
-      );
+
+      const { writeDurationMs, ...markedValue } = marked.result ?? {};
       assert.deepEqual(
-        { version: marked.result.version, revision: marked.result.revision },
+        markedValue,
         { version: "1.5.0", revision: 1 },
         JSON.stringify(marked),
+      );
+      assert.ok(
+        Number.isInteger(writeDurationMs) && writeDurationMs >= 0,
+        "durable write timing must be measured",
+      );
+      console.log(
+        `DEADLINE_MEASUREMENT platform=${process.platform} operation=semver.mark durationMs=${writeDurationMs} roundTripMs=${Math.ceil(performance.now() - markStarted)} declaredMs=15000 scope=durable-state-put`,
       );
       if (mode === "race") await race();
       else {
