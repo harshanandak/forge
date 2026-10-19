@@ -1,0 +1,36 @@
+{
+  "operations": {
+    "worktree.create": {
+      "title": "worktree.create",
+      "summary": "Create an isolated branch from the fetched remote default or an explicit base."
+    },
+    "worktree.list": {
+      "title": "worktree.list",
+      "summary": "Read Git worktrees and their owned issue/run bindings without writes."
+    },
+    "worktree.remove": {
+      "title": "worktree.remove",
+      "summary": "Remove one owned clean worktree at its expected head and binding revision."
+    },
+    "worktree.clean": {
+      "title": "worktree.clean",
+      "summary": "Remove only started, clean, owned worktrees whose patch is merged; keep unstarted work."
+    },
+    "branch.push": {
+      "title": "branch.push",
+      "summary": "Push an exact commit without force or bypassing hooks and verify the remote head."
+    },
+    "hook.install": {
+      "title": "hook.install",
+      "summary": "Explicitly install a tiny owned hook only when existing user hooks can be preserved."
+    },
+    "hook.remove": {
+      "title": "hook.remove",
+      "summary": "Remove only receipt-owned hook bytes and restore an unchanged hooks path."
+    },
+    "hook.status": {
+      "title": "hook.status",
+      "summary": "Read actual hook bytes, executable mode, command availability and declared dependencies."
+    }
+  }
+}

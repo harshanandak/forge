@@ -1,0 +1,77 @@
+import type { Counterfactual } from "../state/counterfactuals.ts";
+
+export const counterfactuals: readonly Counterfactual[] = [
+  {
+    kind: "assertion",
+    file: "blocks/git/entry.cjs",
+    from: "sha: await revision(c, reference)",
+    to: 'sha: await revision(c, "HEAD")',
+    journey: "base",
+    evidence: "default base must be remote default, not parent WIP",
+  },
+  {
+    kind: "assertion",
+    file: "blocks/git/entry.cjs",
+    from: "tree.head === binding.baseSha",
+    to: "false",
+    journey: "unstarted",
+    evidence: "unstarted worktree must survive cleanup",
+  },
+  {
+    kind: "assertion",
+    file: "blocks/git/entry.cjs",
+    from: '["cherry", target, synthetic]',
+    to: '["cherry", target, head]',
+    journey: "squash",
+    evidence:
+      "combined patch from multiple commits must count as squash merged",
+  },
+  {
+    kind: "assertion",
+    file: "blocks/git/entry.cjs",
+    from: "`${head}:refs/heads/${remoteBranch}`",
+    to: "`${branch}:refs/heads/${remoteBranch}`",
+    journey: "push",
+    evidence: "Remote head did not read back",
+  },
+  {
+    kind: "assertion",
+    file: "blocks/git/entry.cjs",
+    from: '(c.services.clone.platform === "win32" || info.executable)',
+    to: "true",
+    journey: "hook-mode",
+    evidence: "POSIX non-executable hook must be inactive",
+  },
+  {
+    kind: "assertion",
+    file: "blocks/git/entry.cjs",
+    from: "hookDependencies(c, command, limit);",
+    to: "true;",
+    journey: "hook-dependency",
+    evidence: "missing dependency must deactivate hook",
+  },
+  {
+    kind: "assertion",
+    file: "blocks/git/entry.cjs",
+    from: '(await revision(c, "HEAD", absolute)) !== input.expectedHead',
+    to: "false",
+    journey: "removal-race",
+    evidence: "expected SUBJECT_VERSION_CONFLICT",
+  },
+  {
+    kind: "assertion",
+    file: "blocks/git/entry.cjs",
+    from: "if (!samePath(effective, desired, c.services.clone.platform))",
+    to: "if (false)",
+    journey: "hook-path",
+    evidence: "mismatched effective hook path must create no file",
+  },
+  {
+    kind: "assertion",
+    file: "blocks/git/entry.cjs",
+    from: "if (!receipt.created && c.input.adoptExisting !== true)",
+    to: "if (!receipt.created)",
+    journey: "hook-recovery",
+    evidence: "explicit recovery must adopt exact reserved hook bytes",
+  },
+];
