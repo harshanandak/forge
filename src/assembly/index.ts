@@ -189,6 +189,9 @@ export async function createAssembly(
         ]),
       ),
       ...(show.effective.mcp === undefined ? {} : { mcp: show.effective.mcp }),
+      ...(show.effective.runtime === undefined
+        ? {}
+        : { runtime: show.effective.runtime }),
     });
     if (!checked.ok) refuse("INPUT_INVALID", "Invalid effective composition");
     return checked.value;

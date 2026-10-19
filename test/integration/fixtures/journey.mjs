@@ -125,6 +125,7 @@ function makeBlock() {
     input,
     output,
     context,
+    timeoutMs: 15000,
     effects,
     args,
     idempotent: effects.length === 0,
@@ -371,10 +372,14 @@ try {
       ]);
       server = mcp();
       await server.initialize();
+      const markStarted = performance.now();
       const marked = await server.call("semver_mark", {
         version: "1.5.0",
         expectRevision: 0,
       });
+      console.log(
+        `DEADLINE_MEASUREMENT platform=${process.platform} operation=semver.mark durationMs=${Math.ceil(performance.now() - markStarted)} declaredMs=15000 scope=mcp-round-trip`,
+      );
       assert.deepEqual(
         marked.result,
         { version: "1.5.0", revision: 1 },

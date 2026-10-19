@@ -47,6 +47,8 @@ function run(
     throw new Error(
       `${result.error?.message ?? "process failed"}\n${result.stdout}\n${result.stderr}`,
     );
+  for (const line of result.stdout.split(/\r?\n/))
+    if (line.startsWith("DEADLINE_MEASUREMENT ")) console.log(line);
   return result.stdout;
 }
 function withoutBun(): NodeJS.ProcessEnv {
@@ -202,6 +204,14 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
         join(isolated, `${name}.mjs`),
       );
     const mutations = [
+      {
+        file: "src/core/runtime/deadline.js",
+        from: "const timeoutMs = Math.min(...limits);",
+        to: "const timeoutMs = 1000;",
+        mode: "deadline",
+        fixture: "review-two",
+        evidence: "declared durable budget must complete",
+      },
       {
         file: "src/assembly/state.js",
         from: "ensurePrivateDirectory(dirname(this.#path), this.#directories);",

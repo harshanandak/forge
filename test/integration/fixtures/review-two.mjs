@@ -10,7 +10,15 @@ import {
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { createAssembly, localContext } from "forge-workflow/runtime";
+import {
+  createAssembly,
+  localContext,
+  Runtime,
+  Catalog,
+  TrustStore,
+  captureBlock,
+  nodeFileCapture,
+} from "forge-workflow/runtime";
 import { StateOwner } from "forge-workflow/state";
 import { sqliteStore } from "forge-workflow/adapters/sqlite";
 const packageUrl = import.meta.resolve("forge-workflow/package.json");
@@ -51,6 +59,7 @@ function block(path, noun) {
         output: "output.json",
         args: ["value"],
         context: "stateless",
+        timeoutMs: 15000,
         effects: [],
         idempotent: true,
         callers: ["human", "agent"],
@@ -365,7 +374,66 @@ async function directories() {
     "PASS directories: every parent synced before acknowledgement, including retries after sync failure",
   );
 }
+async function declaredDeadline() {
+  const directory = join(work, "deadline");
+  const manifest = block(directory, "clock");
+  writeFileSync(join(directory, "block.json"), JSON.stringify(manifest));
+  const captured = captureBlock(directory, nodeFileCapture);
+  const catalog = new Catalog(
+    {
+      schemaVersion: "forge.config/1",
+      blocks: { clock: { source: { path: "./clock" } } },
+    },
+    new Map([["clock", captured]]),
+  );
+  const trust = new TrustStore();
+  trust.admit("human", captured.digest);
+  let now = 0;
+  const runtime = new Runtime(catalog, trust, {
+    clock: { now: () => now },
+    services: () => {
+      now += 2000;
+      return Promise.resolve({ ownership: "borrowed", value: {} });
+    },
+    isolation: {
+      open: () =>
+        Promise.resolve({
+          ok: true,
+          handle: {
+            ownership: "owned",
+            close: () => Promise.resolve(),
+            value: {
+              run(options) {
+                assert.equal(
+                  options.timeoutMs,
+                  13000,
+                  "declared budget must survive a write taking more than one second",
+                );
+                now += 2000;
+                return options.encode({ value: "written" });
+              },
+            },
+          },
+        }),
+    },
+  });
+  const request = {
+    schemaVersion: "forge.invocation/1",
+    requestId: "deadline",
+    op: "clock.echo",
+    caller: "agent",
+    context: {},
+    input: { value: "ok" },
+  };
+  assert.equal(
+    (await runtime.invoke(request)).ok,
+    true,
+    "declared durable budget must complete",
+  );
+  console.log("PASS declared deadlines with injected clock");
+}
 try {
+  if (["all", "deadline"].includes(mode)) await declaredDeadline();
   if (["all", "directories", "directory-retry"].includes(mode))
     await directories();
   if (mode === "all" || mode === "bootstrap") {

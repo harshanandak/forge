@@ -38,6 +38,7 @@ for (const verb of [
     input: "input.json",
     output: "output.json",
     context: leased ? "leased" : "project",
+    timeoutMs: 15000,
     ...(leased
       ? {
           leaseMode: ["claim", "cancel", "undo"].includes(verb)
