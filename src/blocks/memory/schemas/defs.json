@@ -71,7 +71,7 @@
         }
       },
       "additionalProperties": false,
-      "required": ["revision", "at"]
+      "required": ["revision"]
     },
     "Note": {
       "type": "object",

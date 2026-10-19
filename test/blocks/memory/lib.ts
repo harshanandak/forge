@@ -18,6 +18,7 @@ import {
 import type {
   BatchEntry,
   ExtendedStateClient,
+  HistoryOptions,
   PutOptions,
   RangeOptions,
 } from "../../../src/ports/state.ts";
@@ -208,6 +209,7 @@ export interface Counts {
   list: number;
   listedRecords: number;
   events: number;
+  history: number;
 }
 /** An in-memory state client that counts what the block asks of it. */
 export function memoryState(
@@ -231,6 +233,7 @@ export function memoryState(
     list: 0,
     listedRecords: 0,
     events: 0,
+    history: 0,
   };
   function write(key: string, value: unknown, expectRevision: number) {
     const revision = (records.get(key)?.revision ?? 0) + 1;
@@ -281,6 +284,10 @@ export function memoryState(
     },
     events() {
       counts.events += 1;
+      return [];
+    },
+    history(_options: HistoryOptions) {
+      counts.history += 1;
       return [];
     },
     put(key, value, options: PutOptions) {

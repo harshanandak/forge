@@ -173,21 +173,25 @@ function notePage(
     })
     .map((record) => ({ ...noteOf(record), record }));
 }
+/**
+ * The versions a reader can ask for: the current one and each earlier text still kept, from the
+ * note's own record, so a response never waits on the event log.
+ */
 function versionsOf(
-  state: StateClient,
-  key: string,
-): { revision: number; at: string }[] {
-  return state.events(key).map((event) => ({
-    revision: event.revision,
-    at: event.at,
-  }));
+  record: StateRecord,
+  value: NoteValue,
+): { revision: number; at?: string }[] {
+  return [
+    ...value.previous.map((entry) => ({ revision: entry.revision })),
+    { revision: record.revision, at: record.updatedAt },
+  ];
 }
 function present(
-  state: StateClient,
   id: string,
   record: StateRecord,
   value: NoteValue,
   text: string,
+  versions: { revision: number; at?: string }[] = versionsOf(record, value),
 ) {
   return {
     id,
@@ -197,10 +201,26 @@ function present(
     links: [...value.links],
     text: fence(text, `memory:${id}`, record.updatedAt),
     updatedAt: record.updatedAt,
-    versions: versionsOf(state, record.key),
+    versions,
   };
 }
 
+/** Show adds timestamps from one bounded, indexed page of the note's own history. */
+function shown(
+  state: ExtendedStateClient,
+  record: StateRecord,
+  value: NoteValue,
+): { revision: number; at?: string }[] {
+  const at = new Map(
+    state
+      .history({ key: record.key, limit: MAX_VERSIONS + 1 })
+      .map((event) => [event.revision, event.at] as const),
+  );
+  return versionsOf(record, value).map((version) => {
+    const when = at.get(version.revision);
+    return when === undefined ? version : { ...version, at: when };
+  });
+}
 function terms(text: string): string[] {
   return text
     .normalize("NFKC")
@@ -297,13 +317,7 @@ module.exports = {
       return {
         status: "updated" as const,
         id: input.id,
-        note: present(
-          state,
-          input.id,
-          record,
-          record.value as NoteValue,
-          input.text,
-        ),
+        note: present(input.id, record, record.value as NoteValue, input.text),
       };
     }
     // The number and the note it numbers commit together.
@@ -322,7 +336,7 @@ module.exports = {
       return {
         status: "added" as const,
         id,
-        note: present(state, id, record, record.value as NoteValue, input.text),
+        note: present(id, record, record.value as NoteValue, input.text),
       };
     });
   },
@@ -457,7 +471,13 @@ module.exports = {
     if (input.revision === undefined || input.revision === record.revision)
       return {
         status: "found" as const,
-        note: present(state, input.id, record, value, value.text),
+        note: present(
+          input.id,
+          record,
+          value,
+          value.text,
+          shown(state, record, value),
+        ),
       };
     const older = value.previous.find(
       (entry) => entry.revision === input.revision,
@@ -465,7 +485,13 @@ module.exports = {
     if (!older) return { status: "version_unavailable" as const };
     return {
       status: "found" as const,
-      note: present(state, input.id, record, value, older.text),
+      note: present(
+        input.id,
+        record,
+        value,
+        older.text,
+        shown(state, record, value),
+      ),
     };
   },
 

@@ -357,3 +357,54 @@ test("every write operation is exactly one transaction, so one durable commit pe
     forget: 1,
   });
 }, 30_000);
+
+test("a note response never waits on the event log: add and edit read no history, show reads one bounded page", () => {
+  const entry = loadEntry("memory");
+  const state = memoryState();
+  const noHistory = () => {
+    expect(state.counts.events).toBe(0);
+    expect(state.counts.history).toBe(0);
+  };
+  entry["memory.add"]!({ input: { text: "one" }, services: { state } });
+  entry["memory.add"]!({
+    input: { text: "two", id: "note-1", expectRevision: 1 },
+    services: { state },
+  });
+  noHistory();
+  const shown = entry["memory.show"]!({
+    input: { id: "note-1" },
+    services: { state },
+  }) as { note: { versions: { revision: number }[] } };
+  // One page, not the whole log; the kept versions come from the record itself.
+  expect(state.counts.history).toBe(1);
+  expect(state.counts.events).toBe(0);
+  expect(shown.note.versions.map((version) => version.revision)).toEqual([
+    1, 2,
+  ]);
+}, 30_000);
+
+test("a failing history lookup cannot turn a committed add into a failed call", () => {
+  const entry = loadEntry("memory");
+  const state = memoryState();
+  const broken = {
+    ...state,
+    history: () => {
+      throw new Error("the event log is too slow");
+    },
+    events: () => {
+      throw new Error("the event log is too slow");
+    },
+    // The spread copies methods; writes must still reach the same records.
+    putMany: state.putMany,
+    put: state.put,
+    get: state.get,
+  };
+  const added = entry["memory.add"]!({
+    input: { text: "kept" },
+    services: { state: broken },
+  }) as { status: string; id: string };
+  expect(added).toMatchObject({ status: "added", id: "note-1" });
+  // The note exists exactly once: a caller who saw a response has nothing to retry.
+  expect(state.counts.putMany).toBe(1);
+  expect(state.get("note/000000001")).toBeDefined();
+}, 30_000);

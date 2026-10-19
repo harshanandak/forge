@@ -4,6 +4,7 @@ import type {
   BatchEntry,
   BatchOptions,
   ExtendedStateClient,
+  HistoryOptions,
   PutOptions,
   RangeOptions,
   StateClient,
@@ -73,6 +74,8 @@ export function createStateClient(options: {
     list: (prefix?: string) => owner?.list(namespace, prefix) ?? [],
     listRange: (range: RangeOptions) =>
       owner?.listRange(namespace, range) ?? [],
+    history: (options: HistoryOptions) =>
+      owner?.history(namespace, options) ?? [],
     events: (key?: string) => owner?.events(namespace, key) ?? [],
     lease: (subject: string) => owner?.lease(namespace, subject),
     put(key: string, value: unknown, put: ClientPutOptions) {

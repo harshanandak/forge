@@ -27,6 +27,7 @@ export type {
   BatchEntry,
   BatchOptions,
   ExtendedStateClient,
+  HistoryOptions,
   PutOptions,
   RangeOptions,
   StateClient,

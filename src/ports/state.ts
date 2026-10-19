@@ -32,6 +32,15 @@ export interface BatchOptions {
   }[];
 }
 
+export interface HistoryOptions {
+  /** The record key whose events to read. */
+  readonly key: string;
+  /** Events to read at most, from 1 to 1000. */
+  readonly limit: number;
+  /** Only events with a revision below this one: the cursor for the next, older page. */
+  readonly before?: number;
+}
+
 export interface RangeOptions {
   /** Smallest key to read, inclusive. */
   readonly from?: string;
@@ -47,7 +56,8 @@ export interface RangeOptions {
  * `putMany`: all entries commit in one transaction or none does, and the store syncs once, not once
  * per record. Every entry carries its own expectRevision, a stale one fails the whole batch, and
  * keys must be distinct. `listRange`: reads at most `limit` records from a key range, in key order
- * or reverse, without loading the rest of the namespace.
+ * or reverse, without loading the rest of the namespace. `history`: reads at most `limit` events of
+ * one key, newest first, without scanning the event log.
  */
 export interface ExtendedStateClient extends StateClient {
   putMany(
@@ -55,4 +65,6 @@ export interface ExtendedStateClient extends StateClient {
     options?: BatchOptions,
   ): readonly StateRecord[];
   listRange(options: RangeOptions): readonly StateRecord[];
+  /** One bounded page of a key's events, newest first, found through an index on the key. */
+  history(options: HistoryOptions): readonly StateEvent[];
 }

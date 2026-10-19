@@ -20,12 +20,18 @@ import type {
   BatchEntry,
   BatchOptions,
   ExtendedStateClient,
+  HistoryOptions,
   PutOptions,
   RangeOptions,
 } from "../../ports/state.ts";
 import type { SqlDatabase, SqlRow } from "../../ports/store.ts";
 import type { Handle } from "../../ports/lifetime.ts";
-import { baseline, migrate, type Migration } from "./migrations.ts";
+import {
+  baseline,
+  eventKeyIndex,
+  migrate,
+  type Migration,
+} from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
 
 /** Optional storage capability supplied by trusted assembly; the locked SQL port stays unchanged. */
@@ -614,7 +620,7 @@ function dataTables(db: SqlDatabase): readonly string[] {
 export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
-  #knownMigrations = new Set([baseline.id]);
+  #knownMigrations = new Set([baseline.id, eventKeyIndex.id]);
   constructor(db: SqlDatabase, clock: ClockPort) {
     this.#db = db;
     this.#clock = clock;
@@ -632,7 +638,11 @@ export class StateOwner {
     }
     migrate(
       this.#db,
-      [baseline, ...domains.flatMap((domain) => domain.migrations)],
+      [
+        baseline,
+        eventKeyIndex,
+        ...domains.flatMap((domain) => domain.migrations),
+      ],
       () => {
         registerTables(
           this.#db,
@@ -656,6 +666,7 @@ export class StateOwner {
     );
     this.#knownMigrations = new Set([
       baseline.id,
+      eventKeyIndex.id,
       ...domains.flatMap((domain) =>
         domain.migrations.map((migration) => migration.id),
       ),
@@ -683,6 +694,7 @@ export class StateOwner {
         ),
       list: (prefix?: string) => this.list(namespace, prefix),
       listRange: (options: RangeOptions) => this.listRange(namespace, options),
+      history: (options: HistoryOptions) => this.history(namespace, options),
       events: (key?: string) => this.events(namespace, key),
     });
   }
@@ -733,6 +745,26 @@ export class StateOwner {
         params,
       )
       .map((row) => body<StateRecord>(row)!);
+  }
+  /** One bounded page of a key's events, newest first; the (namespace, key, sequence) index serves it. */
+  history(namespace: string, options: HistoryOptions): readonly StateEvent[] {
+    namespaceValid(namespace);
+    keyValid(options.key);
+    if (
+      !Number.isSafeInteger(options.limit) ||
+      options.limit < 1 ||
+      options.limit > 1000 ||
+      (options.before !== undefined && !Number.isSafeInteger(options.before))
+    )
+      invalid("History limit must be an integer from 1 to 1000");
+    return this.#db
+      .all(
+        `SELECT body FROM state_events WHERE namespace=? AND key=?${options.before === undefined ? "" : " AND json_extract(body,'$.revision')<?"} ORDER BY sequence DESC LIMIT ${options.limit}`,
+        options.before === undefined
+          ? [namespace, options.key]
+          : [namespace, options.key, options.before],
+      )
+      .map((row) => body<StateEvent>(row)!);
   }
   events(namespace: string, key?: string): readonly StateEvent[] {
     namespaceValid(namespace);
