@@ -270,7 +270,7 @@ async function review() {
   for (const command of ["tool && other", 'tool "unterminated']) {
     configure({ commands: { test: command } });
     assert.equal(
-      cli(["check", "run"], 2).error.code,
+      cli(["check", "run"], 6).error.code,
       "INPUT_INVALID",
       "invalid command string has a typed error",
     );
