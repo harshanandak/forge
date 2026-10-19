@@ -11,13 +11,9 @@ afterEach(async () => {
 
 test("both blocks are registered first-party sources that resolve to their folders", () => {
   expect(Object.keys(firstPartyBlocks)).toContain("forge/memory");
-  expect(Object.keys(firstPartyBlocks)).toContain("forge/context");
   expect(
     resolveBlock("/unused", { builtin: "forge/memory" }).replaceAll("\\", "/"),
   ).toMatch(/src\/blocks\/memory\/?$/);
-  expect(
-    resolveBlock("/unused", { builtin: "forge/context" }).replaceAll("\\", "/"),
-  ).toMatch(/src\/blocks\/context\/?$/);
 }, 30_000);
 
 const operations = {
@@ -30,12 +26,10 @@ const operations = {
   "decision.propose": { effects: ["decision:write"], humanOnly: false },
   "decision.adopt": { effects: ["decision:write"], humanOnly: true },
   "decision.list": { effects: [], humanOnly: false },
-  "context.handoff": { effects: ["context:write"], humanOnly: false },
-  "context.show": { effects: [], humanOnly: false },
 } as const;
 
 test("every operation is fully described in the catalog, so any surface can be generated from it", async () => {
-  harness = await openHarness(["memory", "context"]);
+  harness = await openHarness(["memory"]);
   const listed = harness.assembly.catalog.list();
   const mine = listed.filter((entry) => entry.op in operations);
   expect(mine.map((entry) => entry.op).sort()).toEqual(
@@ -55,12 +49,10 @@ test("every operation is fully described in the catalog, so any surface can be g
     expect(entry.outputSchema?.type).toBe("object");
     expect(entry.admitted).toBe(true);
   }
-  // Notes work on the device alone; decisions and handoffs belong to the project.
+  // Notes work on the device alone; decisions belong to the project.
   const context = (op: string) =>
     mine.find((entry) => entry.op === op)?.declaration.context;
   expect(context("memory.add")).toBe("device");
   expect(context("memory.search")).toBe("device");
   expect(context("decision.propose")).toBe("project");
-  expect(context("context.handoff")).toBe("project");
-  expect(context("context.show")).toBe("project");
 }, 60_000);

@@ -62,7 +62,7 @@ function pattern(text: string): RegExp {
 
 // Labelled integration: the packed, installed package on Node without Bun; each key journey is then
 // shown to fail with its fix removed from the installed copy.
-test("integration: packed memory and context journeys, each failing with its fix removed", async () => {
+test("integration: packed memory journeys, each failing with its fix removed", async () => {
   const work = mkdtempSync(join(tmpdir(), "forge-packed-l8-"));
   try {
     const node = nodeBinary();
@@ -104,7 +104,7 @@ test("integration: packed memory and context journeys, each failing with its fix
     const passed = await launch([fixture, installed, "all"], consumer);
     if (passed.status !== 0)
       throw new Error(`journeys failed\n${passed.stdout}\n${passed.stderr}`);
-    for (const journey of ["device", "fence", "handoff"])
+    for (const journey of ["device", "fence"])
       expect(passed.stdout).toContain(`PASS ${journey}`);
 
     // Each worker mutates its own copy of the installed package.
@@ -151,7 +151,7 @@ test("integration: packed memory and context journeys, each failing with its fix
       }),
     );
     console.log(
-      `Packed memory and context: 3 journeys, ${counterfactuals.length} remove-the-fix checks`,
+      `Packed memory: 2 journeys, ${counterfactuals.length} remove-the-fix checks`,
     );
   } finally {
     rmSync(work, { recursive: true, force: true });

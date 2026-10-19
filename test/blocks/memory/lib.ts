@@ -32,7 +32,7 @@ import type {
 const repo = resolve(import.meta.dirname, "../../..");
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 
-export type BlockName = "memory" | "context";
+export type BlockName = "memory";
 
 /** Copy a block and emit its entry the way the build does, so the block runs as captured bytes. */
 export function stageBlock(name: BlockName, into: string): string {
@@ -110,7 +110,6 @@ export function done(result: ResultEnvelope): unknown {
 
 const effects: Record<BlockName, string[]> = {
   memory: ["memory:write", "decision:write"],
-  context: ["context:write"],
 };
 
 /** Build an assembly in temp folders, add the blocks by path, and admit and grant them as a human. */
@@ -205,7 +204,7 @@ export function racing(
           retry: "reconcile_first",
         });
       const record = {
-        namespace: "forge/context",
+        namespace: "forge/memory",
         key,
         revision: (current?.revision ?? 0) + 1,
         value,

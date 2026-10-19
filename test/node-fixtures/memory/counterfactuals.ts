@@ -6,7 +6,7 @@ export interface Counterfactual {
   readonly to: string;
   /** Replace every occurrence rather than the first. */
   readonly all?: true;
-  readonly journey: "device" | "fence" | "handoff";
+  readonly journey: "device" | "fence";
   readonly evidence: string;
 }
 
@@ -34,26 +34,5 @@ export const counterfactuals: readonly Counterfactual[] = [
     to: 'source: text.includes("forge/policy") ? "forge/policy" : source,\n text: neutralize(text),',
     journey: "fence",
     evidence: "provenance names the note",
-  },
-  {
-    file: "blocks/context/index.cjs",
-    from: '(thread) => thread.state === "unresolved"',
-    to: '(thread) => thread.state === "resolved"',
-    journey: "handoff",
-    evidence: "pending review state round-trips",
-  },
-  {
-    file: "blocks/context/index.cjs",
-    from: "uncommitted: { ...value.uncommitted },",
-    to: 'uncommitted: { state: "clean", base: value.head },',
-    journey: "handoff",
-    evidence: "uncommitted-work identity round-trips",
-  },
-  {
-    file: "blocks/context/index.cjs",
-    from: 'return digest === recorded.digest ? "same" : "changed";',
-    to: 'return "same";',
-    journey: "handoff",
-    evidence: "different unfinished work is not mistaken",
   },
 ];
