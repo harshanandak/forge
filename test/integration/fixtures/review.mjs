@@ -64,6 +64,7 @@ function block(path, noun) {
           output: "output.json",
           args: ["value"],
           context: "stateless",
+          timeoutMs: 15000,
           effects: [],
           idempotent: true,
           callers: ["human", "agent"],

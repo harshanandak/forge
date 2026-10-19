@@ -46,6 +46,7 @@ function fixture(
         input: "input.json",
         output: "output.json",
         context: "stateless",
+        timeoutMs: 1000,
         effects: [],
         idempotent: true,
         callers: ["human", "agent"],
@@ -820,6 +821,7 @@ test("runtime uses the injected evaluator and closes both owned handles on every
     try {
       f.trust.admit("human", f.block.digest);
       const runtime = new Runtime(f.catalog, f.trust, {
+        clock: { now: () => 0 },
         services: () =>
           Promise.resolve({
             ownership: "owned",

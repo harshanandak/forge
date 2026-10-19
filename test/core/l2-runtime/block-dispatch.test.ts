@@ -28,6 +28,7 @@ for (const blockName of ["sample", "a".repeat(41)])
             input: "input.json",
             output: "output.json",
             context: "stateless",
+            timeoutMs: 1000,
             effects: [],
             idempotent: true,
             callers: ["human", "agent"],

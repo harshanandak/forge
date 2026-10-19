@@ -1,3 +1,5 @@
+import { invocationDeadline, validateTimeout } from "./deadline.ts";
+import type { ClockPort } from "../../ports/clock.ts";
 import { bindContext } from "../../contract/context.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
@@ -16,13 +18,12 @@ import { TrustStore, refuse } from "../trust/index.ts";
 import type { Handle, LifetimeProvider } from "../../ports/lifetime.ts";
 
 export interface RuntimeLimits {
-  readonly timeoutMs: number;
+  readonly timeoutMs?: number;
   readonly maxOutputBytes: number;
   readonly parse: ParseLimits;
 }
 
 export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
-  timeoutMs: 1000,
   maxOutputBytes: 1_048_576,
   parse: DEFAULT_PARSE_LIMITS,
 };
@@ -50,6 +51,7 @@ export interface RunIsolation {
 export type RunIsolationPort = LifetimeProvider<RunIsolation, void>;
 
 export interface RuntimeOptions {
+  readonly clock?: ClockPort;
   readonly isolation?: RunIsolationPort;
   readonly limits?: Partial<RuntimeLimits>;
   /** Constructs clients exposing only scope.effects, never block-wide grants.
@@ -190,9 +192,10 @@ export class Runtime {
         ...(options.limits?.parse ?? DEFAULT_RUNTIME_LIMITS.parse),
       }),
     });
+    if (this.#limits.timeoutMs !== undefined)
+      validateTimeout(this.#limits.timeoutMs);
     const parse = this.#limits.parse;
     for (const limit of [
-      this.#limits.timeoutMs,
       this.#limits.maxOutputBytes,
       parse.maxBytes,
       parse.maxDepth,
@@ -247,6 +250,17 @@ export class Runtime {
         this.#options.services === undefined
       )
         refuse("PROVIDER_MISSING", "bound clients need a service provider");
+      const deadline = invocationDeadline(
+        {
+          declared: declaration.timeoutMs,
+          configured:
+            this.#catalog.config.blocks[operation.instance]
+              ?.operationTimeouts?.[operation.declaredOp],
+          host: this.#catalog.config.runtime?.timeoutMs,
+          embedding: this.#limits.timeoutMs,
+        },
+        this.#options.clock ?? { now: () => Date.now() },
+      );
       handle = await this.#options.services?.(
         operation.instance,
         bound.context,
@@ -266,6 +280,7 @@ export class Runtime {
       if (!opened.ok) refuse("PROVIDER_MISSING", opened.unavailable.reason);
       let encoded: unknown;
       try {
+        deadline.remaining();
         // Opening the evaluator may yield too; admission must still be current.
         this.#trust.check(block.digest, declaration.effects);
         started = true;
@@ -280,8 +295,9 @@ export class Runtime {
           }),
           encode: (output: unknown) => encodeOutput(output, this.#limits),
           fail: refuse,
-          timeoutMs: this.#limits.timeoutMs,
+          timeoutMs: deadline.remaining(),
         });
+        deadline.remaining();
       } finally {
         await opened.handle.close();
       }
