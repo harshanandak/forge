@@ -11,6 +11,24 @@ import type { HandlerArgs } from "../../../src/contract/author.ts";
 import type { StateRecord } from "../../../src/generated/types.ts";
 import { validateWithSchema } from "../../../src/contract/schema.ts";
 import schema from "../../../src/blocks/check/schemas/config.json" with { type: "json" };
+import manifest from "../../../src/blocks/check/forge.block.json" with { type: "json" };
+import { validateBlockManifest } from "../../../src/contract/index.ts";
+
+test("the check manifest uses locked major interface references in every slot", () => {
+  expect(validateBlockManifest(manifest).ok).toBe(true);
+  for (const requirement of manifest.requires) {
+    expect(
+      validateBlockManifest({
+        ...manifest,
+        requires: manifest.requires.map((item) =>
+          item === requirement
+            ? { ...item, interface: item.interface.replace(/@1$/, "@^1.0.0") }
+            : item,
+        ),
+      }).ok,
+    ).toBe(false);
+  }
+}, 1000);
 type Args<T> = HandlerArgs<T, CheckConfig, CatalogServices>;
 const handlers = entry as unknown as {
   "check.run"(

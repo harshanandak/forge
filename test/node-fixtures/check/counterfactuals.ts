@@ -7,6 +7,27 @@ export interface Counterfactual {
 }
 export const counterfactuals: readonly Counterfactual[] = [
   {
+    file: "blocks/check/forge.block.json",
+    from: "forge.state@1",
+    to: "forge.state@^1.0.0",
+    journey: "mcp",
+    evidence: "Unknown operation: check.run",
+  },
+  {
+    file: "adapters/runner-output/index.js",
+    from: "|errors?|warnings?|reruns?)$/",
+    to: "|errors?|reruns?)$/",
+    journey: "pytest",
+    evidence: "pytest warnings preserve the real test count",
+  },
+  {
+    file: "blocks/check/entry.cjs",
+    from: "const result = await services.process.run(",
+    to: "const result = services.process.run(",
+    journey: "mcp",
+    evidence: "MCP awaits the declared command",
+  },
+  {
     file: "blocks/check/entry.cjs",
     from: "function status(value) {",
     to: "function status(value) { if (Array.isArray(value)) return true;",

@@ -85,6 +85,19 @@ const config = (name, timeoutMs = 3000) => ({
   environment: [],
 });
 const cases = {
+  async pytest() {
+    const output = createRunnerOutput();
+    assert.equal(
+      output.parse("1 passed, 1 warning in 0.12s", "", "auto").testCount,
+      1,
+      "pytest warnings preserve the real test count",
+    );
+    assert.equal(
+      output.parse("1 mystery, 2 passed in 0.12s", "", "auto").testCount,
+      null,
+      "unknown summary terms never yield a partial count",
+    );
+  },
   async cancellation() {
     const controller = new AbortController();
     const marker = join(directory, "cancel-ready.json");

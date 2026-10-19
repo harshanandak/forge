@@ -14,27 +14,27 @@
   "requires": [
     {
       "slot": "state",
-      "interface": "forge.state@^1.0.0"
+      "interface": "forge.state@1"
     },
     {
       "slot": "process",
-      "interface": "forge.process@^1.0.0"
+      "interface": "forge.process@1"
     },
     {
       "slot": "files",
-      "interface": "forge.files@^1.0.0"
+      "interface": "forge.files@1"
     },
     {
       "slot": "environment",
-      "interface": "forge.environment@^1.0.0"
+      "interface": "forge.environment@1"
     },
     {
       "slot": "crypto",
-      "interface": "forge.crypto@^1.0.0"
+      "interface": "forge.crypto@1"
     },
     {
       "slot": "output",
-      "interface": "forge.runner-output@^1.0.0"
+      "interface": "forge.runner-output@1"
     }
   ],
   "operations": {

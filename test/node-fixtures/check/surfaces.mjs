@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const installed = process.argv[2];
+const mcpOnly = process.argv[3] === "mcp";
 const root = realpathSync(mkdtempSync(join(tmpdir(), "check-surfaces-")));
 const bin = join(installed, "dist/bin/forge.js");
 const env = {
@@ -49,7 +50,7 @@ function git(args) {
 }
 const config = {
   commands: { test: { argv: [process.execPath, "command.mjs", "unknown"] } },
-  timeoutMs: 1000,
+  timeoutMs: 5000,
   maxOutputBytes: 8192,
   report: "auto",
   stopOnFailure: true,
@@ -65,14 +66,14 @@ const effects = [
   "files:read",
   "environment:read",
 ];
+let revision;
 function configure(changes) {
-  const current = cli(["config", "show"]);
-  cli([
+  const applied = cli([
     "config",
     "apply",
     "--input",
     JSON.stringify({
-      expectRevision: current.result.revision,
+      expectRevision: revision,
       patch: Object.entries(changes).map(([key, value]) => ({
         op: "set",
         path: `/blocks/check/config/${key}`,
@@ -80,6 +81,7 @@ function configure(changes) {
       })),
     }),
   ]);
+  revision = applied.result.revision;
 }
 async function mcp() {
   const child = spawn(process.execPath, [bin, "--mcp"], {
@@ -136,9 +138,16 @@ async function mcp() {
         listed.result.tools.some((tool) => tool.name === name),
         `generated MCP exposes ${name}`,
       );
+    const commands = await rpc("tools/call", {
+      name: "check_list",
+      arguments: {},
+    });
+    assert.deepEqual(commands.result.structuredContent.result.commands, [
+      "test",
+    ]);
     const run = await rpc("tools/call", { name: "check_run", arguments: {} });
     assert.equal(
-      run.result.structuredContent.result.status,
+      run.result?.structuredContent?.result?.status,
       "PASS",
       "MCP awaits the declared command",
     );
@@ -189,7 +198,7 @@ try {
     "fixture",
   ]);
   const initial = cli(["config", "show"]);
-  cli([
+  const applied = cli([
     "config",
     "apply",
     "--input",
@@ -205,6 +214,7 @@ try {
       ],
     }),
   ]);
+  revision = applied.result.revision;
   assert.equal(
     cli(["check", "run"], 2).error.code,
     "ADMISSION_REQUIRED",
@@ -217,52 +227,59 @@ try {
   const digest = checked.result.digest;
   cli(["block", "admit", digest]);
   cli(["config", "grant", "--input", JSON.stringify({ digest, effects })]);
-  assert.deepEqual(cli(["check", "list"]).result.commands, ["test"]);
-  const first = cli(["check", "run"]).result;
-  assert.equal(first.status, "PASS", "installed CLI awaits command");
-  assert.equal(
-    first.runs[0].testCount,
-    null,
-    "CLI unknown count stays unknown",
-  );
-  assert.deepEqual(
-    cli(["check", "show", first.id]).result,
-    first,
-    "CLI readback matches receipt",
-  );
-  for (const [mode, status] of [
-    ["zero", "FAIL"],
-    ["malformed", "INCOMPLETE"],
-    ["environment", "PASS"],
-  ]) {
-    configure({
-      commands: { test: { argv: [process.execPath, "command.mjs", mode] } },
-    });
+  if (mcpOnly) {
+    await mcp();
+    console.log(
+      "PASS packed generated MCP: list, awaited run, receipt readback",
+    );
+  } else {
+    assert.deepEqual(cli(["check", "list"]).result.commands, ["test"]);
+    const first = cli(["check", "run"]).result;
+    assert.equal(first.status, "PASS", "installed CLI awaits command");
+    assert.equal(
+      first.runs[0].testCount,
+      null,
+      "CLI unknown count stays unknown",
+    );
+    assert.deepEqual(
+      cli(["check", "show", first.id]).result,
+      first,
+      "CLI readback matches receipt",
+    );
+    for (const [mode, status] of [
+      ["zero", "FAIL"],
+      ["malformed", "INCOMPLETE"],
+      ["environment", "PASS"],
+    ]) {
+      configure({
+        commands: { test: { argv: [process.execPath, "command.mjs", mode] } },
+      });
+      assert.equal(
+        cli(["check", "run"]).result.status,
+        status,
+        `CLI ${mode} outcome`,
+      );
+    }
+    configure({ commands: {} });
     assert.equal(
       cli(["check", "run"]).result.status,
-      status,
-      `CLI ${mode} outcome`,
+      "NOT_EXECUTED",
+      "CLI nothing declared",
+    );
+    configure({ commands: config.commands });
+    writeFileSync(join(root, "input.txt"), "changed bytes\n");
+    const changed = cli(["check", "run"]).result;
+    assert.notEqual(
+      first.inputsDigest,
+      changed.inputsDigest,
+      "dirty file bytes bind CLI receipts",
+    );
+    const wire = await mcp();
+    assert.equal(wire.status, changed.status, "CLI and MCP outcomes agree");
+    console.log(
+      "PASS packed generated CLI/MCP: admission, list, outcomes, env, input binding, receipt readback",
     );
   }
-  configure({ commands: {} });
-  assert.equal(
-    cli(["check", "run"]).result.status,
-    "NOT_EXECUTED",
-    "CLI nothing declared",
-  );
-  configure({ commands: config.commands });
-  writeFileSync(join(root, "input.txt"), "changed bytes\n");
-  const changed = cli(["check", "run"]).result;
-  assert.notEqual(
-    first.inputsDigest,
-    changed.inputsDigest,
-    "dirty file bytes bind CLI receipts",
-  );
-  const wire = await mcp();
-  assert.equal(wire.status, changed.status, "CLI and MCP outcomes agree");
-  console.log(
-    "PASS packed generated CLI/MCP: admission, list, outcomes, env, input binding, receipt readback",
-  );
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

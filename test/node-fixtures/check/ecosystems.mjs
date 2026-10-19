@@ -176,7 +176,8 @@ export async function ecosystems({
         "python+pytest",
         {
           "pytest.ini": "[pytest]\n",
-          "test_example.py": "def test_declared():\n    assert 1 + 1 == 2\n",
+          "test_example.py":
+            "import warnings\ndef test_declared():\n    warnings.warn('declared fixture warning', UserWarning)\n    assert 1 + 1 == 2\n",
           "check-command.txt": declaration,
         },
         declaration,

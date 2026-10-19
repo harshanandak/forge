@@ -87,6 +87,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
             "--no-fund",
           ],
           consumer,
+          180000,
         ),
       );
     }
@@ -115,18 +116,19 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
           node,
           [join(import.meta.dirname, "surfaces.mjs"), installed],
           consumer,
-          30000,
+          90000,
           artifactEnv,
         ),
       ),
     );
     const report = JSON.parse(
-      success(run(node, [fixture, installed], consumer, 30000, artifactEnv)),
+      success(run(node, [fixture, installed], consumer, 90000, artifactEnv)),
     ) as {
       passed: string[];
       ecosystem: { passed: string[]; skipped: string[] };
     };
     expect(report.passed).toEqual([
+      "pytest",
       "cancellation",
       "handler",
       "unknown",
@@ -166,8 +168,12 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       try {
         const result = run(
           node,
-          mutation.journey === "surfaces"
-            ? [join(import.meta.dirname, "surfaces.mjs"), isolated]
+          ["surfaces", "mcp"].includes(mutation.journey)
+            ? [
+                join(import.meta.dirname, "surfaces.mjs"),
+                isolated,
+                mutation.journey,
+              ]
             : [fixture, isolated, mutation.journey],
           consumer,
           30000,
@@ -186,4 +192,4 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
-}, 90000);
+}, 300000);
