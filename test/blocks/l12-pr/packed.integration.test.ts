@@ -240,11 +240,11 @@ test("installed PR/GitHub blocks: all computed verdicts, exact head and both fen
               onOutput: () => {},
             },
           );
-          expect(
-            result.status,
-            `counterfactual survived: ${mutation.journey}\n${result.stdout}\n${result.stderr}`,
-          ).not.toBe(0);
-          expect(result.stderr).toContain(mutation.evidence);
+          const diagnostic = `PR counterfactual ${mutation.journey} (${mutation.file}; removed ${mutation.from}): status=${result.status}; expected nonzero exit containing ${JSON.stringify(mutation.evidence)}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
+          if (result.status === 0 || !result.stderr.includes(mutation.evidence))
+            console.error(diagnostic);
+          expect(result.status, diagnostic).not.toBe(0);
+          expect(result.stderr, diagnostic).toContain(mutation.evidence);
         } finally {
           writeFileSync(target, original);
         }

@@ -1,4 +1,5 @@
 import { expect, test, setDefaultTimeout } from "bun:test";
+import { ignoredReviews } from "../../node-fixtures/l12-pr/review-states.ts";
 import {
   call,
   rejection,
@@ -95,6 +96,38 @@ function harness(mutation?: { from: string; to: string }) {
     },
   };
 }
+test("packed ignored-review fixture detects removal of each review-state filter", async () => {
+  for (const state of ["COMMENTED", "DISMISSED"]) {
+    const current = ready();
+    if (!Array.isArray(current.reviews)) throw new Error("Missing ready reviews");
+    const evidence = {
+      ...current,
+      reviews: [
+        ...current.reviews,
+        ...ignoredReviews(head, 11000).filter(
+          (review) => review.state === state && review.headSha === head,
+        ),
+      ],
+    };
+    const baseline = harness();
+    baseline.set(evidence);
+    expect(await baseline.invoke("status")).toMatchObject({
+      verdict: { status: "MERGE_READY" },
+    });
+    const mutant = harness({
+      from: `review.state === "${state}"`,
+      to: "false",
+    });
+    mutant.set(evidence);
+    expect(
+      await mutant.invoke("status"),
+      `${state} filter must be load-bearing`,
+    ).toMatchObject({
+      verdict: { status: "REVIEW_BLOCKED" },
+    });
+  }
+});
+
 test("outsider or unknown-authority approvals never satisfy the configured approval count", async () => {
   for (const authorizing of [false, undefined, "true"]) {
     const h = harness();

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { ignoredReviews } from "./review-states.ts";
 const [installed, root, mode = "all", provider] = process.argv.slice(2);
 const load = (path) =>
   import(pathToFileURL(join(installed, "dist/src", path)).href);
@@ -201,16 +202,24 @@ async function invoke(op, input = reference, generation, who = "alice") {
 const seenOperations = new Set();
 async function good(op, input = reference, generation) {
   const value = await invoke(op, input, generation);
-  assert.equal(value.ok, true, JSON.stringify(value));
+  assert.equal(value.ok, true, `${mode}: pr.${op}: ${JSON.stringify(value)}`);
   return value.result;
 }
 function error(value, code) {
-  assert.equal(value.ok, false, "expected rejection");
+  assert.equal(
+    value.ok,
+    false,
+    `${mode}: expected rejection: ${JSON.stringify(value)}`,
+  );
   assert.equal(value.error.code, code, JSON.stringify(value));
 }
 async function status(expected) {
   const value = await good("status");
-  assert.equal(value.verdict.status, expected, `expected verdict ${expected}`);
+  assert.equal(
+    value.verdict.status,
+    expected,
+    `${mode}: expected verdict ${expected}: ${JSON.stringify(value)}`,
+  );
   return value;
 }
 try {
@@ -611,23 +620,7 @@ try {
   if (["all", "stale-review"].includes(mode)) {
     save({
       ...ready(),
-      reviews: [
-        ...ready().reviews,
-        {
-          id: "R0",
-          author: "history",
-          state: "COMMENTED",
-          headSha: "c".repeat(40),
-          updatedAt: now - 20000,
-        },
-        {
-          id: "R-comment",
-          author: "comment-only",
-          state: "COMMENTED",
-          headSha: head,
-          updatedAt: now - 10000,
-        },
-      ],
+      reviews: [...ready().reviews, ...ignoredReviews(head, now)],
     });
     await status("MERGE_READY");
   }
