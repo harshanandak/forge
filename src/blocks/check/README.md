@@ -12,6 +12,11 @@ the first result that does not pass. Remaining requested checks are `NOT_EXECUTE
 `list(config)` lists declarations; `show(id)` reads and verifies a stored receipt.
 Reads do not start commands or create state. State writes use the bound `StateClient`.
 
+`operations["check.run"]` is an async handler that awaits this engine. It forwards the
+invocation's `AbortSignal` to the process service and caps each command at the remaining
+invocation deadline. Cancellation or expiry prevents later commands and receipt writes.
+The engine creates no timer or controller of its own; the runtime owns that lifetime.
+
 The embedding supplies `ProcessPort`, `ClockPort`, `RunnerOutputPort`, an explicit
 child environment and a `snapshot()` provider. Each snapshot must cover the exact
 head and input file bytes, including uncommitted content. The engine checks snapshots
@@ -30,14 +35,19 @@ an unknown count. Malformed reports, killed processes and truncated output are i
 Timeout results retain captured output. The process adapter owns termination and tree
 cleanup. The runner-output adapter recognizes report formats and imports no runner package.
 
-## Assembly prerequisite
+## Pending async integration
 
-The locked `trusted-action-sync/v1` ABI cannot await `ProcessPort.run()`. The first-party
-directory registry alone does not change that. Catalog integration needs an approved
-native asynchronous dispatch seam or execution profile. This engine does not widen the
-outside-author ABI, add a parallel registry, or expose a special CLI-only path.
+Async handlers for all blocks are owner-approved (tracking `51f33320`) and are being
+implemented in PR #27. The handlers here prepare for that single value-or-Promise ABI,
+including its signal and deadline, without editing the contract. Once it merges, merge
+the fetched main branch normally, add one entry to the first-party registry introduced
+by PR #23, and wire invocation-scoped services through the catalog for CLI/MCP parity.
+No parallel registry, alternate execution profile, or special CLI path is introduced.
 
 Node acceptance fixtures exercise the packed, installed engine and real state owner.
+An embedding that already owns a fresh packed install can set `CHECK_PACKED_CONSUMER`
+to that consumer directory; the check fixture reads its base package and mutates only
+private copies. Shared CI wiring is tracked separately (`92574980`).
 Run the normal pack smoke first when running the packed check fixture alone. The full
 suite's earlier packed slice also seeds the package installer cache. This additional
 install is offline so it verifies the artifact without repeating registry requests.

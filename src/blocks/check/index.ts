@@ -8,8 +8,10 @@ import type {
   CheckRun,
   CheckServices,
   CheckStatus,
+  CheckInvocationScope,
   RunInput,
 } from "./types.ts";
+import type { SpawnOptions } from "../../ports/process.ts";
 export type * from "./types.ts";
 export { verifyReceipt } from "./receipt.ts";
 
@@ -45,7 +47,11 @@ function aggregate(runs: readonly CheckRun[]): CheckStatus {
 export interface CheckBlock {
   list(config: CheckConfig): string[];
   show(id: string): CheckReceipt | undefined;
-  run(input: RunInput, config: CheckConfig): Promise<CheckReceipt>;
+  run(
+    input: RunInput,
+    config: CheckConfig,
+    scope?: CheckInvocationScope,
+  ): Promise<CheckReceipt>;
 }
 export function createCheck(services: CheckServices): CheckBlock {
   function show(id: string): CheckReceipt | undefined {
@@ -69,7 +75,28 @@ export function createCheck(services: CheckServices): CheckBlock {
       return Object.keys(config.commands);
     },
     show,
-    async run(input: RunInput, config: CheckConfig): Promise<CheckReceipt> {
+    async run(
+      input: RunInput,
+      config: CheckConfig,
+      scope?: CheckInvocationScope,
+    ): Promise<CheckReceipt> {
+      function active(): void {
+        if (scope?.signal.aborted)
+          throw new ForgeFailure({
+            code: "INVOCATION_CANCELLED",
+            message: "Check invocation was cancelled",
+            retry: "reconcile_first",
+          });
+        if (scope && services.clock.now() >= scope.deadline)
+          throw new ForgeFailure({
+            code: "INVOCATION_TIMEOUT",
+            message: "Check invocation deadline exceeded",
+            retry: "reconcile_first",
+          });
+      }
+      if (scope && !Number.isSafeInteger(scope.deadline))
+        invalid("Invocation deadline must be an integer timestamp");
+      active();
       if (
         !Number.isSafeInteger(config.timeoutMs) ||
         config.timeoutMs < 1 ||
@@ -86,6 +113,7 @@ export function createCheck(services: CheckServices): CheckBlock {
       const frozenInput = structuredClone(input);
       const env = Object.freeze({ ...services.environment });
       const before = structuredClone(await services.snapshot());
+      active();
       const names = [
         ...new Set(frozenInput.checks ?? Object.keys(frozenConfig.commands)),
       ];
@@ -129,6 +157,7 @@ export function createCheck(services: CheckServices): CheckBlock {
         environmentDigest: hash(env),
         config: frozenConfig,
         trigger: frozenInput.trigger ?? null,
+        invocationDeadline: scope?.deadline ?? null,
         declarations: declarations.map(
           ({ name, argv, executable, report }) => ({
             name,
@@ -141,6 +170,7 @@ export function createCheck(services: CheckServices): CheckBlock {
       });
       const runs: CheckRun[] = [];
       for (const declaration of declarations) {
+        active();
         const { name, argv, executable, report } = declaration;
         if (runs.some((run) => run.status !== "PASS")) {
           runs.push(blank(name, argv, "An earlier check did not pass"));
@@ -162,12 +192,26 @@ export function createCheck(services: CheckServices): CheckBlock {
           continue;
         }
         try {
-          const result = await services.process.run(executable, argv.slice(1), {
+          // The signal is supplied by the approved async ABI; the process port
+          // gains this option in its owning change, without a second controller.
+          const options: SpawnOptions & { readonly signal?: AbortSignal } = {
             cwd: services.root,
             env: { ...env },
-            timeoutMs: frozenConfig.timeoutMs,
+            timeoutMs: scope
+              ? Math.min(
+                  frozenConfig.timeoutMs,
+                  scope.deadline - services.clock.now(),
+                )
+              : frozenConfig.timeoutMs,
             maxOutputBytes: frozenConfig.maxOutputBytes,
-          });
+            ...(scope ? { signal: scope.signal } : {}),
+          };
+          const result = await services.process.run(
+            executable,
+            argv.slice(1),
+            options,
+          );
+          active();
           const parsed = services.output.parse(
             result.stdout,
             result.stderr,
@@ -199,6 +243,7 @@ export function createCheck(services: CheckServices): CheckBlock {
                 : parsed.detail,
           });
         } catch {
+          active();
           runs.push({
             ...blank(
               name,
@@ -210,7 +255,9 @@ export function createCheck(services: CheckServices): CheckBlock {
           });
         }
       }
+      active();
       const after = await services.snapshot();
+      active();
       const changed = hash(before) !== hash(after);
       const status = changed ? "INCOMPLETE" : aggregate(runs);
       const body = {

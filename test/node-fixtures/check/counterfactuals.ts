@@ -7,6 +7,13 @@ export interface Counterfactual {
 }
 export const counterfactuals: readonly Counterfactual[] = [
   {
+    file: "blocks/check/operations.js",
+    from: "signal: args.signal",
+    to: "signal: new AbortController().signal",
+    journey: "handler",
+    evidence: "cancelled handler starts no process",
+  },
+  {
     file: "blocks/check/index.js",
     from: "parsed.testCount === 0",
     to: "false",

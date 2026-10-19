@@ -11,6 +11,7 @@ const mode = process.argv[3] ?? "all";
 const load = (path) =>
   import(pathToFileURL(join(installed, "dist/src", path)).href);
 const { createCheck, verifyReceipt } = await load("blocks/check/index.js");
+const { operations } = await load("blocks/check/operations.js");
 const { createRunnerOutput } = await load("adapters/runner-output/index.js");
 const { createProcessPort } = await load("adapters/process/index.js");
 const { StateOwner } = await load("core/state/index.js");
@@ -64,6 +65,35 @@ const config = (name, timeoutMs = 3000) => ({
   maxOutputBytes: 8192,
 });
 const cases = {
+  async handler() {
+    const controller = new AbortController();
+    const args = {
+      input: {},
+      config: config("unknown"),
+      services,
+      signal: controller.signal,
+      deadline: Date.now() + 3000,
+    };
+    const receipt = await operations["check.run"](args);
+    assert.equal(
+      receipt.status,
+      "PASS",
+      "async handler awaits the actual process service",
+    );
+    assert.match(receipt.runs[0].stdout, /project-owned check finished/);
+    const before = state.list().length;
+    controller.abort();
+    await assert.rejects(
+      operations["check.run"](args),
+      /INVOCATION_CANCELLED/,
+      "cancelled handler starts no process",
+    );
+    assert.equal(
+      state.list().length,
+      before,
+      "cancelled handler writes no accepted receipt",
+    );
+  },
   async unknown() {
     const receipt = await check.run({}, config("unknown"));
     assert.equal(receipt.status, "PASS", "unknown output uses exit code");

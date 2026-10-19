@@ -4,9 +4,14 @@ import {
   verifyReceipt,
   type CheckServices,
 } from "../../../src/blocks/check/index.ts";
-import type { ProcessResult } from "../../../src/ports/process.ts";
+import type {
+  ProcessResult,
+  ResolvedExecutable,
+  SpawnOptions,
+} from "../../../src/ports/process.ts";
 import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts";
 import type { StateRecord } from "../../../src/generated/types.ts";
+import { operations } from "../../../src/blocks/check/operations.ts";
 
 function fixture(result: Partial<ProcessResult> = {}) {
   const records = new Map<string, StateRecord>();
@@ -23,7 +28,11 @@ function fixture(result: Partial<ProcessResult> = {}) {
     output: createRunnerOutput(),
     process: {
       resolve: (path) => ({ kind: "resolved", path }),
-      run(_executable, _args, options) {
+      run(
+        _executable: ResolvedExecutable,
+        _args: readonly string[],
+        options: SpawnOptions,
+      ) {
         environments.push(options.env);
         return Promise.resolve({
           stdout: "done",
@@ -168,4 +177,107 @@ test("child environments are private snapshots and failure stops remaining check
     "FAIL",
     "NOT_EXECUTED",
   ]);
+}, 1000);
+
+test("the async run handler awaits the process service and applies the invocation deadline", async () => {
+  const { services, records } = fixture();
+  const controller = new AbortController();
+  let complete: ((result: ProcessResult) => void) | undefined;
+  let observedTimeout = 0;
+  let observedSignal: unknown;
+  const pending = operations["check.run"]({
+    input: {},
+    config,
+    signal: controller.signal,
+    deadline: services.clock.now() + 250,
+    services: {
+      ...services,
+      process: {
+        ...services.process,
+        run(
+          _executable: ResolvedExecutable,
+          _args: readonly string[],
+          options: SpawnOptions,
+        ) {
+          observedTimeout = options.timeoutMs;
+          observedSignal = "signal" in options ? options.signal : undefined;
+          return new Promise<ProcessResult>((resolve) => {
+            complete = resolve;
+          });
+        },
+      },
+    },
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(records.size).toBe(0);
+  expect(observedTimeout).toBe(250);
+  expect(observedSignal).toBe(controller.signal);
+  expect(complete).toBeDefined();
+  complete!({
+    exitCode: 0,
+    signal: null,
+    stdout: "done",
+    stderr: "",
+    durationMs: 1,
+    timedOut: false,
+    truncated: false,
+  });
+  expect((await pending).status).toBe("PASS");
+  expect(records.size).toBe(1);
+}, 1000);
+
+test("cancelled or expired invocations start no process and persist no receipt", async () => {
+  for (const cancelled of [true, false]) {
+    const { services, records, environments } = fixture();
+    const controller = new AbortController();
+    if (cancelled) controller.abort();
+    const failure = await operations["check.run"]({
+      input: {},
+      config,
+      services,
+      signal: controller.signal,
+      deadline: services.clock.now() + (cancelled ? 1000 : 0),
+    }).catch((error: unknown) => error);
+    expect(String(failure)).toContain(
+      cancelled ? "INVOCATION_CANCELLED" : "INVOCATION_TIMEOUT",
+    );
+    expect(environments).toHaveLength(0);
+    expect(records.size).toBe(0);
+  }
+}, 1000);
+
+test("cancellation during a process prevents subsequent commands and accepted receipts", async () => {
+  const { services, records } = fixture();
+  const controller = new AbortController();
+  let launches = 0;
+  const run = operations["check.run"]({
+    input: {},
+    config: { ...config, commands: { test: "a", lint: "b" } },
+    signal: controller.signal,
+    deadline: services.clock.now() + 1000,
+    services: {
+      ...services,
+      process: {
+        ...services.process,
+        run() {
+          launches++;
+          controller.abort();
+          return Promise.resolve({
+            exitCode: null,
+            signal: "SIGKILL",
+            stdout: "before cancellation",
+            stderr: "",
+            timedOut: false,
+            truncated: false,
+            durationMs: 1,
+          });
+        },
+      },
+    },
+  });
+  const failure = await run.catch((error: unknown) => error);
+  expect(String(failure)).toContain("INVOCATION_CANCELLED");
+  expect(launches).toBe(1);
+  expect(records.size).toBe(0);
 }, 1000);

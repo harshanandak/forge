@@ -26,6 +26,11 @@ export interface RunInput {
   readonly checks?: readonly string[];
   readonly trigger?: string;
 }
+/** Invocation lifetime supplied by the approved async author ABI. */
+export interface CheckInvocationScope {
+  readonly signal: AbortSignal;
+  readonly deadline: number;
+}
 export interface InputSnapshot {
   readonly head: string;
   /** Digest of the actual input files, including uncommitted content. */

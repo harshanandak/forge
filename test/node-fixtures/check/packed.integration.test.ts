@@ -35,50 +35,53 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
   try {
     const node = Bun.which("node");
     if (!node) throw new Error("Node runtime required");
-    const npm = [
-      join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-      join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-    ].find(existsSync);
-    if (!npm) throw new Error("Node package installer required");
-    // CI builds before the serial integration lane; standalone runs build once.
-    if (!existsSync(join(root, "dist/src/blocks/check/index.js")))
-      success(run(process.execPath, ["run", "build"], root));
-    const pack = JSON.parse(
+    const sharedConsumer = process.env.CHECK_PACKED_CONSUMER;
+    const consumer = sharedConsumer ?? join(work, "consumer");
+    if (!sharedConsumer) {
+      const npm = [
+        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
+        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
+      ].find(existsSync);
+      if (!npm) throw new Error("Node package installer required");
+      // CI builds before the serial integration lane; standalone runs build once.
+      if (!existsSync(join(root, "dist/src/blocks/check/index.js")))
+        success(run(process.execPath, ["run", "build"], root));
+      const pack = JSON.parse(
+        success(
+          run(
+            node,
+            [
+              npm,
+              "pack",
+              "--json",
+              "--ignore-scripts",
+              "--pack-destination",
+              work,
+            ],
+            root,
+          ),
+        ),
+      ) as { filename: string }[];
+      mkdirSync(consumer);
+      writeFileSync(
+        join(consumer, "package.json"),
+        '{"name":"check-consumer","private":true,"type":"module"}',
+      );
       success(
         run(
           node,
           [
             npm,
-            "pack",
-            "--json",
-            "--ignore-scripts",
-            "--pack-destination",
-            work,
+            "install",
+            join(work, pack[0]!.filename),
+            "--offline",
+            "--no-audit",
+            "--no-fund",
           ],
-          root,
+          consumer,
         ),
-      ),
-    ) as { filename: string }[];
-    const consumer = join(work, "consumer");
-    mkdirSync(consumer);
-    writeFileSync(
-      join(consumer, "package.json"),
-      '{"name":"check-consumer","private":true,"type":"module"}',
-    );
-    success(
-      run(
-        node,
-        [
-          npm,
-          "install",
-          join(work, pack[0]!.filename),
-          "--offline",
-          "--no-audit",
-          "--no-fund",
-        ],
-        consumer,
-      ),
-    );
+      );
+    }
     const installed = join(consumer, "node_modules/forge-workflow");
     const fixture = join(import.meta.dirname, "journeys.mjs");
     const report = JSON.parse(
@@ -88,6 +91,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       ecosystem: { passed: string[]; skipped: string[] };
     };
     expect(report.passed).toEqual([
+      "handler",
       "unknown",
       "zero",
       "malformed",
