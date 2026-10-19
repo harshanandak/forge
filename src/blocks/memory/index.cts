@@ -76,6 +76,14 @@ interface MemoryConfig {
     readonly agent?: LevelDefault;
   };
 }
+/** What a destination records about a transfer into it. */
+interface Transfer {
+  readonly number: number;
+  /** The copy's revision when the transfer wrote it. */
+  readonly revision: number;
+  /** The source revision the copy was taken from. */
+  readonly sourceRevision: number;
+}
 type Origin =
   | { readonly level: "device" }
   | { readonly level: "project"; readonly project: ProjectIdentity };
@@ -456,9 +464,6 @@ function decisionText(value: DecisionValue, status: string): string {
       : ["", "Consequences", "", value.consequences]),
     "",
   ].join("\n");
-}
-function sameNote(a: NoteValue, b: NoteValue): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
 }
 const TOMBSTONE = {
   text: "",
@@ -860,31 +865,65 @@ module.exports = {
       previous: [],
       from: input.id,
     };
-    const placed = committed(() => {
-      const made = target.state.get(marker);
-      if (made) {
-        const at = (made.value as { number: number }).number;
+    // The transfer record names the copy and the revisions it was made at: the copy's own revision
+    // and the source revision it was taken from. The copy and its record commit together, so a
+    // destination at another revision was changed after the transfer, never left half-made.
+    const placed = committed(
+      ():
+        | { readonly at: number; readonly settled: boolean }
+        | { readonly conflict: string } => {
+        const made = target.state.get(marker);
+        const recorded = made?.value as Transfer | undefined;
+        const counter = readCounter(target.state, NOTE_COUNTER);
+        const at = recorded?.number ?? counter.last + 1;
         const current = target.state.get(noteKey(at));
-        if (!current || !sameNote(current.value as NoteValue, copy))
-          target.state.put(noteKey(at), copy, {
+        if (made && recorded && current) {
+          // Someone edited or forgot the copy since: the transfer is done and is never redone.
+          if (current.revision !== recorded.revision) {
+            const live = (current.value as NoteValue).deleted !== true;
+            return input.keep === true ||
+              (live && recorded.sourceRevision === existing.revision)
+              ? { at, settled: true }
+              : {
+                  conflict: `${idIn(target, at)} changed after ${input.id} was copied there; nothing was written`,
+                };
+          }
+          // The copy is as the transfer left it and already holds this revision of the source.
+          if (recorded.sourceRevision === existing.revision)
+            return { at, settled: true };
+        }
+        // The first copy, or a copy nobody has touched brought up to the source's later revision.
+        const written = (current?.revision ?? 0) + 1;
+        target.state.putMany([
+          ...(recorded
+            ? []
+            : [
+                {
+                  key: NOTE_COUNTER,
+                  value: { last: at },
+                  expectRevision: counter.revision,
+                },
+              ]),
+          {
+            key: noteKey(at),
+            value: copy,
             expectRevision: current?.revision ?? 0,
-          });
-        return at;
-      }
-      const counter = readCounter(target.state, NOTE_COUNTER);
-      const at = counter.last + 1;
-      target.state.putMany([
-        {
-          key: NOTE_COUNTER,
-          value: { last: at },
-          expectRevision: counter.revision,
-        },
-        { key: noteKey(at), value: copy, expectRevision: 0 },
-        { key: marker, value: { number: at }, expectRevision: 0 },
-      ]);
-      return at;
-    });
-    const to = idIn(target, placed);
+          },
+          {
+            key: marker,
+            value: {
+              number: at,
+              revision: written,
+              sourceRevision: existing.revision,
+            } satisfies Transfer,
+            expectRevision: made?.revision ?? 0,
+          },
+        ]);
+        return { at, settled: false };
+      },
+    );
+    if ("conflict" in placed) return fail("TRANSFER_CONFLICT", placed.conflict);
+    const to = idIn(target, placed.at);
     if (input.keep === true)
       return {
         status: "copied" as const,

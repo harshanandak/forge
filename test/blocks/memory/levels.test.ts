@@ -347,8 +347,9 @@ const MOVE_FIX = [
     to: "const made = undefined;",
   },
   {
-    from: "{ key: marker, value: { number: at }, expectRevision: 0 },",
-    to: "",
+    // Each attempt would then record its copy under a key of its own.
+    from: "key: marker,",
+    to: "key: `${marker}/${counter.last}`,",
   },
 ];
 
@@ -399,6 +400,121 @@ test("without the transfer record the same retry leaves a duplicate", async () =
   const { copies } = await crashJourney(loadEntry("memory", MOVE_FIX));
   expect(copies).toHaveLength(2);
 }, 30_000);
+
+/** A settled transfer, from the copy's own record: the copy was made and is not redone. */
+const SETTLED_FIX = {
+  from: "if (made && recorded && current) {",
+  to: "if (false) {",
+};
+
+async function laterChange(
+  entry: ReturnType<typeof loadEntry>,
+  change: "edit" | "forget",
+) {
+  const stores = crashStores();
+  await entry["memory.add"]!({
+    input: { text: "copy me once", level: "device" },
+    services: stores.services,
+  });
+  const request = () =>
+    entry["memory.move"]!({
+      input: {
+        id: "device/note-1",
+        to: "project",
+        expectRevision: 1,
+        keep: true,
+      },
+      services: stores.services,
+    });
+  const original = await request();
+  // After the copy, someone edits or forgets it in the project.
+  const copied = stores.project.get("note/000000001")!;
+  stores.project.put(
+    "note/000000001",
+    change === "edit"
+      ? { ...(copied.value as object), text: "edited after the copy" }
+      : { text: "", tags: [], links: [], previous: [], deleted: true },
+    { expectRevision: copied.revision },
+  );
+  const writes = () =>
+    stores.project.counts.put + stores.project.counts.putMany;
+  const before = writes();
+  // A delayed retry of the same request.
+  const retried = await request();
+  return {
+    original,
+    retried,
+    written: writes() - before,
+    note: stores.project.get("note/000000001")!,
+  };
+}
+
+test("a delayed retry after the copy was edited returns the first result and writes nothing", async () => {
+  const { original, retried, written, note } = await laterChange(
+    loadEntry("memory"),
+    "edit",
+  );
+  expect(retried).toEqual(original);
+  expect(written).toBe(0);
+  expect(note.value).toMatchObject({ text: "edited after the copy" });
+  expect(note.revision).toBe(2);
+}, 30_000);
+
+test("a delayed retry after the copy was forgotten does not bring it back", async () => {
+  const { original, retried, written, note } = await laterChange(
+    loadEntry("memory"),
+    "forget",
+  );
+  expect(retried).toEqual(original);
+  expect(written).toBe(0);
+  expect(note.value).toMatchObject({ deleted: true });
+}, 30_000);
+
+test("without the settled-transfer check the same retries overwrite the edit and revive the forgotten copy", async () => {
+  const edited = await laterChange(loadEntry("memory", SETTLED_FIX), "edit");
+  expect(edited.written).toBe(1);
+  expect(edited.note.value).toMatchObject({ text: "copy me once" });
+  const forgotten = await laterChange(
+    loadEntry("memory", SETTLED_FIX),
+    "forget",
+  );
+  expect(forgotten.note.value).not.toMatchObject({ deleted: true });
+}, 30_000);
+
+test("on real stores a repeated copy never overwrites a later edit or revives a forgotten copy", async () => {
+  const { alpha } = await twoProjects();
+  for (const change of ["edit", "forget"] as const) {
+    const note = await add(alpha, `copy then ${change}`, "device");
+    const request = {
+      id: note.id,
+      to: "project",
+      expectRevision: 1,
+      keep: true,
+    };
+    const first = done(await alpha.call("memory.move", request, agent)) as {
+      to: string;
+    };
+    if (change === "edit")
+      done(
+        await alpha.call(
+          "memory.add",
+          { id: first.to, expectRevision: 1, text: "edited later" },
+          agent,
+        ),
+      );
+    else done(await alpha.call("memory.forget", { id: first.to }));
+    expect(done(await alpha.call("memory.move", request, agent))).toEqual(
+      first,
+    );
+    const shown = done(
+      await alpha.call("memory.show", { id: first.to }, agent),
+    ) as { status: string; note?: Note };
+    if (change === "edit") {
+      expect(shown.note?.text.text).toBe("edited later");
+      expect(shown.note?.revision).toBe(2);
+    } else expect(shown.status).toBe("forgotten");
+  }
+}, 60_000);
 
 test("export and restore work per level, and a project export restores into the restoring project", async () => {
   const { alpha, beta } = await twoProjects();
