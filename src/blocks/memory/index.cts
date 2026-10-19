@@ -1078,15 +1078,21 @@ module.exports = {
         : (input.level ?? "device");
     const target = await writeTarget(services, level);
     const { state } = target;
-    // Links between the exported project's notes move with them to the restoring project; links
-    // to the device or to any other project stay as they are.
+    // A link to a note of the exported project moves to the restoring project only when that note
+    // is restored by this call, so the link and its note arrive together. Every other link, to a
+    // note left out of the export, the device or another project, stays exactly as it was.
     const exported =
       level === "project" && input.project !== undefined
         ? `project/${input.project.id}/`
         : undefined;
-    const relinked = (links: readonly string[]) =>
+    const relinked = (
+      links: readonly string[],
+      restored: ReadonlySet<string>,
+    ) =>
       qualifiedLinks(links).map((link) =>
-        exported !== undefined && link.startsWith(exported)
+        exported !== undefined &&
+        link.startsWith(exported) &&
+        restored.has(link)
           ? `${target.prefix}/${link.slice(exported.length)}`
           : link,
       );
@@ -1096,6 +1102,9 @@ module.exports = {
       const conflicts: string[] = [];
       const entries: BatchEntry[] = [];
       const queued = new Set<string>();
+      // The exported ids of the notes this call restores: added, or already here unchanged.
+      const restored = new Set<string>();
+      const adding: { key: string; note: (typeof input.notes)[number] }[] = [];
       let highest = 0;
       for (const note of input.notes) {
         const ref = parseRef(note.id);
@@ -1109,8 +1118,10 @@ module.exports = {
         const existing = state.get(key);
         if (existing) {
           const old = existing.value as NoteValue;
-          if (old.deleted !== true && old.text === note.text.text) skipped += 1;
-          else conflicts.push(id);
+          if (old.deleted !== true && old.text === note.text.text) {
+            skipped += 1;
+            restored.add(qualified(note.id));
+          } else conflicts.push(id);
           continue;
         }
         if (queued.has(key)) {
@@ -1118,18 +1129,21 @@ module.exports = {
           continue;
         }
         queued.add(key);
+        restored.add(qualified(note.id));
+        adding.push({ key, note });
+      }
+      for (const { key, note } of adding)
         entries.push({
           key,
           value: {
             text: note.text.text,
             ...(note.scope === undefined ? {} : { scope: note.scope }),
             tags: note.tags,
-            links: relinked(note.links),
+            links: relinked(note.links, restored),
             previous: [],
           },
           expectRevision: 0,
         });
-      }
       const added = entries.length;
       const counter = readCounter(state, NOTE_COUNTER);
       if (counter.last < highest)

@@ -322,3 +322,60 @@ test("a project export restored under another project identity keeps its links b
     note: { text: { text: "the linked target" } },
   });
 }, 30_000);
+
+test("a partial project export relinks only to the notes it restores", async () => {
+  const entry = loadEntry("memory");
+  const project = (id: string) => {
+    const device = memoryState();
+    const store = memoryState();
+    const levels = {
+      ...device,
+      caller: "human" as const,
+      inProject: true,
+      project: () =>
+        Promise.resolve({ identity: { id, name: "app" }, state: store }),
+      peer: (ref: string) =>
+        Promise.resolve({ status: "not_found" as const, ref }),
+    };
+    return { services: { state: device, levels }, store };
+  };
+  const OLD = "aaaaaaaaaaaaaaaa";
+  const NEW = "bbbbbbbbbbbbbbbb";
+  const first = project(OLD);
+  const add = async (text: string, scope: string, links: string[] = []) =>
+    (
+      (await entry["memory.add"]!({
+        input: { text, level: "project", scope, links },
+        services: first.services,
+      })) as { id: string }
+    ).id;
+  const kept = await add("restored target", "repo:a");
+  const left = await add("left out of the export", "repo:b");
+  await add("links to both", "repo:a", [kept, left]);
+  // A scoped export carries the first and third notes, not the second.
+  const exported = JSON.parse(
+    JSON.stringify(
+      await entry["memory.export"]!({
+        input: { level: "project", scope: "repo:a" },
+        services: first.services,
+      }),
+    ),
+  ) as { notes: { id: string }[] };
+  expect(exported.notes.map((note) => note.id)).toEqual([
+    kept,
+    `project/${OLD}/note-3`,
+  ]);
+  const clone = project(NEW);
+  expect(
+    await entry["memory.restore"]!({
+      input: exported,
+      services: clone.services,
+    }),
+  ).toEqual({ added: 2, skipped: 0, conflicts: [] });
+  const shown = (await entry["memory.show"]!({
+    input: { id: `project/${NEW}/note-3` },
+    services: clone.services,
+  })) as { note: { links: string[] } };
+  // The restored note's link follows it; the link to the note left out is unchanged.
+  expect(shown.note.links).toEqual([`project/${NEW}/note-1`, left]);
+}, 30_000);
