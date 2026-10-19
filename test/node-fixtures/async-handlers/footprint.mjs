@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { windowsFootprint } from "./windows-footprint.mjs";
 import childProcess from "node:child_process";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import {
@@ -47,44 +48,16 @@ const moduleUrl =
 const artifact = moduleUrl.pathname.endsWith(".js") ? "built" : "source";
 const { createProcessPort } = await import(moduleUrl);
 
+const nativeSnapshot =
+  process.platform === "win32" ? windowsFootprint() : undefined;
 function snapshot() {
-  if (process.platform !== "win32") {
-    return {
-      hostResidentBytes: process.memoryUsage().rss,
-      hostThreads: "NOT_MEASURED",
-      helpers: [],
-    };
-  }
-  const powershell = join(
-    process.env.SystemRoot ?? "C:/Windows",
-    "System32/WindowsPowerShell/v1.0/powershell.exe",
-  );
-  const script = `
-    $ErrorActionPreference = 'Stop'
-    $hostProcess = Get-Process -Id ${process.pid}
-    $helpers = @(foreach ($helperId in @(${[...trackedSupervisors].join(",")})) {
-      $helper = Get-Process -Id $helperId -ErrorAction SilentlyContinue
-      if ($null -ne $helper) {
-        [pscustomobject]@{
-          pid = [int]$helper.Id
-          residentBytes = [long]$helper.WorkingSet64
-          threads = [int]$helper.Threads.Count
-        }
-      }
-    })
-    [pscustomobject]@{
-      hostResidentBytes = [long]$hostProcess.WorkingSet64
-      hostThreads = [int]$hostProcess.Threads.Count
-      helpers = $helpers
-    } | ConvertTo-Json -Compress -Depth 4
-  `;
-  const measured = childProcess.spawnSync(
-    powershell,
-    ["-NoProfile", "-NonInteractive", "-Command", script],
-    { encoding: "utf8", timeout: 10_000, windowsHide: true, env },
-  );
-  assert.equal(measured.status, 0, measured.stderr || measured.error?.message);
-  return JSON.parse(measured.stdout);
+  if (nativeSnapshot)
+    return nativeSnapshot(process.pid, [...trackedSupervisors].filter(alive));
+  return {
+    hostResidentBytes: process.memoryUsage().rss,
+    hostThreads: "NOT_MEASURED",
+    helpers: [],
+  };
 }
 
 function alive(pid) {
@@ -291,7 +264,7 @@ try {
       artifact,
       method:
         process.platform === "win32"
-          ? "Windows working sets and Get-Process threads"
+          ? "Windows native working sets and Toolhelp thread counts"
           : "Node RSS and supervisor readiness reports; threads NOT_MEASURED",
       before,
       during,
