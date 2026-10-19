@@ -352,6 +352,12 @@ async function main(): Promise<void> {
       const results = await Promise.allSettled([
         packedIntegration(
           stateBun,
+          "test/assembly/providers/packed.integration.test.ts",
+          "packed assembly providers",
+          { ...process.env, FORGE_PACKED_CONSUMER: consumer },
+        ),
+        packedIntegration(
+          stateBun,
           "test/integration/packed.integration.test.ts",
           "packed first slice integration",
           { ...process.env, FORGE_PACKED_CONSUMER: consumer },
