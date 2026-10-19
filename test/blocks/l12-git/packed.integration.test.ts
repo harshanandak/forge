@@ -117,6 +117,17 @@ test("installed git block: real clone journeys and remove-the-fix checks", () =>
       ])
         expect(output).toContain(`PASS ${journey}:`);
       console.log(output.trim());
+      const host = good(
+        runtime,
+        [
+          join(root, "test/node-fixtures/l12-git/assembly.mjs"),
+          installed,
+          join(work, `host-${index}`),
+        ],
+        consumer,
+      );
+      expect(host).toContain("PASS Git assembly:");
+      console.log(host.trim());
     }
     const isolated = join(
       sharedConsumer ? work : consumer,

@@ -352,9 +352,7 @@ const files = {
     return clone.list(areaPath(path, area), maxEntries);
   },
   lock(paths) {
-    return clone.lock(
-      paths.map(({ path, area }) => resolve(roots[area ?? "project"], path)),
-    );
+    return clone.lock(paths);
   },
   write(path, text, options = {}) {
     assert.equal(
