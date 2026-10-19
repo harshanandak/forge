@@ -778,14 +778,73 @@ try {
         await opened.handle.close();
       }
     }
-    // Leased bindings are covered by the generic lease journey; stateless writes remain unsupported.
+    const processPath = join(root, "stateless-process"),
+      processManifest = block(processPath, "stateless-process");
+    processManifest.requires = [
+      { slot: "records", interface: "forge.state@1" },
+      { slot: "process", interface: "forge.process@1" },
+      { slot: "environment", interface: "forge.environment@1" },
+    ];
+    processManifest.operations["stateless-process.echo"].effects = [
+      "external:process",
+      "environment:read",
+    ];
+    rewrite(processPath, "forge.block.json", processManifest);
+    writeFileSync(
+      join(processPath, "index.cjs"),
+      `module.exports={"stateless-process.echo":async({input,services})=>{
+      services.records.get("absent");
+      const env=services.environment.select(input.names);
+      const executable=services.process.resolve(input.value,env);
+      const result=await services.process.run(executable,["-e","process.stdout.write('stateless-process-ok')"],{cwd:services.process.cwd,env,timeoutMs:5000,maxOutputBytes:1024});
+      return {value:result.stdout};
+    }};`,
+    );
+    assert.equal(
+      cli(root, ["block", "check", "./stateless-process"]).ok,
+      true,
+      "stateless state-reader with non-state effects must compose",
+    );
+    const processAdded = cli(root, ["block", "add", "./stateless-process"], 2);
+    const processDigest =
+      processAdded.error.repair.match(/sha256:[a-f0-9]{64}/)[0];
+    cli(root, ["block", "admit", processDigest]);
+    cli(root, [
+      "config",
+      "grant",
+      "--input",
+      JSON.stringify({
+        digest: processDigest,
+        effects: ["external:process", "environment:read"],
+      }),
+    ]);
+    const processResult = cli(root, [
+      "stateless-process",
+      "echo",
+      "--input",
+      JSON.stringify({
+        value: process.execPath,
+        names: Object.keys(process.env).filter((key) =>
+          ["path", "pathext", "systemroot", "windir", "tmp", "temp"].includes(
+            key.toLowerCase(),
+          ),
+        ),
+      }),
+    ]);
+    assert.equal(
+      processResult.result.value,
+      "stateless-process-ok",
+      "stateless process with all required services must run",
+    );
+
+    // Leased bindings are covered separately; an actual stateless state write remains unsupported.
     for (const context of ["stateless"]) {
       const unsupported = join(root, `unsupported-${context}`),
         bad = block(unsupported, `unsupported-${context}`);
       bad.requires = [{ slot: "state", interface: "forge.state@1" }];
       bad.operations[`unsupported-${context}.echo`].context = context;
       bad.operations[`unsupported-${context}.echo`].effects = [
-        "unsupported:write",
+        `unsupported-${context}:write`,
       ];
       rewrite(unsupported, "forge.block.json", bad);
       const refused = cli(
@@ -793,7 +852,11 @@ try {
         ["block", "check", `./unsupported-${context}`],
         1,
       );
-      assert.equal(refused.error.code, "PROVIDER_MISSING");
+      assert.equal(
+        refused.error.code,
+        "PROVIDER_MISSING",
+        "stateless state-writer must be refused",
+      );
       const current = cli(root, ["config", "show"]);
       cli(root, [
         "config",

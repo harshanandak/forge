@@ -11,14 +11,28 @@ providers are mechanisms shared by blocks, with no command or account policy.
     { "slot": "process", "interface": "forge.process@1" },
     { "slot": "files", "interface": "forge.files@1" },
     { "slot": "environment", "interface": "forge.environment@1" },
-    { "slot": "crypto", "interface": "forge.crypto@1" }
+    { "slot": "crypto", "interface": "forge.crypto@1" },
+    { "slot": "output", "interface": "forge.runner-output@1" }
   ]
 }
 ```
 
-Bind explicitly with `bind: { process: core, files: core, environment: core, crypto: core }`
+Bind explicitly with `bind: { process: core, files: core, environment: core, crypto: core, output: core }`
 when a composition has competing providers. Ordinary imports use the exported types
 from `forge-workflow/runtime`; captured entry files use type-only imports.
+
+## Supplied output
+
+`forge.runner-output@1.0.0` supplies the existing `RunnerOutputPort` for requirements
+declaring `forge.runner-output@1`. Its only method is
+`parse(stdout: string, stderr: string, report: "auto" | "json" | "exit-code")`.
+It returns `{ kind: "recognized" | "unknown" | "malformed", testCount: number | null,
+failed: number | null, detail: string }`. The block selects the report format; this
+service only parses supplied strings. It has no process, file, environment or state
+access and requires no effects. It works in stateless operations, follows invocation
+cancellation and deadlines, and is revoked with the invocation. The neutral port and
+pure parser are imported unchanged from the check lane; no check policy is added to
+assembly.
 
 ## Process
 
