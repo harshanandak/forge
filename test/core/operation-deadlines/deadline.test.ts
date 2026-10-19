@@ -103,31 +103,45 @@ test("a declared durable operation can spend more than one second in services an
     result: "written",
   });
   expect(writes).toBe(1);
-  expect(budget).toBe(13000);
+  expect(budget).toBe(15000);
 }, 30000);
 
-test("the deadline includes service and evaluator acquisition without waiting for wall time", async () => {
+test("host acquisition is outside the handler budget, which still expires during handler work", async () => {
   const f = fixture(15000);
   let now = 0;
   let runs = 0;
   const runtime = new Runtime(f.catalog, f.trust, {
     clock: { now: () => now },
     services: () => {
-      now = 15000;
+      now += 30000;
       return Promise.resolve({ ownership: "borrowed", value: {} });
     },
     isolation: {
       open: () => {
-        runs++;
-        throw Error("must not open");
+        now += 2000;
+        return Promise.resolve({
+          ok: true,
+          handle: {
+            ownership: "owned",
+            close: () => Promise.resolve(),
+            value: {
+              run(options) {
+                runs++;
+                expect(options.timeoutMs).toBe(15000);
+                now += 15001;
+                return options.encode("written");
+              },
+            },
+          },
+        });
       },
     },
   });
   expect(await runtime.invoke(f.request)).toMatchObject({
     ok: false,
-    error: { code: "INVOCATION_TIMEOUT", retry: "never" },
+    error: { code: "INVOCATION_TIMEOUT", retry: "reconcile_first" },
   });
-  expect(runs).toBe(0);
+  expect(runs).toBe(1);
 }, 30000);
 
 test("expiry during a write is a typed failure requiring reconciliation", async () => {

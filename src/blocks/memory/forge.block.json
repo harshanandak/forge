@@ -16,7 +16,8 @@
       "args": ["text"],
       "idempotent": false,
       "callers": ["agent", "human"],
-      "stability": "stable"
+      "stability": "stable",
+      "timeoutMs": 15000
     },
     "memory.search": {
       "input": "schemas/search.input.json",
@@ -26,7 +27,8 @@
       "args": ["query"],
       "idempotent": true,
       "callers": ["agent", "human"],
-      "stability": "stable"
+      "stability": "stable",
+      "timeoutMs": 5000
     },
     "memory.show": {
       "input": "schemas/show.input.json",
@@ -36,7 +38,8 @@
       "args": ["id"],
       "idempotent": true,
       "callers": ["agent", "human"],
-      "stability": "stable"
+      "stability": "stable",
+      "timeoutMs": 5000
     },
     "memory.forget": {
       "input": "schemas/forget.input.json",
@@ -47,7 +50,8 @@
       "destructive": true,
       "idempotent": true,
       "callers": ["human"],
-      "stability": "stable"
+      "stability": "stable",
+      "timeoutMs": 15000
     },
     "memory.export": {
       "input": "schemas/export.input.json",
@@ -56,7 +60,8 @@
       "effects": [],
       "idempotent": true,
       "callers": ["agent", "human"],
-      "stability": "stable"
+      "stability": "stable",
+      "timeoutMs": 5000
     },
     "memory.restore": {
       "input": "schemas/restore.input.json",
@@ -65,7 +70,8 @@
       "effects": ["memory:write"],
       "idempotent": true,
       "callers": ["human"],
-      "stability": "stable"
+      "stability": "stable",
+      "timeoutMs": 15000
     },
     "decision.propose": {
       "input": "schemas/propose.input.json",
@@ -75,7 +81,8 @@
       "args": ["title", "text"],
       "idempotent": false,
       "callers": ["agent", "human"],
-      "stability": "stable"
+      "stability": "stable",
+      "timeoutMs": 15000
     },
     "decision.adopt": {
       "input": "schemas/adopt.input.json",
@@ -85,7 +92,8 @@
       "args": ["id"],
       "idempotent": true,
       "callers": ["human"],
-      "stability": "stable"
+      "stability": "stable",
+      "timeoutMs": 15000
     },
     "decision.list": {
       "input": "schemas/list.input.json",
@@ -94,7 +102,8 @@
       "effects": [],
       "idempotent": true,
       "callers": ["agent", "human"],
-      "stability": "stable"
+      "stability": "stable",
+      "timeoutMs": 5000
     }
   },
   "requires": [

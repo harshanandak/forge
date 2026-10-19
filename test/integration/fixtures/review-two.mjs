@@ -426,7 +426,7 @@ async function declaredDeadline() {
               run(options) {
                 assert.equal(
                   options.timeoutMs,
-                  13000,
+                  15000,
                   "declared budget must survive a write taking more than one second",
                 );
                 now += 2000;

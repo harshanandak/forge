@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { done, openHarness, type Harness } from "./lib.ts";
 
-// One coarse smoke on the real store and the real one-second block deadline, in the serial
+// One coarse smoke on the real store and the block's declared operation deadlines, in the serial
 // integration lane. The counts that prove scale are in scale.test.ts; this only shows the real
 // path completes. It asserts no timings of its own: the runtime's deadline is the limit.
 

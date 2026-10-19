@@ -261,7 +261,6 @@ export class Runtime {
         },
         this.#options.clock ?? { now: () => Date.now() },
       );
-      deadline.remaining();
       handle = await this.#options.services?.(
         operation.instance,
         bound.context,
@@ -270,7 +269,6 @@ export class Runtime {
           effects: Object.freeze([...declaration.effects]),
         }),
       );
-      deadline.remaining();
       // Opening clients may yield; trust must still hold immediately before execution.
       this.#trust.check(block.digest, declaration.effects);
       if (this.#options.isolation === undefined)
