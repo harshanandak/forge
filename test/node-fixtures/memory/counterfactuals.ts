@@ -6,7 +6,7 @@ export interface Counterfactual {
   readonly to: string;
   /** Replace every occurrence rather than the first. */
   readonly all?: true;
-  readonly journey: "device" | "fence";
+  readonly journey: "device" | "fence" | "levels" | "policy" | "move";
   readonly evidence: string;
 }
 
@@ -34,5 +34,45 @@ export const counterfactuals: readonly Counterfactual[] = [
     to: 'source: text.includes("forge/policy") ? "forge/policy" : source,\n text: neutralize(text),',
     journey: "fence",
     evidence: "provenance names the note",
+  },
+  {
+    // Project notes would be written to the device store, so their ids would not be their own.
+    file: "blocks/memory/index.cjs",
+    from: 'if (level === "device") return deviceSource(services.state);',
+    to: "return deviceSource(services.state);",
+    journey: "levels",
+    evidence: "a project note's id names its project",
+  },
+  {
+    // The assembly would hand the device store over as the project's.
+    file: "assembly/index.js",
+    from: "projectState,\n device: owner,",
+    to: "projectState: deviceState,\n device: owner,",
+    journey: "levels",
+    evidence: "a project note's id names its project",
+  },
+  {
+    // Another project's notes would come back as if they were the caller's own.
+    file: "blocks/memory/index.cjs",
+    from: "return projectSource(found.identity, found.state, true);",
+    to: "return projectSource(found.identity, found.state, false);",
+    journey: "levels",
+    evidence: "pulled notes are read-only",
+  },
+  {
+    // A missing level would be guessed for an agent instead of refused.
+    file: "blocks/memory/index.cjs",
+    from: 'const policy = config.levels?.[services.state.caller] ?? "required";',
+    to: 'const policy = "nearest";',
+    journey: "policy",
+    evidence: "an agent that omits the level is refused",
+  },
+  {
+    // A retried move would not find the copy it already made.
+    file: "blocks/memory/index.cjs",
+    from: "const made = target.state.get(marker);",
+    to: "const made = undefined;",
+    journey: "move",
+    evidence: "the retried move finishes with one copy",
   },
 ];

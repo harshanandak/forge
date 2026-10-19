@@ -16,24 +16,25 @@ mkdirSync(root);
 const env = { ...process.env, FORGE_DEVICE_ROOT: deviceRoot };
 assert.equal(process.versions.bun, undefined, "journeys run on Node");
 
-function cli(args, expected = 0) {
+function cli(args, expected = 0, cwd = root) {
   const result = spawnSync(process.execPath, [bin, ...args], {
-    cwd: root,
+    cwd,
     env,
     encoding: "utf8",
     timeout: 20000,
     windowsHide: true,
   });
-  assert.equal(
-    result.status,
-    expected,
-    `${args.join(" ")}: ${result.stderr}\n${result.stdout}`,
-  );
+  if (expected !== null)
+    assert.equal(
+      result.status,
+      expected,
+      `${args.join(" ")}: ${result.stderr}\n${result.stdout}`,
+    );
   return JSON.parse(result.stdout);
 }
-function mcp() {
+function mcp(cwd = root) {
   const child = spawn(process.execPath, [bin, "--mcp"], {
-    cwd: root,
+    cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -111,41 +112,59 @@ function mcp() {
  * grant it as the human. The digest comes from a checked copy of the shipped files; the registered
  * block must hash to the same bytes or the admission would not cover it.
  */
-function setup(name, effects) {
-  mkdirSync(join(root, "blocks"), { recursive: true });
-  cpSync(join(installed, "dist/src/blocks", name), join(root, "blocks", name), {
+function setup(name, effects, at = root, config) {
+  mkdirSync(join(at, "blocks"), { recursive: true });
+  cpSync(join(installed, "dist/src/blocks", name), join(at, "blocks", name), {
     recursive: true,
     filter: (path) => !path.endsWith(".map"),
   });
-  const digest = cli(["block", "check", `./blocks/${name}`]).result.digest;
-  const shown = cli(["config", "show"]);
-  cli([
-    "config",
-    "apply",
-    "--input",
-    JSON.stringify({
-      expectRevision: shown.result.revision,
-      patch: [
-        {
-          op: "set",
-          path: `/blocks/${name}`,
-          value: { source: { builtin: `forge/${name}` } },
-        },
-      ],
-    }),
-  ]);
-  const probe = ["memory", "search", "x"];
-  assert.equal(
-    cli(probe, 2).error.code,
-    "ADMISSION_REQUIRED",
-    "the registered block is not admitted until a human admits it",
+  const digest = cli(["block", "check", `./blocks/${name}`], 0, at).result
+    .digest;
+  const shown = cli(["config", "show"], 0, at);
+  cli(
+    [
+      "config",
+      "apply",
+      "--input",
+      JSON.stringify({
+        expectRevision: shown.result.revision,
+        patch: [
+          {
+            op: "set",
+            path: `/blocks/${name}`,
+            value: {
+              source: { builtin: `forge/${name}` },
+              ...(config === undefined ? {} : { config }),
+            },
+          },
+        ],
+      }),
+    ],
+    0,
+    at,
   );
-  assert.equal(cli(["block", "admit", digest]).result.admitted, true);
-  cli(["config", "grant", "--input", JSON.stringify({ digest, effects })]);
-  assert.equal(cli(probe).ok, true, "the registered block runs once admitted");
+  const probe = ["memory", "search", "x"];
+  // Admission is per device: a second project on an admitting device is already admitted.
+  if (at === root)
+    assert.equal(
+      cli(probe, 2, at).error.code,
+      "ADMISSION_REQUIRED",
+      "the registered block is not admitted until a human admits it",
+    );
+  assert.equal(cli(["block", "admit", digest], 0, at).result.admitted, true);
+  cli(
+    ["config", "grant", "--input", JSON.stringify({ digest, effects })],
+    0,
+    at,
+  );
+  assert.equal(
+    cli(probe, 0, at).ok,
+    true,
+    "the registered block runs once admitted",
+  );
 }
-async function connect() {
-  const server = mcp();
+async function connect(cwd = root) {
+  const server = mcp(cwd);
   await server.initialize();
   return server;
 }
@@ -160,7 +179,11 @@ async function device() {
     "memory",
     "add",
     "--input",
-    JSON.stringify({ text: "device note about releases", tags: ["release"] }),
+    JSON.stringify({
+      text: "device note about releases",
+      level: "device",
+      tags: ["release"],
+    }),
   ]);
   assert.equal(added.result.status, "added");
   assert.equal(
@@ -205,6 +228,7 @@ async function device() {
     );
     const second = await call("memory.add", {
       text: "written with no project",
+      level: "device",
     });
     assert.equal(second.ok, true, `device-only add: ${JSON.stringify(second)}`);
     const decisions = await call("decision.list", {});
@@ -222,17 +246,22 @@ async function device() {
 
 async function fence() {
   setup("memory", ["memory:write", "decision:write"]);
-  cli(["memory", "add", "--input", JSON.stringify({ text: FORGED })]);
+  cli([
+    "memory",
+    "add",
+    "--input",
+    JSON.stringify({ text: FORGED, level: "device" }),
+  ]);
   const server = await connect();
   try {
     const tools = (await server.rpc("tools/list", {})).tools.map((t) => t.name);
     assert.ok(tools.includes("memory_search"), "agents can search memory");
     assert.ok(!tools.includes("memory_forget"), "forget is human only");
-    const shown = await server.call("memory_show", { id: "note-1" });
+    const shown = await server.call("memory_show", { id: "device/note-1" });
     const searched = await server.call("memory_search", {
       query: "ignore instructions",
     });
-    const fromCli = cli(["memory", "show", "note-1"]);
+    const fromCli = cli(["memory", "show", "device/note-1"]);
     for (const fenced of [
       shown.result.note.text,
       searched.result.hits[0].snippet,
@@ -241,7 +270,7 @@ async function fence() {
       assert.equal(fenced.kind, "untrusted", "note text is untrusted content");
       assert.equal(
         fenced.source,
-        "memory:note-1",
+        "memory:device/note-1",
         "provenance names the note, not what the note claims",
       );
       assert.ok(
@@ -259,11 +288,177 @@ async function fence() {
   console.log("PASS fence");
 }
 
-const journeys = { device, fence };
-const deadline = setTimeout(() => {
-  console.error("journey deadline exceeded");
-  process.exit(1);
-}, 60000);
+const EFFECTS = ["memory:write", "decision:write"];
+const POLICY = { levels: { human: "nearest", agent: "required" } };
+/** Project alpha (the journey root) and project beta, on one device. */
+function twoProjects() {
+  const beta = join(work, "beta");
+  rmSync(beta, { recursive: true, force: true });
+  mkdirSync(beta);
+  setup("memory", EFFECTS, root, POLICY);
+  setup("memory", EFFECTS, beta, POLICY);
+  return beta;
+}
+function add(input, at = root) {
+  return cli(["memory", "add", "--input", JSON.stringify(input)], 0, at).result;
+}
+async function levels() {
+  const beta = twoProjects();
+  const device = add({ text: "shared release checklist", level: "device" });
+  const own = add({ text: "alpha release secret", level: "project" });
+  assert.equal(device.id, "device/note-1");
+  assert.match(
+    own.id,
+    /^project\/[0-9a-f]{16}\/note-1$/,
+    "a project note's id names its project",
+  );
+  const fromAlpha = cli(["memory", "search", "release"]).result.hits;
+  assert.deepEqual(
+    fromAlpha.map((hit) => `${hit.level}:${hit.id}`).sort(),
+    [`device:${device.id}`, `project:${own.id}`].sort(),
+    "inside alpha a search covers alpha and the device, each hit labelled",
+  );
+  const fromBeta = cli(["memory", "search", "release"], 0, beta).result.hits;
+  assert.deepEqual(
+    fromBeta.map((hit) => hit.id),
+    [device.id],
+    "beta sees the device note and not alpha's project note",
+  );
+  // An agent in beta pulls alpha's note only by naming alpha.
+  const server = await connect(beta);
+  try {
+    const pulled = await server.call("memory_search", {
+      query: "secret",
+      projects: [own.note.origin.project.name],
+    });
+    assert.equal(pulled.ok, true, JSON.stringify(pulled));
+    const [hit] = pulled.result.hits;
+    assert.equal(hit?.id, own.id, "the named project's note is found");
+    assert.equal(hit.readOnly, true, "pulled notes are read-only");
+    assert.deepEqual(
+      hit.origin,
+      {
+        level: "project",
+        project: { id: own.id.split("/")[1], name: "project" },
+      },
+      "a pulled note is labelled with its project",
+    );
+    assert.equal(hit.snippet.kind, "untrusted", "a pulled note is fenced");
+    assert.equal(hit.snippet.source, `memory:${own.id}`);
+    const edit = await server.call("memory_add", {
+      id: own.id,
+      expectRevision: 1,
+      text: "changed from beta",
+    });
+    assert.equal(
+      edit.result?.status,
+      "read_only",
+      "pulled notes are read-only",
+    );
+  } finally {
+    await server.close();
+  }
+  assert.equal(
+    cli(["memory", "show", own.id]).result.note.text.text,
+    "alpha release secret",
+    "alpha's note is unchanged",
+  );
+  console.log("PASS levels");
+}
+
+async function policy() {
+  setup("memory", EFFECTS, root, POLICY);
+  const server = await connect();
+  try {
+    const refused = await server.call("memory_add", { text: "no level given" });
+    assert.equal(
+      refused.error?.code,
+      "LEVEL_REQUIRED",
+      `an agent that omits the level is refused: ${JSON.stringify(refused)}`,
+    );
+    assert.match(refused.error.message, /level "device"/);
+    assert.match(refused.error.message, /level "project"/);
+  } finally {
+    await server.close();
+  }
+  const person = add({ text: "a person's note" });
+  assert.match(
+    person.id,
+    /^project\//,
+    "a person inside a project gets the project",
+  );
+  console.log("PASS policy");
+}
+
+async function move() {
+  setup("memory", EFFECTS, root, POLICY);
+  const server = await connect();
+  try {
+    const call = async (name, args) => {
+      const result = await server.call(name, args);
+      assert.equal(result.ok, true, `${name}: ${JSON.stringify(result)}`);
+      return result.result;
+    };
+    const note = await call("memory_add", {
+      text: "move me to the project",
+      level: "device",
+    });
+    const request = { id: note.id, to: "project", expectRevision: 1 };
+    // A keep copy leaves exactly what a move that stopped between the two stores leaves: the
+    // copy and its transfer record in the project, the source still live on the device.
+    const stopped = await call("memory_move", { ...request, keep: true });
+    assert.equal(stopped.status, "copied");
+    assert.equal(
+      (await call("memory_show", { id: note.id })).status,
+      "found",
+      "the source is still there after the interruption",
+    );
+    const retried = await server.call("memory_move", request);
+    assert.equal(
+      retried.ok,
+      true,
+      `the retried move finishes with one copy: ${JSON.stringify(retried)}`,
+    );
+    const finished = retried.result;
+    assert.equal(finished.status, "moved");
+    assert.equal(
+      finished.to,
+      stopped.to,
+      "the retried move finishes with one copy",
+    );
+    assert.deepEqual(
+      (await call("memory_search", { query: "move" })).hits.map(
+        (hit) => hit.id,
+      ),
+      [stopped.to],
+      "the retried move finishes with one copy and no device duplicate",
+    );
+    assert.deepEqual(
+      await call("memory_move", request),
+      finished,
+      "repeating a finished move returns the same result",
+    );
+    assert.deepEqual(await call("memory_show", { id: note.id }), {
+      status: "moved",
+      to: stopped.to,
+    });
+  } finally {
+    await server.close();
+  }
+  console.log("PASS move");
+}
+
+const journeys = { device, fence, levels, policy, move };
+
+// Each journey has its own deadline; a journey spawns the CLI a dozen or so times.
+let deadline;
+const limit = () => {
+  clearTimeout(deadline);
+  deadline = setTimeout(() => {
+    console.error("journey deadline exceeded");
+    process.exit(1);
+  }, 60000);
+};
 try {
   if (mode === "all") {
     for (const [name, run] of Object.entries(journeys)) {
@@ -272,11 +467,13 @@ try {
       rmSync(deviceRoot, { recursive: true, force: true });
       mkdirSync(root);
       void name;
+      limit();
       await run();
     }
   } else {
     const run = journeys[mode];
     assert.ok(run, `unknown journey ${mode}`);
+    limit();
     await run();
   }
 } finally {

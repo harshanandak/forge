@@ -22,6 +22,7 @@ import type {
   PutOptions,
   RangeOptions,
 } from "../../../src/ports/state.ts";
+import type { StoreLevels } from "../../../src/assembly/levels.ts";
 import type {
   Actor,
   AmbientContext,
@@ -54,27 +55,40 @@ type Handler = (args: {
   config?: unknown;
   services: unknown;
 }) => unknown;
+/** A handler that may return a Promise; tests await every call. */
+export type Entry = Record<string, Handler>;
 
 /** The block's handlers, loaded the way the runtime evaluates the entry, for fault-injection tests. */
 export function loadEntry(
   name: BlockName,
-  without?: { readonly from: string; readonly to: string },
+  without?:
+    | { readonly from: string; readonly to: string }
+    | readonly { readonly from: string; readonly to: string }[],
   globals: Record<string, unknown> = {},
 ): Record<string, Handler> {
   let source = readFileSync(
     join(repo, "src/blocks", name, "index.cts"),
     "utf8",
   );
-  if (without !== undefined) {
-    if (!source.includes(without.from))
-      throw new Error("fix to remove not found");
-    source = source.replace(without.from, without.to);
+  for (const fix of without === undefined
+    ? []
+    : "from" in without
+      ? [without]
+      : without) {
+    if (!source.includes(fix.from)) throw new Error("fix to remove not found");
+    source = source.replace(fix.from, fix.to);
   }
   const module = { exports: {} as Record<string, Handler> };
   const wrapped = runInNewContext(
     `(function (module, exports) {${transpiler.transformSync(source)}
 })`,
-    globals,
+    {
+      // The runtime gives every block this way to refuse with a typed error.
+      fail(code: string, message: string): never {
+        throw new ForgeFailure({ code, message, retry: "never" });
+      },
+      ...globals,
+    },
   ) as (module: unknown, exports: unknown) => void;
   wrapped(module, module.exports);
   return module.exports;
@@ -116,10 +130,12 @@ const effects: Record<BlockName, string[]> = {
 export async function openHarness(
   blocks: readonly BlockName[],
   settings: Readonly<Record<string, unknown>> = {},
+  /** A second project on the same device shares the first one's device folder. */
+  place: { readonly deviceRoot?: string; readonly project?: string } = {},
 ): Promise<Harness> {
   const work = mkdtempSync(join(tmpdir(), "forge-l8-"));
-  const root = join(work, "project");
-  const deviceRoot = join(work, "device");
+  const root = join(work, place.project ?? "project");
+  const deviceRoot = place.deviceRoot ?? join(work, "device");
   mkdirSync(root);
   const assembly = await createAssembly({ root, deviceRoot });
   let counter = 0;
@@ -149,8 +165,11 @@ export async function openHarness(
   for (const name of blocks) {
     stageBlock(name, stage);
     const added = await call("block.add", { path: `./blocks/${name}` });
+    // On a device that already admitted these bytes, adding needs no second admission.
     const digest = /sha256:[a-f0-9]{64}/.exec(
-      added.ok ? "" : (added.error?.repair ?? ""),
+      added.ok
+        ? (added.result as { digest: string }).digest
+        : (added.error?.repair ?? ""),
     )?.[0];
     if (!digest) throw new Error(`block.add ${name}: ${JSON.stringify(added)}`);
     done(await call("block.admit", { digest }));
@@ -215,9 +234,11 @@ export interface Counts {
 export function memoryState(
   /** Runs once, just before the first write: another writer lands first. */
   beforeFirstWrite?: (records: Map<string, StateRecord>) => void,
-): ExtendedStateClient & {
-  readonly counts: Counts;
-} {
+  levels: Partial<StoreLevels> = {},
+): ExtendedStateClient &
+  StoreLevels & {
+    readonly counts: Counts;
+  } {
   const records = new Map<string, StateRecord>();
   let raced = beforeFirstWrite === undefined;
   const race = () => {
@@ -255,6 +276,11 @@ export function memoryState(
     return record;
   }
   return {
+    caller: "agent",
+    inProject: false,
+    project: () => Promise.resolve(undefined),
+    peer: (ref: string) => Promise.resolve({ status: "not_found", ref }),
+    ...levels,
     counts,
     get(key) {
       counts.get += 1;

@@ -12,6 +12,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { counterfactuals } from "./counterfactuals.ts";
+import { packedCoverage, selectShard } from "../state/counterfactuals.ts";
+
+const JOURNEYS = ["device", "fence", "levels", "policy", "move"] as const;
 
 const root = resolve(import.meta.dirname, "../../..");
 const fixture = join(import.meta.dirname, "journeys.mjs");
@@ -106,11 +109,24 @@ test("integration: packed memory journeys, each failing with its fix removed", a
     }
     const installed = join(consumer, "node_modules/forge-workflow");
 
-    const passed = await launch([fixture, installed, "all"], consumer);
-    if (passed.status !== 0)
-      throw new Error(`journeys failed\n${passed.stdout}\n${passed.stderr}`);
-    for (const journey of ["device", "fence"])
-      expect(passed.stdout).toContain(`PASS ${journey}`);
+    // Each journey is its own process with its own folders, so they run side by side.
+    const runs = await Promise.all(
+      JOURNEYS.map((journey) =>
+        launch([fixture, installed, journey], consumer),
+      ),
+    );
+    runs.forEach((passed, index) => {
+      if (passed.status !== 0)
+        throw new Error(
+          `journey ${JOURNEYS[index]} failed\n${passed.stdout}\n${passed.stderr}`,
+        );
+      expect(passed.stdout).toContain(`PASS ${JOURNEYS[index]}`);
+    });
+    // The two Node legs in CI each take half of the remove-the-fix checks; run alone, all of them.
+    const mutations = selectShard(
+      counterfactuals,
+      packedCoverage(process.env.STATE_NODE_LEG).shard,
+    );
 
     // Each worker mutates its own copy of the installed package.
     await Promise.all(
@@ -124,9 +140,7 @@ test("integration: packed memory journeys, each failing with its fix removed", a
           recursive: true,
           filter: (path) => !path.endsWith(".map") && !path.endsWith(".ts"),
         });
-        for (const mutation of counterfactuals.filter(
-          (_, i) => i % 2 === worker,
-        )) {
+        for (const mutation of mutations.filter((_, i) => i % 2 === worker)) {
           const path = join(isolated, "dist/src", mutation.file);
           const original = readFileSync(path, "utf8");
           const find = pattern(mutation.from);
@@ -156,9 +170,9 @@ test("integration: packed memory journeys, each failing with its fix removed", a
       }),
     );
     console.log(
-      `Packed memory: 2 journeys, ${counterfactuals.length} remove-the-fix checks`,
+      `Packed memory: ${JOURNEYS.length} journeys, ${mutations.length} of ${counterfactuals.length} remove-the-fix checks`,
     );
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
-}, 240_000);
+}, 420_000);
