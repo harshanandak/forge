@@ -2,7 +2,13 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { createAssembly } from "../../../src/assembly/index.ts";
-import { done, loadEntry, openHarness, racing, type Harness } from "./lib.ts";
+import {
+  done,
+  loadEntry,
+  memoryState,
+  openHarness,
+  type Harness,
+} from "./lib.ts";
 
 let harness: Harness | undefined;
 afterEach(async () => {
@@ -454,7 +460,7 @@ test("without a configured format a decision is not invented", async () => {
 
 test("a writer that loses the race for a note id retries and gets the next one", () => {
   const entry = loadEntry("memory");
-  const state = racing((records) => {
+  const state = memoryState((records) => {
     // Another writer takes counter value 1 between this writer's read and its write.
     records.set("meta/note-counter", {
       namespace: "forge/memory",
@@ -479,7 +485,7 @@ test("without the retry the same lost race surfaces as a failed write", () => {
     from: "if (!conflict(error)) throw error;\n      last = error;",
     to: "throw error;",
   });
-  const state = racing((records) => {
+  const state = memoryState((records) => {
     records.set("meta/note-counter", {
       namespace: "forge/memory",
       key: "meta/note-counter",

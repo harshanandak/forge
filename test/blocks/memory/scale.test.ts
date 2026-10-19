@@ -68,7 +68,7 @@ function backup(count: number, length: number) {
     // The runtime hands results across as JSON text; do the same here.
     expect(validRestore(JSON.parse(JSON.stringify(chunk)))).toEqual([]);
     expect(JSON.stringify(chunk).length).toBeLessThan(1_048_576);
-    expect(chunk.count).toBeLessThanOrEqual(50);
+    expect(chunk.count).toBeLessThanOrEqual(25);
     reset(target.counts);
     const result = entry["memory.restore"]!({
       input: chunk,
@@ -76,7 +76,7 @@ function backup(count: number, length: number) {
     }) as { added: number; conflicts: string[] };
     // The whole page is one batch write; only the counter is written separately.
     expect(target.counts.putMany).toBe(1);
-    expect(target.counts.put).toBeLessThanOrEqual(1);
+    expect(target.counts.put).toBe(0);
     expect(result.added).toBe(chunk.count);
     expect(result.conflicts).toEqual([]);
     restored += result.added;
@@ -105,7 +105,7 @@ test("every export, however many notes, restores: no size cliff for large or man
 test("a restore page costs one batch write, not one write per note", () => {
   const entry = loadEntry("memory");
   const state = memoryState();
-  const notes = Array.from({ length: 50 }, (_, index) => ({
+  const notes = Array.from({ length: 25 }, (_, index) => ({
     id: `note-${index + 1}`,
     tags: [],
     links: [],
@@ -115,10 +115,11 @@ test("a restore page costs one batch write, not one write per note", () => {
     input: { format: "forge.memory.export/1", notes },
     services: { state },
   });
-  // Before: 50 single writes (50 transactions, 50 syncs) plus the counter. After: 1 batch plus the counter.
+  // Before: 25 single writes (25 transactions, 25 syncs) plus one for the counter. After: one
+  // transaction holds the 25 notes and the counter.
   expect(state.counts.putMany).toBe(1);
-  expect(state.counts.put).toBe(1);
-  expect(state.counts.puttedRecords).toBe(51);
+  expect(state.counts.put).toBe(0);
+  expect(state.counts.puttedRecords).toBe(26);
 }, 30_000);
 
 /** Counts every operation on a Map the block creates, so repeated scans show up as numbers. */
@@ -296,4 +297,63 @@ test("a decision list is bounded and continues from a cursor, so it always fits 
   }
   expect(seen).toHaveLength(450);
   expect(new Set(seen).size).toBe(450);
+}, 30_000);
+
+test("every write operation is exactly one transaction, so one durable commit per call", () => {
+  const entry = loadEntry("memory");
+  const state = memoryState();
+  const config = { decisions: { idPattern: "D-NNN" } };
+  const transactions = () => state.counts.put + state.counts.putMany;
+  const measure = (run: () => unknown): number => {
+    const before = transactions();
+    run();
+    return transactions() - before;
+  };
+  // Before: add and propose each made two transactions (claim the number, then write the record).
+  const add = measure(() =>
+    entry["memory.add"]!({ input: { text: "first" }, services: { state } }),
+  );
+  const edit = measure(() =>
+    entry["memory.add"]!({
+      input: { text: "second", id: "note-1", expectRevision: 1 },
+      services: { state },
+    }),
+  );
+  const propose = measure(() =>
+    entry["decision.propose"]!({
+      input: { title: "t", text: "x" },
+      config,
+      services: { state },
+    }),
+  );
+  const adopt = measure(() =>
+    entry["decision.adopt"]!({ input: { id: "D-001" }, services: { state } }),
+  );
+  const restore = measure(() =>
+    entry["memory.restore"]!({
+      input: {
+        format: "forge.memory.export/1",
+        notes: [
+          {
+            id: "note-9",
+            tags: [],
+            links: [],
+            text: { kind: "untrusted", source: "s", text: "t" },
+          },
+        ],
+      },
+      services: { state },
+    }),
+  );
+  const forget = measure(() =>
+    entry["memory.forget"]!({ input: { id: "note-1" }, services: { state } }),
+  );
+  expect({ add, edit, propose, adopt, restore, forget }).toEqual({
+    add: 1,
+    edit: 1,
+    propose: 1,
+    adopt: 1,
+    restore: 1,
+    forget: 1,
+  });
 }, 30_000);

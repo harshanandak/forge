@@ -20,7 +20,6 @@ import type {
   ExtendedStateClient,
   PutOptions,
   RangeOptions,
-  StateClient,
 } from "../../../src/ports/state.ts";
 import type {
   Actor,
@@ -180,43 +179,6 @@ export async function openHarness(
   };
 }
 
-/** A state client whose next write loses a race: another writer lands first. */
-export function racing(
-  onFirstPut: (state: Map<string, StateRecord>) => void,
-): StateClient {
-  const records = new Map<string, StateRecord>();
-  let raced = false;
-  return {
-    get: (key) => records.get(key),
-    list: (prefix = "") =>
-      [...records.values()].filter((r) => r.key.startsWith(prefix)),
-    events: () => [],
-    put(key, value, options: PutOptions) {
-      if (!raced) {
-        raced = true;
-        onFirstPut(records);
-      }
-      const current = records.get(key);
-      if ((current?.revision ?? 0) !== options.expectRevision)
-        throw new ForgeFailure({
-          code: "REVISION_CONFLICT",
-          message: "stale",
-          retry: "reconcile_first",
-        });
-      const record = {
-        namespace: "forge/memory",
-        key,
-        revision: (current?.revision ?? 0) + 1,
-        value,
-        updatedAt: "2026-10-18T00:00:00Z",
-        updatedBy: { kind: "agent", id: "a" },
-      } as StateRecord;
-      records.set(key, record);
-      return record;
-    },
-  };
-}
-
 /** Validate a value against one of a block's own schema files, as the runtime does. */
 export function blockSchema(
   block: BlockName,
@@ -248,10 +210,19 @@ export interface Counts {
   events: number;
 }
 /** An in-memory state client that counts what the block asks of it. */
-export function memoryState(): ExtendedStateClient & {
+export function memoryState(
+  /** Runs once, just before the first write: another writer lands first. */
+  beforeFirstWrite?: (records: Map<string, StateRecord>) => void,
+): ExtendedStateClient & {
   readonly counts: Counts;
 } {
   const records = new Map<string, StateRecord>();
+  let raced = beforeFirstWrite === undefined;
+  const race = () => {
+    if (raced) return;
+    raced = true;
+    beforeFirstWrite?.(records);
+  };
   const counts: Counts = {
     get: 0,
     put: 0,
@@ -313,11 +284,13 @@ export function memoryState(): ExtendedStateClient & {
       return [];
     },
     put(key, value, options: PutOptions) {
+      race();
       counts.put += 1;
       counts.puttedRecords += 1;
       return write(key, value, options.expectRevision);
     },
     putMany(entries: readonly BatchEntry[]) {
+      race();
       counts.putMany += 1;
       counts.puttedRecords += entries.length;
       const before = new Map(records);

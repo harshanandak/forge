@@ -65,8 +65,9 @@ const DECISION_COUNTER = "meta/decision-counter";
 const SEARCH_WINDOW = 1000;
 const EXPORT_READ = 100;
 // The runtime stops a block after one second and refuses output over 1 MiB. A write costs a few
-// milliseconds, so a restore takes few notes; an export chunk is never larger than a restore.
-const CHUNK_NOTES = 50;
+// milliseconds and one operation is one commit, so a restore takes few notes; an export chunk is
+// never larger than a restore.
+const CHUNK_NOTES = 25;
 const CHUNK_CHARS = 250_000;
 const LIST_LIMIT = 200;
 const MAX_VERSIONS = 5;
@@ -99,43 +100,33 @@ function conflict(error: unknown): boolean {
   const detail = (error as { error?: { code?: unknown } }).error;
   return detail?.code === "REVISION_CONFLICT";
 }
-/** Hand out the next number for a counter; a competing writer that wins makes this retry. */
-function claim(state: StateClient, key: string, floor: number): number {
+/** The counter's last issued number and the revision to write it at. */
+function readCounter(
+  state: StateClient,
+  key: string,
+): { last: number; revision: number } {
+  const current = state.get(key);
+  return {
+    last: current ? (current.value as { last: number }).last : 0,
+    revision: current?.revision ?? 0,
+  };
+}
+/**
+ * Run a read-then-write that commits as one transaction. A competing writer that wins makes it
+ * start again from fresh reads. Every write the block makes is one such transaction, so one
+ * operation costs one durable commit however many records it touches.
+ */
+function committed<T>(attempt: () => T): T {
   let last: unknown;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
-    const current = state.get(key);
-    const issued = current ? (current.value as { last: number }).last : 0;
-    const next = Math.max(issued, floor) + 1;
+  for (let attempts = 0; attempts < MAX_RETRIES; attempts += 1) {
     try {
-      state.put(
-        key,
-        { last: next },
-        { expectRevision: current?.revision ?? 0 },
-      );
-      return next;
+      return attempt();
     } catch (error) {
       if (!conflict(error)) throw error;
       last = error;
     }
   }
   throw last;
-}
-function raise(state: StateClient, key: string, number: number): void {
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
-    const current = state.get(key);
-    const issued = current ? (current.value as { last: number }).last : 0;
-    if (issued >= number) return;
-    try {
-      state.put(
-        key,
-        { last: number },
-        { expectRevision: current?.revision ?? 0 },
-      );
-      return;
-    } catch (error) {
-      if (!conflict(error)) throw error;
-    }
-  }
 }
 
 function noteId(number: number): string {
@@ -304,13 +295,25 @@ module.exports = {
         ),
       };
     }
-    const id = noteId(claim(state, NOTE_COUNTER, 0));
-    const record = state.put(noteKey(id), fields([]), { expectRevision: 0 });
-    return {
-      status: "added" as const,
-      id,
-      note: present(state, id, record, record.value as NoteValue, input.text),
-    };
+    // The number and the note it numbers commit together.
+    return committed(() => {
+      const counter = readCounter(state, NOTE_COUNTER);
+      const id = noteId(counter.last + 1);
+      const [, record] = state.putMany([
+        {
+          key: NOTE_COUNTER,
+          value: { last: counter.last + 1 },
+          expectRevision: counter.revision,
+        },
+        { key: noteKey(id), value: fields([]), expectRevision: 0 },
+      ]);
+      if (!record) throw new Error("note was not written");
+      return {
+        status: "added" as const,
+        id,
+        note: present(state, id, record, record.value as NoteValue, input.text),
+      };
+    });
   },
 
   "memory.search": ({
@@ -549,42 +552,51 @@ module.exports = {
     services: Services;
   }) => {
     const { state } = services;
-    let skipped = 0;
-    const conflicts: string[] = [];
-    const entries: BatchEntry[] = [];
-    const queued = new Set<string>();
-    let highest = 0;
-    for (const note of input.notes) {
-      const key = noteKey(note.id);
-      highest = Math.max(highest, noteNumber(note.id));
-      const existing = state.get(key);
-      if (existing) {
-        const old = existing.value as NoteValue;
-        if (old.deleted !== true && old.text === note.text.text) skipped += 1;
-        else conflicts.push(note.id);
-        continue;
+    // One transaction for the whole page and the counter that must stay ahead of it.
+    return committed(() => {
+      let skipped = 0;
+      const conflicts: string[] = [];
+      const entries: BatchEntry[] = [];
+      const queued = new Set<string>();
+      let highest = 0;
+      for (const note of input.notes) {
+        const key = noteKey(note.id);
+        highest = Math.max(highest, noteNumber(note.id));
+        const existing = state.get(key);
+        if (existing) {
+          const old = existing.value as NoteValue;
+          if (old.deleted !== true && old.text === note.text.text) skipped += 1;
+          else conflicts.push(note.id);
+          continue;
+        }
+        if (queued.has(key)) {
+          conflicts.push(note.id);
+          continue;
+        }
+        queued.add(key);
+        entries.push({
+          key,
+          value: {
+            text: note.text.text,
+            ...(note.scope === undefined ? {} : { scope: note.scope }),
+            tags: note.tags,
+            links: note.links,
+            previous: [],
+          },
+          expectRevision: 0,
+        });
       }
-      if (queued.has(key)) {
-        conflicts.push(note.id);
-        continue;
-      }
-      queued.add(key);
-      entries.push({
-        key,
-        value: {
-          text: note.text.text,
-          ...(note.scope === undefined ? {} : { scope: note.scope }),
-          tags: note.tags,
-          links: note.links,
-          previous: [],
-        },
-        expectRevision: 0,
-      });
-    }
-    // One transaction and one sync for the whole page, not one per note.
-    if (entries.length > 0) state.putMany(entries);
-    raise(state, NOTE_COUNTER, highest);
-    return { added: entries.length, skipped, conflicts };
+      const added = entries.length;
+      const counter = readCounter(state, NOTE_COUNTER);
+      if (counter.last < highest)
+        entries.push({
+          key: NOTE_COUNTER,
+          value: { last: highest },
+          expectRevision: counter.revision,
+        });
+      if (entries.length > 0) state.putMany(entries);
+      return { added, skipped, conflicts };
+    });
   },
 
   "decision.propose": ({
@@ -604,28 +616,37 @@ module.exports = {
           "Set /blocks/memory/config/decisions/idPattern to the project's record id shape (for example D-NNN). Run `forge project detect` to see the detected value under /blocks/project/detected/decisions/records.",
       };
     const { state } = services;
-    const number = claim(state, DECISION_COUNTER, format.highest ?? 0);
-    const id = formatId(format.idPattern, number);
-    const value: DecisionValue = {
-      id,
-      number,
-      title: input.title,
-      text: input.text,
-      ...(input.consequences === undefined
-        ? {}
-        : { consequences: input.consequences }),
-      status: "proposed",
-    };
-    // The record and the lookup by project id commit together.
-    const [record] = state.putMany([
-      { key: numberKey(DECISION_PREFIX, number), value, expectRevision: 0 },
-      {
-        key: `${DECISION_ID_PREFIX}${id}`,
-        value: { number },
-        expectRevision: 0,
-      },
-    ]);
-    if (!record) throw new Error("decision was not written");
+    // The number, the record and the lookup by project id commit together.
+    const { id, value, record } = committed(() => {
+      const counter = readCounter(state, DECISION_COUNTER);
+      const number = Math.max(counter.last, format.highest ?? 0) + 1;
+      const id = formatId(format.idPattern as string, number);
+      const value: DecisionValue = {
+        id,
+        number,
+        title: input.title,
+        text: input.text,
+        ...(input.consequences === undefined
+          ? {}
+          : { consequences: input.consequences }),
+        status: "proposed",
+      };
+      const [, record] = state.putMany([
+        {
+          key: DECISION_COUNTER,
+          value: { last: number },
+          expectRevision: counter.revision,
+        },
+        { key: numberKey(DECISION_PREFIX, number), value, expectRevision: 0 },
+        {
+          key: `${DECISION_ID_PREFIX}${id}`,
+          value: { number },
+          expectRevision: 0,
+        },
+      ]);
+      if (!record) throw new Error("decision was not written");
+      return { id, value, record };
+    });
     const rendered =
       format.path === undefined || format.layout === undefined
         ? undefined

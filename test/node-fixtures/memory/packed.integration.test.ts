@@ -63,42 +63,47 @@ function pattern(text: string): RegExp {
 // Labelled integration: the packed, installed package on Node without Bun; each key journey is then
 // shown to fail with its fix removed from the installed copy.
 test("integration: packed memory journeys, each failing with its fix removed", async () => {
-  const work = mkdtempSync(join(tmpdir(), "forge-packed-l8-"));
+  const work = mkdtempSync(join(tmpdir(), "forge-packed-memory-"));
   try {
     const node = nodeBinary();
-    run(process.execPath, ["run", "build"]);
-    const npm = [
-      join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-      join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-    ].find((path) => existsSync(path));
-    if (!npm) throw new Error("Cannot locate the Node installation's npm CLI");
-    const packed = JSON.parse(
-      run(node, [
-        npm,
-        "pack",
-        "--json",
-        "--ignore-scripts",
-        "--pack-destination",
-        work,
-      ]),
-    ) as { filename: string }[];
-    const consumer = join(work, "consumer");
-    mkdirSync(consumer);
-    writeFileSync(
-      join(consumer, "package.json"),
-      '{"name":"l8-consumer","version":"1.0.0","private":true}',
-    );
-    run(
-      node,
-      [
-        npm,
-        "install",
-        join(work, packed[0]!.filename),
-        "--no-audit",
-        "--no-fund",
-      ],
-      consumer,
-    );
+    // Pack smoke installs the package once and shares it; run alone, build, pack and install here.
+    let consumer = process.env.MEMORY_PACKED_CONSUMER ?? "";
+    if (consumer === "") {
+      consumer = join(work, "consumer");
+      run(process.execPath, ["run", "build"]);
+      const npm = [
+        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
+        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
+      ].find((path) => existsSync(path));
+      if (!npm)
+        throw new Error("Cannot locate the Node installation's npm CLI");
+      const packed = JSON.parse(
+        run(node, [
+          npm,
+          "pack",
+          "--json",
+          "--ignore-scripts",
+          "--pack-destination",
+          work,
+        ]),
+      ) as { filename: string }[];
+      mkdirSync(consumer);
+      writeFileSync(
+        join(consumer, "package.json"),
+        '{"name":"memory-consumer","version":"1.0.0","private":true}',
+      );
+      run(
+        node,
+        [
+          npm,
+          "install",
+          join(work, packed[0]!.filename),
+          "--no-audit",
+          "--no-fund",
+        ],
+        consumer,
+      );
+    }
     const installed = join(consumer, "node_modules/forge-workflow");
 
     const passed = await launch([fixture, installed, "all"], consumer);
@@ -113,7 +118,7 @@ test("integration: packed memory journeys, each failing with its fix removed", a
         const isolated = join(
           consumer,
           "node_modules",
-          `forge-l8-cf-${worker}`,
+          `forge-memory-cf-${worker}`,
         );
         cpSync(installed, isolated, {
           recursive: true,

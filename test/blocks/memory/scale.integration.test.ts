@@ -15,8 +15,8 @@ test("integration: a 1,200-note device restores page by page and is searched ins
   harness = await openHarness(["memory"]);
   const h = harness;
   const words = Array.from({ length: 60 }, (_, index) => `topic${index}`);
-  for (let start = 0; start < 1200; start += 50) {
-    const notes = Array.from({ length: 50 }, (_, offset) => {
+  for (let start = 0; start < 1200; start += 25) {
+    const notes = Array.from({ length: 25 }, (_, offset) => {
       const number = start + offset + 1;
       return {
         id: `note-${number}`,

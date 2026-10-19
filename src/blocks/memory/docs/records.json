@@ -32,7 +32,7 @@
     "memory.export": {
       "title": "Export notes",
       "summary": "Read every note out as one document for backup.",
-      "description": "Returns up to 50 notes at a time, the most one restore accepts. When truncated is true, call again with after set to next."
+      "description": "Returns up to 25 notes at a time, the most one restore accepts. When truncated is true, call again with after set to next."
     },
     "memory.restore": {
       "title": "Restore notes",
