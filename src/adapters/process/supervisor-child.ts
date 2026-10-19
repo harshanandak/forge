@@ -32,7 +32,12 @@ process.on("message", (value: unknown) => {
   child.once("spawn", () =>
     process.send?.({ kind: "started", pid: child.pid }),
   );
-  child.once("error", () => process.send?.({ kind: "failed" }));
+  child.once("error", (error: NodeJS.ErrnoException) =>
+    process.send?.({
+      kind: "failed",
+      ...(typeof error.code === "string" ? { errno: error.code } : {}),
+    }),
+  );
   child.once("exit", (code, signal) =>
     process.send?.({ kind: "exited", code, signal }),
   );

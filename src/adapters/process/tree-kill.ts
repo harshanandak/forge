@@ -1,12 +1,22 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { ProcessSpawnError } from "./errors.ts";
+import {
+  linuxProcessTable,
+  type ProcessTablePort,
+} from "./linux-process-table.ts";
+import { darwinProcessTable } from "./darwin-process-table.ts";
 
 interface GroupControl {
+  readonly processTable?: ProcessTablePort;
   signal(pid: number, signal: "SIGKILL" | 0): void;
   now(): number;
   pause(ms: number): Promise<void>;
 }
 const realGroupControl: GroupControl = {
+  ...(process.platform === "linux" ? { processTable: linuxProcessTable } : {}),
+  ...(process.platform === "darwin"
+    ? { processTable: darwinProcessTable }
+    : {}),
   signal(pid, signal) {
     process.kill(pid, signal);
   },
@@ -28,11 +38,14 @@ export async function killTree(
   try {
     control.signal(-pid, "SIGKILL");
   } catch (error) {
+    // Darwin may return EPERM for zombie-only groups. Member states must prove
+    // termination; a permission response alone never counts as success.
     if (!(
       error !== null &&
       typeof error === "object" &&
       "code" in error &&
-      error.code === "ESRCH"
+      (error.code === "ESRCH" ||
+        (error.code === "EPERM" && control.processTable !== undefined))
     ))
       throw new ProcessSpawnError(
         "TREE_KILL_FAILED",
@@ -64,6 +77,32 @@ export async function killTree(
           "Could not confirm process group termination",
           error,
         );
+    }
+    if (control.processTable !== undefined) {
+      const checkBudget = (): void => {
+        if (control.now() >= deadline)
+          throw new Error(
+            "Process table inspection exceeded the cleanup deadline",
+          );
+      };
+      try {
+        let live = false;
+        for (const member of control.processTable.members(pid, checkBudget)) {
+          checkBudget();
+          if (member.state !== "Z") {
+            live = true;
+            break;
+          }
+        }
+        checkBudget();
+        if (!live) return;
+      } catch (error) {
+        throw new ProcessSpawnError(
+          "TREE_KILL_FAILED",
+          "Could not inspect process group members",
+          error,
+        );
+      }
     }
     const remaining = deadline - control.now();
     if (remaining <= 0)

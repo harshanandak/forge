@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { constants } from "node:os";
 import { fileURLToPath } from "node:url";
 import type {
   ProcessResult,
@@ -14,6 +15,19 @@ import { openContainment, type ContainmentOptions } from "./containment.ts";
 const MAX_TIMER_MS = 2147483647;
 import { MAX_SUPERVISORS, validateSupervision } from "./supervision.ts";
 let activeSupervisors = 0;
+
+/** IPC errno values are untrusted; reconstruct only a host-known system error code. */
+export function supervisedSpawnFailure(code: unknown): ProcessSpawnError {
+  const cause =
+    typeof code === "string" && Object.hasOwn(constants.errno, code)
+      ? Object.assign(new Error(`Command spawn failed (${code})`), { code })
+      : undefined;
+  return new ProcessSpawnError(
+    "SPAWN_FAILED",
+    "Could not start supervised command",
+    cause,
+  );
+}
 
 /** Keeps the first `limit` bytes of one stream and counts the rest as dropped. */
 class Capture {
@@ -345,12 +359,7 @@ export async function runProcess(
             typeof message.signal === "string" ? message.signal : null;
           void finish();
         } else if (message.kind === "failed")
-          void finish(
-            new ProcessSpawnError(
-              "SPAWN_FAILED",
-              "Could not start supervised command",
-            ),
-          );
+          void finish(supervisedSpawnFailure(message.errno));
       });
     });
   } finally {

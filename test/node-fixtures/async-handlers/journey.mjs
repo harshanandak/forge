@@ -428,6 +428,7 @@ try {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    const exited = new Promise((resolve) => child.once("exit", resolve));
     let next = 0,
       buffer = "",
       errors = "";
@@ -480,7 +481,7 @@ try {
       );
     } finally {
       child.stdin.end();
-      await new Promise((resolve) => child.once("exit", resolve));
+      await exited;
     }
   }
   if (["all", "leased"].includes(mode)) {
