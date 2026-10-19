@@ -122,7 +122,8 @@ function withoutBun(): NodeJS.ProcessEnv {
   return env;
 }
 test("packed accounts: parallel clone routing, Git identity guards, trailer policy, scoped writes and exact native restoration", async () => {
-  const shared = process.env.FORGE_PACKED_CONSUMER;
+  const shared =
+    process.env.ACCOUNTS_PACKED_CONSUMER ?? process.env.FORGE_PACKED_CONSUMER;
   const work = mkdtempSync(
     join(shared ?? tmpdir(), shared ? "ga-" : "forge-accounts-"),
   );
