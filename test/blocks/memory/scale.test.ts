@@ -394,10 +394,11 @@ test("a failing history lookup cannot turn a committed add into a failed call", 
     events: () => {
       throw new Error("the event log is too slow");
     },
-    // The spread copies methods; writes must still reach the same records.
-    putMany: state.putMany,
-    put: state.put,
-    get: state.get,
+    // Writes and reads still reach the same records.
+    putMany: (...args: Parameters<typeof state.putMany>) =>
+      state.putMany(...args),
+    put: (...args: Parameters<typeof state.put>) => state.put(...args),
+    get: (key: string) => state.get(key),
   };
   const added = entry["memory.add"]!({
     input: { text: "kept" },
