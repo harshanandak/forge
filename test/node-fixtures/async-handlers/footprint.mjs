@@ -29,10 +29,13 @@ const root = mkdtempSync(join(tmpdir(), "forge-footprint-"));
 const pause = (milliseconds) =>
   new Promise((done) => setTimeout(done, milliseconds));
 let supervisorStarts = 0;
+const trackedSupervisors = new Set();
 const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   supervisorStarts += 1;
-  return originalSpawn(...args);
+  const child = originalSpawn(...args);
+  if (child.pid !== undefined) trackedSupervisors.add(child.pid);
+  return child;
 };
 syncBuiltinESMExports();
 const moduleUrl =
@@ -59,15 +62,16 @@ function snapshot() {
   const script = `
     $ErrorActionPreference = 'Stop'
     $hostProcess = Get-Process -Id ${process.pid}
-    $helpers = @(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${process.pid}' |
-      Where-Object { $_.Name -ieq '${basename(process.execPath)}' -and $_.ProcessId -ne $PID } | ForEach-Object {
-        $helper = Get-Process -Id $_.ProcessId
+    $helpers = @(foreach ($helperId in @(${[...trackedSupervisors].join(",")})) {
+      $helper = Get-Process -Id $helperId -ErrorAction SilentlyContinue
+      if ($null -ne $helper) {
         [pscustomobject]@{
           pid = [int]$helper.Id
           residentBytes = [long]$helper.WorkingSet64
           threads = [int]$helper.Threads.Count
         }
-      })
+      }
+    })
     [pscustomobject]@{
       hostResidentBytes = [long]$hostProcess.WorkingSet64
       hostThreads = [int]$hostProcess.Threads.Count
