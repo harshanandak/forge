@@ -3,7 +3,13 @@
   "type": "object",
   "properties": {
     "format": {
-      "const": "forge.memory.export/1"
+      "const": "forge.memory.export/2"
+    },
+    "level": {
+      "$ref": "defs.json#/$defs/Level"
+    },
+    "project": {
+      "$ref": "defs.json#/$defs/Project"
     },
     "count": {
       "type": "integer",
@@ -49,5 +55,5 @@
     }
   },
   "additionalProperties": false,
-  "required": ["format", "count", "truncated", "notes"]
+  "required": ["format", "level", "count", "truncated", "notes"]
 }

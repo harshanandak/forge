@@ -17,6 +17,7 @@ import { counterfactuals } from "./counterfactuals.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 const fixture = join(import.meta.dirname, "journeys.mjs");
+const JOURNEYS = ["device", "fence", "levels"] as const;
 
 function timing(label: string, started: number): void {
   console.log(
@@ -156,7 +157,7 @@ test("integration: packed memory journeys, each failing with its fix removed", a
         console.log(`Packed memory ${phase}: 0 ms (shared smoke)`);
     }
     const installed = join(consumer, "node_modules/forge-workflow");
-    const positives = ["device", "fence"].map((journey) => ({
+    const positives = JOURNEYS.map((journey) => ({
       label: journey,
       command: node,
       args: [fixture, installed, journey],
@@ -164,10 +165,13 @@ test("integration: packed memory journeys, each failing with its fix removed", a
       env: process.env,
     }));
     const passed = await timedAsync("positives", () =>
-      runFixtures(positives, 2, "Packed memory"),
+      runFixtures(positives, 3, "Packed memory"),
     );
-    for (const [index, journey] of ["device", "fence"].entries())
+    for (const [index, journey] of JOURNEYS.entries()) {
       expect(passed[index]).toContain(`PASS ${journey}`);
+      for (const line of passed[index]!.split(/\r?\n/))
+        if (line.startsWith("STEP ")) console.log(`Packed memory ${line}`);
+    }
 
     // Each worker mutates its own copy; only its selected counterfactuals are sequential.
     const workers = timed("copy", () =>
@@ -224,7 +228,7 @@ test("integration: packed memory journeys, each failing with its fix removed", a
       });
     });
     console.log(
-      `Packed memory: 2 journeys, ${selected.length}/${counterfactuals.length} remove-the-fix checks`,
+      `Packed memory: ${JOURNEYS.length} journeys, ${selected.length}/${counterfactuals.length} remove-the-fix checks`,
     );
   } finally {
     try {
@@ -233,4 +237,4 @@ test("integration: packed memory journeys, each failing with its fix removed", a
       timing("total", started);
     }
   }
-}, 240_000);
+}, 420_000);

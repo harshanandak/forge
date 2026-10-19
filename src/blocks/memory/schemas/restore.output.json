@@ -13,7 +13,8 @@
     "conflicts": {
       "type": "array",
       "items": {
-        "$ref": "defs.json#/$defs/NoteId"
+        "type": "string",
+        "maxLength": 40
       }
     }
   },

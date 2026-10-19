@@ -7,6 +7,19 @@
       "minLength": 1,
       "maxLength": 500
     },
+    "level": {
+      "$ref": "defs.json#/$defs/Level",
+      "description": "Search one level only. Left out, a search covers this project and the device."
+    },
+    "projects": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "defs.json#/$defs/ProjectRef"
+      },
+      "description": "Also search these other projects, read-only. Nothing outside this project is searched unless named here."
+    },
     "scope": {
       "$ref": "defs.json#/$defs/Scope"
     },
@@ -21,9 +34,9 @@
     },
     "cursor": {
       "type": "string",
-      "pattern": "^[0-9]{1,9}:[0-9]{1,9}$",
-      "maxLength": 19,
-      "description": "Continue from the previous result: its next value."
+      "pattern": "^(?:[0-9]{1,9}|x)(?:\\.(?:[0-9]{1,9}|x)){0,9}:[0-9]{1,9}$",
+      "maxLength": 110,
+      "description": "Continue from the previous result: its next value, with the same level and projects."
     }
   },
   "additionalProperties": false,

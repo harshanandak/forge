@@ -19,7 +19,7 @@ test("integration: a 1,200-note device restores page by page and is searched ins
     const notes = Array.from({ length: 25 }, (_, offset) => {
       const number = start + offset + 1;
       return {
-        id: `note-${number}`,
+        id: `device/note-${number}`,
         tags: [],
         links: [],
         text: {
@@ -34,7 +34,8 @@ test("integration: a 1,200-note device restores page by page and is searched ins
     });
     done(
       await h.call("memory.restore", {
-        format: "forge.memory.export/1",
+        format: "forge.memory.export/2",
+        level: "device",
         notes,
       }),
     );
