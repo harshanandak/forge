@@ -1,5 +1,11 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssemblyProviders } from "../../../src/assembly/providers.ts";
@@ -66,7 +72,7 @@ test("clone-file methods follow the current handler deadline and drain an unawai
   };
   const scope: ServiceScope = {
     op: "sample.read",
-    effects: ["files:read"],
+    effects: ["files:read", "files:write"],
     signal: new AbortController().signal,
     get deadline() {
       return deadline;
@@ -91,7 +97,10 @@ test("clone-file methods follow the current handler deadline and drain an unawai
         maxOutputBytes: 100,
       })
       .catch((error: unknown) => error);
+    lease.value.lock([join(git, "HEAD.lock")]);
+    expect(existsSync(join(git, "HEAD.lock"))).toBe(true);
     await lease.close();
+    expect(existsSync(join(git, "HEAD.lock"))).toBe(false);
     expect(stopped).toBe(true);
     expect(await snapshot).toMatchObject({
       error: { code: "INVOCATION_TIMEOUT" },

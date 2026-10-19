@@ -4,18 +4,32 @@ import {
   fstatSync,
   fsyncSync,
   lstatSync,
+  opendirSync,
   openSync,
   readSync,
+  realpathSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import type { Stats } from "node:fs";
-import { createHash } from "node:crypto";
-import { isAbsolute, join, parse, relative, resolve, win32 } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  dirname,
+  basename,
+  isAbsolute,
+  join,
+  parse,
+  relative,
+  resolve,
+  win32,
+} from "node:path";
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
   createPrivateDirectory,
   createPrivateFile,
   removeDurable,
+  publishExclusive,
+  removePrivateDirectory,
   replaceDurable,
 } from "./durable-io.ts";
 
@@ -48,6 +62,24 @@ export interface CloneFilesService {
   write(path: string, text: string, options?: CloneFileWriteOptions): void;
   remove(path: string, options?: CloneFileCondition): void;
   inspect(path: string, area?: CloneFileArea): CloneFileInspection | undefined;
+  list(
+    path: string,
+    maxEntries: number,
+    area?: CloneFileArea,
+  ): readonly string[];
+  /** Relative lock paths are rooted at common; absolute paths stay inside git/common metadata. */
+  lock(paths: readonly string[]): CloneFileLock;
+}
+export interface CloneFileLock {
+  release(): void;
+}
+export interface CloneFilesLease {
+  readonly service: CloneFilesService;
+  close(): void;
+}
+interface CloneFilesTestHooks {
+  beforeCommit?(): void;
+  afterClaim?(): void;
 }
 export interface CloneFileInspection {
   readonly regular: boolean;
@@ -112,7 +144,7 @@ function validateRoot(path: string): string {
     current = join(current, segment);
     directory(current);
   }
-  return root;
+  return realpathSync.native(root);
 }
 function segmentsOf(path: string): readonly string[] {
   if (path.length > 4096)
@@ -152,13 +184,54 @@ function regular(info: Stats): void {
 function sameFile(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
+function sameCapturedFile(
+  before: Stats | null,
+  claimed: Stats | null,
+  beforeHash: string | null,
+  claimedHash: string | null,
+  claimedText: string | undefined,
+  expected: string,
+): boolean {
+  return (
+    before !== null &&
+    claimed !== null &&
+    sameFile(before, claimed) &&
+    before.size === claimed.size &&
+    before.mtimeMs === claimed.mtimeMs &&
+    beforeHash === claimedHash &&
+    claimedText === expected
+  );
+}
 
-function createCloneFilesAccess(options: CloneFilesOptions): {
+/** Resolve parent aliases (including Windows short names), never a final lock symlink. */
+function canonicalLockPath(path: string): string {
+  if (!isAbsolute(path))
+    failure("INPUT_INVALID", "Clone lock path belongs to another platform");
+  const absolute = resolve(path);
+  const suffix = [basename(absolute)];
+  let ancestor = dirname(absolute);
+  for (;;) {
+    try {
+      return join(realpathSync.native(ancestor), ...suffix);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT" || dirname(ancestor) === ancestor)
+        throw error;
+      suffix.unshift(basename(ancestor));
+      ancestor = dirname(ancestor);
+    }
+  }
+}
+
+function createCloneFilesAccess(
+  options: CloneFilesOptions,
+  hooks: CloneFilesTestHooks = {},
+): {
   readonly service: CloneFilesService;
   readonly readBytes: (
     path: string,
     maxBytes: number,
   ) => Uint8Array | undefined;
+  readonly close: () => void;
 } {
   active(options);
   const limit = boundedLimit(options.maxBytes ?? MAX_BYTES, MAX_BYTES);
@@ -167,13 +240,30 @@ function createCloneFilesAccess(options: CloneFilesOptions): {
     git: validateRoot(options.gitDirectory),
     common: validateRoot(options.commonDirectory),
   });
+  let closed = false;
+  interface OwnedLock {
+    readonly target: string;
+    readonly area: CloneFileArea;
+    readonly path: string;
+    readonly fd: number;
+    readonly identity: Stats;
+    readonly nonce: Buffer;
+    written: number;
+    released: boolean;
+  }
+  const locks = new Set<OwnedLock>();
+  function checkActive(): void {
+    if (closed) failure("SERVICE_EXPIRED", "Clone file service has closed");
+    active(options);
+  }
   function targetFor(
     area: CloneFileArea,
     path: string,
     createParents = false,
     inspectFinal = false,
+    cleanup = false,
   ): string {
-    active(options);
+    if (!cleanup) checkActive();
     const root = roots[area];
     if (root === undefined) failure("INPUT_INVALID", "Unknown clone file area");
     validateRoot(root);
@@ -183,7 +273,7 @@ function createCloneFilesAccess(options: CloneFilesOptions): {
       current = join(current, segment);
       let info = stat(current);
       if (info === null && createParents) {
-        active(options);
+        checkActive();
         try {
           createPrivateDirectory(current);
         } catch (error) {
@@ -235,7 +325,7 @@ function createCloneFilesAccess(options: CloneFilesOptions): {
       const buffer = Buffer.alloc(max + 1);
       let count = 0;
       while (count < buffer.length) {
-        active(options);
+        checkActive();
         const progress = readSync(
           fd,
           buffer,
@@ -286,7 +376,7 @@ function createCloneFilesAccess(options: CloneFilesOptions): {
     text?: string,
     executable = false,
   ): void {
-    active(options);
+    checkActive();
     if (!options.write)
       failure(
         "EFFECT_UNDECLARED",
@@ -319,15 +409,118 @@ function createCloneFilesAccess(options: CloneFilesOptions): {
       throw error;
     }
     let promoted = false;
+    const identity = fstatSync(fd);
+    let quarantine: string | undefined;
+    let claimed: string | undefined;
+    function restoreClaim(): void {
+      if (claimed === undefined || stat(claimed) === null) return;
+      try {
+        publishExclusive(claimed, target);
+      } catch {
+        failure(
+          "INPUT_CONFLICT",
+          `Concurrent replacement preserved; reconcile the original in ${quarantine}`,
+        );
+      }
+      removeDurable(claimed);
+    }
     try {
+      const captured = stat(target);
       const current = readFile(area, path, limit) ?? null;
+      const capturedHash =
+        current === null
+          ? null
+          : createHash("sha256").update(current, "utf8").digest("hex");
+      const afterRead = stat(target);
+      if (
+        (captured === null) !== (afterRead === null) ||
+        (captured !== null &&
+          afterRead !== null &&
+          (!sameFile(captured, afterRead) ||
+            captured.size !== afterRead.size ||
+            captured.mtimeMs !== afterRead.mtimeMs))
+      )
+        failure(
+          "INPUT_CONFLICT",
+          "Clone file identity changed during its initial read",
+        );
       if (condition.expected !== undefined && current !== condition.expected)
         failure(
           "INPUT_CONFLICT",
           "Clone file no longer matches expected content",
         );
-      active(options);
-      if (text === undefined) {
+      if (text !== undefined) {
+        writeFileSync(fd, text, "utf8");
+        fsyncSync(fd);
+      }
+      hooks.beforeCommit?.();
+      checkActive();
+      const lockNow = stat(lock);
+      if (
+        lockNow === null ||
+        !sameFile(identity, lockNow) ||
+        lockNow.nlink !== 1
+      )
+        failure("INPUT_CONFLICT", "Clone file lock changed before commit");
+      if (condition.expected !== undefined) {
+        if (condition.expected !== null) {
+          quarantine = join(dirname(target), `.forge-restore-${randomUUID()}`);
+          createPrivateDirectory(quarantine);
+          claimed = join(quarantine, "original");
+          targetFor(area, path);
+          try {
+            replaceDurable(target, claimed);
+          } catch (error) {
+            if (errorCode(error) === "ENOENT")
+              failure("INPUT_CONFLICT", "Clone file disappeared before commit");
+            throw error;
+          }
+          const claimedPath = relative(roots[area], claimed)
+            .split("\\")
+            .join("/");
+          const claimedIdentity = stat(claimed);
+          const claimedText = readFile(area, claimedPath, limit);
+          const claimedHash =
+            claimedText === undefined
+              ? null
+              : createHash("sha256").update(claimedText, "utf8").digest("hex");
+          // Claim before comparing: a changed target can be restored without overwriting a new one.
+          if (
+            !sameCapturedFile(
+              captured,
+              claimedIdentity,
+              capturedHash,
+              claimedHash,
+              claimedText,
+              condition.expected,
+            )
+          ) {
+            restoreClaim();
+            failure(
+              "INPUT_CONFLICT",
+              "Clone file changed before commit; its replacement was restored",
+            );
+          }
+          hooks.afterClaim?.();
+        }
+        checkActive();
+        if (text !== undefined) {
+          try {
+            publishExclusive(lock, target);
+          } catch (error) {
+            if (errorCode(error) === "EEXIST")
+              failure(
+                "INPUT_CONFLICT",
+                "A concurrent clone file replacement was preserved",
+              );
+            throw error;
+          }
+          removeDurable(lock);
+          promoted = true;
+        }
+        if (claimed !== undefined && stat(claimed) !== null)
+          removeDurable(claimed);
+      } else if (text === undefined) {
         if (current !== null) {
           targetFor(area, path);
           removeDurable(target);
@@ -337,27 +530,200 @@ function createCloneFilesAccess(options: CloneFilesOptions): {
         (process.platform !== "win32" &&
           ((stat(target)?.mode ?? 0) & 0o111) !== (executable ? 0o100 : 0))
       ) {
-        writeFileSync(fd, text, "utf8");
-        fsyncSync(fd);
         closeSync(fd);
         fd = -1;
         targetFor(area, path);
-        active(options);
+        checkActive();
         replaceDurable(lock, target);
         promoted = true;
       }
+    } catch (error) {
+      restoreClaim();
+      throw error;
     } finally {
       if (fd !== -1) closeSync(fd);
-      if (!promoted && stat(lock) !== null) removeDurable(lock);
+      const remaining = stat(lock);
+      if (!promoted && remaining !== null && sameFile(remaining, identity))
+        removeDurable(lock);
+      if (
+        quarantine !== undefined &&
+        (claimed === undefined || stat(claimed) === null)
+      )
+        removePrivateDirectory(quarantine);
+    }
+  }
+  function releaseLock(lock: OwnedLock): void {
+    if (lock.released) return;
+    lock.released = true;
+    locks.delete(lock);
+    try {
+      try {
+        targetFor(lock.area, lock.path, false, true, true);
+      } catch (error) {
+        if (error instanceof ForgeFailure) return;
+        throw error;
+      }
+      const candidate = stat(lock.target);
+      if (
+        candidate === null ||
+        !candidate.isFile() ||
+        candidate.isSymbolicLink() ||
+        candidate.nlink !== 1 ||
+        !sameFile(candidate, lock.identity)
+      )
+        return;
+      const opened = fstatSync(lock.fd);
+      if (
+        !sameFile(opened, lock.identity) ||
+        opened.nlink !== 1 ||
+        opened.size !== lock.written
+      )
+        return;
+      const actual = Buffer.alloc(lock.written + 1);
+      let count = 0;
+      while (count < actual.length) {
+        const progress = readSync(
+          lock.fd,
+          actual,
+          count,
+          actual.length - count,
+          count,
+        );
+        if (progress === 0) break;
+        count += progress;
+      }
+      if (
+        count !== lock.written ||
+        !actual.subarray(0, count).equals(lock.nonce.subarray(0, lock.written))
+      )
+        return;
+      const final = stat(lock.target);
+      if (final !== null && sameFile(final, lock.identity) && final.nlink === 1)
+        removeDurable(lock.target);
+    } finally {
+      closeSync(lock.fd);
+    }
+  }
+  function releaseAll(owned: readonly OwnedLock[]): void {
+    const errors: unknown[] = [];
+    for (const lock of owned) {
+      try {
+        releaseLock(lock);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0)
+      throw new AggregateError(errors, "Clone lock cleanup failed");
+  }
+  function acquire(paths: readonly string[]): CloneFileLock {
+    checkActive();
+    if (!options.write)
+      failure(
+        "EFFECT_UNDECLARED",
+        "Clone lock acquisition requires the declared files:write effect",
+      );
+    if (paths.length > 3 || locks.size + paths.length > 3)
+      failure(
+        "LIMIT_EXCEEDED",
+        "Clone service may hold at most three exclusion locks",
+      );
+    const seen = new Set<string>();
+    const plans = paths.map((path) => {
+      let area: CloneFileArea = "common";
+      let local = path;
+      if (isAbsolute(path) || win32.isAbsolute(path)) {
+        const canonical = canonicalLockPath(path);
+        const matched = (["common", "git"] as const).find((candidate) => {
+          const localPath = relative(roots[candidate], canonical);
+          return (
+            localPath !== "" &&
+            !localPath.startsWith(
+              `..${process.platform === "win32" ? "\\" : "/"}`,
+            ) &&
+            localPath !== ".." &&
+            !isAbsolute(localPath)
+          );
+        });
+        if (matched === undefined)
+          failure(
+            "INPUT_INVALID",
+            "Clone locks must stay inside verified Git metadata roots",
+          );
+        area = matched;
+        local = relative(roots[area], canonical).split("\\").join("/");
+      }
+      if (!local.endsWith(".lock"))
+        failure(
+          "INPUT_INVALID",
+          "Clone exclusion paths must name native .lock files",
+        );
+      const target = targetFor(area, local);
+      const identity =
+        process.platform === "win32" ? target.toLowerCase() : target;
+      if (seen.has(identity))
+        failure("INPUT_INVALID", "Clone exclusion lock paths must be unique");
+      seen.add(identity);
+      return { area, path: local, target };
+    });
+    const acquired: OwnedLock[] = [];
+    try {
+      for (const plan of plans) {
+        checkActive();
+        targetFor(plan.area, plan.path, true);
+        let fd: number;
+        try {
+          fd = createPrivateFile(plan.target, false, "wx+");
+        } catch (error) {
+          if (errorCode(error) === "EEXIST")
+            failure(
+              "INPUT_CONFLICT",
+              "A native Git exclusion lock already exists",
+            );
+          throw error;
+        }
+        const lock: OwnedLock = {
+          ...plan,
+          fd,
+          identity: fstatSync(fd),
+          nonce: Buffer.from(`${randomUUID()}\n`),
+          written: 0,
+          released: false,
+        };
+        locks.add(lock);
+        acquired.push(lock);
+        while (lock.written < lock.nonce.length) {
+          const progress = writeSync(
+            fd,
+            lock.nonce,
+            lock.written,
+            lock.nonce.length - lock.written,
+            lock.written,
+          );
+          if (progress <= 0)
+            throw new Error("Clone lock write made no progress");
+          lock.written += progress;
+        }
+        fsyncSync(fd);
+        checkActive();
+      }
+      return Object.freeze({
+        release(): void {
+          releaseAll(acquired);
+        },
+      });
+    } catch (error) {
+      releaseAll(acquired);
+      throw error;
     }
   }
   const service: CloneFilesService = Object.freeze({
     get root(): string {
-      active(options);
+      checkActive();
       return roots.project;
     },
     get roots(): Readonly<Record<CloneFileArea, string>> {
-      active(options);
+      checkActive();
       return roots;
     },
     read(
@@ -365,7 +731,7 @@ function createCloneFilesAccess(options: CloneFilesOptions): {
       maxBytes: number,
       area: CloneFileArea = "project",
     ): string | undefined {
-      active(options);
+      checkActive();
       if (!options.read)
         failure(
           "EFFECT_UNDECLARED",
@@ -393,14 +759,14 @@ function createCloneFilesAccess(options: CloneFilesOptions): {
       path: string,
       area: CloneFileArea = "project",
     ): CloneFileInspection | undefined {
-      active(options);
+      checkActive();
       if (!options.read)
         failure(
           "EFFECT_UNDECLARED",
           "Clone file inspection requires the declared files:read effect",
         );
       const info = stat(targetFor(area, path, false, true));
-      active(options);
+      checkActive();
       if (info === null) return undefined;
       const regularFile =
         info.isFile() && !info.isSymbolicLink() && info.nlink === 1;
@@ -412,11 +778,58 @@ function createCloneFilesAccess(options: CloneFilesOptions): {
         size: info.size,
       };
     },
+    list(
+      path: string,
+      maxEntries: number,
+      area: CloneFileArea = "project",
+    ): readonly string[] {
+      checkActive();
+      if (!options.read)
+        failure(
+          "EFFECT_UNDECLARED",
+          "Clone directory listing requires the declared files:read effect",
+        );
+      const cap = boundedLimit(maxEntries, 1024);
+      if (roots[area] === undefined)
+        failure("INPUT_INVALID", "Unknown clone file area");
+      const target =
+        path === "."
+          ? validateRoot(roots[area])
+          : targetFor(area, path, false, true);
+      directory(target);
+      const dir = opendirSync(target, { bufferSize: 1 });
+      try {
+        const names: string[] = [];
+        for (;;) {
+          checkActive();
+          const entry = dir.readSync();
+          if (entry === null) break;
+          if (names.length === cap)
+            failure(
+              "LIMIT_EXCEEDED",
+              "Clone directory exceeds the declared entry limit",
+            );
+          names.push(entry.name);
+        }
+        if (path === ".") validateRoot(roots[area]);
+        else directory(targetFor(area, path, false, true));
+        checkActive();
+        return names.sort();
+      } finally {
+        dir.closeSync();
+      }
+    },
+    lock: acquire,
   });
   return {
     service,
+    close(): void {
+      if (closed) return;
+      closed = true;
+      releaseAll([...locks]);
+    },
     readBytes(path: string, maxBytes: number): Uint8Array | undefined {
-      active(options);
+      checkActive();
       if (!options.read)
         failure(
           "EFFECT_UNDECLARED",
@@ -429,8 +842,16 @@ function createCloneFilesAccess(options: CloneFilesOptions): {
 
 export function createCloneFiles(
   options: CloneFilesOptions,
+  hooks?: CloneFilesTestHooks,
 ): CloneFilesService {
-  return createCloneFilesAccess(options).service;
+  return createCloneFilesAccess(options, hooks).service;
+}
+
+export function createCloneFilesLease(
+  options: CloneFilesOptions,
+): CloneFilesLease {
+  const access = createCloneFilesAccess(options);
+  return { service: access.service, close: access.close };
 }
 
 /** The ordered paths and missing markers are framed separately from exact file bytes. */

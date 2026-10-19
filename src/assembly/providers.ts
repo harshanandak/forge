@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createProcessPort } from "../adapters/process/index.ts";
 import type { SupervisionOptions } from "../adapters/process/supervision.ts";
 import {
-  createCloneFiles,
+  createCloneFilesLease,
   digestCloneFiles,
   type CloneFilesService,
 } from "../adapters/fs/clone-files.ts";
@@ -52,7 +52,10 @@ export interface AssemblyProviders {
   openFiles(scope: ServiceScope): Promise<OwnedHandle<FilesService>>;
 }
 interface InternalProviders extends AssemblyProviders {
-  files(scope: ServiceScope, executor: ProcessPort): Promise<FilesService>;
+  files(
+    scope: ServiceScope,
+    executor: ProcessPort,
+  ): Promise<OwnedHandle<FilesService>>;
 }
 
 /** Host cleanup ceilings, not workflow policy. No supervisor exists until a launch. */
@@ -228,6 +231,7 @@ export function createAssemblyProviders(
       const signal = AbortSignal.any([scope.signal, controller.signal]);
       const pending = new Set<Promise<ProcessResult>>();
       const cleanupErrors: unknown[] = [];
+      let fileLease: OwnedHandle<FilesService> | undefined;
       const executor: ProcessPort = {
         ...port,
         run(executable, args, options) {
@@ -256,6 +260,7 @@ export function createAssemblyProviders(
       const close = async (): Promise<void> => {
         controller.abort();
         await Promise.allSettled([...pending]);
+        await fileLease?.close();
         if (cleanupErrors.length)
           throw new AggregateError(
             cleanupErrors,
@@ -263,7 +268,7 @@ export function createAssemblyProviders(
           );
       };
       try {
-        const value = await providers.files(
+        fileLease = await providers.files(
           {
             ...scope,
             signal,
@@ -273,7 +278,7 @@ export function createAssemblyProviders(
           },
           executor,
         );
-        return { ownership: "owned", value, close };
+        return { ownership: "owned", value: fileLease.value, close };
       } catch (error) {
         await close();
         throw error;
@@ -282,7 +287,7 @@ export function createAssemblyProviders(
     async files(
       scope: ServiceScope,
       executor: ProcessPort,
-    ): Promise<FilesService> {
+    ): Promise<OwnedHandle<FilesService>> {
       active(scope);
       // Git, not caller input or a .git text file, resolves linked-worktree roots.
       const discoveryEnv = Object.fromEntries(
@@ -334,9 +339,9 @@ export function createAssemblyProviders(
           ? {}
           : { maxBytes: options.maxFileBytes }),
       };
-      const files = createCloneFiles(fileOptions);
-      return {
-        ...files,
+      const lease = createCloneFilesLease(fileOptions);
+      const value: FilesService = {
+        ...lease.service,
         async snapshot(input: FileSnapshotInput) {
           active(scope);
           if (!scope.effects.includes("files:read"))
@@ -392,6 +397,14 @@ export function createAssemblyProviders(
           if (before !== after)
             refuse("INPUT_CONFLICT", "Git HEAD changed during snapshot");
           return { head: after, filesDigest };
+        },
+      };
+      return {
+        ownership: "owned",
+        value,
+        close: () => {
+          lease.close();
+          return Promise.resolve();
         },
       };
     },
