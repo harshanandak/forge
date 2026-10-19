@@ -42,7 +42,7 @@ export const counterfactuals: readonly {
   },
   {
     file: "blocks/work/entry.cjs",
-    from: "return !blocked(state, value) && !live(state, value.id);",
+    from: "return !blocked(graph, value) && !live(state, value.id);",
     to: "return !live(state, value.id);",
     journey: "dependencies",
     evidence: "AssertionError",
@@ -81,6 +81,13 @@ export const counterfactuals: readonly {
     to: "void 0;",
     journey: "dependency-race",
     evidence: "expected REVISION_CONFLICT",
+  },
+  {
+    file: "blocks/work/entry.cjs",
+    from: "if (complete.has(next)) {",
+    to: "if (false) {",
+    journey: "graph",
+    evidence: "graph node expanded more than once",
   },
   {
     file: "blocks/work/entry.cjs",

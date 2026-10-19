@@ -144,27 +144,90 @@ function checkKind(kind: string | undefined): void {
       `Unknown issue kind ${kind}; known kinds: ${kinds.join(", ")}`,
     );
 }
+function dependencyGraph(
+  state: LeaseStateClient,
+  initial: readonly StateRecord[] = [],
+) {
+  const records = new Map<string, StateRecord | undefined>(
+    initial.map((record) => [stored(record).id, record]),
+  );
+  const readSet: { key: string; expectRevision: number }[] = [];
+  const missing = new Set<string>();
+  const complete = new Map<string, boolean>();
+  const read = (id: string): StateRecord | undefined => {
+    if (!records.has(id)) {
+      const record = state.get(key(id));
+      records.set(id, record);
+      if (record)
+        readSet.push({ key: record.key, expectRevision: record.revision });
+      else missing.add(id);
+    }
+    return records.get(id);
+  };
+  const check = (id: string, dependencies?: readonly string[]): boolean => {
+    if (complete.has(id)) return complete.get(id)!;
+    const root = dependencies ?? stored(read(id)!).dependsOn;
+    const active = new Set([id]);
+    const stack = [{ id, dependencies: root, index: 0, valid: true }];
+    while (stack.length) {
+      const frame = stack[stack.length - 1]!;
+      if (frame.index === frame.dependencies.length) {
+        active.delete(frame.id);
+        complete.set(frame.id, frame.valid);
+        stack.pop();
+        if (!stack.length) return frame.valid;
+        stack[stack.length - 1]!.valid &&= frame.valid;
+        continue;
+      }
+      const next = frame.dependencies[frame.index++]!;
+      if (active.has(next)) {
+        frame.valid = false;
+        continue;
+      }
+      if (complete.has(next)) {
+        frame.valid &&= complete.get(next)!;
+        continue;
+      }
+      const record = read(next);
+      if (!record) {
+        complete.set(next, false);
+        frame.valid = false;
+        continue;
+      }
+      active.add(next);
+      stack.push({
+        id: next,
+        dependencies: stored(record).dependsOn,
+        index: 0,
+        valid: true,
+      });
+    }
+    return true;
+  };
+  return { read, check, readSet, missing };
+}
 function validateDependencies(
   state: LeaseStateClient,
   id: string,
   dependencies: readonly string[],
 ): readonly { readonly key: string; readonly expectRevision: number }[] {
-  const readSet: { key: string; expectRevision: number }[] = [];
-  const walk = (dependency: string, path: Set<string>): void => {
-    if (dependency === id || path.has(dependency))
-      fail("INPUT_CONFLICT", "Dependencies must not contain a cycle");
-    const record = get(state, dependency);
-    readSet.push({ key: record.key, expectRevision: record.revision });
-    const value = stored(record);
-    for (const next of value.dependsOn)
-      walk(next, new Set([...path, dependency]));
-  };
-  for (const dependency of dependencies) walk(dependency, new Set());
-  return readSet;
+  const graph = dependencyGraph(state);
+  if (!graph.check(id, dependencies)) {
+    if (graph.missing.size)
+      fail(
+        "NOT_FOUND",
+        `Issue ${graph.missing.values().next().value} was not found`,
+      );
+    fail("INPUT_CONFLICT", "Dependencies must not contain a cycle");
+  }
+  return graph.readSet;
 }
-function blocked(state: LeaseStateClient, value: Stored): boolean {
+function blocked(
+  graph: ReturnType<typeof dependencyGraph>,
+  value: Stored,
+): boolean {
   return value.dependsOn.some((id) => {
-    const dependency = state.get(key(id));
+    const dependency = graph.read(id);
     return !dependency || stored(dependency).status !== "closed";
   });
 }
@@ -174,6 +237,7 @@ function list(
   mode?: "ready" | "blocked" | "stale",
 ): { items: readonly TrackerItem[] } {
   let records = state.list("issue:");
+  const graph = dependencyGraph(state, records);
   if (input.status)
     records = records.filter(
       (record) => stored(record).status === input.status,
@@ -182,7 +246,7 @@ function list(
     records = records.filter((record) => {
       const value = stored(record);
       if (value.status !== "open") return false;
-      if (mode === "blocked") return blocked(state, value);
+      if (mode === "blocked") return blocked(graph, value);
       if (mode === "stale") {
         const lease = state.lease(key(value.id));
         return (
@@ -191,7 +255,7 @@ function list(
           Date.parse(lease.expiresAt) <= state.now()
         );
       }
-      return !blocked(state, value) && !live(state, value.id);
+      return !blocked(graph, value) && !live(state, value.id);
     });
   return {
     items: records
@@ -389,16 +453,15 @@ const operations: Operations<WorkOperations> = {
   "issue.lint": ({ services }) => {
     const state = client(services);
     const problems: string[] = [];
-    for (const record of state.list("issue:")) {
+    const records = state.list("issue:");
+    const graph = dependencyGraph(state, records);
+    for (const record of records) {
       const value = stored(record);
       if (value.kind !== undefined && !kinds.includes(value.kind))
         problems.push(`${value.id}: unknown kind`);
-      try {
-        validateDependencies(state, value.id, value.dependsOn);
-      } catch {
+      if (!graph.check(value.id))
         problems.push(`${value.id}: missing or cyclic dependency`);
-      }
-      if (value.parent !== undefined && !state.get(key(value.parent)))
+      if (value.parent !== undefined && !graph.read(value.parent))
         problems.push(`${value.id}: missing parent`);
     }
     return { problems };

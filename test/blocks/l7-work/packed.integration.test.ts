@@ -107,6 +107,13 @@ test("installed work block: CLI readback, lease fixtures and remove-the-fix chec
       expect(output).toContain("PASS dependencies");
       expect(output).toContain("PASS dependency-race");
       expect(output).toContain("PASS append-order");
+      const graph = good(
+        runtime,
+        [join(root, "test/node-fixtures/work/graph.mjs"), installed],
+        consumer,
+      );
+      expect(graph).toContain("PASS graph:");
+      console.log(graph.trim());
     }
     for (const [index, runtime] of nodes.entries())
       expect(
@@ -136,7 +143,9 @@ test("installed work block: CLI readback, lease fixtures and remove-the-fix chec
         const result = run(
           node,
           [
-            journey,
+            mutation.journey === "graph"
+              ? join(root, "test/node-fixtures/work/graph.mjs")
+              : journey,
             isolated,
             join(work, `mutation-${index}`),
             mutation.journey,
