@@ -50,6 +50,7 @@ services, owns cancellation, and drains the process tree before returning. The b
 starts no timer, supervisor, cache or persistent process.
 
 Every team choice is explicit configuration: `commands`, `timeoutMs`, `maxOutputBytes`,
+`outputHeadBytes`, `outputTailBytes`, `maxMetadataBytes`, `maxReceiptBytes`,
 `report`, `stopOnFailure`, `inputs`, `maxInputBytes`, and `environment`. A command can
 select its own `report`; otherwise it uses the declared block report. `exit-code` disables
 report interpretation, `json` requires a structured report, and `auto` delegates recognition
@@ -71,3 +72,22 @@ packed consumer may be passed as `CHECK_PACKED_CONSUMER`; all counterfactuals mu
 private copies. `CHECK_ECOSYSTEM_TOOLS` and `CHECK_PYTHON_PACKAGES` optionally select
 external test-only tool installations. Missing ecosystem executables are explicit skips,
 never simulated passes. The Make fixture requires actual recipe output.
+
+The pure `validateBudgets(config)` preflight runs at the start of both the captured handler
+and engine, before snapshots or process calls. Head and tail byte caps must sum to at most
+`maxOutputBytes`. `maxMetadataBytes` reserves room for all declared arguments, identifiers,
+stream commitments and other receipt fields. It must cover the measured declaration metadata.
+`maxReceiptBytes` caps the whole encoded receipt and cannot exceed the host crypto ceiling
+of 1,048,576 bytes. The validator requires metadata plus two streams per declared command
+to fit that total. Each retained raw byte reserves ten encoded bytes: at most six for its
+JSON text preview and four for base64 evidence. Conflicts name the budgets and the maximum
+retention that fits. Resolved paths and the actual subject must fit the metadata reservation
+before the first command starts. Config application remains JSON Schema only; the reusable
+pure validator supplies the cross-field check at invocation time.
+
+The process adapter hashes every raw byte as it arrives, retaining only the configured head
+and tail. Receipt stream evidence contains lossless base64 previews, full observed byte count,
+SHA-256 digest and whether the pipes drained completely. Text previews remain readable in
+`stdout` and `stderr`; truncated or incompletely drained streams have unknown test counts and
+make the run incomplete. Large input bindings use ordered, domain-separated chunk commitments;
+every host hash call fits the same 1 MiB ceiling, without splitting Unicode surrogate pairs.

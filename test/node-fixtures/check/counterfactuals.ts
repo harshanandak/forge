@@ -7,6 +7,41 @@ export interface Counterfactual {
 }
 export const counterfactuals: readonly Counterfactual[] = [
   {
+    file: "blocks/check/entry.cjs",
+    from: "if (bytes <= HASH_LIMIT)",
+    to: "if (true)",
+    journey: "bindings",
+    evidence: "LIMIT_EXCEEDED",
+  },
+  {
+    file: "blocks/check/entry.cjs",
+    from: "headBytes: frozenConfig.outputHeadBytes,",
+    to: "headBytes: frozenConfig.maxOutputBytes - frozenConfig.outputTailBytes,",
+    journey: "budget",
+    evidence: "Process evidence exceeded its validated receipt budget",
+  },
+  {
+    file: "adapters/process/capture.js",
+    from: "this.hash?.update(chunk);",
+    to: "void 0;",
+    journey: "budget",
+    evidence: "full streaming digest includes discarded middle",
+  },
+  {
+    file: "blocks/check/entry.cjs",
+    from: "totalBytes > config.maxReceiptBytes",
+    to: "false",
+    journey: "budget",
+    evidence: "budget conflict refuses before I/O",
+  },
+  {
+    file: "blocks/check/entry.cjs",
+    from: "if (metadata > config.maxMetadataBytes)",
+    to: "if (false)",
+    journey: "budget",
+    evidence: "budget conflict refuses before I/O",
+  },
+  {
     file: "blocks/check/forge.block.json",
     from: "forge.state@1",
     to: "forge.state@^1.0.0",

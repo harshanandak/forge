@@ -13,6 +13,7 @@ import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts
 import type { StateRecord } from "../../../src/generated/types.ts";
 import { operations } from "../../../src/blocks/check/operations.ts";
 import { hash } from "../../../src/blocks/check/receipt.ts";
+import { captured } from "./fakes.ts";
 
 function fixture(result: Partial<ProcessResult> = {}) {
   const records = new Map<string, StateRecord>();
@@ -36,16 +37,21 @@ function fixture(result: Partial<ProcessResult> = {}) {
         options: SpawnOptions,
       ) {
         environments.push(options.env);
-        return Promise.resolve({
-          stdout: "done",
-          stderr: "",
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
-          truncated: false,
-          durationMs: 1,
-          ...result,
-        });
+        return Promise.resolve(
+          captured(
+            {
+              stdout: "done",
+              stderr: "",
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              truncated: false,
+              durationMs: 1,
+              ...result,
+            },
+            options,
+          ),
+        );
       },
     },
     state: {
@@ -72,6 +78,10 @@ const config = {
   commands: { test: "declared-tool test" },
   timeoutMs: 1000,
   maxOutputBytes: 8192,
+  outputHeadBytes: 1024,
+  outputTailBytes: 1024,
+  maxMetadataBytes: 32768,
+  maxReceiptBytes: 262144,
   report: "auto" as const,
   stopOnFailure: true,
   inputs: [],
@@ -243,7 +253,7 @@ test("the async run handler awaits the process service and applies the invocatio
           observedTimeout = options.timeoutMs;
           observedSignal = "signal" in options ? options.signal : undefined;
           return new Promise<ProcessResult>((resolve) => {
-            complete = resolve;
+            complete = (result) => resolve(captured(result, options));
           });
         },
       },

@@ -128,6 +128,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       ecosystem: { passed: string[]; skipped: string[] };
     };
     expect(report.passed).toEqual([
+      "budget",
       "pytest",
       "cancellation",
       "handler",
@@ -168,7 +169,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       try {
         const result = run(
           node,
-          ["surfaces", "mcp"].includes(mutation.journey)
+          ["surfaces", "mcp", "bindings"].includes(mutation.journey)
             ? [
                 join(import.meta.dirname, "surfaces.mjs"),
                 isolated,

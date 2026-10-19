@@ -3,6 +3,7 @@ import { checkCrypto } from "./support.ts";
 import type { CheckServices } from "./types.ts";
 export type * from "./types.ts";
 export { verifyReceipt } from "./receipt.ts";
+export { validateBudgets } from "./budget.ts";
 export function createCheck(services: CheckServices): CheckBlock {
   return (
     entry as unknown as {

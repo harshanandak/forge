@@ -13,6 +13,7 @@ import { validateWithSchema } from "../../../src/contract/schema.ts";
 import schema from "../../../src/blocks/check/schemas/config.json" with { type: "json" };
 import manifest from "../../../src/blocks/check/forge.block.json" with { type: "json" };
 import { validateBlockManifest } from "../../../src/contract/index.ts";
+import { captured } from "./fakes.ts";
 
 test("the check manifest uses locked major interface references in every slot", () => {
   expect(validateBlockManifest(manifest).ok).toBe(true);
@@ -43,6 +44,10 @@ const config: CheckConfig = {
   commands: { test: { argv: ["declared-command", "arg"] } },
   timeoutMs: 1000,
   maxOutputBytes: 8192,
+  outputHeadBytes: 1024,
+  outputTailBytes: 1024,
+  maxMetadataBytes: 32768,
+  maxReceiptBytes: 262144,
   report: "auto",
   stopOnFailure: true,
   inputs: ["source.txt"],
@@ -82,15 +87,20 @@ function fixture() {
         expect(options.cwd).toBe("/clone");
         expect(options.signal).toBeDefined();
         observed.push("run");
-        return Promise.resolve({
-          exitCode: 0,
-          signal: null,
-          stdout: "Tests: 1 passed, 1 total",
-          stderr: "",
-          timedOut: false,
-          truncated: false,
-          durationMs: 1,
-        });
+        return Promise.resolve(
+          captured(
+            {
+              exitCode: 0,
+              signal: null,
+              stdout: "Tests: 1 passed, 1 total",
+              stderr: "",
+              timedOut: false,
+              truncated: false,
+              durationMs: 1,
+            },
+            options,
+          ),
+        );
       },
     },
     state: {

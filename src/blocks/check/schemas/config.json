@@ -9,7 +9,11 @@
     "stopOnFailure",
     "inputs",
     "maxInputBytes",
-    "environment"
+    "environment",
+    "outputHeadBytes",
+    "outputTailBytes",
+    "maxMetadataBytes",
+    "maxReceiptBytes"
   ],
   "properties": {
     "report": {
@@ -87,6 +91,26 @@
         "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
         "maxLength": 200
       }
+    },
+    "outputHeadBytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 262144
+    },
+    "outputTailBytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 262144
+    },
+    "maxMetadataBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
+    "maxReceiptBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
     }
   }
 }

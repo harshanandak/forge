@@ -2,7 +2,7 @@ import type { CryptoService, CatalogServices } from "./services.ts";
 declare const fail: (code: string, message: string) => never;
 function failure(code: string, message: string): never {
   if (typeof fail === "function") return fail(code, message);
-  throw new Error(`${code}: ${message}`);
+  throw Object.assign(new Error(`${code}: ${message}`), { code });
 }
 function copy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -34,8 +34,37 @@ function canonical(value: unknown): string {
   return encoded;
 }
 
+const HASH_LIMIT = 1_048_576;
+function utf8Bytes(text: string): number {
+  let size = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0)!;
+    size += code <= 127 ? 1 : code <= 2047 ? 2 : code <= 65535 ? 3 : 4;
+  }
+  return size;
+}
 function digest(value: unknown, crypto: CryptoService): string {
-  return `sha256:${crypto.sha256(canonical(value))}`;
+  const text = canonical(value),
+    bytes = utf8Bytes(text);
+  if (bytes <= HASH_LIMIT) return `sha256:${crypto.sha256(text)}`;
+  // Ordered, domain-separated chunk commitments. Never split a surrogate pair.
+  const domain = "forge/check/chunked-sha256/v1";
+  let chain = crypto.sha256(domain),
+    index = 0;
+  for (let start = 0; start < text.length;) {
+    let end = Math.min(text.length, start + Math.floor(HASH_LIMIT / 3));
+    if (
+      end < text.length &&
+      /[\uD800-\uDBFF]/.test(text[end - 1]!) &&
+      /[\uDC00-\uDFFF]/.test(text[end]!)
+    )
+      end--;
+    chain = crypto.sha256(
+      `${chain}:${index++}:${crypto.sha256(text.slice(start, end))}`,
+    );
+    start = end;
+  }
+  return `sha256:${crypto.sha256(`${domain}:${text.length}:${bytes}:${index}:${chain}`)}`;
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -92,7 +121,7 @@ function verify(
       !isRecord(run) ||
       !keys(
         run,
-        "name,argv,executable,status,testCount,exitCode,signal,timedOut,truncated,stdout,stderr,durationMs,reason",
+        "name,argv,executable,status,testCount,exitCode,signal,timedOut,truncated,stdout,stderr,stdoutEvidence,stderrEvidence,durationMs,reason",
       ) ||
       typeof run.name !== "string" ||
       !run.name ||
@@ -101,6 +130,28 @@ function verify(
       !run.argv.every((v) => typeof v === "string")
     )
       return false;
+    for (const stream of [run.stdoutEvidence, run.stderrEvidence]) {
+      if (stream === null) continue;
+      if (
+        !isRecord(stream) ||
+        !keys(stream, "head,tail,encoding,totalBytes,digest,complete") ||
+        stream.encoding !== "base64" ||
+        typeof stream.head !== "string" ||
+        typeof stream.tail !== "string" ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+          stream.head,
+        ) ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+          stream.tail,
+        ) ||
+        !integer(stream.totalBytes) ||
+        stream.totalBytes < 0 ||
+        typeof stream.complete !== "boolean" ||
+        typeof stream.digest !== "string" ||
+        !/^sha256:[a-f0-9]{64}$/.test(stream.digest)
+      )
+        return false;
+    }
     if (
       ![run.executable, run.signal].every(
         (v) => v === null || typeof v === "string",
@@ -131,6 +182,10 @@ function verify(
     if (
       run.status === "PASS" &&
       (run.exitCode !== 0 ||
+        run.stdoutEvidence === null ||
+        run.stderrEvidence === null ||
+        !(run.stdoutEvidence as { complete: boolean }).complete ||
+        !(run.stderrEvidence as { complete: boolean }).complete ||
         run.timedOut ||
         run.truncated ||
         run.signal !== null ||
@@ -167,9 +222,119 @@ function blank(
     truncated: false,
     stdout: "",
     stderr: "",
+    stdoutEvidence: null,
+    stderrEvidence: null,
     durationMs: 0,
     reason,
   };
+}
+
+const INCOMPLETE_REASON =
+  "Command could not be completed; inspect the executable and project configuration";
+function declarationsFor(config: CheckConfig) {
+  return Object.entries(config.commands).map(([name, command]) => ({
+    name,
+    argv:
+      typeof command === "string"
+        ? commandArguments(command)
+        : [...command.argv],
+  }));
+}
+function metadataSize(
+  config: CheckConfig,
+  subject = "",
+  paths?: ReadonlyMap<string, string>,
+): number {
+  const stream = {
+    head: "",
+    tail: "",
+    encoding: "base64",
+    totalBytes: Number.MAX_SAFE_INTEGER,
+    digest: "sha256:" + "a".repeat(64),
+    complete: false,
+  };
+  const runs = declarationsFor(config).map(({ name, argv }) => ({
+    ...blank(name, argv, INCOMPLETE_REASON, "NOT_EXECUTED"),
+    executable: paths?.get(name) ?? argv[0] ?? null,
+    testCount: Number.MAX_SAFE_INTEGER,
+    exitCode: -Number.MAX_SAFE_INTEGER,
+    signal: "\0".repeat(64),
+    durationMs: Number.MAX_VALUE,
+    stdoutEvidence: stream,
+    stderrEvidence: stream,
+  }));
+  return utf8Bytes(
+    canonical({
+      version: 1,
+      id: "a".repeat(36),
+      subject,
+      status: "NOT_EXECUTED",
+      checkedAt: "0".repeat(24),
+      checked: runs.map(({ name, status }) => ({ name, status })),
+      reason: "Project inputs changed while checks ran",
+      inputsDigest: "sha256:" + "a".repeat(64),
+      digest: "sha256:" + "a".repeat(64),
+      runs,
+    }),
+  );
+}
+/** Pure preflight: no clock, snapshot, environment selection or process calls. */
+function validateBudgets(config: CheckConfig): {
+  totalBytes: number;
+  declarationBytes: number;
+} {
+  const invalid = (message: string): never => failure("INPUT_INVALID", message);
+  for (const [name, value, maximum] of [
+    ["maxOutputBytes", config.maxOutputBytes, 262144],
+    ["outputHeadBytes", config.outputHeadBytes, 262144],
+    ["outputTailBytes", config.outputTailBytes, 262144],
+    ["maxMetadataBytes", config.maxMetadataBytes, HASH_LIMIT],
+    ["maxReceiptBytes", config.maxReceiptBytes, HASH_LIMIT],
+  ] as const) {
+    const minimum =
+      name === "outputHeadBytes" || name === "outputTailBytes" ? 0 : 1;
+    if (!Number.isSafeInteger(value) || value < minimum || value > maximum)
+      invalid(
+        `${name} must be an integer in ${minimum}..${maximum}; maximum ${maximum}`,
+      );
+  }
+  const retained = config.outputHeadBytes + config.outputTailBytes;
+  if (retained > config.maxOutputBytes)
+    invalid(
+      `outputHeadBytes + outputTailBytes (${retained}) conflicts with maxOutputBytes (${config.maxOutputBytes}); maximum retained bytes per stream is ${config.maxOutputBytes}`,
+    );
+  const count = Object.keys(config.commands).length;
+  if (count > 256) invalid("commands exceeds its maximum of 256");
+  const declarationBytes = utf8Bytes(canonical(config.commands));
+  const metadata = metadataSize(config);
+  const maximumMetadata = Math.max(
+    0,
+    config.maxReceiptBytes - count * 2 * retained * 10,
+  );
+  if (metadata > config.maxMetadataBytes)
+    invalid(
+      `maxMetadataBytes (${config.maxMetadataBytes}) cannot fit declarations (${declarationBytes} bytes) and receipt metadata; needs at least ${metadata}; maximum metadata reservation that fits maxReceiptBytes is ${maximumMetadata}`,
+    );
+  // JSON text needs at most six bytes per retained raw byte; base64 at most four.
+  const totalBytes = config.maxMetadataBytes + count * 2 * retained * 10;
+  if (
+    !Number.isSafeInteger(totalBytes) ||
+    totalBytes > config.maxReceiptBytes
+  ) {
+    const maximum = count
+      ? Math.max(
+          0,
+          Math.floor(
+            (config.maxReceiptBytes - config.maxMetadataBytes) /
+              (count * 2 * 10),
+          ),
+        )
+      : 0;
+    invalid(
+      `commands (${count}) × two streams × outputHeadBytes + outputTailBytes (${retained}), plus maxMetadataBytes (${config.maxMetadataBytes}), conflicts with maxReceiptBytes (${config.maxReceiptBytes}); maximum retained bytes per stream is ${maximum}; crypto ceiling is ${HASH_LIMIT}`,
+    );
+  }
+  return { totalBytes, declarationBytes };
 }
 function aggregate(runs: readonly CheckRun[]): CheckStatus {
   if (runs.some((run) => run.status === "FAIL")) return "FAIL";
@@ -220,6 +385,7 @@ function createCheck(
       config: CheckConfig,
       scope?: CheckInvocationScope,
     ): Promise<CheckReceipt> {
+      validateBudgets(config);
       function active(): void {
         if (scope?.signal.aborted)
           failure("INVOCATION_CANCELLED", "Check invocation was cancelled");
@@ -235,17 +401,9 @@ function createCheck(
         config.timeoutMs > 2_147_483_647
       )
         invalid("timeoutMs must be a positive timer budget");
-      if (
-        !Number.isSafeInteger(config.maxOutputBytes) ||
-        config.maxOutputBytes < 1 ||
-        config.maxOutputBytes > 262_144
-      )
-        invalid("maxOutputBytes must be between 1 and 262144");
       const frozenConfig = structuredClone(config);
       const frozenInput = structuredClone(input);
       const env = Object.freeze({ ...services.environment });
-      const before = structuredClone(await services.snapshot());
-      active();
       const names = [
         ...new Set(frozenInput.checks ?? Object.keys(frozenConfig.commands)),
       ];
@@ -254,6 +412,20 @@ function createCheck(
         names.some((name) => !name || name.length > 200)
       )
         invalid("Select at most 256 named checks");
+      const budgetConfig = {
+        ...frozenConfig,
+        commands: Object.fromEntries(
+          names.map((name) => [
+            name,
+            Object.hasOwn(frozenConfig.commands, name)
+              ? frozenConfig.commands[name]!
+              : { argv: [] },
+          ]),
+        ),
+      };
+      validateBudgets(budgetConfig);
+      const before = structuredClone(await services.snapshot());
+      active();
       const declarations = names.map((name) => {
         const command = Object.hasOwn(frozenConfig.commands, name)
           ? frozenConfig.commands[name]
@@ -300,6 +472,19 @@ function createCheck(
           }),
         ),
       });
+      const paths = new Map(
+        declarations
+          .filter((d) => d.executable?.kind === "resolved")
+          .map((d) => [
+            d.name,
+            d.executable!.kind === "resolved" ? d.executable!.path : "",
+          ]),
+      );
+      const requiredMetadata = metadataSize(budgetConfig, before.head, paths);
+      if (requiredMetadata > frozenConfig.maxMetadataBytes)
+        invalid(
+          `maxMetadataBytes (${frozenConfig.maxMetadataBytes}) cannot fit resolved declaration metadata; needs at least ${requiredMetadata}; maximum metadata reservation that fits maxReceiptBytes is ${Math.max(0, frozenConfig.maxReceiptBytes - names.length * 2 * (frozenConfig.outputHeadBytes + frozenConfig.outputTailBytes) * 10)}`,
+        );
       const runs: CheckRun[] = [];
       for (const declaration of declarations) {
         active();
@@ -320,7 +505,7 @@ function createCheck(
             blank(
               name,
               argv,
-              `${executable.reason}. ${executable.remedy}`,
+              "Executable is unavailable; inspect the declared command and environment",
               "INCOMPLETE",
             ),
           );
@@ -337,6 +522,10 @@ function createCheck(
                 )
               : frozenConfig.timeoutMs,
             maxOutputBytes: frozenConfig.maxOutputBytes,
+            capture: {
+              headBytes: frozenConfig.outputHeadBytes,
+              tailBytes: frozenConfig.outputTailBytes,
+            },
             ...(scope ? { signal: scope.signal } : {}),
           };
           const result = await services.process.run(
@@ -345,14 +534,21 @@ function createCheck(
             options,
           );
           active();
-          const parsed = services.output.parse(
-            result.stdout,
-            result.stderr,
-            report,
-          );
+          if (!result.outputEvidence)
+            throw new Error(
+              "Process service did not supply streaming evidence",
+            );
+          const incompleteOutput =
+            result.truncated ||
+            !result.outputEvidence.stdout.complete ||
+            !result.outputEvidence.stderr.complete;
+          const parsed = incompleteOutput
+            ? { kind: "unknown" as const, testCount: null, failed: null }
+            : services.output.parse(result.stdout, result.stderr, report);
           const status: CheckStatus =
             result.timedOut ||
             result.truncated ||
+            incompleteOutput ||
             result.signal !== null ||
             result.exitCode === null ||
             parsed.kind === "malformed"
@@ -370,6 +566,8 @@ function createCheck(
             signal: result.signal,
             stdout: result.stdout,
             stderr: result.stderr,
+            stdoutEvidence: result.outputEvidence.stdout,
+            stderrEvidence: result.outputEvidence.stderr,
             timedOut: result.timedOut,
             truncated: result.truncated,
             durationMs: result.durationMs,
@@ -379,17 +577,12 @@ function createCheck(
               ? "Command exceeded its time budget; retained output follows"
               : result.truncated
                 ? "Output exceeded its byte budget"
-                : parsed.detail,
+                : `Output report: ${parsed.kind}`,
           });
         } catch {
           active();
           runs.push({
-            ...blank(
-              name,
-              argv,
-              "Command could not be completed; inspect the executable and project configuration",
-              "INCOMPLETE",
-            ),
+            ...blank(name, argv, INCOMPLETE_REASON, "INCOMPLETE"),
             executable: executable.path,
           });
         }
@@ -415,6 +608,11 @@ function createCheck(
         runs,
       };
       const receipt: CheckReceipt = { ...body, digest: hash(body) };
+      if (utf8Bytes(canonical(receipt)) > frozenConfig.maxReceiptBytes)
+        failure(
+          "LIMIT_EXCEEDED",
+          "Process evidence exceeded its validated receipt budget",
+        );
       services.state.put(`runs/${receipt.id}`, receipt, { expectRevision: 0 });
       const stored = show(receipt.id);
       if (!stored || stored.digest !== receipt.digest)
@@ -469,6 +667,7 @@ type Call<T> = import("../../contract/author.ts").HandlerCall<T> & {
 };
 const operations = {
   async "check.run"(args: Call<RunInput>) {
+    validateBudgets(args.config);
     const services = args.services;
     const config = args.config;
     const engine = createCheck({
@@ -515,4 +714,5 @@ module.exports = {
   canonical,
   digest,
   verify,
+  validateBudgets,
 };

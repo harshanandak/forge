@@ -1,4 +1,7 @@
-import type { ProcessPort } from "../../ports/process.ts";
+import type {
+  ProcessPort,
+  ProcessOutputEvidence,
+} from "../../ports/process.ts";
 import type { ClockPort } from "../../ports/clock.ts";
 import type { StateClient } from "../../ports/state.ts";
 import type { RunnerOutputPort } from "../../ports/runner-output.ts";
@@ -16,6 +19,10 @@ export interface CheckConfig {
   readonly commands: Readonly<Record<string, string | CommandDeclaration>>;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
+  readonly outputHeadBytes: number;
+  readonly outputTailBytes: number;
+  readonly maxMetadataBytes: number;
+  readonly maxReceiptBytes: number;
   readonly report: "auto" | "json" | "exit-code";
   readonly stopOnFailure: boolean;
   readonly inputs: readonly string[];
@@ -58,6 +65,8 @@ export interface CheckRun {
   readonly truncated: boolean;
   readonly stdout: string;
   readonly stderr: string;
+  readonly stdoutEvidence: ProcessOutputEvidence | null;
+  readonly stderrEvidence: ProcessOutputEvidence | null;
   readonly durationMs: number;
   readonly reason: string;
 }

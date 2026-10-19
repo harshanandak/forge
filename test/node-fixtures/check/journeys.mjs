@@ -78,6 +78,10 @@ const config = (name, timeoutMs = 3000) => ({
   commands: { test: { argv: [process.execPath, child, name] } },
   timeoutMs,
   maxOutputBytes: 8192,
+  outputHeadBytes: 1024,
+  outputTailBytes: 1024,
+  maxMetadataBytes: 32768,
+  maxReceiptBytes: 262144,
   report: "auto",
   stopOnFailure: true,
   inputs: [],
@@ -85,6 +89,82 @@ const config = (name, timeoutMs = 3000) => ({
   environment: [],
 });
 const cases = {
+  async budget() {
+    await assert.rejects(
+      services.process.run(
+        services.process.resolve(process.execPath, baseEnv),
+        [child, "maximum"],
+        {
+          cwd: directory,
+          env: baseEnv,
+          timeoutMs: 3000,
+          maxOutputBytes: 1,
+          capture: { headBytes: 2, tailBytes: 2 },
+        },
+      ),
+      { code: "INVALID_OPTIONS" },
+    );
+    let io = 0;
+    const guarded = createCheck({
+      ...services,
+      snapshot: async () => {
+        io++;
+        return services.snapshot();
+      },
+    });
+    for (const change of [{ maxReceiptBytes: 4096 }, { maxMetadataBytes: 1 }]) {
+      await assert.rejects(
+        guarded.run({}, { ...config("maximum"), ...change }),
+        /INPUT_INVALID/,
+        "budget conflict refuses before I/O",
+      );
+      assert.equal(io, 0, "budget conflict refuses before I/O");
+    }
+    const options = {
+      ...config("maximum"),
+      maxOutputBytes: 262144,
+      commands: {
+        first: { argv: [process.execPath, child, "maximum"] },
+        second: { argv: [process.execPath, child, "maximum"] },
+      },
+      stopOnFailure: false,
+    };
+    const receipt = await check.run({}, options);
+    assert.equal(receipt.runs.length, 2);
+    assert.equal(
+      verifyReceipt(receipt, receipt.inputsDigest),
+      true,
+      "bounded receipt verifies",
+    );
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(receipt)) <= options.maxReceiptBytes,
+      "receipt fits declared total",
+    );
+    const full = Buffer.from("H" + "x".repeat(262142) + "T");
+    const expected =
+      "sha256:" + createHash("sha256").update(full).digest("hex");
+    for (const run of receipt.runs)
+      for (const stream of [run.stdoutEvidence, run.stderrEvidence]) {
+        assert.equal(stream.totalBytes, 262144, "full stream length");
+        assert.equal(
+          stream.digest,
+          expected,
+          "full streaming digest includes discarded middle",
+        );
+        assert.equal(stream.complete, true, "stream drained completely");
+        assert.equal(
+          Buffer.from(stream.head, "base64").length,
+          options.outputHeadBytes,
+          "bounded head bytes",
+        );
+        assert.equal(
+          Buffer.from(stream.tail, "base64").length,
+          options.outputTailBytes,
+          "bounded tail bytes",
+        );
+      }
+    assert.deepEqual(check.show(receipt.id), receipt);
+  },
   async pytest() {
     const output = createRunnerOutput();
     assert.equal(

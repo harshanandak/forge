@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
   cpSync,
@@ -12,6 +13,7 @@ import { join } from "node:path";
 
 const installed = process.argv[2];
 const mcpOnly = process.argv[3] === "mcp";
+const bindingsOnly = process.argv[3] === "bindings";
 const root = realpathSync(mkdtempSync(join(tmpdir(), "check-surfaces-")));
 const bin = join(installed, "dist/bin/forge.js");
 const env = {
@@ -22,18 +24,19 @@ const env = {
 const envNames = Object.keys(env).filter((name) =>
   /^(?:path|pathext|systemroot|windir|temp|tmp|home)$/i.test(name),
 );
-function cli(args, expected = 0) {
+function cli(args, expected = 0, input) {
   const result = spawnSync(process.execPath, [bin, ...args], {
     cwd: root,
     env,
     encoding: "utf8",
     windowsHide: true,
     timeout: 15000,
+    input,
   });
   assert.equal(
     result.status,
     expected,
-    `${args.slice(0, 2).join(" ")}: ${result.stdout} ${result.stderr}`,
+    `${args.slice(0, 2).join(" ")}: ${result.error?.code ?? result.signal ?? "exit"} ${result.stdout} ${result.stderr}`,
   );
   return JSON.parse(result.stdout);
 }
@@ -52,6 +55,10 @@ const config = {
   commands: { test: { argv: [process.execPath, "command.mjs", "unknown"] } },
   timeoutMs: 5000,
   maxOutputBytes: 8192,
+  outputHeadBytes: 1024,
+  outputTailBytes: 1024,
+  maxMetadataBytes: 32768,
+  maxReceiptBytes: 262144,
   report: "auto",
   stopOnFailure: true,
   inputs: ["input.txt", "command.mjs"],
@@ -68,10 +75,9 @@ const effects = [
 ];
 let revision;
 function configure(changes) {
-  const applied = cli([
-    "config",
-    "apply",
-    "--input",
+  const applied = cli(
+    ["--hook", "config.apply"],
+    0,
     JSON.stringify({
       expectRevision: revision,
       patch: Object.entries(changes).map(([key, value]) => ({
@@ -80,10 +86,59 @@ function configure(changes) {
         value,
       })),
     }),
-  ]);
+  );
   revision = applied.result.revision;
 }
-async function mcp() {
+function maximumReceipt(receipt) {
+  assert.equal(
+    receipt.runs.length,
+    2,
+    "two maximum-output commands return a receipt",
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(receipt)) <= config.maxReceiptBytes,
+  );
+  const expected =
+    "sha256:" +
+    createHash("sha256")
+      .update("H" + "x".repeat(262142) + "T")
+      .digest("hex");
+  for (const run of receipt.runs)
+    for (const stream of [run.stdoutEvidence, run.stderrEvidence]) {
+      assert.equal(stream.totalBytes, 262144, "full streaming length");
+      assert.equal(
+        stream.digest,
+        expected,
+        "full streaming digest includes discarded middle",
+      );
+      assert.equal(stream.complete, true);
+    }
+}
+function bindings() {
+  configure({
+    commands: Object.fromEntries(
+      Array.from({ length: 128 }, (_, index) => [
+        "check" + index,
+        { argv: ["unavailable-declaration", "x".repeat(4200)] },
+      ]),
+    ),
+    outputHeadBytes: 1,
+    outputTailBytes: 1,
+    maxMetadataBytes: 850000,
+    maxReceiptBytes: 1048576,
+    stopOnFailure: false,
+  });
+  const receipt = cli(["check", "run"]).result;
+  assert.equal(
+    receipt.runs.length,
+    128,
+    "large declaration binding returns a receipt",
+  );
+  assert.equal(receipt.status, "INCOMPLETE");
+  assert.match(receipt.inputsDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.deepEqual(cli(["check", "show", receipt.id]).result, receipt);
+}
+async function mcp(expectedStatus = "PASS", expectedCommands = ["test"]) {
   const child = spawn(process.execPath, [bin, "--mcp"], {
     cwd: root,
     env,
@@ -142,13 +197,14 @@ async function mcp() {
       name: "check_list",
       arguments: {},
     });
-    assert.deepEqual(commands.result.structuredContent.result.commands, [
-      "test",
-    ]);
+    assert.deepEqual(
+      commands.result.structuredContent.result.commands,
+      expectedCommands,
+    );
     const run = await rpc("tools/call", { name: "check_run", arguments: {} });
     assert.equal(
       run.result?.structuredContent?.result?.status,
-      "PASS",
+      expectedStatus,
       "MCP awaits the declared command",
     );
     const receipt = run.result.structuredContent.result;
@@ -185,7 +241,7 @@ try {
   writeFileSync(join(root, "input.txt"), "exact input\n");
   writeFileSync(
     join(root, "command.mjs"),
-    `const mode=process.argv[2];if(mode==="zero")console.log("Tests: 0 total");else if(mode==="malformed")console.log('{"numTotalTests":');else if(mode==="environment"){if(process.env.CHECK_PARENT_ONLY)process.exitCode=9;else console.log("isolated");}else console.log("project command");`,
+    `const mode=process.argv[2];if(mode==="maximum"){const text="H"+"x".repeat(262142)+"T";process.stdout.write(text);process.stderr.write(text);}else if(mode==="zero")console.log("Tests: 0 total");else if(mode==="malformed")console.log('{"numTotalTests":');else if(mode==="environment"){if(process.env.CHECK_PARENT_ONLY)process.exitCode=9;else console.log("isolated");}else console.log("project command");`,
   );
   git(["add", "input.txt", "command.mjs"]);
   git([
@@ -232,6 +288,9 @@ try {
     console.log(
       "PASS packed generated MCP: list, awaited run, receipt readback",
     );
+  } else if (bindingsOnly) {
+    bindings();
+    console.log("PASS packed large declaration input binding");
   } else {
     assert.deepEqual(cli(["check", "list"]).result.commands, ["test"]);
     const first = cli(["check", "run"]).result;
@@ -276,6 +335,17 @@ try {
     );
     const wire = await mcp();
     assert.equal(wire.status, changed.status, "CLI and MCP outcomes agree");
+    configure({
+      commands: {
+        first: { argv: [process.execPath, "command.mjs", "maximum"] },
+        second: { argv: [process.execPath, "command.mjs", "maximum"] },
+      },
+      maxOutputBytes: 262144,
+      stopOnFailure: false,
+    });
+    maximumReceipt(cli(["check", "run"]).result);
+    maximumReceipt(await mcp("INCOMPLETE", ["first", "second"]));
+    bindings();
     console.log(
       "PASS packed generated CLI/MCP: admission, list, outcomes, env, input binding, receipt readback",
     );

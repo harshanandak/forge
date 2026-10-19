@@ -2,6 +2,11 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
 const mode = process.argv[2];
+if (mode === "maximum") {
+  const text = "H" + "x".repeat(262142) + "T";
+  process.stdout.write(text);
+  process.stderr.write(text);
+}
 if (mode === "unknown") console.log("project-owned check finished");
 if (mode === "zero") console.log("Tests:       0 total");
 if (mode === "malformed") console.log('{"numTotalTests":');
