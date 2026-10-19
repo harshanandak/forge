@@ -1,6 +1,21 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { ProcessSpawnError } from "./errors.ts";
 
+interface GroupControl {
+  signal(pid: number, signal: "SIGKILL" | 0): void;
+  now(): number;
+  pause(ms: number): Promise<void>;
+}
+const realGroupControl: GroupControl = {
+  signal(pid, signal) {
+    process.kill(pid, signal);
+  },
+  now: () => performance.now(),
+  pause: async (ms) => {
+    await sleep(ms);
+  },
+};
+
 /** A POSIX scope owns its helper's process group until command settlement. */
 export async function killTree(
   pid: number,
@@ -8,9 +23,10 @@ export async function killTree(
     readonly cleanupTimeoutMs: number;
     readonly pollIntervalMs: number;
   },
+  control: GroupControl = realGroupControl,
 ): Promise<void> {
   try {
-    process.kill(-pid, "SIGKILL");
+    control.signal(-pid, "SIGKILL");
   } catch (error) {
     if (!(
       error !== null &&
@@ -24,10 +40,10 @@ export async function killTree(
         error,
       );
   }
-  const deadline = performance.now() + timing.cleanupTimeoutMs;
+  const deadline = control.now() + timing.cleanupTimeoutMs;
   while (true) {
     try {
-      process.kill(-pid, 0);
+      control.signal(-pid, 0);
     } catch (error) {
       if (
         error !== null &&
@@ -36,18 +52,25 @@ export async function killTree(
         error.code === "ESRCH"
       )
         return;
-      throw new ProcessSpawnError(
-        "TREE_KILL_FAILED",
-        "Could not confirm process group termination",
-        error,
-      );
+      // EPERM is ambiguous while a signalled group is being reaped. Only ESRCH proves absence.
+      if (!(
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "EPERM"
+      ))
+        throw new ProcessSpawnError(
+          "TREE_KILL_FAILED",
+          "Could not confirm process group termination",
+          error,
+        );
     }
-    const remaining = deadline - performance.now();
+    const remaining = deadline - control.now();
     if (remaining <= 0)
       throw new ProcessSpawnError(
         "TREE_KILL_FAILED",
         "Process group remained alive after termination",
       );
-    await sleep(Math.min(timing.pollIntervalMs, remaining));
+    await control.pause(Math.min(timing.pollIntervalMs, remaining));
   }
 }
