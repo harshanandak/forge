@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "dryRun": {
+      "type": "boolean"
+    }
+  },
+  "required": ["dryRun"],
+  "additionalProperties": false
+}

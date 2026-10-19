@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "installed": {
+      "type": "boolean"
+    },
+    "removed": {
+      "type": "boolean"
+    },
+    "active": {
+      "type": "boolean"
+    },
+    "owned": {
+      "type": "boolean"
+    },
+    "effectivePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": ["name"],
+  "additionalProperties": false
+}
