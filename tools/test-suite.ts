@@ -34,9 +34,10 @@ function run(kind: "unit" | "integration" | "integration-rest"): void {
       ? !file.endsWith(".integration.test.ts")
       : file.endsWith(".integration.test.ts") &&
         (kind !== "integration-rest" ||
-          !file
-            .replaceAll("\\", "/")
-            .endsWith("node-fixtures/state/packed.integration.test.ts")),
+          ![
+            "test/node-fixtures/state/packed.integration.test.ts",
+            "test/integration/packed.integration.test.ts",
+          ].includes(file.replaceAll("\\", "/"))),
   );
   if (selected.length === 0) throw new Error(`the ${kind} test suite is empty`);
   console.log(`${kind}: ${selected.length} test files`);

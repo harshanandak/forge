@@ -12,7 +12,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 for (const suite of ["integration", "integration-rest"] as const)
-  for (const failing of ["packed", "serial", "neither"] as const) {
+  for (const failing of [
+    "packed",
+    "first-slice",
+    "serial",
+    "neither",
+  ] as const) {
     test(`${suite} preserves selected files and the ${failing} outcome`, () => {
       const work = mkdtempSync(join(tmpdir(), "forge-suite-outcomes-"));
       try {
@@ -21,13 +26,15 @@ for (const suite of ["integration", "integration-rest"] as const)
           resolve(import.meta.dirname, "../../../tools/test-suite.ts"),
           join(work, "tools/test-suite.ts"),
         );
-        for (const lane of ["packed", "serial"] as const) {
+        for (const lane of ["packed", "first-slice", "serial"] as const) {
           const path = join(
             work,
             "test",
             lane === "packed"
               ? "node-fixtures/state/packed.integration.test.ts"
-              : "other.integration.test.ts",
+              : lane === "first-slice"
+                ? "integration/packed.integration.test.ts"
+                : "other.integration.test.ts",
           );
           mkdirSync(dirname(path), { recursive: true });
           writeFileSync(
@@ -64,13 +71,14 @@ test("${lane}", async () => {
         expect(result.error).toBeUndefined();
         expect(result.status).toBe(
           failing === "serial" ||
-            (failing === "packed" && suite === "integration")
+            ((failing === "packed" || failing === "first-slice") &&
+              suite === "integration")
             ? 1
             : 0,
         );
-        for (const lane of ["packed", "serial"])
+        for (const lane of ["packed", "first-slice", "serial"])
           expect(existsSync(join(work, `${lane}.collected`))).toBe(
-            lane !== failing && (suite === "integration" || lane !== "packed"),
+            lane !== failing && (suite === "integration" || lane === "serial"),
           );
       } finally {
         rmSync(work, { recursive: true, force: true });
