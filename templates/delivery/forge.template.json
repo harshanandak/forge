@@ -15,7 +15,13 @@
     },
     "values": {
       "slice": { "targetLines": 800, "splitAbove": 1500, "maxFiles": 15 },
-      "review": { "rounds": 2, "fix": ["P0", "P1"], "file": ["P2", "P3"] },
+      "review": {
+        "rounds": 2,
+        "fix": ["P0", "P1"],
+        "file": ["P2", "P3"],
+        "reruns": 1
+      },
+      "helpers": "templates/delivery/scripts",
       "merge": { "by": "agent", "method": "squash" },
       "doors": [
         "publish",

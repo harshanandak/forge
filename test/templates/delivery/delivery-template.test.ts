@@ -18,7 +18,7 @@ import { dispatch, record } from "../../../src/surface/dispatch.ts";
 import { lintSkill } from "../../../src/surface/skills.ts";
 
 const repo = resolve(import.meta.dirname, "../../..");
-const SKILLS = ["build", "loop", "slice"] as const;
+const SKILLS = ["build", "land", "loop", "open-pr", "review", "slice"] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
 type Call = (op: string, input?: object) => Promise<Record<string, unknown>>;
@@ -118,7 +118,7 @@ async function withDelivery(
   }
 }
 
-test("the delivery template renders loop, slice and build: linted, at most 4 KB, values filled in", async () => {
+test("the delivery template renders all six skills: linted, at most 4 KB, values filled in", async () => {
   await withDelivery(async (root, call, lint) => {
     const synced = await call("skills.sync");
     expect(synced).toMatchObject({ ok: true });
@@ -146,6 +146,22 @@ test("the delivery template renders loop, slice and build: linted, at most 4 KB,
     expect(text.slice).toContain("p0, p1, p2, p3, p4");
     expect(text.build).toContain('"ttlSeconds":7200');
     expect(text.build).toContain("After 2 failed fixes on the same check");
+    expect(text.review).toContain("At most 2 rounds");
+    expect(text.review).toContain("Fix only P0, P1 findings");
+    expect(text.review).toContain("Rerun up to 1 time");
+    expect(text.review).toContain(
+      "node templates/delivery/scripts/resolve-thread.mjs",
+    );
+    expect(text["open-pr"]).toContain('"relation":"delivers"');
+    expect(text["open-pr"]).toContain("`link_pull_request`");
+    // the merge conditions: CLEAN, receipt on the pinned head, no open threads, no open door
+    expect(text.land).toContain("`OPEN` and `CLEAN`");
+    expect(text.land).toContain("Its head equals `headRefOid`");
+    expect(text.land).toContain("review-threads.mjs <n>` prints `[]`");
+    expect(text.land).toContain(
+      "gh pr merge <n> --squash --match-head-commit <headRefOid>",
+    );
+    expect(text.land).toContain("publish, force-push, prod-write");
   });
 }, 30_000);
 
