@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAssembly } from "../../../src/assembly/index.ts";
+import { createAssembly } from "../../src/assembly/index.ts";
 
 test("assembled block-to-block slots require the process-hook fallback", async () => {
   const root = mkdtempSync(join(tmpdir(), "forge-slot-"));
