@@ -123,7 +123,7 @@ export const firstSliceMutations: readonly FirstSliceMutation[] = [
   },
   {
     file: "src/core/runtime/index.js",
-    from: "this.#trust.check(block.digest, declaration.effects);",
+    from: "this.#trust.check(block.digest, effects);",
     to: "void 0;",
     mode: "admission",
     evidence: "unadmitted agent call",

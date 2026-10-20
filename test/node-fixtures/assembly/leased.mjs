@@ -128,26 +128,7 @@ try {
   });
   assert.equal(apply.ok, true, JSON.stringify(apply));
   assert.deepEqual(assembly.catalog.unavailable(), []);
-  const before = await invoke("counter.show");
-  assert.equal(before.error.code, "ADMISSION_REQUIRED");
-  const checked = await invoke("block.check", { path: "./counter" });
-  assert.equal(checked.ok, true, JSON.stringify(checked));
-  const digest = checked.result.digest;
-  assert.equal(
-    (await invoke("block.admit", { digest }, context, "human")).ok,
-    true,
-  );
-  assert.equal(
-    (
-      await invoke(
-        "config.grant",
-        { digest, effects: ["counter:write"] },
-        context,
-        "human",
-      )
-    ).ok,
-    true,
-  );
+  // A registered built-in is shipped with the package: no admit or grant step.
   assert.equal((await invoke("counter.show")).result, null);
   assert.equal(
     existsSync(join(root, ".forge/state.sqlite")),

@@ -207,7 +207,13 @@ export async function createAssembly(
       let found = captures.get(key);
       if (found === undefined) {
         try {
-          found = captureBlock(resolveBlock(root, source), blockCapture);
+          // Only a builtin source reads the installed package's own block folder (resolveBlock).
+          found = captureBlock(
+            resolveBlock(root, source),
+            blockCapture,
+            undefined,
+            "builtin" in source,
+          );
         } catch (error) {
           found = { failed: error };
         }
@@ -384,7 +390,7 @@ export async function createAssembly(
         );
         let admitted = false;
         try {
-          trust.check(block.digest, []);
+          if (!block.shipped) trust.check(block.digest, []);
           admitted = true;
         } catch (error) {
           if (

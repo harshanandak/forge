@@ -50,7 +50,7 @@ export function asyncCounterfactuals(platform: NodeJS.Platform) {
     },
     {
       file: "core/runtime/index.js",
-      from: "this.#trust.check(block.digest, declaration.effects);",
+      from: "this.#trust.check(block.digest, effects);",
       to: "void 0;",
       mode: "grants",
       evidence: "async effect needs human grant",
