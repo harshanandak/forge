@@ -18,11 +18,17 @@ const SIGKILL_RESEND_INTERVAL_MS = 25;
  * it for the group every member is dead; members still answering a signal-zero probe after that
  * are zombies waiting to be reaped and are not polled for. Resolves false only when a signal
  * could not be delivered for a reason other than the group being gone.
+ *
+ * macOS skips zombies when signalling a group and answers EPERM when no live member is left,
+ * so a group whose members all died but are not yet reaped looks refused. A refusal is therefore
+ * re-checked after `reaped` (the leader's exit) settles: once the leader is reaped the group
+ * disappears (ESRCH) unless a live member really refuses the signal.
  */
 export async function endProcessGroup(
   pid: number,
   timing: Pick<SupervisionOptions, "cleanupTimeoutMs" | "pollIntervalMs">,
   kill: Kill = (target, signal) => process.kill(target, signal),
+  reaped: Promise<unknown> = Promise.resolve(),
 ): Promise<boolean> {
   const deadline = performance.now() + timing.cleanupTimeoutMs;
   const grace = deadline - timing.cleanupTimeoutMs / 2;
@@ -36,33 +42,52 @@ export async function endProcessGroup(
   // A member forking while the first SIGKILL lands can publish a child that misses it, so the
   // group is sent SIGKILL again a few times; ESRCH means it is gone. These are safety repeats,
   // not policy, and they stay inside the cleanup budget.
-  for (
-    let resend = 0;
-    resend < SIGKILL_RESENDS && state === "present";
-    resend++
+  let resends = 0;
+  while (
+    state === "refused" ||
+    (state === "present" && resends < SIGKILL_RESENDS)
   ) {
     const left = deadline - performance.now();
     if (left <= 0) break;
-    await sleep(Math.min(SIGKILL_RESEND_INTERVAL_MS, left));
+    if (state === "refused") {
+      await within(reaped, left);
+      await sleep(
+        Math.min(
+          timing.pollIntervalMs,
+          Math.max(0, deadline - performance.now()),
+        ),
+      );
+    } else {
+      resends++;
+      await sleep(Math.min(SIGKILL_RESEND_INTERVAL_MS, left));
+    }
     state = signalGroup(kill, pid, "SIGKILL");
   }
-  return state !== "failed";
+  return state === "present" || state === "gone";
 }
 
-/** Only ESRCH proves the group is gone; any other error (EPERM) means the signal failed. */
+/** Only ESRCH proves the group is gone; EPERM is a refusal, any other error a failure. */
 function signalGroup(
   kill: Kill,
   pid: number,
   signal: NodeJS.Signals | 0,
-): "present" | "gone" | "failed" {
+): "present" | "gone" | "refused" | "failed" {
   try {
     kill(-pid, signal);
     return "present";
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH"
-      ? "gone"
-      : "failed";
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ESRCH" ? "gone" : code === "EPERM" ? "refused" : "failed";
   }
+}
+
+async function within(pending: Promise<unknown>, ms: number): Promise<void> {
+  let wait: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    pending,
+    new Promise<void>((resolve) => (wait = setTimeout(resolve, ms))),
+  ]);
+  clearTimeout(wait);
 }
 
 /**
@@ -114,17 +139,6 @@ export function runProcessTree(
     let timedOut = false,
       interrupted = false,
       settling = false;
-    const within = async (
-      pending: Promise<void>,
-      ms: number,
-    ): Promise<void> => {
-      let wait: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([
-        pending,
-        new Promise<void>((resolve) => (wait = setTimeout(resolve, ms))),
-      ]);
-      clearTimeout(wait);
-    };
     const settle = async (interrupt: boolean): Promise<void> => {
       if (settling) return;
       settling = true;
@@ -133,7 +147,8 @@ export function runProcessTree(
       options.signal?.removeEventListener("abort", cancel);
       const pid = child.pid;
       const confirmed =
-        pid === undefined || (await endProcessGroup(pid, supervision));
+        pid === undefined ||
+        (await endProcessGroup(pid, supervision, undefined, exited));
       if (pid !== undefined) {
         if (child.exitCode === null && child.signalCode === null)
           await within(exited, supervision.cleanupTimeoutMs);
