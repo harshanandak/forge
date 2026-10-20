@@ -1,6 +1,10 @@
 // The skills surface: one SKILL.md per block noun, generated from catalog metadata only, next to
 // the generated CLI and MCP surfaces. The lint (D9) keeps any skill honest against the catalog.
-import { isAgentCallable, type McpCandidate } from "../contract/mcp.ts";
+import {
+  isAgentCallable,
+  renamedOperation,
+  type McpCandidate,
+} from "../contract/mcp.ts";
 import {
   CORE_NOUNS,
   cliWords,
@@ -49,28 +53,62 @@ function shape(schema: unknown): string {
   return fields.length === 0 ? "none" : fields.join(", ");
 }
 
+/** What the CLI parser expects after a value flag: raw text, a number, or JSON for anything else. */
+function placeholder(schema: unknown): string {
+  const type = record(schema)?.type;
+  if (type === undefined || type === "string") return "<text>";
+  return type === "integer" || type === "number" ? "<number>" : "<json>";
+}
+
+/** `forge <noun> <verb>` usage: positionals, then required flags, then optional ones in brackets. */
+function usage(candidate: McpCandidate): string {
+  const [noun, verb] = cliWords(candidate.op) ?? [candidate.op, ""];
+  const properties = record(candidate.inputSchema.properties) ?? {};
+  const listed = candidate.inputSchema.required;
+  const required = new Set(Array.isArray(listed) ? listed : []);
+  const args = candidate.declaration.args ?? [];
+  const optional = (part: string, key: string): string =>
+    required.has(key) ? part : `[${part}]`;
+  const flags = Object.keys(properties)
+    .filter((key) => !args.includes(key))
+    .flatMap((key) => {
+      const flag = flagName(key);
+      if (flag === undefined) return [];
+      const value =
+        record(properties[key])?.type === "boolean"
+          ? ""
+          : ` ${placeholder(properties[key])}`;
+      return [{ key, part: optional(`--${flag}${value}`, key) }];
+    })
+    .sort((a, b) => Number(required.has(b.key)) - Number(required.has(a.key)));
+  return [
+    "forge",
+    noun,
+    verb,
+    ...args.map((arg) => optional(`<${arg}>`, arg)),
+    ...flags.map((f) => f.part),
+  ].join(" ");
+}
+
 function section(candidate: McpCandidate, prefix: string | undefined): string {
   const { op, declaration, docs } = candidate;
-  const [noun, verb] = cliWords(op) ?? [op, ""];
-  const positional = (declaration.args ?? []).map((arg) => ` <${arg}>`);
-  const named = Object.keys(record(candidate.inputSchema.properties) ?? {})
-    .filter((key) => !(declaration.args ?? []).includes(key))
-    .map((key) => flagName(key))
-    .filter((flag) => flag !== undefined);
-  const flags = named.length === 0 ? "" : ` [--${named.join("] [--")}]`;
   const effects =
     declaration.effects.length === 0
       ? "none (read-only)"
       : declaration.effects.map((e) => `\`${e}\``).join(", ");
   const example = docs.examples?.[0];
-  const deprecated = declaration.deprecated?.use;
+  const declared = declaration.deprecated?.use;
+  const deprecated =
+    declared === undefined
+      ? undefined
+      : renamedOperation(declared, candidate.rename);
   return [
     `## \`${op}\` — ${docs.title}`,
     "",
     ...(deprecated === undefined ? [] : [`Deprecated: use \`${deprecated}\`.`]),
     docs.summary,
     "",
-    `- CLI: \`forge ${noun} ${verb}${positional.join("")}${flags}\``,
+    `- CLI: \`${usage(candidate)}\``,
     `- MCP: \`${mcpToolName(op, prefix) ?? "catalog_call"}\``,
     `- Input: ${shape(candidate.inputSchema)}`,
     `- Output: ${candidate.outputSchema === undefined ? "none" : shape(candidate.outputSchema)}`,

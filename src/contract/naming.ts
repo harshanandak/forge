@@ -30,6 +30,7 @@ export const SURFACE_NOUNS: readonly string[] = [
   "help",
   "hook",
   "mcp",
+  "skills",
   "version",
   "x",
 ];
