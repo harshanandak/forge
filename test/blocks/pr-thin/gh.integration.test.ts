@@ -11,7 +11,7 @@ type Result = {
   verdict?: string;
   merged?: boolean;
   mergeCommit?: string;
-  reasons?: { message: string }[];
+  reasons?: { code: string; message: string }[];
 };
 const ops = createRequire(import.meta.url)(
   "../../../src/blocks/pr/entry.cts",
@@ -25,7 +25,7 @@ if (node.kind !== "resolved") throw new Error("Node unavailable");
 const nodePath = node.path,
   head = "a".repeat(40);
 const cases =
-  "ready:READY behind:BEHIND failed:BLOCKED changes:BLOCKED threads:BLOCKED draft:DRAFT merged:MERGED mismatch:BLOCKED policy-off:READY merge:MERGED refused:BLOCKED missing:UNAVAILABLE non-github:UNAVAILABLE pending:BLOCKED closed:CLOSED";
+  "ready:READY behind:BEHIND failed:BLOCKED changes:BLOCKED threads:BLOCKED draft:DRAFT merged:MERGED mismatch:BLOCKED policy-off:READY merge:MERGED refused:BLOCKED missing:UNAVAILABLE non-github:UNAVAILABLE pending:BLOCKED closed:CLOSED queue:UNSUPPORTED confirmation:UNAVAILABLE";
 for (const item of cases.split(" "))
   test(
     item,
@@ -48,6 +48,8 @@ for (const item of cases.split(" "))
         },
         run: (_exe, args, options) => {
           launches++;
+          if (scenario === "queue")
+            expect(args.slice(0, 2)).not.toEqual(["pr", "merge"]);
           const child = spawnSync(nodePath, [fixture, ...args], {
             encoding: "utf8",
             env: {
@@ -66,7 +68,13 @@ for (const item of cases.split(" "))
           });
         },
       };
-      const merging = ["merge", "mismatch", "refused"].includes(scenario!);
+      const merging = [
+        "merge",
+        "mismatch",
+        "refused",
+        "queue",
+        "confirmation",
+      ].includes(scenario!);
       const result = await ops[merging ? "pr.merge" : "pr.status"]!({
         input: {
           repo:
@@ -82,10 +90,16 @@ for (const item of cases.split(" "))
           process: port,
           files: { root: process.cwd() },
           environment: {
-            select: () => ({
-              PATH: dirname(fixture) + delimiter + process.env.PATH,
-              SystemRoot: process.env.SystemRoot ?? "",
-            }),
+            select: (names: readonly string[]) =>
+              Object.fromEntries(
+                Object.entries({
+                  PATH: dirname(fixture) + delimiter + process.env.PATH,
+                  SystemRoot: process.env.SystemRoot ?? "",
+                  APPDATA: "fixture-APPDATA",
+                  XDG_CONFIG_HOME: "fixture-XDG_CONFIG_HOME",
+                  DBUS_SESSION_BUS_ADDRESS: "fixture-DBUS_SESSION_BUS_ADDRESS",
+                }).filter(([name]) => names.includes(name)),
+              ),
           },
         },
         signal: new AbortController().signal,
@@ -99,12 +113,18 @@ for (const item of cases.split(" "))
       expect(launches).toBe(
         unavailable
           ? 0
-          : scenario === "merge"
+          : ["merge", "confirmation"].includes(scenario!)
             ? 4
             : scenario === "refused"
               ? 3
               : 2,
       );
+      if (scenario === "confirmation") {
+        expect(result.reasons?.[0]?.code).toBe("EVIDENCE_GAP");
+        expect(result.reasons?.[0]?.message).toContain(
+          "Merge command succeeded but could not be confirmed",
+        );
+      }
       if (scenario === "threads")
         expect(result.reasons?.[0]?.message).toBe(
           "1 unresolved review threads",

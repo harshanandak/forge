@@ -25,7 +25,7 @@ function message(error: unknown): string {
 }
 function client(call: Call) {
   const env = call.services.environment.select(
-    "PATH PATHEXT SystemRoot HOME USERPROFILE GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR".split(
+    "PATH PATHEXT SystemRoot HOME USERPROFILE GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR APPDATA XDG_CONFIG_HOME DBUS_SESSION_BUS_ADDRESS".split(
       " ",
     ),
   );
@@ -98,7 +98,7 @@ async function status(call: Call) {
     state = pr.state;
     const [owner, name] = call.input.repo.split("/");
     const query =
-      "query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}";
+      "query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){isMergeQueueEnabled reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}";
     const pages = array(
       await gh([
         "api",
@@ -116,13 +116,16 @@ async function status(call: Call) {
       ]),
     );
     if (!pages.length) throw new Error("Missing review threads");
-    let unresolved = 0;
+    let unresolved = 0,
+      mergeQueue = false;
     for (const page of pages) {
       const data = object(page);
       if (data.errors) throw new Error("GitHub could not read review threads");
-      const threads = object(
-        object(object(object(data.data).repository).pullRequest).reviewThreads,
-      );
+      const pull = object(object(object(data.data).repository).pullRequest);
+      if (typeof pull.isMergeQueueEnabled !== "boolean")
+        throw new Error("Missing merge queue status");
+      mergeQueue ||= pull.isMergeQueueEnabled;
+      const threads = object(pull.reviewThreads);
       for (const node of array(threads.nodes)) {
         const thread = object(node);
         if (typeof thread.isResolved !== "boolean")
@@ -152,7 +155,10 @@ async function status(call: Call) {
         );
     }
     if (state === "MERGED" || state === "CLOSED") verdict = state;
-    else if (pr.isDraft) verdict = "DRAFT";
+    else if (mergeQueue) {
+      verdict = "UNSUPPORTED";
+      add("MERGE_METHOD_UNAVAILABLE", "The base branch requires a merge queue");
+    } else if (pr.isDraft) verdict = "DRAFT";
     else if (pr.mergeStateStatus === "BEHIND") verdict = "BEHIND";
     else if (
       state === "OPEN" &&
@@ -181,8 +187,8 @@ async function merge(call: Call) {
   if (before.verdict !== "READY") return { ...before, merged: false };
   if (before.head !== call.input.expectHead)
     return blocked("Head does not match expectHead");
+  const gh = client(call);
   try {
-    const gh = client(call);
     await gh(
       [
         "pr",
@@ -194,13 +200,28 @@ async function merge(call: Call) {
       ],
       false,
     );
+  } catch (error) {
+    return blocked(message(error));
+  }
+  try {
     const after = object(await gh(view(call.input, "state,mergeCommit")));
     const commit = object(after.mergeCommit);
     if (after.state !== "MERGED" || typeof commit.oid !== "string")
       throw new Error("GitHub has not confirmed a merge commit");
     return { merged: true, mergeCommit: commit.oid };
   } catch (error) {
-    return blocked(message(error));
+    return {
+      ...before,
+      merged: false,
+      verdict: "UNAVAILABLE",
+      reasons: [
+        reason(
+          "EVIDENCE_GAP",
+          "Merge command succeeded but could not be confirmed: " +
+            message(error),
+        ),
+      ],
+    };
   }
 }
 module.exports = { "pr.status": status, "pr.merge": merge };

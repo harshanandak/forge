@@ -13,7 +13,8 @@
         "BEHIND",
         "BLOCKED",
         "READY",
-        "UNAVAILABLE"
+        "UNAVAILABLE",
+        "UNSUPPORTED"
       ]
     },
     "reasons": {
