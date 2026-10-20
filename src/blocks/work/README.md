@@ -1,6 +1,6 @@
 # Work block
 
-`forge/work` is an opt-in implementation of `forge.tracker@1`. Register the built-in source in composition and bind its `state` slot to `core`. Registration does not grant admission or effects. The same declared operations are available from CLI and MCP. Operations are experimental; select `issue` in `mcp.expose` to expose them to MCP.
+`forge/work` is an opt-in implementation of `forge.tracker@1`. Register the built-in source in composition and bind its `state` slot to `core`. Loaded from its built-in source it needs no admission or grants, because installing Forge is the trust step; a path or package copy still needs human admission and grants. The same declared operations are available from CLI and MCP. Operations are experimental; select `issue` in `mcp.expose` to expose them to MCP.
 
 Project operations require an actor and project. Claims also require a session and supply no generation. Renewal, release, update, close, dependency edits and links require the current lease generation. No context is invented by the work block.
 
