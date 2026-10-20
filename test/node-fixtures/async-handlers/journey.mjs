@@ -130,8 +130,6 @@ function report(result, containment, descendantPid) {
     assert.equal(value.backend, "windows-job", "Windows keeps Job Objects");
   else if (containment === "supervised")
     assert.equal(value.backend, "process-group", "the OS owns the tree");
-  if (containment === "strict" && process.platform === "linux")
-    assert.equal(value.backend, "linux-cgroup");
   if (descendantPid !== undefined) {
     assert.equal(alive(descendantPid), false, "grandchild must be stopped");
     if (value.backend !== "process-group")

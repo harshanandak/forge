@@ -22,7 +22,7 @@ export interface ProcessAdapterOptions extends ContainmentOptions {
   readonly probe?: FileProbe;
 }
 
-/** The one place programs are started: argument arrays only, PATH/PATHEXT resolution, tree-kill, no console window. */
+/** The one place programs are started: argument arrays only, PATH/PATHEXT resolution, tree cleanup, no console window. */
 export function createProcessPort(
   options: ProcessAdapterOptions = {},
 ): ProcessPort {
