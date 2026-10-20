@@ -231,13 +231,16 @@ try {
     false,
     "the refused workload must not run",
   );
-  assert.equal(supervisorStarts, 1, "only one helper may be started");
+  assert.equal(supervisorStarts, 1, "only one process may be started");
   if (process.platform === "win32") {
-    assert.equal(during.helpers.length, 1, "the helper must be measured");
-    assert.ok(
-      during.helpers.every((helper) => !targetPids.includes(helper.pid)),
+    // The default mode starts the command itself; no helper runs beside it.
+    during.helpers = during.helpers.filter(
+      (helper) => !targetPids.includes(helper.pid),
     );
+    assert.equal(during.helpers.length, 0, "no helper may run beside it");
   }
+  // Cleanup may start its own short-lived tool (taskkill on Windows); only starts before it count.
+  const startsBeforeCleanup = supervisorStarts;
   for (const controller of controllers) controller.abort();
   const outcomes = await awaitDeadline(
     settled,
@@ -261,11 +264,13 @@ try {
   const after = snapshot();
   assert.equal(after.helpers.length, 0, "cleanup must leave no idle helpers");
   if (process.platform !== "win32") {
-    during.helpers = reports.map((report) => ({
-      pid: report.supervisorPid,
-      residentBytes: report.supervisorResidentBytes,
-      threads: "NOT_MEASURED",
-    }));
+    during.helpers = reports
+      .filter((report) => !targetPids.includes(report.supervisorPid))
+      .map((report) => ({
+        pid: report.supervisorPid,
+        residentBytes: report.supervisorResidentBytes,
+        threads: "NOT_MEASURED",
+      }));
   }
   const helperResidentBytes = during.helpers.reduce(
     (total, helper) => total + helper.residentBytes,
@@ -288,7 +293,7 @@ try {
       during,
       after,
       addedResidentBytes,
-      supervisorStarts,
+      supervisorStarts: startsBeforeCleanup,
       rejectedBeforeHelperSpawn: true,
       supervisorPids,
       targetPids,

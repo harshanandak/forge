@@ -241,7 +241,12 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
     phase("mutations");
   } finally {
     phaseStarted = performance.now();
-    rmSync(work, { recursive: true, force: true });
+    rmSync(work, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
     phase("cleanup");
     console.log(
       `Packed async total: ${Math.round(performance.now() - started)} ms`,

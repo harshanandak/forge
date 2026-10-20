@@ -19,11 +19,12 @@ export function asyncCounterfactuals(platform: NodeJS.Platform) {
       evidence: "strict containment must refuse before activation",
     },
     {
-      file: "adapters/process/run.js",
-      from: "stoppedPids = await container.stop();",
-      to: "stoppedPids = [];",
-      mode: "default-cleanup",
-      evidence: "root exit must complete after tree cleanup",
+      // Windows has no tree left to walk once the root exits, so it proves cancellation instead.
+      file: "adapters/process/process-tree.js",
+      from: "(await endProcessTree(pid, platform, supervision))",
+      to: "(child.kill('SIGKILL'), true)",
+      mode: platform === "win32" ? "cancel" : "default-cleanup",
+      evidence: "invocation must stop its entire process tree",
     },
     {
       file: "adapters/node-runtime/isolation.js",
