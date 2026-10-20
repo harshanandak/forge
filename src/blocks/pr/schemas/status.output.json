@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["head", "state", "verdict", "reasons"],
+  "properties": {
+    "head": { "type": ["string", "null"] },
+    "state": { "type": "string" },
+    "verdict": {
+      "enum": [
+        "MERGED",
+        "CLOSED",
+        "DRAFT",
+        "BEHIND",
+        "BLOCKED",
+        "READY",
+        "UNAVAILABLE"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "items": { "$ref": "pr.json#/$defs/Blocker" }
+    }
+  }
+}

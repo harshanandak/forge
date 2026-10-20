@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "number"],
+  "properties": {
+    "repo": { "type": "string", "minLength": 1 },
+    "number": { "type": "integer", "minimum": 1 }
+  }
+}

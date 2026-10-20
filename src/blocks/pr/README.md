@@ -1,6 +1,11 @@
-# Shared contracts
+# GitHub status and pinned merge
 
-Shapes only: this slice enables no operations. Like the tracker convention, the host
+The thin block declares `pr.status` and `pr.merge` through the existing process service.
+It asks GitHub for status, defaults `requireResolvedThreads` to true, and only squash
+merges the expected head. Supply a GitHub `owner/repository`; other hosts are unavailable.
+Thread policy is checked before merging; GitHub enforces protection at merge time.
+
+The earlier shared contracts below remain unchanged. Like the tracker convention, the host
 uses `forge.interface/1`, identity `forge.pr-host`, provider `forge.pr-host@1.0.0`,
 and consumer slot `{ slot: "host", interface: "forge.pr-host@1" }`. Schema references
 resolve beside the interface document. It is owned by this block, never core.

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/pr",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "configSchema": "schemas/config.json",
+  "nouns": { "pr": { "interface": "1.0.0" } },
+  "requires": [
+    { "slot": "process", "interface": "forge.process@1" },
+    { "slot": "files", "interface": "forge.files@1" },
+    { "slot": "environment", "interface": "forge.environment@1" }
+  ],
+  "operations": {
+    "pr.status": {
+      "input": "schemas/status.input.json",
+      "output": "schemas/status.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": [
+        "process:write",
+        "external:process",
+        "files:read",
+        "environment:read"
+      ],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
+    "pr.merge": {
+      "input": "schemas/merge.input.json",
+      "output": "schemas/merge.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": [
+        "process:write",
+        "external:process",
+        "files:read",
+        "environment:read",
+        "external:write"
+      ],
+      "idempotent": false,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    }
+  },
+  "docs": "docs.json",
+  "files": ["schemas/pr.json"]
+}
