@@ -3,6 +3,8 @@
 // no merge: a key the project already sets to a different value refuses the whole import, naming
 // the keys. Removing a template removes exactly the keys it wrote that still hold that value; the
 // rest stay and are reported. To diff, revert or blame a config file, use version control.
+// A template file's skills are not copied: the record keeps the file's path, and skills sync
+// renders `skills/<name>/SKILL.md` next to it on each run.
 import { jsonEqual } from "../../contract/schema.ts";
 import { DEFAULT_PARSE_LIMITS } from "../../contract/untrusted.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
@@ -362,6 +364,9 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
             {
               template: ref,
               digest: digestValue(template),
+              ...(TEMPLATE_FILE.test(input.template)
+                ? { source: input.template.replace(/^\.\//, "") }
+                : {}),
               importedAt: new Date(env.clock.now()).toISOString(),
             },
           ];

@@ -15,6 +15,10 @@
     },
     "runtime": { "$ref": "#/$defs/RuntimeBudget" },
     "mcp": { "$ref": "#/$defs/McpExposure" },
+    "values": {
+      "description": "Named settings, e.g. review.rounds. Skills from imported templates read them as {{values.<path>}}; skills sync writes them into the skill text.",
+      "type": "object"
+    },
     "templates": {
       "description": "Templates imported into this config, with the exact version and digest imported.",
       "type": "array",
@@ -148,6 +152,10 @@
       "properties": {
         "template": { "$ref": "common.json#/$defs/TemplateRef" },
         "digest": { "$ref": "common.json#/$defs/Digest" },
+        "source": {
+          "description": "The template file this was imported from; skills sync reads the template's skills/<name>/SKILL.md next to it.",
+          "$ref": "common.json#/$defs/RelativePath"
+        },
         "importedAt": { "$ref": "common.json#/$defs/Timestamp" }
       },
       "additionalProperties": false

@@ -489,16 +489,22 @@ export async function createAssembly(
               refuse("OUTPUT_INVALID", "Invalid config output");
             return success(request.op, output);
           }
-          if (request.op === "skills.sync")
+          if (request.op === "skills.sync") {
+            const show = call.config.show();
             return success(
               request.op,
               syncSkills(
                 root,
                 catalog.list(),
-                composition(call.config.show()).mcp?.toolPrefix,
+                composition(show).mcp?.toolPrefix,
                 typeof input.dir === "string" ? input.dir : undefined,
+                {
+                  sources: show.templates.flatMap((t) => t.source ?? []),
+                  values: show.effective.values,
+                },
               ),
             );
+          }
           if (request.op === "block.check" || request.op === "block.add") {
             const spec = String(input.path);
             const source = sourceFor(spec);
