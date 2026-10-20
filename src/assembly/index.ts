@@ -495,7 +495,7 @@ export async function createAssembly(
               syncSkills(
                 root,
                 catalog.list(),
-                composition(config.show()).mcp?.toolPrefix,
+                composition(call.config.show()).mcp?.toolPrefix,
                 typeof input.dir === "string" ? input.dir : undefined,
               ),
             );
