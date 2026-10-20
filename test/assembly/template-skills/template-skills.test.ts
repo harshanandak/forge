@@ -165,6 +165,40 @@ test("removing the template, then syncing, deletes its generated skill and keeps
   });
 }, 30_000);
 
+test("a generated skill converted to CRLF is still recognized: updated when values change, removed with its template", async () => {
+  await withTemplate(async (root, call) => {
+    await call("skills.sync");
+    const target = join(root, RENDERED);
+    const toCrlf = (): void =>
+      writeFileSync(
+        target,
+        readFileSync(target, "utf8").replace(/\r?\n/g, "\r\n"),
+      );
+    toCrlf();
+    expect(
+      await call("config.set", {
+        path: "/values/review/rounds",
+        value: 5,
+        expectRevision: "",
+      }),
+    ).toMatchObject({ ok: true });
+    expect(await call("skills.sync")).toMatchObject({
+      written: [RENDERED],
+      skipped: [],
+    });
+    const updated = readFileSync(target, "utf8");
+    expect(updated).toContain("Stop after 5 rounds;");
+    expect(updated).not.toContain("\r");
+    toCrlf();
+    await call("template.remove", {
+      template: "acme/delivery",
+      expectRevision: "",
+    });
+    expect(await call("skills.sync")).toMatchObject({ removed: [RENDERED] });
+    expect(existsSync(target)).toBe(false);
+  });
+}, 30_000);
+
 test("a hand-written file at a template skill's target is reported and left untouched", async () => {
   await withTemplate(async (root, call) => {
     const mine = "---\nname: review\ndescription: mine\n---\n";

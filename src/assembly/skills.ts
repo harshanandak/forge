@@ -40,9 +40,14 @@ function readFile(
   }
 }
 
+/** Line endings are normalized first: git autocrlf may have turned a generated file's LF into CRLF. */
 const generated = (bytes: Uint8Array | undefined): boolean =>
   bytes !== undefined &&
-  new TextDecoder().decode(bytes).split("\n").includes(GENERATED_MARKER);
+  new TextDecoder()
+    .decode(bytes)
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .includes(GENERATED_MARKER);
 
 /** Each template's `skills/<name>/SKILL.md`, read from next to the template file and rendered. */
 function templateSkills(
