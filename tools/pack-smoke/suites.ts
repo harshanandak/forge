@@ -39,4 +39,9 @@ export const packedSuites = [
     label: "packed providers integration",
     consumerEnv: "PROVIDERS_PACKED_CONSUMER",
   },
+  {
+    file: "test/integration/first-run.integration.test.ts",
+    label: "packed first-run journey",
+    consumerEnv: "FIRST_RUN_PACKED_CONSUMER",
+  },
 ] as const;
