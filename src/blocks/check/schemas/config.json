@@ -1,6 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
+  "description": "Every key but commands has a default; a key left out takes it, and config explain shows its source as default.",
   "required": [
     "commands",
     "timeoutMs",
@@ -17,17 +18,21 @@
   ],
   "properties": {
     "report": {
+      "default": "auto",
       "enum": ["auto", "json", "exit-code"]
     },
     "stopOnFailure": {
+      "default": true,
       "type": "boolean"
     },
     "timeoutMs": {
+      "default": 600000,
       "type": "integer",
       "minimum": 1,
       "maximum": 2147483647
     },
     "maxOutputBytes": {
+      "default": 65536,
       "type": "integer",
       "minimum": 1,
       "maximum": 262144
@@ -68,6 +73,7 @@
       }
     },
     "inputs": {
+      "default": [],
       "type": "array",
       "maxItems": 1024,
       "uniqueItems": true,
@@ -78,11 +84,13 @@
       }
     },
     "maxInputBytes": {
+      "default": 1048576,
       "type": "integer",
       "minimum": 1,
       "maximum": 67108864
     },
     "environment": {
+      "default": [],
       "type": "array",
       "maxItems": 256,
       "uniqueItems": true,
@@ -93,21 +101,25 @@
       }
     },
     "outputHeadBytes": {
+      "default": 1024,
       "type": "integer",
       "minimum": 0,
       "maximum": 262144
     },
     "outputTailBytes": {
+      "default": 1024,
       "type": "integer",
       "minimum": 0,
       "maximum": 262144
     },
     "maxMetadataBytes": {
+      "default": 32768,
       "type": "integer",
       "minimum": 1,
       "maximum": 1048576
     },
     "maxReceiptBytes": {
+      "default": 262144,
       "type": "integer",
       "minimum": 1,
       "maximum": 1048576

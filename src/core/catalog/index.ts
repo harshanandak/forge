@@ -3,7 +3,12 @@ import {
   checkProvidedInterface,
   resolveComposition,
 } from "../../contract/composition.ts";
-import { SchemaRegistry, isSchemaObject } from "../../contract/schema.ts";
+import {
+  type JsonSchema,
+  type SchemaProblem,
+  SchemaRegistry,
+  isSchemaObject,
+} from "../../contract/schema.ts";
 import {
   parseUntrustedJson,
   DEFAULT_PARSE_LIMITS,
@@ -161,6 +166,23 @@ export class CapturedBlock {
     return (
       this.#registry.validate(capturedUri(path, this.#base), value).length === 0
     );
+  }
+
+  /** Problems with a value against a captured schema, with its captured `$ref`s resolved. */
+  problems(path: string, value: unknown): SchemaProblem[] {
+    return this.#registry.validate(capturedUri(path, this.#base), value);
+  }
+
+  /** The schema a captured file describes, following top-level `$ref`s within the capture. */
+  resolvedSchema(path: string): JsonSchema | undefined {
+    let uri = capturedUri(path, this.#base);
+    let node = this.#registry.lookup(uri);
+    for (let hop = 0; hop < 8 && isSchemaObject(node); hop += 1) {
+      if (typeof node.$ref !== "string") break;
+      uri = this.#registry.resolve(node.$ref, uri);
+      node = this.#registry.lookup(uri);
+    }
+    return node;
   }
 
   schema(path: string): unknown {

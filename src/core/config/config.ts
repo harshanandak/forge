@@ -10,9 +10,11 @@ import type {
 import type { ClockPort } from "../../ports/clock.ts";
 import type { ConfigCodecPort } from "../../ports/config-codec.ts";
 import {
+  type BlockConfigSchema,
   type BlockLookup,
   type Change,
   checkDocument,
+  checkInstanceConfig,
   diff,
   emptyDocument,
   encodeDocument,
@@ -31,9 +33,11 @@ import {
   type Ignored,
   type InvocationValue,
   type LayerEntry,
+  type Layers,
   METADATA_KEYS,
   resolveLayers,
 } from "./layers.ts";
+import { absoluteUses, schemaDefaults } from "./short.ts";
 import {
   clone,
   formatPointer,
@@ -111,18 +115,36 @@ function excludedAt(pointer: string): string[] {
   return [top];
 }
 
-/** The document with every invalid part removed, and what was removed. */
+/**
+ * The document with every invalid part removed, and what was removed. `implied` lists the sources
+ * filled in from a built-in's short name; they are not in the file, so they resolve as defaults.
+ */
 function usable(
   document: JsonObject | undefined,
   lookup: BlockLookup,
-): { document: JsonObject | undefined; excluded: Excluded[] } {
-  if (document === undefined) return { document, excluded: [] };
+): {
+  document: JsonObject | undefined;
+  excluded: Excluded[];
+  implied: string[];
+} {
+  if (document === undefined) return { document, excluded: [], implied: [] };
   const filled = clone(document);
-  fillSources(filled, lookup);
+  const implied = fillSources(filled, lookup);
   const checked = validateConfigDocument(filled);
-  if (checked.ok) return { document: filled, excluded: [] };
+  const uses = absoluteUses(filled);
+  if (checked.ok && uses.length === 0)
+    return { document: filled, excluded: [], implied };
+  // an absolute `use` is its instance's whole problem; the schema's echoes of it add nothing
+  const flagged = uses.map((u) => u.pointer.replace(/\/use$/, ""));
+  const problems = [
+    ...uses,
+    ...(checked.ok ? [] : checked.problems).filter(
+      (p) =>
+        !flagged.some((f) => p.pointer === f || p.pointer.startsWith(`${f}/`)),
+    ),
+  ];
   const byUnit = new Map<string, string[]>();
-  for (const problem of checked.problems) {
+  for (const problem of problems) {
     const unit = formatPointer(excludedAt(problem.pointer));
     const found = byUnit.get(unit) ?? [];
     found.push(`${problem.pointer || "/"} ${problem.message}`);
@@ -131,7 +153,7 @@ function usable(
   const excluded = [...byUnit.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([pointer, problems]) => ({ pointer, problems }));
-  if (byUnit.has("")) return { document: undefined, excluded };
+  if (byUnit.has("")) return { document: undefined, excluded, implied: [] };
   const dropped = new Set<number>();
   for (const { pointer } of excluded) {
     const segments = parsePointer(pointer) ?? [];
@@ -142,7 +164,62 @@ function usable(
   }
   if (Array.isArray(filled.templates) && dropped.size > 0)
     filled.templates = filled.templates.filter((_, i) => !dropped.has(i));
-  return { document: filled, excluded };
+  return {
+    document: filled,
+    excluded,
+    implied: implied.filter((p) => hasIn(filled, parsePointer(p) ?? [])),
+  };
+}
+
+/** Each configured instance's block config schema, if its block supplies one. */
+function blockSchemas(
+  document: JsonObject | undefined,
+  lookup: BlockLookup,
+): Array<[string, BlockConfigSchema]> {
+  const blocks = isObject(document?.blocks) ? document.blocks : {};
+  return Object.entries(blocks).flatMap(([name, instance]) => {
+    if (!isObject(instance) || !isObject(instance.source)) return [];
+    const schema = lookup.blockConfig?.(
+      name,
+      instance.source as unknown as BlockSource,
+    );
+    return schema === undefined ? [] : [[name, schema] as const];
+  });
+}
+
+/**
+ * The one effective-config resolver: default < derived < project file < invocation. The default
+ * layer is each instance's configSchema defaults plus the sources `implied` by short names.
+ */
+function resolve(
+  lookup: BlockLookup,
+  document: JsonObject | undefined,
+  implied: readonly string[],
+  derived: DerivedLayer,
+  invocation: readonly InvocationValue[] = [],
+): Layers {
+  const project = document === undefined ? undefined : clone(document);
+  const defaults: InvocationValue[] = [];
+  for (const pointer of implied) {
+    const segments = parsePointer(pointer) ?? [];
+    defaults.push({ segments, value: getIn(document ?? {}, segments) });
+    if (project !== undefined) removeIn(project, segments);
+  }
+  for (const [name, { schema }] of blockSchemas(document, lookup))
+    for (const { key, value } of schemaDefaults(schema))
+      defaults.push({ segments: ["blocks", name, "config", key], value });
+  return resolveLayers(derived, project, invocation, defaults);
+}
+
+/** Where a value came from: a block's schema default, detection, the file, a template, or the call. */
+export type ValueSource =
+  "default" | "derived" | "project" | "template" | "invocation";
+
+function sourceOf(entry: LayerEntry): ValueSource {
+  if (entry.layer !== "project") return entry.layer;
+  return entry.owner !== undefined && !entry.owner.edited
+    ? "template"
+    : "project";
 }
 
 /**
@@ -178,6 +255,7 @@ export interface ExplainResult {
   readonly set: boolean;
   readonly value: unknown;
   readonly layer: LayerEntry["layer"] | null;
+  readonly source: ValueSource | null;
   readonly entries: readonly LayerEntry[];
 }
 
@@ -264,7 +342,14 @@ export function planBytes(
 ): { bytes: Uint8Array | null; changes: Change[] } {
   if (!Object.hasOwn(next, "blocks")) next.blocks = {};
   fillSources(next, env);
-  checkDocument(next, env);
+  checkDocument(next);
+  // check what the block will run with, so a detected or default value counts without being saved
+  const { effective } = resolve(env, next, [], deriveLayer(env.detect()));
+  for (const [name, schema] of blockSchemas(next, env))
+    checkInstanceConfig(
+      name,
+      schema.check(getIn(effective, ["blocks", name, "config"]) ?? {}),
+    );
   const bytes = encodeDocument(next, env.codec);
   const after = bytes === null ? undefined : next;
   return { bytes, changes: diff(current.document, after) };
@@ -379,8 +464,8 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
           segments: segmentsOf(step.path),
           value: step.value,
         }));
-      const { document, excluded } = usable(current.document, env);
-      const layers = resolveLayers(derived, document, invocation);
+      const { document, excluded, implied } = usable(current.document, env);
+      const layers = resolve(env, document, implied, derived, invocation);
       const blocks = isObject(document?.blocks) ? document.blocks : {};
       const instances: Instance[] = [];
       for (const [name, instance] of Object.entries(blocks)) {
@@ -416,7 +501,8 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
     explain(input) {
       const segments = segmentsOf(input.path);
       const current = readProject(env);
-      const layers = resolveLayers(derive(), current.document);
+      const { document, implied } = usable(current.document, env);
+      const layers = resolve(env, document, implied, derive());
       const entries = entriesAt(layers, segments);
       const set = hasIn(layers.effective, segments);
       const exact = entries.find(
@@ -427,6 +513,7 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
         set,
         value: set ? (getIn(layers.effective, segments) ?? null) : null,
         layer: exact?.layer ?? null,
+        source: exact === undefined ? null : sourceOf(exact),
         entries,
       };
     },

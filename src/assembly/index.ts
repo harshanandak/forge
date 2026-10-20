@@ -43,6 +43,7 @@ import { discoveryOperations } from "../generated/core-discovery.ts";
 import { createStateClient } from "./state-client.ts";
 import { version } from "../version.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
+import { firstPartyBlocks } from "./first-party.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
 import { LocalState } from "./state.ts";
 import { openLevels, PROJECT_STATE } from "./levels.ts";
@@ -182,12 +183,64 @@ export async function createAssembly(
       refuse("UNAVAILABLE", "Trust removal is not assembled");
     },
   });
+  // Each block is captured once per call: config reads its schema from the same capture the
+  // catalog runs, and nothing is kept once the call ends.
+  let captures: Map<string, CapturedBlock | { failed: unknown }> | undefined;
+  function captured(source: BlockSource): CapturedBlock {
+    const key = JSON.stringify(source);
+    let found = captures?.get(key);
+    if (found === undefined) {
+      try {
+        found = captureBlock(resolveBlock(root, source), blockCapture);
+      } catch (error) {
+        found = { failed: error };
+      }
+      captures?.set(key, found);
+    }
+    if ("failed" in found) throw found.failed;
+    return found;
+  }
+  function perCall<T>(run: () => T): T {
+    if (captures !== undefined) return run();
+    captures = new Map();
+    let async = false;
+    try {
+      const result = run();
+      if (result instanceof Promise) {
+        async = true;
+        return result.finally(() => {
+          captures = undefined;
+        }) as T;
+      }
+      return result;
+    } finally {
+      if (!async) captures = undefined;
+    }
+  }
   const environment = {
     files: nodeConfigFiles(root),
     codec: yamlConfigCodec,
     clock: { now: () => Date.now() },
     detect: () => detectProject(createFolderFiles(root)).observations,
     templates: { list: () => [], get: () => undefined },
+    builtinSource: (name: string): BlockSource | undefined =>
+      firstPartyBlocks[`forge/${name}`] === undefined
+        ? undefined
+        : { builtin: `forge/${name}` },
+    blockConfig(_name: string, source: BlockSource) {
+      let block: CapturedBlock;
+      try {
+        block = captured(source);
+      } catch {
+        return undefined; // reported as an unavailable block
+      }
+      const path = block.manifest.configSchema;
+      const schema =
+        path === undefined ? undefined : block.resolvedSchema(path);
+      return path === undefined || schema === undefined
+        ? undefined
+        : { schema, check: (value: unknown) => block.problems(path, value) };
+    },
   };
   const config = createConfig(environment);
   const configOperations = createConfigOperations(environment);
@@ -315,10 +368,7 @@ export async function createAssembly(
     for (const [name, instance] of Object.entries(document.blocks)) {
       if (instance.enabled === false) continue;
       try {
-        const block = captureBlock(
-          resolveBlock(root, instance.source),
-          blockCapture,
-        );
+        const block = captured(instance.source);
         const docs = ready(block, instance);
         const proposed = new Map(blocks);
         proposed.set(name, block);
@@ -393,8 +443,16 @@ export async function createAssembly(
     };
   }
   const catalog: Assembly["catalog"] = {
-    unavailable: () => snapshot().unavailable,
-    list: () => [...configCandidates, grantCandidate, ...snapshot().candidates],
+    unavailable: () => perCall(() => snapshot().unavailable),
+    list: () =>
+      perCall(() => [
+        ...configCandidates,
+        grantCandidate,
+        ...snapshot().candidates,
+      ]),
+    invoke: (request) => perCall(() => direct.invoke(request)),
+  };
+  const direct: Pick<Assembly["catalog"], "invoke"> = {
     async invoke(request) {
       try {
         await trustState.open(false);
@@ -722,7 +780,7 @@ export async function createAssembly(
     catalog,
     root,
     deviceRoot,
-    exposure: composition(config.show()).mcp ?? {},
+    exposure: perCall(() => composition(config.show()).mcp ?? {}),
     async close() {
       try {
         await projectState.close();
