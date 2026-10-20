@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "forge.template/1",
+  "id": "harsha/delivery",
+  "version": "0.1.0",
+  "summary": "The owner's delivery loop over the work, memory and check blocks: slice, build with receipts, review in bounded rounds, merge on a pinned head. Skills read the values below.",
+  "config": {
+    "schemaVersion": "forge.config/1",
+    "blocks": {
+      "work": {
+        "source": { "builtin": "forge/work" },
+        "config": { "labelOrder": ["p0", "p1", "p2", "p3", "p4"] }
+      },
+      "memory": { "source": { "builtin": "forge/memory" } },
+      "check": { "source": { "builtin": "forge/check" } }
+    },
+    "values": {
+      "slice": { "targetLines": 800, "splitAbove": 1500, "maxFiles": 15 },
+      "review": {
+        "rounds": 2,
+        "fix": ["P0", "P1"],
+        "file": ["P2", "P3"],
+        "reruns": 1
+      },
+      "merge": { "by": "agent", "method": "squash" },
+      "doors": [
+        "publish",
+        "force-push",
+        "prod-write",
+        "migration-apply",
+        "delete-branch",
+        "delete-worktree",
+        "merge-to-autodeploy",
+        "global-config"
+      ],
+      "fixes": { "maxFailedPerCheck": 2 },
+      "lanes": { "max": 3, "fullSuiteRuns": 1, "stallMinutes": 10 },
+      "claims": { "ttlSeconds": 7200 },
+      "questions": { "max": 5 },
+      "labels": {
+        "priority": ["p0", "p1", "p2", "p3", "p4"],
+        "deferred": "review-deferred",
+        "gap": "contract-gap"
+      },
+      "roles": {
+        "orchestrator": "strong",
+        "implementer": "fast",
+        "reviewer": "other-family",
+        "housekeeping": "cheapest"
+      },
+      "pr": {
+        "models": true,
+        "notVerified": true,
+        "trailers": "none",
+        "style": "plain opening; bold takeaways; What review found; Verification"
+      }
+    }
+  }
+}

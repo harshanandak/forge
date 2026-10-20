@@ -22,9 +22,15 @@ export interface SkillsSyncResult {
   readonly removed: readonly string[];
 }
 
+/** A template file to read skills from: a project file, or one shipped in the installed package. */
+export interface TemplateFile {
+  readonly root: string;
+  readonly file: string;
+}
+
 /** Imported template files to read skills from, and the project's effective values. */
 export interface TemplateSkills {
-  readonly sources: readonly string[];
+  readonly sources: readonly TemplateFile[];
   readonly values: unknown;
 }
 
@@ -50,13 +56,12 @@ const generated = (bytes: Uint8Array | undefined): boolean =>
     .includes(GENERATED_MARKER);
 
 /** Each template's `skills/<name>/SKILL.md`, read from next to the template file and rendered. */
-function templateSkills(
-  files: ReturnType<typeof nodeConfigFiles>,
-  templates: TemplateSkills,
-): SkillFile[] {
+function templateSkills(templates: TemplateSkills): SkillFile[] {
   const skills: SkillFile[] = [];
   for (const source of templates.sources) {
-    const dir = `${source.split("/").slice(0, -1).join("/") || "."}/skills`;
+    const files = nodeConfigFiles(source.root);
+    const parent = source.file.split("/").slice(0, -1).join("/");
+    const dir = parent === "" ? "skills" : `${parent}/skills`;
     for (const name of files.list(dir)) {
       const bytes = readFile(files, `${dir}/${name}/SKILL.md`);
       if (bytes === undefined) continue;
@@ -94,7 +99,7 @@ export function syncSkills(
   try {
     skills = [
       ...renderSkills(candidates, prefix),
-      ...templateSkills(files, templates),
+      ...templateSkills(templates),
     ];
   } catch (error) {
     refuse(
