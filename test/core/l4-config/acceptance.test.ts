@@ -1,7 +1,7 @@
 // L4 acceptance: each test is one journey an agent or person takes through the config API on a
 // real project directory, with the real YAML codec.
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   failureOf,
@@ -112,7 +112,7 @@ describe("configure as you go", () => {
       value: "pnpm vitest run",
       expectRevision: revision,
     });
-    expect(written.receipt).not.toBeNull();
+    expect(written.changes).not.toEqual([]);
 
     const explained = p.config.explain({ path: "check.commands.test" });
     expect(explained.value).toBe("pnpm vitest run");
@@ -234,67 +234,6 @@ describe("configure as you go", () => {
     expect(existsSync(join(p.root, ".forge/config.lock"))).toBe(false);
   });
 
-  test("revert restores the exact prior bytes, comments and layout included", () => {
-    const p = project();
-    const original =
-      '# our hand-written config\nschemaVersion: forge.config/1\nblocks:\n  check:   # spacing kept\n    source: {builtin: forge/check}\n    config:\n      commands: {test: "make test"}\n';
-    mkdirSync(join(p.root, ".forge"));
-    writeFileSync(join(p.root, ".forge/config.yaml"), original);
-    const before = readFileSync(join(p.root, ".forge/config.yaml"));
-
-    const { revision } = p.config.show();
-    const written = p.config.set({
-      path: "check.commands.test",
-      value: "make check",
-      expectRevision: revision,
-    });
-    expect(p.read()).not.toBe(original);
-
-    const reverted = p.config.revert({ expectRevision: written.revision });
-    expect(reverted.reverted).toBe(written.receipt as string);
-    expect(
-      readFileSync(join(p.root, ".forge/config.yaml")).equals(before),
-    ).toBe(true);
-    expect(reverted.revision).toBe(revision);
-  });
-
-  test("reverting the edit that created the file removes it again", () => {
-    const p = project({ detections: npmDetections });
-    const { revision } = p.config.show();
-    const written = p.config.set({
-      path: "check.commands.test",
-      value: "pnpm test",
-      expectRevision: revision,
-    });
-    const reverted = p.config.revert({ expectRevision: written.revision });
-    expect(reverted.fileRemoved).toBe(true);
-    expect(p.read()).toBeUndefined();
-    expect(p.config.show().configured).toBe(false);
-  });
-
-  test("reverting walks back one edit at a time", () => {
-    const p = project();
-    const first = p.config.set({
-      path: "check.commands.test",
-      value: "one",
-      expectRevision: p.config.show().revision,
-    });
-    const second = p.config.set({
-      path: "check.commands.test",
-      value: "two",
-      expectRevision: first.revision,
-    });
-    const back1 = p.config.revert({ expectRevision: second.revision });
-    expect(p.config.explain({ path: "check.commands.test" }).value).toBe("one");
-    p.config.revert({ expectRevision: back1.revision });
-    expect(p.read()).toBeUndefined();
-    expect(
-      failureOf(() =>
-        p.config.revert({ expectRevision: p.config.show().revision }),
-      )?.code,
-    ).toBe("INPUT_INVALID");
-  });
-
   test("unknown keys are refused and nothing is written", () => {
     const p = project({
       configSchema: (_name, source) =>
@@ -362,7 +301,6 @@ describe("templates", () => {
       template: "forge/delivery",
       expectRevision: revision,
     });
-    expect(d.conflicts).toEqual([]);
     const s = p.templates.importTemplate({
       template: "forge/starter",
       expectRevision: d.revision,
@@ -390,18 +328,13 @@ describe("templates", () => {
       template: "forge/delivery",
       expectRevision: revision,
     });
+    // keys starter only shared were written by delivery, so they go with it
     const after = p.config.show();
-    expect(after.instances.map((i) => i.name).sort()).toEqual([
-      "check",
-      "context",
-      "memory",
-      "pr",
-      "work",
-    ]);
+    expect(after.instances.map((i) => i.name).sort()).toEqual(["check", "pr"]);
     expect(after.templates.map((t) => t.template)).toEqual([
       "forge/starter@0.1.0",
     ]);
-    // the edit is kept, and so is the source of the instance it lives in
+    // the edit is kept, and so is the source of each instance an edit lives in
     expect(after.effective).toMatchObject({
       blocks: {
         pr: {
@@ -411,60 +344,23 @@ describe("templates", () => {
         check: { config: { commands: { test: "pnpm vitest run" } } },
       },
     });
-    const prMerge = (
-      after.effective as {
-        blocks: { pr: { config: { merge: Record<string, unknown> } } };
-      }
-    ).blocks.pr.config.merge;
-    expect(prMerge).toEqual({ settleMinutes: 15 });
     expect(removed.kept.map((k) => k.pointer)).toEqual([
       "/blocks/check/source",
-      "/blocks/context/source",
-      "/blocks/memory/source",
       "/blocks/pr/config/merge/settleMinutes",
       "/blocks/pr/source",
-      "/blocks/work/source",
     ]);
     expect(removed.removed).toContain("/blocks/policy/config/rules");
+    expect(removed.removed).toContain("/blocks/work/source");
     expect(removed.removed).toContain("/mcp/budget");
-    expect(removed.removed).not.toContain(
-      "/blocks/pr/config/merge/settleMinutes",
-    );
-    // keys shared with starter now belong to starter
-    expect(
-      p.templates
-        .show({ template: "forge/starter" })
-        .owned.map((o) => o.pointer)
-        .sort(),
-    ).toEqual([
-      "/blocks/check/source",
-      "/blocks/context/source",
-      "/blocks/memory/source",
-      "/blocks/work/source",
-    ]);
 
     const last = p.templates.remove({
       template: "forge/starter",
       expectRevision: removed.revision,
     });
-    expect([...last.removed].sort()).toEqual([
-      "/blocks/context/source",
-      "/blocks/memory/source",
-      "/blocks/work/source",
-    ]);
+    expect(last.removed).toEqual([]);
     const final = p.config.show();
     expect(final.templates).toEqual([]);
     expect(final.instances.map((i) => i.name).sort()).toEqual(["check", "pr"]);
-    expect(final.effective).toMatchObject({
-      blocks: {
-        pr: { config: { merge: { settleMinutes: 15 } } },
-        check: {
-          config: {
-            commands: { test: "pnpm vitest run", lint: "npm run lint" },
-          },
-        },
-      },
-    });
   });
 
   test("removing every template returns the project to the adaptive layer", () => {

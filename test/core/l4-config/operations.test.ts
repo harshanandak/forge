@@ -45,16 +45,13 @@ test("every operation is a valid declaration under a core noun, and read-only on
     "config.detect",
     "config.explain",
     "config.preview",
-    "config.revert",
     "config.save",
     "config.set",
     "config.show",
-    "template.compare",
     "template.import",
     "template.list",
     "template.remove",
     "template.show",
-    "template.update",
   ]);
   for (const [name, declaration] of Object.entries(fragment.operations)) {
     expect(validateOperationDeclaration(declaration).ok).toBe(true);
@@ -116,18 +113,11 @@ test("each handler's real input and output match its declared schemas", () => {
     patch: [{ op: "set", path: "check.commands.lint", value: "pnpm lint" }],
     expectRevision: revision,
   }).revision as string;
-  revision = call("config.revert", { expectRevision: revision })
-    .revision as string;
   revision = call("config.save", { expectRevision: revision })
     .revision as string;
   call("template.list", {});
   call("template.show", { template: "forge/delivery" });
   revision = call("template.import", {
-    template: "forge/starter",
-    expectRevision: revision,
-  }).revision as string;
-  call("template.compare", { template: "forge/starter" });
-  revision = call("template.update", {
     template: "forge/starter",
     expectRevision: revision,
   }).revision as string;

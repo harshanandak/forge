@@ -45,12 +45,9 @@ describe("the fs adapter implements ConfigFiles", () => {
     );
     // no temporary file is left beside it
     expect(readdirSync(join(dir, ".forge"))).toEqual(["config.yaml"]);
-    files.write(".forge/config-history/000002.json", bytes("{}"));
-    files.write(".forge/config-history/000001.json", bytes("{}"));
-    expect(files.list(".forge/config-history")).toEqual([
-      "000001.json",
-      "000002.json",
-    ]);
+    files.write(".forge/notes/000002.json", bytes("{}"));
+    files.write(".forge/notes/000001.json", bytes("{}"));
+    expect(files.list(".forge/notes")).toEqual(["000001.json", "000002.json"]);
     files.remove(".forge/config.yaml");
     files.remove(".forge/config.yaml");
     expect(files.read(".forge/config.yaml")).toBeUndefined();

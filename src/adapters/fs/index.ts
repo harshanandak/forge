@@ -24,8 +24,8 @@ import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import type { ConfigFiles } from "../../core/config/files.ts";
 import {
   fileLimitExceeded,
+  MAX_CONFIG_FILE_BYTES,
   MAX_LOCK_FILE_BYTES,
-  MAX_RECEIPT_FILE_BYTES,
 } from "../../core/config/files.ts";
 
 function errorCode(error: unknown): string | undefined {
@@ -101,7 +101,7 @@ export function nodeConfigFiles(root: string): ConfigFiles {
       path,
       maxBytes = path === ".forge/config.lock"
         ? MAX_LOCK_FILE_BYTES
-        : MAX_RECEIPT_FILE_BYTES,
+        : MAX_CONFIG_FILE_BYTES,
     ) {
       let fd: number;
       try {

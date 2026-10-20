@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/template-remove.output.json",
-  "description": "Only keys the template still owns unchanged are removed; edited or shared keys stay.",
+  "description": "Only keys the template still owns unchanged are removed; edited keys stay.",
   "allOf": [
     {
       "$ref": "defs.json#/$defs/WriteFields"
@@ -13,7 +13,6 @@
         "file": {},
         "previousRevision": {},
         "revision": {},
-        "receipt": {},
         "changes": {},
         "fileRemoved": {},
         "template": {
@@ -28,7 +27,7 @@
         "kept": {
           "type": "array",
           "items": {
-            "$ref": "defs.json#/$defs/KeyChange"
+            "$ref": "defs.json#/$defs/KeptKey"
           }
         }
       },

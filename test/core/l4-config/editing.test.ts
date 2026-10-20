@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { readdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   failureOf,
@@ -156,7 +156,7 @@ describe("sparse edits (behaviours kept from the old config writer)", () => {
     );
   });
 
-  test("a whole patch applies as one edit with one receipt", () => {
+  test("a whole patch applies as one edit", () => {
     const p = project();
     const written = p.config.apply({
       patch: [
@@ -174,9 +174,6 @@ describe("sparse edits (behaviours kept from the old config writer)", () => {
       "/blocks/mine/config/level",
       "/blocks/mine/source",
       "/mcp/budget",
-    ]);
-    expect(readdirSync(join(p.root, ".forge/config-history"))).toEqual([
-      "000001.json",
     ]);
   });
 });
@@ -250,7 +247,7 @@ describe("preview, save and a broken file", () => {
     expect(saved.skipped).toEqual([
       expect.objectContaining({ pointer: "/blocks/thirdparty/config/x" }),
     ]);
-    expect(saved.receipt).toBeNull();
+    expect(saved.changes).toEqual([]);
   });
 
   test("a hand-broken file is reported by show and refuses edits with a repair", () => {
@@ -272,11 +269,6 @@ describe("preview, save and a broken file", () => {
       }),
     );
     expect(refused?.code).toBe("INPUT_INVALID");
-    // no recorded edit produced the broken bytes, so there is nothing to revert to blindly
-    expect(
-      failureOf(() => p.config.revert({ expectRevision: shown.revision }))
-        ?.code,
-    ).toBe("INPUT_INVALID");
     expect(p.read()).toBe(BROKEN);
   });
 });

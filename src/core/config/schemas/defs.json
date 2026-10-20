@@ -108,18 +108,13 @@
       },
       "additionalProperties": false
     },
-    "KeyChange": {
+    "KeptKey": {
       "type": "object",
-      "required": ["pointer", "kind"],
+      "required": ["pointer", "reason"],
       "properties": {
         "pointer": {
           "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
         },
-        "kind": {
-          "enum": ["add", "change", "remove", "conflict", "kept", "adopt"]
-        },
-        "current": {},
-        "upstream": {},
         "reason": {
           "type": "string"
         }
@@ -132,7 +127,6 @@
         "file",
         "previousRevision",
         "revision",
-        "receipt",
         "changes",
         "fileRemoved"
       ],
@@ -145,11 +139,6 @@
         },
         "revision": {
           "$ref": "../../../../schemas/common.json#/$defs/Digest"
-        },
-        "receipt": {
-          "type": ["string", "null"],
-          "pattern": "^[0-9]{6,}$",
-          "maxLength": 64
         },
         "changes": {
           "type": "array",

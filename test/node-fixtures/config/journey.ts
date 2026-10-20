@@ -76,7 +76,6 @@ try {
       expectRevision: first.revision,
     }),
   );
-  config.revert({ expectRevision: first.revision });
 
   mkdirSync(join(root, ".forge"), { recursive: true });
   const handWritten = "# mine\nschemaVersion: forge.config/1\nblocks: {}\n";
@@ -128,7 +127,6 @@ try {
         overridden.entries.map((e) => `${e.layer}:${e.active}`),
       ],
       unknown,
-      revertedToNothing: config.show().configured === false,
       kept,
       left,
       backToAdaptive:

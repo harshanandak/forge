@@ -5,10 +5,7 @@ import { ForgeFailure } from "../../contract/failure.ts";
 
 export const MAX_CONFIG_FILE_BYTES = 1_048_576;
 export const MAX_TEMPLATE_FILE_BYTES = 1_048_576;
-// A receipt base64-encodes the previous config, so it needs room for expansion.
-export const MAX_RECEIPT_FILE_BYTES = 2_097_152;
 export const MAX_LOCK_FILE_BYTES = 4_096;
-export const MAX_HISTORY_FILES = 1_000;
 
 export function fileLimitExceeded(
   path: string,
