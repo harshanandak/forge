@@ -1,4 +1,4 @@
-import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -18,11 +18,18 @@ type Handler = (call: {
 
 const root = resolve(import.meta.dirname, "../../../src/blocks/work");
 let operations: Record<string, Handler>;
+const globals = globalThis as Record<string, unknown>;
+const hadFail = "fail" in globals;
+const previousFail = globals.fail;
 beforeAll(() => {
-  (globalThis as Record<string, unknown>).fail = (code: string) => {
+  globals.fail = (code: string) => {
     throw new Error(code);
   };
   operations = require(resolve(root, "entry.cts")) as typeof operations;
+});
+afterAll(() => {
+  if (hadFail) globals.fail = previousFail;
+  else delete globals.fail;
 });
 
 function services(items: readonly Item[]) {
