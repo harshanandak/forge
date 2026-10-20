@@ -1,0 +1,12 @@
+{
+  "operations": {
+    "pr.status": {
+      "title": "Read GitHub status",
+      "summary": "Ask GitHub for status and apply the declared thread policy."
+    },
+    "pr.merge": {
+      "title": "Merge the expected head",
+      "summary": "Squash merge a ready PR with the head pinned, then read it back."
+    }
+  }
+}
