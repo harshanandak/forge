@@ -18,13 +18,22 @@ export function asyncCounterfactuals(platform: NodeJS.Platform) {
       mode: "strict-refusal",
       evidence: "strict containment must refuse before activation",
     },
-    {
-      file: "adapters/process/run.js",
-      from: "stoppedPids = await container.stop();",
-      to: "stoppedPids = [];",
-      mode: "default-cleanup",
-      evidence: "root exit must complete after tree cleanup",
-    },
+    // Windows keeps the Job Object helper; POSIX ends the command's process group directly.
+    platform === "win32"
+      ? {
+          file: "adapters/process/run.js",
+          from: "stoppedPids = await container.stop();",
+          to: "stoppedPids = [];",
+          mode: "default-cleanup",
+          evidence: "root exit must complete after tree cleanup",
+        }
+      : {
+          file: "adapters/process/process-tree.js",
+          from: "(await endProcessGroup(pid, supervision))",
+          to: "(child.kill('SIGKILL'), true)",
+          mode: "default-cleanup",
+          evidence: "invocation must stop its entire process tree",
+        },
     {
       file: "adapters/node-runtime/isolation.js",
       from: "Promise.resolve(handler(args))",

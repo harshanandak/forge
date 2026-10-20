@@ -12,6 +12,7 @@ import { planSpawn } from "./plan.ts";
 import type { Platform } from "./platform.ts";
 import { openContainment, type ContainmentOptions } from "./containment.ts";
 import { StreamCapture } from "./capture.ts";
+import { runProcessTree } from "./process-tree.ts";
 
 const MAX_TIMER_MS = 2147483647;
 import { MAX_SUPERVISORS, validateSupervision } from "./supervision.ts";
@@ -92,6 +93,15 @@ export async function runProcess(
   const started = performance.now();
   let scope: Awaited<ReturnType<typeof openContainment>> | undefined;
   try {
+    // On POSIX the default mode lets the OS own the tree as a process group. Strict containment,
+    // and every Windows run, still go through the helper with its cgroup or Job Object.
+    if (options.containment !== "strict" && platform !== "win32")
+      return await runProcessTree(
+        planSpawn(executable, args, options.env, platform),
+        options,
+        supervisionConfig,
+        started,
+      );
     // Capability setup is complete before even the waiting supervisor is spawned.
     scope = await openContainment(
       platform,
