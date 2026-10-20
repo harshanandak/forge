@@ -51,7 +51,7 @@ Each one gets an entry here and an adapter in the same pull request.
 - **Saves:** the emit of the published `dist/**/*.js` and `.d.ts` files, which Bun cannot produce; type checking itself is `bun check`.
 - **Maintenance:** Microsoft's native compiler line; 7.0.2 published 2026-10-16 on the 7.x line.
 - **Transitive packages:** 0 JavaScript packages; 20 optional platform binaries (`@typescript/typescript-<os>-<cpu>`), of which one is installed per machine.
-- **Fit:** runs as a native binary under Node 24/26 and Bun alike; it only runs in our build, never in the published package. Verified locally with Bun 1.4.3 on Windows; CI covers Linux, macOS and Node 26.
+- **Fit:** runs as a native binary under Node 24/26 and Bun alike; it only runs in our build, never in the published package. Verified locally with Bun 1.4.3 on Windows; CI covers Linux, Windows and macOS (macOS on Node 24 only) and Node 26 on Linux and Windows.
 - **Licence:** Apache-2.0.
 - **Trust:** published to npm by the TypeScript team; the exact version and integrity hash are pinned in `bun.lock`.
 - **Swap proof:** `tsconfig.build.json` is plain `tsc` options; any emitter that produces the same `dist/` layout passes `tools/pack-smoke`.
