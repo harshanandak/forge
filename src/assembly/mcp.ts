@@ -5,13 +5,18 @@ import { mcpToolName } from "../contract/naming.ts";
 import { isAgentCallable, selectMcpTools } from "../contract/mcp.ts";
 import type { McpTransportPort } from "../ports/mcp-transport.ts";
 import type { Assembly } from "./index.ts";
-import { localContext } from "./index.ts";
+import { randomUUID } from "node:crypto";
+import { localContext, localSession } from "./index.ts";
 
 /** Hidden, unadmitted names still reach the same runtime refusal through direct MCP calls. */
 export function assemblyMcp(assembly: Assembly): McpTransportPort {
   return {
     async open(options) {
-      const context = localContext(assembly, { kind: "agent", id: "mcp" });
+      const context = localContext(
+        assembly,
+        { kind: "agent", id: "mcp" },
+        localSession(`mcp-${randomUUID()}`),
+      );
       const exposure = assembly.exposure;
       const handlers = () =>
         createMcpHandlers(assembly.catalog, exposure, {

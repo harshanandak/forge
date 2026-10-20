@@ -135,12 +135,52 @@ export async function dispatch(
       op,
       input,
       caller: options.caller,
-      context: options.context ?? {},
+      context: await heldContext(catalog, op, input, options),
       ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
     });
   } catch {
     return failure("INTERNAL", "The runtime did not return a result envelope.");
   }
+}
+
+/**
+ * A held operation on an item that names no lease generation takes the generation of the item's
+ * current lease, read through the noun's `show`. Only the number is filled in: the state owner still
+ * fences the write to the lease's actor and session, so another session is refused as before.
+ */
+async function heldContext(
+  catalog: SurfaceCatalog,
+  op: string,
+  input: unknown,
+  options: CallOptions,
+): Promise<AmbientContext> {
+  const context = options.context ?? {};
+  const declaration = catalog.list().find((c) => c.op === op)?.declaration;
+  const id = record(input)?.id;
+  const show = `${op.split(".")[0] ?? ""}.show`;
+  if (
+    declaration?.context !== "leased" ||
+    declaration.leaseMode === "acquire" ||
+    context.session === undefined ||
+    context.leaseGeneration !== undefined ||
+    typeof id !== "string" ||
+    !catalog.list().some((c) => c.op === show)
+  )
+    return context;
+  const shown = await catalog.invoke({
+    schemaVersion: "forge.invocation/1",
+    requestId: randomUUID(),
+    op: show,
+    input: { id },
+    caller: options.caller,
+    context,
+  });
+  const generation = shown.ok
+    ? record(record(shown.result)?.lease)?.generation
+    : undefined;
+  return typeof generation === "number"
+    ? { ...context, leaseGeneration: generation }
+    : context;
 }
 
 export function record(
