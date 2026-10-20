@@ -57,6 +57,7 @@ import {
   readProject,
   type StoreDeps,
 } from "./store.ts";
+import { schemaDefaults } from "./short.ts";
 
 export interface ConfigEnvironment extends StoreDeps, BlockLookup {
   readonly files: ConfigFiles;
@@ -173,11 +174,40 @@ function fillMissing(
   return wrote;
 }
 
+/** The schema defaults of every instance a usable document configures, as the lowest layer. */
+function defaultsFor(
+  document: JsonObject | undefined,
+  lookup: BlockLookup,
+): InvocationValue[] {
+  const blocks = isObject(document?.blocks) ? document.blocks : {};
+  return Object.entries(blocks).flatMap(([name, instance]) =>
+    isObject(instance) && isObject(instance.source)
+      ? schemaDefaults(
+          lookup.configSchema?.(
+            name,
+            instance.source as unknown as BlockSource,
+          ),
+          ["blocks", name, "config"],
+        )
+      : [],
+  );
+}
+
+/** Where a value came from, in the words people use: the schema, a template, the user, or a layer. */
+export type ValueSource =
+  "default" | "template" | "user" | "derived" | "invocation";
+
+function sourceOf(entry: LayerEntry): ValueSource {
+  if (entry.layer !== "project") return entry.layer;
+  return entry.owner !== undefined && !entry.owner.edited ? "template" : "user";
+}
+
 export interface ExplainResult {
   readonly pointer: string;
   readonly set: boolean;
   readonly value: unknown;
   readonly layer: LayerEntry["layer"] | null;
+  readonly source: ValueSource | null;
   readonly entries: readonly LayerEntry[];
 }
 
@@ -380,7 +410,12 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
           value: step.value,
         }));
       const { document, excluded } = usable(current.document, env);
-      const layers = resolveLayers(derived, document, invocation);
+      const layers = resolveLayers(
+        derived,
+        document,
+        invocation,
+        defaultsFor(document, env),
+      );
       const blocks = isObject(document?.blocks) ? document.blocks : {};
       const instances: Instance[] = [];
       for (const [name, instance] of Object.entries(blocks)) {
@@ -416,7 +451,12 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
     explain(input) {
       const segments = segmentsOf(input.path);
       const current = readProject(env);
-      const layers = resolveLayers(derive(), current.document);
+      const layers = resolveLayers(
+        derive(),
+        current.document,
+        [],
+        defaultsFor(usable(current.document, env).document, env),
+      );
       const entries = entriesAt(layers, segments);
       const set = hasIn(layers.effective, segments);
       const exact = entries.find(
@@ -427,6 +467,7 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
         set,
         value: set ? (getIn(layers.effective, segments) ?? null) : null,
         layer: exact?.layer ?? null,
+        source: exact === undefined ? null : sourceOf(exact),
         entries,
       };
     },

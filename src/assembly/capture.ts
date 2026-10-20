@@ -1,9 +1,10 @@
-﻿import { existsSync } from "node:fs";
+﻿import { existsSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { nodeFileCapture } from "../adapters/node-runtime/capture.ts";
 import type { FileCapturePort } from "../core/catalog/index.ts";
 import type { BlockSource } from "../generated/types.ts";
+import { isSchemaObject, type JsonSchema } from "../contract/schema.ts";
 import { refuse } from "../core/trust/index.ts";
 import { fileURLToPath } from "node:url";
 import { firstPartyBlocks } from "./first-party.ts";
@@ -59,4 +60,30 @@ export function sourceFor(spec: string): BlockSource {
   return spec.startsWith(".") || /^[A-Za-z]:[\\/]|^\//.test(spec)
     ? { path: spec }
     : { package: spec };
+}
+
+const MAX_SCHEMA_BYTES = 1024 * 1024;
+function readJson(path: string): unknown {
+  if (!existsSync(path) || statSync(path).size > MAX_SCHEMA_BYTES)
+    return undefined;
+  return JSON.parse(readFileSync(path, "utf8")) as unknown;
+}
+/** A block's configSchema, read as data so config can apply its defaults; undefined when unreadable. */
+export function readConfigSchema(
+  root: string,
+  source: BlockSource,
+): JsonSchema | undefined {
+  try {
+    const dir = resolveBlock(root, source);
+    const manifest =
+      readJson(join(dir, "forge.block.json")) ??
+      readJson(join(dir, "block.json"));
+    const path = isSchemaObject(manifest) ? manifest.configSchema : undefined;
+    if (typeof path !== "string" || /(?:^|[/\\])\.\.(?:[/\\]|$)/.test(path))
+      return undefined;
+    const schema = readJson(join(dir, path));
+    return isSchemaObject(schema) ? schema : undefined;
+  } catch {
+    return undefined;
+  }
 }

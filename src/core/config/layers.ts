@@ -1,4 +1,4 @@
-// The three layers, low to high: derived (read from the project by detectors) → project (the
+// The layers, low to high: default (a block's configSchema defaults) → derived (read from the project by detectors) → project (the
 // config file) → invocation (one call's overrides). The derived layer only fills block config
 // values; it never adds a block instance, binds a slot or exposes anything, so detection alone can
 // never switch a block, check or hook on.
@@ -21,9 +21,10 @@ import {
   setIn,
 } from "./pointer.ts";
 
-export type Layer = "derived" | "project" | "invocation";
+export type Layer = "default" | "derived" | "project" | "invocation";
 
 const LAYER_RANK: Readonly<Record<Layer, number>> = {
+  default: -1,
   derived: 0,
   project: 1,
   invocation: 2,
@@ -156,11 +157,17 @@ export function resolveLayers(
   derived: DerivedLayer,
   document: JsonObject | undefined,
   invocation: readonly InvocationValue[] = [],
+  defaults: readonly InvocationValue[] = [],
 ): Layers {
   const owners = isObject(document?.owners) ? document.owners : {};
   const raw: Array<
     Omit<LayerEntry, "active" | "pointer"> & { segments: readonly string[] }
   > = [
+    ...defaults.map((v) => ({
+      segments: v.segments,
+      value: v.value,
+      layer: "default" as const,
+    })),
     ...derived.entries.map((e) => ({
       segments: e.segments,
       value: e.value,

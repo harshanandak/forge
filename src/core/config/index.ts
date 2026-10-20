@@ -6,6 +6,7 @@ export {
   createConfig,
   type DetectResult,
   type ExplainResult,
+  type ValueSource,
   type Instance,
   type PatchStep,
   type PreviewResult,

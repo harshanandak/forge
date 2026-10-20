@@ -397,6 +397,18 @@ try {
     maximumReceipt(await mcp("INCOMPLETE", ["first", "second"]));
     bindings();
     await review();
+    // Short form: only commands; every other key is the configSchema default.
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      `blocks:\n  check:\n    commands:\n      test: { argv: ${JSON.stringify(config.commands.test.argv)} }\n`,
+    );
+    assert.equal(cli(["check", "run"]).result.status, "PASS", "short form");
+    assert.equal(
+      cli(["config", "explain", "--input", '{"path":"check.timeoutMs"}']).result
+        .source,
+      "default",
+      "explain names the schema default",
+    );
     console.log(
       "PASS packed generated CLI/MCP: admission, list, outcomes, env, input binding, receipt readback",
     );

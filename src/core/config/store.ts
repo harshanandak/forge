@@ -18,6 +18,7 @@ import {
   type ConfigFiles,
 } from "./files.ts";
 import { digestBytes, isObject, type JsonObject } from "./pointer.ts";
+import { expandShortForm } from "./short.ts";
 
 export const CONFIG_FILE = ".forge/config.yaml";
 export const HISTORY_DIR = ".forge/config-history";
@@ -122,10 +123,11 @@ export function readProject(deps: StoreDeps): ProjectConfig {
       },
     };
   }
-  const checked = validateConfigDocument(decoded.value);
+  const document = expandShortForm(decoded.value);
+  const checked = validateConfigDocument(document);
   return {
     ...base,
-    document: decoded.value,
+    document,
     unreadable: undefined,
     problems: checked.ok ? [] : checked.problems,
   };

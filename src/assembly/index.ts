@@ -42,7 +42,13 @@ import type { SurfaceCatalog } from "../surface/catalog.ts";
 import { discoveryOperations } from "../generated/core-discovery.ts";
 import { createStateClient } from "./state-client.ts";
 import { version } from "../version.ts";
-import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
+import {
+  blockCapture,
+  readConfigSchema,
+  resolveBlock,
+  sourceFor,
+} from "./capture.ts";
+import { firstPartyBlocks } from "./first-party.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
 import { LocalState } from "./state.ts";
 import { openLevels, PROJECT_STATE } from "./levels.ts";
@@ -188,6 +194,12 @@ export async function createAssembly(
     clock: { now: () => Date.now() },
     detect: () => detectProject(createFolderFiles(root)).observations,
     templates: { list: () => [], get: () => undefined },
+    builtinSource: (name: string): BlockSource | undefined =>
+      firstPartyBlocks[`forge/${name}`] === undefined
+        ? undefined
+        : { builtin: `forge/${name}` },
+    configSchema: (_name: string, source: BlockSource) =>
+      readConfigSchema(root, source),
   };
   const config = createConfig(environment);
   const configOperations = createConfigOperations(environment);

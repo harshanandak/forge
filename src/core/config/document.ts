@@ -21,6 +21,7 @@ import {
   leaves,
   parsePointer,
 } from "./pointer.ts";
+import { withDefaults } from "./short.ts";
 import { CONFIG_FILE } from "./store.ts";
 
 export const CONFIG_VERSION = "forge.config/1";
@@ -113,7 +114,10 @@ export function checkDocument(document: JsonObject, lookup: BlockLookup): void {
   for (const [name, instance] of Object.entries(blocks)) {
     const schema = lookup.configSchema?.(name, instance.source);
     if (schema === undefined) continue;
-    const problems = validateWithSchema(schema, instance.config ?? {});
+    const problems = validateWithSchema(
+      schema,
+      withDefaults(schema, instance.config ?? {}),
+    );
     if (problems.length > 0) {
       throw invalid(
         problems.map((p) => ({
