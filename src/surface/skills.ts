@@ -121,7 +121,10 @@ function skill(
   ].join("\n");
 }
 
-/** One skill per block noun with at least one agent-callable operation; sorted, so output is stable. */
+/**
+ * One skill per block noun with at least one admitted, agent-callable operation; sorted, so output
+ * is stable. Unadmitted operations are dropped first, as every other discovery surface hides them.
+ */
 export function renderSkills(
   candidates: readonly McpCandidate[],
   prefix?: string,
@@ -130,6 +133,7 @@ export function renderSkills(
   for (const candidate of [...candidates].sort((a, b) =>
     a.op < b.op ? -1 : a.op > b.op ? 1 : 0,
   )) {
+    if (!candidate.admitted) continue;
     const noun = parseOperationName(candidate.op)?.noun;
     if (noun === undefined || CORE_NOUNS.includes(noun)) continue;
     byNoun.set(noun, [...(byNoun.get(noun) ?? []), candidate]);

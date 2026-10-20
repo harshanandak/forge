@@ -48,9 +48,13 @@ async function forge(assembly: Assembly, argv: readonly string[]) {
   return JSON.parse(text) as { ok: boolean; result?: unknown };
 }
 
-/** The shipped work and memory blocks as a project enables them; entries are stubs, listing never runs them. */
+/**
+ * The shipped work and memory blocks as a project enables them; entries are stubs, listing never
+ * runs them. A human admits the blocks named in `admit`; the rest stay enabled but unadmitted.
+ */
 async function withProject(
   run: (assembly: Assembly, root: string) => Promise<void>,
+  admit: readonly string[] = ["work", "memory"],
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "forge-skills-"));
   try {
@@ -74,6 +78,21 @@ async function withProject(
       deviceRoot: join(root, "device"),
     });
     try {
+      const call = localCall(assembly);
+      for (const name of admit) {
+        const checked = await dispatch(
+          assembly.catalog,
+          "block.check",
+          { path: `./blocks/${name}` },
+          call,
+        );
+        const digest = String(
+          record(checked.ok ? checked.result : undefined)?.digest,
+        );
+        expect(
+          await dispatch(assembly.catalog, "block.admit", { digest }, call),
+        ).toMatchObject({ ok: true });
+      }
       await run(assembly, root);
     } finally {
       await assembly.close();
@@ -123,6 +142,34 @@ test("skills.sync writes one linted skill per block noun, deterministically, fro
     ).toMatchObject({ ok: true, result: { dir: "agent/skills" } });
     expect(existsSync(join(root, "agent/skills/issue/SKILL.md"))).toBe(true);
   });
+}, 30_000);
+
+test("an enabled but unadmitted block gets no skill and none of its text reaches any file", async () => {
+  await withProject(
+    async (assembly, root) => {
+      const catalog = assembly.catalog.list();
+      const hidden = catalog.filter((c) => !c.admitted);
+      expect(hidden.map((c) => c.op)).toContain("memory.add");
+      const sync = await forge(assembly, ["skills", "sync"]);
+      expect(sync).toMatchObject({
+        ok: true,
+        result: {
+          written: [".agents/skills/issue/SKILL.md"],
+        },
+      });
+      const text = readFileSync(
+        join(root, ".agents/skills/issue/SKILL.md"),
+        "utf8",
+      );
+      for (const noun of ["decision", "memory"])
+        expect(existsSync(join(root, `.agents/skills/${noun}`))).toBe(false);
+      for (const c of hidden) {
+        expect(text).not.toContain(c.op);
+        expect(text).not.toContain(c.docs.summary);
+      }
+    },
+    ["work"],
+  );
 }, 30_000);
 
 test("every generated CLI line for the shipped blocks delivers its --input JSON through the real CLI parser", async () => {
