@@ -29,7 +29,7 @@ export function asyncCounterfactuals(platform: NodeJS.Platform) {
         }
       : {
           file: "adapters/process/process-tree.js",
-          from: "(await endProcessGroup(pid, supervision))",
+          from: "(await endProcessGroup(pid, supervision, undefined, exited))",
           to: "(child.kill('SIGKILL'), true)",
           mode: "default-cleanup",
           evidence: "invocation must stop its entire process tree",
