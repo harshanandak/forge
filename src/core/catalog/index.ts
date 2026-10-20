@@ -71,6 +71,12 @@ function capturedUri(path: string, base: string): string {
 export class CapturedBlock {
   readonly manifest: BlockManifest;
   readonly digest: string;
+  /**
+   * Read from the installed package's own blocks. Installing the package is the trust step, so
+   * these bytes need no admission or grants. Set only by the embedding from where it read the
+   * bytes; nothing in config or the manifest can set it.
+   */
+  readonly shipped: boolean;
   readonly #files: ReadonlyMap<string, string>;
   readonly #registry: SchemaRegistry;
   readonly #base: string;
@@ -79,8 +85,10 @@ export class CapturedBlock {
     files: ReadonlyMap<string, string>,
     manifest: BlockManifest,
     byteDigest?: string,
+    shipped = false,
   ) {
     this.manifest = freeze(structuredClone(manifest));
+    this.shipped = shipped;
     this.#files = new Map(files);
     this.digest =
       byteDigest ??
@@ -234,6 +242,7 @@ export function captureBlock(
   rootPath: string,
   capture: FileCapturePort,
   limits: CaptureLimits = DEFAULT_CAPTURE_LIMITS,
+  shipped = false,
 ): CapturedBlock {
   const source = capture.open(rootPath).value;
   let bytes = 0;
@@ -281,6 +290,7 @@ export function captureBlock(
         [...hashes].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
       ),
     ),
+    shipped,
   );
 }
 

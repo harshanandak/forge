@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import {
-  cpSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -66,14 +60,6 @@ const config = {
   maxInputBytes: 1048576,
   environment: envNames,
 };
-const effects = [
-  "check:write",
-  "process:write",
-  "external:process",
-  "external:write",
-  "files:read",
-  "environment:read",
-];
 let revision;
 function configure(changes) {
   const applied = cli(
@@ -319,18 +305,11 @@ try {
     }),
   ]);
   revision = applied.result.revision;
-  assert.equal(
-    cli(["check", "run"], 2).error.code,
-    "ADMISSION_REQUIRED",
-    "generated CLI enforces admission",
+  assert.deepEqual(
+    cli(["check", "list"]).result.commands,
+    ["test"],
+    "the block shipped in the installed package needs no admit or grant step",
   );
-  cpSync(join(installed, "dist/src/blocks/check"), join(root, "check-bytes"), {
-    recursive: true,
-  });
-  const checked = cli(["block", "check", "./check-bytes"]);
-  const digest = checked.result.digest;
-  cli(["block", "admit", digest]);
-  cli(["config", "grant", "--input", JSON.stringify({ digest, effects })]);
   if (reviewOnly) {
     await review();
   } else if (mcpOnly) {

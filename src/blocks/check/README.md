@@ -46,7 +46,8 @@ engine is available to native embeddings through `createCheck`; it is not a seco
 
 The shared process service enforces `external:process`. The run declaration also names
 `external:write`, `process:write`, `files:read`, `environment:read`, and `check:write`.
-Each call still needs human admission and effect grants. The runtime scopes and revokes
+Loaded from its built-in source, the block needs no admission or grants (installing Forge
+is the trust step); a path or package copy needs human admission and grants. The runtime scopes and revokes
 services, owns cancellation, and drains the process tree before returning. The block
 starts no timer, supervisor, cache or persistent process.
 

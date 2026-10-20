@@ -18,7 +18,7 @@ import type {
   ResultEnvelope,
   ParseLimits,
 } from "../../generated/types.ts";
-import { Catalog } from "../catalog/index.ts";
+import { Catalog, type CapturedBlock } from "../catalog/index.ts";
 import { TrustStore, refuse } from "../trust/index.ts";
 import type { Handle, LifetimeProvider } from "../../ports/lifetime.ts";
 
@@ -218,6 +218,11 @@ export class Runtime {
     }
   }
 
+  /** Shipped blocks are trusted by installing the package; other bytes need human admission and grants. */
+  #checkTrust(block: CapturedBlock, effects: readonly string[]): void {
+    if (!block.shipped) this.#trust.check(block.digest, effects);
+  }
+
   async invokeText(
     text: string | Uint8Array,
     options: { readonly signal?: AbortSignal } = {},
@@ -261,7 +266,7 @@ export class Runtime {
         !block.validate(block.manifest.configSchema, config)
       )
         refuse("INPUT_INVALID", "config does not match block schema");
-      this.#trust.check(block.digest, declaration.effects);
+      this.#checkTrust(block, declaration.effects);
       if (
         this.#catalog.bindings(operation.instance).length > 0 &&
         this.#options.services === undefined
@@ -286,7 +291,7 @@ export class Runtime {
       invocation = new InvocationServices(
         clock.now() + preparationTimeoutMs,
         () => {
-          this.#trust.check(block.digest, declaration.effects);
+          this.#checkTrust(block, declaration.effects);
         },
         declaration.processContainment === "strict",
         clock,
@@ -343,7 +348,7 @@ export class Runtime {
       await scope.prepare(handle?.value);
       scope.check();
       // Opening clients may yield; trust must still hold immediately before execution.
-      this.#trust.check(block.digest, declaration.effects);
+      this.#checkTrust(block, declaration.effects);
       if (this.#options.isolation === undefined)
         refuse("PROVIDER_MISSING", "execution needs an isolation provider");
       const opened = await scope.wait(
@@ -362,7 +367,7 @@ export class Runtime {
           Math.max(TIMEOUT_BOUNDS.minimum, scope.deadline - clock.now()),
         );
         // Opening the evaluator may yield too; admission must still be current.
-        this.#trust.check(block.digest, declaration.effects);
+        this.#checkTrust(block, declaration.effects);
         scope.check();
         started = true;
         encoded = await scope.wait(
@@ -401,7 +406,7 @@ export class Runtime {
       if (!parsed.ok) throw new ForgeFailure(parsed.error);
       if (!block.validate(declaration.output, parsed.value))
         refuse("OUTPUT_INVALID", "output does not match operation schema");
-      this.#trust.check(block.digest, declaration.effects);
+      this.#checkTrust(block, declaration.effects);
       result = {
         ok: true,
         op: request.op,
