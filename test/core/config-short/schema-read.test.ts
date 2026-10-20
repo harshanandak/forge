@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readConfigSchema } from "../../../src/assembly/capture.ts";
+import type { JsonSchema } from "../../../src/contract/schema.ts";
 
 const SCHEMA = JSON.stringify({
   type: "object",
@@ -45,7 +46,7 @@ describe("readConfigSchema", () => {
     const { root, dir } = block();
     writeFileSync(join(dir, "schema.json"), SCHEMA);
     expect(readConfigSchema(root, { path: "./blocks/hello" })).toEqual(
-      JSON.parse(SCHEMA) as unknown,
+      JSON.parse(SCHEMA) as JsonSchema,
     );
   }, 10_000);
 
