@@ -173,21 +173,60 @@ export class CapturedBlock {
     return this.#registry.validate(capturedUri(path, this.#base), value);
   }
 
-  /** The schema a captured file describes, following top-level `$ref`s within the capture. */
+  /**
+   * The schema a captured file describes, following top-level `$ref`s within the capture. A `$ref`
+   * applies alongside its sibling keywords, so the result is the referenced schema composed with
+   * every sibling: `properties` merge per key and `required` unions; outer keywords win otherwise.
+   */
   resolvedSchema(path: string): JsonSchema | undefined {
     let uri = capturedUri(path, this.#base);
     let node = this.#registry.lookup(uri);
+    const outer: Record<string, unknown>[] = [];
     for (let hop = 0; hop < 8 && isSchemaObject(node); hop += 1) {
       if (typeof node.$ref !== "string") break;
-      uri = this.#registry.resolve(node.$ref, uri);
+      const { $ref, ...siblings } = node;
+      outer.push(siblings);
+      uri = this.#registry.resolve($ref, uri);
       node = this.#registry.lookup(uri);
     }
-    return node;
+    if (outer.length === 0 || !isSchemaObject(node)) return node;
+    return outer.reduceRight(composeSchema, node as Record<string, unknown>);
   }
 
   schema(path: string): unknown {
     return freeze(JSON.parse(this.text(path)) as unknown);
   }
+}
+
+/** One schema with an outer schema's keywords applied over it, for reading defaults. */
+function composeSchema(
+  inner: Record<string, unknown>,
+  outer: Record<string, unknown>,
+): Record<string, unknown> {
+  const composed: Record<string, unknown> = { ...inner, ...outer };
+  if (isSchemaObject(inner.properties) && isSchemaObject(outer.properties)) {
+    const properties: Record<string, unknown> = { ...inner.properties };
+    for (const [key, schema] of Object.entries(outer.properties)) {
+      const below = properties[key];
+      properties[key] =
+        isSchemaObject(below) && isSchemaObject(schema)
+          ? { ...below, ...schema }
+          : schema;
+    }
+    composed.properties = properties;
+  }
+  const below = requiredOf(inner);
+  const above = requiredOf(outer);
+  if (below && above) composed.required = [...new Set([...below, ...above])];
+  return composed;
+}
+
+function requiredOf(
+  schema: Record<string, unknown>,
+): readonly unknown[] | undefined {
+  return Array.isArray(schema.required)
+    ? (schema.required as readonly unknown[])
+    : undefined;
 }
 
 /** Reads bounded regular files contained in one root; discovery executes no module. */

@@ -184,66 +184,60 @@ export async function createAssembly(
     },
   });
   // Each block is captured once per call: config reads its schema from the same capture the
-  // catalog runs, and nothing is kept once the call ends.
-  let captures: Map<string, CapturedBlock | { failed: unknown }> | undefined;
-  function captured(source: BlockSource): CapturedBlock {
-    const key = JSON.stringify(source);
-    let found = captures?.get(key);
-    if (found === undefined) {
-      try {
-        found = captureBlock(resolveBlock(root, source), blockCapture);
-      } catch (error) {
-        found = { failed: error };
-      }
-      captures?.set(key, found);
-    }
-    if ("failed" in found) throw found.failed;
-    return found;
-  }
-  function perCall<T>(run: () => T): T {
-    if (captures !== undefined) return run();
-    captures = new Map();
-    let async = false;
-    try {
-      const result = run();
-      if (result instanceof Promise) {
-        async = true;
-        return result.finally(() => {
-          captures = undefined;
-        }) as T;
-      }
-      return result;
-    } finally {
-      if (!async) captures = undefined;
-    }
-  }
-  const environment = {
-    files: nodeConfigFiles(root),
-    codec: yamlConfigCodec,
-    clock: { now: () => Date.now() },
-    detect: () => detectProject(createFolderFiles(root)).observations,
-    templates: { list: () => [], get: () => undefined },
-    builtinSource: (name: string): BlockSource | undefined =>
-      firstPartyBlocks[`forge/${name}`] === undefined
-        ? undefined
-        : { builtin: `forge/${name}` },
-    blockConfig(_name: string, source: BlockSource) {
-      let block: CapturedBlock;
-      try {
-        block = captured(source);
-      } catch {
-        return undefined; // reported as an unavailable block
-      }
-      const path = block.manifest.configSchema;
-      const schema =
-        path === undefined ? undefined : block.resolvedSchema(path);
-      return path === undefined || schema === undefined
-        ? undefined
-        : { schema, check: (value: unknown) => block.problems(path, value) };
-    },
+  // catalog runs. The cache belongs to one call and is passed down it, so overlapping calls
+  // never share or clear each other's captures, and nothing is kept once the call ends.
+  type CallScope = {
+    captured(source: BlockSource): CapturedBlock;
+    config: ReturnType<typeof createConfig>;
+    configOperations: ReturnType<typeof createConfigOperations>;
   };
-  const config = createConfig(environment);
-  const configOperations = createConfigOperations(environment);
+  function callScope(): CallScope {
+    const captures = new Map<string, CapturedBlock | { failed: unknown }>();
+    function captured(source: BlockSource): CapturedBlock {
+      const key = JSON.stringify(source);
+      let found = captures.get(key);
+      if (found === undefined) {
+        try {
+          found = captureBlock(resolveBlock(root, source), blockCapture);
+        } catch (error) {
+          found = { failed: error };
+        }
+        captures.set(key, found);
+      }
+      if ("failed" in found) throw found.failed;
+      return found;
+    }
+    const environment = {
+      files: nodeConfigFiles(root),
+      codec: yamlConfigCodec,
+      clock: { now: () => Date.now() },
+      detect: () => detectProject(createFolderFiles(root)).observations,
+      templates: { list: () => [], get: () => undefined },
+      builtinSource: (name: string): BlockSource | undefined =>
+        firstPartyBlocks[`forge/${name}`] === undefined
+          ? undefined
+          : { builtin: `forge/${name}` },
+      blockConfig(_name: string, source: BlockSource) {
+        let block: CapturedBlock;
+        try {
+          block = captured(source);
+        } catch {
+          return undefined; // reported as an unavailable block
+        }
+        const path = block.manifest.configSchema;
+        const schema =
+          path === undefined ? undefined : block.resolvedSchema(path);
+        return path === undefined || schema === undefined
+          ? undefined
+          : { schema, check: (value: unknown) => block.problems(path, value) };
+      },
+    };
+    return {
+      captured,
+      config: createConfig(environment),
+      configOperations: createConfigOperations(environment),
+    };
+  }
   function composition(show: ShowResult) {
     const effectiveBlocks = show.effective.blocks as
       Record<string, unknown> | undefined;
@@ -348,14 +342,14 @@ export async function createAssembly(
       remedy: `Repair the source or configuration for ${name}, or remove /blocks/${name} with config.apply at the current config revision.`,
     };
   }
-  function snapshot(): {
+  function snapshot(call: CallScope): {
     catalog: Catalog;
     blocks: ReadonlyMap<string, CapturedBlock>;
     candidates: readonly McpCandidate[];
     unavailable: readonly UnavailableBlock[];
     problems: readonly string[];
   } {
-    const show = config.show();
+    const show = call.config.show();
     const document = composition(show);
     const blocks = new Map<string, CapturedBlock>();
     const candidates: McpCandidate[] = [];
@@ -368,7 +362,7 @@ export async function createAssembly(
     for (const [name, instance] of Object.entries(document.blocks)) {
       if (instance.enabled === false) continue;
       try {
-        const block = captured(instance.source);
+        const block = call.captured(instance.source);
         const docs = ready(block, instance);
         const proposed = new Map(blocks);
         proposed.set(name, block);
@@ -443,17 +437,19 @@ export async function createAssembly(
     };
   }
   const catalog: Assembly["catalog"] = {
-    unavailable: () => perCall(() => snapshot().unavailable),
-    list: () =>
-      perCall(() => [
-        ...configCandidates,
-        grantCandidate,
-        ...snapshot().candidates,
-      ]),
-    invoke: (request) => perCall(() => direct.invoke(request)),
+    unavailable: () => snapshot(callScope()).unavailable,
+    list: () => [
+      ...configCandidates,
+      grantCandidate,
+      ...snapshot(callScope()).candidates,
+    ],
+    invoke: (request) => direct.invoke(callScope(), request),
   };
-  const direct: Pick<Assembly["catalog"], "invoke"> = {
-    async invoke(request) {
+  const direct = {
+    async invoke(
+      call: CallScope,
+      request: Parameters<Assembly["catalog"]["invoke"]>[0],
+    ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
         await trustState.open(false);
         const checked = validateInvocationRequest(request);
@@ -476,14 +472,17 @@ export async function createAssembly(
           if (request.dryRun && entry.declaration.effects.length)
             refuse("UNAVAILABLE", "This operation has no dry-run contract");
           const input = request.input as Record<string, unknown>;
-          const configHandler = configOperations[request.op];
+          const configHandler = call.configOperations[request.op];
           if (configHandler) {
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
             const handled = configHandler(request.input);
             const output =
               request.op === "config.show"
-                ? { ...(handled as ShowResult), problems: snapshot().problems }
+                ? {
+                    ...(handled as ShowResult),
+                    problems: snapshot(call).problems,
+                  }
                 : handled;
             if (!validateConfigValue(entry.declaration, "output", output))
               refuse("OUTPUT_INVALID", "Invalid config output");
@@ -497,8 +496,8 @@ export async function createAssembly(
               blockCapture,
             );
             const name = block.manifest.id.split("/").at(-1)!;
-            const show = config.show();
-            const current = snapshot();
+            const show = call.config.show();
+            const current = snapshot(call);
             const existing = current.blocks.get(name);
             if (existing && existing.manifest.id !== block.manifest.id)
               refuse("NOUN_COLLISION", "Block instance name is already in use");
@@ -530,7 +529,7 @@ export async function createAssembly(
             )
               refuse("INPUT_INVALID", "Block docs do not cover its operations");
             if (request.op === "block.add")
-              config.apply({
+              call.config.apply({
                 patch: [
                   { op: "set", path: `/blocks/${name}`, value: instance },
                 ],
@@ -568,7 +567,7 @@ export async function createAssembly(
           }
           if (request.op === "block.admit" || request.op === "config.grant") {
             const digest = String(input.digest);
-            const candidates = [...snapshot().blocks.values()].filter(
+            const candidates = [...snapshot(call).blocks.values()].filter(
               (block) => block.digest === digest,
             );
             if (!candidates.length)
@@ -616,7 +615,7 @@ export async function createAssembly(
           }
           refuse("UNKNOWN_COMMAND", "Operation is not assembled");
         }
-        const current = snapshot();
+        const current = snapshot(call);
         return await new Runtime(current.catalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
@@ -780,7 +779,7 @@ export async function createAssembly(
     catalog,
     root,
     deviceRoot,
-    exposure: perCall(() => composition(config.show()).mcp ?? {}),
+    exposure: composition(callScope().config.show()).mcp ?? {},
     async close() {
       try {
         await projectState.close();

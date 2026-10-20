@@ -118,3 +118,117 @@ test("an outside block with a $ref config schema takes its defaults and can be c
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+function project(blockFiles: Record<string, unknown>): string {
+  const root = mkdtempSync(join(tmpdir(), "forge-config-defaults-"));
+  mkdirSync(join(root, "hello"));
+  mkdirSync(join(root, ".forge"));
+  writeBlock(root, blockFiles);
+  writeFileSync(join(root, "hello/entry.cjs"), "module.exports={}");
+  writeFileSync(
+    join(root, ".forge/config.yaml"),
+    "blocks:\n  hello:\n    use: ./hello\n",
+  );
+  return root;
+}
+function writeBlock(root: string, blockFiles: Record<string, unknown>): void {
+  for (const [name, value] of Object.entries(blockFiles))
+    writeFileSync(join(root, "hello", name), JSON.stringify(value));
+}
+function withGreeting(greeting: string): Record<string, unknown> {
+  const defs = files["defs.json"] as {
+    $defs: { Config: { properties: Record<string, unknown> } };
+  };
+  return {
+    ...files,
+    "defs.json": {
+      $defs: {
+        Config: {
+          ...defs.$defs.Config,
+          properties: {
+            ...defs.$defs.Config.properties,
+            greeting: { type: "string", default: greeting },
+          },
+        },
+      },
+    },
+  };
+}
+
+test("overlapping calls each read the block bytes on their own", async () => {
+  const root = project(withGreeting("hi"));
+  const assembly = await createAssembly({
+    root,
+    deviceRoot: join(root, "device"),
+  });
+  const { caller, context } = localCall(assembly);
+  try {
+    // the show call is still running when a listing captures the block and its bytes change
+    const pending = assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: "show",
+      op: "config.show",
+      input: {},
+      caller,
+      context: context ?? {},
+    });
+    expect(assembly.catalog.list().length).toBeGreaterThan(0);
+    writeBlock(root, withGreeting("hello"));
+    const shown = (await pending) as {
+      ok: boolean;
+      result: { effective: unknown; problems: string[] };
+    };
+    expect(shown.ok).toBe(true);
+    expect(shown.result.effective).toMatchObject({
+      blocks: { hello: { config: { greeting: "hello" } } },
+    });
+    expect(shown.result.problems).toEqual([]);
+  } finally {
+    await assembly.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a $ref config schema's sibling properties supply defaults too", async () => {
+  const root = project({
+    ...files,
+    // `tone` is required and only declared beside the `$ref`; its default makes `use:` alone valid
+    "config.json": {
+      $ref: "defs.json#/$defs/Config",
+      required: ["tone"],
+      properties: { tone: { type: "string", default: "calm" } },
+    },
+    "defs.json": {
+      $defs: {
+        Config: {
+          type: "object",
+          required: ["greeting"],
+          properties: { greeting: { type: "string", default: "hi" } },
+        },
+      },
+    },
+  });
+  const assembly = await createAssembly({
+    root,
+    deviceRoot: join(root, "device"),
+  });
+  const { caller, context } = localCall(assembly);
+  try {
+    expect(assembly.catalog.unavailable()).toEqual([]);
+    const shown = (await assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: "show",
+      op: "config.show",
+      input: {},
+      caller,
+      context: context ?? {},
+    })) as { ok: boolean; result: { effective: unknown; problems: string[] } };
+    expect(shown.result.effective).toMatchObject({
+      blocks: { hello: { config: { greeting: "hi", tone: "calm" } } },
+    });
+    expect(shown.result.problems).toEqual([]);
+  } finally {
+    await assembly.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
