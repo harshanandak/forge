@@ -150,6 +150,42 @@ export function renderSkills(
     }));
 }
 
+const scalar = (value: unknown): value is string | number | boolean =>
+  ["string", "number", "boolean"].includes(typeof value);
+
+/**
+ * A template's hand-written skill with each `{{values.<path>}}` replaced by the project's effective
+ * value, and the generated marker placed after the frontmatter. Returns the placeholders it could
+ * not resolve instead when there are any.
+ */
+export function renderTemplateSkill(
+  name: string,
+  source: string,
+  values: unknown,
+): SkillFile | { readonly unknown: readonly string[] } {
+  const unknown: string[] = [];
+  const text = source
+    .replace(/\r\n/g, "\n")
+    .replace(/\{\{\s*([^{}]*?)\s*\}\}/g, (whole, key: string) => {
+      let value: unknown = /^values(?:\.[^.\s]+)+$/.test(key)
+        ? values
+        : undefined;
+      for (const part of key.split(".").slice(1)) value = record(value)?.[part];
+      // a scalar or a list of scalars; an object has no one text form
+      if (scalar(value)) return String(value);
+      if (Array.isArray(value) && value.every(scalar)) return value.join(", ");
+      unknown.push(whole);
+      return whole;
+    });
+  if (unknown.length > 0) return { unknown };
+  const front = /^---\n[\s\S]*?\n---\n/.exec(text)?.[0] ?? "";
+  return {
+    noun: name,
+    path: `${name}/SKILL.md`,
+    text: `${front}${GENERATED_MARKER}\n${text.slice(front.length)}`,
+  };
+}
+
 const NAME = "[a-z][a-z0-9-]*";
 const CLI_FORM = new RegExp(`^forge (${NAME}) (${NAME})(?:\\s|$)`);
 const OP_FORM = new RegExp(`^(${NAME})[._](${NAME})$`);

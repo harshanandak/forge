@@ -35,5 +35,6 @@ export {
   type TemplateEnvironment,
   type TemplateSource,
   type TemplateSummary,
+  TEMPLATE_SKILLS_DIR,
   type UpdateResult,
 } from "./templates.ts";

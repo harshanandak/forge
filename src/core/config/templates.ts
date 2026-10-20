@@ -145,6 +145,8 @@ export interface TemplateApi {
 }
 
 const TEMPLATE_FILE = /\.(?:json|ya?ml)$/;
+/** Where import copies a template's skills; skills sync renders them from here. */
+export const TEMPLATE_SKILLS_DIR = ".forge/skills";
 const DROPPED_EDITED = "upstream dropped it, but it was edited since import";
 
 function refuse(message: string, repair?: string): ForgeFailure {
@@ -322,6 +324,30 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
       throw refuse(`${id} is installed at ${found.version}, not ${version}`);
     }
     return found;
+  };
+
+  /** A template file's skills sit next to it at skills/<name>/SKILL.md; import copies them as they are. */
+  const skillSources = (
+    reference: string,
+    template: TemplateDocument,
+  ): Map<string, Uint8Array> => {
+    const names = template.config.skills ?? [];
+    if (names.length > 0 && !TEMPLATE_FILE.test(reference))
+      throw refuse(
+        `${template.id} lists skills; only a template file can carry them`,
+      );
+    const dir = reference.replace(/^\.\//, "").replace(/[^/]*$/, "");
+    return new Map(
+      names.map((name) => {
+        const path = `${dir}skills/${name}/SKILL.md`;
+        const bytes = readProjectFile(env.files, path, MAX_TEMPLATE_FILE_BYTES);
+        if (bytes === undefined)
+          throw refuse(
+            `${template.id} lists skill ${name}, but ${path} does not exist`,
+          );
+        return [name, bytes];
+      }),
+    );
   };
 
   const importedRef = (
@@ -544,6 +570,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
     importTemplate(input) {
       const template = load(input.template);
       const ref = refOf(template);
+      const skills = skillSources(input.template, template);
       const result = editWith(
         "template.import",
         input.expectRevision,
@@ -602,6 +629,8 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           };
         },
       );
+      for (const [name, bytes] of skills)
+        env.files.write(`${TEMPLATE_SKILLS_DIR}/${name}/SKILL.md`, bytes);
       const { detail, ...written } = result;
       return { ...written, template: ref, ...detail };
     },

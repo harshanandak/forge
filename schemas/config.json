@@ -15,6 +15,21 @@
     },
     "runtime": { "$ref": "#/$defs/RuntimeBudget" },
     "mcp": { "$ref": "#/$defs/McpExposure" },
+    "values": {
+      "description": "Named settings a template's skills read as {{values.<path>}}; skills sync writes them into the skill text.",
+      "type": "object"
+    },
+    "skills": {
+      "description": "Template skills to render: each name is a .forge/skills/<name>/SKILL.md that skills sync renders into the skills directory.",
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "maxLength": 64,
+        "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+      }
+    },
     "templates": {
       "description": "Templates imported into this config, with the exact version and digest imported.",
       "type": "array",

@@ -46,7 +46,7 @@ import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { firstPartyBlocks } from "./first-party.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
 import { LocalState } from "./state.ts";
-import { syncSkills } from "./skills.ts";
+import { removeTemplateSkills, syncSkills } from "./skills.ts";
 import { openLevels, PROJECT_STATE } from "./levels.ts";
 import {
   ASSEMBLY_PROVIDES,
@@ -56,6 +56,12 @@ import {
 } from "./providers.ts";
 
 const TRUST_NAMESPACE = "forge/core-trust";
+
+/** Template skill names the effective config lists. */
+function listedSkills(show: ShowResult): readonly string[] {
+  const { skills } = show.effective;
+  return Array.isArray(skills) ? skills.map(String) : [];
+}
 const grantCandidate: McpCandidate = {
   op: "config.grant",
   admitted: true,
@@ -477,7 +483,16 @@ export async function createAssembly(
           if (configHandler) {
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
+            const removing = request.op === "template.remove";
+            const before = removing ? listedSkills(call.config.show()) : [];
             const handled = configHandler(request.input);
+            if (removing) {
+              const after = listedSkills(call.config.show());
+              removeTemplateSkills(
+                root,
+                before.filter((name) => !after.includes(name)),
+              );
+            }
             const output =
               request.op === "config.show"
                 ? {
@@ -489,16 +504,19 @@ export async function createAssembly(
               refuse("OUTPUT_INVALID", "Invalid config output");
             return success(request.op, output);
           }
-          if (request.op === "skills.sync")
+          if (request.op === "skills.sync") {
+            const show = call.config.show();
             return success(
               request.op,
               syncSkills(
                 root,
                 catalog.list(),
-                composition(call.config.show()).mcp?.toolPrefix,
+                composition(show).mcp?.toolPrefix,
                 typeof input.dir === "string" ? input.dir : undefined,
+                { skills: listedSkills(show), values: show.effective.values },
               ),
             );
+          }
           if (request.op === "block.check" || request.op === "block.add") {
             const spec = String(input.path);
             const source = sourceFor(spec);
