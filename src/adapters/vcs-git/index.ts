@@ -1,4 +1,11 @@
-import { resolve as resolvePath } from "node:path";
+import { realpathSync, statSync } from "node:fs";
+import {
+  basename,
+  dirname,
+  join,
+  relative,
+  resolve as resolvePath,
+} from "node:path";
 import type { Unavailable } from "../../generated/types.ts";
 import type { ProcessPort, ProcessResult } from "../../ports/process.ts";
 import type { VcsPort, WorkingTreeStatus } from "../../ports/vcs.ts";
@@ -90,6 +97,65 @@ function describeFailure(result: ProcessResult): Unavailable {
     message === "" ? `git exited with ${result.exitCode}` : message,
     "Run the same git command by hand to see the full error.",
   );
+}
+
+/** The nearest `.git` entry at or above `dir`: a folder in a main checkout, a file in a linked worktree. */
+function nearestGitEntry(dir: string): "folder" | "file" | undefined {
+  for (let current = resolvePath(dir); ;) {
+    try {
+      return statSync(join(current, ".git")).isDirectory() ? "folder" : "file";
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return undefined;
+      current = parent;
+    }
+  }
+}
+
+/**
+ * The folder matching `dir` in the repository's main working tree, read from git's shared
+ * directory (`--git-common-dir`), so every linked worktree of one repository resolves to the same
+ * place. `dir` itself outside a linked worktree (no git is started then) or when git cannot answer.
+ * A shared directory not named `.git` (a bare or separated repository) is used as the main tree.
+ */
+export async function mainCheckoutPath(
+  dir: string,
+  options: VcsAdapterOptions,
+): Promise<string> {
+  const own = resolvePath(dir);
+  if (nearestGitEntry(own) !== "file") return own;
+  const env = gitEnvironment(options.env);
+  const found = options.process.resolve("git", env);
+  if (found.kind === "unavailable") return own;
+  try {
+    const result = await options.process.run(
+      found,
+      [
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+        "--git-common-dir",
+      ],
+      {
+        cwd: own,
+        env,
+        timeoutMs: options.timeoutMs,
+        maxOutputBytes: options.maxOutputBytes,
+      },
+    );
+    const [top, common] = result.stdout.trim().split(/\r?\n/);
+    if (result.exitCode !== 0 || result.truncated || !top || !common)
+      return own;
+    const shared = resolvePath(common);
+    const main = basename(shared) === ".git" ? dirname(shared) : shared;
+    // git reports the real path; compare like with like so a symlinked or short-named path maps too.
+    const inside = relative(resolvePath(top), realpathSync.native(own));
+    return resolvePath(main, inside);
+  } catch (error) {
+    if (error instanceof Error && error.name === "ProcessSpawnError")
+      return own;
+    throw error;
+  }
 }
 
 const REF_UNSAFE = /[\0\r\n]/;

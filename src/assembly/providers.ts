@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { createProcessPort } from "../adapters/process/index.ts";
 import { createRunnerOutput } from "../adapters/runner-output/index.ts";
+import { mainCheckoutPath } from "../adapters/vcs-git/index.ts";
 import type { RunnerOutputPort } from "../ports/runner-output.ts";
 import type { SupervisionOptions } from "../adapters/process/supervision.ts";
 import {
@@ -141,12 +142,8 @@ export function createProcessService(
   };
 }
 
-export function createAssemblyProviders(
-  root: string,
-  options: ProviderOptions = {},
-  suppliedProcess?: ProcessPort,
-): AssemblyProviders {
-  const env = Object.freeze({
+function hostEnv(options: ProviderOptions): Readonly<Record<string, string>> {
+  return Object.freeze({
     ...(options.env ??
       Object.fromEntries(
         Object.entries(process.env).filter(
@@ -154,6 +151,27 @@ export function createAssemblyProviders(
         ),
       )),
   });
+}
+
+/** Where project state lives: in a linked git worktree, the same folder in the main working tree. */
+export function projectStateRoot(
+  root: string,
+  options: ProviderOptions = {},
+): Promise<string> {
+  return mainCheckoutPath(root, {
+    process: createProcessPort({ supervision: options.supervision ?? CLEANUP }),
+    env: hostEnv(options),
+    timeoutMs: 10000,
+    maxOutputBytes: 16384,
+  });
+}
+
+export function createAssemblyProviders(
+  root: string,
+  options: ProviderOptions = {},
+  suppliedProcess?: ProcessPort,
+): AssemblyProviders {
+  const env = hostEnv(options);
   const port =
     suppliedProcess ??
     createProcessPort({

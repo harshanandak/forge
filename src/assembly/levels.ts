@@ -99,6 +99,8 @@ function registered(
 
 export function openLevels(options: {
   readonly root: string;
+  /** The folder holding the project store; registered so every git worktree records one place. */
+  readonly stateRoot: string;
   readonly projectState: LocalState;
   readonly deviceState: LocalState;
   readonly namespace: string;
@@ -156,8 +158,9 @@ export function openLevels(options: {
     const key = `${REGISTRY_PREFIX}${id}`;
     const current = device.get(REGISTRY_NAMESPACE, key);
     const known = registered(current?.value);
-    if (known?.name === name && known.root === root) return;
-    device.put(REGISTRY_NAMESPACE, key, { name, root }, actor, {
+    const where = options.stateRoot;
+    if (known?.name === name && known.root === where) return;
+    device.put(REGISTRY_NAMESPACE, key, { name, root: where }, actor, {
       expectRevision: current?.revision ?? 0,
     });
   }
