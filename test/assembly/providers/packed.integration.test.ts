@@ -151,6 +151,14 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
         ),
       ),
     ];
+    // Node cannot strip TypeScript inside the installed package, so the
+    // journey gets the shared state-aware liveness probe as plain JS.
+    const liveness = new Bun.Transpiler({ loader: "ts" }).transformSync(
+      readFileSync(
+        join(root, "test/node-fixtures/process/liveness.ts"),
+        "utf8",
+      ),
+    );
     const positives = runtimes.map((runtime) => {
       const cwd = mkdtempSync(join(consumer, "p-"));
       for (const file of ["journey.mjs", "entry.cjs"])
@@ -158,6 +166,7 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
           join(root, "test/node-fixtures/assembly-providers", file),
           join(cwd, file),
         );
+      writeFileSync(join(cwd, "liveness.mjs"), liveness);
       return {
         label: `all (${runtime})`,
         command: runtime,
@@ -185,6 +194,7 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
         join(root, "test/node-fixtures/assembly-providers", file),
         join(isolated, file),
       );
+    writeFileSync(join(isolated, "liveness.mjs"), liveness);
     copyFileSync(
       join(root, "test/integration/fixtures/mutation-proof.mjs"),
       join(isolated, "mutation-proof.mjs"),

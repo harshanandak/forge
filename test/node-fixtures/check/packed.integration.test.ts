@@ -106,6 +106,19 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       )
       .join(delimiter);
     delete artifactEnv.BUN_INSTALL;
+    // Node cannot strip TypeScript here, so the journeys get the shared
+    // state-aware probe as plain JS.
+    const liveness = join(work, "liveness.mjs");
+    writeFileSync(
+      liveness,
+      new Bun.Transpiler({ loader: "ts" }).transformSync(
+        readFileSync(
+          join(root, "test/node-fixtures/process/liveness.ts"),
+          "utf8",
+        ),
+      ),
+    );
+    artifactEnv.CHECK_LIVENESS_PROBE = liveness;
     expect(
       run("bun", ["--version"], consumer, 5000, artifactEnv).error,
     ).toBeDefined();
