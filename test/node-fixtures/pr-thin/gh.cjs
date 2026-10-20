@@ -3,8 +3,14 @@ const args = process.argv.slice(2),
 const pr = JSON.parse(
   '{"number":1,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","statusCheckRollup":[]}',
 );
-for (const name of ["APPDATA", "XDG_CONFIG_HOME", "DBUS_SESSION_BUS_ADDRESS"])
-  if (process.env[name] !== `fixture-${name}`) process.exit(3);
+for (const name of "APPDATA XDG_CONFIG_HOME DBUS_SESSION_BUS_ADDRESS HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy".split(
+  " ",
+))
+  if (
+    process.env[name] !==
+    (name.toLowerCase().includes("proxy") ? "fixture-proxy" : `fixture-${name}`)
+  )
+    process.exit(3);
 const emit = (value) => console.log(JSON.stringify(value));
 if (args[0] === "api") {
   emit([

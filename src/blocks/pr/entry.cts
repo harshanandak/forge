@@ -25,7 +25,7 @@ function message(error: unknown): string {
 }
 function client(call: Call) {
   const env = call.services.environment.select(
-    "PATH PATHEXT SystemRoot HOME USERPROFILE GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR APPDATA XDG_CONFIG_HOME DBUS_SESSION_BUS_ADDRESS".split(
+    "PATH PATHEXT SystemRoot HOME USERPROFILE GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR APPDATA XDG_CONFIG_HOME DBUS_SESSION_BUS_ADDRESS HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy".split(
       " ",
     ),
   );
@@ -141,6 +141,18 @@ async function status(call: Call) {
         review === "CHANGES_REQUESTED" ? "REVIEW_BLOCKED" : "REVIEW_REQUIRED",
         review,
       );
+    if (state === "MERGED" || state === "CLOSED") verdict = state;
+    else if (mergeQueue) {
+      verdict = "UNSUPPORTED";
+      add("MERGE_METHOD_UNAVAILABLE", "The base branch requires a merge queue");
+    } else if (pr.isDraft) verdict = "DRAFT";
+    else if (pr.mergeStateStatus === "BEHIND") verdict = "BEHIND";
+    else if (
+      state === "OPEN" &&
+      pr.mergeStateStatus === "CLEAN" &&
+      !reasons.length
+    )
+      verdict = "READY";
     for (const item of array(pr.statusCheckRollup ?? [])) {
       const check = object(item),
         result = String(check.conclusion || check.state || check.status);
@@ -154,18 +166,6 @@ async function status(call: Call) {
           String(check.name || check.context) + ": " + result,
         );
     }
-    if (state === "MERGED" || state === "CLOSED") verdict = state;
-    else if (mergeQueue) {
-      verdict = "UNSUPPORTED";
-      add("MERGE_METHOD_UNAVAILABLE", "The base branch requires a merge queue");
-    } else if (pr.isDraft) verdict = "DRAFT";
-    else if (pr.mergeStateStatus === "BEHIND") verdict = "BEHIND";
-    else if (
-      state === "OPEN" &&
-      pr.mergeStateStatus === "CLEAN" &&
-      !reasons.length
-    )
-      verdict = "READY";
     if (verdict === "DRAFT") add("DRAFT", "GitHub reports a draft");
     if (pr.mergeStateStatus !== "CLEAN")
       add("HOST_BLOCKED", pr.mergeStateStatus);

@@ -24,8 +24,13 @@ const node = createProcessPort().resolve("node", {
 if (node.kind !== "resolved") throw new Error("Node unavailable");
 const nodePath = node.path,
   head = "a".repeat(40);
+const proxyEnv = Object.fromEntries(
+  "HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy"
+    .split(" ")
+    .map((name) => [name, "fixture-proxy"]),
+);
 const cases =
-  "ready:READY behind:BEHIND failed:BLOCKED changes:BLOCKED threads:BLOCKED draft:DRAFT merged:MERGED mismatch:BLOCKED policy-off:READY merge:MERGED refused:BLOCKED missing:UNAVAILABLE non-github:UNAVAILABLE pending:BLOCKED closed:CLOSED queue:UNSUPPORTED confirmation:UNAVAILABLE";
+  "ready:READY behind:BEHIND failed:READY changes:BLOCKED threads:BLOCKED draft:DRAFT merged:MERGED mismatch:BLOCKED policy-off:READY merge:MERGED refused:BLOCKED missing:UNAVAILABLE non-github:UNAVAILABLE pending:READY closed:CLOSED queue:UNSUPPORTED confirmation:UNAVAILABLE";
 for (const item of cases.split(" "))
   test(
     item,
@@ -48,6 +53,8 @@ for (const item of cases.split(" "))
         },
         run: (_exe, args, options) => {
           launches++;
+          for (const [name, value] of Object.entries(proxyEnv))
+            expect(options.env[name]).toBe(value);
           if (scenario === "queue")
             expect(args.slice(0, 2)).not.toEqual(["pr", "merge"]);
           const child = spawnSync(nodePath, [fixture, ...args], {
@@ -98,6 +105,7 @@ for (const item of cases.split(" "))
                   APPDATA: "fixture-APPDATA",
                   XDG_CONFIG_HOME: "fixture-XDG_CONFIG_HOME",
                   DBUS_SESSION_BUS_ADDRESS: "fixture-DBUS_SESSION_BUS_ADDRESS",
+                  ...proxyEnv,
                 }).filter(([name]) => names.includes(name)),
               ),
           },
@@ -119,6 +127,16 @@ for (const item of cases.split(" "))
               ? 3
               : 2,
       );
+      if (scenario === "failed")
+        expect(result.reasons).toContainEqual({
+          code: "CHECK_FAILED",
+          message: "build: FAILURE",
+        });
+      if (scenario === "pending")
+        expect(result.reasons).toContainEqual({
+          code: "CHECK_PENDING",
+          message: "build: PENDING",
+        });
       if (scenario === "confirmation") {
         expect(result.reasons?.[0]?.code).toBe("EVIDENCE_GAP");
         expect(result.reasons?.[0]?.message).toContain(
