@@ -194,18 +194,22 @@ async function main(): Promise<void> {
       "dist/bin/forge.js",
       "dist/src/index.js",
       "dist/src/index.d.ts",
+      "templates/delivery/forge.template.json",
     ]) {
       if (!files.includes(needed)) fail(`tarball is missing ${needed}`);
     }
     const stray = files.filter(
-      (file) => !/^(?:dist\/|package\.json$|LICENSE$|README\.md$)/.test(file),
+      (file) =>
+        !/^(?:dist\/|templates\/|package\.json$|LICENSE$|README\.md$)/.test(
+          file,
+        ),
     );
     if (stray.length > 0)
       fail(
         `tarball holds files that are not part of the package: ${stray.join(", ")}`,
       );
     step(
-      `packed ${entry.filename} (${files.length} files, only the built package)`,
+      `packed ${entry.filename} (${files.length} files, only the built package and its templates)`,
     );
 
     writeFileSync(
