@@ -10,7 +10,11 @@ import type {
 import { ProcessSpawnError } from "./errors.ts";
 import { planSpawn } from "./plan.ts";
 import type { Platform } from "./platform.ts";
-import { openContainment, type ContainmentOptions } from "./containment.ts";
+import {
+  openContainment,
+  validateHostOptions,
+  type ContainmentOptions,
+} from "./containment.ts";
 import { StreamCapture } from "./capture.ts";
 import { runProcessTree } from "./process-tree.ts";
 
@@ -76,6 +80,7 @@ export async function runProcess(
 ): Promise<ProcessResult> {
   validate(options);
   const supervisionConfig = validateSupervision(containmentOptions.supervision);
+  validateHostOptions(containmentOptions);
   if (options.signal?.aborted)
     throw new ProcessSpawnError(
       "INVALID_OPTIONS",
@@ -93,8 +98,8 @@ export async function runProcess(
   const started = performance.now();
   let scope: Awaited<ReturnType<typeof openContainment>> | undefined;
   try {
-    // On POSIX the default mode lets the OS own the tree as a process group. Strict containment,
-    // and every Windows run, still go through the helper with its cgroup or Job Object.
+    // On POSIX the default mode lets the OS own the tree as a process group. Every Windows run
+    // goes through the helper and its Job Object; strict refuses on POSIX before spawning.
     if (options.containment !== "strict" && platform !== "win32")
       return await runProcessTree(
         planSpawn(executable, args, options.env, platform),
@@ -148,7 +153,6 @@ export async function runProcess(
             ? { SystemRoot: process.env.SystemRoot ?? "C:/Windows" }
             : {},
         stdio: ["ignore", "pipe", "pipe", "ipc"],
-        detached: platform !== "win32",
         windowsHide: true,
         shell: false,
       });
@@ -263,11 +267,8 @@ export async function runProcess(
           supervisorPid: child.pid!,
           ...(commandPid === undefined ? {} : { commandPid }),
           stoppedPids,
-          ...(container.backend === "process-group"
-            ? { groupId: child.pid! }
-            : {}),
           confirmed: true,
-          pidSnapshotComplete: container.backend !== "process-group",
+          pidSnapshotComplete: true,
           supervisorResidentBytes: residentBytes,
         };
         resolveRun({
