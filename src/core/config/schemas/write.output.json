@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/write.output.json",
-  "description": "A compare-and-set edit: the revision before and after, the receipt config revert undoes, and the key-by-key changes.",
+  "description": "A compare-and-set edit: the revision before and after, and the key-by-key changes.",
   "allOf": [
     {
       "$ref": "defs.json#/$defs/WriteFields"
@@ -12,7 +12,6 @@
         "file": {},
         "previousRevision": {},
         "revision": {},
-        "receipt": {},
         "changes": {},
         "fileRemoved": {}
       },

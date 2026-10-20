@@ -8,7 +8,7 @@ const program = fileURLToPath(
   new URL("../../node-fixtures/config/journey.ts", import.meta.url),
 );
 
-test("integration: under Node, the adaptive, set, conflict, revert and template journey holds", () => {
+test("integration: under Node, the adaptive, set, conflict and template journey holds", () => {
   const run = spawnSync("node", [program], {
     encoding: "utf8",
     timeout: 60_000,
@@ -21,7 +21,6 @@ test("integration: under Node, the adaptive, set, conflict, revert and template 
     stale: "REVISION_CONFLICT",
     overridden: ["project", ["project:true", "derived:false"]],
     unknown: "INPUT_INVALID",
-    revertedToNothing: true,
     kept: 15,
     left: ["pr"],
     backToAdaptive: true,

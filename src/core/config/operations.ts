@@ -10,8 +10,6 @@ export type ConfigOperations = Readonly<
 type Input = Readonly<Record<string, unknown>>;
 
 const text = (input: Input, key: string): string => String(input[key]);
-const optional = (input: Input, key: string): string | undefined =>
-  typeof input[key] === "string" ? input[key] : undefined;
 const steps = (input: Input, key: string): readonly PatchStep[] =>
   Array.isArray(input[key]) ? (input[key] as PatchStep[]) : [];
 
@@ -46,13 +44,6 @@ export function createConfigOperations(
         expectRevision: text(i, "expectRevision"),
       }),
     ),
-    "config.revert": op((i) => {
-      const receipt = optional(i, "receipt");
-      return config.revert({
-        expectRevision: text(i, "expectRevision"),
-        ...(receipt === undefined ? {} : { receipt }),
-      });
-    }),
     "config.save": op((i) =>
       config.save({
         expectRevision: text(i, "expectRevision"),
@@ -69,22 +60,6 @@ export function createConfigOperations(
         expectRevision: text(i, "expectRevision"),
       }),
     ),
-    "template.compare": op((i) => {
-      const source = optional(i, "source");
-      return templates.compare({
-        template: text(i, "template"),
-        ...(source === undefined ? {} : { source }),
-      });
-    }),
-    "template.update": op((i) => {
-      const source = optional(i, "source");
-      return templates.update({
-        template: text(i, "template"),
-        expectRevision: text(i, "expectRevision"),
-        ...(source === undefined ? {} : { source }),
-        ...(Array.isArray(i.accept) ? { accept: i.accept.map(String) } : {}),
-      });
-    }),
     "template.remove": op((i) =>
       templates.remove({
         template: text(i, "template"),

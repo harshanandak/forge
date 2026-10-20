@@ -21,11 +21,7 @@ import {
   fillSources,
 } from "./document.ts";
 import { validateConfigDocument } from "../../generated/validators.ts";
-import {
-  MAX_CONFIG_FILE_BYTES,
-  readProjectFile,
-  type ConfigFiles,
-} from "./files.ts";
+import type { ConfigFiles } from "./files.ts";
 import {
   type DerivedLayer,
   deriveLayer,
@@ -53,11 +49,8 @@ import {
 import {
   CONFIG_FILE,
   type Committed,
-  HISTORY_DIR,
   commit,
-  decodeReceiptBytes,
   type ProjectConfig,
-  readHistory,
   readProject,
   type StoreDeps,
 } from "./store.ts";
@@ -269,8 +262,6 @@ export interface WriteResult {
   readonly file: string;
   readonly previousRevision: string;
   readonly revision: string;
-  /** Receipt that config.revert undoes; null when nothing changed. */
-  readonly receipt: string | null;
   readonly changes: readonly Change[];
   /** True when the edit removed the file because nothing is configured any more. */
   readonly fileRemoved: boolean;
@@ -318,7 +309,7 @@ function refuseMetadata(path: string, segments: readonly string[]): void {
       message: `${path} is managed by Forge and cannot be edited directly`,
       retry: "never",
       repair:
-        "import, update or remove templates with template import, template update and template remove",
+        "import or remove templates with template import and template remove",
     });
   }
 }
@@ -327,7 +318,7 @@ export function writable(current: ProjectConfig): JsonObject {
   if (current.unreadable !== undefined) {
     throw new ForgeFailure({
       ...current.unreadable,
-      repair: `fix ${CONFIG_FILE} by hand, or undo the edit that broke it with config revert`,
+      repair: `fix ${CONFIG_FILE} by hand, or restore it from version control`,
     });
   }
   return current.document === undefined
@@ -363,8 +354,7 @@ function written(
     file: CONFIG_FILE,
     previousRevision: committed.from,
     revision: committed.to,
-    receipt: committed.receipt,
-    changes: committed.receipt === null ? [] : changes,
+    changes: committed.changed ? changes : [],
     fileRemoved: committed.fileRemoved,
   };
 }
@@ -413,10 +403,6 @@ export interface ConfigApi {
     readonly value: unknown;
     readonly expectRevision: string;
   }): WriteResult;
-  revert(input: {
-    readonly expectRevision: string;
-    readonly receipt?: string;
-  }): RevertResult;
   save(input: {
     readonly expectRevision: string;
     readonly paths?: readonly string[];
@@ -426,11 +412,6 @@ export interface ConfigApi {
 export interface DetectResult {
   readonly observations: readonly LayerEntry[];
   readonly ignored: readonly Ignored[];
-}
-
-export interface RevertResult extends WriteResult {
-  /** The receipt whose edit was undone. */
-  readonly reverted: string;
 }
 
 export function createConfig(env: ConfigEnvironment): ConfigApi {
@@ -568,87 +549,6 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
       );
     },
 
-    revert(input) {
-      let reverted = "";
-      let changes: Change[] = [];
-      const committed = commit(
-        env,
-        "config.revert",
-        input.expectRevision,
-        (current) => {
-          const { receipts, damaged } = readHistory(env);
-          const broken =
-            input.receipt === undefined
-              ? undefined
-              : damaged.find(
-                  (d) => d.file === `${HISTORY_DIR}/${input.receipt}.json`,
-                );
-          if (broken !== undefined) {
-            throw new ForgeFailure({
-              code: "INPUT_INVALID",
-              message: `receipt ${broken.file} is damaged (${broken.problem}); it is never applied`,
-              retry: "never",
-              repair: `restore ${CONFIG_FILE} by hand or from version control`,
-            });
-          }
-          const undone = new Set(
-            receipts.flatMap((r) =>
-              r.reverts === undefined ? [] : [r.reverts],
-            ),
-          );
-          const target =
-            input.receipt === undefined
-              ? receipts.findLast(
-                  (r) =>
-                    r.to === current.revision &&
-                    r.reverts === undefined &&
-                    !undone.has(r.id),
-                )
-              : receipts.find((r) => r.id === input.receipt);
-          if (target === undefined) {
-            throw new ForgeFailure({
-              code: "INPUT_INVALID",
-              message:
-                input.receipt === undefined
-                  ? `no recorded edit produced the current ${CONFIG_FILE}; there is nothing to revert`
-                  : `no receipt "${input.receipt}" is recorded`,
-              retry: "never",
-              ...(damaged.length === 0
-                ? {}
-                : {
-                    repair: `damaged receipts were ignored and never applied: ${damaged.map((d) => `${d.file} (${d.problem})`).join("; ")}`,
-                  }),
-            });
-          }
-          if (target.to !== current.revision) {
-            throw new ForgeFailure({
-              code: "REVISION_CONFLICT",
-              message: `${CONFIG_FILE} changed after edit ${target.id}; reverting it would discard the later change`,
-              retry: "reconcile_first",
-              expected: target.to,
-              observed: current.revision,
-              reconcileWith: "config.show",
-            });
-          }
-          reverted = target.id;
-          const bytes = decodeReceiptBytes(target);
-          const before = readProject({
-            ...env,
-            files: {
-              ...env.files,
-              read: (path) =>
-                path === CONFIG_FILE
-                  ? (bytes ?? undefined)
-                  : readProjectFile(env.files, path, MAX_CONFIG_FILE_BYTES),
-            },
-          });
-          changes = diff(current.document, before.document);
-          return { bytes, reverts: target.id };
-        },
-      );
-      return { ...written(committed, changes), reverted };
-    },
-
     save(input) {
       const saved: string[] = [];
       const skipped: Array<{ pointer: string; reason: string }> = [];
@@ -658,7 +558,7 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
         input.expectRevision,
         (document, current) => {
           // a key a template owned but the project no longer holds: what save writes there is the
-          // user's value, so that template's record goes (see the merge model in templates.ts)
+          // user's value, so that template's record goes
           const owners = isObject(document.owners) ? document.owners : {};
           const vacant = Object.keys(owners).filter(
             (p) => !hasIn(document, parsePointer(p) ?? []),

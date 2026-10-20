@@ -1,5 +1,5 @@
-// Core config and templates: the default → derived → project → invocation layers, compare-and-set edits with
-// reversible receipts, and the template import/compare/update/remove lifecycle.
+// Core config and templates: the default → derived → project → invocation layers, compare-and-set
+// edits, and templates that import as a plain copy and remove only what they wrote unchanged.
 export {
   type ConfigApi,
   type ConfigEnvironment,
@@ -9,7 +9,6 @@ export {
   type Instance,
   type PatchStep,
   type PreviewResult,
-  type RevertResult,
   type SaveResult,
   type ShowResult,
   type ValueSource,
@@ -24,16 +23,14 @@ export {
 export type { ConfigFiles } from "./files.ts";
 export type { Ignored, Layer, LayerEntry } from "./layers.ts";
 export { createConfigOperations, type ConfigOperations } from "./operations.ts";
-export { CONFIG_FILE, HISTORY_DIR, LOCK_FILE } from "./store.ts";
+export { CONFIG_FILE, LOCK_FILE } from "./store.ts";
 export {
   createTemplates,
-  type CompareResult,
   type ImportResult,
-  type KeyChange,
+  type KeptKey,
   type RemoveResult,
   type TemplateApi,
   type TemplateEnvironment,
   type TemplateSource,
   type TemplateSummary,
-  type UpdateResult,
 } from "./templates.ts";

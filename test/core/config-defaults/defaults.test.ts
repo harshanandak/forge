@@ -104,7 +104,7 @@ test("with check on and its commands detected, an unrelated edit succeeds", () =
     value: false,
     expectRevision: p.config.show().revision,
   });
-  expect(edit.receipt).not.toBeNull();
+  expect(edit.changes).not.toEqual([]);
   expect(blocks(p).check!.config).toMatchObject({
     stopOnFailure: false,
     commands: { test: "npm test" },
