@@ -4,7 +4,7 @@
   "description": "Shapes shared by the config and template operations.",
   "$defs": {
     "Layer": {
-      "enum": ["derived", "project", "invocation"]
+      "enum": ["default", "derived", "project", "invocation"]
     },
     "PatchStep": {
       "type": "object",

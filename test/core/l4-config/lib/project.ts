@@ -12,8 +12,10 @@ import {
   type ConfigFiles,
   createConfig,
   createTemplates,
+  standaloneConfigSchema,
   type TemplateEnvironment,
 } from "../../../../src/core/config/index.ts";
+import type { JsonSchema } from "../../../../src/contract/schema.ts";
 
 const ROOT = new URL("../../../../", import.meta.url);
 
@@ -63,7 +65,10 @@ export interface FixtureOptions {
   readonly detections?: () => readonly unknown[];
   readonly files?: (real: ConfigFiles) => ConfigFiles;
   readonly root?: string;
-  readonly configSchema?: TemplateEnvironment["configSchema"];
+  readonly configSchema?: (
+    name: string,
+    source: BlockSource,
+  ) => JsonSchema | undefined;
 }
 
 export function makeProject(options: FixtureOptions = {}): Fixture {
@@ -93,7 +98,14 @@ export function makeProject(options: FixtureOptions = {}): Fixture {
       BUILTINS.has(name) ? { builtin: `forge/${name}` } : undefined,
     ...(options.configSchema === undefined
       ? {}
-      : { configSchema: options.configSchema }),
+      : {
+          blockConfig: (name: string, source: BlockSource) => {
+            const schema = options.configSchema?.(name, source);
+            return schema === undefined
+              ? undefined
+              : standaloneConfigSchema(schema);
+          },
+        }),
   };
   return {
     root,

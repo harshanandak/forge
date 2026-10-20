@@ -1,10 +1,11 @@
 // Whole-document checks and encoding for a planned project config. Every edit is validated as a
 // whole before anything is written: the forge.config/1 schema (unknown keys are refused there) and,
-// where the catalog supplies it, each instance's own configSchema.
+// where the catalog supplies it, each instance's own configSchema against its resolved config.
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
   jsonEqual,
   type JsonSchema,
+  type SchemaProblem,
   validateWithSchema,
 } from "../../contract/schema.ts";
 import type { BlockSource, ForgeError } from "../../generated/types.ts";
@@ -21,6 +22,7 @@ import {
   leaves,
   parsePointer,
 } from "./pointer.ts";
+import { absoluteUses } from "./short.ts";
 import { CONFIG_FILE } from "./store.ts";
 
 export const CONFIG_VERSION = "forge.config/1";
@@ -29,11 +31,26 @@ export const CONFIG_VERSION = "forge.config/1";
 export interface BlockLookup {
   /** The source of an instance name people configure without adding it first (a builtin block's own name). */
   readonly builtinSource?: (instance: string) => BlockSource | undefined;
-  /** A block's configSchema, so unknown keys inside an instance's config are refused too. */
-  readonly configSchema?: (
+  /**
+   * A block's configSchema, from the block already captured for this call: its property defaults
+   * are the lowest config layer, and edits check the resolved config with it.
+   */
+  readonly blockConfig?: (
     instance: string,
     source: BlockSource,
-  ) => JsonSchema | undefined;
+  ) => BlockConfigSchema | undefined;
+}
+
+export interface BlockConfigSchema {
+  /** The object schema, after any top-level `$ref`; its properties' `default`s are read. */
+  readonly schema: JsonSchema;
+  /** Problems with a resolved config, pointers relative to the config. */
+  check(config: unknown): readonly SchemaProblem[];
+}
+
+/** A config schema that is one standalone document (no `$ref` to other files). */
+export function standaloneConfigSchema(schema: JsonSchema): BlockConfigSchema {
+  return { schema, check: (config) => validateWithSchema(schema, config) };
 }
 
 export function emptyDocument(): JsonObject {
@@ -90,7 +107,10 @@ function invalid(
   return new ForgeFailure(error);
 }
 
-export function checkDocument(document: JsonObject, lookup: BlockLookup): void {
+/** The forge.config/1 checks; each instance's own config is checked resolved, in config.ts. */
+export function checkDocument(document: JsonObject): void {
+  const uses = absoluteUses(document);
+  if (uses.length > 0) throw invalid(uses);
   const checked = validateConfigDocument(document);
   if (!checked.ok) {
     const missingSource = checked.problems.find(
@@ -109,19 +129,20 @@ export function checkDocument(document: JsonObject, lookup: BlockLookup): void {
     }
     throw invalid(checked.problems);
   }
-  const blocks = checked.value.blocks;
-  for (const [name, instance] of Object.entries(blocks)) {
-    const schema = lookup.configSchema?.(name, instance.source);
-    if (schema === undefined) continue;
-    const problems = validateWithSchema(schema, instance.config ?? {});
-    if (problems.length > 0) {
-      throw invalid(
-        problems.map((p) => ({
-          pointer: `${formatPointer(["blocks", name, "config"])}${p.pointer}`,
-          message: p.message,
-        })),
-      );
-    }
+}
+
+/** Refuse an instance whose resolved config does not match its block's configSchema. */
+export function checkInstanceConfig(
+  name: string,
+  problems: readonly SchemaProblem[],
+): void {
+  if (problems.length > 0) {
+    throw invalid(
+      problems.map((p) => ({
+        pointer: `${formatPointer(["blocks", name, "config"])}${p.pointer}`,
+        message: p.message,
+      })),
+    );
   }
 }
 

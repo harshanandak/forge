@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/explain.output.json",
   "type": "object",
-  "required": ["pointer", "set", "value", "layer", "entries"],
+  "required": ["pointer", "set", "value", "layer", "source", "entries"],
   "properties": {
     "pointer": {
       "$ref": "../../../../schemas/common.json#/$defs/JsonPointer"
@@ -12,7 +12,11 @@
     },
     "value": {},
     "layer": {
-      "enum": ["derived", "project", "invocation", null]
+      "enum": ["default", "derived", "project", "invocation", null]
+    },
+    "source": {
+      "description": "Where the value came from: the block's configSchema default (or the source a built-in's short name implies), detection, the config file, a template, or this call.",
+      "enum": ["default", "derived", "project", "template", "invocation", null]
     },
     "entries": {
       "type": "array",

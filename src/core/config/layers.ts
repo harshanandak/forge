@@ -1,5 +1,6 @@
-// The three layers, low to high: derived (read from the project by detectors) → project (the
-// config file) → invocation (one call's overrides). The derived layer only fills block config
+// The layers, low to high: default (each block's configSchema defaults, and the source a built-in's
+// short name implies) → derived (read from the project by detectors) → project (the config file) →
+// invocation (one call's overrides). The derived layer only fills block config
 // values; it never adds a block instance, binds a slot or exposes anything, so detection alone can
 // never switch a block, check or hook on.
 import { jsonEqual } from "../../contract/schema.ts";
@@ -21,9 +22,10 @@ import {
   setIn,
 } from "./pointer.ts";
 
-export type Layer = "derived" | "project" | "invocation";
+export type Layer = "default" | "derived" | "project" | "invocation";
 
 const LAYER_RANK: Readonly<Record<Layer, number>> = {
+  default: -1,
   derived: 0,
   project: 1,
   invocation: 2,
@@ -156,11 +158,17 @@ export function resolveLayers(
   derived: DerivedLayer,
   document: JsonObject | undefined,
   invocation: readonly InvocationValue[] = [],
+  defaults: readonly InvocationValue[] = [],
 ): Layers {
   const owners = isObject(document?.owners) ? document.owners : {};
   const raw: Array<
     Omit<LayerEntry, "active" | "pointer"> & { segments: readonly string[] }
   > = [
+    ...defaults.map((v) => ({
+      segments: v.segments,
+      value: v.value,
+      layer: "default" as const,
+    })),
     ...derived.entries.map((e) => ({
       segments: e.segments,
       value: e.value,
@@ -192,11 +200,21 @@ export function resolveLayers(
     })),
   ];
 
+  // An empty object is a container that hides nothing beneath it, unless a lower layer sets that
+  // very key: then it is an explicit value and wins like any other.
+  const explicit = (entry: (typeof raw)[number]): boolean =>
+    !emptyObject(entry.value) ||
+    raw.some(
+      (other) =>
+        LAYER_RANK[other.layer] < LAYER_RANK[entry.layer] &&
+        isPrefix(other.segments, entry.segments) &&
+        isPrefix(entry.segments, other.segments),
+    );
   const effective: JsonObject = {};
   for (const entry of [...raw].sort(
     (a, b) => LAYER_RANK[a.layer] - LAYER_RANK[b.layer],
   )) {
-    if (emptyObject(entry.value) && isObject(getIn(effective, entry.segments)))
+    if (!explicit(entry) && isObject(getIn(effective, entry.segments)))
       continue;
     setIn(effective, entry.segments, clone(entry.value));
   }
@@ -205,7 +223,7 @@ export function resolveLayers(
     const hider = raw.find(
       (other) =>
         LAYER_RANK[other.layer] > LAYER_RANK[entry.layer] &&
-        !emptyObject(other.value) &&
+        explicit(other) &&
         (isPrefix(other.segments, entry.segments) ||
           (isPrefix(entry.segments, other.segments) && !isObject(entry.value))),
     );

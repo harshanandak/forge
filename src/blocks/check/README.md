@@ -50,7 +50,9 @@ Each call still needs human admission and effect grants. The runtime scopes and 
 services, owns cancellation, and drains the process tree before returning. The block
 starts no timer, supervisor, cache or persistent process.
 
-Every team choice is explicit configuration: `commands`, `timeoutMs`, `maxOutputBytes`,
+Every team choice is visible configuration. Only `commands` must be set, and detection can
+supply it; every other key has a `default` in `schemas/config.json`, and `forge config explain`
+shows which value is in effect and where it came from. The keys: `commands`, `timeoutMs`, `maxOutputBytes`,
 `outputHeadBytes`, `outputTailBytes`, `maxMetadataBytes`, `maxReceiptBytes`,
 `report`, `stopOnFailure`, `inputs`, `maxInputBytes`, and `environment`. A command can
 select its own `report`; otherwise it uses the declared block report. `exit-code` disables
