@@ -19,6 +19,7 @@ export const CORE_NOUNS: readonly string[] = [
   "config",
   "doctor",
   "host",
+  "skills",
   "state",
   "template",
 ];
@@ -30,7 +31,6 @@ export const SURFACE_NOUNS: readonly string[] = [
   "help",
   "hook",
   "mcp",
-  "skills",
   "version",
   "x",
 ];

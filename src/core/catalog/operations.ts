@@ -41,6 +41,16 @@ export const operations: Record<string, OperationDeclaration> = {
     input: "catalog/path.input.schema.json",
     callers: ["human", "agent"],
   },
+  "skills.sync": {
+    output: "catalog/skills-sync.output.schema.json",
+    context: "project",
+    idempotent: true,
+    stability: "experimental",
+    // Writes one SKILL.md per enabled block noun, skipping unchanged files.
+    effects: ["skills:write"],
+    input: "catalog/skills-sync.input.schema.json",
+    callers: ["human", "agent"],
+  },
   "catalog.call": {
     output: "catalog/call.output.schema.json",
     context: "stateless",

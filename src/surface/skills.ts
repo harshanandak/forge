@@ -63,6 +63,12 @@ function placeholder(schema: unknown): string {
 /** `forge <noun> <verb>` usage: positionals, then required flags, then optional ones in brackets. */
 function usage(candidate: McpCandidate): string {
   const [noun, verb] = cliWords(candidate.op) ?? [candidate.op, ""];
+  // Flags map onto object properties only; any other input goes in whole as JSON.
+  if (
+    candidate.inputSchema.properties === undefined &&
+    candidate.inputSchema.type !== "object"
+  )
+    return `forge ${noun} ${verb} --input <json>`;
   const properties = record(candidate.inputSchema.properties) ?? {};
   const listed = candidate.inputSchema.required;
   const required = new Set(Array.isArray(listed) ? listed : []);

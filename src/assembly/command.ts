@@ -4,7 +4,6 @@ import { runCommand } from "../surface/command.ts";
 import { failure, respond } from "../surface/result.ts";
 import { createLocalAssembly, localCall } from "./index.ts";
 import { assemblyMcp } from "./mcp.ts";
-import { syncSkills } from "./skills.ts";
 
 /** Keep host bootstrap and its failures inside the CLI's response boundary. */
 export async function runLocalCommand(
@@ -17,11 +16,6 @@ export async function runLocalCommand(
     }
     const assembly = await createLocalAssembly();
     try {
-      if (argv[0] === "skills") {
-        const response = respond(syncSkills(assembly, argv.slice(1)));
-        process.stdout.write(response.stdout);
-        return response.exitCode;
-      }
       return await runCommand(argv, {
         catalog: assembly.catalog,
         version,

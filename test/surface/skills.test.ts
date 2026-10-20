@@ -10,12 +10,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import type { McpCandidate } from "../../src/contract/mcp.ts";
 import { nounRefusal, propertyFromFlag } from "../../src/contract/naming.ts";
-import { createAssembly, type Assembly } from "../../src/assembly/index.ts";
-import { syncSkills } from "../../src/assembly/skills.ts";
+import {
+  createAssembly,
+  localCall,
+  type Assembly,
+} from "../../src/assembly/index.ts";
+import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { mapArguments } from "../../src/surface/cli.ts";
-import { record } from "../../src/surface/dispatch.ts";
+import { runCommand } from "../../src/surface/command.ts";
+import { dispatch, record } from "../../src/surface/dispatch.ts";
 import { lintSkill, renderSkills } from "../../src/surface/skills.ts";
 import { candidate } from "./fixtures/catalog.ts";
 
@@ -94,6 +100,28 @@ function parseCliLine(
   return input;
 }
 
+/** Run `forge <argv>` through the generated CLI against the assembly; returns exit code and envelope. */
+async function forge(
+  assembly: Assembly,
+  argv: readonly string[],
+): Promise<{ code: number; text: string; envelope?: ResultEnvelope }> {
+  const output = new PassThrough();
+  let text = "";
+  output.on("data", (chunk: Buffer) => (text += chunk.toString()));
+  const code = await runCommand(argv, {
+    catalog: assembly.catalog,
+    version: "0.0.0",
+    call: localCall(assembly),
+    output,
+  });
+  output.end();
+  try {
+    return { code, text, envelope: JSON.parse(text) as ResultEnvelope };
+  } catch {
+    return { code, text };
+  }
+}
+
 /** The shipped blocks as a project enables them. Listing never runs block code, so entries are stubs. */
 async function withProject(
   run: (assembly: Assembly, root: string) => Promise<void> | void,
@@ -134,8 +162,8 @@ async function withProject(
 }
 
 test("forge skills sync writes one linted skill per enabled block noun", async () => {
-  await withProject((assembly, root) => {
-    const first = syncSkills(assembly, ["sync"]);
+  await withProject(async (assembly, root) => {
+    const first = (await forge(assembly, ["skills", "sync"])).envelope;
     expect(first).toMatchObject({
       ok: true,
       result: {
@@ -174,30 +202,60 @@ test("forge skills sync writes one linted skill per enabled block noun", async (
     expect(decision).not.toContain("## `decision.adopt`");
     expect(decision.split("\n")[2]).toContain("Record a decision under");
     // Deterministic: a second sync rewrites nothing.
-    const again = syncSkills(assembly, ["sync"]);
-    expect(again.ok ? again.result : undefined).toEqual({
+    const again = (await forge(assembly, ["skills", "sync"])).envelope;
+    expect(again?.ok ? again.result : undefined).toEqual({
       dir: ".agents/skills",
       written: [],
-      unchanged: first.ok
+      unchanged: first?.ok
         ? (first.result as { written: string[] }).written
         : [],
     });
     expect(
-      syncSkills(assembly, ["sync", "--dir", "custom/skills/"]),
-    ).toMatchObject({
-      ok: true,
-      result: { dir: "custom/skills" },
-    });
+      (await forge(assembly, ["skills", "sync", "--dir", "custom/skills/"]))
+        .envelope,
+    ).toMatchObject({ ok: true, result: { dir: "custom/skills" } });
     expect(existsSync(join(root, "custom/skills/issue/SKILL.md"))).toBe(true);
-    expect(syncSkills(assembly, ["sync", "--dir", "../outside"])).toMatchObject(
+    expect(
+      (await forge(assembly, ["skills", "sync", "--dir", "../outside"]))
+        .envelope,
+    ).toMatchObject({ ok: false });
+    expect(
+      (await forge(assembly, ["skills", "publish"])).envelope,
+    ).toMatchObject({ ok: false, error: { code: "UNKNOWN_COMMAND" } });
+  });
+}, 30_000);
+
+test("skills.sync is a catalog operation: described, listed in help and callable by agents", async () => {
+  await withProject(async (assembly, root) => {
+    const call = localCall(assembly);
+    const described = await dispatch(
+      assembly.catalog,
+      "catalog.describe",
+      { op: "skills.sync" },
+      call,
+    );
+    expect(described).toMatchObject({
+      ok: true,
+      result: {
+        op: "skills.sync",
+        declaration: { effects: ["skills:write"], idempotent: true },
+        inputSchema: { properties: { dir: { type: "string" } } },
+      },
+    });
+    const help = await forge(assembly, ["skills", "--help"]);
+    expect(help.code).toBe(0);
+    expect(help.text).toContain("sync");
+    const agent = await dispatch(
+      assembly.catalog,
+      "catalog.call",
+      { op: "skills.sync", input: { dir: "agent/skills" } },
       {
-        ok: false,
+        caller: "agent",
+        context: { ...call.context, actor: { kind: "agent", id: "a" } },
       },
     );
-    expect(syncSkills(assembly, ["publish"])).toMatchObject({
-      ok: false,
-      error: { code: "UNKNOWN_COMMAND" },
-    });
+    expect(agent).toMatchObject({ ok: true, result: { dir: "agent/skills" } });
+    expect(existsSync(join(root, "agent/skills/issue/SKILL.md"))).toBe(true);
   });
 }, 30_000);
 
@@ -274,10 +332,22 @@ test("CLI lines give value flags a placeholder, keep booleans bare and mark what
   );
 }, 30_000);
 
-test("a block cannot declare the skills noun the CLI reserves for skills sync", () => {
+test("a block cannot declare the skills noun core owns for skills.sync", () => {
   expect(
     nounRefusal("skills", "io.github.alice", { firstPartyNouns: [] })?.code,
   ).toBe("NAME_RESERVED");
+}, 30_000);
+
+test("an operation whose input is not an object gets --input <json> on its CLI line", () => {
+  const base = candidate("sample.echo", { args: [] });
+  const text =
+    renderSkills([{ ...base, inputSchema: { type: "string" } }])[0]?.text ?? "";
+  expect(text).toContain("- CLI: `forge sample echo --input <json>`");
+  const list =
+    renderSkills([
+      { ...base, inputSchema: { type: "array", items: { type: "string" } } },
+    ])[0]?.text ?? "";
+  expect(list).toContain("- CLI: `forge sample echo --input <json>`");
 }, 30_000);
 
 test("a deprecation's replacement follows the instance's noun rename", () => {
