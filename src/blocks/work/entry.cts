@@ -23,17 +23,19 @@ type LinkInput = {
   readonly relation: string;
   readonly url: string;
 };
+type WorkListInput = ListItemsInput & { readonly labels?: readonly string[] };
+type WorkConfig = { readonly labelOrder?: readonly string[] };
 type WorkOperations = TrackerOperations<"issue"> & {
   readonly "issue.ready": readonly [
-    ListItemsInput,
+    WorkListInput,
     { items: readonly TrackerItem[] },
   ];
   readonly "issue.blocked": readonly [
-    ListItemsInput,
+    WorkListInput,
     { items: readonly TrackerItem[] },
   ];
   readonly "issue.stale": readonly [
-    ListItemsInput,
+    WorkListInput,
     { items: readonly TrackerItem[] },
   ];
   readonly "issue.comments": readonly [
@@ -231,13 +233,24 @@ function blocked(
     return !dependency || stored(dependency).status !== "closed";
   });
 }
+/** Position of the first configured label an item carries; items with none rank last. */
+function rank(order: readonly string[], value: Stored): number {
+  const at = order.findIndex((label) => value.labels.includes(label));
+  return at === -1 ? order.length : at;
+}
 function list(
   state: LeaseStateClient,
-  input: ListItemsInput,
+  input: WorkListInput,
   mode?: "ready" | "blocked" | "stale",
+  config?: WorkConfig,
 ): { items: readonly TrackerItem[] } {
   let records = state.list("issue:");
   const graph = dependencyGraph(state, records);
+  const wanted = input.labels;
+  if (wanted?.length)
+    records = records.filter((record) =>
+      wanted.every((label) => stored(record).labels.includes(label)),
+    );
   if (input.status)
     records = records.filter(
       (record) => stored(record).status === input.status,
@@ -257,6 +270,12 @@ function list(
       }
       return !blocked(graph, value) && !live(state, value.id);
     });
+  // Missing config means no order; a stable sort keeps the stored order within one rank.
+  const order = mode === "ready" ? (config?.labelOrder ?? []) : [];
+  if (order.length)
+    records = records.toSorted(
+      (a, b) => rank(order, stored(a)) - rank(order, stored(b)),
+    );
   return {
     items: records
       .slice(0, input.limit ?? 1000)
@@ -341,8 +360,8 @@ const operations: Operations<WorkOperations> = {
     return item(state, get(state, input.id));
   },
   "issue.list": ({ input, services }) => list(client(services), input),
-  "issue.ready": ({ input, services }) =>
-    list(client(services), input, "ready"),
+  "issue.ready": ({ input, services, config }) =>
+    list(client(services), input, "ready", config as WorkConfig | undefined),
   "issue.blocked": ({ input, services }) =>
     list(client(services), input, "blocked"),
   "issue.stale": ({ input, services }) =>

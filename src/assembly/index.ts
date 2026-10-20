@@ -46,6 +46,7 @@ import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { firstPartyBlocks } from "./first-party.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
 import { LocalState } from "./state.ts";
+import { syncSkills } from "./skills.ts";
 import { openLevels, PROJECT_STATE } from "./levels.ts";
 import {
   ASSEMBLY_PROVIDES,
@@ -488,6 +489,16 @@ export async function createAssembly(
               refuse("OUTPUT_INVALID", "Invalid config output");
             return success(request.op, output);
           }
+          if (request.op === "skills.sync")
+            return success(
+              request.op,
+              syncSkills(
+                root,
+                catalog.list(),
+                composition(config.show()).mcp?.toolPrefix,
+                typeof input.dir === "string" ? input.dir : undefined,
+              ),
+            );
           if (request.op === "block.check" || request.op === "block.add") {
             const spec = String(input.path);
             const source = sourceFor(spec);
