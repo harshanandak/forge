@@ -396,5 +396,11 @@ try {
   );
 } finally {
   await opened.handle.close();
-  rmSync(directory, { recursive: true, force: true });
+  // Windows keeps a just-stopped child's working directory busy for a moment after it ends.
+  rmSync(directory, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
 }

@@ -1,5 +1,5 @@
-// A Node program (never Bun) that drives the real process adapter and prints one JSON object of
-// outcomes for test/adapters/process/node-program.test.ts to assert on. Run it as
+// A program that drives the real process adapter and prints one JSON object of outcomes for
+// test/adapters/process/node-program.integration.test.ts to assert on, under Node and under Bun:
 //   node --disable-warning=ExperimentalWarning spawn.fixture.ts [adapter module URL]
 // The optional argument points at the built package's adapter (dist/...) instead of the sources.
 import {
@@ -38,6 +38,7 @@ interface Adapter {
         timeoutMs: number;
         maxOutputBytes: number;
         stdin?: string;
+        signal?: AbortSignal;
       },
     ): Promise<Record<string, unknown>>;
   };
@@ -60,9 +61,10 @@ const port = adapter.createProcessPort({
 const windows = process.platform === "win32";
 
 const work = realpathSync.native(mkdtempSync(join(tmpdir(), "forge-proc-")));
+// Under Bun, `node` is still found on the caller's PATH, after the runtime's own directory.
 const nodeDir = dirname(process.execPath);
 const baseEnv: Record<string, string> = {
-  PATH: [work, nodeDir].join(delimiter),
+  PATH: [work, nodeDir, process.env["PATH"] ?? ""].join(delimiter),
   ...(windows
     ? {
         SystemRoot: process.env["SystemRoot"] ?? "C:\\Windows",
@@ -80,6 +82,7 @@ function run(
     maxOutputBytes: number;
     stdin: string;
     cwd: string;
+    signal: AbortSignal;
   }> = {},
 ): Promise<Record<string, unknown>> {
   const env = extra.env ?? baseEnv;
@@ -93,6 +96,7 @@ function run(
     timeoutMs: extra.timeoutMs ?? 20_000,
     maxOutputBytes: extra.maxOutputBytes ?? 1_000_000,
     ...(extra.stdin === undefined ? {} : { stdin: extra.stdin }),
+    ...(extra.signal === undefined ? {} : { signal: extra.signal }),
   });
 }
 
@@ -199,38 +203,69 @@ results["badCwd"] = await rejection(
   run("node", ["-e", "0"], { cwd: join(work, "does-not-exist") }),
 );
 
-// A command that starts a grandchild and then waits: the timeout must stop both.
-const pidFile = join(work, "grandchild.pid");
-const parentJs = join(work, "parent.js");
-writeFileSync(
-  parentJs,
-  [
-    "const { spawn } = require('node:child_process');",
-    "const fs = require('node:fs');",
-    "const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });",
-    `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
-    "setInterval(()=>{},1000);",
-  ].join("\n"),
+// A command that starts a grandchild and then waits: timeout and cancellation must stop both.
+async function stoppedTree(
+  name: string,
+  extra: { timeoutMs?: number; signal?: AbortSignal },
+  onStarted: () => void = () => undefined,
+): Promise<Record<string, unknown>> {
+  const pidFile = join(work, `${name}.pid`);
+  const parentJs = join(work, `${name}.js`);
+  writeFileSync(
+    parentJs,
+    [
+      "const { spawn } = require('node:child_process');",
+      "const fs = require('node:fs');",
+      // On Windows a non-detached child sits in libuv's kill-on-close job and would die with its
+      // parent anyway; detaching it leaves only the tree kill to stop it.
+      `const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', detached: ${windows} });`,
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+      "setInterval(()=>{},1000);",
+    ].join("\n"),
+  );
+  const pending = run(process.execPath, [parentJs], extra);
+  for (let wait = 0; wait < 100 && !existsSync(pidFile); wait += 1)
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  onStarted();
+  const result = await pending;
+  const grandchildPid = Number(readFileSync(pidFile, "utf8"));
+  const childPid = (result["supervision"] as { commandPid?: number })
+    .commandPid;
+  let alive = true;
+  for (let attempt = 0; attempt < 40 && alive; attempt += 1) {
+    if (isRunning(grandchildPid) || (childPid && isRunning(childPid))) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } else {
+      alive = false;
+    }
+  }
+  for (const pid of [grandchildPid, childPid ?? 0])
+    if (alive && pid > 0)
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+  return { ...result, treeAlive: alive };
+}
+results["timeout"] = await stoppedTree("timeout", { timeoutMs: 1500 });
+const controller = new AbortController();
+results["cancel"] = await stoppedTree(
+  "cancel",
+  { signal: controller.signal },
+  () => controller.abort(),
 );
-const timeoutResult = await run("node", [parentJs], { timeoutMs: 1500 });
-results["timeout"] = timeoutResult;
-const grandchildPid = Number(readFileSync(pidFile, "utf8"));
-let alive = true;
-for (let attempt = 0; attempt < 40 && alive; attempt += 1) {
-  if (isRunning(grandchildPid)) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  } else {
-    alive = false;
-  }
-}
-results["grandchildAliveAfterTimeout"] = alive;
-if (alive) {
-  try {
-    process.kill(grandchildPid, "SIGKILL");
-  } catch {
-    // already gone
-  }
-}
 
-rmSync(work, { recursive: true, force: true });
 process.stdout.write(`${JSON.stringify(results)}\n`);
+// Best effort: Windows keeps a killed process's working directory busy for a moment after it ends,
+// and a failed cleanup must not hide the outcomes already reported.
+try {
+  rmSync(work, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
+} catch {
+  // left in the temp folder
+}
