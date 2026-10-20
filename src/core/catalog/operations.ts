@@ -46,7 +46,8 @@ export const operations: Record<string, OperationDeclaration> = {
     context: "project",
     idempotent: true,
     stability: "experimental",
-    // Writes one SKILL.md per enabled block noun, skipping unchanged files.
+    // Writes one SKILL.md per enabled block noun and imported template skill, skipping unchanged
+    // files and deleting generated ones it no longer produces.
     effects: ["skills:write"],
     input: "catalog/skills-sync.input.schema.json",
     callers: ["human", "agent"],

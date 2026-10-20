@@ -1,11 +1,12 @@
 {
   "type": "object",
-  "required": ["dir", "written", "unchanged", "skipped"],
+  "required": ["dir", "written", "unchanged", "skipped", "removed"],
   "properties": {
     "dir": { "type": "string" },
     "written": { "type": "array", "items": { "type": "string" } },
     "unchanged": { "type": "array", "items": { "type": "string" } },
-    "skipped": { "type": "array", "items": { "type": "string" } }
+    "skipped": { "type": "array", "items": { "type": "string" } },
+    "removed": { "type": "array", "items": { "type": "string" } }
   },
   "additionalProperties": false
 }
