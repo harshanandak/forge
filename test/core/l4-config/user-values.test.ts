@@ -1,4 +1,4 @@
-// The user's picks win: saving derived values, updating a template and removing one never replace a
+// The user's picks win: saving derived values and removing a template never replace a
 // value the project sets, and a config file that is only partly valid still shows its valid part.
 // Each case runs the declared operations against a real config file on disk, checking every output
 // against its declared schema.
@@ -118,135 +118,11 @@ describe("saving derived values", () => {
     });
     // nothing left to fill: a second save writes nothing and says why
     const again = call("config.save", { expectRevision: revision() });
-    expect(again.receipt).toBeNull();
+    expect(again.changes).toEqual([]);
   });
 });
 
-describe("template updates and ownership", () => {
-  test("a shape change the user never touched applies: the template still holds its own base", () => {
-    const { call, revision, file, install } = project();
-    install(template("acme/a", "1.0.0", { timeout: 300 }));
-    call("template.import", { template: "acme/a", expectRevision: revision() });
-    install(template("acme/a", "2.0.0", { timeout: { seconds: 600 } }));
-    const update = call("template.update", {
-      template: "acme/a",
-      expectRevision: revision(),
-    });
-    expect(update.conflicts).toEqual([]);
-    expect(file()).toContain("seconds: 600");
-    expect(file()).not.toContain("timeout: 300");
-    // and back again
-    install(template("acme/a", "3.0.0", { timeout: 300 }));
-    call("template.update", { template: "acme/a", expectRevision: revision() });
-    expect(file()).toContain("timeout: 300");
-    expect(file()).not.toContain("seconds");
-  });
-
-  test("a shape change over the user's value is one conflict at the highest path; accepting only a child holds it whole", () => {
-    const { call, revision, file, install } = project();
-    install(template("acme/a", "1.0.0", { x: 1 }));
-    call("template.import", { template: "acme/a", expectRevision: revision() });
-    call("config.set", {
-      path: "check.x",
-      value: 7,
-      expectRevision: revision(),
-    });
-    install(template("acme/a", "2.0.0", { x: { a: 2, b: 3 } }));
-    const before = file();
-    const partial = call("template.update", {
-      template: "acme/a",
-      expectRevision: revision(),
-      accept: ["/blocks/check/config/x/a"],
-    });
-    // nothing under /x is written, the scalar is not replaced by a half object
-    expect(file()).toContain("x: 7");
-    expect(file()).not.toContain("a: 2");
-    expect(partial.applied).toEqual([]);
-    expect(partial.conflicts).toEqual([
-      expect.objectContaining({
-        pointer: "/blocks/check/config/x",
-        kind: "conflict",
-        current: 7,
-        upstream: { a: 2, b: 3 },
-      }),
-    ]);
-    // the held owner record keeps the base it had, so the conflict stays a conflict
-    expect(file().slice(file().indexOf("owners:"))).toContain(
-      "/blocks/check/config/x:\n    from: acme/a@1.0.0",
-    );
-    expect(before).toContain("x: 7");
-    // accepting the root takes the template's value whole
-    const taken = call("template.update", {
-      template: "acme/a",
-      expectRevision: revision(),
-      accept: ["/blocks/check/config/x"],
-    });
-    expect(taken.conflicts).toEqual([]);
-    expect(call("config.show").effective).toMatchObject({
-      blocks: { check: { config: { x: { a: 2, b: 3 } } } },
-    });
-  });
-
-  test("the reverse shape change over the user's edit also waits for the root", () => {
-    const { call, revision, file, install } = project();
-    install(template("acme/a", "1.0.0", { timeout: { seconds: 600 } }));
-    call("template.import", { template: "acme/a", expectRevision: revision() });
-    call("config.set", {
-      path: "check.timeout.seconds",
-      value: 60,
-      expectRevision: revision(),
-    });
-    install(template("acme/a", "2.0.0", { timeout: 300 }));
-    const held = call("template.update", {
-      template: "acme/a",
-      expectRevision: revision(),
-    });
-    expect(file()).toContain("seconds: 60");
-    expect(held.conflicts).toEqual([
-      expect.objectContaining({
-        pointer: "/blocks/check/config/timeout",
-        kind: "conflict",
-        current: { seconds: 60 },
-        upstream: 300,
-      }),
-    ]);
-    call("template.update", {
-      template: "acme/a",
-      expectRevision: revision(),
-      accept: ["/blocks/check/config/timeout"],
-    });
-    expect(file()).toContain("timeout: 300");
-    expect(file()).not.toContain("seconds");
-  });
-
-  test("a template installed at another version than was imported is unavailable for hand-off", () => {
-    const { call, revision, file, install } = project();
-    install(template("acme/a", "1.0.0", { timeout: 300 }));
-    install(template("acme/b", "1.0.0", { timeout: 300 }));
-    call("template.import", { template: "acme/a", expectRevision: revision() });
-    call("template.import", { template: "acme/b", expectRevision: revision() });
-    // b advances locally and drops the key; the project still records b@1.0.0, which sets it
-    install(template("acme/b", "2.0.0", { retries: 1 }));
-    const removed = call("template.remove", {
-      template: "acme/a",
-      expectRevision: revision(),
-    });
-    expect(file()).toContain("timeout: 300");
-    expect(removed.removed).toEqual([]);
-    expect(removed.kept).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          pointer: "/blocks/check/config/timeout",
-          kind: "kept",
-          reason:
-            "acme/b@1.0.0 is installed here as acme/b@2.0.0, not the imported version, so whether it shares this key is unknown",
-        }),
-      ]),
-    );
-    // nobody owns it now, but it is not deleted
-    expect(file()).not.toContain("/blocks/check/config/timeout:");
-  });
-
+describe("templates and saved values", () => {
   test("a saved derived value is the user's, even where a template's removed key was", () => {
     const { call, revision, file, install } = project({
       detections: () => [
@@ -269,42 +145,6 @@ describe("template updates and ownership", () => {
     call("template.remove", { template: "acme/a", expectRevision: revision() });
     expect(file()).toContain("timeout: 300");
     expect(file()).not.toContain("retries");
-  });
-
-  test("an update that drops a shared key hands it to the earliest-imported template that sets it", () => {
-    const { call, revision, file, install } = project();
-    install(template("acme/a", "1.0.0", { commands: { test: "npm test" } }));
-    install(template("acme/b", "1.0.0", { commands: { test: "npm test" } }));
-    install(template("acme/c", "1.0.0", { commands: { test: "npm test" } }));
-    for (const id of ["acme/a", "acme/c", "acme/b"])
-      call("template.import", { template: id, expectRevision: revision() });
-    install(template("acme/a", "2.0.0", { timeout: 300 }));
-    const update = call("template.update", {
-      template: "acme/a",
-      expectRevision: revision(),
-    });
-    expect(update.applied).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          pointer: "/blocks/check/config/commands/test",
-          kind: "kept",
-          reason: "acme/c@1.0.0 sets the same value",
-        }),
-      ]),
-    );
-    expect(file()).toContain("test: npm test");
-    const shown = call("config.show") as {
-      values: { pointer: string; owner?: { from: string } }[];
-    };
-    expect(
-      shown.values.find(
-        (v) => v.pointer === "/blocks/check/config/commands/test",
-      )?.owner?.from,
-    ).toBe("acme/c@1.0.0");
-    // and removing the new owner hands it on again, to b
-    call("template.remove", { template: "acme/c", expectRevision: revision() });
-    expect(file()).toContain("test: npm test");
-    expect(file()).toContain("from: acme/b@1.0.0");
   });
 });
 

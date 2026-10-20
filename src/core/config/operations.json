@@ -56,15 +56,6 @@
       "callers": ["agent", "human"],
       "stability": "experimental"
     },
-    "config.revert": {
-      "input": "schemas/revert.input.json",
-      "output": "schemas/revert.output.json",
-      "context": "project",
-      "effects": ["config:write"],
-      "idempotent": false,
-      "callers": ["agent", "human"],
-      "stability": "experimental"
-    },
     "config.save": {
       "input": "schemas/save.input.json",
       "output": "schemas/save.output.json",
@@ -96,26 +87,6 @@
     "template.import": {
       "input": "schemas/template-edit.input.json",
       "output": "schemas/template-import.output.json",
-      "args": ["template"],
-      "context": "project",
-      "effects": ["config:write"],
-      "idempotent": false,
-      "callers": ["agent", "human"],
-      "stability": "experimental"
-    },
-    "template.compare": {
-      "input": "schemas/template-compare.input.json",
-      "output": "schemas/template-compare.output.json",
-      "args": ["template"],
-      "context": "project",
-      "effects": [],
-      "idempotent": true,
-      "callers": ["agent", "human"],
-      "stability": "experimental"
-    },
-    "template.update": {
-      "input": "schemas/template-update.input.json",
-      "output": "schemas/template-update.output.json",
       "args": ["template"],
       "context": "project",
       "effects": ["config:write"],
