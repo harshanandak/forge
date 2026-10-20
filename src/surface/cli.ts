@@ -52,8 +52,7 @@ function argumentValue(raw: string, schema: unknown): unknown {
   return value;
 }
 
-/** Map operation tokens to input by the entry's schema; the same parser `forge <noun> <verb>` uses. */
-export function mapArguments(
+function mapArguments(
   tokens: readonly string[],
   entry: McpCandidate | undefined,
 ): unknown {

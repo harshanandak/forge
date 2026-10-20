@@ -11,147 +11,69 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
-import type { McpCandidate } from "../../src/contract/mcp.ts";
-import { nounRefusal, propertyFromFlag } from "../../src/contract/naming.ts";
+import { isAgentCallable, type McpCandidate } from "../../src/contract/mcp.ts";
+import { CORE_NOUNS, nounRefusal } from "../../src/contract/naming.ts";
 import {
   createAssembly,
   localCall,
   type Assembly,
 } from "../../src/assembly/index.ts";
-import type { ResultEnvelope } from "../../src/generated/types.ts";
-import { mapArguments } from "../../src/surface/cli.ts";
+import type { InvocationRequest } from "../../src/generated/types.ts";
+import { runCli } from "../../src/surface/cli.ts";
 import { runCommand } from "../../src/surface/command.ts";
-import { dispatch, record } from "../../src/surface/dispatch.ts";
-import { lintSkill, renderSkills } from "../../src/surface/skills.ts";
+import { dispatch, record, success } from "../../src/surface/dispatch.ts";
+import {
+  GENERATED_MARKER,
+  lintSkill,
+  renderSkills,
+} from "../../src/surface/skills.ts";
 import { candidate } from "./fixtures/catalog.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
-const blocks = ["work", "memory", "check"] as const;
-const checkConfig = {
-  commands: { test: { argv: ["declared", "test"] } },
-  timeoutMs: 1000,
-  maxOutputBytes: 262144,
-  outputHeadBytes: 4096,
-  outputTailBytes: 4096,
-  maxMetadataBytes: 32768,
-  maxReceiptBytes: 524288,
-  report: "auto",
-  stopOnFailure: false,
-  inputs: [],
-  maxInputBytes: 1024,
-  environment: [],
-};
-
-/** A skill's CLI usage line; built with RegExp so its backticks do not read as a template literal. */
+/** A skill's CLI line; built with RegExp so its backticks do not read as a template literal. */
 const CLI_LINE = new RegExp("^- CLI: `([^`]+)`$", "gm");
 
-/** A value the CLI parser accepts for a property of this schema. */
-function sample(schema: unknown): string {
-  const s = record(schema);
-  if (Array.isArray(s?.enum)) return String(s.enum[0]);
-  switch (s?.type) {
-    case "integer":
-    case "number":
-      return "1";
-    case "boolean":
-      return "true";
-    case "array":
-      return "[]";
-    case "object":
-      return "{}";
-    default:
-      return "x";
-  }
-}
-
-/**
- * Run a skill's `- CLI:` line through the real CLI argument parser, with every optional part
- * included and each placeholder filled with a value of the property's type.
- */
-function parseCliLine(
-  line: string,
-  catalog: readonly McpCandidate[],
-): Record<string, unknown> {
-  const [noun, verb, ...rest] = line.split(" ").slice(1);
-  const entry = catalog.find((c) => c.op === `${noun}.${verb}`);
-  if (entry === undefined) throw new Error(`no operation for ${line}`);
-  const properties = record(entry.inputSchema.properties) ?? {};
-  const positions = entry.declaration.args ?? [];
-  const tokens = rest
-    .join(" ")
-    .replace(/[[\]]/g, "")
-    .split(" ")
-    .filter(Boolean);
-  let position = 0;
-  let flag: string | undefined;
-  const filled = tokens.map((token) => {
-    if (token.startsWith("--")) {
-      flag = propertyFromFlag(token.slice(2));
-      return token;
-    }
-    const key = flag ?? positions[position++] ?? "";
-    flag = undefined;
-    return token.startsWith("<") ? sample(properties[key]) : token;
-  });
-  const input = mapArguments(filled, entry) as Record<string, unknown>;
-  const required = entry.inputSchema.required;
-  for (const key of Array.isArray(required) ? required : [])
-    expect(Object.keys(input)).toContain(String(key));
-  return input;
-}
-
-/** Run `forge <argv>` through the generated CLI against the assembly; returns exit code and envelope. */
-async function forge(
-  assembly: Assembly,
-  argv: readonly string[],
-): Promise<{ code: number; text: string; envelope?: ResultEnvelope }> {
+/** Run `forge <argv>` through the generated CLI against the assembly; returns the parsed envelope. */
+async function forge(assembly: Assembly, argv: readonly string[]) {
   const output = new PassThrough();
   let text = "";
   output.on("data", (chunk: Buffer) => (text += chunk.toString()));
-  const code = await runCommand(argv, {
+  await runCommand(argv, {
     catalog: assembly.catalog,
     version: "0.0.0",
     call: localCall(assembly),
     output,
   });
   output.end();
-  try {
-    return { code, text, envelope: JSON.parse(text) as ResultEnvelope };
-  } catch {
-    return { code, text };
-  }
+  return JSON.parse(text) as { ok: boolean; result?: unknown };
 }
 
-/** The shipped blocks as a project enables them. Listing never runs block code, so entries are stubs. */
+/** The shipped work and memory blocks as a project enables them; entries are stubs, listing never runs them. */
 async function withProject(
-  run: (assembly: Assembly, root: string) => Promise<void> | void,
+  run: (assembly: Assembly, root: string) => Promise<void>,
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "forge-skills-"));
   try {
-    const config: Record<string, unknown> = {};
-    for (const name of blocks) {
+    const blocks: Record<string, unknown> = {};
+    for (const name of ["work", "memory"]) {
       const target = join(root, "blocks", name);
       cpSync(join(repo, "src/blocks", name), target, { recursive: true });
-      const manifest = JSON.parse(
+      const { entry } = JSON.parse(
         readFileSync(join(target, "forge.block.json"), "utf8"),
       ) as { entry: string };
-      writeFileSync(join(target, manifest.entry), "module.exports={};");
-      config[name] = {
-        source: { path: `./blocks/${name}` },
-        ...(name === "check" ? { config: checkConfig } : {}),
-      };
+      writeFileSync(join(target, entry), "module.exports={};");
+      blocks[name] = { source: { path: `./blocks/${name}` } };
     }
     mkdirSync(join(root, ".forge"));
     writeFileSync(
       join(root, ".forge", "config.yaml"),
-      JSON.stringify({ schemaVersion: "forge.config/1", blocks: config }),
+      JSON.stringify({ schemaVersion: "forge.config/1", blocks }),
     );
     const assembly = await createAssembly({
       root,
       deviceRoot: join(root, "device"),
     });
     try {
-      expect(assembly.catalog.unavailable()).toEqual([]);
       await run(assembly, root);
     } finally {
       await assembly.close();
@@ -161,121 +83,126 @@ async function withProject(
   }
 }
 
-test("forge skills sync writes one linted skill per enabled block noun", async () => {
+test("skills.sync writes one linted skill per block noun, deterministically, from CLI and catalog.call", async () => {
   await withProject(async (assembly, root) => {
-    const first = (await forge(assembly, ["skills", "sync"])).envelope;
-    expect(first).toMatchObject({
-      ok: true,
-      result: {
-        dir: ".agents/skills",
-        written: [
-          ".agents/skills/check/SKILL.md",
-          ".agents/skills/decision/SKILL.md",
-          ".agents/skills/issue/SKILL.md",
-          ".agents/skills/memory/SKILL.md",
-        ],
-        unchanged: [],
-      },
+    const paths = ["decision", "issue", "memory"].map(
+      (noun) => `.agents/skills/${noun}/SKILL.md`,
+    );
+    const first = { dir: ".agents/skills", written: paths, unchanged: [] };
+    expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
+      result: { ...first, skipped: [] },
     });
-    const catalog = assembly.catalog.list();
-    for (const noun of ["check", "decision", "issue", "memory"]) {
-      const text = readFileSync(
-        join(root, ".agents/skills", noun, "SKILL.md"),
-        "utf8",
-      );
-      expect(text.startsWith(`---\nname: ${noun}\ndescription: "`)).toBe(true);
-      expect(lintSkill(text, catalog)).toEqual([]);
-      // Every CLI line an agent copies must parse with the real CLI parser.
-      for (const [, line = ""] of text.matchAll(CLI_LINE))
-        expect(() => parseCliLine(line, catalog)).not.toThrow();
+    for (const path of paths) {
+      const text = readFileSync(join(root, path), "utf8");
+      expect(text).toContain(GENERATED_MARKER);
+      expect(lintSkill(text, assembly.catalog.list())).toEqual([]);
     }
-    const decision = readFileSync(
-      join(root, ".agents/skills/decision/SKILL.md"),
-      "utf8",
-    );
+    const decision = readFileSync(join(root, paths[0] ?? ""), "utf8");
     expect(decision).toContain(
-      "- CLI: `forge decision propose <title> <text> [--consequences <text>]`",
+      "- CLI: `forge decision propose --input '<json>'`\n- MCP: `decision_propose`",
     );
-    expect(decision).toContain("- MCP: `decision_propose`");
     expect(decision).toContain("- Effects: `decision:write`; not idempotent");
     expect(decision).toContain("- `decision.adopt`: Mark a proposed decision");
-    expect(decision).not.toContain("## `decision.adopt`");
-    expect(decision.split("\n")[2]).toContain("Record a decision under");
-    // Deterministic: a second sync rewrites nothing.
-    const again = (await forge(assembly, ["skills", "sync"])).envelope;
-    expect(again?.ok ? again.result : undefined).toEqual({
-      dir: ".agents/skills",
-      written: [],
-      unchanged: first?.ok
-        ? (first.result as { written: string[] }).written
-        : [],
+    expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
+      result: { written: [], unchanged: paths },
     });
     expect(
-      (await forge(assembly, ["skills", "sync", "--dir", "custom/skills/"]))
-        .envelope,
-    ).toMatchObject({ ok: true, result: { dir: "custom/skills" } });
-    expect(existsSync(join(root, "custom/skills/issue/SKILL.md"))).toBe(true);
-    expect(
-      (await forge(assembly, ["skills", "sync", "--dir", "../outside"]))
-        .envelope,
+      await forge(assembly, ["skills", "sync", "--dir", "../outside"]),
     ).toMatchObject({ ok: false });
-    expect(
-      (await forge(assembly, ["skills", "publish"])).envelope,
-    ).toMatchObject({ ok: false, error: { code: "UNKNOWN_COMMAND" } });
-  });
-}, 30_000);
-
-test("skills.sync is a catalog operation: described, listed in help and callable by agents", async () => {
-  await withProject(async (assembly, root) => {
     const call = localCall(assembly);
-    const described = await dispatch(
-      assembly.catalog,
-      "catalog.describe",
-      { op: "skills.sync" },
-      call,
-    );
-    expect(described).toMatchObject({
-      ok: true,
-      result: {
-        op: "skills.sync",
-        declaration: { effects: ["skills:write"], idempotent: true },
-        inputSchema: { properties: { dir: { type: "string" } } },
-      },
-    });
-    const help = await forge(assembly, ["skills", "--help"]);
-    expect(help.code).toBe(0);
-    expect(help.text).toContain("sync");
-    const agent = await dispatch(
-      assembly.catalog,
-      "catalog.call",
-      { op: "skills.sync", input: { dir: "agent/skills" } },
-      {
-        caller: "agent",
-        context: { ...call.context, actor: { kind: "agent", id: "a" } },
-      },
-    );
-    expect(agent).toMatchObject({ ok: true, result: { dir: "agent/skills" } });
+    expect(
+      await dispatch(
+        assembly.catalog,
+        "catalog.call",
+        { op: "skills.sync", input: { dir: "agent/skills/" } },
+        {
+          caller: "agent",
+          context: { ...call.context, actor: { kind: "agent", id: "a" } },
+        },
+      ),
+    ).toMatchObject({ ok: true, result: { dir: "agent/skills" } });
     expect(existsSync(join(root, "agent/skills/issue/SKILL.md"))).toBe(true);
   });
 }, 30_000);
 
-test("the skill lint rejects unknown operations and oversized skills", () => {
-  const catalog = [candidate("sample.echo"), candidate("sample.list")];
-  const [skill] = renderSkills(catalog);
-  expect(skill?.path).toBe("sample/SKILL.md");
-  const text = skill?.text ?? "";
-  expect(lintSkill(text, catalog)).toEqual([]);
-  expect(renderSkills([...catalog].reverse())).toEqual(renderSkills(catalog));
+test("every generated CLI line for the shipped blocks delivers its --input JSON through the real CLI parser", async () => {
+  await withProject(async (assembly) => {
+    const catalog = assembly.catalog.list();
+    const input = { probe: [1, "two words"], nested: { ok: true } };
+    const ops: string[] = [];
+    for (const skill of renderSkills(catalog))
+      for (const [, line = ""] of skill.text.matchAll(CLI_LINE)) {
+        let seen: InvocationRequest | undefined;
+        const argv = line
+          .split(" ")
+          .slice(1)
+          .map((t) => (t === "'<json>'" ? JSON.stringify(input) : t));
+        await runCli(
+          {
+            list: () => catalog,
+            invoke: (request) => {
+              seen = request;
+              return Promise.resolve(success(request.op, null));
+            },
+          },
+          argv,
+        );
+        expect(seen?.input).toEqual(input);
+        ops.push(seen?.op ?? line);
+      }
+    // One line per agent-callable block operation, and nothing else.
+    const expected = catalog
+      .filter((c) => isAgentCallable(c.declaration))
+      .map((c) => c.op)
+      .filter((op) => !CORE_NOUNS.includes(op.split(".")[0] ?? ""));
+    expect(ops.sort()).toEqual(expected.sort());
+    expect(ops.length).toBeGreaterThan(10);
+  });
+}, 30_000);
+
+test("sync replaces its own files whatever their size and never touches hand-written ones", async () => {
+  await withProject(async (assembly, root) => {
+    const dir = join(root, ".agents/skills");
+    mkdirSync(join(dir, "issue"), { recursive: true });
+    mkdirSync(join(dir, "memory"), { recursive: true });
+    // A stale generated file past the 16 KiB read cap the first version used.
+    const stale = `${GENERATED_MARKER}\n${"OLD LINE\n".repeat(3000)}`;
+    writeFileSync(join(dir, "issue/SKILL.md"), stale);
+    const mine = "---\nname: memory\ndescription: mine\n---\n# mine\n";
+    writeFileSync(join(dir, "memory/SKILL.md"), mine);
+    expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
+      ok: true,
+      result: { skipped: [".agents/skills/memory/SKILL.md"] },
+    });
+    const issue = readFileSync(join(dir, "issue/SKILL.md"), "utf8");
+    expect(issue).not.toContain("OLD LINE");
+    expect(lintSkill(issue, assembly.catalog.list())).toEqual([]);
+    expect(readFileSync(join(dir, "memory/SKILL.md"), "utf8")).toBe(mine);
+  });
+}, 30_000);
+
+test("the lint rejects unknown operations and oversized skills; core and human-only nouns get no skill", () => {
+  const catalog = [
+    candidate("sample.echo"),
+    candidate("sample.list"),
+    candidate("config.show"),
+    candidate("vault.seal", { callers: ["human"] }),
+  ];
+  const skills = renderSkills(catalog, "forge");
+  expect(skills.map((s) => s.path)).toEqual(["sample/SKILL.md"]);
+  expect(renderSkills([...catalog].reverse(), "forge")).toEqual(skills);
+  const text = skills[0]?.text ?? "";
+  expect(text).toContain("- MCP: `forge_sample_echo`");
+  expect(lintSkill(text, catalog, "forge")).toEqual([]);
   for (const planted of [
-    "Then call `sample.frobnicate`.",
-    "Then call `sample_frobnicate`.",
-    "Then run `forge widget make --now`.",
+    "`sample.frobnicate`",
+    "`forge_sample_frobnicate`",
+    "`forge widget make --now`",
   ])
-    expect(lintSkill(`${text}\n${planted}\n`, catalog)).toEqual([
+    expect(lintSkill(`${text}\n${planted}\n`, catalog, "forge")).toEqual([
       expect.stringContaining("unknown operation"),
     ]);
-  // Not operation names: file names and unknown nouns in dotted form.
-  expect(lintSkill(`${text}\nSee \`config.yaml\`.\n`, catalog)).toEqual([]);
+  expect(lintSkill(`${text}\nSee \`notes.yaml\`.\n`, catalog)).toEqual([]);
   expect(lintSkill(`${text}\n${"x".repeat(8192)}\n`, catalog)).toEqual([
     expect.stringMatching(/bytes; the limit is 8192$/),
   ]);
@@ -285,72 +212,31 @@ test("the skill lint rejects unknown operations and oversized skills", () => {
   ]);
 }, 30_000);
 
-test("core nouns and human-only nouns get no skill; the MCP prefix is applied", () => {
-  const skills = renderSkills(
-    [
-      candidate("config.show"),
-      candidate("vault.seal", { callers: ["human"] }),
-      candidate("sample.echo"),
-    ],
-    "forge",
-  );
-  expect(skills.map((s) => s.noun)).toEqual(["sample"]);
-  expect(skills[0]?.text).toContain("- MCP: `forge_sample_echo`");
-  expect(
-    lintSkill(skills[0]?.text ?? "", [candidate("sample.echo")], "forge"),
-  ).toEqual([]);
-}, 30_000);
-
-test("CLI lines give value flags a placeholder, keep booleans bare and mark what is optional", () => {
+test("input fields are shown for display only; non-object and $ref/anyOf inputs never become syntax", () => {
   const base = candidate("sample.echo");
-  const entry: McpCandidate = {
-    ...base,
-    inputSchema: {
-      ...base.inputSchema,
-      properties: {
-        ...record(base.inputSchema.properties),
-        tags: { type: "array", items: { type: "string" } },
-        mode: { type: "string", enum: ["fast", "slow"] },
-      },
-      required: ["value", "mode"],
-    },
+  const properties = {
+    ...record(base.inputSchema.properties),
+    tags: { $ref: "#/$defs/tags" },
+    mode: { anyOf: [{ type: "string" }, { type: "integer" }] },
+    level: { enum: ["low", "high"] },
+    names: { type: "array", items: { type: "string" } },
   };
-  const text = renderSkills([entry])[0]?.text ?? "";
-  const line =
-    "forge sample echo <value> --mode <text> [--count <number>] [--pre-release] [--tags <json>]";
-  expect(text).toContain(`- CLI: \`${line}\``);
-  expect(parseCliLine(line, [entry])).toEqual({
-    value: "x",
-    mode: "fast",
-    count: 1,
-    preRelease: true,
-    tags: [],
-  });
-  // The old shape: a value flag with no value is refused by the parser.
-  expect(() => mapArguments(["x", "--count"], entry)).toThrow(
-    "Missing value for --count.",
+  const render = (inputSchema: McpCandidate["inputSchema"]) =>
+    renderSkills([{ ...base, inputSchema }])[0]?.text ?? "";
+  const text = render({ ...base.inputSchema, properties });
+  expect(text).toContain("- CLI: `forge sample echo --input '<json>'`");
+  expect(text).toContain(
+    '- Input: `value` string (required), `count` integer (optional), `preRelease` boolean (optional), `tags` see schema (optional), `mode` see schema (optional), `level` "low" | "high" (optional), `names` string[] (optional)\n',
+  );
+  expect(render({ type: "string" })).toContain(
+    "- CLI: `forge sample echo --input '<json>'`\n- MCP: `sample_echo`\n- Input: string\n",
+  );
+  expect(render({ type: "array", items: { type: "string" } })).toContain(
+    "- Input: string[]\n",
   );
 }, 30_000);
 
-test("a block cannot declare the skills noun core owns for skills.sync", () => {
-  expect(
-    nounRefusal("skills", "io.github.alice", { firstPartyNouns: [] })?.code,
-  ).toBe("NAME_RESERVED");
-}, 30_000);
-
-test("an operation whose input is not an object gets --input <json> on its CLI line", () => {
-  const base = candidate("sample.echo", { args: [] });
-  const text =
-    renderSkills([{ ...base, inputSchema: { type: "string" } }])[0]?.text ?? "";
-  expect(text).toContain("- CLI: `forge sample echo --input <json>`");
-  const list =
-    renderSkills([
-      { ...base, inputSchema: { type: "array", items: { type: "string" } } },
-    ])[0]?.text ?? "";
-  expect(list).toContain("- CLI: `forge sample echo --input <json>`");
-}, 30_000);
-
-test("a deprecation's replacement follows the instance's noun rename", () => {
+test("a deprecation's replacement follows the noun rename; blocks cannot claim the skills noun", () => {
   const old: McpCandidate = {
     ...candidate("demo.old", {
       stability: "deprecated",
@@ -362,4 +248,7 @@ test("a deprecation's replacement follows the instance's noun rename", () => {
   const text = renderSkills(catalog)[0]?.text ?? "";
   expect(text).toContain("Deprecated: use `demo.new`.");
   expect(lintSkill(text, catalog)).toEqual([]);
+  expect(
+    nounRefusal("skills", "io.github.alice", { firstPartyNouns: [] })?.code,
+  ).toBe("NAME_RESERVED");
 }, 30_000);

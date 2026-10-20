@@ -1,10 +1,11 @@
 {
   "type": "object",
-  "required": ["dir", "written", "unchanged"],
+  "required": ["dir", "written", "unchanged", "skipped"],
   "properties": {
     "dir": { "type": "string" },
     "written": { "type": "array", "items": { "type": "string" } },
-    "unchanged": { "type": "array", "items": { "type": "string" } }
+    "unchanged": { "type": "array", "items": { "type": "string" } },
+    "skipped": { "type": "array", "items": { "type": "string" } }
   },
   "additionalProperties": false
 }

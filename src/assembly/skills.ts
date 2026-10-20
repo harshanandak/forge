@@ -1,7 +1,11 @@
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
 import type { McpCandidate } from "../contract/mcp.ts";
 import { refuse } from "../core/trust/index.ts";
-import { lintSkill, renderSkills, SKILL_MAX_BYTES } from "../surface/skills.ts";
+import {
+  GENERATED_MARKER,
+  lintSkill,
+  renderSkills,
+} from "../surface/skills.ts";
 
 /** Harness-neutral skills directory, relative to the project root. */
 export const DEFAULT_SKILLS_DIR = ".agents/skills";
@@ -10,9 +14,14 @@ export interface SkillsSyncResult {
   readonly dir: string;
   readonly written: readonly string[];
   readonly unchanged: readonly string[];
+  /** Existing files without the generated marker: hand-written, so never overwritten. */
+  readonly skipped: readonly string[];
 }
 
-/** `skills.sync`: write each enabled block noun's skill under the project root, skipping unchanged files. */
+/**
+ * `skills.sync`: write each enabled block noun's skill under the project root. A file it generated
+ * (it carries the marker line) is always replaced, whatever its size; a hand-written one is left alone.
+ */
 export function syncSkills(
   root: string,
   candidates: readonly McpCandidate[],
@@ -32,13 +41,22 @@ export function syncSkills(
   const files = nodeConfigFiles(root);
   const written: string[] = [];
   const unchanged: string[] = [];
+  const skipped: string[] = [];
   try {
     for (const skill of skills) {
       const path = `${dir}/${skill.path}`;
       const bytes = new TextEncoder().encode(skill.text);
-      const current = files.read(path, SKILL_MAX_BYTES * 2);
+      const current = files.read(path);
       if (current !== undefined && Buffer.from(current).equals(bytes))
         unchanged.push(path);
+      else if (
+        current !== undefined &&
+        !new TextDecoder()
+          .decode(current)
+          .split("\n")
+          .includes(GENERATED_MARKER)
+      )
+        skipped.push(path);
       else {
         files.write(path, bytes);
         written.push(path);
@@ -50,5 +68,5 @@ export function syncSkills(
       error instanceof Error ? error.message : "Cannot write skills",
     );
   }
-  return { dir, written, unchanged };
+  return { dir, written, unchanged, skipped };
 }
