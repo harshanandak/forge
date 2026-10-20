@@ -11,7 +11,12 @@ Orchestrator only. A worker never merges. Merge by: {{values.merge.by}}.
 
 1. `gh pr view <n> --json state,mergeStateStatus,headRefOid` shows `OPEN` and `CLEAN`. Anything else (`BLOCKED`, `BEHIND`, `DIRTY`, `UNSTABLE`, `UNKNOWN`) is a no.
 2. A passing check receipt exists for that exact head: `forge check show --input '{"id":"<receipt>"}'`. Its head equals `headRefOid`. A receipt for an older head is no receipt.
-3. No open review threads: `node {{values.helpers}}/review-threads.mjs <n>` prints `[]`.
+3. No open review threads, counted over every page; it must print `0`:
+
+```
+gh api graphql --paginate -F owner='{owner}' -F repo='{repo}' -F n=<n> -f query='query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}' --jq '.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved|not)|.id' | wc -l
+```
+
 4. No one-way door is open. A merge that deploys, publishes or migrates is a door ({{values.doors}}): it needs the owner's reply naming that action. Silence or "continue" is not a yes.
 
 Any no: do not merge. Go back to `review`, or ask the owner about the door, then stop.

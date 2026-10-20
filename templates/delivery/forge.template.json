@@ -21,7 +21,6 @@
         "file": ["P2", "P3"],
         "reruns": 1
       },
-      "helpers": "templates/delivery/scripts",
       "merge": { "by": "agent", "method": "squash" },
       "doors": [
         "publish",

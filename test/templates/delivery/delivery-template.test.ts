@@ -149,15 +149,22 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text.review).toContain("At most 2 rounds");
     expect(text.review).toContain("Fix only P0, P1 findings");
     expect(text.review).toContain("Rerun up to 1 time");
+    // review threads are read and resolved with gh alone: nothing in the skills points into this repo
+    expect(text.review).toContain("gh api graphql --paginate");
+    expect(text.review).toContain("after:$endCursor");
     expect(text.review).toContain(
-      "node templates/delivery/scripts/resolve-thread.mjs",
+      "repos/{owner}/{repo}/pulls/<n>/comments/<comment id>/replies",
     );
+    expect(text.review).toContain("resolveReviewThread(input:{threadId:$id})");
+    for (const name of SKILLS)
+      expect(text[name]).not.toMatch(/templates\/|\.mjs/);
     expect(text["open-pr"]).toContain('"relation":"delivers"');
     expect(text["open-pr"]).toContain("`link_pull_request`");
     // the merge conditions: CLEAN, receipt on the pinned head, no open threads, no open door
     expect(text.land).toContain("`OPEN` and `CLEAN`");
     expect(text.land).toContain("Its head equals `headRefOid`");
-    expect(text.land).toContain("review-threads.mjs <n>` prints `[]`");
+    expect(text.land).toContain("gh api graphql --paginate");
+    expect(text.land).toContain("|.id' | wc -l");
     expect(text.land).toContain(
       "gh pr merge <n> --squash --match-head-commit <headRefOid>",
     );

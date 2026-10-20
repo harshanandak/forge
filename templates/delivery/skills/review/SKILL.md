@@ -8,7 +8,12 @@ description: "Use when an open PR has new checks, comments or review threads, on
 ## Read only what is new
 
 1. `gh pr view <n> --json headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`.
-2. Threads: `node {{values.helpers}}/review-threads.mjs <n>` prints the unresolved ones as JSON: thread id, comment id, path, line, author, short body.
+2. Unresolved threads, every page, one JSON line each (thread id, first comment id, path, line, author, short body):
+
+```
+gh api graphql --paginate -F owner='{owner}' -F repo='{repo}' -F n=<n> -f query='query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved path line comments(first:1){nodes{databaseId author{login} body}}}}}}}' --jq '.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved|not)|{thread:.id,comment:.comments.nodes[0].databaseId,path,line,author:.comments.nodes[0].author.login,body:.comments.nodes[0].body[:200]}'
+```
+
 3. Act only on checks and comments newer than your last push. Older ones were handled or are waiting on that push.
 
 ## Each finding
@@ -20,13 +25,14 @@ description: "Use when an open PR has new checks, comments or review threads, on
 
 ## Reply and resolve every thread
 
-Write the reply to a file with the editor tool, then:
+Write the reply to a file with the editor tool, then reply in the thread and resolve it:
 
 ```
-node {{values.helpers}}/resolve-thread.mjs <n> <comment id> <thread id> <reply file>
+gh api -X POST repos/{owner}/{repo}/pulls/<n>/comments/<comment id>/replies -F body=@<reply file>
+gh api graphql -F id=<thread id> -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' --jq '.data.resolveReviewThread.thread.isResolved'
 ```
 
-It posts the reply in the thread and resolves it, and fails unless GitHub reads the thread back as resolved. Reply text: "Fixed in <sha>: ..." or "Filed as <issue id>: ...", or why the finding does not hold. Every thread, from any author, bot or human. Never resolve a thread you did not fix, file or answer. Run the list again: it must print `[]`.
+The second must print `true`. Reply text: "Fixed in <sha>: ..." or "Filed as <issue id>: ...", or why the finding does not hold. Every thread, from any author, bot or human. Never resolve a thread you did not fix, file or answer. Run the list again: it must print nothing.
 
 ## Red checks
 
@@ -39,4 +45,4 @@ It posts the reply in the thread and resolves it, and fails unless GitHub reads 
 
 - One round is one triage pass plus one push. Log it: `forge issue comment --input '{"id":"<slice>","body":"review round <k>: fixed ..., filed ..."}'`.
 - At most {{values.review.rounds}} rounds. After the last, a new blocker means split or re-plan with the orchestrator, not another round.
-- When checks are green and the list prints `[]`, hand over to `land`.
+- When checks are green and the list prints nothing, hand over to `land`.
