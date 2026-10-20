@@ -1,6 +1,6 @@
 # GitHub status and pinned merge
 
-The thin block declares `pr.status` and `pr.merge` through the existing process service.
+The thin block declares `pr.status` and `pr.merge` and runs `gh` (and only `gh`) through the process service.
 It asks GitHub for status, defaults `requireResolvedThreads` to true, and only squash
 merges the expected head. Supply a GitHub `owner/repository`; other hosts are unavailable.
 Thread policy is checked before merging; GitHub enforces protection at merge time.
