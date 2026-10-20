@@ -115,7 +115,8 @@ function nearestGitEntry(dir: string): "folder" | "file" | undefined {
 /**
  * The folder matching `dir` in the repository's main working tree, read from git's shared
  * directory (`--git-common-dir`), so every linked worktree of one repository resolves to the same
- * place. `dir` itself outside a linked worktree (no git is started then) or when git cannot answer.
+ * place. `dir` itself outside a linked worktree (no git is started then; a submodule, whose git
+ * directory equals its shared one, counts as outside too) or when git cannot answer.
  * A shared directory not named `.git` (a bare or separated repository) is used as the main tree.
  */
 export async function mainCheckoutPath(
@@ -134,6 +135,7 @@ export async function mainCheckoutPath(
         "rev-parse",
         "--path-format=absolute",
         "--show-toplevel",
+        "--git-dir",
         "--git-common-dir",
       ],
       {
@@ -143,10 +145,12 @@ export async function mainCheckoutPath(
         maxOutputBytes: options.maxOutputBytes,
       },
     );
-    const [top, common] = result.stdout.trim().split(/\r?\n/);
-    if (result.exitCode !== 0 || result.truncated || !top || !common)
+    const [top, gitDir, common] = result.stdout.trim().split(/\r?\n/);
+    if (result.exitCode !== 0 || result.truncated || !top || !gitDir || !common)
       return own;
     const shared = resolvePath(common);
+    // A submodule's `.git` is a file as well, but its git directory is its own shared one: not a linked worktree.
+    if (resolvePath(gitDir) === shared) return own;
     const main = basename(shared) === ".git" ? dirname(shared) : shared;
     // git reports the real path; compare like with like so a symlinked or short-named path maps too.
     const inside = relative(resolvePath(top), realpathSync.native(own));

@@ -185,6 +185,34 @@ test("config is still read from the worktree itself", async () => {
   );
 }, 60_000);
 
+test("a git submodule keeps its store in its own folder", async () => {
+  // A submodule's `.git` is a file too, but it is not a linked worktree of the superproject.
+  const library = join(work, "library");
+  const superproject = join(work, "super");
+  mkdirSync(library);
+  mkdirSync(superproject);
+  await git(library, "init", "--quiet");
+  writeFileSync(join(library, "README"), "library\n");
+  await git(library, "add", "README");
+  await git(library, "commit", "--quiet", "-m", "library");
+  await git(superproject, "init", "--quiet");
+  await git(
+    superproject,
+    "-c",
+    "protocol.file.allow=always",
+    "submodule",
+    "add",
+    "--quiet",
+    library,
+    "sub",
+  );
+  const submodule = join(superproject, "sub");
+  await enableWork(submodule);
+  const call = await open(submodule);
+  done(await call("issue.create", { title: "In the submodule" }));
+  expect(existsSync(join(submodule, ".forge/state.sqlite"))).toBe(true);
+}, 60_000);
+
 test("a project outside git keeps its store in its own folder", async () => {
   const plain = join(work, "plain");
   mkdirSync(plain);
