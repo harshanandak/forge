@@ -126,9 +126,9 @@ function report(result, containment, descendantPid) {
   assert.ok(value.stoppedCount > 0, "supervision must report what stopped");
   assert.ok(value.stoppedCount >= value.stoppedPids.length);
   assert.equal(alive(value.supervisorPid), false, "supervisor must be stopped");
-  if (containment === "strict" && process.platform === "win32")
-    assert.equal(value.backend, "windows-job");
-  if (containment === "supervised")
+  if (process.platform === "win32")
+    assert.equal(value.backend, "windows-job", "Windows keeps Job Objects");
+  else if (containment === "supervised")
     assert.equal(value.backend, "process-group", "the OS owns the tree");
   if (containment === "strict" && process.platform === "linux")
     assert.equal(value.backend, "linux-cgroup");
@@ -197,11 +197,10 @@ async function tree(kind, containment = "supervised") {
   const strict = containment === "strict";
   const ready = join(root, `${containment}-${kind}.ready`);
   // On Windows libuv already ends a non-detached grandchild with its parent; detaching it leaves
-  // only the tree kill to stop it. A root that has exited leaves no parent links for taskkill, so
-  // a detached orphan there is reachable only by strict containment.
+  // only the Job Object to stop it, including after its root has exited.
   const late = join(root, `${containment}-${kind}.late`);
   const grandchild = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)},String(process.pid)); setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'escaped'),6000); setInterval(()=>{},1000);`;
-  const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:${strict || (process.platform === "win32" && kind !== "rootexit")},stdio:${JSON.stringify(strict ? "ignore" : "inherit")},env:${JSON.stringify(env)}}); c.unref(); ${kind === "rootexit" ? `const check=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(check);process.exit(0);}},5);` : "setInterval(()=>{},1000);"}`;
+  const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:${strict || process.platform === "win32"},stdio:${JSON.stringify(strict ? "ignore" : "inherit")},env:${JSON.stringify(env)}}); c.unref(); ${kind === "rootexit" ? `const check=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(check);process.exit(0);}},5);` : "setInterval(()=>{},1000);"}`;
   const f = fixture(
     "async ({ input, services }) => { const result = await services.process.run(input.executable, input.args, input.options); if (result.exitCode !== 0) throw Error('child failed'); return 'root-exited'; }",
     kind === "timeout" ? 2000 : 6000,

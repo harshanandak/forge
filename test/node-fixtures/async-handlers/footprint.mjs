@@ -233,14 +233,12 @@ try {
   );
   assert.equal(supervisorStarts, 1, "only one process may be started");
   if (process.platform === "win32") {
-    // The default mode starts the command itself; no helper runs beside it.
-    during.helpers = during.helpers.filter(
-      (helper) => !targetPids.includes(helper.pid),
+    // Windows keeps the Job Object helper beside the command.
+    assert.equal(during.helpers.length, 1, "the helper must be measured");
+    assert.ok(
+      during.helpers.every((helper) => !targetPids.includes(helper.pid)),
     );
-    assert.equal(during.helpers.length, 0, "no helper may run beside it");
   }
-  // Cleanup may start its own short-lived tool (taskkill on Windows); only starts before it count.
-  const startsBeforeCleanup = supervisorStarts;
   for (const controller of controllers) controller.abort();
   const outcomes = await awaitDeadline(
     settled,
@@ -293,7 +291,7 @@ try {
       during,
       after,
       addedResidentBytes,
-      supervisorStarts: startsBeforeCleanup,
+      supervisorStarts,
       rejectedBeforeHelperSpawn: true,
       supervisorPids,
       targetPids,

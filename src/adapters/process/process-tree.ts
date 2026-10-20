@@ -4,68 +4,57 @@ import type { ProcessResult, SpawnOptions } from "../../ports/process.ts";
 import { StreamCapture } from "./capture.ts";
 import { ProcessSpawnError } from "./errors.ts";
 import type { SpawnPlan } from "./plan.ts";
-import { pathFor, type Platform } from "./platform.ts";
 import type { SupervisionOptions } from "./supervision.ts";
 
+type Kill = (pid: number, signal: NodeJS.Signals | 0) => void;
+
 /**
- * Ends the tree rooted at `pid` the way the OS already models it. On POSIX the command leads its
- * own process group: SIGTERM the group, then SIGKILL whatever is left after half the cleanup
- * budget. On Windows `taskkill /T /F` walks the parent links. Resolves to whether the end was
- * confirmed (the group is gone, or taskkill succeeded) within `cleanupTimeoutMs`.
+ * Ends the POSIX process group led by `pid`: SIGTERM the group, then SIGKILL whatever is left
+ * after half the cleanup budget. SIGKILL cannot be caught or ignored, so once the OS accepts
+ * it for the group every member is dead; members still answering a signal-zero probe after that
+ * are zombies waiting to be reaped and are not polled for. Resolves false only when a signal
+ * could not be delivered for a reason other than the group being gone.
  */
-export async function endProcessTree(
+export async function endProcessGroup(
   pid: number,
-  platform: Platform,
   timing: Pick<SupervisionOptions, "cleanupTimeoutMs" | "pollIntervalMs">,
+  kill: Kill = (target, signal) => process.kill(target, signal),
 ): Promise<boolean> {
-  if (platform === "win32") return taskkill(pid, timing.cleanupTimeoutMs);
-  const deadline = performance.now() + timing.cleanupTimeoutMs;
   const grace = performance.now() + timing.cleanupTimeoutMs / 2;
-  for (const [signal, until] of [
-    ["SIGTERM", grace],
-    ["SIGKILL", deadline],
-  ] as const) {
-    if (!signalGroup(pid, signal)) return true;
-    while (performance.now() < until) {
-      if (!signalGroup(pid, 0)) return true;
-      await sleep(Math.min(timing.pollIntervalMs, until - performance.now()));
-    }
+  let state = signalGroup(kill, pid, "SIGTERM");
+  while (state === "present" && performance.now() < grace) {
+    await sleep(Math.min(timing.pollIntervalMs, grace - performance.now()));
+    state = signalGroup(kill, pid, 0);
   }
-  return !signalGroup(pid, 0);
+  if (state === "gone") return true;
+  return signalGroup(kill, pid, "SIGKILL") !== "failed";
 }
 
-/** False once the group is gone. EPERM keeps it "present": only ESRCH proves absence. */
-function signalGroup(pid: number, signal: NodeJS.Signals | 0): boolean {
+/** Only ESRCH proves the group is gone; any other error (EPERM) means the signal failed. */
+function signalGroup(
+  kill: Kill,
+  pid: number,
+  signal: NodeJS.Signals | 0,
+): "present" | "gone" | "failed" {
   try {
-    process.kill(-pid, signal);
-    return true;
+    kill(-pid, signal);
+    return "present";
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    return (error as NodeJS.ErrnoException).code === "ESRCH"
+      ? "gone"
+      : "failed";
   }
-}
-
-function taskkill(pid: number, timeoutMs: number): Promise<boolean> {
-  const root = process.env.SystemRoot ?? "C:\\Windows";
-  return new Promise((resolve) => {
-    const killer = spawn(
-      pathFor("win32").join(root, "System32", "taskkill.exe"),
-      ["/T", "/F", "/PID", String(pid)],
-      { stdio: "ignore", windowsHide: true, shell: false, timeout: timeoutMs },
-    );
-    killer.once("error", () => resolve(false));
-    // 128: the process already exited, so there is nothing left to end.
-    killer.once("exit", (code) => resolve(code === 0 || code === 128));
-  });
 }
 
 /**
- * Runs the command directly, without a helper process. On POSIX it leads its own process group
- * (`detached`), so the whole group is ended on timeout, cancellation and normal exit alike.
+ * Runs the command directly, without a helper process, on POSIX only. It leads its own process
+ * group (`detached`), so the whole group is ended on timeout, cancellation and normal exit alike.
+ * Windows keeps the helper and its Job Object: taskkill /T cannot reach a detached descendant
+ * whose parent already exited.
  */
 export function runProcessTree(
   plan: SpawnPlan,
   options: SpawnOptions,
-  platform: Platform,
   supervision: SupervisionOptions,
   started: number,
 ): Promise<ProcessResult> {
@@ -74,9 +63,7 @@ export function runProcessTree(
       cwd: options.cwd,
       env: { ...options.env },
       stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-      detached: platform !== "win32",
-      windowsHide: true,
-      windowsVerbatimArguments: plan.windowsVerbatimArguments,
+      detached: true,
       shell: false,
     });
     const stdout = new StreamCapture(options.maxOutputBytes, options.capture),
@@ -126,11 +113,8 @@ export function runProcessTree(
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", cancel);
       const pid = child.pid;
-      // On Windows a tree whose root already exited has no parent links left to walk.
       const confirmed =
-        pid === undefined ||
-        (platform === "win32" && !interrupt) ||
-        (await endProcessTree(pid, platform, supervision));
+        pid === undefined || (await endProcessGroup(pid, supervision));
       if (pid !== undefined) {
         if (child.exitCode === null && child.signalCode === null)
           await within(exited, supervision.cleanupTimeoutMs);
@@ -164,9 +148,7 @@ export function runProcessTree(
           supervisorPid: pid ?? 0,
           ...(pid === undefined ? {} : { commandPid: pid }),
           stoppedPids: pid === undefined ? [] : [pid],
-          ...(pid !== undefined && platform !== "win32"
-            ? { groupId: pid }
-            : {}),
+          ...(pid === undefined ? {} : { groupId: pid }),
           confirmed: true,
           pidSnapshotComplete: false,
           supervisorResidentBytes: 0,

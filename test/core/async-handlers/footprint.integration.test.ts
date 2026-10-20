@@ -82,8 +82,10 @@ builtTest(
     expect(report.supervisorStarts).toBe(1);
     expect(report.rejectedBeforeHelperSpawn).toBe(true);
     expect(report.addedResidentBytes).toBeLessThan(100_000_000);
-    // The default mode starts the command itself, with no helper process beside it.
-    expect(report.during.helpers).toHaveLength(0);
+    // POSIX starts the command itself; Windows keeps one Job Object helper beside it.
+    expect(report.during.helpers).toHaveLength(
+      process.platform === "win32" ? 1 : 0,
+    );
     expect(report.after.helpers).toHaveLength(0);
     expect(report.allStopped).toBe(true);
     console.log(`PROCESS_FOOTPRINT ${JSON.stringify(report)}`);

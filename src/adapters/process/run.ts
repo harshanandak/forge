@@ -93,13 +93,12 @@ export async function runProcess(
   const started = performance.now();
   let scope: Awaited<ReturnType<typeof openContainment>> | undefined;
   try {
-    // The default mode lets the OS own the tree (process group / taskkill). Only strict
-    // containment still goes through the helper with its cgroup or Job Object.
-    if (options.containment !== "strict")
+    // On POSIX the default mode lets the OS own the tree as a process group. Strict containment,
+    // and every Windows run, still go through the helper with its cgroup or Job Object.
+    if (options.containment !== "strict" && platform !== "win32")
       return await runProcessTree(
         planSpawn(executable, args, options.env, platform),
         options,
-        platform,
         supervisionConfig,
         started,
       );

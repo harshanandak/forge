@@ -105,7 +105,11 @@ export const counterfactuals: readonly Counterfactual[] = [
     evidence: "async handler awaits the actual process service",
   },
   {
-    file: "adapters/process/run.js",
+    // POSIX runs the command directly; Windows still runs it through the Job Object helper.
+    file:
+      process.platform === "win32"
+        ? "adapters/process/run.js"
+        : "adapters/process/process-tree.js",
     from: 'options.signal?.addEventListener("abort", cancel, { once: true });',
     to: "void 0;",
     journey: "cancellation",
