@@ -21,7 +21,7 @@ import {
   leaves,
   parsePointer,
 } from "./pointer.ts";
-import { withDefaults } from "./short.ts";
+import { absoluteUses, withDefaults } from "./short.ts";
 import { CONFIG_FILE } from "./store.ts";
 
 export const CONFIG_VERSION = "forge.config/1";
@@ -92,6 +92,8 @@ function invalid(
 }
 
 export function checkDocument(document: JsonObject, lookup: BlockLookup): void {
+  const uses = absoluteUses(document);
+  if (uses.length > 0) throw invalid(uses);
   const checked = validateConfigDocument(document);
   if (!checked.ok) {
     const missingSource = checked.problems.find(

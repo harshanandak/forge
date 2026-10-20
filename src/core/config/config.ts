@@ -57,7 +57,7 @@ import {
   readProject,
   type StoreDeps,
 } from "./store.ts";
-import { schemaDefaults } from "./short.ts";
+import { absoluteUses, schemaDefaults } from "./short.ts";
 
 export interface ConfigEnvironment extends StoreDeps, BlockLookup {
   readonly files: ConfigFiles;
@@ -121,9 +121,20 @@ function usable(
   const filled = clone(document);
   fillSources(filled, lookup);
   const checked = validateConfigDocument(filled);
-  if (checked.ok) return { document: filled, excluded: [] };
+  const uses = absoluteUses(filled);
+  if (checked.ok && uses.length === 0)
+    return { document: filled, excluded: [] };
+  // an absolute `use` is its instance's whole problem; the schema's echoes of it add nothing
+  const flagged = uses.map((u) => u.pointer.replace(/\/use$/, ""));
+  const problems = [
+    ...uses,
+    ...(checked.ok ? [] : checked.problems).filter(
+      (p) =>
+        !flagged.some((f) => p.pointer === f || p.pointer.startsWith(`${f}/`)),
+    ),
+  ];
   const byUnit = new Map<string, string[]>();
-  for (const problem of checked.problems) {
+  for (const problem of problems) {
     const unit = formatPointer(excludedAt(problem.pointer));
     const found = byUnit.get(unit) ?? [];
     found.push(`${problem.pointer || "/"} ${problem.message}`);

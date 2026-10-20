@@ -44,7 +44,7 @@ describe("short form", () => {
     ]);
     const config = (
       shown.effective.blocks as Record<string, { config: object }>
-    ).check.config;
+    ).check?.config;
     expect(config).toMatchObject({
       commands: { test: "bun test" },
       timeoutMs: 60000,
@@ -134,6 +134,22 @@ describe("short form", () => {
     expect(shown.effective.blocks).toMatchObject({
       hello: { enabled: false, config: { greeting: "hi" } },
     });
+  }, 10_000);
+
+  test("an absolute use path is refused with a clear message at its own pointer", () => {
+    for (const abs of [
+      "/opt/blocks/hello",
+      "C:/blocks/hello",
+      "\\\\host\\blocks",
+    ]) {
+      const shown = project(
+        `blocks:\n  hello:\n    use: ${JSON.stringify(abs)}\n`,
+      ).config.show();
+      expect(shown.excluded.map((e) => e.pointer)).toEqual(["/blocks/hello"]);
+      expect(shown.problems.join(" ")).toContain(
+        "/blocks/hello/use must be a path relative to the project",
+      );
+    }
   }, 10_000);
 
   test("ambiguous short form is refused at its own pointer, not guessed", () => {
