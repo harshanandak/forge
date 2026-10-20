@@ -1,25 +1,17 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createSupervisorDeadline } from "./supervisor-deadline.ts";
 
-// The host attaches this waiting helper to its group/job/cgroup before sending start.
+// The host attaches this waiting Windows helper to its Job Object before sending start.
 // No target environment, loader option or executable is inherited by the supervisor.
 let started = false;
 let child: ChildProcess | undefined;
 const stopOwnedScope = (): void => {
-  if (process.platform !== "win32") {
-    try {
-      process.kill(-process.pid, "SIGKILL");
-    } catch {
-      // The group may already be gone; the helper must still exit.
-    }
-  } else {
-    // The host owns the Job handle and terminates its tree when this helper exits.
-    // Also stop the direct child if host progress or IPC has stalled.
-    try {
-      child?.kill("SIGKILL");
-    } catch {
-      // Already stopped; exiting still notifies the owning host.
-    }
+  // The host owns the Job handle and terminates its tree when this helper exits.
+  // Also stop the direct child if host progress or IPC has stalled.
+  try {
+    child?.kill("SIGKILL");
+  } catch {
+    // Already stopped; exiting still notifies the owning host.
   }
   process.exit(1);
 };

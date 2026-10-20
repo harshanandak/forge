@@ -35,14 +35,14 @@ Each one gets an entry here and an adapter in the same pull request.
 
 ### koffi
 
-- **Saves:** maintained native FFI bindings for Windows Job Objects and Darwin process-member states. Node child-process APIs cannot attach a child to a job or retain ownership after its parent exits; this avoids maintaining a native addon and compiler toolchain.
+- **Saves:** maintained native FFI bindings for Windows Job Objects. Node child-process APIs cannot attach a child to a job or retain ownership after its parent exits; this avoids maintaining a native addon and compiler toolchain.
 - **Maintenance:** maintained Koffi 3.x project; exact 3.3.3 released 2026-10-10. [Official documentation](https://koffi.dev/) and [changelog](https://koffi.dev/changelog).
 - **Transitive packages:** no ordinary runtime dependencies; optional prebuilt native packages select the current platform and architecture. No additional package is installed for another platform by a normal install.
-- **Fit:** lazy-loaded only inside the process adapter on Windows (Job Objects) or macOS (libproc member states). Supported Node 24/26 and Bun use the prebuilt native module; no compiler or service is required. Only synchronous FFI calls are used; bounded polling uses the existing event loop, with no FFI worker pool. Temporary Node supervisors have a declared concurrency limit and are released after every command.
+- **Fit:** lazy-loaded only inside the process adapter on Windows (Job Objects). Supported Node 24/26 and Bun use the prebuilt native module; no compiler or service is required. Only synchronous FFI calls are used; bounded polling uses the existing event loop, with no FFI worker pool. Temporary Node supervisors have a declared concurrency limit and are released after every command.
 - **Licence:** MIT.
 - **Trust:** exact version and registry integrity pinned in bun.lock. Main package registry size is about 1.73 MB compressed; a platform binary is additionally installed. The package can build from source through an install script when a prebuilt binary is absent; Forge neither invokes a compiler nor enables blocked install scripts. An unavailable native module causes typed containment refusal before command spawning.
 - **Swap proof:** only src/adapters/process/ loads Koffi, behind ProcessPort. The Windows native integration and packed detached-descendant journey exercise lifetime, typed refusal and confirmed cleanup. Another Job Object binding changes only this adapter.
-- **Adapter:** src/adapters/process/ implements src/ports/process.ts. Linux delegated cgroups and Linux process-group inspection use Node built-ins and load no FFI library. Darwin uses libproc to distinguish live members from unreaped zombies; its injected native-binding tests and real POSIX zombie journey cover this use.
+- **Adapter:** src/adapters/process/ implements src/ports/process.ts. Linux and macOS end process groups with Node built-ins and load no FFI library.
 
 ## Development dependencies
 
