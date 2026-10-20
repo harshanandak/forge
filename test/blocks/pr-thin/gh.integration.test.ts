@@ -5,7 +5,7 @@ import { resolve, dirname, delimiter } from "node:path";
 import { createProcessPort } from "../../../src/adapters/process/index.ts";
 import type { ProcessPort } from "../../../src/ports/process.ts";
 import { validateBlockManifest } from "../../../src/contract/index.ts";
-import manifest from "../../../src/blocks/pr/forge.block.json";
+import manifest from "../../../src/blocks/pr/forge.block.json" with { type: "json" };
 type Result = {
   head?: string | null;
   verdict?: string;
