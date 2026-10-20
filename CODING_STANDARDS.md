@@ -50,7 +50,7 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 ## Platform
 
 - Durable file operations in adapters go through shared helpers that create private files and directories and fsync the parent directory after create, rename and unlink. **Guard:** `assembly-directories` rejects raw directory creation in assembly.
-- Paths, executables and processes go through the process and OS adapters. CI runs Ubuntu, macOS and Windows.
+- Paths, executables and processes go through the process and OS adapters. CI runs Ubuntu and Windows on Node 24 and 26, and macOS on Node 24 only.
 - Spawn with argument arrays only, never shell strings. Resolve executables with a PATH and PATHEXT walk.
 - Worktrees base on the fetched remote default branch.
 
