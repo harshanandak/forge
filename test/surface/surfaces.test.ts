@@ -338,7 +338,7 @@ test("stable budget is configurable; discovery preserves human and read-only bou
   );
   const catalog = fakeCatalog(entries);
   const handlers = createMcpHandlers(catalog);
-  expect(handlers.listTools()).toHaveLength(45);
+  expect(handlers.listTools()).toHaveLength(46);
   expect(
     handlers
       .listTools()
@@ -346,7 +346,7 @@ test("stable budget is configurable; discovery preserves human and read-only bou
         (t) => t.name === "sample_private" || t.name === "sample_experimental",
       ),
   ).toBe(false);
-  expect(createMcpHandlers(catalog, { budget: 0 }).listTools()).toHaveLength(5);
+  expect(createMcpHandlers(catalog, { budget: 0 }).listTools()).toHaveLength(6);
   expect(
     (await handlers.callTool("catalog_call", { op: "sample.op44", input: {} }))
       ?.ok,
