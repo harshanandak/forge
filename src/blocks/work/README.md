@@ -2,7 +2,14 @@
 
 `forge/work` is an opt-in implementation of `forge.tracker@1`. Register the built-in source in composition and bind its `state` slot to `core`. Registration does not grant admission or effects. The same declared operations are available from CLI and MCP. Operations are experimental; select `issue` in `mcp.expose` to expose them to MCP.
 
-Use `catalog.call` (CLI: `forge catalog call --input <JSON>`, MCP: `catalog_call`) to supply the canonical context and request ID. Project operations require an actor and project. Claims also require a session and supply no generation. Renewal, release, update, close, dependency edits and links require the current lease generation. No context is invented by the work block.
+Project operations require an actor and project. Claims also require a session and supply no generation. Renewal, release, update, close, dependency edits and links require the current lease generation. No context is invented by the work block.
+
+The CLI and MCP surfaces supply both, so `forge issue claim <id>`, `forge issue link ...` and `forge issue close <id>` are plain commands:
+
+- **Session.** The caller's session is `FORGE_SESSION` when set. Otherwise every CLI command uses one fixed session (`local-cli`), so separate commands share a claim, and each MCP server uses its own random session for its lifetime. Two agents that use the CLI in one checkout set different `FORGE_SESSION` values so they never share a claim.
+- **Generation.** A held operation that names an item `id` and no generation takes the generation of that item's live lease, read through `issue.show`. Only the number is filled in. The state owner still checks that the lease belongs to the caller's actor and session, so another session's link or close is refused with `LEASE_NOT_HELD`, and an item with no live lease is refused with `CONTEXT_MISSING`.
+
+`catalog.call` (CLI: `forge catalog call --input <JSON>`, MCP: `catalog_call`) still takes a full context and request ID; a context it supplies replaces the surface's.
 
 The provider knows four optional kinds: `task`, `bug`, `feature`, and `epic`. Omitted kinds stay omitted; unknown kinds are refused. A claim without an explicit duration lasts 3600 seconds; `ttlSeconds` may select 1 through 604800 seconds.
 

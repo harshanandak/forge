@@ -804,12 +804,24 @@ export async function createAssembly(
     },
   };
 }
-export function localContext(assembly: Assembly, actor: Actor): AmbientContext {
+export function localContext(
+  assembly: Assembly,
+  actor: Actor,
+  session?: string,
+): AmbientContext {
   return {
     actor,
     project: { id: assembly.root, root: assembly.root },
     device: { id: assembly.deviceRoot },
+    ...(session === undefined ? {} : { session: { id: session } }),
   };
+}
+/**
+ * The caller's session: FORGE_SESSION when set, otherwise the given fallback. The CLI falls back to
+ * one fixed session so separate commands share a claim; each MCP server falls back to its own.
+ */
+export function localSession(fallback: string): string {
+  return process.env.FORGE_SESSION || fallback;
 }
 export async function createLocalAssembly(): Promise<Assembly> {
   return createAssembly({
@@ -820,9 +832,14 @@ export async function createLocalAssembly(): Promise<Assembly> {
 
 export function localCall(
   assembly: Assembly,
+  session: string = localSession("local-cli"),
 ): import("../surface/dispatch.ts").CallOptions {
   return {
     caller: "human",
-    context: localContext(assembly, { kind: "human", id: "local-cli" }),
+    context: localContext(
+      assembly,
+      { kind: "human", id: "local-cli" },
+      session,
+    ),
   };
 }
