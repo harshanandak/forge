@@ -214,7 +214,7 @@
       "args": ["id"]
     },
     "issue.lint": {
-      "input": "schemas/ListItemsInput.json",
+      "input": "schemas/LintInput.json",
       "output": "schemas/lint-result.json",
       "context": "project",
       "timeoutMs": 5000,

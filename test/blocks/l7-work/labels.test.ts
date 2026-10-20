@@ -1,7 +1,11 @@
 import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { validateWithSchema } from "../../../src/contract/schema.ts";
+import {
+  type SchemaObject,
+  SchemaRegistry,
+  validateWithSchema,
+} from "../../../src/contract/schema.ts";
 
 setDefaultTimeout(30_000);
 
@@ -106,4 +110,26 @@ test("the config schema declares labelOrder with an empty default and refuses ot
     [],
   );
   expect(validateWithSchema(schema, { other: 1 })).not.toEqual([]);
+});
+
+test("issue.lint has its own input schema that refuses labels", () => {
+  const manifest = JSON.parse(
+    readFileSync(resolve(root, "forge.block.json"), "utf8"),
+  ) as { operations: Record<string, { input: string }> };
+  const read = (path: string) =>
+    JSON.parse(readFileSync(path, "utf8")) as SchemaObject;
+  const lint = {
+    ...read(resolve(root, manifest.operations["issue.lint"]!.input)),
+    $id: "urn:forge:test:lint-input",
+  };
+  const schemas = resolve(root, "../../../schemas");
+  const contract = readdirSync(schemas)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => read(resolve(schemas, name)));
+  const registry = new SchemaRegistry([...contract, lint]);
+  const validate = (value: unknown) =>
+    registry.validate("urn:forge:test:lint-input", value);
+  expect(validate({})).toEqual([]);
+  expect(validate({ status: "open", limit: 5 })).toEqual([]);
+  expect(validate({ labels: ["p0"] })).not.toEqual([]);
 });
