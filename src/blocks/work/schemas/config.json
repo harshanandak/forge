@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "labelOrder": {
+      "description": "Labels in rank order, first ranks highest (for example p0, p1, p2). issue.ready sorts an item by the first of these labels it carries; items with none come last, and ties keep their stored order. Left empty, issue.ready does not reorder.",
+      "type": "array",
+      "default": [],
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+    }
+  },
+  "additionalProperties": false
+}

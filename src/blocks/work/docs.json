@@ -10,7 +10,7 @@
     },
     "issue.list": {
       "title": "Issue list",
-      "summary": "List issues; ready means open, dependencies closed and no live lease."
+      "summary": "List issues; ready means open, dependencies closed and no live lease. Pass labels to keep only items that carry every one of them."
     },
     "issue.update": {
       "title": "Issue update",
@@ -38,7 +38,7 @@
     },
     "issue.ready": {
       "title": "Issue ready",
-      "summary": "Open issues with closed dependencies and no live lease; expired or released leases never hide ready work."
+      "summary": "Open issues with closed dependencies and no live lease; expired or released leases never hide ready work. Pass labels to keep only items that carry all of them. When /blocks/work/config/labelOrder is set, results sort by the first listed label an item carries, then by stored order."
     },
     "issue.blocked": {
       "title": "Issue blocked",

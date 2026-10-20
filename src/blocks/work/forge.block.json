@@ -5,6 +5,7 @@
   "authorAbi": "forge.author/v1",
   "profile": "trusted-action-sync/v1",
   "entry": "entry.cjs",
+  "configSchema": "schemas/config.json",
   "nouns": {
     "issue": {
       "interface": "1.0.0"
