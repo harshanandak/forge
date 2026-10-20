@@ -540,7 +540,7 @@ test("owned core fragments assemble without duplicate operations", () => {
     docs: "docs.json",
   };
   const manifest = assembleCoreManifest(base, fragments);
-  assert.equal(Object.keys(manifest.operations).length, 6);
+  assert.equal(Object.keys(manifest.operations).length, 7);
   assert.throws(
     () => assembleCoreManifest(base, [...fragments, fragments[0]!]),
     /duplicate core operation/,
@@ -563,6 +563,7 @@ test("core manifest is generated from area declarations at check and build time"
     "catalog.call",
     "catalog.describe",
     "catalog.list",
+    "skills.sync",
   ]);
   for (const area of ["catalog", "trust"])
     assert.equal(

@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemStatus"
+    },
+    "ready": {
+      "description": "Only open items whose dependencies are closed and that no live lease holds.",
+      "type": "boolean"
+    },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 }
+  },
+  "additionalProperties": false
+}
