@@ -32,30 +32,33 @@ interface Outcomes {
   envIsolation: Run;
   missingCommand: { kind: string; reason: string; remedy: string };
   badCwd: { code: string };
-  timeout: Run;
-  grandchildAliveAfterTimeout: boolean;
+  timeout: Run & { treeAlive: boolean };
+  cancel: Run & { treeAlive: boolean };
 }
 
 let outcomes: Outcomes;
+let bunOutcomes: Outcomes;
 
-beforeAll(() => {
+function runFixture(runtime: string, flags: string[]): Outcomes {
   // FORGE_PROCESS_ENTRY points the same program at the built package (dist) in the pack smoke.
   const entry = process.env["FORGE_PROCESS_ENTRY"];
-  const run = spawnSync(
-    "node",
-    [
-      "--disable-warning=ExperimentalWarning",
-      fixture,
-      ...(entry === undefined ? [] : [entry]),
-    ],
-    { encoding: "utf8", timeout: 120_000, windowsHide: true },
-  );
+  const args = [...flags, fixture, ...(entry === undefined ? [] : [entry])];
+  const run = spawnSync(runtime, args, {
+    encoding: "utf8",
+    timeout: 120_000,
+    windowsHide: true,
+  });
   if (run.status !== 0) {
     throw new Error(
-      `the node fixture failed (${run.status}): ${run.stderr || run.error?.message}`,
+      `the ${runtime} fixture failed (${run.status}): ${run.stderr || run.error?.message}`,
     );
   }
-  outcomes = JSON.parse(run.stdout) as Outcomes;
+  return JSON.parse(run.stdout) as Outcomes;
+}
+
+beforeAll(() => {
+  outcomes = runFixture("node", ["--disable-warning=ExperimentalWarning"]);
+  bunOutcomes = runFixture(process.execPath, []);
 }, 150_000);
 
 const windows = process.platform === "win32";
@@ -127,8 +130,20 @@ test("a missing command is Unavailable and a bad working directory is a typed re
   expect(outcomes.badCwd).toMatchObject({ code: "INVALID_OPTIONS" });
 }, 30_000);
 
-test("a timeout stops the whole process tree and says so", () => {
-  expect(outcomes.timeout.timedOut).toBe(true);
-  expect(outcomes.timeout.exitCode).toBeNull();
-  expect(outcomes.grandchildAliveAfterTimeout).toBe(false);
-}, 30_000);
+test.each(["node", "bun"])(
+  "under %s, timeout and cancellation stop the child and its grandchild",
+  (runtime) => {
+    const ran = runtime === "node" ? outcomes : bunOutcomes;
+    expect(ran.timeout).toMatchObject({
+      timedOut: true,
+      exitCode: null,
+      treeAlive: false,
+    });
+    expect(ran.cancel).toMatchObject({
+      timedOut: false,
+      exitCode: null,
+      treeAlive: false,
+    });
+  },
+  30_000,
+);

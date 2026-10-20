@@ -127,11 +127,9 @@ function report(result, containment, descendantPid) {
   assert.ok(value.stoppedCount >= value.stoppedPids.length);
   assert.equal(alive(value.supervisorPid), false, "supervisor must be stopped");
   if (process.platform === "win32")
-    assert.equal(
-      value.backend,
-      "windows-job",
-      "Windows defaults to Job Objects",
-    );
+    assert.equal(value.backend, "windows-job", "Windows keeps Job Objects");
+  else if (containment === "supervised")
+    assert.equal(value.backend, "process-group", "the OS owns the tree");
   if (containment === "strict" && process.platform === "linux")
     assert.equal(value.backend, "linux-cgroup");
   if (descendantPid !== undefined) {
@@ -198,6 +196,8 @@ async function refusal(port, label) {
 async function tree(kind, containment = "supervised") {
   const strict = containment === "strict";
   const ready = join(root, `${containment}-${kind}.ready`);
+  // On Windows libuv already ends a non-detached grandchild with its parent; detaching it leaves
+  // only the Job Object to stop it, including after its root has exited.
   const late = join(root, `${containment}-${kind}.late`);
   const grandchild = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)},String(process.pid)); setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'escaped'),6000); setInterval(()=>{},1000);`;
   const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:${strict || process.platform === "win32"},stdio:${JSON.stringify(strict ? "ignore" : "inherit")},env:${JSON.stringify(env)}}); c.unref(); ${kind === "rootexit" ? `const check=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(check);process.exit(0);}},5);` : "setInterval(()=>{},1000);"}`;
@@ -235,8 +235,16 @@ async function tree(kind, containment = "supervised") {
   }
   assert.ok(existsSync(ready), "grandchild must have started");
   const pid = Number(readFileSync(ready, "utf8"));
+  const survived = alive(pid);
+  // A counterfactual leaves a real orphan; stop it so it cannot outlive the journey.
+  if (survived)
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
   assert.equal(
-    alive(pid),
+    survived,
     false,
     `invocation must stop its entire process tree (pid=${pid})`,
   );
@@ -292,7 +300,7 @@ try {
       ["all", kind, kind === "rootexit" ? "default-cleanup" : ""].includes(mode)
     )
       await tree(kind);
-  if (mode === "job-termination") await tree("cancel");
+  if (mode === "job-termination") await tree("cancel", "strict");
   if (["all", "strict-refusal"].includes(mode)) {
     await refusal(processPort({ strictContainment: false }), "host disabled");
     const actual = processPort();
