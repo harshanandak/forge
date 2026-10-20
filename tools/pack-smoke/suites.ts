@@ -39,4 +39,9 @@ export const packedSuites = [
     label: "packed delivery template integration",
     consumerEnv: "DELIVERY_PACKED_CONSUMER",
   },
+  {
+    file: "test/integration/first-run/packed.integration.test.ts",
+    label: "packed first run integration",
+    consumerEnv: "FIRST_RUN_PACKED_CONSUMER",
+  },
 ] as const;
