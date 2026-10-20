@@ -8,9 +8,13 @@ import type { SupervisionOptions } from "./supervision.ts";
 
 type Kill = (pid: number, signal: NodeJS.Signals | 0) => void;
 
+/** Extra group SIGKILLs after the first, to catch a child forked while the first one landed. */
+const SIGKILL_RESENDS = 3;
+const SIGKILL_RESEND_INTERVAL_MS = 25;
+
 /**
  * Ends the POSIX process group led by `pid`: SIGTERM the group, then SIGKILL whatever is left
- * after half the cleanup budget. SIGKILL cannot be caught or ignored, so once the OS accepts
+ * after half the cleanup budget, re-sent a few times so a child forked mid-kill is caught. SIGKILL cannot be caught or ignored, so once the OS accepts
  * it for the group every member is dead; members still answering a signal-zero probe after that
  * are zombies waiting to be reaped and are not polled for. Resolves false only when a signal
  * could not be delivered for a reason other than the group being gone.
@@ -20,14 +24,29 @@ export async function endProcessGroup(
   timing: Pick<SupervisionOptions, "cleanupTimeoutMs" | "pollIntervalMs">,
   kill: Kill = (target, signal) => process.kill(target, signal),
 ): Promise<boolean> {
-  const grace = performance.now() + timing.cleanupTimeoutMs / 2;
+  const deadline = performance.now() + timing.cleanupTimeoutMs;
+  const grace = deadline - timing.cleanupTimeoutMs / 2;
   let state = signalGroup(kill, pid, "SIGTERM");
   while (state === "present" && performance.now() < grace) {
     await sleep(Math.min(timing.pollIntervalMs, grace - performance.now()));
     state = signalGroup(kill, pid, 0);
   }
   if (state === "gone") return true;
-  return signalGroup(kill, pid, "SIGKILL") !== "failed";
+  state = signalGroup(kill, pid, "SIGKILL");
+  // A member forking while the first SIGKILL lands can publish a child that misses it, so the
+  // group is sent SIGKILL again a few times; ESRCH means it is gone. These are safety repeats,
+  // not policy, and they stay inside the cleanup budget.
+  for (
+    let resend = 0;
+    resend < SIGKILL_RESENDS && state === "present";
+    resend++
+  ) {
+    const left = deadline - performance.now();
+    if (left <= 0) break;
+    await sleep(Math.min(SIGKILL_RESEND_INTERVAL_MS, left));
+    state = signalGroup(kill, pid, "SIGKILL");
+  }
+  return state !== "failed";
 }
 
 /** Only ESRCH proves the group is gone; any other error (EPERM) means the signal failed. */

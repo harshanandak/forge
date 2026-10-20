@@ -17,7 +17,8 @@ test("a group left with only zombies after SIGKILL counts as stopped, without wa
   });
   expect(stopped).toBe(true);
   expect(sent[0]).toBe("SIGTERM");
-  expect(sent.at(-1)).toBe("SIGKILL");
+  // SIGKILL is re-sent so a child forked while the first one landed is caught too.
+  expect(sent.filter((signal) => signal === "SIGKILL")).toHaveLength(4);
   // Only the SIGTERM grace (half the budget) is spent; nothing polls after SIGKILL.
   expect(performance.now() - started).toBeLessThan(
     timing.cleanupTimeoutMs * 0.9,
@@ -37,6 +38,25 @@ test("a group that exits after SIGTERM is never sent SIGKILL", async () => {
 test("a SIGKILL the OS refuses is reported as not stopped", async () => {
   const stopped = await endProcessGroup(7, timing, (_pid, signal) => {
     if (signal === "SIGKILL") throw errno("EPERM");
+  });
+  expect(stopped).toBe(false);
+}, 5_000);
+
+test("SIGKILL re-sends stop as soon as the group is gone", async () => {
+  const sent: (NodeJS.Signals | 0)[] = [];
+  let kills = 0;
+  const stopped = await endProcessGroup(7, timing, (_pid, signal) => {
+    sent.push(signal);
+    if (signal === "SIGKILL" && ++kills === 2) throw errno("ESRCH");
+  });
+  expect(stopped).toBe(true);
+  expect(sent.filter((signal) => signal === "SIGKILL")).toHaveLength(2);
+}, 5_000);
+
+test("a SIGKILL re-send the OS refuses is reported as not stopped", async () => {
+  let kills = 0;
+  const stopped = await endProcessGroup(7, timing, (_pid, signal) => {
+    if (signal === "SIGKILL" && ++kills === 3) throw errno("EPERM");
   });
   expect(stopped).toBe(false);
 }, 5_000);
