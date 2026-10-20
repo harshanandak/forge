@@ -55,7 +55,7 @@ export function isAgentCallable(declaration: OperationDeclaration): boolean {
 }
 
 /** A block-declared operation name as it appears on the surfaces, after the instance's renames. */
-function renamed(
+export function renamedOperation(
   op: string,
   rename: Readonly<Record<string, string>> | undefined,
 ): string {
@@ -76,7 +76,9 @@ export function projectMcpTool(
   const { docs, declaration } = candidate;
   const declared = declaration.deprecated?.use;
   const replacement =
-    declared === undefined ? undefined : renamed(declared, candidate.rename);
+    declared === undefined
+      ? undefined
+      : renamedOperation(declared, candidate.rename);
   const notice =
     replacement === undefined
       ? ""
