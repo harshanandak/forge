@@ -60,9 +60,10 @@ async function open<T>(
 }
 
 /**
- * A fresh project that imported the repo's delivery template, read in place from a copy of
- * templates/delivery. Built-in entries exist only in a build, so each imported block instance is
- * pointed at a copy of the shipped block with a stub entry; listing never runs it.
+ * A fresh project that imported the shipped delivery template by name, as a user does; its skills
+ * are read from the package. Built-in entries exist only in a build, so each imported block
+ * instance is pointed at a copy of the shipped block with a stub entry; listing never runs it.
+ * The installed-package journey is packed.integration.test.ts.
  */
 async function withDelivery(
   run: (
@@ -73,9 +74,12 @@ async function withDelivery(
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "forge-delivery-"));
   try {
-    cpSync(join(repo, "templates/delivery"), join(root, "templates/delivery"), {
-      recursive: true,
-    });
+    // an npm project: check's commands come from its scripts, not from the template
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ name: "p", scripts: { test: "node test.js" } }),
+    );
+    writeFileSync(join(root, "package-lock.json"), '{"lockfileVersion":3}');
     mkdirSync(join(root, ".forge"));
     writeFileSync(
       join(root, ".forge/config.yaml"),
@@ -84,7 +88,7 @@ async function withDelivery(
     await open(root, async (call) => {
       expect(
         await call("template.import", {
-          template: "templates/delivery/forge.template.json",
+          template: "delivery",
           expectRevision: "",
         }),
       ).toMatchObject({ ok: true });

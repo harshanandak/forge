@@ -46,7 +46,8 @@ import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { firstPartyBlocks } from "./first-party.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
 import { LocalState } from "./state.ts";
-import { syncSkills } from "./skills.ts";
+import { syncSkills, type TemplateFile } from "./skills.ts";
+import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
 import { openLevels, PROJECT_STATE } from "./levels.ts";
 import {
   ASSEMBLY_PROVIDES,
@@ -189,11 +190,13 @@ export async function createAssembly(
   // never share or clear each other's captures, and nothing is kept once the call ends.
   type CallScope = {
     captured(source: BlockSource): CapturedBlock;
+    shipped: ReturnType<typeof shippedTemplates>;
     config: ReturnType<typeof createConfig>;
     configOperations: ReturnType<typeof createConfigOperations>;
   };
   function callScope(): CallScope {
     const captures = new Map<string, CapturedBlock | { failed: unknown }>();
+    const shipped = shippedTemplates();
     function captured(source: BlockSource): CapturedBlock {
       const key = JSON.stringify(source);
       let found = captures.get(key);
@@ -213,7 +216,7 @@ export async function createAssembly(
       codec: yamlConfigCodec,
       clock: { now: () => Date.now() },
       detect: () => detectProject(createFolderFiles(root)).observations,
-      templates: { list: () => [], get: () => undefined },
+      templates: shipped,
       builtinSource: (name: string): BlockSource | undefined =>
         firstPartyBlocks[`forge/${name}`] === undefined
           ? undefined
@@ -235,6 +238,7 @@ export async function createAssembly(
     };
     return {
       captured,
+      shipped,
       config: createConfig(environment),
       configOperations: createConfigOperations(environment),
     };
@@ -499,7 +503,16 @@ export async function createAssembly(
                 composition(show).mcp?.toolPrefix,
                 typeof input.dir === "string" ? input.dir : undefined,
                 {
-                  sources: show.templates.flatMap((t) => t.source ?? []),
+                  sources: show.templates.flatMap((t): TemplateFile[] => {
+                    if (t.source !== undefined)
+                      return [{ root, file: t.source }];
+                    const dir = call.shipped.dirOf(
+                      t.template.slice(0, t.template.lastIndexOf("@")),
+                    );
+                    return dir === undefined
+                      ? []
+                      : [{ root: dir, file: TEMPLATE_FILE }];
+                  }),
                   values: show.effective.values,
                 },
               ),

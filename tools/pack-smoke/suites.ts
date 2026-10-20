@@ -34,4 +34,9 @@ export const packedSuites = [
     label: "packed providers integration",
     consumerEnv: "PROVIDERS_PACKED_CONSUMER",
   },
+  {
+    file: "test/templates/delivery/packed.integration.test.ts",
+    label: "packed delivery template integration",
+    consumerEnv: "DELIVERY_PACKED_CONSUMER",
+  },
 ] as const;

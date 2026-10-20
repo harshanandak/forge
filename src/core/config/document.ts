@@ -136,6 +136,21 @@ export function checkInstanceConfig(
   name: string,
   problems: readonly SchemaProblem[],
 ): void {
+  // A required key with no default that nothing sets: say so plainly, with where it can come from.
+  const missing = problems.find(
+    (p) => p.keyword === "required" && /^\/[^/]+$/.test(p.pointer),
+  );
+  if (missing !== undefined) {
+    const key = parsePointer(missing.pointer)?.[0] ?? "";
+    const pointer = formatPointer(["blocks", name, "config", key]);
+    throw new ForgeFailure({
+      code: "INPUT_INVALID",
+      message: `blocks.${name} needs ${key}, and nothing sets it: ${CONFIG_FILE} has no value and nothing was detected in this project`,
+      pointer,
+      retry: "never",
+      repair: `set ${pointer} in the same edit`,
+    });
+  }
   if (problems.length > 0) {
     throw invalid(
       problems.map((p) => ({
