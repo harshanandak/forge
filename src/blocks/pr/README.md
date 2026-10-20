@@ -1,8 +1,9 @@
 # GitHub status and pinned merge
 
-The thin block declares `pr.status` and `pr.merge` and runs `gh` (and only `gh`) through the process service.
+The thin block declares `pr.status`, `pr.merge`, `pr.threads`, `pr.reply` and `pr.resolve` and runs `gh` (and only `gh`) through the process service.
 It asks GitHub for status, defaults `requireResolvedThreads` to true, and only squash
 merges the expected head. Supply a GitHub `owner/repository`; other hosts are unavailable.
+`pr.threads` lists review threads (paginated; `unresolved` filters) with a text excerpt fenced as untrusted data, sized by `excerptChars`. `pr.reply` replies to a review comment; `pr.resolve` resolves a thread and reads it back. A missing `gh` or non-GitHub remote is `UNAVAILABLE`.
 Thread policy is checked before merging; GitHub enforces protection at merge time.
 
 The earlier shared contracts below remain unchanged. Like the tracker convention, the host

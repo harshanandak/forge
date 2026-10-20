@@ -6,6 +6,13 @@
       "type": "boolean",
       "default": true,
       "description": "Require all GitHub review threads to be resolved before merging."
+    },
+    "excerptChars": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2000,
+      "default": 200,
+      "description": "Characters of each review comment that pr.threads returns as its excerpt."
     }
   }
 }

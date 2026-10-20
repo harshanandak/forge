@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "isResolved", "reasons"],
+  "properties": {
+    "verdict": { "enum": ["OK", "BLOCKED", "UNAVAILABLE"] },
+    "isResolved": { "type": ["boolean", "null"] },
+    "reasons": {
+      "type": "array",
+      "items": { "$ref": "pr.json#/$defs/Blocker" }
+    }
+  }
+}

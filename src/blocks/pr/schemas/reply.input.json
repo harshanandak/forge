@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "number", "commentId", "body"],
+  "properties": {
+    "repo": { "type": "string", "minLength": 1 },
+    "number": { "type": "integer", "minimum": 1 },
+    "commentId": { "type": "integer", "minimum": 1 },
+    "body": { "type": "string", "minLength": 1 }
+  }
+}

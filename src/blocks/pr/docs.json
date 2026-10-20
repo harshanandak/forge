@@ -7,6 +7,18 @@
     "pr.merge": {
       "title": "Merge the expected head",
       "summary": "Squash merge a ready PR with the head pinned, then read it back."
+    },
+    "pr.threads": {
+      "title": "List review threads",
+      "summary": "List review threads with ids, author, location and a fenced text excerpt; optionally only unresolved ones."
+    },
+    "pr.reply": {
+      "title": "Reply to a review comment",
+      "summary": "Post a reply on a review thread through GitHub."
+    },
+    "pr.resolve": {
+      "title": "Resolve a review thread",
+      "summary": "Resolve a thread on GitHub, then read it back and report whether it is resolved."
     }
   }
 }

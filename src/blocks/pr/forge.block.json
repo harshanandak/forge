@@ -6,11 +6,24 @@
   "profile": "trusted-action/v2",
   "entry": "entry.cjs",
   "configSchema": "schemas/config.json",
-  "nouns": { "pr": { "interface": "1.0.0" } },
+  "nouns": {
+    "pr": {
+      "interface": "1.0.0"
+    }
+  },
   "requires": [
-    { "slot": "process", "interface": "forge.process@1" },
-    { "slot": "files", "interface": "forge.files@1" },
-    { "slot": "environment", "interface": "forge.environment@1" }
+    {
+      "slot": "process",
+      "interface": "forge.process@1"
+    },
+    {
+      "slot": "files",
+      "interface": "forge.files@1"
+    },
+    {
+      "slot": "environment",
+      "interface": "forge.environment@1"
+    }
   ],
   "operations": {
     "pr.status": {
@@ -41,6 +54,53 @@
         "external:write"
       ],
       "idempotent": false,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
+    "pr.threads": {
+      "input": "schemas/threads.input.json",
+      "output": "schemas/threads.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": [
+        "process:write",
+        "external:process",
+        "files:read",
+        "environment:read"
+      ],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
+    "pr.reply": {
+      "input": "schemas/reply.input.json",
+      "output": "schemas/reply.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": [
+        "process:write",
+        "external:process",
+        "files:read",
+        "environment:read",
+        "external:write"
+      ],
+      "idempotent": false,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
+    "pr.resolve": {
+      "input": "schemas/resolve.input.json",
+      "output": "schemas/resolve.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": [
+        "process:write",
+        "external:process",
+        "files:read",
+        "environment:read",
+        "external:write"
+      ],
+      "idempotent": true,
       "callers": ["human", "agent"],
       "stability": "experimental"
     }
