@@ -34,6 +34,9 @@
         "op": { "$ref": "common.json#/$defs/OperationName" },
         "status": { "enum": ["FAIL", "INCOMPLETE"] },
         "error": { "$ref": "error.json" },
+        "result": {
+          "description": "Accepted operation output retained when its outcome is unsuccessful."
+        },
         "warnings": {
           "type": "array",
           "maxItems": 32,

@@ -12,6 +12,7 @@ Commands are the `package.json` scripts. `test/structure` holds the repo guards.
 - Commit with conventional titles (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:`). The pull request title is checked and becomes the squash-merge title and the changelog line.
 
 - After cloning, run `forge skills sync` and follow the `loop` skill; this repo runs on its own delivery template (`.forge/config.yaml`).
+- Checks: PASS exits 0; FAIL 1; INCOMPLETE/NOT_EXECUTED 2. Non-PASS keeps the receipt with `ok:false`.
 
 ## Standards
 

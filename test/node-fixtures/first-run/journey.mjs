@@ -111,7 +111,7 @@ passed.push("issue create");
 cli(["issue", "claim", slice.id]);
 passed.push("issue claim");
 
-const red = cli(["check", "run"]).result;
+const red = cli(["check", "run"], 1).result;
 assert.equal(red.status, "FAIL", JSON.stringify(red));
 assert.equal(red.subject, git("rev-parse", "HEAD"));
 passed.push("check red");
