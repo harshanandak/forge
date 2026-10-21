@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { nameDistance } from "../contract/distance.ts";
 import { isAgentCallable } from "../contract/mcp.ts";
+import { closestNames } from "../contract/schema.ts";
 import type {
   AmbientContext,
   Caller,
@@ -41,12 +41,10 @@ export function suggestions(
   catalog: SurfaceCatalog,
   caller: Caller,
 ): string[] {
-  return visible(catalog, caller)
-    .map((c) => ({ op: c.op, score: nameDistance(name, c.op) }))
-    .filter((c) => c.score <= Math.max(2, Math.floor(name.length / 3)))
-    .sort((a, b) => a.score - b.score || a.op.localeCompare(b.op))
-    .slice(0, 8)
-    .map((c) => c.op);
+  return closestNames(
+    name,
+    visible(catalog, caller).map((entry) => entry.op),
+  );
 }
 
 /** All execution, including overflow tools and hooks, joins the injected runtime here. */
@@ -107,12 +105,15 @@ export async function dispatch(
         (options.caller !== "agent" || isAgentCallable(c.declaration)) &&
         (!options.readOnly || c.declaration.effects.length === 0),
     )
-  )
+  ) {
+    const error = catalog.diagnose?.(op);
+    if (error) return { ok: false, op, status: "FAIL", error, warnings: [] };
     return failure(
       "UNKNOWN_COMMAND",
       `Unknown operation: ${op}`,
       suggestions(op, catalog, options.caller),
     );
+  }
   try {
     return await catalog.invoke({
       schemaVersion: "forge.invocation/1",

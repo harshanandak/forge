@@ -2,7 +2,47 @@ import type { ForgeError, OperationDocs } from "../generated/types.ts";
 import type { SchemaObject, SchemaProblem } from "./schema.ts";
 import { renderExample } from "./example.ts";
 
-function sentence(problem: SchemaProblem): string {
+/** One renderer for transport input and document diagnostics. */
+export function formatProblem(
+  problem: SchemaProblem,
+  value?: unknown,
+  prefix?: string,
+  file = ".forge/config.yaml",
+): string {
+  if (arguments.length > 1) {
+    const segments = problem.pointer
+      .split("/")
+      .slice(1)
+      .map((part) => part.replaceAll("~1", "/").replaceAll("~0", "~"));
+    let received = value;
+    for (const segment of segments)
+      received =
+        typeof received === "object" && received !== null
+          ? (received as Readonly<Record<string, unknown>>)[segment]
+          : undefined;
+    const path = [prefix, ...segments].filter(Boolean).join(".") || "/";
+    const actual = JSON.stringify(received) ?? "missing";
+    const message =
+      problem.keyword === "type"
+        ? problem.message.replace(/, got .*/, () => `, got ${actual}`)
+        : `${problem.message}; got ${actual}`;
+    const expectation = problem.message
+      .replace(/, got .*/, "")
+      .replace(/^expected /, "");
+    const fix =
+      problem.suggestion !== undefined
+        ? problem.keyword === "additionalProperties"
+          ? `did you mean ${problem.suggestion}? Rename ${segments.at(-1)} to ${problem.suggestion}`
+          : `use ${JSON.stringify(problem.suggestion)}`
+        : problem.keyword === "additionalProperties"
+          ? `remove ${path}`
+          : problem.keyword === "required"
+            ? `add ${path}`
+            : problem.keyword === "oneOf" || problem.keyword === "anyOf"
+              ? `use one of the allowed shapes at ${path}`
+              : `set ${path} to ${problem.keyword === "type" ? `a valid ${expectation}` : problem.keyword === "enum" || problem.keyword === "const" ? expectation : `a value that ${expectation}`}`;
+    return `${file}: ${path}: ${message}. Fix: ${fix}.`;
+  }
   const field =
     problem.pointer
       .split("/")
@@ -57,7 +97,7 @@ export function inputError(
       : renderExample(op, docs, schema, positions);
   return {
     code: "INPUT_INVALID",
-    message: `Invalid input for ${op}:\n${problems.map(sentence).join("\n")}${call === undefined ? "" : `\nExample: ${call}`}`,
+    message: `Invalid input for ${op}:\n${problems.map((problem) => formatProblem(problem)).join("\n")}${call === undefined ? "" : `\nExample: ${call}`}`,
     retry: "never",
     observed: {
       problems: fields,

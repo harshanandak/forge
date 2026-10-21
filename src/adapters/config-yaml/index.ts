@@ -96,7 +96,7 @@ export const yamlConfigCodec: ConfigCodecPort = {
     const [problem] = [...document.errors, ...document.warnings];
     if (problem !== undefined) {
       return refuse(
-        `config is not valid strict YAML: ${problem.message.split("\n")[0] ?? problem.code}`,
+        `config is not valid strict YAML: ${problem.message.trim()}`,
       );
     }
     let value: unknown;

@@ -15,8 +15,8 @@ export const counterfactuals: readonly Counterfactual[] = [
   },
   {
     file: "blocks/check/entry.cjs",
-    from: 'function commandArguments(text) {\n    const invalid = (message) => failure("INPUT_INVALID", message);',
-    to: "function commandArguments(text) {\n    const invalid = (message) => { throw new Error(message); };",
+    from: 'function commandArguments(text, configPath) {\n    const invalid = (message) => failure("INPUT_INVALID", message);',
+    to: "function commandArguments(text, configPath) {\n    const invalid = (message) => { throw new Error(message); };",
     journey: "review",
     evidence: "invalid command string has a typed error",
   },
@@ -67,7 +67,7 @@ export const counterfactuals: readonly Counterfactual[] = [
     from: "forge.state@1",
     to: "forge.state@^1.0.0",
     journey: "mcp",
-    evidence: "Unknown operation: check.list",
+    evidence: "check list:",
   },
   {
     file: "adapters/runner-output/index.js",
@@ -95,7 +95,7 @@ export const counterfactuals: readonly Counterfactual[] = [
     from: '"forge/check": new URL("../blocks/check/", import.meta.url),',
     to: "",
     journey: "surfaces",
-    evidence: "Unknown operation: check.list",
+    evidence: "check list:",
   },
   {
     file: "blocks/check/entry.cjs",

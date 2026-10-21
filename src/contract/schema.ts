@@ -15,6 +15,16 @@ export interface SchemaProblem {
   readonly suggestion?: string;
 }
 
+/** Closest declared spelling; the schema, rather than a list of special cases, owns the names. */
+export function closestNames(name: string, names: readonly string[]): string[] {
+  return names
+    .map((key) => ({ key, score: nameDistance(name, key) }))
+    .filter(({ score }) => score <= Math.max(2, Math.floor(name.length / 3)))
+    .sort((a, b) => a.score - b.score || a.key.localeCompare(b.key))
+    .slice(0, 8)
+    .map(({ key }) => key);
+}
+
 export type ValidationResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly problems: readonly SchemaProblem[] };
@@ -501,11 +511,11 @@ export class SchemaRegistry {
         pointer,
         keyword,
         message,
+        ...(suggestion === undefined ? {} : { suggestion }),
         ...(detailed
           ? {
               expected,
               received,
-              ...(suggestion === undefined ? {} : { suggestion }),
             }
           : {}),
       });
@@ -541,11 +551,22 @@ export class SchemaRegistry {
       Array.isArray(schema.enum) &&
       !schema.enum.some((e) => jsonEqual(e, value))
     ) {
+      const suggested =
+        typeof value === "string"
+          ? closestNames(
+              value,
+              schema.enum.filter(
+                (entry): entry is string => typeof entry === "string",
+              ),
+            )[0]
+          : undefined;
       add(
         "enum",
         `expected one of ${JSON.stringify(schema.enum)}`,
         at,
         `one of ${JSON.stringify(schema.enum)}`,
+        detailed ? (JSON.stringify(value) ?? "missing") : "",
+        suggested,
       );
     }
     if ("const" in schema && !jsonEqual(schema.const, value)) {
@@ -680,7 +701,9 @@ export class SchemaRegistry {
               pointer,
               `one of ${Object.keys(properties).join(", ") || "no properties"}`,
               detailed ? (JSON.stringify(value[key]) ?? "missing") : "",
-              detailed ? closestName(key, Object.keys(properties)) : undefined,
+              detailed
+                ? closestName(key, Object.keys(properties))
+                : closestNames(key, Object.keys(properties))[0],
             );
           } else {
             problems.push(
