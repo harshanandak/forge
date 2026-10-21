@@ -16,7 +16,7 @@
     },
     "block.add": {
       "title": "Capture a block",
-      "summary": "Capture an installed block and report its digest.",
+      "summary": "Register a block and report its digest; pending human admission returns the next command.",
       "examples": [{ "input": { "path": "./example-block" } }]
     },
     "block.check": {

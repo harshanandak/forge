@@ -45,6 +45,8 @@
   "files": [
     "dist",
     "templates",
+    "examples/hello-block",
+    "docs/writing-a-block.md",
     "LICENSE",
     "README.md"
   ],

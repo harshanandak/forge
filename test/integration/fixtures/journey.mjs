@@ -313,9 +313,11 @@ try {
     console.log("PASS detection");
   } else {
     makeBlock();
-    const added = cli(["block", "add", "./semver"], 2);
-    assert.equal(added.error.code, "ADMISSION_REQUIRED");
-    const digest = added.error.repair.match(/sha256:[a-f0-9]{64}/)[0];
+    const added = cli(["block", "add", "./semver"]);
+    assert.equal(added.ok, true);
+    assert.equal(added.result.admitted, false);
+    const digest = added.result.digest;
+    assert.equal(added.result.next, `npx forge block admit ${digest}`);
     assert.equal(
       cli(["config", "show"]).result.instances[0].name,
       "semver",

@@ -220,3 +220,35 @@ test("positional advice follows schemas and lists flags when no unique field fit
     expect(catalog.calls).toHaveLength(0);
   }
 });
+
+test("reserved text flag advice and examples use executable JSON input", async () => {
+  const entry = {
+    ...candidate("greet.shout", { args: [] }),
+    inputSchema: {
+      type: "object",
+      properties: { text: { type: "string" } },
+      required: ["text"],
+    },
+    docs: {
+      title: "Shout",
+      summary: "Shout text",
+      examples: [{ input: { text: "quiet" } }],
+    },
+  };
+  const catalog = fakeCatalog([entry]);
+  const bad = await runCli(catalog, ["greet", "shout", "--text", "quiet"]);
+  expect(bad.exitCode).toBe(6);
+  expect(bad.stdout).toContain("--text is reserved");
+  expect(bad.stdout).not.toContain("pass --text");
+  const help = await runCli(catalog, ["greet", "shout", "--help"]);
+  expect(help.stdout).toContain("--input");
+  expect(help.stdout).not.toContain("--text quiet");
+  const good = await runCli(catalog, [
+    "greet",
+    "shout",
+    "--input",
+    '{"text":"quiet"}',
+  ]);
+  expect(good.exitCode).toBe(0);
+  expect(catalog.calls.at(-1)?.input).toEqual({ text: "quiet" });
+});

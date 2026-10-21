@@ -17,8 +17,9 @@ export function formatProblem(
   value?: unknown,
   prefix?: string,
   file = ".forge/config.yaml",
+  source?: string,
 ): string {
-  if (arguments.length > 1) {
+  if (source === undefined && arguments.length > 1) {
     const segments = problem.pointer
       .split("/")
       .slice(1)
@@ -61,7 +62,9 @@ export function formatProblem(
         (name, part) =>
           /^\d+$/.test(part)
             ? `${name}[${part}]`
-            : `${name}${name ? "." : ""}${part}`,
+            : source !== undefined && !/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(part)
+              ? `${name}[${JSON.stringify(part)}]`
+              : `${name}${name ? "." : ""}${part}`,
         "",
       ) || "input";
   if (problem.keyword === "required") return `${field} is required`;
@@ -81,6 +84,7 @@ export function inputError(
   docs?: OperationDocs,
   schema: SchemaObject = {},
   positions: readonly string[] = [],
+  source?: string,
 ): ForgeError {
   const fields = problems.map((problem) => ({
     pointer: problem.pointer,
@@ -106,7 +110,7 @@ export function inputError(
       : renderExample(op, docs, schema, positions);
   return {
     code: "INPUT_INVALID",
-    message: `Invalid input for ${op}:\n${problems.map((problem) => formatProblem(problem)).join("\n")}${call === undefined ? "" : `\nExample: ${call}`}`,
+    message: `Invalid input for ${op}:\n${problems.map((problem) => (source === undefined ? formatProblem(problem) : `${source}: ${formatProblem(problem, undefined, undefined, undefined, source)}`)).join("\n")}${call === undefined ? "" : `\nExample: ${call}`}`,
     retry: "never",
     observed: {
       problems: fields,

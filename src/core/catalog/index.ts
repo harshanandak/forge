@@ -1,4 +1,7 @@
 import type { BorrowedHandle } from "../../ports/lifetime.ts";
+import { ForgeFailure } from "../../contract/failure.ts";
+import { inputError } from "../../contract/input-error.ts";
+import { SCHEMA_BASE } from "../../contract/documents.ts";
 import {
   checkProvidedInterface,
   resolveComposition,
@@ -37,6 +40,7 @@ import type { InterfaceDocument } from "../../generated/types.ts";
 
 /** Root-scoped, bounded byte capture. Platform containment belongs to the adapter. */
 export interface CaptureFiles {
+  readonly manifestPath?: string;
   read(name: string, maxBytes: number): Uint8Array;
 }
 
@@ -297,7 +301,17 @@ export function captureBlock(
   const parsed = parseUntrustedJson(read("block.json"), limits.parse);
   if (!parsed.ok) refuse(parsed.error.code, parsed.error.message);
   const checked = validateBlockManifest(parsed.value);
-  if (!checked.ok) refuse("INPUT_INVALID", "invalid block manifest");
+  if (!checked.ok)
+    throw new ForgeFailure(
+      inputError(
+        `block manifest ${rootPath.replaceAll("\\", "/").replace(/\/$/, "")}/${source.manifestPath ?? "block.json"}`,
+        new SchemaRegistry(SCHEMA_DOCUMENTS, SCHEMA_BASE).validate(
+          "block.json",
+          parsed.value,
+          true,
+        ),
+      ),
+    );
   const manifest = checked.value;
   const paths = new Set([
     manifest.entry,

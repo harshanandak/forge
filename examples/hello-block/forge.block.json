@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "example.org/hello",
+  "version": "1.0.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "index.cjs",
+  "docs": "docs.json",
+  "operations": {
+    "hello.say": {
+      "input": "input.schema.json",
+      "output": "output.schema.json",
+      "context": "stateless",
+      "timeoutMs": 1000,
+      "effects": [],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "stable"
+    }
+  }
+}

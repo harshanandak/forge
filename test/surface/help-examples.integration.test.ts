@@ -90,14 +90,23 @@ for (const shell of shells) {
           windowsHide: true,
           timeout: 30_000,
         });
-        expect(result.error).toBeUndefined();
-        expect(result.stdout).not.toContain("INPUT_INVALID");
-        expect(result.status).toBe(0);
+        const diagnostic = `${shell}: ${examples[0]}\n${result.stdout}\n${result.stderr}`;
+        expect(result.error, diagnostic).toBeUndefined();
+        expect(result.stdout, diagnostic).not.toContain("INPUT_INVALID");
+        expect(result.status, diagnostic).toBe(0);
         expect(JSON.parse(result.stdout)).toMatchObject({
           ok: true,
           ...(op === "issue.create"
             ? { result: { title: "First task", kind: "task" } }
-            : {}),
+            : op === "memory.add"
+              ? {
+                  result: {
+                    note: {
+                      text: { text: "The release job needs a clean tree" },
+                    },
+                  },
+                }
+              : {}),
         });
       }
     } finally {

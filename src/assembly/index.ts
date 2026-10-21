@@ -17,6 +17,7 @@ import {
 } from "../core/catalog/index.ts";
 import { Runtime } from "../core/runtime/index.ts";
 import { nodeRunIsolation } from "../adapters/node-runtime/isolation.ts";
+import { localForgeCommand } from "../adapters/node-runtime/catalog.ts";
 import { TrustStore, refuse, type TrustRecord } from "../core/trust/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
@@ -30,6 +31,7 @@ import { parseOperationName } from "../contract/naming.ts";
 import { validateConfiguration } from "../blocks/check/budget.ts";
 import type { CheckConfig } from "../blocks/check/types.ts";
 import {
+  registry,
   validateConfigDocument,
   validateDocsRecords,
   validateInvocationRequest,
@@ -317,16 +319,28 @@ export async function createAssembly(
     instance: BlockInstance,
     name: string,
   ): DocsRecords {
-    const docs = validateDocsRecords(
-      JSON.parse(block.text(block.manifest.docs)) as unknown,
-    );
-    if (
-      !docs.ok ||
-      Object.keys(block.manifest.operations).some(
-        (op) => !docs.value.operations[op],
-      )
-    )
-      refuse("INPUT_INVALID", "Block docs do not cover its operations");
+    const value: unknown = JSON.parse(block.text(block.manifest.docs));
+    const docs = validateDocsRecords(value);
+    const problems = docs.ok
+      ? validateWithSchema(
+          { type: "object", required: Object.keys(block.manifest.operations) },
+          docs.value.operations,
+        ).map((problem) => ({
+          ...problem,
+          pointer: `/operations${problem.pointer}`,
+        }))
+      : registry.validate("docs.json", value, true);
+    if (!docs.ok || problems.length > 0)
+      throw new ForgeFailure(
+        inputError(
+          `block docs ${block.manifest.docs}`,
+          problems,
+          undefined,
+          {},
+          [],
+          block.manifest.docs,
+        ),
+      );
     if (block.manifest.configSchema) {
       const problems = block.problems(
         block.manifest.configSchema,
@@ -791,16 +805,6 @@ export async function createAssembly(
             );
             for (const name of blocks.keys())
               readyBindings(checkedCatalog, name);
-            const docs = validateDocsRecords(
-              JSON.parse(block.text(block.manifest.docs)) as unknown,
-            );
-            if (
-              !docs.ok ||
-              Object.keys(block.manifest.operations).some(
-                (op) => !docs.value.operations[op],
-              )
-            )
-              refuse("INPUT_INVALID", "Block docs do not cover its operations");
             if (request.op === "block.add")
               call.config.apply({
                 patch: [
@@ -819,23 +823,13 @@ export async function createAssembly(
               )
                 throw error;
             }
-            if (request.op === "block.add" && !admitted)
-              return {
-                ok: false,
-                op: request.op,
-                status: "INCOMPLETE",
-                error: {
-                  code: "ADMISSION_REQUIRED",
-                  message: "Block added; captured bytes need human admission",
-                  repair: `forge block admit ${block.digest}`,
-                  retry: "never",
-                },
-                warnings: [],
-              };
             return success(request.op, {
               blockId: block.manifest.id,
               digest: block.digest,
               admitted,
+              ...(request.op === "block.add" && !admitted
+                ? { next: localForgeCommand(["block", "admit", block.digest]) }
+                : {}),
             });
           }
           if (request.op === "block.admit" || request.op === "config.grant") {

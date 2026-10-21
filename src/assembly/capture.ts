@@ -12,14 +12,16 @@ import { firstPartyBlocks } from "./first-party.ts";
 export const blockCapture: FileCapturePort = {
   open(root) {
     const handle = nodeFileCapture.open(root);
+    const manifestPath = existsSync(join(root, "forge.block.json"))
+      ? "forge.block.json"
+      : "block.json";
     return {
       ownership: "borrowed",
       value: {
+        manifestPath,
         read(name, budget) {
           return handle.value.read(
-            name === "block.json" && existsSync(join(root, "forge.block.json"))
-              ? "forge.block.json"
-              : name,
+            name === "block.json" ? manifestPath : name,
             budget,
           );
         },
