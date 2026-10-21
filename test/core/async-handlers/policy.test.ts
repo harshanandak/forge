@@ -97,8 +97,8 @@ for (const outcome of ["timeout", "cancelled", "close-failed"] as const) {
       {
         exitCode: 0,
         signal: null,
-        stdout: "",
-        stderr: "",
+        stdout: "available output",
+        stderr: "available error",
         timedOut: false,
         truncated: false,
         durationMs: 0,
@@ -191,6 +191,22 @@ for (const outcome of ["timeout", "cancelled", "close-failed"] as const) {
     expect(JSON.parse(result.warnings[0]!.message)).toMatchObject({
       confirmed: true,
       stoppedPids: [124],
+    });
+    expect(result).toMatchObject({
+      error: {
+        observed: {
+          processes: {
+            results: [
+              {
+                stdout: "available output",
+                stderr: "available error",
+                exitCode: 0,
+              },
+            ],
+            omittedResults: 0,
+          },
+        },
+      },
     });
   }, 5000);
 }

@@ -5,15 +5,13 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   packedCoverage,
@@ -21,6 +19,7 @@ import {
 } from "../../node-fixtures/state/counterfactuals.ts";
 import { providerCounterfactuals } from "../../node-fixtures/assembly-providers/counterfactuals.ts";
 import { runFixtures } from "../../integration/fixtures/run.ts";
+import { packedConsumer } from "../../integration/packed-consumer.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 function run(
@@ -73,77 +72,17 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
     );
     phaseStarted = performance.now();
   }
-  const shared =
-    process.env.PROVIDERS_PACKED_CONSUMER ?? process.env.FORGE_PACKED_CONSUMER;
-  const work = mkdtempSync(
-    join(shared ?? tmpdir(), shared ? "ap-" : "forge-providers-"),
-  );
+  const shared = packedConsumer();
+  const work = mkdtempSync(join(shared, "ap-"));
   const node = Bun.which("node");
   if (!node) throw Error("Node is required");
   const env = withoutBun();
-  const successful = (
-    command: string,
-    args: string[],
-    cwd: string,
-    childEnv = env,
-  ): string => {
-    const result = run(command, args, cwd, childEnv);
-    expect(
-      result.status,
-      `${result.error?.message ?? ""} ${result.stdout} ${result.stderr}`,
-    ).toBe(0);
-    return result.stdout;
-  };
   try {
-    const consumer = shared ? work : join(work, "consumer");
-    if (!shared) mkdirSync(consumer);
+    const consumer = work;
     writeFileSync(
       join(consumer, "package.json"),
       '{"private":true,"type":"module"}',
     );
-    if (!shared) {
-      successful(process.execPath, ["run", "build"], root, process.env);
-      phase("build");
-      const npm = [
-        ...(process.env.FORGE_SMOKE_NPM_CLI
-          ? [process.env.FORGE_SMOKE_NPM_CLI]
-          : []),
-        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-      ].find(existsSync);
-      if (!npm) throw Error("npm CLI is required");
-      const packed = JSON.parse(
-        successful(
-          node,
-          [
-            npm,
-            "pack",
-            "--json",
-            "--ignore-scripts",
-            "--pack-destination",
-            work,
-          ],
-          root,
-        ),
-      ) as { filename: string }[];
-      phase("pack");
-      successful(
-        node,
-        [
-          npm,
-          "install",
-          join(work, packed[0]!.filename),
-          "--no-audit",
-          "--no-fund",
-        ],
-        consumer,
-      );
-      phase("install");
-    } else {
-      phase("build", " (shared consumer)");
-      phase("pack", " (shared consumer)");
-      phase("install", " (shared consumer)");
-    }
     const runtimes = [
       ...new Set(
         [node, process.env.FORGE_NODE26].filter((value): value is string =>
@@ -180,7 +119,7 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
       expect(output).toContain("PASS assembly-providers all");
     phase("positive fixtures");
 
-    const installed = join(shared ?? consumer, "node_modules/forge-workflow");
+    const installed = join(shared, "node_modules/forge-workflow");
     const isolated = join(
       consumer,
       "node_modules/forge-provider-counterfactual",

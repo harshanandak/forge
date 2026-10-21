@@ -4,15 +4,15 @@ import {
   cpSync,
   existsSync,
   mkdtempSync,
-  mkdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { counterfactuals } from "./counterfactuals.ts";
+import { packedConsumer } from "../../integration/packed-consumer.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 function run(
@@ -43,54 +43,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
   try {
     const node = Bun.which("node");
     if (!node) throw new Error("Node runtime required");
-    const sharedConsumer = process.env.CHECK_PACKED_CONSUMER;
-    const consumer = sharedConsumer ?? join(work, "consumer");
-    if (!sharedConsumer) {
-      const npm = [
-        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-      ].find(existsSync);
-      if (!npm) throw new Error("Node package installer required");
-      // CI builds before the serial integration lane; standalone runs build once.
-      if (!existsSync(join(root, "dist/src/blocks/check/index.js")))
-        success(run(process.execPath, ["run", "build"], root));
-      const pack = JSON.parse(
-        success(
-          run(
-            node,
-            [
-              npm,
-              "pack",
-              "--json",
-              "--ignore-scripts",
-              "--pack-destination",
-              work,
-            ],
-            root,
-          ),
-        ),
-      ) as { filename: string }[];
-      mkdirSync(consumer);
-      writeFileSync(
-        join(consumer, "package.json"),
-        '{"name":"check-consumer","private":true,"type":"module"}',
-      );
-      success(
-        run(
-          node,
-          [
-            npm,
-            "install",
-            join(work, pack[0]!.filename),
-            "--offline",
-            "--no-audit",
-            "--no-fund",
-          ],
-          consumer,
-          180000,
-        ),
-      );
-    }
+    const consumer = packedConsumer();
     const installed = join(consumer, "node_modules/forge-workflow");
     const artifactEnv = { ...process.env };
     const pathKey =
