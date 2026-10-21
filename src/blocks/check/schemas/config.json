@@ -133,7 +133,8 @@
       "maximum": 1048576
     },
     "maxReceiptBytes": {
-      "default": 262144,
+      "description": "Caps the whole receipt. Each selected command reserves two streams × (outputHeadBytes + outputTailBytes) × 10 encoded bytes; with the defaults that is 40960 per command, so 524288 holds maxMetadataBytes plus 12 commands.",
+      "default": 524288,
       "type": "integer",
       "minimum": 1,
       "maximum": 1048576

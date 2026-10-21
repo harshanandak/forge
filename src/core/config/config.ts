@@ -33,7 +33,7 @@ import {
   METADATA_KEYS,
   resolveLayers,
 } from "./layers.ts";
-import { absoluteUses, schemaDefaults } from "./short.ts";
+import { absoluteUses, schemaDefaults, schemaMaps } from "./short.ts";
 import {
   clone,
   formatPointer,
@@ -201,7 +201,23 @@ function resolve(
   for (const [name, { schema }] of blockSchemas(document, lookup))
     for (const { key, value } of schemaDefaults(schema))
       defaults.push({ segments: ["blocks", name, "config", key], value });
-  return resolveLayers(derived, project, invocation, defaults);
+  return resolveLayers(
+    derived,
+    project,
+    invocation,
+    defaults,
+    mapKeys(document, lookup),
+  );
+}
+
+/** The config keys each instance's schema declares as maps, which the project declares whole. */
+function mapKeys(
+  document: JsonObject | undefined,
+  lookup: BlockLookup,
+): string[][] {
+  return blockSchemas(document, lookup).flatMap(([name, { schema }]) =>
+    schemaMaps(schema).map((key) => ["blocks", name, "config", key]),
+  );
 }
 
 /** Where a value came from: a block's schema default, detection, the file, a template, or the call. */
@@ -563,7 +579,13 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
           const vacant = Object.keys(owners).filter(
             (p) => !hasIn(document, parsePointer(p) ?? []),
           );
-          const layers = resolveLayers(derive(), current.document);
+          const layers = resolveLayers(
+            derive(),
+            current.document,
+            [],
+            [],
+            mapKeys(usable(current.document, env).document, env),
+          );
           for (const entry of layers.entries) {
             if (entry.layer !== "derived" || !entry.active) continue;
             if (
