@@ -5,7 +5,8 @@ The npm package is `forge-workflow`; the command is `forge`.
 
 ## Quickstart
 
-Install Node 24.15+ (or Node 26+) and Git. npm ships with Node. Bun is needed
+Install Node 24.15 or later 24.x, or Node 26 and later (Node 25 is not supported)
+and Git. npm ships with Node. Bun is needed
 only for contributing to Forge.
 
 ```sh
