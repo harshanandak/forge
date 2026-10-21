@@ -12,19 +12,17 @@ import {
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "../../..");
-const missingLocalBuild =
-  !existsSync(join(root, "dist/bin/forge.js")) && !process.env.CI;
-if (missingLocalBuild)
-  console.log(
-    "NOT_EXERCISED journey exit race: dist is absent; run bun run build first. CI requires the built artifact.",
-  );
-const builtTest = missingLocalBuild ? test.skip : test;
 
-builtTest(
+// No skip on a missing build: `bun run test:integration` builds first, so an absent dist is a failure.
+test(
   "MCP journey cleanup completes when the child exited before finally",
   () => {
     const node = Bun.which("node");
     if (node === null) throw new Error("Node is required for the MCP journey.");
+    if (!existsSync(join(root, "dist/bin/forge.js")))
+      throw new Error(
+        "dist is absent: run bun run build (bun run test:integration builds first).",
+      );
     const directory = mkdtempSync(join(root, ".journey-exit-"));
     try {
       const original = readFileSync(

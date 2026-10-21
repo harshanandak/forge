@@ -37,14 +37,9 @@ const builtAdapter = resolve(
   import.meta.dirname,
   "../../../dist/src/adapters/process/index.js",
 );
-const missingLocalBuild = !existsSync(builtAdapter) && !process.env.CI;
-if (missingLocalBuild)
-  console.log(
-    "NOT_EXERCISED supervisor footprint: dist is absent; run bun run build first. CI requires the built artifact.",
-  );
-const builtTest = missingLocalBuild ? test.skip : test;
 
-builtTest(
+// No skip on a missing build: `bun run test:integration` builds first, so an absent dist is a failure.
+test(
   "one active built supervisor stays below the approved footprint and leaves no idle helper",
   () => {
     const node = Bun.which("node");
@@ -56,7 +51,7 @@ builtTest(
     );
     if (!existsSync(builtAdapter)) {
       throw new Error(
-        "Build Forge before running the supervisor footprint integration test.",
+        "dist is absent: run bun run build (bun run test:integration builds first).",
       );
     }
     const run = spawnSync(

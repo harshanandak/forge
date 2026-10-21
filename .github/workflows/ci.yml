@@ -128,7 +128,6 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: bun run build
       - name: Unit tests
         run: bun run test:unit
       - name: Integration tests
