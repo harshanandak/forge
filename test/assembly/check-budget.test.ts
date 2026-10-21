@@ -1,5 +1,13 @@
-import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { expect, spyOn, test } from "bun:test";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Catalog, captureBlock } from "../../src/core/catalog/index.ts";
 import { Runtime } from "../../src/core/runtime/index.ts";
 import { TrustStore } from "../../src/core/trust/index.ts";
@@ -8,6 +16,63 @@ import { ASSEMBLY_PROVIDES } from "../../src/assembly/providers.ts";
 import { schemaDefaults } from "../../src/core/config/short.ts";
 import schema from "../../src/blocks/check/schemas/config.json" with { type: "json" };
 import manifest from "../../src/blocks/check/forge.block.json" with { type: "json" };
+import { createAssembly, localCall } from "../../src/assembly/index.ts";
+import { runCli } from "../../src/surface/cli.ts";
+import { blockCapture } from "../../src/assembly/capture.ts";
+
+test("assembled check.run preserves command config errors and exit 6", async () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-check-budget-"));
+  mkdirSync(join(root, ".forge"));
+  writeFileSync(join(root, ".forge/config.yaml"), "blocks:\n  check: {}\n");
+  const open = blockCapture.open.bind(blockCapture);
+  const capture = spyOn(blockCapture, "open").mockImplementation((path) => {
+    const handle = open(path);
+    return {
+      ...handle,
+      value: {
+        read: (name, budget) =>
+          name === "entry.cjs"
+            ? new TextEncoder().encode("module.exports={};")
+            : handle.value.read(name, budget),
+      },
+    };
+  });
+  const assembly = await createAssembly({
+    root,
+    deviceRoot: join(root, "device"),
+    providers: { env: {} },
+  });
+  try {
+    for (const [command, message] of [
+      [
+        "tool && other",
+        "Shell syntax needs a project-owned script; declare an argument array instead.",
+      ],
+      ['tool "unterminated', "Declared command contains an unclosed quote."],
+    ]) {
+      writeFileSync(
+        join(root, ".forge/config.yaml"),
+        JSON.stringify({ blocks: { check: { commands: { test: command } } } }),
+      );
+      const response = await runCli(
+        assembly.catalog,
+        ["check", "run"],
+        localCall(assembly),
+      );
+      expect(response.envelope).toMatchObject({
+        ok: false,
+        op: "check.run",
+        status: "FAIL",
+        error: { code: "INPUT_INVALID", message, retry: "never" },
+      });
+      expect(response.exitCode).toBe(6);
+    }
+  } finally {
+    await assembly.close();
+    capture.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10000);
 
 function fixture(timeoutMs = 120000, override?: number, shipped = true) {
   const root = new URL("../../src/blocks/check/", import.meta.url);
