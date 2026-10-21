@@ -1,5 +1,11 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssembly, localCall } from "../../../src/assembly/index.ts";
@@ -153,6 +159,112 @@ function withGreeting(greeting: string): Record<string, unknown> {
       },
     },
   };
+}
+
+for (const crossFile of [false, true]) {
+  test(`a captured ${crossFile ? "cross-file" : "local"} property reference replaces detected commands`, async () => {
+    const map = { type: "object", additionalProperties: { type: "string" } };
+    const root = project({
+      ...files,
+      "config.json": crossFile
+        ? { $ref: "defs.json#/$defs/Config" }
+        : {
+            type: "object",
+            $defs: { commands: map },
+            properties: { commands: { $ref: "#/$defs/commands" } },
+          },
+      "defs.json": {
+        $defs: {
+          Config: {
+            type: "object",
+            properties: { commands: { $ref: "#/$defs/commands" } },
+          },
+          commands: { $ref: "commands.schema.json", default: {} },
+        },
+      },
+      "commands.schema.json": map,
+      "forge.block.json": {
+        ...(files["forge.block.json"] as Record<string, unknown>),
+        files: ["defs.json", "commands.schema.json"],
+      },
+    });
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({
+        packageManager: "npm@11.0.0",
+        scripts: { lint: "detected-lint", test: "detected-test" },
+      }),
+    );
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      "blocks:\n  check:\n    use: ./hello\n",
+    );
+    const assembly = await createAssembly({
+      root,
+      deviceRoot: join(root, "device"),
+    });
+    const { caller, context } = localCall(assembly);
+    const call = async (op: string, input: unknown) => {
+      const result = (await assembly.catalog.invoke({
+        schemaVersion: "forge.invocation/1",
+        requestId: op,
+        op,
+        input,
+        caller,
+        context: context ?? {},
+      })) as { ok: boolean; result: Record<string, unknown> };
+      expect(result.ok).toBe(true);
+      return result.result;
+    };
+    try {
+      const shown = await call("config.show", {});
+      expect(shown.problems).toEqual([]);
+      expect(
+        (await call("config.explain", { path: "check.commands.lint" })).value,
+      ).toBe("npm run lint");
+      const set = await call("config.set", {
+        path: "check.commands",
+        value: { manual: "declared-command" },
+        expectRevision: shown.revision,
+      });
+      expect(
+        (await call("config.explain", { path: "check.commands" })).value,
+      ).toEqual({ manual: "declared-command" });
+      expect(
+        await call("config.explain", { path: "check.commands.manual" }),
+      ).toMatchObject({ value: "declared-command", source: "project" });
+      const lint = await call("config.explain", {
+        path: "check.commands.lint",
+      });
+      expect(lint.set).toBe(false);
+      expect(lint.entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            layer: "derived",
+            active: false,
+            origin: {
+              detector: "project.detect",
+              file: "package.json",
+              pointer: "/scripts/lint",
+            },
+            overriddenBy: {
+              layer: "project",
+              pointer: "/blocks/check/config/commands",
+            },
+          }),
+        ]),
+      );
+      expect(
+        (await call("config.save", { expectRevision: set.revision })).saved,
+      ).toEqual([]);
+      expect(
+        readFileSync(join(root, ".forge/config.yaml"), "utf8"),
+      ).not.toContain("npm run lint");
+    } finally {
+      await assembly.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 }
 
 test("overlapping calls each read the block bytes on their own", async () => {

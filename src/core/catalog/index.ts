@@ -182,23 +182,50 @@ export class CapturedBlock {
   }
 
   /**
-   * The schema a captured file describes, following top-level `$ref`s within the capture. A `$ref`
+   * The schema a captured file describes, following root and direct-property `$ref`s. A `$ref`
    * applies alongside its sibling keywords, so the result is the referenced schema composed with
    * every sibling: `properties` merge per key and `required` unions; outer keywords win otherwise.
    */
   resolvedSchema(path: string): JsonSchema | undefined {
-    let uri = capturedUri(path, this.#base);
-    let node = this.#registry.lookup(uri);
-    const outer: Record<string, unknown>[] = [];
-    for (let hop = 0; hop < 8 && isSchemaObject(node); hop += 1) {
-      if (typeof node.$ref !== "string") break;
-      const { $ref, ...siblings } = node;
-      outer.push(siblings);
-      uri = this.#registry.resolve($ref, uri);
-      node = this.#registry.lookup(uri);
-    }
-    if (outer.length === 0 || !isSchemaObject(node)) return node;
-    return outer.reduceRight(composeSchema, node as Record<string, unknown>);
+    const properties = (
+      node: Record<string, unknown>,
+      uri: string,
+    ): Record<string, unknown> => {
+      if (!isSchemaObject(node.properties)) return node;
+      return {
+        ...node,
+        properties: Object.fromEntries(
+          Object.entries(node.properties).map(([key, value]) => [
+            key,
+            resolve(value as JsonSchema, uri, false),
+          ]),
+        ),
+      };
+    };
+    const resolve = (
+      schema: JsonSchema | undefined,
+      base: string,
+      directProperties: boolean,
+    ): JsonSchema | undefined => {
+      let uri = base;
+      let node = schema;
+      const outer: Record<string, unknown>[] = [];
+      for (let hop = 0; hop < 8 && isSchemaObject(node); hop += 1) {
+        if (typeof node.$ref !== "string") break;
+        const { $ref, ...siblings } = node;
+        // Resolve each side in its own document before composing sibling keywords.
+        outer.push(directProperties ? properties(siblings, uri) : siblings);
+        uri = this.#registry.resolve($ref, uri);
+        node = this.#registry.lookup(uri);
+      }
+      if (node === undefined) return undefined;
+      if (directProperties && isSchemaObject(node))
+        node = properties(node, uri);
+      if (outer.length === 0 || !isSchemaObject(node)) return node;
+      return outer.reduceRight(composeSchema, node as Record<string, unknown>);
+    };
+    const uri = capturedUri(path, this.#base);
+    return resolve(this.#registry.lookup(uri), uri, true);
   }
 
   schema(path: string): unknown {
