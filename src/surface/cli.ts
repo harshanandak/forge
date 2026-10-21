@@ -200,6 +200,24 @@ export async function runCli(
         : first.includes(".")
           ? first
           : `${first}.${tokens.shift() ?? ""}`;
+    const entries = catalog.list();
+    const entry = [...discoveryOperations, ...entries].find((c) => c.op === op);
+    if (
+      helpRequested ||
+      op === undefined ||
+      entry?.declaration.effects.length === 0
+    ) {
+      const source = catalog;
+      // One read uses one discovery view for arguments, visibility and dispatch.
+      // The next CLI call asks the host again, including after config or trust edits.
+      catalog = {
+        list: () => entries,
+        invoke: (request) => source.invoke(request),
+        ...(source.diagnose === undefined
+          ? {}
+          : { diagnose: (name: string) => source.diagnose!(name) }),
+      };
+    }
     if (helpRequested || op === undefined) {
       const result = help(catalog, options, op);
       const response = respond(success("catalog.list", result), text);
@@ -207,7 +225,7 @@ export async function runCli(
         ? response
         : { ...response, stdout: renderHelp(result.operations, op) };
     }
-    if (![...builtins, ...catalog.list().map((c) => c.op)].includes(op))
+    if (![...builtins, ...entries.map((c) => c.op)].includes(op))
       return respond(await dispatch(catalog, op, {}, options), text);
     let input: unknown;
     if (rawInput !== undefined) {
@@ -215,10 +233,7 @@ export async function runCli(
         throw new Error("Do not mix --input with operation arguments.");
       input = JSON.parse(rawInput);
     } else {
-      input = mapArguments(
-        tokens,
-        [...discoveryOperations, ...catalog.list()].find((c) => c.op === op),
-      );
+      input = mapArguments(tokens, entry);
     }
     return respond(
       await dispatch(catalog, op, input, {
