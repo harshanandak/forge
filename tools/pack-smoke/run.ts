@@ -69,23 +69,28 @@ async function main(): Promise<void> {
     fail("dist/ is missing; run `bun run build` first");
 
   const bun = resolveBun();
-  const env = environmentWithoutBun();
-  if (run("bun", ["--version"], root, env).error === undefined)
-    fail("bun is still resolvable on PATH; the smoke must run without Bun");
-  const npmCli = [
-    join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"),
-    join(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js"),
-  ].find((candidate) => existsSync(candidate));
-  if (npmCli === undefined)
-    fail(`npm-cli.js not found next to ${process.execPath}`);
-  const npm = (args: string[], cwd: string): string =>
-    ok(run(process.execPath, [npmCli, ...args], cwd, env));
-  console.log(
-    `- node ${process.version}, npm ${npm(["--version"], root).trim()}, no bun on PATH`,
-  );
-
   const work = mkdtempSync(join(tmpdir(), "forge-pack-smoke-"));
   try {
+    const env = environmentWithoutBun(join(work, "bin"), process.execPath);
+    const consumerNode = join(
+      work,
+      "bin",
+      process.platform === "win32" ? "node.exe" : "node",
+    );
+    if (run("bun", ["--version"], root, env).error === undefined)
+      fail("bun is still resolvable on PATH; the smoke must run without Bun");
+    const npmCli = [
+      join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"),
+      join(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js"),
+    ].find((candidate) => existsSync(candidate));
+    if (npmCli === undefined)
+      fail(`npm-cli.js not found next to ${process.execPath}`);
+    const npm = (args: string[], cwd: string): string =>
+      ok(run(consumerNode, [npmCli, ...args], cwd, env));
+    console.log(
+      `- node ${process.version}, npm ${npm(["--version"], root).trim()}, no bun on PATH`,
+    );
+
     const packDir = join(work, "pack");
     const consumer = join(work, "consumer");
     mkdirSync(packDir);
@@ -154,7 +159,7 @@ async function main(): Promise<void> {
     )
       fail("npm did not link a forge command into node_modules/.bin");
     const node = (args: string[]): SpawnSyncReturns<string> =>
-      run(process.execPath, args, consumer, env);
+      run(consumerNode, args, consumer, env);
     for (const [how, printed] of [
       ["npm exec", npm(["exec", "--no", "--", "forge", "--version"], consumer)],
       ["the bin", ok(node([join(installedDir, binTarget), "--version"]))],
