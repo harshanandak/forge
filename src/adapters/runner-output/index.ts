@@ -1,5 +1,7 @@
 import type {
+  OutputRecognizer,
   OutputReport,
+  ReportFormat,
   RunnerOutputPort,
 } from "../../ports/runner-output.ts";
 import { stripVTControlCharacters } from "node:util";
@@ -17,6 +19,10 @@ const malformed: OutputReport = {
   failed: null,
   detail: "Recognized report is malformed or incomplete",
 };
+// Summaries are short lines; longer lines are skipped, never buffered.
+const LINE_LIMIT = 65_536;
+// A structured report is read whole; a larger one is reported, never guessed at.
+const REPORT_LIMIT = 8_388_608;
 const count = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 function jsonReport(text: string): OutputReport {
@@ -47,77 +53,178 @@ function jsonReport(text: string): OutputReport {
     detail: "Structured test report",
   };
 }
-export function createRunnerOutput(): RunnerOutputPort {
+function summary(
+  kind: "Jest" | "Vitest",
+  match: readonly string[],
+): OutputReport {
+  const failed = /(\d+)\s+failed/.exec(match[0] ?? "");
   return {
-    parse(stdout, stderr, format) {
+    kind: "recognized",
+    testCount: Number(match[1]),
+    failed: Number(failed?.[1] ?? 0),
+    detail: `${kind} test summary`,
+  };
+}
+function pytest(line: string): OutputReport {
+  let total = 0,
+    failed = 0;
+  for (const term of line.split(/,\s*/)) {
+    const match =
+      /^(\d+)\s+(passed|failed|skipped|deselected|xfailed|xpassed|errors?|warnings?|reruns?)$/.exec(
+        term,
+      );
+    if (!match) return unknown;
+    const n = Number(match[1]);
+    if (!count(n)) return unknown;
+    if (!/^(?:deselected|warnings?|reruns?)$/.test(match[2]!)) total += n;
+    if (/^(?:failed|errors?)$/.test(match[2]!)) failed += n;
+    if (!count(total) || !count(failed)) return unknown;
+  }
+  return {
+    kind: "recognized",
+    testCount: total,
+    failed,
+    detail: "Pytest test summary",
+  };
+}
+
+/** Scans one stream line by line, keeping only the summary lines it has seen. */
+class SummaryLines {
+  bytes = 0;
+  jest: readonly string[] | undefined;
+  vitest: readonly string[] | undefined;
+  pytest: string | undefined;
+  zero = false;
+  hint = false;
+  private pending: Buffer[] = [];
+  private pendingBytes = 0;
+  private overlong = false;
+
+  push(chunk: Uint8Array): void {
+    this.bytes += chunk.length;
+    for (let start = 0; ;) {
+      const end = chunk.indexOf(10, start);
+      this.hold(chunk.subarray(start, end < 0 ? chunk.length : end));
+      if (end < 0) return;
+      this.line();
+      start = end + 1;
+    }
+  }
+  end(): void {
+    if (this.pendingBytes) this.line();
+  }
+  private hold(part: Uint8Array): void {
+    if (this.overlong || !part.length) return;
+    this.pendingBytes += part.length;
+    if (this.pendingBytes > LINE_LIMIT) {
+      this.overlong = true;
+      this.pending = [];
+    } else this.pending.push(Buffer.from(part));
+  }
+  private line(): void {
+    const text = this.overlong
+      ? ""
+      : stripVTControlCharacters(
+          Buffer.concat(this.pending).toString("utf8"),
+        ).replace(/\r$/, "");
+    this.pending = [];
+    this.pendingBytes = 0;
+    this.overlong = false;
+    if (!text) return;
+    this.jest ??= /^\s*Tests:\s*(.*?)\s*(\d+)\s+total\s*$/.exec(text)?.slice(1);
+    this.vitest ??= /^\s*Tests\s+(.*?)\((\d+)\)\s*$/.exec(text)?.slice(1);
+    if (
+      /no test(?:s| files)? (?:found|collected)|collected 0 items/i.test(text)
+    )
+      this.zero = true;
+    const pytest =
+      /^[\t ]*(.*?)[\t ]+in[\t ]+\d+(?:\.\d+)?s(?:[\t ]+\(.*\))?[\t ]*=*[\t ]*$/.exec(
+        text,
+      );
+    if (pytest) this.pytest = pytest[1] ?? "";
+    if (/^\s*Tests:|^\s*Tests\s+\d+.*\(|"numTotalTests"/.test(text))
+      this.hint = true;
+  }
+}
+
+function recognizer(format: ReportFormat): OutputRecognizer {
+  const stdout = new SummaryLines(),
+    stderr = new SummaryLines();
+  let structured: Buffer[] | undefined = format === "json" ? [] : undefined;
+  let structuredBytes = 0,
+    decided = format === "json",
+    overflow = false;
+  function keep(chunk: Uint8Array): void {
+    let part = chunk;
+    if (!decided) {
+      const start = part.findIndex(
+        (byte) => byte !== 32 && (byte < 9 || byte > 13),
+      );
+      if (start < 0) return;
+      decided = true;
+      if (part[start] !== 0x7b) return;
+      structured = [];
+      part = part.subarray(start);
+    }
+    if (!structured || overflow) return;
+    const room = REPORT_LIMIT - structuredBytes;
+    if (part.length > room) overflow = true;
+    structured.push(Buffer.from(part.subarray(0, room)));
+    structuredBytes += Math.min(part.length, room);
+  }
+  return {
+    push(stream, chunk) {
+      if (stream === "stdout") {
+        stdout.push(chunk);
+        if (format !== "exit-code") keep(chunk);
+      } else stderr.push(chunk);
+    },
+    observed: () => ({ stdout: stdout.bytes, stderr: stderr.bytes }),
+    report() {
       if (format === "exit-code") return unknown;
-      const text = stripVTControlCharacters(`${stdout}\n${stderr}`);
-      const trimmed = stdout.trim();
+      stdout.end();
+      stderr.end();
+      const text = structured ? Buffer.concat(structured).toString("utf8") : "";
       if (
         format === "json" ||
-        /^\s*\{[\s\S]*"num(?:Total|Failed)Tests"/.test(stdout)
+        (structured && /"num(?:Total|Failed)Tests"/.test(text))
       )
-        return jsonReport(trimmed);
-      const jest = /^\s*Tests:\s*(.*?)\s*(\d+)\s+total\s*$/m.exec(text);
-      if (jest) {
-        const failed = /(\d+)\s+failed/.exec(jest[1] ?? "");
-        return {
-          kind: "recognized",
-          testCount: Number(jest[2]),
-          failed: Number(failed?.[1] ?? 0),
-          detail: "Jest test summary",
-        };
-      }
-      const vitest = /^\s*Tests\s+(.*?)\((\d+)\)\s*$/m.exec(text);
-      if (vitest) {
-        const failed = /(\d+)\s+failed/.exec(vitest[1] ?? "");
-        return {
-          kind: "recognized",
-          testCount: Number(vitest[2]),
-          failed: Number(failed?.[1] ?? 0),
-          detail: "Vitest test summary",
-        };
-      }
-      if (
-        /no test(?:s| files)? (?:found|collected)|collected 0 items/i.test(text)
-      )
+        return overflow
+          ? {
+              ...malformed,
+              detail: `Structured report exceeds ${REPORT_LIMIT} bytes and cannot be read whole`,
+            }
+          : jsonReport(text.trim());
+      const jest = stdout.jest ?? stderr.jest;
+      if (jest) return summary("Jest", jest);
+      const vitest = stdout.vitest ?? stderr.vitest;
+      if (vitest) return summary("Vitest", vitest);
+      if (stdout.zero || stderr.zero)
         return {
           kind: "recognized",
           testCount: 0,
           failed: 0,
           detail: "Runner reported zero tests",
         };
-      const summaries = [
-        ...text.matchAll(
-          /^[\t ]*(.*?)[\t ]+in[\t ]+\d+(?:\.\d+)?s(?:[\t ]+\([^\n]*\))?[\t ]*=*[\t ]*$/gm,
-        ),
-      ];
-      const summary = summaries.at(-1)?.[1]?.replace(/^=+\s*|\s*=+$/g, "");
-      if (summary) {
-        let total = 0,
-          failed = 0;
-        for (const term of summary.split(/,\s*/)) {
-          const match =
-            /^(\d+)\s+(passed|failed|skipped|deselected|xfailed|xpassed|errors?|warnings?|reruns?)$/.exec(
-              term,
-            );
-          if (!match) return unknown;
-          const n = Number(match[1]);
-          if (!count(n)) return unknown;
-          if (!/^(?:deselected|warnings?|reruns?)$/.test(match[2]!)) total += n;
-          if (/^(?:failed|errors?)$/.test(match[2]!)) failed += n;
-          if (!count(total) || !count(failed)) return unknown;
-        }
-        return {
-          kind: "recognized",
-          testCount: total,
-          failed,
-          detail: "Pytest test summary",
-        };
-      }
-      if (/^\s*Tests:|^\s*Tests\s+\d+.*\(|"numTotalTests"/m.test(text))
-        return malformed;
+      const last = (stderr.pytest ?? stdout.pytest)?.replace(
+        /^=+\s*|\s*=+$/g,
+        "",
+      );
+      if (last) return pytest(last);
+      if (stdout.hint || stderr.hint) return malformed;
       return unknown;
+    },
+  };
+}
+
+export function createRunnerOutput(): RunnerOutputPort {
+  return {
+    recognize: recognizer,
+    parse(stdout, stderr, format) {
+      const output = recognizer(format);
+      output.push("stdout", Buffer.from(stdout));
+      output.push("stderr", Buffer.from(stderr));
+      return output.report();
     },
   };
 }

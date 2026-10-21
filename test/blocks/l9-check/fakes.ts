@@ -9,6 +9,8 @@ export function captured(
   options: SpawnOptions,
 ): ProcessResult {
   if (!options.capture || result.outputEvidence) return result;
+  options.observer?.push("stdout", Buffer.from(result.stdout));
+  options.observer?.push("stderr", Buffer.from(result.stderr));
   const stdout = new StreamCapture(options.maxOutputBytes, options.capture);
   const stderr = new StreamCapture(options.maxOutputBytes, options.capture);
   stdout.push(Buffer.from(result.stdout));

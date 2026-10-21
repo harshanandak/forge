@@ -185,6 +185,10 @@ export function createAssemblyProviders(
           active(scope);
           return output.parse(stdout, stderr, format);
         },
+        recognize(format) {
+          active(scope);
+          return output.recognize(format);
+        },
       };
     },
     process(scope: ServiceScope): ProcessService {

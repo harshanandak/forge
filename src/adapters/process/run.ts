@@ -158,17 +158,26 @@ export async function runProcess(
       });
       const stdout = new StreamCapture(options.maxOutputBytes, options.capture),
         stderr = new StreamCapture(options.maxOutputBytes, options.capture);
-      const capture = (stream: StreamCapture, chunk: Buffer): void => {
+      const capture = (
+        stream: StreamCapture,
+        name: "stdout" | "stderr",
+        chunk: Buffer,
+      ): void => {
         try {
           stream.push(chunk);
+          options.observer?.push(name, chunk);
         } catch (error) {
           void finish(
             error instanceof Error ? error : new Error("Output capture failed"),
           );
         }
       };
-      child.stdout?.on("data", (chunk: Buffer) => capture(stdout, chunk));
-      child.stderr?.on("data", (chunk: Buffer) => capture(stderr, chunk));
+      child.stdout?.on("data", (chunk: Buffer) =>
+        capture(stdout, "stdout", chunk),
+      );
+      child.stderr?.on("data", (chunk: Buffer) =>
+        capture(stderr, "stderr", chunk),
+      );
       let timedOut = false,
         interrupted = false,
         attached = false,
