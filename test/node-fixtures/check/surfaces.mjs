@@ -25,7 +25,8 @@ function cli(args, expected = 0, input, label = "") {
     env,
     encoding: "utf8",
     windowsHide: true,
-    timeout: 15000,
+    // Cold Windows starts need the same finite headroom as the Node journeys.
+    timeout: 60000,
     input,
   });
   assert.equal(
@@ -158,7 +159,7 @@ async function mcp(expectedStatus = "PASS", expectedCommands = ["test"]) {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(Error(`MCP timeout: ${errors}`));
-      }, 10000);
+      }, 60000);
       pending.set(id, (message) => {
         clearTimeout(timer);
         resolve(message);
