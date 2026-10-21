@@ -12,6 +12,7 @@ import { detectProject, createFolderFiles } from "../blocks/project/index.ts";
 import {
   Catalog,
   captureBlock,
+  DEFAULT_CAPTURE_LIMITS,
   type CapturedBlock,
 } from "../core/catalog/index.ts";
 import { Runtime } from "../core/runtime/index.ts";
@@ -21,12 +22,14 @@ import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
 import { bindContext } from "../contract/context.ts";
 import { schemaDiagnostic, validateWithSchema } from "../contract/schema.ts";
+import { parseOperationName } from "../contract/naming.ts";
 import { validateConfiguration } from "../blocks/check/budget.ts";
 import type { CheckConfig } from "../blocks/check/types.ts";
 import {
   validateConfigDocument,
   validateDocsRecords,
   validateInvocationRequest,
+  validateBlockManifest,
 } from "../generated/validators.ts";
 import type { McpCandidate } from "../contract/mcp.ts";
 import type {
@@ -403,6 +406,8 @@ export async function createAssembly(
     };
   }
   function snapshot(call: CallScope): {
+    show: ShowResult;
+    document: ConfigDocument;
     catalog: Catalog;
     blocks: ReadonlyMap<string, CapturedBlock>;
     candidates: readonly McpCandidate[];
@@ -499,6 +504,8 @@ export async function createAssembly(
     );
     const executable = new Set(active.list());
     return {
+      show,
+      document,
       catalog: active,
       blocks,
       candidates: candidates.filter((entry) => executable.has(entry.op)),
@@ -516,6 +523,7 @@ export async function createAssembly(
   const catalog: Assembly["catalog"] = {
     unavailable: () => snapshot(callScope()).unavailable,
     diagnose(op) {
+      if (parseOperationName(op) === undefined) return undefined;
       const current = snapshot(callScope());
       if (
         [
@@ -527,8 +535,70 @@ export async function createAssembly(
         current.problems.length === 0
       )
         return undefined;
+      // Invalid YAML can hide the whole composition; otherwise only inspect
+      // configured or excluded instances, preserving their local noun renames.
+      const names = new Set([
+        ...current.show.instances
+          .filter((instance) => instance.enabled)
+          .map((instance) => instance.name),
+        ...current.show.excluded.flatMap(({ pointer }) => {
+          const [, area, name] = pointer.split("/");
+          return area === "blocks" && name !== undefined ? [name] : [];
+        }),
+        ...(!current.show.valid &&
+        (current.show.excluded.length === 0 ||
+          current.show.excluded.some(
+            ({ pointer }) => pointer === "" || pointer === "/blocks",
+          ))
+          ? Object.keys(firstPartyBlocks).map((id) => id.slice("forge/".length))
+          : []),
+      ]);
+      const declared = [...names].find((name) => {
+        const instance = current.document.blocks[name];
+        const source = instance?.source;
+        const sources: BlockSource[] = source === undefined ? [] : [source];
+        if (
+          firstPartyBlocks[`forge/${name}`] !== undefined &&
+          (source === undefined ||
+            ("builtin" in source &&
+              firstPartyBlocks[source.builtin] === undefined))
+        )
+          sources.push({ builtin: `forge/${name}` });
+        return sources.some((source) => {
+          try {
+            // Read the declaration even if capture failed on an entry or schema.
+            const handle = blockCapture.open(resolveBlock(root, source));
+            const manifest = validateBlockManifest(
+              JSON.parse(
+                new TextDecoder().decode(
+                  handle.value.read(
+                    "block.json",
+                    DEFAULT_CAPTURE_LIMITS.maxBytes,
+                  ),
+                ),
+              ) as unknown,
+            );
+            return (
+              manifest.ok &&
+              Object.keys(manifest.value.operations).some((declaredOp) => {
+                const parsed = parseOperationName(declaredOp);
+                return (
+                  parsed !== undefined &&
+                  `${instance?.rename?.[parsed.noun] ?? parsed.noun}.${parsed.verb}` ===
+                    op
+                );
+              })
+            );
+          } catch {
+            return false;
+          }
+        });
+      });
+      if (declared === undefined) return undefined;
       return {
-        code: current.unavailable[0]?.error.code ?? "INPUT_INVALID",
+        code:
+          current.unavailable.find((block) => block.name === declared)?.error
+            .code ?? "INPUT_INVALID",
         message: current.problems.join("\n"),
         retry: "reconcile_first",
         reconcileWith: "config.show",

@@ -93,6 +93,18 @@ for (const [name, config, ...messages] of cases) {
       providers: { env: {} },
     });
     try {
+      for (const args of [["unknown-command"], ["check", "lst"]]) {
+        const response = await runCli(
+          assembly.catalog,
+          args,
+          localCall(assembly),
+        );
+        expect(response.exitCode).toBe(3);
+        expect(response.envelope).toMatchObject({
+          ok: false,
+          error: { code: "UNKNOWN_COMMAND" },
+        });
+      }
       for (const args of [
         ["config", "show"],
         ["check", "list"],

@@ -14,6 +14,75 @@ import { join, resolve } from "node:path";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { counterfactuals } from "../node-fixtures/check/counterfactuals.ts";
 
+test("unknown commands retain exit 3 unless configuration hides a declared operation", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-unknown-config-"));
+  const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
+  const cli = (args: string[], code: number) => {
+    const result = spawnSync("node", [bin, ...args], {
+      cwd: root,
+      env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(code);
+    return result.stdout;
+  };
+  const unknown = (args: string[], suggest?: string) => {
+    const result = JSON.parse(cli(args, 3)) as ResultEnvelope;
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "UNKNOWN_COMMAND" },
+    });
+    if (result.ok) throw Error("Expected unknown command");
+    expect(result.error.message).toBe(
+      `Unknown operation: ${args[0]}.${args[1] ?? ""}`,
+    );
+    if (suggest) expect(result.error.suggest).toContain(suggest);
+  };
+  try {
+    unknown(["unknown-command"]);
+    mkdirSync(join(root, ".forge"));
+    const file = join(root, ".forge/config.yaml");
+    writeFileSync(file, "blocks:\n  check:\n    commands: {}\n");
+    unknown(["check", "lst"], "check.list");
+    unknown(["unknown-command"]);
+    const text = cli(["check", "lst", "--text"], 3);
+    expect(text).toContain("Unknown operation: check.lst");
+    expect(text).toContain("check.list");
+    writeFileSync(
+      file,
+      "blocks:\n  check:\n    commands: {}\n    timoutMs: 3000\n",
+    );
+    unknown(["check", "lst"]);
+    unknown(["unknown-command"]);
+    const hidden = JSON.parse(cli(["check", "list"], 6)) as ResultEnvelope;
+    if (hidden.ok) throw Error("Expected invalid config");
+    expect(hidden.error.message).toContain(".forge/config.yaml");
+    expect(hidden.error.message).toContain("blocks.check.config.timoutMs");
+    expect(hidden.error.message).toContain("did you mean timeoutMs?");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        blocks: {
+          unrelated: { source: { path: "./missing-block" } },
+          check: { commands: {}, timoutMs: 3000 },
+        },
+      }),
+    );
+    expect(JSON.parse(cli(["check", "list"], 6))).toMatchObject({
+      error: { code: "INPUT_INVALID" },
+    });
+    writeFileSync(file, "blocks:\n  memory:\n    typo: true\n");
+    unknown(["check", "list"]);
+    writeFileSync(file, "blocks: {}\nmcp: false\n");
+    unknown(["check", "list"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 110_000);
+
 test("built CLI reports the actual config error and recovers after repair", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-config-errors-cli-"));
   const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
