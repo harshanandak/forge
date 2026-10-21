@@ -342,9 +342,7 @@ for (const source of [
         ? "runtime.timeoutMs"
         : source === "embedding"
           ? "RuntimeOptions.limits.timeoutMs"
-          : source === "declared"
-            ? 'operations["sample.run"].timeoutMs'
-            : 'blocks.sample.operationTimeouts["sample.run"]';
+          : 'blocks.sample.operationTimeouts["sample.run"]';
     expect(result.error.message).toContain(key);
     expect(result.error.message).toContain(
       source === "embedding"
@@ -355,7 +353,7 @@ for (const source of [
             ? "1 s"
             : "1.5 s",
     );
-    expect(result.error.message).toContain("raise");
+    expect(result.error.message).toContain("more than");
   }, 1000);
 
 test("the live operation timer preserves its budget diagnostic", async () => {
@@ -379,6 +377,36 @@ test("the live operation timer preserves its budget diagnostic", async () => {
     error: { code: "INVOCATION_TIMEOUT" },
   });
   if (result.ok) throw new Error("Expected expiry");
-  for (const text of ['operations["sample.run"].timeoutMs', "0.01 s", "raise"])
+  for (const text of [
+    'blocks.sample.operationTimeouts["sample.run"]',
+    "0.01 s",
+    "more than",
+  ])
+    expect(result.error.message).toContain(text);
+}, 1000);
+
+test("the preparation safety maximum names the config budgets to lower", async () => {
+  const f = fixture(1000);
+  let now = 0;
+  const runtime = new Runtime(f.catalog, f.trust, {
+    clock: { now: () => now },
+    services: () => {
+      now = 2147483648;
+      return Promise.resolve({ ownership: "borrowed", value: {} });
+    },
+  });
+  const result = await runtime.invoke(f.request);
+  expect(result).toMatchObject({
+    ok: false,
+    error: { code: "INVOCATION_TIMEOUT" },
+  });
+  if (result.ok) throw new Error("Expected preparation expiry");
+  for (const text of [
+    "configured operation and command timeouts add up",
+    "2147483647 ms",
+    "about 24.8 days",
+    'blocks.sample.operationTimeouts["sample.run"]',
+    "blocks.sample.config.timeoutMs",
+  ])
     expect(result.error.message).toContain(text);
 }, 1000);

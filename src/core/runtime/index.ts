@@ -296,7 +296,7 @@ export class Runtime {
         const embedding = this.#limits.timeoutMs;
         const value = started ? budget.timeoutMs : preparationTimeoutMs;
         if (!started && host !== value && embedding !== value)
-          return `Invocation host preparation deadline expired: timer safety maximum (${value / 1000} s). Fix: reduce host preparation time.`;
+          return `Invocation host preparation deadline expired: configured operation and command timeouts add up to more than Node's largest supported timer (2147483647 ms, about 24.8 days). Fix: lower blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] or blocks.${operation.instance}.config.timeoutMs in .forge/config.yaml.`;
         const key =
           host === value
             ? "runtime.timeoutMs in .forge/config.yaml"
@@ -304,8 +304,8 @@ export class Runtime {
               ? "RuntimeOptions.limits.timeoutMs in the embedding host"
               : configured !== undefined
                 ? `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] in .forge/config.yaml`
-                : `operations["${operation.declaredOp}"].timeoutMs in block.json`;
-        return `Invocation ${started ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s). Fix: raise ${key} above ${value / 1000} s to allow more time.`;
+                : `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] in .forge/config.yaml`;
+        return `Invocation ${started ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s). Fix: increase ${key} to more than ${value / 1000} s.`;
       };
       invocation = new InvocationServices(
         clock.now() + preparationTimeoutMs,
