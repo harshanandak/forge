@@ -10,6 +10,7 @@ import {
 } from "./providers.ts";
 import { version } from "../version.ts";
 import { refuse } from "../core/trust/index.ts";
+import { formatConfigProblem } from "../contract/input-error.ts";
 
 export function withCheckRunBudget(
   catalog: Catalog,
@@ -47,7 +48,11 @@ export function withCheckRunBudget(
     if (ceiling !== undefined && ceiling < timeoutMs)
       refuse(
         "INPUT_INVALID",
-        `Selected run needs at least ${timeoutMs / 1000} s; ${key} (${ceiling / 1000} s) in .forge/config.yaml is too short. Fix: raise it to at least ${timeoutMs / 1000} s, lower blocks.${operation.instance}.config.timeoutMs, or select fewer checks with --input '{"checks":["name"]}'.`,
+        formatConfigProblem(
+          key,
+          `Selected run needs at least ${timeoutMs / 1000} s; ${key} (${ceiling / 1000} s) is too short`,
+          `raise it to at least ${timeoutMs / 1000} s, lower blocks.${operation.instance}.config.timeoutMs, or select fewer checks with --input '{"checks":["name"]}'`,
+        ),
       );
   }
   if (configured !== undefined) return catalog;

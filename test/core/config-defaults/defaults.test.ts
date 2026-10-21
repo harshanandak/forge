@@ -144,7 +144,7 @@ test("short form: use: is a relative path or a package, other keys are config, a
     {
       pointer: "/blocks/far",
       problems: [
-        "/blocks/far/use must be a path relative to the project, like ./blocks/far",
+        '.forge/config.yaml: blocks.far.use: must be a path relative to the project, like ./blocks/far; got "/opt/far". Fix: set blocks.far.use to a value that must be a path relative to the project, like ./blocks/far.',
       ],
     },
   ]);

@@ -123,16 +123,32 @@ try {
     writeFileSync(join(root, ".forge/config.yaml"), bytes);
     rmSync(join(root, "removed"), { recursive: true, force: true });
     rmSync(removedPackage, { recursive: true, force: true });
-    const show = cli(root, ["config", "show"]);
-    assert.equal(show.ok, true, "missing blocks must not disable config.show");
-    for (const name of ["removed", "uninstalled", "absent"])
+    const show = cli(root, ["config", "show"], 6);
+    assert.equal(show.ok, false, "missing sources make config invalid");
+    assert.ok(
+      show.result,
+      "config show must retain readable invalid configuration",
+    );
+    assert.equal(show.result.valid, false);
+    assert.equal(show.error.message, show.result.problems.join("\n"));
+    for (const name of ["removed", "uninstalled"])
       assert.ok(
         show.result.problems.some(
           (problem) =>
-            problem.includes(name) && problem.includes("unavailable"),
+            problem.includes(`blocks.${name}.source:`) &&
+            problem.includes(
+              `Repair the source or configuration for ${name}`,
+            ) &&
+            problem.includes(`remove /blocks/${name} with config.apply`),
         ),
-        `visible unavailable diagnostic for ${name}`,
+        `visible source diagnostic and repair for ${name}`,
       );
+    assert.match(show.error.message, /blocks\.removed\.source:/);
+    assert.match(show.error.message, /blocks\.uninstalled\.source:/);
+    assert.match(
+      show.error.message,
+      /blocks\.absent\.source\.builtin:.*got "forge\/absent".*Fix:/,
+    );
     assert.equal(show.result.instances.length, 4);
     assert.equal(
       readFileSync(join(root, ".forge/config.yaml"), "utf8"),

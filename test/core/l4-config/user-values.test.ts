@@ -185,7 +185,7 @@ describe("a schema-invalid config file", () => {
       "/extra",
     ]);
     expect(shown.excluded[0]?.problems.join("\n")).toContain(
-      "/blocks/check/source/foo",
+      ".forge/config.yaml: blocks.check.source.foo:",
     );
     expect(shown.problems.length).toBeGreaterThan(0);
     expect(shown.effective).toEqual({

@@ -59,7 +59,7 @@ test("assembled check.run preserves command config errors and exit 6", async () 
         "Shell syntax needs a project-owned script; declare an argument array instead.",
       ],
       ['tool "unterminated', "Declared command contains an unclosed quote."],
-    ]) {
+    ] as const) {
       writeFileSync(
         join(root, ".forge/config.yaml"),
         JSON.stringify({ blocks: { check: { commands: { test: command } } } }),
@@ -73,8 +73,14 @@ test("assembled check.run preserves command config errors and exit 6", async () 
         ok: false,
         op: "check.run",
         status: "FAIL",
-        error: { code: "INPUT_INVALID", message, retry: "never" },
+        error: { code: "INPUT_INVALID" },
       });
+      if (response.envelope.ok) throw Error("Expected invalid command");
+      expect(response.envelope.error.message).toContain(message);
+      expect(response.envelope.error.message).toContain(
+        ".forge/config.yaml: blocks.check.config.commands.test:",
+      );
+      expect(response.envelope.error.message).toContain('Fix: use {"argv":[');
       expect(response.exitCode).toBe(6);
     }
     for (const [changes, key, value, remedy] of [
@@ -100,7 +106,7 @@ test("assembled check.run preserves command config errors and exit 6", async () 
       );
       expect(response.envelope).toMatchObject({
         ok: false,
-        error: { code: "INPUT_INVALID", retry: "never" },
+        error: { code: "INPUT_INVALID", retry: "reconcile_first" },
       });
       expect(response.exitCode).toBe(6);
       if (!response.envelope.ok) {
@@ -230,6 +236,22 @@ test("aliased check outcomes derive from the receipt and retain accepted output"
     warnings: [],
   } as const;
   expect(checkResult(f.catalog, f.request.op, failure)).toBe(failure);
+  const metadata = {
+    ...failure,
+    error: {
+      ...failure.error,
+      message:
+        "maxMetadataBytes (10) cannot fit resolved declaration metadata; needs at least 100",
+    },
+  };
+  expect(checkResult(f.catalog, f.request.op, metadata)).toBe(metadata);
+  expect(
+    checkResult(
+      fixture(1000, undefined, false).catalog,
+      f.request.op,
+      metadata,
+    ),
+  ).toBe(metadata);
 }, 1000);
 
 test("a selected run exceeding 60 seconds finishes under its operation deadline", async () => {
@@ -445,6 +467,7 @@ test("sufficient explicit budgets, other operations and unshipped bytes keep the
 test("explicit operation or host ceilings cannot silently shorten a selected run", () => {
   const f = fixture(120000, 10000);
   for (const text of [
+    '.forge/config.yaml: blocks.checks.operationTimeouts["check.run"]:',
     'blocks.checks.operationTimeouts["check.run"]',
     ".forge/config.yaml",
     "10 s",
@@ -538,6 +561,7 @@ test("an expired check operation names its sized budget and config remedy", asyn
     'blocks.checks.operationTimeouts["check.run"]',
     ".forge/config.yaml",
     "161.25 s",
+    '.forge/config.yaml: blocks.checks.operationTimeouts["check.run"]:',
     "increase",
   ])
     expect(result.error.message).toContain(text);

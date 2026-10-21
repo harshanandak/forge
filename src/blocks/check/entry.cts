@@ -232,12 +232,15 @@ function blank(
 
 const INCOMPLETE_REASON =
   "Command could not be completed; inspect the executable and project configuration";
-function declarationsFor(config: CheckConfig) {
+function declarationsFor(
+  config: CheckConfig,
+  configPath = "blocks.check.config",
+) {
   return Object.entries(config.commands).map(([name, command]) => ({
     name,
     argv:
       typeof command === "string"
-        ? commandArguments(command)
+        ? commandArguments(command, `${configPath}.commands.${name}`)
         : [...command.argv],
   }));
 }
@@ -245,6 +248,7 @@ function metadataSize(
   config: CheckConfig,
   subject = "",
   paths?: ReadonlyMap<string, string>,
+  configPath?: string,
 ): number {
   const stream = {
     head: "",
@@ -254,7 +258,7 @@ function metadataSize(
     digest: "sha256:" + "a".repeat(64),
     complete: false,
   };
-  const runs = declarationsFor(config).map(({ name, argv }) => ({
+  const runs = declarationsFor(config, configPath).map(({ name, argv }) => ({
     ...blank(name, argv, INCOMPLETE_REASON, "NOT_EXECUTED"),
     executable: paths?.get(name) ?? argv[0] ?? null,
     testCount: Number.MAX_SAFE_INTEGER,
@@ -280,11 +284,18 @@ function metadataSize(
   );
 }
 /** Pure preflight: no clock, snapshot, environment selection or process calls. */
-function validateBudgets(config: CheckConfig): {
+function validateBudgets(
+  config: CheckConfig,
+  configPath = "blocks.check.config",
+): {
   totalBytes: number;
   declarationBytes: number;
 } {
-  const invalid = (message: string): never => failure("INPUT_INVALID", message);
+  const invalid = (message: string, key: string, fix: string): never =>
+    failure(
+      "INPUT_INVALID",
+      `.forge/config.yaml: ${configPath}.${key}: ${message}. Fix: ${fix}.`,
+    );
   for (const [name, value, maximum] of [
     ["maxOutputBytes", config.maxOutputBytes, 262144],
     ["outputHeadBytes", config.outputHeadBytes, 262144],
@@ -297,17 +308,26 @@ function validateBudgets(config: CheckConfig): {
     if (!Number.isSafeInteger(value) || value < minimum || value > maximum)
       invalid(
         `${name} must be an integer in ${minimum}..${maximum}; maximum ${maximum}`,
+        name,
+        `set ${configPath}.${name} to an integer in ${minimum}..${maximum}`,
       );
   }
   const retained = config.outputHeadBytes + config.outputTailBytes;
   if (retained > config.maxOutputBytes)
     invalid(
       `outputHeadBytes + outputTailBytes (${retained}) conflicts with maxOutputBytes (${config.maxOutputBytes}); maximum retained bytes per stream is ${config.maxOutputBytes}`,
+      "outputHeadBytes",
+      `lower ${configPath}.outputHeadBytes + ${configPath}.outputTailBytes to at most ${config.maxOutputBytes}`,
     );
   const count = Object.keys(config.commands).length;
-  if (count > 256) invalid("commands exceeds its maximum of 256");
+  if (count > 256)
+    invalid(
+      "commands exceeds its maximum of 256",
+      "commands",
+      `keep at most 256 entries in ${configPath}.commands`,
+    );
   const declarationBytes = utf8Bytes(canonical(config.commands));
-  const metadata = metadataSize(config);
+  const metadata = metadataSize(config, "", undefined, configPath);
   const maximumMetadata = Math.max(
     0,
     config.maxReceiptBytes - count * 2 * retained * 10,
@@ -315,6 +335,8 @@ function validateBudgets(config: CheckConfig): {
   if (metadata > config.maxMetadataBytes)
     invalid(
       `maxMetadataBytes (${config.maxMetadataBytes}) cannot fit declarations (${declarationBytes} bytes) and receipt metadata; needs at least ${metadata}; maximum metadata reservation that fits maxReceiptBytes is ${maximumMetadata}`,
+      "maxMetadataBytes",
+      `raise ${configPath}.maxMetadataBytes to at least ${metadata}`,
     );
   // JSON text needs at most six bytes per retained raw byte; base64 at most four.
   const totalBytes = config.maxMetadataBytes + count * 2 * retained * 10;
@@ -333,6 +355,8 @@ function validateBudgets(config: CheckConfig): {
       : 0;
     invalid(
       `commands (${count}) × two streams × outputHeadBytes + outputTailBytes (${retained}), plus maxMetadataBytes (${config.maxMetadataBytes}), conflicts with maxReceiptBytes (${config.maxReceiptBytes}); maximum retained bytes per stream is ${maximum}; crypto ceiling is ${HASH_LIMIT}`,
+      "maxReceiptBytes",
+      `lower ${configPath}.outputHeadBytes + ${configPath}.outputTailBytes to at most ${maximum}`,
     );
   }
   return { totalBytes, declarationBytes };
@@ -369,7 +393,7 @@ function runTimeoutMs(
   configPath = "blocks.check.config",
 ): number {
   const selected = selectedConfig(config, input.checks);
-  validateBudgets(selected.config);
+  validateBudgets(selected.config, configPath);
   const { cleanupMs, snapshotMs } = timing;
   const timeoutMs =
     selected.names.length * (config.timeoutMs + cleanupMs) +
@@ -669,8 +693,9 @@ function createCheck(
 }
 
 /** Split a declared executable invocation, never evaluate shell syntax. */
-function commandArguments(text: string): string[] {
+function commandArguments(text: string, configPath?: string): string[] {
   const invalid = (message: string): never => failure("INPUT_INVALID", message);
+  let problem: string | undefined;
   const args: string[] = [];
   let value = "",
     quote = "",
@@ -690,16 +715,21 @@ function commandArguments(text: string): string[] {
       }
     } else {
       if (/[|&;<>`$\r\n]/.test(char))
-        invalid(
-          "Shell syntax needs a project-owned script; declare an argument array instead.",
-        );
+        problem ??=
+          "Shell syntax needs a project-owned script; declare an argument array instead.";
       value += char;
       started = true;
     }
   }
-  if (quote) invalid("Declared command contains an unclosed quote.");
+  if (quote) problem ??= "Declared command contains an unclosed quote.";
   if (started) args.push(value);
-  if (!args[0]) invalid("Declared command has no executable.");
+  if (!args[0]) problem ??= "Declared command has no executable.";
+  if (problem)
+    invalid(
+      configPath === undefined
+        ? problem
+        : `.forge/config.yaml: ${configPath}: ${problem} Got ${JSON.stringify(text)}. Fix: use ${JSON.stringify({ argv: args.length ? args : ["executable"] })}; put shell behavior in a project-owned script.`,
+    );
   return args;
 }
 

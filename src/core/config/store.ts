@@ -84,7 +84,7 @@ export function readProject(deps: StoreDeps): ProjectConfig {
       document: undefined,
       unreadable: {
         ...decoded.error,
-        message: `${CONFIG_FILE}: ${decoded.error.message}`,
+        message: `${CONFIG_FILE}: ${decoded.error.message}. Fix: correct the YAML syntax at the reported location, then run config show.`,
       },
     };
   }

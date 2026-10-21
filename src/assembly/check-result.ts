@@ -8,13 +8,13 @@ export function checkResult(
   op: string,
   envelope: ResultEnvelope,
 ): ResultEnvelope {
-  if (!envelope.ok) return envelope;
   const { block, operation } = catalog.resolve(op);
   if (
     block.manifest.id !== "forge/check" ||
     operation.declaredOp !== "check.run"
   )
     return envelope;
+  if (!envelope.ok) return envelope;
   const receipt = envelope.result as CheckReceipt;
   if (receipt.status === "PASS") return envelope;
   const remedy =
