@@ -10,7 +10,7 @@ Orchestrator only. A worker never merges. Merge by: {{values.merge.by}}.
 ## Merge conditions: all of them, read fresh
 
 1. `gh pr view <n> --json state,mergeStateStatus,headRefOid` shows `OPEN` and `CLEAN`. Anything else (`BLOCKED`, `BEHIND`, `DIRTY`, `UNSTABLE`, `UNKNOWN`) is a no.
-2. A passing check receipt exists for that exact head: `forge check show --input '{"id":"<receipt>"}'`. Its head equals `headRefOid`. A receipt for an older head is no receipt.
+2. A passing check receipt exists for that exact head: `forge check show --input '{"id":"<receipt>"}'`. Its head equals `headRefOid` and `result.status` is PASS; show exiting 0 only means the read succeeded. For a new run, only PASS exits 0 with `ok:true`; FAIL exits 1, INCOMPLETE or NOT_EXECUTED exits 2, all with `ok:false` and the full receipt in `result`. A receipt for an older head is no receipt.
 3. No open review threads, counted over every page; it must print `0`:
 
 ```

@@ -9,6 +9,8 @@ const installed = process.argv[2];
 const mcpOnly = process.argv[3] === "mcp";
 const bindingsOnly = process.argv[3] === "bindings";
 const reviewOnly = process.argv[3] === "review";
+const honestOnly = process.argv[3] === "honest";
+const noHeadOnly = process.argv[3] === "no-head";
 const root = realpathSync(mkdtempSync(join(tmpdir(), "check-surfaces-")));
 const bin = join(installed, "dist/bin/forge.js");
 const env = {
@@ -35,6 +37,10 @@ function cli(args, expected = 0, input, label = "") {
     `${label} ${args.slice(0, 2).join(" ")}: ${result.error?.code ?? result.signal ?? "exit"} ${result.stdout} ${result.stderr}`,
   );
   return JSON.parse(result.stdout);
+}
+function runReceipt(envelope, label = "check.run receipt") {
+  assert.ok(envelope?.result, `${label}: ${JSON.stringify(envelope)}`);
+  return envelope.result;
 }
 function git(args) {
   const result = spawnSync("git", args, {
@@ -118,7 +124,7 @@ function bindings() {
     maxReceiptBytes: 1048576,
     stopOnFailure: false,
   });
-  const receipt = cli(["check", "run"]).result;
+  const receipt = runReceipt(cli(["check", "run"], 2));
   assert.equal(
     receipt.runs.length,
     128,
@@ -192,12 +198,17 @@ async function mcp(expectedStatus = "PASS", expectedCommands = ["test"]) {
       expectedCommands,
     );
     const run = await rpc("tools/call", { name: "check_run", arguments: {} });
+    const receipt = runReceipt(
+      run.result?.structuredContent,
+      `MCP awaits the declared command: ${JSON.stringify(run.error ?? null)}`,
+    );
     assert.equal(
-      run.result?.structuredContent?.result?.status,
+      receipt.status,
       expectedStatus,
       `MCP awaits the declared command: ${JSON.stringify(run.error ?? run.result?.structuredContent?.error ?? null)}`,
     );
-    const receipt = run.result.structuredContent.result;
+    assert.equal(run.result.structuredContent.ok, expectedStatus === "PASS");
+    assert.equal(run.result.isError, expectedStatus !== "PASS");
     const read = await rpc("tools/call", {
       name: "check_show",
       arguments: { id: receipt.id },
@@ -226,6 +237,64 @@ async function mcp(expectedStatus = "PASS", expectedCommands = ["test"]) {
     }
   }
 }
+async function honest() {
+  const failures = [];
+  for (const [mode, status, exit] of [
+    ["unknown", "PASS", 0],
+    ["fail", "FAIL", 1],
+    ["missing", "INCOMPLETE", 2],
+    ["timeout", "INCOMPLETE", 2],
+    ["nothing", "NOT_EXECUTED", 2],
+  ]) {
+    configure({
+      commands:
+        mode === "nothing"
+          ? {}
+          : {
+              test: {
+                argv:
+                  mode === "missing"
+                    ? ["forge-check-does-not-exist-316"]
+                    : [process.execPath, "command.mjs", mode],
+              },
+            },
+      timeoutMs: mode === "timeout" ? 1500 : 5000,
+    });
+    try {
+      const envelope = cli(["check", "run"], exit, undefined, mode);
+      assert.equal(envelope.ok, status === "PASS");
+      const receipt = runReceipt(envelope);
+      assert.equal(receipt.status, status);
+      if (mode === "fail") assert.equal(receipt.runs[0].exitCode, 7);
+      if (mode === "timeout") assert.equal(receipt.runs[0].timedOut, true);
+      if (mode === "fail") {
+        assert.deepEqual(cli(["check", "show", receipt.id]).result, receipt);
+        const called = cli(
+          [
+            "catalog",
+            "call",
+            "--input",
+            JSON.stringify({ op: "check.run", input: {} }),
+          ],
+          exit,
+        );
+        assert.equal(called.ok, status === "PASS");
+        assert.equal(runReceipt(called).status, status);
+      }
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await mcp(status, mode === "nothing" ? [] : ["test"]);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length) throw new AggregateError(failures, "check outcomes");
+  console.log(
+    "PASS honest CLI/MCP outcomes: PASS, child exit 7, missing executable, timeout, no commands, receipt readback, catalog.call",
+  );
+}
 async function review() {
   configure({
     ...config,
@@ -233,7 +302,7 @@ async function review() {
     outputHeadBytes: 1,
     outputTailBytes: 0,
   });
-  const first = cli(["check", "run"]).result;
+  const first = runReceipt(cli(["check", "run"]));
   assert.equal(
     first.runs.length,
     1,
@@ -244,7 +313,7 @@ async function review() {
     "cA==",
     "command retention stays at one byte",
   );
-  const second = cli(["check", "run"]).result;
+  const second = runReceipt(cli(["check", "run"]));
   assert.equal(
     first.inputsDigest,
     second.inputsDigest,
@@ -279,18 +348,8 @@ try {
   writeFileSync(join(root, "input.txt"), "exact input\n");
   writeFileSync(
     join(root, "command.mjs"),
-    `const mode=process.argv[2];if(mode==="maximum"){const text="H"+"x".repeat(262142)+"T";process.stdout.write(text);process.stderr.write(text);}else if(mode==="zero")console.log("Tests: 0 total");else if(mode==="malformed")console.log('{"numTotalTests":');else if(mode==="environment"){if(process.env.CHECK_PARENT_ONLY)process.exitCode=9;else console.log("isolated");}else console.log("project command");`,
+    `const mode=process.argv[2];if(mode==="fail")process.exitCode=7;else if(mode==="timeout")setInterval(()=>{},1000);else if(mode==="maximum"){const text="H"+"x".repeat(262142)+"T";process.stdout.write(text);process.stderr.write(text);}else if(mode==="zero")console.log("Tests: 0 total");else if(mode==="malformed")console.log('{"numTotalTests":');else if(mode==="environment"){if(process.env.CHECK_PARENT_ONLY)process.exitCode=9;else console.log("isolated");}else console.log("project command");`,
   );
-  git(["add", "input.txt", "command.mjs"]);
-  git([
-    "-c",
-    "user.name=Fixture",
-    "-c",
-    "user.email=fixture@example.invalid",
-    "commit",
-    "-qm",
-    "fixture",
-  ]);
   const initial = cli(["config", "show"]);
   const applied = cli([
     "config",
@@ -309,12 +368,36 @@ try {
     }),
   ]);
   revision = applied.result.revision;
+  if (noHeadOnly) {
+    const initial = cli(["check", "run"], 4);
+    assert.equal(initial.ok, false);
+    assert.match(initial.error.message, /first commit/i);
+    assert.match(
+      initial.error.message,
+      /git add -A && git commit -m "initial commit"/,
+    );
+    console.log("PASS fresh git init gives a first-commit command");
+  }
+  git(["add", "input.txt", "command.mjs"]);
+  git([
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-qm",
+    "fixture",
+  ]);
   assert.deepEqual(
     cli(["check", "list"]).result.commands,
     ["test"],
     "the block shipped in the installed package needs no admit or grant step",
   );
-  if (reviewOnly) {
+  if (noHeadOnly) {
+    // The first-commit repair above is the whole journey.
+  } else if (honestOnly) {
+    await honest();
+  } else if (reviewOnly) {
     await review();
   } else if (mcpOnly) {
     await mcp();
@@ -326,7 +409,7 @@ try {
     console.log("PASS packed large declaration input binding");
   } else {
     assert.deepEqual(cli(["check", "list"]).result.commands, ["test"]);
-    const first = cli(["check", "run"]).result;
+    const first = runReceipt(cli(["check", "run"]));
     assert.equal(first.status, "PASS", "installed CLI awaits command");
     assert.equal(
       first.runs[0].testCount,
@@ -347,20 +430,25 @@ try {
         commands: { test: { argv: [process.execPath, "command.mjs", mode] } },
       });
       assert.equal(
-        cli(["check", "run"]).result.status,
+        runReceipt(
+          cli(
+            ["check", "run"],
+            status === "PASS" ? 0 : status === "FAIL" ? 1 : 2,
+          ),
+        ).status,
         status,
         `CLI ${mode} outcome`,
       );
     }
     configure({ commands: {} });
     assert.equal(
-      cli(["check", "run"]).result.status,
+      runReceipt(cli(["check", "run"], 2)).status,
       "NOT_EXECUTED",
       "CLI nothing declared",
     );
     configure({ commands: config.commands });
     writeFileSync(join(root, "input.txt"), "changed bytes\n");
-    const changed = cli(["check", "run"]).result;
+    const changed = runReceipt(cli(["check", "run"]));
     assert.notEqual(
       first.inputsDigest,
       changed.inputsDigest,
@@ -376,7 +464,7 @@ try {
       maxOutputBytes: 262144,
       stopOnFailure: false,
     });
-    maximumReceipt(cli(["check", "run"]).result);
+    maximumReceipt(runReceipt(cli(["check", "run"])));
     maximumReceipt(await mcp("PASS", ["first", "second"]));
     bindings();
     await review();
@@ -385,7 +473,11 @@ try {
       join(root, ".forge/config.yaml"),
       `blocks:\n  check:\n    commands:\n      test: { argv: ${JSON.stringify(config.commands.test.argv)} }\n`,
     );
-    assert.equal(cli(["check", "run"]).result.status, "PASS", "short form");
+    assert.equal(
+      runReceipt(cli(["check", "run"])).status,
+      "PASS",
+      "short form",
+    );
     assert.equal(
       cli(["config", "explain", "--input", '{"path":"check.timeoutMs"}']).result
         .source,

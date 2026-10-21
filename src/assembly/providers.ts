@@ -505,7 +505,10 @@ export function createAssemblyProviders(
               result.truncated ||
               !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.stdout.trim())
             )
-              refuse("INPUT_CONFLICT", "Snapshot requires an exact Git HEAD");
+              refuse(
+                "INPUT_CONFLICT",
+                'Snapshot requires an exact Git HEAD. If this repository has no first commit, create it with: git add -A && git commit -m "initial commit". Otherwise repair HEAD and retry.',
+              );
             return result.stdout.trim();
           };
           const before = await head();

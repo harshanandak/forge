@@ -23,7 +23,7 @@ Get a worktree with dependencies installed from the harness:
 ## Red, then green
 
 1. Explore before editing: `forge issue show --input '{"id":"<slice>"}'`, then every file under Touches.
-2. Make the named check fail: `forge check run --input '{"checks":["<name>"]}'`. Keep the receipt id.
+2. Make the named check fail: `forge check run --input '{"checks":["<name>"]}'`. Expect exit 1 and `ok:false` for FAIL (exit 2 for INCOMPLETE or NOT_EXECUTED); keep the full `result` receipt and its id even on nonzero exit. PASS alone exits 0. Do not chain red checks with `&&` or discard their output on failure.
 3. Make the smallest change that turns it green. Run it again; keep that receipt id too.
 4. Commit in small conventional commits.
 
@@ -46,7 +46,7 @@ After {{values.fixes.maxFailedPerCheck}} failed fixes on the same check, stop ed
 
 ## Finish
 
-1. Run every check on the final tree: `forge check run --input '{}'`. Read it back with `forge check show --input '{"id":"<receipt>"}'`; its head must be your head.
+1. Run every check on the final tree: `forge check run --input '{}'`. Require exit 0, `ok:true` and receipt status PASS. Read it back with `forge check show --input '{"id":"<receipt>"}'`; its head must be your head. A successful show reads evidence; it does not mean the stored checks passed.
 2. Push, open the PR (`open-pr`), then link it while you still hold the claim: `forge issue link --input '{"id":"<slice>","relation":"delivers","url":"<pr url>"}'`.
 3. Release: `forge issue release --input '{"id":"<slice>"}'`. The orchestrator claims again to merge and close.
 4. Stop at push. Never merge. Cite the receipt ids and what was not checked in the PR's Verification section.

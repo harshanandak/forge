@@ -12,6 +12,9 @@ import { Catalog, captureBlock } from "../../src/core/catalog/index.ts";
 import { Runtime } from "../../src/core/runtime/index.ts";
 import { TrustStore } from "../../src/core/trust/index.ts";
 import { withCheckRunBudget } from "../../src/assembly/check-budget.ts";
+import { checkResult } from "../../src/assembly/check-result.ts";
+import { exitCode } from "../../src/surface/result.ts";
+import { validateResultEnvelope } from "../../src/generated/validators.ts";
 import { ASSEMBLY_PROVIDES } from "../../src/assembly/providers.ts";
 import { schemaDefaults } from "../../src/core/config/short.ts";
 import schema from "../../src/blocks/check/schemas/config.json" with { type: "json" };
@@ -169,6 +172,51 @@ function fixture(timeoutMs = 120000, override?: number, shipped = true) {
   } as const;
   return { catalog, blocks, request };
 }
+
+test("aliased check outcomes derive from the receipt and retain accepted output", () => {
+  const f = fixture();
+  for (const [status, exit] of [
+    ["PASS", 0],
+    ["FAIL", 1],
+    ["INCOMPLETE", 2],
+    ["NOT_EXECUTED", 2],
+  ] as const) {
+    const receipt = {
+      id: "accepted",
+      status,
+      runs: [{ reason: "retained evidence" }],
+    };
+    const envelope = {
+      ok: true,
+      op: f.request.op,
+      status: "OK",
+      result: receipt,
+      warnings: [],
+    } as const;
+    const result = checkResult(f.catalog, f.request.op, envelope);
+    expect(result.ok).toBe(status === "PASS");
+    expect(exitCode(result)).toBe(exit);
+    expect(result.result).toBe(receipt);
+    expect(validateResultEnvelope(result).ok).toBe(true);
+    expect(
+      checkResult(
+        fixture(1000, undefined, false).catalog,
+        f.request.op,
+        envelope,
+      ).ok,
+    ).toBe(status === "PASS");
+    expect(checkResult(f.catalog, "verify.show", envelope)).toBe(envelope);
+    expect(checkResult(f.catalog, "verify.list", envelope)).toBe(envelope);
+  }
+  const failure = {
+    ok: false,
+    op: f.request.op,
+    status: "FAIL",
+    error: { code: "INPUT_INVALID", message: "invalid", retry: "never" },
+    warnings: [],
+  } as const;
+  expect(checkResult(f.catalog, f.request.op, failure)).toBe(failure);
+}, 1000);
 
 test("a selected run exceeding 60 seconds finishes under its operation deadline", async () => {
   const f = fixture();
