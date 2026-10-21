@@ -151,43 +151,59 @@ test("affected check counterfactuals still fail on the built artifact", () => {
         mutation.evidence === "check list:",
     );
     expect(mutations).toHaveLength(3);
-    const baseline = spawnSync(
-      "node",
-      [join(repo, "test/node-fixtures/check/surfaces.mjs"), root, "review"],
-      {
-        cwd: root,
-        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 60_000,
-      },
-    );
-    expect(baseline.error).toBeUndefined();
-    expect(baseline.status, baseline.stdout + baseline.stderr).toBe(0);
+    mkdirSync(join(root, ".forge"));
+    const call = (parser: boolean) =>
+      spawnSync(
+        "node",
+        [
+          join(root, "dist/bin/forge.js"),
+          ...(parser ? ["check", "run"] : ["config", "show"]),
+        ],
+        {
+          cwd: root,
+          env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 30_000,
+        },
+      );
     for (const mutation of mutations) {
+      const parser = mutation.from.startsWith("function commandArguments");
+      writeFileSync(
+        join(root, ".forge/config.yaml"),
+        JSON.stringify({
+          blocks: {
+            check: {
+              commands: { test: parser ? 'tool "unterminated' : "tool" },
+            },
+          },
+        }),
+      );
+      const baseline = call(parser);
+      expect(baseline.error).toBeUndefined();
+      expect(baseline.status, baseline.stdout + baseline.stderr).toBe(
+        parser ? 6 : 0,
+      );
+      expect(JSON.parse(baseline.stdout)).toMatchObject(
+        parser
+          ? { ok: false, error: { code: "INPUT_INVALID" } }
+          : { ok: true, result: { valid: true } },
+      );
       const file = join(root, "dist/src", mutation.file);
       const original = readFileSync(file, "utf8");
       expect(original.split(mutation.from)).toHaveLength(2);
       writeFileSync(file, original.replace(mutation.from, mutation.to));
       try {
-        const result = spawnSync(
-          "node",
-          [
-            join(repo, "test/node-fixtures/check/surfaces.mjs"),
-            root,
-            mutation.journey,
-          ],
-          {
-            cwd: root,
-            env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
-            encoding: "utf8",
-            windowsHide: true,
-            timeout: 30_000,
-          },
-        );
+        const result = call(parser);
         expect(result.error).toBeUndefined();
-        expect(result.status, result.stdout + result.stderr).not.toBe(0);
-        expect(result.stderr).toContain(mutation.evidence);
+        expect(result.status, result.stdout + result.stderr).toBe(
+          parser ? 1 : 6,
+        );
+        expect(JSON.parse(result.stdout)).toMatchObject(
+          parser
+            ? { ok: false, error: { code: "PROVIDER_MISSING" } }
+            : { ok: false, result: { valid: false } },
+        );
       } finally {
         writeFileSync(file, original);
       }
