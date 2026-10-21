@@ -73,12 +73,33 @@ select its own `report`; otherwise it uses the declared block report. `exit-code
 report interpretation, `json` requires a structured report, and `auto` delegates recognition
 to the replaceable output adapter. No particular command, parser mode or stop policy is
 selected by the engine. For the built-in `check.run`, assembly uses the existing instance
-`operationTimeouts` mechanism to default the deadline to `(selected commands + 2) × timeoutMs + 1000`
-milliseconds: sequential commands, two snapshots, and receipt finalization. Selection and
-receipt preflight reuse the block's selected-run budget resolver. A total above the finite
-timer ceiling is rejected before execution. Explicit instance overrides and host ceilings
-remain authoritative; when shorter than the selected run's budget they are rejected before
-execution. Command timeouts remain bounded by that invocation deadline.
+`operationTimeouts` mechanism to default the deadline, in milliseconds, to
+`N × (T + C) + 2S + F`: selected commands at their own timeout plus process cleanup,
+two independently bounded snapshots, and receipt finalization. Assembly derives `C`
+from the process service's supervision config: two sequential cleanup waits plus pipe
+drain (default `2 × 5000 + 250 = 10250` ms). The snapshot provider enforces
+`S = 2 × (10000 + C_default) = 40500` ms, reserving a ten-second startup window and
+cleanup for each of the two HEAD lookups. `SNAPSHOT_TIMEOUT_MS`
+in assembly is the shared cap for provider enforcement, check sizing and snapshot
+callers. The provider fixture declares its operation deadline from
+`SNAPSHOT_OPERATION_TIMEOUT_MS` (the cap plus 1000 ms to return the result).
+Idle Windows snapshots took 228–1029 ms, but under load a HEAD lookup exceeded
+the old 4.75-second startup window. The engine and sizing share
+`finalizationTimeoutMs` in `entry.cts`:
+`F = 1000 + ceil(maxReceiptBytes × 1000 / 16384)` ms (33000 ms at 512 KiB).
+The fixed second covers overhead; the 16 KiB/s floor allows slow durable storage.
+Five Windows Node 24 samples at exactly 524288 encoded bytes had medians of
+1.81 ms serialization, 12.10 ms digest, 7431.76 ms store creation/ACL/initialization/write,
+and 16.08 ms verified readback (7468.31 ms total; maximum 11772.01 ms).
+The benchmark used the actual SQLite adapter, private ACL helper and state owner;
+the throughput floor is over four times slower than the measured median.
+The existing 1 MiB receipt ceiling bounds F at 65000 ms.
+Snapshot and finalization allowances do not grow with command timeouts.
+Selection and receipt preflight reuse the block's selected-run budget resolver.
+A total above the finite timer ceiling is rejected before execution. Explicit instance
+overrides and host ceilings remain authoritative; when shorter than the selected run's
+budget they are rejected before execution. Command timeouts remain bounded by that
+invocation deadline.
 
 Safety ceilings: 256 named checks (names 1–200 characters), 1024 arguments per command,
 1–2147483647 ms per command, and 1–262144 bytes per output stream. Input configuration

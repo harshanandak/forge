@@ -2,7 +2,14 @@ import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 
-for (const mode of ["honest", "no-head"]) {
+for (const mode of [
+  "honest:unknown",
+  "honest:fail",
+  "honest:missing",
+  "honest:timeout",
+  "honest:nothing",
+  "no-head",
+]) {
   test(`built CLI and MCP check outcomes: ${mode}`, () => {
     const root = resolve(import.meta.dirname, "../..");
     const node = Bun.which("node");

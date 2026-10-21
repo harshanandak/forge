@@ -14,7 +14,11 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAssembly } from "forge-workflow/runtime";
+import {
+  createAssembly,
+  SNAPSHOT_TIMEOUT_MS,
+  SNAPSHOT_OPERATION_TIMEOUT_MS,
+} from "forge-workflow/runtime";
 // Cleanup may settle while a stopped member is still an unreaped zombie, which
 // answers kill(pid, 0) on every POSIX platform. This probe reads its state.
 import { isRunning as alive } from "./liveness.mjs";
@@ -81,7 +85,12 @@ for (const [verb, declaredEffects] of Object.entries(effects)) {
     idempotent: false,
     callers: ["human", "agent"],
     stability: "stable",
-    timeoutMs: verb === "timeout" ? 1500 : 10000,
+    timeoutMs:
+      verb === "timeout"
+        ? 1500
+        : verb === "snapshot"
+          ? SNAPSHOT_OPERATION_TIMEOUT_MS
+          : 10000,
   };
 }
 const block = join(root, "fixture");
@@ -621,7 +630,7 @@ try {
     const input = {
       paths: ["input.txt", "missing.txt"],
       maxBytes: 1024,
-      timeoutMs: 5000,
+      timeoutMs: SNAPSHOT_TIMEOUT_MS,
       maxOutputBytes: 1024,
     };
     const before = ok(

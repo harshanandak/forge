@@ -9,6 +9,10 @@ export {
 export { TrustStore } from "../core/trust/index.ts";
 export { nodeFileCapture } from "../adapters/node-runtime/capture.ts";
 export { nodeRunIsolation } from "../adapters/node-runtime/isolation.ts";
+export {
+  SNAPSHOT_TIMEOUT_MS,
+  SNAPSHOT_OPERATION_TIMEOUT_MS,
+} from "./providers.ts";
 export type {
   ProcessService,
   FilesService,

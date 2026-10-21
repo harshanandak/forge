@@ -82,6 +82,18 @@ const CLEANUP: SupervisionOptions = {
   drainTimeoutMs: 250,
   maxConcurrent: 1,
 };
+/** Stop the tree, await the supervisor, then drain its pipes: sequential bounds. */
+export function processCleanupBudgetMs(options?: SupervisionOptions): number {
+  const timing = options ?? CLEANUP;
+  return 2 * timing.cleanupTimeoutMs + timing.drainTimeoutMs;
+}
+// Windows load exceeded the old 4.75 s Git window. Each of two HEAD lookups
+// needs a 10 s startup window plus the process service's cleanup bound.
+const SNAPSHOT_HEAD_MS = 10000;
+export const SNAPSHOT_TIMEOUT_MS: number =
+  2 * (SNAPSHOT_HEAD_MS + processCleanupBudgetMs());
+/** An operation wrapping one snapshot also needs time to return its result. */
+export const SNAPSHOT_OPERATION_TIMEOUT_MS: number = SNAPSHOT_TIMEOUT_MS + 1000;
 export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.state@1.0.0",
   "forge.process@1.0.0",
@@ -468,9 +480,10 @@ export function createAssemblyProviders(
           active(scope);
           if (!scope.effects.includes("files:read"))
             refuse("EFFECT_UNDECLARED", "File snapshots require files:read");
+          const timeoutMs = input.timeoutMs;
           if (
-            !Number.isSafeInteger(input.timeoutMs) ||
-            input.timeoutMs < 1 ||
+            !Number.isSafeInteger(timeoutMs) ||
+            timeoutMs < 1 ||
             !Number.isSafeInteger(input.maxOutputBytes) ||
             input.maxOutputBytes < 1 ||
             input.maxOutputBytes > 1048576
@@ -481,12 +494,22 @@ export function createAssemblyProviders(
             );
           const deadline = Math.min(
             scope.deadline,
-            Date.now() + input.timeoutMs,
+            Date.now() + Math.min(timeoutMs, SNAPSHOT_TIMEOUT_MS),
           );
-          const head = async (): Promise<string> => {
+          const cleanupMs = processCleanupBudgetMs(options.supervision);
+          const snapshotActive = (): void => {
             active(scope);
             if (Date.now() >= deadline)
               refuse("INVOCATION_TIMEOUT", "Snapshot deadline exceeded");
+          };
+          const head = async (): Promise<string> => {
+            snapshotActive();
+            const remaining = deadline - Date.now() - cleanupMs;
+            if (remaining < 1)
+              refuse(
+                "INVOCATION_TIMEOUT",
+                "Snapshot has no time left for Git and cleanup",
+              );
             const result = await executor.run(
               git,
               ["-C", root, "rev-parse", "--verify", "HEAD"],
@@ -494,12 +517,13 @@ export function createAssemblyProviders(
                 cwd: root,
                 env: discoveryEnv,
                 signal: scope.signal,
-                timeoutMs: Math.max(1, deadline - Date.now()),
+                timeoutMs: remaining,
                 maxOutputBytes: input.maxOutputBytes,
               },
             );
             if (result.timedOut)
               refuse("INVOCATION_TIMEOUT", "Snapshot head lookup timed out");
+            snapshotActive();
             if (
               result.exitCode !== 0 ||
               result.truncated ||
@@ -518,7 +542,7 @@ export function createAssemblyProviders(
             input.maxBytes,
           );
           const after = await head();
-          active(scope);
+          snapshotActive();
           if (before !== after)
             refuse("INPUT_CONFLICT", "Git HEAD changed during snapshot");
           return { head: after, filesDigest };

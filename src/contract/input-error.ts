@@ -2,6 +2,15 @@ import type { ForgeError, OperationDocs } from "../generated/types.ts";
 import type { SchemaObject, SchemaProblem } from "./schema.ts";
 import { renderExample } from "./example.ts";
 
+export function formatConfigProblem(
+  path: string,
+  message: string,
+  fix: string,
+  file = ".forge/config.yaml",
+): string {
+  return `${file}: ${path}: ${message}. Fix: ${fix}.`;
+}
+
 /** One renderer for transport input and document diagnostics. */
 export function formatProblem(
   problem: SchemaProblem,
@@ -42,7 +51,7 @@ export function formatProblem(
             : problem.keyword === "oneOf" || problem.keyword === "anyOf"
               ? `use one of the allowed shapes at ${path}`
               : `set ${path} to ${problem.keyword === "type" ? `a valid ${expectation}` : problem.keyword === "enum" || problem.keyword === "const" ? expectation : `a value that ${expectation}`}`;
-    return `${file}: ${path}: ${message}. Fix: ${fix}.`;
+    return formatConfigProblem(path, message, fix, file);
   }
   const field =
     problem.pointer
