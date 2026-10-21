@@ -130,7 +130,11 @@ test("the built-in Administrator reads back under its SDDL alias LA", () =>
     // A hosted Windows runner runs as runneradmin, the machine's RID-500 account.
     const { port } = fakePort((args) => {
       if (args[1] === "/save")
-        writeFileSync(args[2] ?? "", "store\r\nD:PAI(A;;FA;;;LA)\r\n", "utf16le");
+        writeFileSync(
+          args[2] ?? "",
+          "store\r\nD:PAI(A;;FA;;;LA)\r\n",
+          "utf16le",
+        );
       return {};
     }, "S-1-5-21-1-2-3-500");
     expect(await failure([file], port)).toBe("resolved");
@@ -140,10 +144,16 @@ test("LA is refused when the current user is not the built-in Administrator", ()
   withFile(async (file) => {
     const { port } = fakePort((args) => {
       if (args[1] === "/save")
-        writeFileSync(args[2] ?? "", "store\r\nD:PAI(A;;FA;;;LA)\r\n", "utf16le");
+        writeFileSync(
+          args[2] ?? "",
+          "store\r\nD:PAI(A;;FA;;;LA)\r\n",
+          "utf16le",
+        );
       return {};
     });
-    expect(await failure([file], port)).toMatch(/unexpected ACL D:PAI\(A;;FA;;;LA\)/);
+    expect(await failure([file], port)).toMatch(
+      /unexpected ACL D:PAI\(A;;FA;;;LA\)/,
+    );
   }));
 
 test("an ACL that reads back with any other entry is refused", () =>
