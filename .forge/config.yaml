@@ -16,6 +16,11 @@ blocks:
   check:
     source:
       builtin: forge/check
+    config:
+      commands:
+        test: bun run test
+        typecheck: bun run check
+        structure: bun run test:structure
 owners:
   /blocks/work/config/labelOrder:
     from: harsha/delivery@0.1.0
