@@ -248,6 +248,7 @@ export class Runtime {
     let started = false;
     let timeoutMessage: (() => string) | undefined;
     let result: ResultEnvelope;
+    const clock = this.#options.clock ?? { now: () => Date.now() };
     try {
       const checked = validateInvocationRequest(value);
       if (!checked.ok) refuse("INPUT_INVALID", "invalid invocation request");
@@ -286,7 +287,6 @@ export class Runtime {
         this.#options.services === undefined
       )
         refuse("PROVIDER_MISSING", "bound clients need a service provider");
-      const clock = this.#options.clock ?? { now: () => Date.now() };
       const budget = invocationDeadline(
         {
           declared: declaration.timeoutMs,
@@ -469,7 +469,10 @@ export class Runtime {
             : "FAIL",
         error: {
           ...failure,
-          ...(failure.code === "INVOCATION_TIMEOUT" && timeoutMessage
+          ...(failure.code === "INVOCATION_TIMEOUT" &&
+          timeoutMessage &&
+          invocation !== undefined &&
+          clock.now() >= invocation.deadline
             ? { message: timeoutMessage() }
             : {}),
           retry: started

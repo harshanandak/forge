@@ -89,6 +89,8 @@ export function processCleanupBudgetMs(options?: SupervisionOptions): number {
 }
 // Windows snapshots took 228–1029 ms; include room for a full supervised cleanup.
 export const SNAPSHOT_TIMEOUT_MS = 15000;
+/** An operation wrapping one snapshot also needs time to return its result. */
+export const SNAPSHOT_OPERATION_TIMEOUT_MS: number = SNAPSHOT_TIMEOUT_MS + 1000;
 export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.state@1.0.0",
   "forge.process@1.0.0",

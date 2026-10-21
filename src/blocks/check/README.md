@@ -78,7 +78,11 @@ selected by the engine. For the built-in `check.run`, assembly uses the existing
 two independently bounded snapshots, and receipt finalization. Assembly derives `C`
 from the process service's supervision config: two sequential cleanup waits plus pipe
 drain (default `2 × 5000 + 250 = 10250` ms). The snapshot provider enforces `S = 15000`
-ms, reserving cleanup time inside each Git call's deadline. Windows snapshots took
+ms, reserving cleanup time inside each Git call's deadline. `SNAPSHOT_TIMEOUT_MS`
+in assembly is the shared cap for provider enforcement, check sizing and snapshot
+callers. The provider fixture declares its operation deadline from
+`SNAPSHOT_OPERATION_TIMEOUT_MS` (the cap plus 1000 ms to return the result).
+Windows snapshots took
 228–1029 ms. The engine enforces `F = 1000` ms for sealing and durable receipt
 write/readback (8 ms measured). Snapshot and finalization allowances do not grow
 with command timeouts.
