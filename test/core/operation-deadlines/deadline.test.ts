@@ -283,3 +283,130 @@ test("both safety endpoints are valid, and remaining time never becomes an unbou
     expect(() => deadline.remaining()).toThrow();
   }
 }, 30000);
+
+for (const source of [
+  "operation",
+  "host",
+  "embedding",
+  "declared",
+  "preparation",
+] as const)
+  test(`expiry names the ${source} budget, seconds and remedy`, async () => {
+    const f = fixture(1000, {
+      schemaVersion: "forge.config/1",
+      runtime: {
+        timeoutMs: source === "host" || source === "preparation" ? 500 : 2000,
+      },
+      blocks: {
+        sample: {
+          source: { path: "./sample" },
+          ...(source === "declared"
+            ? {}
+            : { operationTimeouts: { "sample.run": 1500 } }),
+        },
+      },
+    });
+    let now = 0;
+    const runtime = new Runtime(f.catalog, f.trust, {
+      ...(source === "embedding" ? { limits: { timeoutMs: 250 } } : {}),
+      clock: { now: () => now },
+      services: () => {
+        if (source === "preparation") now = 501;
+        return Promise.resolve({ ownership: "borrowed", value: {} });
+      },
+      isolation: {
+        open: () =>
+          Promise.resolve({
+            ok: true,
+            handle: {
+              ownership: "owned",
+              close: () => Promise.resolve(),
+              value: {
+                run(options) {
+                  now += options.timeoutMs + 1;
+                  return options.encode("late");
+                },
+              },
+            },
+          }),
+      },
+    });
+    const result = await runtime.invoke(f.request);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "INVOCATION_TIMEOUT" },
+    });
+    if (result.ok) throw new Error("Expected expiry");
+    const key =
+      source === "host" || source === "preparation"
+        ? "runtime.timeoutMs"
+        : source === "embedding"
+          ? "RuntimeOptions.limits.timeoutMs"
+          : 'blocks.sample.operationTimeouts["sample.run"]';
+    expect(result.error.message).toContain(key);
+    expect(result.error.message).toContain(
+      source === "embedding"
+        ? "0.25 s"
+        : source === "host" || source === "preparation"
+          ? "0.5 s"
+          : source === "declared"
+            ? "1 s"
+            : "1.5 s",
+    );
+    expect(result.error.message).toContain("more than");
+  }, 1000);
+
+test("the live operation timer preserves its budget diagnostic", async () => {
+  const f = fixture(10);
+  const runtime = new Runtime(f.catalog, f.trust, {
+    isolation: {
+      open: () =>
+        Promise.resolve({
+          ok: true,
+          handle: {
+            ownership: "owned",
+            close: () => Promise.resolve(),
+            value: { run: () => new Promise(() => {}) },
+          },
+        }),
+    },
+  });
+  const result = await runtime.invoke(f.request);
+  expect(result).toMatchObject({
+    ok: false,
+    error: { code: "INVOCATION_TIMEOUT" },
+  });
+  if (result.ok) throw new Error("Expected expiry");
+  for (const text of [
+    'blocks.sample.operationTimeouts["sample.run"]',
+    "0.01 s",
+    "more than",
+  ])
+    expect(result.error.message).toContain(text);
+}, 1000);
+
+test("the preparation safety maximum names the config budgets to lower", async () => {
+  const f = fixture(1000);
+  let now = 0;
+  const runtime = new Runtime(f.catalog, f.trust, {
+    clock: { now: () => now },
+    services: () => {
+      now = 2147483648;
+      return Promise.resolve({ ownership: "borrowed", value: {} });
+    },
+  });
+  const result = await runtime.invoke(f.request);
+  expect(result).toMatchObject({
+    ok: false,
+    error: { code: "INVOCATION_TIMEOUT" },
+  });
+  if (result.ok) throw new Error("Expected preparation expiry");
+  for (const text of [
+    "configured operation and command timeouts add up",
+    "2147483647 ms",
+    "about 24.8 days",
+    'blocks.sample.operationTimeouts["sample.run"]',
+    "blocks.sample.config.timeoutMs",
+  ])
+    expect(result.error.message).toContain(text);
+}, 1000);
