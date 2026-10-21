@@ -87,3 +87,21 @@ export const isRunning = createLivenessProbe({
     });
   },
 });
+
+/**
+ * Waits, boundedly, until none of `pids` is running. A tree counts as stopped once the OS accepts
+ * its kill, so a member can still be exiting for a few milliseconds after the stop returns; a single
+ * check right after the stop races that exit. Resolves false if any pid outlives the bound.
+ */
+export async function waitUntilGone(
+  pids: readonly number[],
+  running: (pid: number) => boolean = isRunning,
+  pause: () => Promise<unknown> = () =>
+    new Promise((resolve) => setTimeout(resolve, 100)),
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (!pids.some((pid) => running(pid))) return true;
+    await pause();
+  }
+  return !pids.some((pid) => running(pid));
+}

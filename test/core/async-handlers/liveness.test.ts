@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { expect, test } from "bun:test";
-import { createLivenessProbe } from "../../node-fixtures/process/liveness.ts";
+import {
+  createLivenessProbe,
+  waitUntilGone,
+} from "../../node-fixtures/process/liveness.ts";
 
 const port = {
   platform: "darwin",
@@ -96,4 +99,21 @@ test("a process disappearing during inspection is gone and malformed output rema
     /denied/,
   );
   expect(createLivenessProbe({ ...port, platform: "linux" })(123)).toBe(false);
+}, 5000);
+
+test("a member still exiting just after a stop is waited for, and one that never exits is reported", async () => {
+  // A group counts as stopped once SIGKILL is accepted; a member can answer a probe a moment longer.
+  let probes = 0;
+  const exitingSoon = (pid: number): boolean => pid === 2 && ++probes <= 3;
+  expect(exitingSoon(2)).toBe(true); // a single check right after the stop sees it
+  expect(
+    await waitUntilGone([1, 2], exitingSoon, () => Promise.resolve()),
+  ).toBe(true);
+  expect(
+    await waitUntilGone(
+      [1, 2],
+      () => true,
+      () => Promise.resolve(),
+    ),
+  ).toBe(false);
 }, 5000);
