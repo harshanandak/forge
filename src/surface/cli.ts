@@ -1,4 +1,6 @@
 import type { McpCandidate } from "../contract/mcp.ts";
+import { ForgeFailure } from "../contract/failure.ts";
+import { inputError } from "../contract/input-error.ts";
 import { propertyFromFlag } from "../contract/naming.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import {
@@ -92,8 +94,21 @@ function mapArguments(
     } else {
       const key = positions[position++];
       if (key === undefined)
-        throw new Error(
-          "Unexpected positional argument. Use declared flags or --input JSON.",
+        throw new ForgeFailure(
+          inputError(
+            entry?.op ?? "",
+            [
+              {
+                pointer: `/arguments/${position - 1}`,
+                keyword: "false",
+                message: "Unexpected positional argument",
+                expected:
+                  "declared flags or --input JSON; no positional argument at this position",
+                received: JSON.stringify(token),
+              },
+            ],
+            entry?.docs,
+          ),
         );
       if (Object.hasOwn(result, key))
         throw new Error(`Duplicate argument ${key}.`);
@@ -183,6 +198,11 @@ export async function runCli(
       text,
     );
   } catch (error) {
+    if (error instanceof ForgeFailure)
+      return respond(
+        { ok: false, status: "FAIL", error: error.error, warnings: [] },
+        text,
+      );
     return respond(
       failure(
         "INPUT_INVALID",

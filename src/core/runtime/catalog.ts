@@ -1,6 +1,7 @@
 import type { McpCandidate } from "../../contract/mcp.ts";
 import { bindContext } from "../../contract/context.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
+import { inputError } from "../../contract/input-error.ts";
 import { SchemaRegistry } from "../../contract/schema.ts";
 import { discoveryOperations } from "../../generated/core-discovery.ts";
 import {
@@ -120,13 +121,11 @@ export class BlockCatalog {
       const bound = bindContext(entry.declaration, request.context);
       if (!bound.ok) throw new ForgeFailure(bound.error);
       const id = "https://core.invalid/input";
-      if (
-        new SchemaRegistry([{ ...entry.inputSchema, $id: id }]).validate(
-          id,
-          request.input,
-        ).length > 0
-      )
-        refuse("INPUT_INVALID", "input does not match operation schema");
+      const problems = new SchemaRegistry([
+        { ...entry.inputSchema, $id: id },
+      ]).validate(id, request.input, true);
+      if (problems.length > 0)
+        throw new ForgeFailure(inputError(request.op, problems, entry.docs));
       if (request.dryRun && request.op !== "block.check")
         refuse("UNAVAILABLE", "block mutations have no dry-run contract");
       const input = request.input as Record<string, string>;

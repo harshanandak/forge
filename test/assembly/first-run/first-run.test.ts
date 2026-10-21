@@ -49,11 +49,15 @@ test("an input the schema refuses names the failing path and key", async () => {
     const failed = JSON.stringify(
       await call("template.import", { template: "delivery", force: true }),
     );
-    expect(failed).toContain('/force unknown property \\"force\\"');
+    expect(failed).toContain(
+      "/force: unknown property; expected one of template, expectRevision; received true",
+    );
     const nested = JSON.stringify(
       await call("config.set", { path: "/values/x", value: 1 }),
     );
-    expect(nested).toContain('missing required property \\"expectRevision\\"');
+    expect(nested).toContain(
+      "/expectRevision: missing required; expected string; received missing",
+    );
   });
 }, 30_000);
 

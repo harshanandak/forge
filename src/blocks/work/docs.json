@@ -2,7 +2,8 @@
   "operations": {
     "issue.create": {
       "title": "Issue create",
-      "summary": "Issue create."
+      "summary": "Create an issue with a title and kind.",
+      "examples": [{ "input": { "title": "First task", "kind": "task" } }]
     },
     "issue.show": {
       "title": "Issue show",
