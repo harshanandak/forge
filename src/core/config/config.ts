@@ -2,7 +2,7 @@
 // change one thing at a time with compare-and-set edits; or import a template (templates.ts).
 // Reads never write: show, explain and detect only read files.
 import { ForgeFailure } from "../../contract/failure.ts";
-import { schemaDiagnostic } from "../../contract/schema.ts";
+import { formatProblem as schemaDiagnostic } from "../../contract/input-error.ts";
 import type {
   BlockSource,
   ParseLimits,

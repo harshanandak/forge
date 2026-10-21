@@ -177,8 +177,12 @@ export class CapturedBlock {
   }
 
   /** Problems with a value against a captured schema, with its captured `$ref`s resolved. */
-  problems(path: string, value: unknown): SchemaProblem[] {
-    return this.#registry.validate(capturedUri(path, this.#base), value);
+  problems(path: string, value: unknown, detailed = false): SchemaProblem[] {
+    return this.#registry.validate(
+      capturedUri(path, this.#base),
+      value,
+      detailed,
+    );
   }
 
   /**

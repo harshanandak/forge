@@ -31,6 +31,13 @@ const cases = [
     '["auto","json","exit-code"]',
   ],
   [
+    "replacement tokens",
+    { timeoutMs: "$&" },
+    "blocks.check.config.timeoutMs",
+    'expected integer, got "$&".',
+    "Fix:",
+  ],
+  [
     "source",
     { source: { builtin: "forge/chekc" } },
     "blocks.check.source.builtin",

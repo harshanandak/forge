@@ -186,6 +186,27 @@ test("built CLI reports the actual config error and recovers after repair", () =
     expect(aliased.error.message).toContain(
       "blocks.verify.config.commands.test",
     );
+    writeFileSync(
+      file,
+      JSON.stringify({
+        blocks: {
+          verify: {
+            source: { builtin: "forge/chekc" },
+            rename: { check: "verify" },
+            commands: {},
+          },
+        },
+      }),
+    );
+    const mistypedAlias = cli(["verify", "run"], 6);
+    if (mistypedAlias.ok) throw Error("Expected invalid builtin");
+    expect(mistypedAlias.error.message).toContain(
+      "blocks.verify.source.builtin:",
+    );
+    expect(mistypedAlias.error.message).toContain(
+      'got "forge/chekc". Fix: use "forge/check".',
+    );
+    cli(["verify", "rn"], 3);
     writeFileSync(file, "blocks:\n  check:\n    commands: {}\n");
     expect(cli(["config", "show"], 0)).toMatchObject({
       ok: true,

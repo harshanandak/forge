@@ -230,14 +230,7 @@ test("aliased check outcomes derive from the receipt and retain accepted output"
         "maxMetadataBytes (10) cannot fit resolved declaration metadata; needs at least 100",
     },
   };
-  const located = checkResult(f.catalog, f.request.op, metadata);
-  expect(located).toMatchObject({
-    ok: false,
-    error: {
-      message:
-        ".forge/config.yaml: blocks.checks.config.maxMetadataBytes: maxMetadataBytes (10) cannot fit resolved declaration metadata; needs at least 100. Fix: edit blocks.checks.config.maxMetadataBytes to meet the reported budget.",
-    },
-  });
+  expect(checkResult(f.catalog, f.request.op, metadata)).toBe(metadata);
   expect(
     checkResult(
       fixture(1000, undefined, false).catalog,

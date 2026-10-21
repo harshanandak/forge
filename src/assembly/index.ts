@@ -21,7 +21,11 @@ import { TrustStore, refuse, type TrustRecord } from "../core/trust/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
 import { bindContext } from "../contract/context.ts";
-import { schemaDiagnostic, validateWithSchema } from "../contract/schema.ts";
+import { validateWithSchema } from "../contract/schema.ts";
+import {
+  inputError,
+  formatProblem as schemaDiagnostic,
+} from "../contract/input-error.ts";
 import { parseOperationName } from "../contract/naming.ts";
 import { validateConfiguration } from "../blocks/check/budget.ts";
 import type { CheckConfig } from "../blocks/check/types.ts";
@@ -563,12 +567,16 @@ export async function createAssembly(
         const source = instance?.source;
         const sources: BlockSource[] = source === undefined ? [] : [source];
         if (
-          firstPartyBlocks[`forge/${name}`] !== undefined &&
-          (source === undefined ||
-            ("builtin" in source &&
-              firstPartyBlocks[source.builtin] === undefined))
+          source === undefined ||
+          ("builtin" in source &&
+            firstPartyBlocks[source.builtin] === undefined)
         )
-          sources.push({ builtin: `forge/${name}` });
+          for (const noun of new Set([
+            name,
+            ...Object.keys(instance?.rename ?? {}),
+          ]))
+            if (firstPartyBlocks[`forge/${noun}`] !== undefined)
+              sources.push({ builtin: `forge/${noun}` });
         return sources.some((source) => {
           try {
             // Read the declaration even if capture failed on an entry or schema.
@@ -645,14 +653,20 @@ export async function createAssembly(
             );
           const bound = bindContext(entry.declaration, request.context);
           if (!bound.ok) throw new ForgeFailure(bound.error);
-          const [problem] = validateWithSchema(
+          const problems = validateWithSchema(
             entry.inputSchema,
             request.input,
+            true,
           );
-          if (problem)
-            refuse(
-              "INPUT_INVALID",
-              `Input does not match declared schema: ${problem.pointer || "/"} ${problem.message}`,
+          if (problems.length > 0)
+            throw new ForgeFailure(
+              inputError(
+                request.op,
+                problems,
+                entry.docs,
+                entry.argumentSchema ?? entry.inputSchema,
+                entry.declaration.args,
+              ),
             );
           if (request.dryRun && entry.declaration.effects.length)
             refuse("UNAVAILABLE", "This operation has no dry-run contract");

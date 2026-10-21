@@ -1,6 +1,7 @@
 // A JSON Schema (2020-12) validator for the bounded keyword profile Forge's own schemas use.
 // Schemas are data; nothing here evaluates code. A schema using a keyword outside the profile is
 // refused when the registry is built, so a validator can never silently skip a rule.
+import { nameDistance } from "./distance.ts";
 
 export type SchemaObject = Readonly<Record<string, unknown>>;
 export type JsonSchema = boolean | SchemaObject;
@@ -9,68 +10,19 @@ export interface SchemaProblem {
   readonly pointer: string;
   readonly keyword: string;
   readonly message: string;
-  readonly hint?: string;
+  readonly expected?: string;
+  readonly received?: string;
+  readonly suggestion?: string;
 }
 
 /** Closest declared spelling; the schema, rather than a list of special cases, owns the names. */
 export function closestNames(name: string, names: readonly string[]): string[] {
-  const distance = (other: string): number => {
-    let row = Array.from({ length: other.length + 1 }, (_, i) => i);
-    for (let i = 0; i < name.length; i++) {
-      const next = [i + 1];
-      for (let j = 0; j < other.length; j++)
-        next.push(
-          Math.min(
-            next[j]! + 1,
-            row[j + 1]! + 1,
-            row[j]! + (name[i] === other[j] ? 0 : 1),
-          ),
-        );
-      row = next;
-    }
-    return row[other.length]!;
-  };
   return names
-    .map((key) => ({ key, score: distance(key) }))
+    .map((key) => ({ key, score: nameDistance(name, key) }))
     .filter(({ score }) => score <= Math.max(2, Math.floor(name.length / 3)))
     .sort((a, b) => a.score - b.score || a.key.localeCompare(b.key))
     .slice(0, 8)
     .map(({ key }) => key);
-}
-
-/** Render the existing validator's problem at its document location, retaining the actual value. */
-export function schemaDiagnostic(
-  problem: SchemaProblem,
-  value: unknown,
-  prefix = "",
-  file = ".forge/config.yaml",
-): string {
-  const segments = problem.pointer.split("/").slice(1).map(unescapePointer);
-  let received = value;
-  for (const segment of segments)
-    received =
-      isObject(received) || Array.isArray(received)
-        ? (received as Readonly<Record<string, unknown>>)[segment]
-        : undefined;
-  const path = [prefix, ...segments].filter(Boolean).join(".") || "/";
-  const actual = JSON.stringify(received) ?? "missing";
-  const message =
-    problem.keyword === "type"
-      ? problem.message.replace(/, got .*/, `, got ${actual}`)
-      : `${problem.message}; got ${actual}`;
-  const expectation = problem.message
-    .replace(/, got .*/, "")
-    .replace(/^expected /, "");
-  const fix =
-    problem.hint ??
-    (problem.keyword === "additionalProperties"
-      ? `remove ${path}`
-      : problem.keyword === "required"
-        ? `add ${path}`
-        : problem.keyword === "oneOf" || problem.keyword === "anyOf"
-          ? `use one of the allowed shapes at ${path}`
-          : `set ${path} to ${problem.keyword === "type" ? `a valid ${expectation}` : problem.keyword === "enum" || problem.keyword === "const" ? expectation : `a value that ${expectation}`}`);
-  return `${file}: ${path}: ${message}. Fix: ${fix}.`;
 }
 
 export type ValidationResult<T> =
@@ -346,13 +298,17 @@ export class SchemaRegistry {
     return this.#locate(this.resolve(reference, base))?.schema;
   }
 
-  validate(reference: string, value: unknown): SchemaProblem[] {
+  validate(
+    reference: string,
+    value: unknown,
+    detailed = false,
+  ): SchemaProblem[] {
     const uri = this.resolve(reference);
     const located = this.#locate(uri);
     if (located === undefined) throw new Error(`no schema at ${uri}`);
     const outside = findNonJson(value);
     if (outside !== undefined) return [outside];
-    return this.#evaluate(located.schema, located.base, value, "");
+    return this.#evaluate(located.schema, located.base, value, "", detailed);
   }
 
   validator<T>(reference: string): Validator<T> {
@@ -524,26 +480,57 @@ export class SchemaRegistry {
     base: string,
     value: unknown,
     at: string,
+    detailed = false,
   ): SchemaProblem[] {
     if (schema === true) return [];
     if (schema === false) {
       return [
-        { pointer: at, keyword: "false", message: "no value is allowed here" },
+        {
+          pointer: at,
+          keyword: "false",
+          message: "no value is allowed here",
+          ...(detailed
+            ? {
+                expected: "no value",
+                received: JSON.stringify(value) ?? "missing",
+              }
+            : {}),
+        },
       ];
     }
     const problems: SchemaProblem[] = [];
-    const add = (keyword: string, message: string, pointer = at): void => {
-      problems.push({ pointer, keyword, message });
+    const add = (
+      keyword: string,
+      message: string,
+      pointer = at,
+      expected = message,
+      received = detailed ? (JSON.stringify(value) ?? "missing") : "",
+      suggestion?: string,
+    ): void => {
+      problems.push({
+        pointer,
+        keyword,
+        message,
+        ...(suggestion === undefined ? {} : { suggestion }),
+        ...(detailed
+          ? {
+              expected,
+              received,
+            }
+          : {}),
+      });
     };
     const sub = (s: unknown, v: unknown, p: string): SchemaProblem[] =>
-      this.#evaluate(s as JsonSchema, base, v, p);
+      this.#evaluate(s as JsonSchema, base, v, p, detailed);
 
     if (typeof schema.$ref === "string") {
       const uri = this.resolve(schema.$ref, base);
       const target = this.#locate(uri);
       if (target === undefined) add("$ref", `unresolvable reference ${uri}`);
       else
-        problems.push(...this.#evaluate(target.schema, target.base, value, at));
+        problems.push(
+          ...this.#evaluate(target.schema, target.base, value, at, detailed),
+        );
     }
 
     if (schema.type !== undefined) {
@@ -551,7 +538,12 @@ export class SchemaRegistry {
         Array.isArray(schema.type) ? schema.type : [schema.type]
       ).map(String);
       if (!types.some((type) => hasType(value, type))) {
-        add("type", `expected ${types.join(" or ")}, got ${typeOf(value)}`);
+        add(
+          "type",
+          `expected ${types.join(" or ")}, got ${typeOf(value)}`,
+          at,
+          types.join(" or "),
+        );
         return problems;
       }
     }
@@ -568,17 +560,22 @@ export class SchemaRegistry {
               ),
             )[0]
           : undefined;
-      problems.push({
-        pointer: at,
-        keyword: "enum",
-        message: `expected one of ${JSON.stringify(schema.enum)}`,
-        ...(suggested === undefined
-          ? {}
-          : { hint: `use ${JSON.stringify(suggested)}` }),
-      });
+      add(
+        "enum",
+        `expected one of ${JSON.stringify(schema.enum)}`,
+        at,
+        `one of ${JSON.stringify(schema.enum)}`,
+        detailed ? (JSON.stringify(value) ?? "missing") : "",
+        suggested,
+      );
     }
     if ("const" in schema && !jsonEqual(schema.const, value)) {
-      add("const", `expected ${JSON.stringify(schema.const)}`);
+      add(
+        "const",
+        `expected ${JSON.stringify(schema.const)}`,
+        at,
+        JSON.stringify(schema.const),
+      );
     }
 
     if (typeof value === "string") {
@@ -677,6 +674,8 @@ export class SchemaRegistry {
               "required",
               `missing required property "${name}"`,
               `${at}/${escapePointer(name)}`,
+              this.#expected(properties[name] as JsonSchema | undefined, base),
+              "missing",
             );
           }
         }
@@ -696,17 +695,16 @@ export class SchemaRegistry {
           problems.push(...sub(properties[key], value[key], pointer));
         } else if (schema.additionalProperties !== undefined) {
           if (schema.additionalProperties === false) {
-            const suggested = closestNames(key, Object.keys(properties))[0];
-            problems.push({
+            add(
+              "additionalProperties",
+              `unknown property "${key}"`,
               pointer,
-              keyword: "additionalProperties",
-              message: `unknown property "${key}"`,
-              ...(suggested === undefined
-                ? {}
-                : {
-                    hint: `did you mean ${suggested}? Rename ${key} to ${suggested}`,
-                  }),
-            });
+              `one of ${Object.keys(properties).join(", ") || "no properties"}`,
+              detailed ? (JSON.stringify(value[key]) ?? "missing") : "",
+              detailed
+                ? closestName(key, Object.keys(properties))
+                : closestNames(key, Object.keys(properties))[0],
+            );
           } else {
             problems.push(
               ...sub(schema.additionalProperties, value[key], pointer),
@@ -746,6 +744,31 @@ export class SchemaRegistry {
     }
     return problems;
   }
+
+  #expected(schema: JsonSchema | undefined, base: string, hops = 0): string {
+    if (!isObject(schema)) return schema === false ? "no value" : "a value";
+    if (Array.isArray(schema.enum))
+      return `one of ${JSON.stringify(schema.enum)}`;
+    if (typeof schema.type === "string") return schema.type;
+    if (Array.isArray(schema.type)) return schema.type.join(" or ");
+    if (typeof schema.$ref === "string" && hops < 8) {
+      const target = this.#locate(this.resolve(schema.$ref, base));
+      if (target) return this.#expected(target.schema, target.base, hops + 1);
+    }
+    return "a value matching the declared schema";
+  }
+}
+
+function closestName(
+  name: string,
+  choices: readonly string[],
+): string | undefined {
+  return choices
+    .map((candidate) => ({
+      name: candidate,
+      score: nameDistance(name, candidate),
+    }))
+    .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name))[0]?.name;
 }
 
 /** The problems of the alternative that came closest, so a refusal says what to fix. */
@@ -761,6 +784,7 @@ function closest(results: readonly SchemaProblem[][]): SchemaProblem[] {
 export function validateWithSchema(
   schema: JsonSchema,
   value: unknown,
+  detailed = false,
 ): SchemaProblem[] {
   const outside = findNonJson(value);
   if (outside !== undefined) return [outside];
@@ -770,5 +794,5 @@ export function validateWithSchema(
       : [{ pointer: "", keyword: "false", message: "no value is allowed" }];
   }
   const id = typeof schema.$id === "string" ? schema.$id : "#";
-  return new SchemaRegistry([schema]).validate(id, value);
+  return new SchemaRegistry([schema]).validate(id, value, detailed);
 }

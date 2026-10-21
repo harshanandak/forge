@@ -68,7 +68,7 @@ const kinds: readonly string[] = ["task", "bug", "feature", "epic"];
  * Items are stored as `work-<n>`, the form they have always had, and shown as `<idPrefix>-<n>`.
  * The number is the identity, so changing the prefix rewrites nothing. An id resolves only with
  * the current prefix or one this project has minted ids with, so another project's id is refused
- * instead of naming an unrelated item here. An id of another shape is used as given.
+ * instead of naming an unrelated item here. Malformed ids are refused before lookup.
  */
 const STORED = "work-";
 const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
@@ -91,7 +91,11 @@ function idsFor(state: LeaseStateClient, config: unknown): Ids {
     prefix,
     stored(id) {
       const match = QUALIFIED.exec(id);
-      if (!match) return id;
+      if (!match)
+        fail(
+          "INPUT_INVALID",
+          `Invalid issue id ${JSON.stringify(id)}; expected <prefix>-<n> (for example ${prefix}-1)`,
+        );
       const given = match[1]!.toLowerCase();
       if (given !== prefix) {
         known ??= accepted(state, prefix);
