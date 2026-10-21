@@ -455,10 +455,12 @@ export class Runtime {
     } catch {
       processCleanupFailed = true;
     }
+    let serviceCleanupFailed = false;
     try {
       if (handle?.ownership === "owned") await handle.close();
     } catch {
-      return {
+      serviceCleanupFailed = true;
+      result = {
         ok: false,
         ...(request === undefined ? {} : { op: request.op }),
         status: "INCOMPLETE",
@@ -467,11 +469,11 @@ export class Runtime {
           message: "owned service cleanup failed",
           retry: "reconcile_first",
         },
-        warnings: [...(invocation?.warnings() ?? [])],
+        warnings: [],
       };
     }
-    if (processCleanupFailed)
-      return {
+    if (processCleanupFailed && !serviceCleanupFailed)
+      result = {
         ok: false,
         ...(request === undefined ? {} : { op: request.op }),
         status: "INCOMPLETE",
@@ -480,11 +482,35 @@ export class Runtime {
           message: "The process tree could not be confirmed stopped",
           retry: "reconcile_first",
         },
-        warnings: [...(invocation?.warnings() ?? [])],
+        warnings: [],
       };
-    return {
+    result = {
       ...result,
       warnings: [...result.warnings, ...(invocation?.warnings() ?? [])],
     };
+    const processes = result.ok ? undefined : invocation?.diagnostics();
+    if (processes && !result.ok) {
+      const candidate = {
+        ...result,
+        error: {
+          ...result.error,
+          observed: {
+            ...(result.error.observed === undefined
+              ? {}
+              : { previous: result.error.observed }),
+            processes,
+          },
+        },
+      };
+      try {
+        // Include the whole envelope, escaping and pre-existing diagnostics in the budget.
+        const encoded = encodeOutput(candidate, this.#limits);
+        const parsed = parseUntrustedJson(encoded, this.#limits.parse);
+        if (parsed.ok) return freezeData(parsed.value) as ResultEnvelope;
+      } catch {
+        // No room for optional evidence: preserve the original failure unchanged.
+      }
+    }
+    return result;
   }
 }

@@ -7,7 +7,63 @@ import type {
   ProcessPort,
   SpawnOptions,
   ProcessSupervisionReport,
+  ProcessResult,
 } from "../../ports/process.ts";
+
+// Bound inspection before encoding: never traverse provider extras or retain mutable results.
+function processSnapshot(result: ProcessResult): string {
+  let shortened = false;
+  const data = (value: unknown, key: string): unknown => {
+    if (typeof value !== "object" || value === null) return undefined;
+    return Object.getOwnPropertyDescriptor(value, key)?.value as unknown;
+  };
+  const fields = (value: unknown, keys: readonly string[], cap: number) => {
+    const copy: Record<string, unknown> = {};
+    for (const key of keys) {
+      const field = data(value, key);
+      if (typeof field === "string") {
+        shortened ||= field.length > cap;
+        // A bounded prefix keeps JSON escaping and UTF-8 encoding work bounded too.
+        copy[key] = key === "tail" ? field.slice(-cap) : field.slice(0, cap);
+      } else if (
+        field === null ||
+        typeof field === "boolean" ||
+        (typeof field === "number" && Number.isFinite(field))
+      )
+        copy[key] = field;
+    }
+    return copy;
+  };
+  const copy = fields(
+    result,
+    ["exitCode", "timedOut", "truncated", "durationMs"],
+    0,
+  );
+  Object.assign(copy, fields(result, ["signal"], 64));
+  Object.assign(copy, fields(result, ["stdout", "stderr"], 512));
+  const evidence = data(result, "outputEvidence");
+  if (evidence !== undefined) {
+    const streams: Record<string, unknown> = {};
+    for (const stream of ["stdout", "stderr"]) {
+      const value = data(evidence, stream);
+      if (value === undefined) continue;
+      const preview = fields(
+        value,
+        ["head", "tail", "encoding", "totalBytes", "complete"],
+        128,
+      );
+      const digest = data(value, "digest");
+      // A partial digest must never look like a digest of the complete stream.
+      if (typeof digest === "string" && digest.length <= 128)
+        preview.digest = digest;
+      else if (digest !== undefined) shortened = true;
+      streams[stream] = preview;
+    }
+    copy.outputEvidence = streams;
+  }
+  copy.captureTruncated = shortened;
+  return JSON.stringify(copy);
+}
 
 /** Revocation covers cached methods as well as clients; the embedding still owns effect checks. */
 export class InvocationServices {
@@ -19,6 +75,10 @@ export class InvocationServices {
   readonly #authorize: () => void;
   readonly #strict: boolean;
   readonly #reports: ProcessSupervisionReport[] = [];
+  readonly #results: string[] = [];
+  // Reserve room for the array, field names and the saturated omission counter.
+  #resultBytes = 128;
+  #omittedResults = 0;
   readonly #clock: ClockPort;
   readonly #limits: Pick<ParseLimits, "maxNodes" | "maxDepth">;
   constructor(
@@ -170,6 +230,35 @@ export class InvocationServices {
         stoppedPids: report.stoppedPids.slice(0, 32),
       }),
     }));
+  }
+  diagnostics():
+    | { readonly results: readonly unknown[]; readonly omittedResults: number }
+    | undefined {
+    if (!this.#results.length && !this.#omittedResults) return undefined;
+    return {
+      results: this.#results.map((text): unknown => JSON.parse(text)),
+      omittedResults: this.#omittedResults,
+    };
+  }
+  #capture(result: ProcessResult): void {
+    // Count and byte exhaustion stop further inspection, including oversized results.
+    if (this.#results.length < 8 && this.#resultBytes < 32_768) {
+      try {
+        const text = processSnapshot(result);
+        const bytes = Buffer.byteLength(text);
+        if (bytes <= 8192 && bytes + this.#resultBytes <= 32_768) {
+          this.#results.push(text);
+          this.#resultBytes += bytes;
+          return;
+        }
+      } catch {
+        // Observation cannot replace a process result or its genuine failure.
+      }
+    }
+    this.#omittedResults = Math.min(
+      Number.MAX_SAFE_INTEGER,
+      this.#omittedResults + 1,
+    );
   }
   wrap(value: unknown): unknown {
     const seen = new WeakMap<object, Map<object | undefined, unknown>>();
@@ -324,6 +413,7 @@ export class InvocationServices {
             void pending.then(
               (result) => {
                 this.#pending.delete(pending);
+                this.#capture(result);
                 if (result.supervision && this.#reports.length < 32)
                   this.#reports.push(result.supervision);
               },
