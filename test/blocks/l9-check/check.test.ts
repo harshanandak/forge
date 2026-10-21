@@ -112,6 +112,10 @@ test("receipt finalization rejects a write/readback exceeding its own allowance"
   expect(records.size).toBe(1);
 }, 1000);
 
+test("native private writes need five seconds of finalization at the 512 KiB cap", () => {
+  expect(finalizationTimeoutMs(524288)).toBe(5000);
+}, 1000);
+
 for (const [childExit, status, exit] of [
   [0, "PASS", 0],
   [7, "FAIL", 1],
@@ -169,10 +173,10 @@ for (const [childExit, status, exit] of [
         cap - Buffer.byteLength(JSON.stringify(probe)) - (i === 0 ? 32 : 0);
       records.clear();
     }
-    writeMs = 20000;
+    writeMs = finalizationTimeoutMs(cap) - 1;
     const receipt = await engine.run({}, capped, {
       signal: new AbortController().signal,
-      deadline: now + 21000,
+      deadline: now + finalizationTimeoutMs(cap) + 1000,
     });
     expect(Buffer.byteLength(JSON.stringify(receipt))).toBe(cap);
     expect(Math.ceil(outputBytes / 2)).toBeLessThanOrEqual(

@@ -23,6 +23,7 @@ import {
   removeDurable,
   renameDurable,
   writePrivateFile,
+  securedFileOps,
   type DirectorySyncPort,
 } from "./file-ops.ts";
 import type { StateImageStore } from "../../core/state/index.ts";
@@ -34,6 +35,7 @@ import type {
   SqlRow,
 } from "../../ports/store.ts";
 import { assertFilesystem } from "../../core/state/fs-class.ts";
+import type { PrivateFileGuard } from "./private-files.ts";
 
 interface Binding {
   exec(sql: string): unknown;
@@ -136,6 +138,7 @@ function changeMarker(path: string): number {
 
 /** Hosts may bind relative store paths to an explicit absolute base directory. */
 export interface RestoreHooks {
+  readonly security?: PrivateFileGuard;
   readonly filesystem?: FilesystemProbe;
   readonly step?: (step: string) => void;
   readonly fs?: DirectorySyncPort & {
@@ -148,6 +151,8 @@ export function createSqliteStore(
   hooks: RestoreHooks = {},
 ): StorePort {
   if (!isAbsolute(basePath)) throw new Error("Store base must be absolute");
+  if (hooks.security)
+    hooks = { ...hooks, fs: securedFileOps(hooks.security, hooks.fs) };
   return {
     async open(options) {
       let binding: Binding | undefined;

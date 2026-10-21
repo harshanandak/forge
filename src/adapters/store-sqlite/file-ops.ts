@@ -13,8 +13,10 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
+import type { PrivateFileGuard } from "./private-files.ts";
 
 export interface DirectorySyncPort {
+  readonly security?: PrivateFileGuard;
   readonly platform: string;
   openSync(path: string, flags: "r"): number;
   fsyncSync(fd: number): void;
@@ -36,6 +38,18 @@ const nodeFs: DirectoryCreatePort = {
   statSync,
   mkdirSync,
 };
+
+export function securedFileOps(
+  security: PrivateFileGuard,
+  fs: DirectorySyncPort = nodeFs,
+): DirectorySyncPort & { renameSync(from: string, to: string): void } {
+  return {
+    ...fs,
+    security,
+    renameSync: (from, to) =>
+      fs.renameSync ? fs.renameSync(from, to) : renameSync(from, to),
+  };
+}
 
 export function syncParentDirectory(
   path: string,
@@ -86,8 +100,10 @@ export function createPrivateFile(
   flags: "wx" | "wx+",
   fs?: DirectorySyncPort,
 ): number {
+  fs?.security?.directory(dirname(path));
   const fd = openSync(path, flags, 0o600);
   try {
+    fs?.security?.file(path);
     syncParentDirectory(path, fs);
   } catch (error) {
     closeSync(fd);
@@ -101,8 +117,13 @@ export function openStoreFile(
   readOnly: boolean,
   fs?: DirectorySyncPort,
 ): number {
-  if (readOnly) return openSync(path, "r");
+  if (readOnly) {
+    fs?.security?.file(path);
+    return openSync(path, "r");
+  }
+  fs?.security?.directory(dirname(path));
   try {
+    fs?.security?.file(path);
     return openSync(path, "r+");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -130,6 +151,7 @@ export function writePrivateFile(
 
 /** SQLite must create VACUUM output itself; its containing directory is private until this adopts it. */
 export function adoptPrivateFile(path: string, fs?: DirectorySyncPort): void {
+  fs?.security?.file(path);
   if (process.platform !== "win32") chmodSync(path, 0o600);
   syncParentDirectory(path, fs);
 }
@@ -186,6 +208,7 @@ export function makePrivateTempDirectory(
 ): string {
   const path = `${prefix}${randomUUID()}`;
   mkdirSync(path, { mode: 0o700 });
+  fs?.security?.directory(path);
   syncParentDirectory(path, fs);
   return path;
 }

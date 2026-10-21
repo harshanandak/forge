@@ -2,128 +2,85 @@ Decisions needed: none.
 
 # Local read performance
 
-**The two-second target is not met in the final batch.** The code removes
-repeated preparation, but the measured wall-clock results vary widely between
-batches. This is not proof of a final latency improvement or a diagnosis of the
-variation. Keep the performance issue open.
+Windows, Node 24.18.0. Baseline: main (6e3c10a). Each side was built and
+packed separately, then its tarball was extracted into a separate scratch
+installation. Both used the same pinned, already-installed dependencies.
+Each equivalent Git project had the delivery template, an npm test script
+and one existing issue before timing. No package manager ran inside a sample.
 
-Measurements use the packed npm package installed into a scratch Git project
-with the delivery template imported, a detected test script and one stored
-issue. Each run starts a new process; the OS filesystem cache is not flushed.
-The host is Windows, Node 24.18.0 and npm 11.16.0. Baseline: main (6cdcce0).
-Times include process launch, module loading, command execution, output capture
-and process close. Five runs per command and launcher; report the median.
-Ambient machine load is not controlled.
+Each sample launches Node directly on the installed `dist/bin/forge.js`,
+captures output and waits for process exit. These are cold processes;
+filesystem caches are retained. Seven main/branch pairs were measured for
+each command, counterbalancing which side runs first in successive pairs.
+All 98 samples exited zero. An earlier partial batch was discarded before
+rebuilding the final artifact with the shorter finalization allowance.
 
-## Cold process timings
+Seconds, median [minimum–maximum]:
 
-Seconds, median of five, direct Node entry point:
+| Command                     |                  Main |               Branch |
+| --------------------------- | --------------------: | -------------------: |
+| help                        |   2.869 [1.545–5.635] |  1.205 [0.929–3.092] |
+| config show                 |   2.695 [2.117–4.386] |  1.304 [0.998–2.541] |
+| issue show                  |   2.737 [2.417–3.172] |  1.591 [1.155–2.458] |
+| issue list                  |   2.375 [1.997–3.822] |  1.335 [1.013–2.619] |
+| check list                  |   4.584 [3.589–6.360] |  2.384 [1.556–3.676] |
+| catalog describe issue.show |  6.357 [3.505–10.501] |  2.176 [1.156–4.554] |
+| issue create                | 11.020 [6.467–18.391] | 8.792 [5.939–13.776] |
 
-| Command                     | Baseline | First optimized batch | Final artifact |
-| --------------------------- | -------: | --------------------: | -------------: |
-| help                        |    0.751 |                 0.962 |          2.504 |
-| config show                 |    2.447 |                 1.206 |          5.124 |
-| issue show                  |    2.187 |                 1.085 |          5.538 |
-| issue list                  |    2.666 |                 0.674 |          3.955 |
-| check list                  |    2.424 |                 2.434 |         10.320 |
-| catalog describe issue.show |    3.286 |                 1.372 |          3.129 |
+CPU utilization, sampled over one second at each endpoint: 100% at start
+and end; average across the timed batch: 99.98%. Each branch median is
+below main's median. The ranges overlap for every command; this loaded-host
+comparison does not establish a universal latency budget.
 
-The final batch is authoritative for the final artifact. The intermediate batch
-is retained to show the variation, rather than selecting its faster results as
-the final verdict. An interrupted final batch was discarded; its completed help
-median was 4.769 s. Every completed sample in a reported median exited zero.
+Confirmed Git starts per command, main → branch: help 0 → 0; config show,
+issue show, issue list and issue create 1 → 1; check list 2 → 1; catalog
+describe 0 → 0. A separate instrumented pass followed the Windows
+supervisor's confirmed target-start messages. Instrumentation was absent
+from timed samples. `icacls` and `whoami` were 0 → 0 for every command:
+this packed baseline already omits the legacy helper from its store path.
+The native enforcement added here requires no per-write tool launches.
 
-## Launchers
+## Preparation and security
 
-For a local install, the direct path avoids npm's startup and package resolution:
+CLI reads reuse one discovery view for argument parsing, visibility and
+dispatch. MCP transport loads when opened. Ordinary config show reuses the
+composition snapshot. A later call still observes changed declarations and
+origin configuration; mutation authority is checked at invocation time.
 
-```sh
-node node_modules/forge-workflow/dist/bin/forge.js issue list
-```
+An operation without file effects receives a files capability that refuses
+access without starting Git discovery. File operations retain discovery,
+containment, lifetime and effect checks. The regression fails with the old
+acquisition path and passes with the refusal path.
 
-The comparison launches Node with npm's `npx-cli.js --no-install forge` entry
-point, avoiding an extra shell. An `npx` command shim can add overhead. No
-network fetch or package installation occurs inside a timed invocation.
+Windows state uses the existing native Windows dependency through a typed
+security boundary. A store directory gets an owner-only inheritable DACL
+when its current DACL is wrong. Files are checked before use or before
+writing payloads. Unexpected file ACLs fail with the path and repair advice.
+Successful checks cache file identity and change time within the process;
+replacement or ACL changes invalidate the check. Reads do not repair ACLs.
+The legacy recovery-hardening helper and its refusal tests remain intact.
 
-Seconds, median of five through npx:
+The directory/write regression fails without the security wiring. Real
+Windows tests verify inheritance, refusal after broadening a file's ACL,
+cache invalidation and subsequent repair. No reset-to-public ACL step occurs.
 
-| Command     | Baseline | First optimized batch | Final artifact |
-| ----------- | -------: | --------------------: | -------------: |
-| config show |    4.590 |                 2.009 |         27.114 |
-| issue show  |    4.263 |                 2.038 |         30.996 |
-
-The npx and direct batches are sequential, not paired controls for machine load.
-Their difference is not an exact measurement of npm's isolated CPU cost. The
-direct path removes the npm launcher by construction; it does not by itself
-establish the two-second budget.
-
-## Profile
-
-Run both `issue show <id>` and `config show` with Node's `--cpu-prof`. Keep
-unprofiled timings separate from profiles. A `registerHooks` preload records
-module load durations and wraps capture, config, runtime and store functions
-with `performance.now()` spans. Inclusive spans overlap and must not be added.
-CPU samples identify synchronous filesystem costs and compilation; idle samples
-include waiting for the supervised Git subprocess.
-
-In the baseline issue trace, six composition snapshots capture 21 blocks
-(687 ms). Snapshots take 829 ms in total. Git id-prefix discovery takes 424 ms,
-including 420 ms in the process adapter. The operation's runtime takes 23 ms,
-including a 5 ms SQLite state acquisition. Output serialization takes 0.10 ms.
-The matching config trace takes 767 ms in snapshots, 667 ms in block capture
-and 1,377 ms in Git discovery. These are individual profiled runs, not medians.
-
-The baseline loads 299 modules for issue show and 298 for config show, including
-the unused MCP transport, its Zod schema machinery and locale modules. V8 module
-compilation accounts for 91 ms and 84 ms of CPU samples. `lstat` accounts for
-311 ms and 346 ms, respectively. Schema validators interpret schemas; the
-repeated work includes registry construction and schema checks, not code
-generation. Admission and captured-byte digests remain checked.
-
-The optimized trace loads 192 and 191 modules, respectively. Each command takes
-two snapshots and six block captures. Issue capture takes 202 ms; config capture
-takes 199 ms. Config reading and resolution take 303 ms and 299 ms inclusive of
-capture. Reading project YAML takes 45 ms in each command; resolving layers
-takes 21 ms. Schema registry construction takes 24 ms across 14 registries for
-issue show and 25 ms across 15 for config show. Digests take about 5 ms.
-
-The optimized issue runtime takes 26 ms, including a 4 ms state acquisition.
-The filesystem-class probe takes 0.3 ms. Config show checks for its trust store
-in 0.4 ms; this fixture has no external admissions and no trust database.
-Private ACL hardening is never called by these reads. Neither store security
-nor supervised process cleanup is bypassed.
-
-A final check-list trace takes 7,125 ms end to end. Two process-adapter calls
-take 4,207 ms inclusive: id-prefix discovery takes 2,723 ms and runtime/provider
-startup takes 1,551 ms. Block capture takes 190 ms, project YAML reads 480 ms,
-and store acquisition 7.6 ms. This identifies remaining expensive preparation;
-it does not justify bypassing process containment or changing derived config.
-
-## Changes and guards
-
-CLI reads reuse one discovery view for argument parsing, visibility and dispatch.
-The view belongs to that call; the next call discovers declarations again.
-Mutations continue to check current authority in the runtime. MCP exposure is
-resolved when requested, and the transport dependency loads only when MCP opens.
-Ordinary config show reuses the snapshot's resolved output; an invocation layer
-still uses the config handler.
-
-The unit guard counts discovery preparations and proves a subsequent read sees
-changed declarations. The Node integration guard refuses any MCP or Zod import
-during built CLI reads. The guards fail on the previous implementation.
+Five 512 KiB seal/write/readback samples through an open native-ACL SQLite
+state owner took 421.30–1199.21 ms (median 562.43 ms), excluding store opening.
+Receipt finalization now reserves 1000 ms plus 128 KiB/s: five seconds at
+512 KiB, down from 33 seconds. Tests retain exact-cap receipts and rejection
+when finalization exceeds its allowance.
 
 ## Verification limits
 
-The three new guards pass. Type checking passes and all 107 structure checks
-pass. Canary formatting passes. Canary lint remains nonzero with three
-await-thenable warnings in unchanged files, tracked by forge-307.
+The focused ACL and provider run passed 15 tests, including real Windows
+ACL changes. Receipt and budget checks passed 29 tests. Type checking and
+the isolated-declarations build check passed. The structure run passed
+107 checks. Canary lint reports three unchanged warnings tracked by
+forge-307; no rule is relaxed.
 
-The full unit run completes with 832 passes, two skips, eight failures and three
-errors in 455.66 seconds. Seven tests time out; cleanup also reports EBUSY and
-resumed assertions report UNKNOWN_COMMAND. These observations were added to
-forge-308; causality against this change is not established.
-
-The focused run has seven passes and one config-error integration timeout in
-422.46 seconds. The new guards, trust-refusal checks and config counterfactuals
-pass. No test timeout, lint rule or gate is weakened. The full integration lane,
-full packed journey suite and hosted CI are not verified locally.
+The initial full unit run finished with 857 passes, two skips and four
+failures (three timeouts and one generated-file rename error). A final
+run was interrupted after exceeding six minutes without a summary; it
+reported timeouts, EBUSY cleanup and resumed UNKNOWN_COMMAND assertions.
+Full unit verification is incomplete. The full integration lane and a
+new-head hosted CI result are not verified locally.

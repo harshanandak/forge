@@ -79,7 +79,7 @@ const SID_ALIASES: readonly (readonly [RegExp, string])[] = [
 ];
 
 /** The forms SDDL may write the current user's SID in. */
-function sddlTrustees(sid: string): readonly string[] {
+export function sddlTrustees(sid: string): readonly string[] {
   const alias = SID_ALIASES.find(([pattern]) => pattern.test(sid))?.[1];
   return alias === undefined ? [sid] : [sid, alias];
 }
