@@ -1,10 +1,8 @@
-// Pack the built package, install the tarball with npm on Node, and run `forge --version`.
-// Run it with Node (`node tools/pack-smoke/run.ts`), never Bun: the point is that a user with
-// only Node and npm can install and run what we publish. Build first (`bun run build`).
-import { ChildRunError, runChild } from "../child-runner.ts";
-import { inheritRunnerGroup, readRunnerPolicy } from "../runner-policy.ts";
-import { runBounded } from "../packed-pool.ts";
-import { packedSuites } from "./suites.ts";
+// Pack the built package once, install the tarball with npm on Node with no Bun on PATH, check the
+// installed package, then run every packed journey (`packed.integration.test.ts`) with `bun test`
+// against that one install. Run it with Node (`bun run test:pack` builds first and does this): the
+// point is that a user with only Node and npm can install and run what we publish.
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -16,168 +14,90 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { runWithin } from "./bounded.ts";
+import { environmentWithoutBun, resolveBun } from "./environment.ts";
 
 const root = resolve(import.meta.dirname, "../..");
-const policy = readRunnerPolicy();
-const scope = new AbortController();
-const deadline = performance.now() + policy.stepTimeoutMs;
-const stepTimer = setTimeout(
-  () => scope.abort(new Error("pack smoke step deadline exceeded")),
-  policy.stepTimeoutMs,
-);
-function childOptions(cwd: string, env: NodeJS.ProcessEnv) {
-  return {
-    cwd,
-    env,
-    inheritProcessGroup: inheritRunnerGroup(),
-    timeoutMs: Math.max(
-      1,
-      Math.min(policy.childTimeoutMs, Math.floor(deadline - performance.now())),
-    ),
-    cleanupTimeoutMs: policy.cleanupTimeoutMs,
-    maxOutputBytes: policy.maxOutputBytes,
-    signal: scope.signal,
-  };
-}
-const BUN_FILES = [
-  "bun",
-  "bun.exe",
-  "bun.cmd",
-  "bun.ps1",
-  "bunx",
-  "bunx.exe",
-  "bunx.cmd",
-];
+// One command that hangs fails with its name instead of stalling the job.
+const COMMAND_TIMEOUT_MS = 300_000;
+// The whole pack-smoke step took at most 132 s in recent CI (Windows, Node 24); 10 minutes is
+// over four times that and still well inside the job's 20-minute ceiling.
+const JOURNEYS_TIMEOUT_MS = 600_000;
 
 function fail(message: string): never {
   throw new Error(`pack-smoke: ${message}`);
 }
 
-function step(message: string): void {
-  console.log(`- ${message}`);
-}
-
-async function timed<T>(
-  label: string,
-  action: () => T | Promise<T>,
-): Promise<T> {
-  const started = performance.now();
-  console.log(`START pack smoke ${label}`);
-  try {
-    return await action();
-  } finally {
-    console.log(
-      `Pack smoke ${label}: ${Math.round(performance.now() - started)} ms`,
-    );
-  }
-}
-
-/** The current environment with every directory that holds a Bun executable removed from PATH. */
-function environmentWithoutBun(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  const key =
-    Object.keys(env).find((k) => k.toLowerCase() === "path") ?? "PATH";
-  const kept = (env[key] ?? "")
-    .split(delimiter)
-    .filter(
-      (dir) =>
-        dir !== "" && !BUN_FILES.some((file) => existsSync(join(dir, file))),
-    );
-  env[key] = kept.join(delimiter);
-  delete env.BUN_INSTALL;
-  return env;
-}
-
-function locateNpmCli(): string {
-  const bin = dirname(process.execPath);
-  const candidates = [
-    ...(process.env.FORGE_SMOKE_NPM_CLI
-      ? [process.env.FORGE_SMOKE_NPM_CLI]
-      : []),
-    join(bin, "node_modules", "npm", "bin", "npm-cli.js"),
-    join(bin, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
-  ];
-  const found = candidates.find((candidate) => existsSync(candidate));
-  return found ?? fail(`npm-cli.js not found next to ${process.execPath}`);
-}
-
-async function run(
-  label: string,
+function run(
   command: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv },
-): Promise<string> {
-  const result = await timed(label, () =>
-    runChild(`pack smoke ${label}`, command, args, {
-      ...childOptions(options.cwd, options.env),
-      // Keep machine-readable stdout intact; failures print its retained tail.
-      onOutput: (stream, text) => {
-        if (stream === "stderr") process.stderr.write(text);
-      },
-    }),
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): SpawnSyncReturns<string> {
+  const started = performance.now();
+  const result = spawnSync(command, args, {
+    cwd,
+    env,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: COMMAND_TIMEOUT_MS,
+  });
+  console.log(
+    `  ${[command, ...args].join(" ")}: ${Math.round(performance.now() - started)} ms`,
   );
-  return result.stdout;
+  return result;
 }
 
-async function packedIntegration(
-  bun: string,
-  file: string,
-  label: string,
-  env: NodeJS.ProcessEnv,
-): Promise<void> {
-  await timed(label, () =>
-    runChild(label, bun, ["test", `./${file}`], childOptions(root, env)),
-  );
+function ok(result: SpawnSyncReturns<string>): string {
+  if (result.error || result.status !== 0)
+    fail(
+      `${result.error?.message ?? `exited ${String(result.status)}`}\n${result.stdout}\n${result.stderr}`,
+    );
+  return result.stdout;
 }
 
 async function main(): Promise<void> {
   if (process.versions.bun !== undefined) fail("run this with Node, not Bun");
-  const stateBun =
-    process.argv[2] === "--state-test" ? process.argv[3] : undefined;
-  if (process.argv.length !== (stateBun ? 4 : 2))
-    fail("usage: run.ts [--state-test <bun-executable>]");
-  const pkg: unknown = JSON.parse(
-    readFileSync(join(root, "package.json"), "utf8"),
-  );
-  const expected = (pkg as { version?: unknown }).version;
+  const expected = (
+    JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+      version?: unknown;
+    }
+  ).version;
   if (typeof expected !== "string") fail("package.json has no version");
   if (!existsSync(join(root, "dist", "bin", "forge.js")))
     fail("dist/ is missing; run `bun run build` first");
 
-  const env = environmentWithoutBun();
-  try {
-    await timed("no Bun on PATH", () =>
-      runChild("no Bun on PATH", "bun", ["--version"], childOptions(root, env)),
-    );
-    fail("bun is still resolvable on PATH; the smoke must run without Bun");
-  } catch (error) {
-    const cause = error instanceof ChildRunError ? error.cause : undefined;
-    if (!(
-      cause !== null &&
-      typeof cause === "object" &&
-      "code" in cause &&
-      cause.code === "ENOENT"
-    ))
-      throw error;
-  }
-  step(`node ${process.version}, no bun on PATH`);
-
-  const npmCli = locateNpmCli();
-  const npm = (label: string, args: string[], cwd: string): Promise<string> =>
-    run(label, process.execPath, [npmCli, ...args], { cwd, env });
-  step(`npm ${(await npm("npm --version", ["--version"], root)).trim()}`);
-
+  const bun = resolveBun();
   const work = mkdtempSync(join(tmpdir(), "forge-pack-smoke-"));
   try {
+    const env = environmentWithoutBun(join(work, "bin"), process.execPath);
+    const consumerNode = join(
+      work,
+      "bin",
+      process.platform === "win32" ? "node.exe" : "node",
+    );
+    if (run("bun", ["--version"], root, env).error === undefined)
+      fail("bun is still resolvable on PATH; the smoke must run without Bun");
+    const npmCli = [
+      join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"),
+      join(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js"),
+    ].find((candidate) => existsSync(candidate));
+    if (npmCli === undefined)
+      fail(`npm-cli.js not found next to ${process.execPath}`);
+    const npm = (args: string[], cwd: string): string =>
+      ok(run(consumerNode, [npmCli, ...args], cwd, env));
+    console.log(
+      `- node ${process.version}, npm ${npm(["--version"], root).trim()}, no bun on PATH`,
+    );
+
     const packDir = join(work, "pack");
     const consumer = join(work, "consumer");
     mkdirSync(packDir);
     mkdirSync(consumer);
 
     const packed: unknown = JSON.parse(
-      await npm(
-        "npm pack",
+      npm(
         ["pack", "--json", "--ignore-scripts", "--pack-destination", packDir],
         root,
       ),
@@ -195,9 +115,9 @@ async function main(): Promise<void> {
       "dist/src/index.js",
       "dist/src/index.d.ts",
       "templates/delivery/forge.template.json",
-    ]) {
+      "templates/delivery/skills/loop/SKILL.md",
+    ])
       if (!files.includes(needed)) fail(`tarball is missing ${needed}`);
-    }
     const stray = files.filter(
       (file) =>
         !/^(?:dist\/|templates\/|package\.json$|LICENSE$|README\.md$)/.test(
@@ -205,19 +125,14 @@ async function main(): Promise<void> {
         ),
     );
     if (stray.length > 0)
-      fail(
-        `tarball holds files that are not part of the package: ${stray.join(", ")}`,
-      );
-    step(
-      `packed ${entry.filename} (${files.length} files, only the built package and its templates)`,
-    );
+      fail(`tarball holds files outside the package: ${stray.join(", ")}`);
+    console.log(`- packed ${entry.filename} (${files.length} files)`);
 
     writeFileSync(
       join(consumer, "package.json"),
       JSON.stringify({ name: "consumer", version: "0.0.0", private: true }),
     );
-    await npm(
-      "npm install",
+    npm(
       [
         "install",
         join(packDir, entry.filename),
@@ -227,61 +142,47 @@ async function main(): Promise<void> {
       ],
       consumer,
     );
-    step("installed the tarball with npm");
+    console.log("- installed the tarball with npm");
 
     const installedDir = join(consumer, "node_modules", "forge-workflow");
-    const installed: unknown = JSON.parse(
-      readFileSync(join(installedDir, "package.json"), "utf8"),
-    );
-    const binTarget = (installed as { bin?: { forge?: unknown } }).bin?.forge;
+    const binTarget = (
+      JSON.parse(readFileSync(join(installedDir, "package.json"), "utf8")) as {
+        bin?: { forge?: unknown };
+      }
+    ).bin?.forge;
     if (typeof binTarget !== "string")
       fail("installed package has no bin.forge");
-    const shims = ["forge", "forge.cmd"].map((name) =>
-      join(consumer, "node_modules", ".bin", name),
-    );
-    if (!shims.some((shim) => existsSync(shim)))
-      fail("npm did not link a forge command into node_modules/.bin");
-
-    const printed = (
-      await npm(
-        "forge --version (npm exec)",
-        ["exec", "--no", "--", "forge", "--version"],
-        consumer,
+    if (
+      !["forge", "forge.cmd"].some((name) =>
+        existsSync(join(consumer, "node_modules", ".bin", name)),
       )
-    ).trim();
-    if (printed !== expected)
-      fail(`forge --version printed "${printed}", expected "${expected}"`);
-    step(`forge --version printed ${printed}`);
-
-    const direct = await run(
-      "node bin",
-      process.execPath,
-      [join(installedDir, binTarget), "--version"],
-      { cwd: consumer, env },
-    );
-    if (direct.trim() !== expected)
-      fail(
-        `bin run directly printed "${direct.trim()}", expected "${expected}"`,
-      );
-
-    const imported = await run(
-      "import",
-      process.execPath,
+    )
+      fail("npm did not link a forge command into node_modules/.bin");
+    const node = (args: string[]): SpawnSyncReturns<string> =>
+      run(consumerNode, args, consumer, env);
+    for (const [how, printed] of [
+      ["npm exec", npm(["exec", "--no", "--", "forge", "--version"], consumer)],
+      ["the bin", ok(node([join(installedDir, binTarget), "--version"]))],
       [
-        "--input-type=module",
-        "-e",
-        "import { version } from 'forge-workflow'; console.log(version);",
+        "import",
+        ok(
+          node([
+            "--input-type=module",
+            "-e",
+            "import { version } from 'forge-workflow'; console.log(version);",
+          ]),
+        ),
       ],
-      { cwd: consumer, env },
+    ])
+      if (printed!.trim() !== expected)
+        fail(`${how} printed "${printed!.trim()}", expected "${expected}"`);
+    console.log(
+      `- forge ${expected} runs through npm exec, its bin and import`,
     );
-    if (imported.trim() !== expected)
-      fail(`import gave "${imported.trim()}", expected "${expected}"`);
-    step("the package exports resolve under Node");
-    copyFileSync(
-      join(root, "tools/pack-smoke/api.mjs"),
-      join(consumer, "api.mjs"),
-    );
-    // Counterfactuals run against the installed artifact, then restore its bytes.
+
+    const api = join(consumer, "api.mjs");
+    copyFileSync(join(root, "tools/pack-smoke/api.mjs"), api);
+    // Remove-the-fix: each break of the installed artifact must fail the API journey.
     const packageFile = join(installedDir, "package.json");
     const packageBytes = readFileSync(packageFile, "utf8");
     const packageData = JSON.parse(packageBytes) as {
@@ -290,20 +191,10 @@ async function main(): Promise<void> {
     delete packageData.exports["./runtime"];
     writeFileSync(packageFile, JSON.stringify(packageData));
     try {
-      const missingExport = await timed("missing runtime export", () =>
-        runChild(
-          "missing runtime export",
-          process.execPath,
-          [join(consumer, "api.mjs")],
-          {
-            ...childOptions(consumer, env),
-            acceptableExitCodes: null,
-          },
-        ),
-      );
+      const missing = node([api]);
       if (
-        missingExport.status === 0 ||
-        !missingExport.stderr.includes("ERR_PACKAGE_PATH_NOT_EXPORTED")
+        missing.status === 0 ||
+        !missing.stderr.includes("ERR_PACKAGE_PATH_NOT_EXPORTED")
       )
         fail("missing public export did not fail the API journey");
     } finally {
@@ -316,69 +207,41 @@ async function main(): Promise<void> {
       const path = join(installedDir, asset);
       renameSync(path, `${path}.hidden`);
       try {
-        const missingAsset = await timed(`missing ${asset}`, () =>
-          runChild(
-            `missing ${asset}`,
-            process.execPath,
-            [join(consumer, "api.mjs")],
-            {
-              ...childOptions(consumer, env),
-              acceptableExitCodes: null,
-            },
-          ),
-        );
-        if (
-          missingAsset.status === 0 ||
-          !missingAsset.stderr.includes("ENOENT")
-        )
+        const missing = node([api]);
+        if (missing.status === 0 || !missing.stderr.includes("ENOENT"))
           fail(`missing ${asset} did not fail the API journey`);
       } finally {
         renameSync(`${path}.hidden`, path);
       }
     }
-    step(
-      "remove-the-fix: missing runtime export and both JSON asset sets fail the API journey",
-    );
-    step(
-      (
-        await run(
-          "public APIs and JSON assets",
-          process.execPath,
-          [join(consumer, "api.mjs")],
-          { cwd: consumer, env },
-        )
-      ).trim(),
-    );
-    if (stateBun) {
-      step(
-        "running all packed suites against the same npm install (at most two suites at once)",
+    console.log(`- ${ok(node([api])).trim()}; each removed fix fails it`);
+
+    // The packed journeys read the install and mutate private copies, so files run in parallel.
+    console.log("- running the packed journeys against this install");
+    try {
+      await runWithin(
+        "packed journeys",
+        bun,
+        [
+          "test",
+          "--parallel=2",
+          "--timeout",
+          "30000",
+          "packed.integration.test",
+        ],
+        {
+          cwd: root,
+          env: { ...env, FORGE_PACKED_CONSUMER: consumer },
+        },
+        JOURNEYS_TIMEOUT_MS,
       );
-      // The suites read the base install and mutate private copies. Drain all
-      // children before cleanup, including when either suite fails.
-      await runBounded(packedSuites, 2, (suite) =>
-        packedIntegration(stateBun, suite.file, suite.label, {
-          ...process.env,
-          [suite.consumerEnv]: consumer,
-        }),
-      );
+    } catch (error) {
+      fail((error as Error).message);
     }
     console.log("pack-smoke: PASS");
   } finally {
-    await timed("cleanup", () =>
-      rmSync(work, { recursive: true, force: true }),
-    );
+    rmSync(work, { recursive: true, force: true });
   }
 }
 
-const started = performance.now();
-try {
-  await main();
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-} finally {
-  clearTimeout(stepTimer);
-  console.log(
-    `Pack smoke total: ${Math.round(performance.now() - started)} ms`,
-  );
-}
+await main();

@@ -1,37 +1,22 @@
 import { test, expect } from "bun:test";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   cpSync,
   mkdtempSync,
-  mkdirSync,
   readFileSync,
   writeFileSync,
   rmSync,
-  existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join } from "node:path";
+import { packedConsumer } from "../../integration/packed-consumer.ts";
 import {
   counterfactuals,
   packedCoverage,
   selectShard,
 } from "./counterfactuals.ts";
 
-const root = resolve(import.meta.dirname, "../../..");
 const fixture = join(import.meta.dirname, "journeys.mjs");
-function run(command: string, args: string[], cwd = root): string {
-  const result = spawnSync(command, args, {
-    cwd,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 90000,
-  });
-  if (result.status !== 0)
-    throw new Error(
-      `${command}: ${result.error?.message ?? result.stderr}\n${result.stdout}`,
-    );
-  return result.stdout;
-}
 
 function launch(command: string, args: string[], cwd: string, timeout = 30000) {
   return new Promise<{
@@ -88,37 +73,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
   try {
     const node = Bun.which("node");
     if (!node) throw new Error("Node runtime required for packed integration");
-    // The smoke owns a real npm install until this test process has finished.
-    const consumer =
-      process.env.STATE_PACKED_CONSUMER ?? join(work, "consumer");
-    if (!process.env.STATE_PACKED_CONSUMER) {
-      run(process.execPath, ["run", "build"]);
-      const npm = [
-        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-      ].find((path) => existsSync(path));
-      if (!npm)
-        throw new Error("Cannot locate the Node installation's npm CLI");
-      const pack = JSON.parse(
-        run(node, [npm, "pack", "--json", "--pack-destination", work]),
-      ) as { filename: string }[];
-      mkdirSync(consumer);
-      writeFileSync(
-        join(consumer, "package.json"),
-        '{"name":"state-consumer","version":"1.0.0","private":true}',
-      );
-      run(
-        node,
-        [
-          npm,
-          "install",
-          join(work, pack[0]!.filename),
-          "--no-audit",
-          "--no-fund",
-        ],
-        consumer,
-      );
-    }
+    const consumer = packedConsumer();
     const installed = join(consumer, "node_modules/forge-workflow");
     phase("install");
     const runtimes = [

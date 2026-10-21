@@ -79,9 +79,8 @@ outputs and Forge state should not be inputs unless a changed-input result is in
 Internal HEAD lookups reserve 66 output bytes for a complete 64-character object id and
 CRLF, independently of the declared command output cap.
 
-Packed fixtures run the installed engine and generated surfaces on Node. A fresh shared
-packed consumer may be passed as `CHECK_PACKED_CONSUMER`; all counterfactuals mutate only
-private copies. `CHECK_ECOSYSTEM_TOOLS` and `CHECK_PYTHON_PACKAGES` optionally select
+Packed fixtures run the installed engine and generated surfaces on Node, against the one
+install `bun run test:pack` makes; all counterfactuals mutate only private copies. `CHECK_ECOSYSTEM_TOOLS` and `CHECK_PYTHON_PACKAGES` optionally select
 external test-only tool installations. Missing ecosystem executables are explicit skips,
 never simulated passes. The Make fixture requires actual recipe output.
 

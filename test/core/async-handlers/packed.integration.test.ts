@@ -6,7 +6,6 @@ import {
   cpSync,
   copyFileSync,
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -14,13 +13,14 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve, delimiter } from "node:path";
+import { join, resolve, delimiter } from "node:path";
 import {
   packedCoverage,
   selectShard,
 } from "../../node-fixtures/state/counterfactuals.ts";
 import { asyncCounterfactuals } from "../../node-fixtures/async-handlers/counterfactuals.ts";
 import { runFixtures } from "../../integration/fixtures/run.ts";
+import { packedConsumer } from "../../integration/packed-consumer.ts";
 const root = resolve(import.meta.dirname, "../../..");
 function run(
   command: string,
@@ -63,69 +63,8 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
     )
     .join(delimiter);
   delete env.BUN_INSTALL;
-  const successful = (
-    command: string,
-    args: string[],
-    cwd: string,
-    childEnv = env,
-  ) => {
-    const result = run(command, args, cwd, childEnv);
-    expect(
-      result.status,
-      `${result.error?.message ?? ""} ${result.stdout} ${result.stderr}`,
-    ).toBe(0);
-    return result.stdout;
-  };
   try {
-    // The smoke keeps its real npm install alive until this process finishes.
-    const sharedConsumer = process.env.ASYNC_PACKED_CONSUMER;
-    const consumer = sharedConsumer ?? join(work, "consumer");
-    if (!sharedConsumer) {
-      const npm = [
-        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-      ].find(existsSync);
-      if (!npm) throw Error("npm required");
-
-      successful(process.execPath, ["run", "build"], root, process.env);
-      phase("build");
-      const packed = JSON.parse(
-        successful(
-          node,
-          [
-            npm,
-            "pack",
-            "--json",
-            "--ignore-scripts",
-            "--pack-destination",
-            work,
-          ],
-          root,
-        ),
-      ) as { filename: string }[];
-      phase("pack");
-      mkdirSync(consumer);
-      writeFileSync(
-        join(consumer, "package.json"),
-        '{"private":true,"type":"module"}',
-      );
-      successful(
-        node,
-        [
-          npm,
-          "install",
-          join(work, packed[0]!.filename),
-          "--no-audit",
-          "--no-fund",
-        ],
-        consumer,
-      );
-      phase("install");
-    } else {
-      phase("build", " (shared consumer)");
-      phase("pack", " (shared consumer)");
-      phase("install", " (shared consumer)");
-    }
+    const consumer = packedConsumer();
     const installed = join(consumer, "node_modules/forge-workflow");
     // Package self-references resolve here; dependency lookup borrows the install.
     // All fixture files and mutations stay inside this suite's private workspace.

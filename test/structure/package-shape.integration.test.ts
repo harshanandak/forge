@@ -69,6 +69,18 @@ test("the guard rejects install scripts, forbidden fields, retired packages and 
   expect(bad({ dependencies: { "cross-spawn": "7.0.0" } })).toBe(1);
   expect(bad({ scripts: { ...good.scripts, lint: "eslint ." } })).toBe(1);
   expect(bad({ scripts: { ...good.scripts, test: "bun test" } })).toBe(1);
+  expect(
+    bad({ scripts: { ...good.scripts, "test:unit": "bun test --parallel" } }),
+  ).toBe(1);
+  expect(
+    bad({
+      scripts: {
+        ...good.scripts,
+        test: "bun run test:unit",
+        "test:unit": "bun test --timeout 30000",
+      },
+    }),
+  ).toBe(0);
   expect(bad({ type: "commonjs" })).toBe(1);
 }, 30_000);
 
