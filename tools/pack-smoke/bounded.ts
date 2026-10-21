@@ -84,15 +84,22 @@ export function runWithin(
         process.kill(-child.pid, "SIGKILL");
         return true;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        return false;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ESRCH") return false;
+        // macOS can refuse SIGKILL for a zombie-only group. Require the same OS
+        // snapshot proof as a delivered signal; a live or unknown group still fails.
+        if (code === "EPERM") return true;
+        throw error;
       }
     };
     let settled = false;
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+    let cleanupFailure: Error | undefined;
     const settle = async (failure?: Error): Promise<void> => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(cleanupTimer);
       detach();
       try {
         // The leader exiting does not end its group: a descendant may ignore the forwarded signal.
@@ -109,21 +116,42 @@ export function runWithin(
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      if (child.pid === undefined) return;
-      if (windows)
-        spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)], {
-          windowsHide: true,
-        });
-      else {
-        try {
-          stopGroup();
-        } catch (error) {
-          void settle(
-            new Error(`${phase}: process group cleanup failed`, {
-              cause: error,
-            }),
+      if (child.pid === undefined) {
+        void settle(new Error(`${phase} timed out after ${timeoutMs} ms`));
+        return;
+      }
+      if (windows) {
+        const result = spawnSync(
+          "taskkill",
+          ["/T", "/F", "/PID", String(child.pid)],
+          { windowsHide: true, timeout: 5000, killSignal: "SIGKILL" },
+        );
+        if (result.error || result.status !== 0)
+          cleanupFailure = new Error(
+            `${phase}: taskkill failed (${(result.error as NodeJS.ErrnoException | undefined)?.code ?? `exit ${String(result.status)}`}); process tree cleanup unconfirmed`,
+            { cause: result.error },
           );
+        cleanupTimer = setTimeout(() => {
+          void settle(
+            cleanupFailure ??
+              new Error(
+                `${phase}: process tree cleanup timed out after taskkill`,
+              ),
+          );
+        }, 1000);
+        if (cleanupFailure) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // The bounded grace still rejects if even the direct kill is refused.
+          }
         }
+      } else {
+        void settle(
+          new Error(
+            `${phase} timed out after ${timeoutMs} ms; its process tree was killed`,
+          ),
+        );
       }
     }, timeoutMs);
     child.once("error", (error) => {
@@ -132,9 +160,10 @@ export function runWithin(
     child.once("exit", (code, signal) => {
       if (timedOut)
         void settle(
-          new Error(
-            `${phase} timed out after ${timeoutMs} ms; its process tree was killed`,
-          ),
+          cleanupFailure ??
+            new Error(
+              `${phase} timed out after ${timeoutMs} ms; its process tree was killed`,
+            ),
         );
       else if (code !== 0)
         void settle(
