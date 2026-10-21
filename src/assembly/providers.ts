@@ -1,7 +1,10 @@
 import { realpathSync } from "node:fs";
 import { basename } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { createProcessPort } from "../adapters/process/index.ts";
+import {
+  createProcessPort,
+  ProcessSpawnError,
+} from "../adapters/process/index.ts";
 import { createRunnerOutput } from "../adapters/runner-output/index.ts";
 import {
   mainCheckoutPath,
@@ -158,9 +161,38 @@ function hostEnv(options: ProviderOptions): Readonly<Record<string, string>> {
   });
 }
 
+// Discovery calls share the host's single supervisor; each lookup is launched once in order.
+let gitDiscovery = Promise.resolve();
 function gitOptions(options: ProviderOptions) {
+  const port = createProcessPort({
+    supervision: options.supervision ?? CLEANUP,
+  });
   return {
-    process: createProcessPort({ supervision: options.supervision ?? CLEANUP }),
+    process: {
+      ...port,
+      async run(...args: Parameters<ProcessPort["run"]>) {
+        const pending = gitDiscovery.then(() => port.run(...args));
+        gitDiscovery = pending.then(
+          () => undefined,
+          () => undefined,
+        );
+        try {
+          return await pending;
+        } catch (error) {
+          // A busy supervisor says nothing about the repository's identity.
+          if (
+            error instanceof ProcessSpawnError &&
+            error.code === "PROCESS_LIMIT_EXCEEDED"
+          )
+            throw new ForgeFailure({
+              code: error.code,
+              message: "Process capacity is unavailable for Git discovery",
+              retry: "never",
+            });
+          throw error;
+        }
+      },
+    },
     env: hostEnv(options),
     timeoutMs: 10000,
     maxOutputBytes: 16384,

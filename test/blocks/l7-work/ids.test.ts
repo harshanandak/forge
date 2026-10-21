@@ -144,6 +144,33 @@ test("an id with a prefix this project never used is refused, naming the prefixe
   );
 });
 
+for (const relation of ["dependsOn", "parent"] as const) {
+  test(`a failed create with a missing ${relation} leaves no prefix alias`, () => {
+    const call = project();
+    const forge = { idPrefix: "forge" };
+    const acme = { idPrefix: "acme" };
+    call("issue.create", { title: "local" }, forge);
+    const before = [...call.records.values()];
+    expect(() =>
+      call(
+        "issue.create",
+        {
+          title: "must fail",
+          [relation]: relation === "dependsOn" ? ["acme-999"] : "acme-999",
+        },
+        acme,
+      ),
+    ).toThrow("NOT_FOUND");
+    expect([...call.records.values()]).toEqual(before);
+    expect(() => call("issue.show", { id: "acme-1" }, forge)).toThrow(
+      "Unknown id prefix acme",
+    );
+    // Only a successful mint makes the earlier name an alias after switching back.
+    expect(call("issue.create", { title: "minted" }, acme).id).toBe("acme-2");
+    expect(call("issue.show", { id: "acme-1" }, forge).id).toBe("forge-1");
+  });
+}
+
 test("an item from before prefixes were recorded counts as minted with work, and the record stays hidden", () => {
   const call = project();
   // An item written before this change: no recorded prefix.

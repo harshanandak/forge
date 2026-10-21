@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createProcessPort } from "../../../src/adapters/process/index.ts";
 import { createAssembly, type Assembly } from "../../../src/assembly/index.ts";
+import { idPrefixObservation } from "../../../src/assembly/providers.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 
 setDefaultTimeout(60_000);
@@ -235,6 +236,44 @@ test("issue ids carry the repository's name in every worktree, and earlier names
   const foreign = await fromLinked("issue.show", { id: `scoreeasy-${number}` });
   expect(foreign.ok).toBe(false);
   expect(JSON.stringify(foreign)).toContain("Unknown id prefix scoreeasy");
+}, 60_000);
+
+test("overlapping catalog creates retain the origin prefix under supervisor contention", async () => {
+  await git(
+    main,
+    "config",
+    "remote.origin.url",
+    "https://example.invalid/o/Forge.git",
+  );
+  const call = await open(main);
+  const results = await Promise.all([
+    call("issue.create", { title: "overlap one" }),
+    call("issue.create", { title: "overlap two" }),
+  ]);
+  const ids = results.map((result) => done(result).id);
+  expect(ids).toHaveLength(2);
+  expect(new Set(ids).size).toBe(2);
+  for (const id of ids) expect(id).toMatch(/^forge-\d+$/);
+  // The next call still reads the actual origin.
+  expect(done(await call("issue.create", { title: "after overlap" })).id).toMatch(
+    /^forge-\d+$/,
+  );
+}, 60_000);
+
+test("zero process capacity cannot be mistaken for an absent origin", async () => {
+  await expect(
+    idPrefixObservation(main, main, {
+      supervision: {
+        cleanupTimeoutMs: 5000,
+        pollIntervalMs: 25,
+        drainTimeoutMs: 250,
+        maxConcurrent: 0,
+      },
+    }),
+  ).rejects.toMatchObject({
+    error: { code: "PROCESS_LIMIT_EXCEEDED" },
+  });
+  expect(await idPrefixObservation(main, main)).toHaveLength(1);
 }, 60_000);
 
 test("a project outside git keeps its store in its own folder", async () => {
