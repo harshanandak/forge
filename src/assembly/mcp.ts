@@ -7,11 +7,30 @@ import type { McpTransportPort } from "../ports/mcp-transport.ts";
 import type { Assembly } from "./index.ts";
 import { randomUUID } from "node:crypto";
 import { localContext, localSession } from "./index.ts";
+import { StateUnavailable } from "./state.ts";
 
 /** Hidden, unadmitted names still reach the same runtime refusal through direct MCP calls. */
 export function assemblyMcp(assembly: Assembly): McpTransportPort {
   return {
     async open(options) {
+      try {
+        await assembly.prepareTrust();
+      } catch (error) {
+        return {
+          ok: false,
+          unavailable:
+            error instanceof StateUnavailable
+              ? error.unavailable
+              : {
+                  kind: "unavailable",
+                  reason:
+                    error instanceof Error
+                      ? error.message
+                      : "Trust preparation failed",
+                  remedy: "Check that the local trust store is readable.",
+                },
+        };
+      }
       const context = localContext(
         assembly,
         { kind: "agent", id: "mcp" },

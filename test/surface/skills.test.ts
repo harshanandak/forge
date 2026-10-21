@@ -144,6 +144,37 @@ test("skills.sync writes one linted skill per block noun, deterministically, fro
   });
 }, 30_000);
 
+test("a fresh assembly loads persisted admission only when syncing skills", async () => {
+  await withProject(async (_assembly, root) => {
+    const reopened = await createAssembly({
+      root,
+      deviceRoot: join(root, "device"),
+    });
+    try {
+      expect(
+        reopened.catalog.list().find((entry) => entry.op === "memory.add")
+          ?.admitted,
+      ).toBe(false);
+      expect(await forge(reopened, ["skills", "sync"])).toMatchObject({
+        ok: true,
+        result: {
+          written: [
+            ".agents/skills/decision/SKILL.md",
+            ".agents/skills/issue/SKILL.md",
+            ".agents/skills/memory/SKILL.md",
+          ],
+        },
+      });
+      expect(
+        reopened.catalog.list().find((entry) => entry.op === "memory.add")
+          ?.admitted,
+      ).toBe(true);
+    } finally {
+      await reopened.close();
+    }
+  });
+}, 30_000);
+
 test("an enabled but unadmitted block gets no skill and none of its text reaches any file", async () => {
   await withProject(
     async (assembly, root) => {

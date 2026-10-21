@@ -17,6 +17,9 @@
     "inputSchema": {
       "type": "object"
     },
+    "argumentSchema": {
+      "type": "object"
+    },
     "outputSchema": {
       "type": "object"
     },

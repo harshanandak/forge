@@ -7,7 +7,34 @@ import {
   probeFilesystem,
   type FilesystemProbe,
 } from "../../../src/adapters/store-sqlite/filesystem.ts";
-import { classifyFilesystem } from "../../../src/core/state/fs-class.ts";
+import {
+  assertFilesystem,
+  classifyFilesystem,
+} from "../../../src/core/state/fs-class.ts";
+
+test("filesystem diagnostics stay silent for unknown and name the risky store and remedy", () => {
+  const messages: string[] = [];
+  assertFilesystem(
+    { path: "/data/state.sqlite", platform: "linux" },
+    (message) => messages.push(message),
+  );
+  expect(messages).toEqual([]);
+  for (const path of [
+    "//server/share/state.sqlite",
+    "C:/OneDrive/state.sqlite",
+  ])
+    expect(() =>
+      assertFilesystem({ path, platform: "win32" }, (message) =>
+        messages.push(message),
+      ),
+    ).toThrow(`Store ${path}`);
+  expect(() =>
+    assertFilesystem(
+      { path: "//server/share/state.sqlite", platform: "win32" },
+      () => {},
+    ),
+  ).toThrow("Move the store to a local unsynced disk");
+}, 10000);
 
 function fake(
   platform: string,

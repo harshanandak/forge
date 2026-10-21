@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   linkSync,
+  mkdirSync,
   mkdtempSync,
   realpathSync,
   rmSync,
@@ -17,6 +18,30 @@ import {
   type StateImageStore,
   StateOwner,
 } from "../../../src/core/state/index.ts";
+
+test("a directory at the store path is refused before the hard-link guard", async () => {
+  const work = realpathSync(
+    mkdtempSync(join(tmpdir(), "forge-directory-open-")),
+  );
+  const path = join(work, "state.db");
+  mkdirSync(path);
+  try {
+    if (process.platform !== "win32")
+      expect(statSync(path).nlink).toBeGreaterThanOrEqual(2);
+    for (const readOnly of [false, true]) {
+      const result = await createSqliteStore(work).open({ path, readOnly });
+      if (result.ok) await result.handle.close();
+      expect(result.ok).toBe(false);
+      if (!result.ok)
+        expect(result.unavailable.reason).toBe(
+          `Error: ${path} is a directory, expected the Forge store file; move or delete it`,
+        );
+      expect(statSync(path).isDirectory()).toBe(true);
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}, 30000);
 
 // Real hard links exercise POSIX in CI and NTFS on Windows; both expose stat.nlink.
 test("hard-linked store aliases refuse writable and read-only opens", async () => {

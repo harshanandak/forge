@@ -50,12 +50,15 @@ const catalog = {
           warnings: [],
         },
 };
-assert.match((await runCli(catalog, ["--help"])).stdout, /fresh.inspect/);
+assert.match(
+  (await runCli(catalog, ["fresh", "--help"])).stdout,
+  /fresh inspect/,
+);
 for (const argv of [
   ["catalog", "--help"],
   ["catalog", "list", "--help"],
 ]) {
-  const help = JSON.parse((await runCli(catalog, argv)).stdout);
+  const help = JSON.parse((await runCli(catalog, [...argv, "--json"])).stdout);
   assert.ok(
     help.result.operations.some((operation) => operation.op === "catalog.list"),
   );

@@ -8,7 +8,12 @@
       "description": "Only open items whose dependencies are closed and that no live lease holds.",
       "type": "boolean"
     },
-    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+    "limit": {
+      "description": "Maximum number of items to return.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
     "labels": {
       "description": "Only items that carry every one of these labels.",
       "type": "array",

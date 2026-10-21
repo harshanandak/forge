@@ -38,10 +38,17 @@
     },
     "Example": {
       "type": "object",
-      "required": ["input"],
+      "if": { "not": { "required": ["input"] } },
+      "then": { "required": ["command"] },
       "properties": {
         "input": {},
-        "output": {}
+        "output": {},
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "A runnable CLI example when arguments must come from an earlier command."
+        }
       },
       "additionalProperties": false
     }

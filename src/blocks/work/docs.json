@@ -2,11 +2,13 @@
   "operations": {
     "issue.create": {
       "title": "Issue create",
-      "summary": "Issue create."
+      "summary": "Create an issue with a title and kind.",
+      "examples": [{ "input": { "title": "First task", "kind": "task" } }]
     },
     "issue.show": {
       "title": "Issue show",
-      "summary": "Read the issue and only its live lease."
+      "summary": "Read the issue and only its live lease.",
+      "examples": [{ "input": { "id": "demo-1" } }]
     },
     "issue.list": {
       "title": "Issue list",
@@ -14,27 +16,42 @@
     },
     "issue.update": {
       "title": "Issue update",
-      "summary": "Issue update."
+      "summary": "Update an issue while holding its lease at the revision read from show.",
+      "examples": [
+        {
+          "command": "POSIX: forge issue update demo-1 --title \"Updated task\" --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge issue update demo-1 --title \"Updated task\" --expect-revision ((forge issue show demo-1 | ConvertFrom-Json).result.revision)"
+        }
+      ]
     },
     "issue.comment": {
       "title": "Issue comment",
-      "summary": "Append a plain comment. Read it back with issue.comments."
+      "summary": "Append a plain comment. Read it back with issue.comments.",
+      "examples": [
+        { "input": { "id": "demo-1", "body": "Implementation started." } }
+      ]
     },
     "issue.claim": {
       "title": "Issue claim",
-      "summary": "Acquire an open issue lease; supply actor, session and project through catalog.call. Replay uses the invocation request ID."
+      "summary": "Acquire an open issue lease for the current session.",
+      "examples": [{ "input": { "id": "demo-1", "ttlSeconds": 7200 } }]
     },
     "issue.renew": {
       "title": "Issue renew",
-      "summary": "Renew a live lease at its current generation; expired leases must be acquired again."
+      "summary": "Renew a live lease at its current generation; expired leases must be acquired again.",
+      "examples": [{ "input": { "id": "demo-1", "ttlSeconds": 7200 } }]
     },
     "issue.release": {
       "title": "Issue release",
-      "summary": "Issue release."
+      "summary": "Release the issue lease held by this session.",
+      "examples": [{ "input": { "id": "demo-1" } }]
     },
     "issue.close": {
       "title": "Issue close",
-      "summary": "Issue close."
+      "summary": "Close an issue while holding its lease.",
+      "examples": [{ "input": { "id": "demo-1" } }]
     },
     "issue.ready": {
       "title": "Issue ready",
@@ -50,23 +67,43 @@
     },
     "issue.comments": {
       "title": "Issue comments",
-      "summary": "Read issue comments."
+      "summary": "Read issue comments.",
+      "examples": [{ "input": { "id": "demo-1" } }]
     },
     "issue.events": {
       "title": "Issue events",
-      "summary": "Read accepted issue and lease history."
+      "summary": "Read accepted issue and lease history.",
+      "examples": [{ "input": { "id": "demo-1" } }]
     },
     "issue.dep": {
       "title": "Issue dep",
-      "summary": "Add or remove a dependency at an expected revision while holding the issue lease."
+      "summary": "Add or remove a dependency at an expected revision while holding the issue lease.",
+      "examples": [
+        {
+          "command": "POSIX: forge issue dep --id demo-1 --target demo-2 --action add --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge issue dep --id demo-1 --target demo-2 --action add --expect-revision ((forge issue show demo-1 | ConvertFrom-Json).result.revision)"
+        }
+      ]
     },
     "issue.link": {
       "title": "Issue link",
-      "summary": "Attach a typed external link while holding the issue lease."
+      "summary": "Attach a typed external link while holding the issue lease.",
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1",
+            "relation": "relates",
+            "url": "https://example.com/task"
+          }
+        }
+      ]
     },
     "issue.links": {
       "title": "Issue links",
-      "summary": "Read issue links."
+      "summary": "Read issue links.",
+      "examples": [{ "input": { "id": "demo-1" } }]
     },
     "issue.lint": {
       "title": "Issue lint",

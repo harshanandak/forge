@@ -1,0 +1,149 @@
+{
+  "operations": {
+    "catalog.describe": {
+      "title": "Describe a command",
+      "summary": "Show the full declaration and schemas for a command.",
+      "examples": [{ "input": { "op": "catalog.list" } }]
+    },
+    "catalog.list": {
+      "title": "List commands",
+      "summary": "List the available command contracts."
+    },
+    "catalog.call": {
+      "title": "Call a command",
+      "summary": "Invoke a command by its operation name.",
+      "examples": [{ "input": { "op": "config.show", "input": {} } }]
+    },
+    "block.add": {
+      "title": "Capture a block",
+      "summary": "Capture an installed block and report its digest.",
+      "examples": [{ "input": { "path": "./example-block" } }]
+    },
+    "block.check": {
+      "title": "Check a block",
+      "summary": "Validate a block and report its digest.",
+      "examples": [{ "input": { "path": "./example-block" } }]
+    },
+    "block.admit": {
+      "title": "Admit a block",
+      "summary": "Admit captured block bytes for this device.",
+      "examples": [
+        {
+          "command": "POSIX: forge block admit \"$(forge block check ./example-block | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.digest')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge block admit ((forge block check ./example-block | ConvertFrom-Json).result.digest)"
+        }
+      ]
+    },
+    "skills.sync": {
+      "title": "Sync skills",
+      "summary": "Generate agent skills from the enabled catalog and templates."
+    },
+    "config.show": {
+      "title": "Show configuration",
+      "summary": "Read the effective configuration and its current revision."
+    },
+    "config.explain": {
+      "title": "Explain a value",
+      "summary": "Show where a configuration value came from.",
+      "examples": [{ "input": { "path": "memory.levels" } }]
+    },
+    "config.detect": {
+      "title": "Detect project settings",
+      "summary": "Detect project settings without saving them."
+    },
+    "config.set": {
+      "title": "Set a value",
+      "summary": "Set one value at the revision read from config show.",
+      "examples": [
+        {
+          "command": "POSIX: forge config set memory.levels.human nearest --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge config set memory.levels.human nearest --expect-revision ((forge config show | ConvertFrom-Json).result.revision)"
+        }
+      ]
+    },
+    "config.preview": {
+      "title": "Preview edits",
+      "summary": "Preview configuration edits without saving them.",
+      "examples": [
+        {
+          "input": {
+            "patch": [{ "op": "set", "path": "/values/example", "value": true }]
+          }
+        }
+      ]
+    },
+    "config.apply": {
+      "title": "Apply edits",
+      "summary": "Apply edits at the revision read from config show.",
+      "examples": [
+        {
+          "command": "POSIX: forge config apply --patch '[{\"op\":\"set\",\"path\":\"/values/example\",\"value\":true}]' --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge config apply --patch '[{\\\"op\\\":\\\"set\\\",\\\"path\\\":\\\"/values/example\\\",\\\"value\\\":true}]' --expect-revision ((forge config show | ConvertFrom-Json).result.revision)"
+        }
+      ]
+    },
+    "config.save": {
+      "title": "Save detected settings",
+      "summary": "Save detected settings at the revision read from config show.",
+      "examples": [
+        {
+          "command": "POSIX: forge config save --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge config save --expect-revision ((forge config show | ConvertFrom-Json).result.revision)"
+        }
+      ]
+    },
+    "config.grant": {
+      "title": "Grant effects",
+      "summary": "Allow named effects for human-admitted bytes.",
+      "examples": [
+        {
+          "command": "POSIX: forge config grant --effects '[]' --digest \"$(forge block check ./example-block | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.digest')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge config grant --effects '[]' --digest ((forge block check ./example-block | ConvertFrom-Json).result.digest)"
+        }
+      ]
+    },
+    "template.list": {
+      "title": "List templates",
+      "summary": "List installed configuration templates."
+    },
+    "template.show": {
+      "title": "Show a template",
+      "summary": "Read an installed or project-relative template.",
+      "examples": [{ "input": { "template": "delivery" } }]
+    },
+    "template.import": {
+      "title": "Import a template",
+      "summary": "Import a template into project configuration.",
+      "examples": [
+        {
+          "command": "POSIX: forge template import delivery --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge template import delivery --expect-revision ((forge config show | ConvertFrom-Json).result.revision)"
+        }
+      ]
+    },
+    "template.remove": {
+      "title": "Remove a template",
+      "summary": "Remove unchanged values owned by a template.",
+      "examples": [
+        {
+          "command": "POSIX: forge template remove harsha/delivery --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge template remove harsha/delivery --expect-revision ((forge config show | ConvertFrom-Json).result.revision)"
+        }
+      ]
+    }
+  }
+}
