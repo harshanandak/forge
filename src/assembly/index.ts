@@ -31,6 +31,7 @@ import type {
   Actor,
   BlockSource,
   ConfigDocument,
+  DetectionObservation,
   ForgeError,
   BlockInstance,
   DocsRecords,
@@ -170,11 +171,6 @@ export async function createAssembly(
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   // Every git worktree of one repository shares one store; config and files stay at `root`.
   const stateRoot = await projectStateRoot(root, options.providers);
-  const derivedIdPrefix = await idPrefixObservation(
-    root,
-    stateRoot,
-    options.providers,
-  );
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
   );
@@ -199,13 +195,15 @@ export async function createAssembly(
   // Each block is captured once per call: config reads its schema from the same capture the
   // catalog runs. The cache belongs to one call and is passed down it, so overlapping calls
   // never share or clear each other's captures, and nothing is kept once the call ends.
+  // `derived` holds what git answers for this call (the id prefix): an invocation asks git each
+  // time, so a long-lived server follows a changed origin; listings leave it to its default.
   type CallScope = {
     captured(source: BlockSource): CapturedBlock;
     shipped: ReturnType<typeof shippedTemplates>;
     config: ReturnType<typeof createConfig>;
     configOperations: ReturnType<typeof createConfigOperations>;
   };
-  function callScope(): CallScope {
+  function callScope(derived: readonly DetectionObservation[] = []): CallScope {
     const captures = new Map<string, CapturedBlock | { failed: unknown }>();
     const shipped = shippedTemplates();
     function captured(source: BlockSource): CapturedBlock {
@@ -234,7 +232,7 @@ export async function createAssembly(
       clock: { now: () => Date.now() },
       detect: () => [
         ...detectProject(createFolderFiles(root)).observations,
-        ...derivedIdPrefix,
+        ...derived,
       ],
       templates: shipped,
       builtinSource: (name: string): BlockSource | undefined =>
@@ -474,7 +472,15 @@ export async function createAssembly(
       grantCandidate,
       ...snapshot(callScope()).candidates,
     ],
-    invoke: (request) => direct.invoke(callScope(), request),
+    async invoke(request) {
+      let derived: readonly DetectionObservation[];
+      try {
+        derived = await idPrefixObservation(root, stateRoot, options.providers);
+      } catch (error) {
+        return failure(request.op, error);
+      }
+      return direct.invoke(callScope(derived), request);
+    },
   };
   const direct = {
     async invoke(

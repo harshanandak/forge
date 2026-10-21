@@ -11,7 +11,7 @@
       "items": { "type": "string", "minLength": 1, "maxLength": 100 }
     },
     "idPrefix": {
-      "description": "The prefix new issue ids carry, as in <idPrefix>-<n>. Derived from the project: the origin remote's repository name, else the main checkout's folder name, normalised to lowercase letters, digits and hyphens. Every item is shown with the current prefix; an id with any earlier prefix (work-12 after a change to acme) still names the same item.",
+      "description": "The prefix new issue ids carry, as in <idPrefix>-<n>. Derived from the project: the origin remote's repository name, else the main checkout's folder name, normalised to lowercase letters, digits and hyphens. Every item is shown with the current prefix; an id with a prefix this project minted with earlier (work-12 after a change to acme) still names the same item, and any other prefix is refused.",
       "type": "string",
       "default": "work",
       "minLength": 1,

@@ -215,11 +215,8 @@ test("a git submodule keeps its store in its own folder", async () => {
 
 test("issue ids carry the repository's name in every worktree, and earlier names keep resolving", async () => {
   // No remote yet: the main checkout's folder names the project, even from the linked worktree.
-  const before = done(
-    await (
-      await open(linked)
-    )("issue.create", { title: "Named" }),
-  );
+  const fromLinked = await open(linked);
+  const before = done(await fromLinked("issue.create", { title: "Named" }));
   expect(before.id).toMatch(/^repo-\d+$/);
   const number = String(before.id).slice("repo-".length);
   await git(
@@ -229,13 +226,15 @@ test("issue ids carry the repository's name in every worktree, and earlier names
     "origin",
     "https://example.invalid/o/Forge.git",
   );
-  const fromLinked = await open(linked);
+  // The same long-lived assembly (an MCP server) follows the new origin on its next call.
   const after = done(await fromLinked("issue.create", { title: "Renamed" }));
   expect(after.id).toMatch(/^forge-\d+$/);
-  for (const alias of [`repo-${number}`, `work-${number}`])
-    expect(done(await fromLinked("issue.show", { id: alias })).id).toBe(
-      `forge-${number}`,
-    );
+  expect(
+    done(await fromLinked("issue.show", { id: `repo-${number}` })).id,
+  ).toBe(`forge-${number}`);
+  const foreign = await fromLinked("issue.show", { id: `scoreeasy-${number}` });
+  expect(foreign.ok).toBe(false);
+  expect(JSON.stringify(foreign)).toContain("Unknown id prefix scoreeasy");
 }, 60_000);
 
 test("a project outside git keeps its store in its own folder", async () => {

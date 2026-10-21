@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 const [installed, suppliedRoot] = process.argv.slice(2);
 mkdirSync(suppliedRoot, { recursive: true });
 const root = realpathSync(suppliedRoot);
@@ -82,6 +82,8 @@ const created = call("create", {
   kind: "task",
   labels: ["acceptance"],
 }).result;
+// Outside git the project folder's name, lowercased, prefixes the id.
+assert.equal(created.id, `${basename(root).toLowerCase()}-1`);
 assert.equal(created.title, "Packed issue");
 assert.deepEqual(created.labels, ["acceptance"]);
 assert.deepEqual(call("show", { id: created.id }).result, created);

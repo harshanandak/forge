@@ -10,7 +10,7 @@ import {
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 const installed = process.argv[2];
 const bin = join(installed, "dist/bin/forge.js");
@@ -105,7 +105,8 @@ const slice = cli([
   "--input",
   JSON.stringify({ title: "Fix add", kind: "bug", labels: ["p1"] }),
 ]).result;
-assert.equal(typeof slice.id, "string");
+// A repository with no origin remote: its folder's name, lowercased, prefixes the id.
+assert.equal(slice.id, `${basename(root).toLowerCase()}-1`);
 passed.push("issue create");
 cli(["issue", "claim", slice.id]);
 passed.push("issue claim");

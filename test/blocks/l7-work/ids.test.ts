@@ -73,8 +73,11 @@ function project() {
     release: (subject: string) => leases.get(subject),
     events: () => [],
   };
-  return (op: string, input: Record<string, unknown>, config?: unknown) =>
-    operations[op]!({ input, config, services: { state } }) as Item;
+  return Object.assign(
+    (op: string, input: Record<string, unknown>, config?: unknown) =>
+      operations[op]!({ input, config, services: { state } }) as Item,
+    { records },
+  );
 }
 
 test("a project named forge mints forge-1, and the prefix carries through deps and parents", () => {
@@ -114,11 +117,56 @@ test("after a prefix change every earlier prefix still names the same item, show
   expect(() => call("issue.show", { id: "acme-9" }, acme)).toThrow("NOT_FOUND");
 });
 
+test("an id with a prefix this project never used is refused, naming the prefixes it accepts", () => {
+  const call = project();
+  const forge = { idPrefix: "forge" };
+  call("issue.create", { title: "one" }, forge);
+  // Another project's id must not silently open this project's item 1.
+  for (const foreign of ["scoreeasy-1", "work-1"])
+    expect(() => call("issue.show", { id: foreign }, forge)).toThrow(
+      `INPUT_INVALID: Unknown id prefix ${foreign.split("-")[0]} in ${foreign}; this project's ids carry forge`,
+    );
+  expect(() =>
+    call("issue.create", { title: "x", dependsOn: ["scoreeasy-1"] }, forge),
+  ).toThrow("Unknown id prefix");
+  expect(() =>
+    call(
+      "issue.dep",
+      { id: "forge-1", target: "other-1", action: "add", expectRevision: 1 },
+      forge,
+    ),
+  ).toThrow("Unknown id prefix");
+  // After a change the old prefix was used, so it is accepted; the error names both.
+  const acme = { idPrefix: "acme" };
+  expect(call("issue.show", { id: "forge-1" }, acme).id).toBe("acme-1");
+  expect(() => call("issue.show", { id: "scoreeasy-1" }, acme)).toThrow(
+    "this project's ids carry acme, forge",
+  );
+});
+
+test("a store from before prefixes were recorded accepts work, and keeps it once a new prefix is used", () => {
+  const call = project();
+  call("issue.create", { title: "legacy" });
+  call.records.delete("prefix:work");
+  const forge = { idPrefix: "forge" };
+  expect(call("issue.show", { id: "work-1" }, forge).id).toBe("forge-1");
+  expect(() => call("issue.show", { id: "acme-1" }, forge)).toThrow(
+    "this project's ids carry forge, work",
+  );
+  call("issue.create", { title: "new" }, forge);
+  expect(
+    [...call.records.keys()].filter((k) => k.startsWith("prefix:")),
+  ).toEqual(["prefix:forge", "prefix:work"]);
+  expect(call("issue.show", { id: "work-2" }, { idPrefix: "acme" }).id).toBe(
+    "acme-2",
+  );
+});
+
 test("every operation that takes an id accepts an alias and answers with the current prefix", () => {
   const call = project();
   const acme = { idPrefix: "acme" };
   call("issue.create", { title: "base" });
-  call("issue.create", { title: "other" });
+  call("issue.create", { title: "other" }, { idPrefix: "forge" });
   expect(call("issue.claim", { id: "forge-2" }, acme).id).toBe("acme-2");
   expect(call("issue.renew", { id: "work-2" }, acme).id).toBe("acme-2");
   expect(call("issue.release", { id: "forge-2" }, acme).id).toBe("acme-2");
@@ -139,12 +187,12 @@ test("every operation that takes an id accepts an alias and answers with the cur
   expect(call("issue.comment", { id: "forge-1", body: "hi" }, acme).id).toBe(
     "acme-1",
   );
-  call("issue.link", {
-    id: "forge-1",
-    relation: "delivers",
-    url: "https://x.example/1",
-  });
-  const links = call("issue.links", { id: "acme-1" }) as unknown as {
+  call(
+    "issue.link",
+    { id: "forge-1", relation: "delivers", url: "https://x.example/1" },
+    acme,
+  );
+  const links = call("issue.links", { id: "acme-1" }, acme) as unknown as {
     records: unknown[];
   };
   expect(links.records).toHaveLength(1);
