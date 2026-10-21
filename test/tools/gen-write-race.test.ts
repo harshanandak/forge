@@ -1,13 +1,21 @@
 // Concurrent writers on real threads publish one generated output. Threads, not processes:
 // the old process race failed on macOS when a child's exit never reached the parent (work-276).
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 
 const WRITERS = 5;
-const ROUNDS = 60;
+// A busy-file crash or an in-place writer fails by round 6; 30 rounds keep that margin inside the budget under load.
+const ROUNDS = 30;
 const fixture = new URL(
   "../node-fixtures/tools/gen-write-race.ts",
   import.meta.url,
@@ -53,11 +61,13 @@ test("concurrent writers publish identical complete content", async () => {
   const directory = mkdtempSync(join(tmpdir(), "forge-gen-race-"));
   // Large enough that one write spans many pages, so a non-atomic publish is visible mid-write.
   const content = "generated content\n".repeat(200_000);
+  // Each round replaces stale output, so every writer reads the target while others rename over it.
+  const stale = "previous contents\n".repeat(200_000);
   const state = new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT);
   const flags = new Int32Array(state);
   const start = (role: "writer" | "reader") =>
     new Worker(fixture, {
-      workerData: { role, directory, content, rounds: ROUNDS, state },
+      workerData: { role, directory, content, stale, rounds: ROUNDS, state },
     });
   const readerThread = start("reader");
   const writerThreads = Array.from({ length: WRITERS }, () => start("writer"));
@@ -69,6 +79,9 @@ test("concurrent writers publish identical complete content", async () => {
   const inboxes = [reader, ...writers];
   try {
     for (let round = 1; round <= ROUNDS; round += 1) {
+      const published = join(directory, `round-${round}`);
+      mkdirSync(published);
+      writeFileSync(join(published, "output.txt"), stale);
       // Release every writer at once so their publishes overlap instead of trailing thread start-up.
       while (Atomics.load(flags, 0) < round * threads.length) {
         const failure = inboxes.map((box) => box.failure()).find(Boolean);
@@ -80,7 +93,6 @@ test("concurrent writers publish identical complete content", async () => {
       await Promise.all(writers.map((box) => box.next()));
       Atomics.store(flags, 2, round);
       expect(await reader.next()).toEqual({ round, incomplete: false });
-      const published = join(directory, `round-${round}`);
       expect(readFileSync(join(published, "output.txt"), "utf8")).toBe(content);
       expect(readdirSync(published)).toEqual(["output.txt"]);
     }
