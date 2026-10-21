@@ -197,6 +197,9 @@ function resolve(
   const defaults: InvocationValue[] = [];
   for (const pointer of implied) {
     const segments = parsePointer(pointer) ?? [];
+    // A template can own a source spelled as a short block name in the file.
+    if (isObject(project?.owners) && Object.hasOwn(project.owners, pointer))
+      continue;
     defaults.push({ segments, value: getIn(document ?? {}, segments) });
     if (project !== undefined) removeIn(project, segments);
   }
@@ -359,7 +362,14 @@ export function planBytes(
       name,
       schema.check(getIn(effective, ["blocks", name, "config"]) ?? {}),
     );
-  const bytes = encodeDocument(next, env.codec);
+  const bytes = encodeDocument(
+    next,
+    env.codec,
+    current.bytes === undefined
+      ? undefined
+      : new TextDecoder("utf-8", { ignoreBOM: true }).decode(current.bytes),
+    env,
+  );
   const after = bytes === null ? undefined : next;
   return { bytes, changes: diff(current.document, after) };
 }

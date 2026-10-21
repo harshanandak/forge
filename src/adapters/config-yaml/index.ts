@@ -2,6 +2,7 @@
 // from disk is untrusted, so decoding refuses duplicate keys, aliases, custom tags and non-JSON
 // values, and enforces the parse budgets before and after parsing.
 import { parseDocument, stringify } from "yaml";
+import { editYaml } from "./edit.ts";
 import type { ForgeError, ParseLimits } from "../../generated/types.ts";
 import type {
   ConfigCodecPort,
@@ -82,6 +83,7 @@ function checkValue(
 }
 
 export const yamlConfigCodec: ConfigCodecPort = {
+  edit: editYaml,
   decode(text: string, limits: ParseLimits): DecodeResult {
     if (new TextEncoder().encode(text).length > limits.maxBytes)
       return overLimit("maxBytes", limits.maxBytes);

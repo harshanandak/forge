@@ -14,6 +14,7 @@ setDefaultTimeout(30_000);
 const jsonCodec: ConfigCodecPort = {
   decode: (text, limits) => parseUntrustedJson(text, limits),
   encode: (value) => `${JSON.stringify(value, null, 2)}\n`,
+  edit: (_text, value) => `${JSON.stringify(value, null, 2)}\n`,
 };
 
 const document = {
@@ -44,6 +45,17 @@ const codecs: ReadonlyArray<readonly [string, ConfigCodecPort]> = [
 
 for (const [name, codec] of codecs) {
   describe(`ConfigCodecPort contract: ${name}`, () => {
+    test("edit sets and removes values and remains decodable", () => {
+      const before = codec.encode({
+        first: 1,
+        removed: true,
+        nested: { keep: "yes" },
+      });
+      const value = { first: 2, nested: { keep: "yes", added: null } };
+      expect(
+        codec.decode(codec.edit(before, value), DEFAULT_PARSE_LIMITS),
+      ).toEqual({ ok: true, value });
+    });
     test("encode then decode gives the same value back", () => {
       const decoded = codec.decode(
         codec.encode(document),

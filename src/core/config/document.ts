@@ -2,6 +2,7 @@
 // whole before anything is written: the forge.config/1 schema (unknown keys are refused there) and,
 // where the catalog supplies it, each instance's own configSchema against its resolved config.
 import { ForgeFailure } from "../../contract/failure.ts";
+import { DEFAULT_PARSE_LIMITS } from "../../contract/untrusted.ts";
 import {
   jsonEqual,
   type JsonSchema,
@@ -22,7 +23,7 @@ import {
   leaves,
   parsePointer,
 } from "./pointer.ts";
-import { absoluteUses } from "./short.ts";
+import { absoluteUses, expandShortForm, keepForm } from "./short.ts";
 import { CONFIG_FILE } from "./store.ts";
 
 export const CONFIG_VERSION = "forge.config/1";
@@ -165,7 +166,22 @@ export function checkInstanceConfig(
 export function encodeDocument(
   document: JsonObject,
   codec: ConfigCodecPort,
+  originalText?: string,
+  lookup: BlockLookup = {},
 ): Uint8Array | null {
+  if (originalText !== undefined) {
+    const original = codec.decode(originalText, DEFAULT_PARSE_LIMITS);
+    if (original.ok && (isObject(original.value) || original.value === null)) {
+      const value = original.value ?? {};
+      if (configuresNothing(document))
+        return configuresNothing(expandShortForm(structuredClone(value)))
+          ? new TextEncoder().encode(originalText)
+          : null;
+      return new TextEncoder().encode(
+        codec.edit(originalText, keepForm(document, value, lookup)),
+      );
+    }
+  }
   if (configuresNothing(document)) return null;
   return new TextEncoder().encode(codec.encode(document));
 }

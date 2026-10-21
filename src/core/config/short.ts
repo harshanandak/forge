@@ -3,7 +3,65 @@
 // under its instance; it is read as the long form. Nothing here applies defaults: those are the
 // lowest layer of the one resolver (layers.ts), read from the block's own configSchema.
 import type { JsonSchema } from "../../contract/schema.ts";
-import { formatPointer, isObject, type JsonObject } from "./pointer.ts";
+import { jsonEqual } from "../../contract/schema.ts";
+import type { BlockLookup } from "./document.ts";
+import { clone, formatPointer, isObject, type JsonObject } from "./pointer.ts";
+
+/** Project the validated document back into each instance's original spelling. */
+export function keepForm(
+  next: JsonObject,
+  original: JsonObject,
+  lookup: BlockLookup,
+): JsonObject {
+  const result = clone(next);
+  const short = !Object.hasOwn(original, "schemaVersion");
+  if (short) delete result.schemaVersion;
+  const blocks = isObject(result.blocks) ? result.blocks : {};
+  const previous = isObject(original.blocks) ? original.blocks : {};
+  for (const [name, instance] of Object.entries(blocks)) {
+    if (!isObject(instance)) continue;
+    const was = isObject(previous[name]) ? previous[name] : {};
+    const compact = Object.hasOwn(previous, name)
+      ? !Object.hasOwn(was, "config")
+      : short;
+    if (
+      (Object.hasOwn(previous, name) || short) &&
+      !Object.hasOwn(was, "source") &&
+      jsonEqual(instance.source, lookup.builtinSource?.(name))
+    )
+      delete instance.source;
+    if (
+      (typeof was.use === "string" ||
+        (short && !Object.hasOwn(previous, name))) &&
+      isObject(instance.source)
+    ) {
+      const path = instance.source.path;
+      const use =
+        typeof path === "string"
+          ? path.startsWith(".")
+            ? path
+            : `./${path}`
+          : instance.source.package;
+      if (typeof use === "string") {
+        instance.use = use;
+        delete instance.source;
+      }
+    }
+    if (isObject(instance.config)) {
+      const remaining: JsonObject = {};
+      for (const [key, value] of Object.entries(instance.config)) {
+        if (!INSTANCE_KEYS.has(key) && (compact || Object.hasOwn(was, key)))
+          instance[key] = value;
+        else remaining[key] = value;
+      }
+      if (Object.keys(remaining).length > 0) instance.config = remaining;
+      else delete instance.config;
+    }
+    if (previous[name] === null && Object.keys(instance).length === 0)
+      blocks[name] = null;
+  }
+  return result;
+}
 
 /** Instance keys that configure the instance itself; every other key belongs to the block's config. */
 export const INSTANCE_KEYS: ReadonlySet<string> = new Set([

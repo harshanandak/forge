@@ -9,4 +9,6 @@ export type DecodeResult =
 export interface ConfigCodecPort {
   decode(text: string, limits: ParseLimits): DecodeResult;
   encode(value: unknown): string;
+  /** Edit a validated document without rewriting untouched source text. */
+  edit(text: string, value: unknown): string;
 }
