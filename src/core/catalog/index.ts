@@ -221,8 +221,11 @@ export class CapturedBlock {
       if (node === undefined) return undefined;
       if (directProperties && isSchemaObject(node))
         node = properties(node, uri);
-      if (outer.length === 0 || !isSchemaObject(node)) return node;
-      return outer.reduceRight(composeSchema, node as Record<string, unknown>);
+      if (outer.length === 0 || node === false) return node;
+      return outer.reduceRight(
+        composeSchema,
+        node === true ? {} : (node as Record<string, unknown>),
+      );
     };
     const uri = capturedUri(path, this.#base);
     return resolve(this.#registry.lookup(uri), uri, true);

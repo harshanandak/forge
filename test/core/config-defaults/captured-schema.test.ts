@@ -104,6 +104,55 @@ test("captured root and property siblings compose in their own document bases", 
   ).toEqual([]);
 });
 
+test("true reference targets retain sibling map keywords and defaults", () => {
+  const block = capture({
+    type: "object",
+    $defs: { allow: true, commands: { $ref: "#/$defs/allow" } },
+    properties: {
+      commands: {
+        $ref: "#/$defs/commands",
+        type: "object",
+        additionalProperties: { type: "string" },
+        default: { manual: "run" },
+      },
+    },
+  });
+  expect(
+    block.problems("config.json", { commands: { manual: "run" } }),
+  ).toEqual([]);
+  const schema = block.resolvedSchema("config.json");
+  expect(schemaMaps(schema)).toEqual(["commands"]);
+  expect(schemaDefaults(schema)).toEqual([
+    { key: "commands", value: { manual: "run" } },
+  ]);
+  expect(
+    block.problems("config.json", { commands: { manual: 5 } }),
+  ).not.toEqual([]);
+});
+
+test("plain true and false reference targets keep their boolean semantics", () => {
+  const block = capture({
+    type: "object",
+    $defs: { allow: true, deny: false },
+    properties: {
+      allowed: { $ref: "#/$defs/allow" },
+      denied: {
+        $ref: "#/$defs/deny",
+        type: "object",
+        default: { manual: "run" },
+      },
+    },
+  });
+  const schema = block.resolvedSchema("config.json");
+  expect(schema).toMatchObject({ properties: { allowed: {}, denied: false } });
+  expect(schemaMaps(schema)).toEqual([]);
+  expect(schemaDefaults(schema)).toEqual([]);
+  expect(block.problems("config.json", { allowed: 5 })).toEqual([]);
+  expect(block.problems("config.json", { denied: {} })).not.toEqual([]);
+  expect(capture(true).problems("config.json", 5)).toEqual([]);
+  expect(capture(false).problems("config.json", {})).not.toEqual([]);
+});
+
 test("property reference siblings keep fixed and closed objects out of maps", () => {
   const block = capture({
     type: "object",

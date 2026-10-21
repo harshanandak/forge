@@ -161,18 +161,26 @@ function withGreeting(greeting: string): Record<string, unknown> {
   };
 }
 
-for (const crossFile of [false, true]) {
-  test(`a captured ${crossFile ? "cross-file" : "local"} property reference replaces detected commands`, async () => {
+for (const reference of ["local", "cross-file", "true-target"]) {
+  test(`a captured ${reference} property reference replaces detected commands`, async () => {
     const map = { type: "object", additionalProperties: { type: "string" } };
     const root = project({
       ...files,
-      "config.json": crossFile
-        ? { $ref: "defs.json#/$defs/Config" }
-        : {
-            type: "object",
-            $defs: { commands: map },
-            properties: { commands: { $ref: "#/$defs/commands" } },
-          },
+      "config.json":
+        reference === "cross-file"
+          ? { $ref: "defs.json#/$defs/Config" }
+          : {
+              type: "object",
+              $defs: { commands: reference === "true-target" ? true : map },
+              properties: {
+                commands: {
+                  $ref: "#/$defs/commands",
+                  ...(reference === "true-target"
+                    ? { ...map, default: { manual: "run" } }
+                    : {}),
+                },
+              },
+            },
       "defs.json": {
         $defs: {
           Config: {
@@ -219,6 +227,10 @@ for (const crossFile of [false, true]) {
     try {
       const shown = await call("config.show", {});
       expect(shown.problems).toEqual([]);
+      const manualDefault =
+        reference === "true-target"
+          ? await call("config.explain", { path: "check.commands.manual" })
+          : undefined;
       expect(
         (await call("config.explain", { path: "check.commands.lint" })).value,
       ).toBe("npm run lint");
@@ -260,6 +272,18 @@ for (const crossFile of [false, true]) {
       expect(
         readFileSync(join(root, ".forge/config.yaml"), "utf8"),
       ).not.toContain("npm run lint");
+      if (manualDefault !== undefined)
+        expect(manualDefault).toMatchObject({
+          value: "run",
+          entries: [
+            {
+              layer: "default",
+              active: true,
+              pointer: "/blocks/check/config/commands",
+              value: { manual: "run" },
+            },
+          ],
+        });
     } finally {
       await assembly.close();
       rmSync(root, { recursive: true, force: true });
