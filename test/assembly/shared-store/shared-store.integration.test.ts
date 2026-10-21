@@ -255,9 +255,9 @@ test("overlapping catalog creates retain the origin prefix under supervisor cont
   expect(new Set(ids).size).toBe(2);
   for (const id of ids) expect(id).toMatch(/^forge-\d+$/);
   // The next call still reads the actual origin.
-  expect(done(await call("issue.create", { title: "after overlap" })).id).toMatch(
-    /^forge-\d+$/,
-  );
+  expect(
+    done(await call("issue.create", { title: "after overlap" })).id,
+  ).toMatch(/^forge-\d+$/);
 }, 60_000);
 
 test("zero process capacity cannot be mistaken for an absent origin", async () => {
