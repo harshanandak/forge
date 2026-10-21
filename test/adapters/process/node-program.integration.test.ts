@@ -28,7 +28,7 @@ interface Outcomes {
   percent: Run | { code: string };
   quote: Run | { code: string };
   stdin: Run;
-  truncated: Run;
+  truncated: Run & { observedBytes: number };
   envIsolation: Run;
   missingCommand: { kind: string; reason: string; remedy: string };
   badCwd: { code: string };
@@ -118,6 +118,7 @@ test("output beyond the budget is dropped and reported, what was kept is returne
   expect(outcomes.truncated.truncated).toBe(true);
   expect(outcomes.truncated.stdout).toHaveLength(1000);
   expect(outcomes.truncated.exitCode).toBe(0);
+  expect(outcomes.truncated.observedBytes).toBe(100000);
 }, 30_000);
 
 test("the child gets exactly the environment it was given", () => {

@@ -77,6 +77,53 @@ test("real runner summary shapes and structured reports preserve failure and cou
   expect(output.parse("bad json", "", "json").kind).toBe("malformed");
 }, 1000);
 
+test("streamed output is recognized the same however it is chunked, and summaries far from the ends count", () => {
+  const text = `${"line ü\n".repeat(20000)}Tests:       1 failed, 2 passed, 3 total\r\n${"line ü\n".repeat(20000)}`;
+  const bytes = Buffer.from(text);
+  for (const size of [1, 7, 4096, bytes.length]) {
+    const recognizer = output.recognize("auto");
+    for (let start = 0; start < bytes.length; start += size)
+      recognizer.push("stdout", bytes.subarray(start, start + size));
+    expect(recognizer.observed()).toEqual({ stdout: bytes.length, stderr: 0 });
+    expect(recognizer.report()).toEqual(output.parse(text, "", "auto"));
+    expect(recognizer.report()).toMatchObject({ testCount: 3, failed: 1 });
+  }
+}, 10000);
+
+test("a structured report too large to read whole is malformed, never guessed", () => {
+  const recognizer = output.recognize("auto");
+  recognizer.push(
+    "stdout",
+    Buffer.from('{"numTotalTests":1,"numFailedTests":0,"x":"'),
+  );
+  recognizer.push("stdout", Buffer.alloc(8_388_608, "a"));
+  recognizer.push("stdout", Buffer.from('"}'));
+  const report = recognizer.report();
+  expect(report.kind).toBe("malformed");
+  expect(report.detail).toContain("cannot be read whole");
+}, 10000);
+
+test("an overflowing JSON object is malformed even when its counts lie past the retained prefix", () => {
+  const recognizer = output.recognize("auto");
+  recognizer.push("stdout", Buffer.from('{"testResults":"'));
+  recognizer.push("stdout", Buffer.alloc(8_388_608, "a"));
+  recognizer.push(
+    "stdout",
+    Buffer.from('","numTotalTests":1,"numFailedTests":1}'),
+  );
+  expect(recognizer.report().kind).toBe("malformed");
+}, 10000);
+
+test("only a line that parses as a pytest summary counts, and stdout wins over stderr", () => {
+  const summary = "======== 1 failed, 2 passed in 0.10s ========";
+  expect(
+    output.parse(`${summary}\nupload finished in 3s\n`, "", "auto"),
+  ).toMatchObject({ kind: "recognized", testCount: 3, failed: 1 });
+  expect(
+    output.parse(summary, "=== 5 passed in 0.20s ===", "auto"),
+  ).toMatchObject({ kind: "recognized", testCount: 3, failed: 1 });
+}, 1000);
+
 test("declared commands split quoted arguments without executing shell syntax", () => {
   expect(commandArguments('tool "path with spaces" test')).toEqual([
     "tool",

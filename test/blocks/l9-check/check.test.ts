@@ -139,11 +139,10 @@ test("changing input files during execution cannot yield a passing receipt", asy
   expect(receipt.reason).toContain("changed");
 }, 1000);
 
-test("malformed reports, timeout and truncated output are incomplete and keep output", async () => {
+test("malformed reports and timeouts are incomplete and keep output", async () => {
   for (const result of [
     { stdout: '{"numTotalTests":' },
     { timedOut: true, exitCode: null },
-    { truncated: true },
   ]) {
     const receipt = await fixture({
       stdout: "before timeout",
@@ -152,6 +151,56 @@ test("malformed reports, timeout and truncated output are incomplete and keep ou
     expect(receipt.status).toBe("INCOMPLETE");
     expect(receipt.runs[0]?.stdout).toBe(result.stdout ?? "before timeout");
   }
+}, 1000);
+
+// About 100 KB of progress around a summary that neither retained head nor tail contains.
+const large = (summary: string) =>
+  `${"progress line\n".repeat(3600)}${summary}\n${"progress line\n".repeat(3600)}`;
+
+test("large output is judged from the full stream; retained output is display only", async () => {
+  const passing = await fixture({
+    stdout: large("Tests:       40 passed, 40 total"),
+  }).check.run({}, config);
+  expect(passing.status).toBe("PASS");
+  expect(passing.runs[0]).toMatchObject({ truncated: true, testCount: 40 });
+  expect(passing.runs[0]!.stdout).not.toContain("Tests:");
+  expect(verifyReceipt(passing, passing.inputsDigest)).toBe(true);
+  for (const exitCode of [0, 1]) {
+    const failing = await fixture({
+      stdout: large("Tests:       2 failed, 38 passed, 40 total"),
+      exitCode,
+    }).check.run({}, config);
+    expect(failing.status).toBe("FAIL");
+    expect(failing.runs[0]).toMatchObject({ truncated: true, testCount: 40 });
+  }
+  const zero = await fixture({
+    stdout: large("Tests:       0 total"),
+  }).check.run({}, config);
+  expect(zero.status).toBe("FAIL");
+  expect(zero.runs[0]?.testCount).toBe(0);
+  const unknown = await fixture({ stdout: large("no summary here") }).check.run(
+    {},
+    config,
+  );
+  expect(unknown.status).toBe("PASS");
+  expect(unknown.runs[0]?.testCount).toBeNull();
+  expect(unknown.runs[0]?.reason).toContain("unknown");
+}, 1000);
+
+test("output the recognizer did not see in full is never judged", async () => {
+  const { services } = fixture();
+  const receipt = await createCheck({
+    ...services,
+    process: {
+      ...services.process,
+      run: (executable, args, options) =>
+        services.process.run(executable, args, {
+          ...options,
+          observer: { push() {} },
+        }),
+    },
+  }).run({}, config);
+  expect(receipt.status).toBe("INCOMPLETE");
 }, 1000);
 
 test("nothing declared or a requested missing check is never pass", async () => {

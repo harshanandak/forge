@@ -4,6 +4,23 @@ import type {
   SpawnOptions,
 } from "../../ports/process.ts";
 
+/** The stdout and stderr captures of one run; every spawn path builds them here so the observer sees every byte. */
+export function captureStreams(options: SpawnOptions): {
+  readonly stdout: StreamCapture;
+  readonly stderr: StreamCapture;
+} {
+  const stream = (name: "stdout" | "stderr"): StreamCapture =>
+    new StreamCapture(
+      options.maxOutputBytes,
+      options.capture,
+      options.observer &&
+        ((chunk) => {
+          options.observer?.push(name, chunk);
+        }),
+    );
+  return { stdout: stream("stdout"), stderr: stream("stderr") };
+}
+
 /** Bounded previews and an incremental digest; discarded bytes are never buffered. */
 export class StreamCapture {
   private head = Buffer.alloc(0);
@@ -12,8 +29,14 @@ export class StreamCapture {
   private readonly headLimit: number;
   private readonly tailLimit: number;
   private readonly hash;
+  private readonly observe: ((chunk: Buffer) => void) | undefined;
 
-  constructor(limit: number, capture?: SpawnOptions["capture"]) {
+  constructor(
+    limit: number,
+    capture?: SpawnOptions["capture"],
+    observe?: (chunk: Buffer) => void,
+  ) {
+    this.observe = observe;
     this.headLimit = capture?.headBytes ?? limit;
     this.tailLimit = capture?.tailBytes ?? 0;
     this.hash = capture ? createHash("sha256") : undefined;
@@ -24,6 +47,7 @@ export class StreamCapture {
     if (!Number.isSafeInteger(this.total))
       throw new RangeError("Output byte count exceeds safe integer range");
     this.hash?.update(chunk);
+    this.observe?.(chunk);
     const take = Math.min(chunk.length, this.headLimit - this.head.length);
     if (take > 0)
       this.head = Buffer.concat([this.head, chunk.subarray(0, take)]);

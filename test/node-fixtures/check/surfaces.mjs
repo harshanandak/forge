@@ -82,6 +82,8 @@ function maximumReceipt(receipt) {
     2,
     "two maximum-output commands return a receipt",
   );
+  assert.equal(receipt.status, "PASS", "retention never decides the verdict");
+  assert.ok(receipt.runs.every((run) => run.truncated));
   assert.ok(
     Buffer.byteLength(JSON.stringify(receipt)) <= config.maxReceiptBytes,
   );
@@ -247,7 +249,8 @@ async function review() {
     second.inputsDigest,
     "repeated CLI input binding is stable",
   );
-  const wire = await mcp("INCOMPLETE");
+  assert.equal(first.status, "PASS", "a one-byte display budget still passes");
+  const wire = await mcp("PASS");
   assert.equal(
     first.inputsDigest,
     wire.inputsDigest,
@@ -373,7 +376,7 @@ try {
       stopOnFailure: false,
     });
     maximumReceipt(cli(["check", "run"]).result);
-    maximumReceipt(await mcp("INCOMPLETE", ["first", "second"]));
+    maximumReceipt(await mcp("PASS", ["first", "second"]));
     bindings();
     await review();
     // Short form: only commands; every other key is the configSchema default.

@@ -15,7 +15,7 @@ import {
   validateHostOptions,
   type ContainmentOptions,
 } from "./containment.ts";
-import { StreamCapture } from "./capture.ts";
+import { captureStreams, type StreamCapture } from "./capture.ts";
 import { runProcessTree } from "./process-tree.ts";
 
 const MAX_TIMER_MS = 2147483647;
@@ -156,8 +156,7 @@ export async function runProcess(
         windowsHide: true,
         shell: false,
       });
-      const stdout = new StreamCapture(options.maxOutputBytes, options.capture),
-        stderr = new StreamCapture(options.maxOutputBytes, options.capture);
+      const { stdout, stderr } = captureStreams(options);
       const capture = (stream: StreamCapture, chunk: Buffer): void => {
         try {
           stream.push(chunk);
