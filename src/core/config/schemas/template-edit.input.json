@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/template-edit.input.json",
   "type": "object",
-  "required": ["template", "expectRevision"],
+  "required": ["template"],
   "properties": {
     "template": {
       "type": "string",
@@ -11,7 +11,7 @@
       "description": "An installed template id (optionally <id>@<version>), or a project-relative .json/.yaml template file."
     },
     "expectRevision": {
-      "description": "The revision read with config show: the digest of the config file's bytes (an absent file has the digest of no bytes).",
+      "description": "The revision read with config show: the digest of the config file's bytes (an absent file has the digest of no bytes). Left out, the edit expects no config file yet, so a first import needs no read; once the file exists it is refused until the revision is passed.",
       "$ref": "../../../../schemas/common.json#/$defs/Digest"
     }
   },

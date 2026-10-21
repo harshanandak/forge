@@ -134,12 +134,12 @@ function sameBytes(a: Uint8Array | undefined, b: Uint8Array | null): boolean {
 
 /**
  * One compare-and-set edit. `plan` sees the config as it is under the lock and returns the new
- * bytes; it may throw a ForgeFailure to refuse.
+ * bytes; it may throw a ForgeFailure to refuse. An undefined `expectRevision` expects no file.
  */
 export function commit(
   deps: StoreDeps,
   op: string,
-  expectRevision: string,
+  expectRevision: string | undefined,
   plan: (current: ProjectConfig) => Planned,
 ): Committed {
   const lock = new TextEncoder().encode(
@@ -156,7 +156,18 @@ export function commit(
   }
   try {
     const current = readProject(deps);
-    if (current.revision !== expectRevision) {
+    if (expectRevision === undefined && current.bytes !== undefined) {
+      throw new ForgeFailure({
+        code: "REVISION_CONFLICT",
+        message: `${CONFIG_FILE} already exists, so this edit needs expectRevision`,
+        retry: "reconcile_first",
+        observed: current.revision,
+        reconcileWith: "config.show",
+        repair:
+          "read the revision with config show and pass it as expectRevision",
+      });
+    }
+    if (expectRevision !== undefined && current.revision !== expectRevision) {
       throw revisionConflict(expectRevision, current.revision);
     }
     const planned = plan(current);

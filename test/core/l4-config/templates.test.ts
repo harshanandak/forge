@@ -165,6 +165,18 @@ describe("template lifecycle", () => {
     });
   });
 
+  test("a first import needs no revision; once the file exists, one is required", () => {
+    const p = project();
+    const first = p.templates.importTemplate({ template: "forge/starter" });
+    expect(first.revision).toBe(p.config.show().revision);
+    const failure = failureOf(() =>
+      p.templates.remove({ template: "forge/starter" }),
+    );
+    expect(failure).toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(failure?.message).toContain("needs expectRevision");
+    expect(p.config.show().revision).toBe(first.revision);
+  });
+
   test("importing the same template twice is refused", () => {
     const p = project();
     const first = p.templates.importTemplate({

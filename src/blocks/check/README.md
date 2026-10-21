@@ -66,7 +66,9 @@ Safety ceilings: 256 named checks (names 1–200 characters), 1024 arguments per
 1–2147483647 ms per command, and 1–262144 bytes per output stream. Input configuration
 selects at most 1024 paths, a 1–67108864 byte aggregate snapshot budget, and at most
 256 explicit environment names. Missing selected variables are omitted. The child inherits
-nothing else. The snapshot provider reads exact selected file bytes (including dirty and
+nothing else. The default `environment` names only what finding and running the project's own
+toolchain needs (`PATH`, and on Windows `PATHEXT`, `SystemRoot`, `ComSpec` and the temp and
+profile folders); see `schemas/config.json`. The snapshot provider reads exact selected file bytes (including dirty and
 untracked selected inputs) and HEAD. It refuses escapes, unsafe file types and over-budget
 snapshots rather than returning partial evidence. Select inputs deliberately: command
 outputs and Forge state should not be inputs unless a changed-input result is intended.
