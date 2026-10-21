@@ -205,10 +205,14 @@ export function resolveLayers(
     })),
   ];
 
-  // An empty object is a container that hides nothing beneath it, unless a lower layer sets that
+  // An empty object hides nothing beneath it unless it declares a map or a lower layer sets that
   // very key: then it is an explicit value and wins like any other.
   const explicit = (entry: (typeof raw)[number]): boolean =>
     !emptyObject(entry.value) ||
+    maps.some(
+      (map) =>
+        map.length === entry.segments.length && isPrefix(map, entry.segments),
+    ) ||
     raw.some(
       (other) =>
         LAYER_RANK[other.layer] < LAYER_RANK[entry.layer] &&

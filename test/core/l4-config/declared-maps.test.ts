@@ -2,6 +2,7 @@
 // it only while the project declares none of its entries.
 import { afterEach, expect, test } from "bun:test";
 import type { JsonSchema } from "../../../src/contract/schema.ts";
+import { getIn } from "../../../src/core/config/pointer.ts";
 import { type Fixture, makeProject, readJsonAt } from "./lib/project.ts";
 
 const checkSchema = readJsonAt(
@@ -93,3 +94,30 @@ test("save does not write back detected commands the project's declaration repla
   expect(saved.saved).toEqual([]);
   expect(p.read()).not.toContain("bun run lint");
 }, 5000);
+
+for (const layer of ["project", "invocation"] as const) {
+  test(`an explicitly empty ${layer} command map suppresses detected commands`, () => {
+    const p = project();
+    p.config.set({
+      path: layer === "project" ? "check.commands" : "check.timeoutMs",
+      value: layer === "project" ? {} : 1000,
+      expectRevision: p.config.show().revision,
+    });
+    const shown = p.config.show(
+      layer === "invocation"
+        ? { invocation: [{ op: "set", path: "check.commands", value: {} }] }
+        : {},
+    );
+    expect(
+      getIn(shown.effective, ["blocks", "check", "config", "commands"]),
+    ).toEqual({});
+    const derived = shown.values.filter((entry) => entry.layer === "derived");
+    expect(derived).toHaveLength(detections().length);
+    for (const entry of derived) {
+      expect(entry).toMatchObject({
+        active: false,
+        overriddenBy: { layer, pointer: "/blocks/check/config/commands" },
+      });
+    }
+  }, 5000);
+}
