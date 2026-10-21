@@ -41,7 +41,9 @@ export async function hardenPrivatePaths(
         "/grant:r",
         `*${sid}:${directory ? "(OI)(CI)" : ""}F`,
       ];
-      const expected = `(A;${directory ? "OICI" : ""};FA;;;${sid})`;
+      const expected = sddlTrustees(sid).map(
+        (trustee) => `(A;${directory ? "OICI" : ""};FA;;;${trustee})`,
+      );
       const readBack = async (): Promise<string> => {
         const saved = join(scratch, "acl");
         await run("icacls.exe", [path, "/save", saved]);
@@ -63,9 +65,21 @@ export async function hardenPrivatePaths(
   }
 }
 
-/** Protected, with the one expected entry and nothing else. */
-function isPrivate(dacl: string, expected: string): boolean {
-  return dacl === `D:PAI${expected}` || dacl === `D:P${expected}`;
+/**
+ * The forms SDDL may write the current user's SID in: the machine's built-in Administrator
+ * (RID 500, the account hosted runners use) reads back as LA, LocalSystem as SY.
+ */
+function sddlTrustees(sid: string): readonly string[] {
+  if (sid === "S-1-5-18") return [sid, "SY"];
+  if (/^S-1-5-21-\d+-\d+-\d+-500$/.test(sid)) return [sid, "LA"];
+  return [sid];
+}
+
+/** Protected, with one expected entry and nothing else. */
+function isPrivate(dacl: string, expected: readonly string[]): boolean {
+  return expected.some(
+    (entry) => dacl === `D:PAI${entry}` || dacl === `D:P${entry}`,
+  );
 }
 
 /** True for a directory; links and junctions are refused so icacls never follows one. */

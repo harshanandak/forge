@@ -13,6 +13,7 @@ const env = { SystemRoot: "C:\\Windows", PATH: "C:\\Git\\usr\\bin" };
 
 function fakePort(
   icacls: (args: readonly string[]) => Partial<ProcessResult>,
+  user: string = sid,
 ): {
   readonly port: ProcessPort;
   readonly started: string[];
@@ -35,7 +36,7 @@ function fakePort(
       if (basename(executable.path.replaceAll("\\", "/")) === "whoami.exe")
         return Promise.resolve({
           ...done,
-          stdout: `"host\\user","${sid}"\r\n`,
+          stdout: `"host\\user","${user}"\r\n`,
         });
       return Promise.resolve({ ...done, ...icacls(args) });
     },
@@ -122,6 +123,27 @@ test("a failing icacls keeps its exit code and error output", () =>
     expect(await failure([file], port)).toBe(
       "Private ACL application or verification failed (icacls.exe exit 5: store: Access is denied.)",
     );
+  }));
+
+test("the built-in Administrator reads back under its SDDL alias LA", () =>
+  withFile(async (file) => {
+    // A hosted Windows runner runs as runneradmin, the machine's RID-500 account.
+    const { port } = fakePort((args) => {
+      if (args[1] === "/save")
+        writeFileSync(args[2] ?? "", "store\r\nD:PAI(A;;FA;;;LA)\r\n", "utf16le");
+      return {};
+    }, "S-1-5-21-1-2-3-500");
+    expect(await failure([file], port)).toBe("resolved");
+  }));
+
+test("LA is refused when the current user is not the built-in Administrator", () =>
+  withFile(async (file) => {
+    const { port } = fakePort((args) => {
+      if (args[1] === "/save")
+        writeFileSync(args[2] ?? "", "store\r\nD:PAI(A;;FA;;;LA)\r\n", "utf16le");
+      return {};
+    });
+    expect(await failure([file], port)).toMatch(/unexpected ACL D:PAI\(A;;FA;;;LA\)/);
   }));
 
 test("an ACL that reads back with any other entry is refused", () =>
