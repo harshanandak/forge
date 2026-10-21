@@ -270,7 +270,13 @@ export async function createAssembly(
         ? {}
         : { runtime: show.effective.runtime }),
     });
-    if (!checked.ok) refuse("INPUT_INVALID", "Invalid effective composition");
+    if (!checked.ok) {
+      const [first] = checked.problems;
+      refuse(
+        "INPUT_INVALID",
+        `Invalid effective composition: ${first?.pointer || "/"} ${first?.message ?? ""}`,
+      );
+    }
     return checked.value;
   }
   function availableComposition(
@@ -483,8 +489,15 @@ export async function createAssembly(
             );
           const bound = bindContext(entry.declaration, request.context);
           if (!bound.ok) throw new ForgeFailure(bound.error);
-          if (validateWithSchema(entry.inputSchema, request.input).length)
-            refuse("INPUT_INVALID", "Input does not match declared schema");
+          const [problem] = validateWithSchema(
+            entry.inputSchema,
+            request.input,
+          );
+          if (problem)
+            refuse(
+              "INPUT_INVALID",
+              `Input does not match declared schema: ${problem.pointer || "/"} ${problem.message}`,
+            );
           if (request.dryRun && entry.declaration.effects.length)
             refuse("UNAVAILABLE", "This operation has no dry-run contract");
           const input = request.input as Record<string, unknown>;

@@ -10,6 +10,10 @@ export type ConfigOperations = Readonly<
 type Input = Readonly<Record<string, unknown>>;
 
 const text = (input: Input, key: string): string => String(input[key]);
+const revision = (input: Input): { expectRevision?: string } =>
+  typeof input.expectRevision === "string"
+    ? { expectRevision: input.expectRevision }
+    : {};
 const steps = (input: Input, key: string): readonly PatchStep[] =>
   Array.isArray(input[key]) ? (input[key] as PatchStep[]) : [];
 
@@ -57,14 +61,11 @@ export function createConfigOperations(
     "template.import": op((i) =>
       templates.importTemplate({
         template: text(i, "template"),
-        expectRevision: text(i, "expectRevision"),
+        ...revision(i),
       }),
     ),
     "template.remove": op((i) =>
-      templates.remove({
-        template: text(i, "template"),
-        expectRevision: text(i, "expectRevision"),
-      }),
+      templates.remove({ template: text(i, "template"), ...revision(i) }),
     ),
   };
 }
