@@ -1,7 +1,12 @@
 import type { McpCandidate } from "../contract/mcp.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { inputError } from "../contract/input-error.ts";
-import { flagName, propertyFromFlag } from "../contract/naming.ts";
+import {
+  flagName,
+  propertyFromFlag,
+  RESERVED_FLAGS,
+} from "../contract/naming.ts";
+import { renderExample } from "../contract/example.ts";
 import { validateWithSchema } from "../contract/schema.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import {
@@ -111,8 +116,17 @@ function mapArguments(
         const suggestion = choices.length === 1 ? choices[0] : undefined;
         const remedy =
           suggestion === undefined
-            ? `use ${[...Object.keys(properties).map((name) => `--${flagName(name)}`), "--input JSON"].join(", ")}`
-            : `pass --${flagName(suggestion)} ${JSON.stringify(token)}`;
+            ? `use ${[
+                ...Object.keys(properties)
+                  .filter(
+                    (name) => !RESERVED_FLAGS.includes(flagName(name) ?? ""),
+                  )
+                  .map((name) => `--${flagName(name)}`),
+                "--input JSON",
+              ].join(", ")}`
+            : RESERVED_FLAGS.includes(flagName(suggestion) ?? "")
+              ? `--${flagName(suggestion)} is reserved; use ${renderExample(entry?.op ?? "", { title: "", summary: "", examples: [{ input: { ...result, [suggestion]: token } }] }, schema)}`
+              : `pass --${flagName(suggestion)} ${JSON.stringify(token)}`;
         throw new ForgeFailure(
           inputError(
             entry?.op ?? "",

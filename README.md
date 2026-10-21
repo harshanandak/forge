@@ -62,6 +62,12 @@ The globally installed `forge` command also runs the installed entry point.
 Windows measurements and the profiling method are in
 [Local read performance](docs/local-read-performance.md).
 
+## Write a block
+
+Copy the complete [hello block](examples/hello-block) and follow
+[Writing a block](docs/writing-a-block.md) to check, add, admit and run it.
+The example and guide also ship in the npm package.
+
 ## MCP
 
 After importing the template, add this top-level section to

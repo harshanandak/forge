@@ -25,6 +25,10 @@ import { blockCapture } from "../../src/assembly/capture.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { validateBudgets } from "../../src/blocks/check/budget.ts";
 import type { CheckConfig } from "../../src/blocks/check/types.ts";
+import { createCheck } from "../../src/blocks/check/index.ts";
+import { createRunnerOutput } from "../../src/adapters/runner-output/index.ts";
+import { captured } from "../blocks/l9-check/fakes.ts";
+import type { StateRecord } from "../../src/generated/types.ts";
 
 test("assembled check.run preserves command config errors and exit 6", async () => {
   const root = mkdtempSync(join(tmpdir(), "forge-check-budget-"));
@@ -118,7 +122,12 @@ test("assembled check.run preserves command config errors and exit 6", async () 
   }
 }, 10000);
 
-function fixture(timeoutMs = 120000, override?: number, shipped = true) {
+function fixture(
+  timeoutMs = 120000,
+  override?: number,
+  shipped = true,
+  count = 2,
+) {
   const root = new URL("../../src/blocks/check/", import.meta.url);
   const block = captureBlock(
     "check",
@@ -152,7 +161,12 @@ function fixture(timeoutMs = 120000, override?: number, shipped = true) {
             ...Object.fromEntries(
               schemaDefaults(schema).map(({ key, value }) => [key, value]),
             ),
-            commands: { first: "tool", second: "tool" },
+            commands: Object.fromEntries(
+              Array.from({ length: count }, (_, i) => [
+                i === 0 ? "first" : `check${i}`,
+                "tool",
+              ]),
+            ),
             timeoutMs,
           },
           ...(override === undefined
@@ -273,20 +287,169 @@ test("a selected run exceeding 60 seconds finishes under its operation deadline"
   });
 }, 1000);
 
+for (const [count, snapshotMs, cleanupMs, expectedMs] of [
+  [1, 2200, 1000, 7000],
+  [6, 100, 4000, 33300],
+] as const) {
+  test(`${count} timed-out commands seal a receipt after ${cleanupMs} ms cleanup each`, async () => {
+    const f = fixture(1500, undefined, true, count);
+    const request = { ...f.request, input: {} };
+    const config = {
+      ...f.catalog.config.blocks.checks!.config,
+      stopOnFailure: false,
+    } as unknown as CheckConfig;
+    let now = 0;
+    let snapshots = 0;
+    const records = new Map<string, StateRecord>();
+    const engine = createCheck({
+      root: "/fixture",
+      environment: {},
+      clock: { now: () => now },
+      output: createRunnerOutput(),
+      snapshot: () => {
+        snapshots++;
+        now += snapshotMs;
+        return Promise.resolve({ head: "a".repeat(40), filesDigest: "same" });
+      },
+      process: {
+        capability: "forge.process/v1",
+        resolve: (path) => ({ kind: "resolved", path }),
+        run(_executable, _args, options) {
+          expect(options.timeoutMs).toBe(1500);
+          // A slow host starts and confirms cleanup around the command's own timer.
+          now += options.timeoutMs + cleanupMs;
+          return Promise.resolve(
+            captured(
+              {
+                stdout: "partial",
+                stderr: "",
+                exitCode: null,
+                signal: "SIGKILL",
+                timedOut: true,
+                truncated: false,
+                durationMs: options.timeoutMs + cleanupMs,
+              },
+              options,
+            ),
+          );
+        },
+      },
+      state: {
+        get: (key) => records.get(key),
+        list: () => [...records.values()],
+        events: () => [],
+        put(key, value) {
+          now += 100;
+          const record: StateRecord = {
+            namespace: "forge/check",
+            key,
+            value: structuredClone(value),
+            revision: 1,
+            updatedAt: new Date(now).toISOString(),
+            updatedBy: { kind: "human", id: "fixture" },
+          };
+          records.set(key, record);
+          return record;
+        },
+      },
+    });
+    const runtime = new Runtime(
+      withCheckRunBudget(f.catalog, f.blocks, request),
+      new TrustStore(),
+      {
+        clock: { now: () => now },
+        services: () => Promise.resolve({ ownership: "borrowed", value: {} }),
+        isolation: {
+          open: () =>
+            Promise.resolve({
+              ok: true,
+              handle: {
+                ownership: "owned",
+                close: () => Promise.resolve(),
+                value: {
+                  async run(options) {
+                    try {
+                      const receipt = await engine.run(request.input, config, {
+                        signal: options.signal,
+                        deadline: options.deadline,
+                      });
+                      return options.encode(receipt);
+                    } catch (error) {
+                      if (
+                        error instanceof Error &&
+                        "code" in error &&
+                        typeof error.code === "string"
+                      )
+                        return options.fail(error.code, error.message);
+                      throw error;
+                    }
+                  },
+                },
+              },
+            }),
+        },
+      },
+    );
+    const result = checkResult(
+      f.catalog,
+      f.request.op,
+      await runtime.invoke(request),
+    );
+    expect(
+      result,
+      `clock=${now} ms; receipt writes=${records.size}`,
+    ).toMatchObject({
+      ok: false,
+      status: "INCOMPLETE",
+      result: {
+        status: "INCOMPLETE",
+        runs: Array.from({ length: count }, () => ({
+          timedOut: true,
+          status: "INCOMPLETE",
+        })),
+      },
+    });
+    expect(exitCode(result)).toBe(2);
+    expect(snapshots).toBe(2);
+    expect(records.size).toBe(1);
+    expect(now).toBe(expectedMs);
+  }, 1000);
+}
+
 test("selected command budgets include two snapshots and finite finalization time", () => {
   const f = fixture();
   const selected = withCheckRunBudget(f.catalog, f.blocks, f.request);
   expect(selected.config.blocks.checks?.operationTimeouts?.["check.run"]).toBe(
-    361000,
+    244250,
   );
   const all = withCheckRunBudget(f.catalog, f.blocks, {
     ...f.request,
     input: {},
   });
   expect(all.config.blocks.checks?.operationTimeouts?.["check.run"]).toBe(
-    481000,
+    374500,
   );
   expect(f.catalog.config.blocks.checks?.operationTimeouts).toBeUndefined();
+  expect(
+    withCheckRunBudget(f.catalog, f.blocks, f.request, {
+      supervision: {
+        cleanupTimeoutMs: 2000,
+        pollIntervalMs: 25,
+        drainTimeoutMs: 500,
+        maxConcurrent: 1,
+      },
+    }).config.blocks.checks?.operationTimeouts?.["check.run"],
+  ).toBe(238500);
+  const short = fixture(1500);
+  expect(
+    withCheckRunBudget(short.catalog, short.blocks, short.request).config.blocks
+      .checks?.operationTimeouts?.["check.run"],
+  ).toBe(125750);
+  const long = fixture(600000);
+  expect(
+    withCheckRunBudget(long.catalog, long.blocks, long.request).config.blocks
+      .checks?.operationTimeouts?.["check.run"],
+  ).toBe(724250);
 }, 1000);
 
 test("sufficient explicit budgets, other operations and unshipped bytes keep their budgets", () => {
@@ -304,10 +467,11 @@ test("sufficient explicit budgets, other operations and unshipped bytes keep the
 test("explicit operation or host ceilings cannot silently shorten a selected run", () => {
   const f = fixture(120000, 10000);
   for (const text of [
+    '.forge/config.yaml: blocks.checks.operationTimeouts["check.run"]:',
     'blocks.checks.operationTimeouts["check.run"]',
     ".forge/config.yaml",
     "10 s",
-    "at least 361 s",
+    "at least 244.25 s",
     "blocks.checks.config.timeoutMs",
     "--input",
   ])
@@ -325,7 +489,7 @@ test("explicit operation or host ceilings cannot silently shorten a selected run
     "runtime.timeoutMs (60 s)",
   );
   expect(() => withCheckRunBudget(capped, host.blocks, host.request)).toThrow(
-    "raise it to at least 361 s",
+    "raise it to at least 244.25 s",
   );
 }, 1000);
 
@@ -336,6 +500,8 @@ test("a selected run whose full budget overflows the timer limit is rejected", (
     "2147483.647 s",
     "blocks.checks.config.timeoutMs",
     "2147483.647 s each",
+    "10.25 s per command for cleanup and drain",
+    "two snapshots at 40.5 s each",
     "--input",
   ])
     expect(() => withCheckRunBudget(f.catalog, f.blocks, f.request)).toThrow(
@@ -394,7 +560,8 @@ test("an expired check operation names its sized budget and config remedy", asyn
   for (const text of [
     'blocks.checks.operationTimeouts["check.run"]',
     ".forge/config.yaml",
-    "361 s",
+    "244.25 s",
+    '.forge/config.yaml: blocks.checks.operationTimeouts["check.run"]:',
     "increase",
   ])
     expect(result.error.message).toContain(text);

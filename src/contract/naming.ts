@@ -44,6 +44,10 @@ export const CATALOG_TOOL_NAMES: readonly string[] = [
 
 /** Global CLI flags no operation property may map to. */
 export const RESERVED_FLAGS: readonly string[] = [
+  "text",
+  "json",
+  "hook",
+  "mcp",
   "dry-run",
   "format",
   "help",

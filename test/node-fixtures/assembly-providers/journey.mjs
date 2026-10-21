@@ -14,7 +14,11 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAssembly } from "forge-workflow/runtime";
+import {
+  createAssembly,
+  SNAPSHOT_TIMEOUT_MS,
+  SNAPSHOT_OPERATION_TIMEOUT_MS,
+} from "forge-workflow/runtime";
 // Cleanup may settle while a stopped member is still an unreaped zombie, which
 // answers kill(pid, 0) on every POSIX platform. This probe reads its state.
 import { isRunning as alive } from "./liveness.mjs";
@@ -81,7 +85,12 @@ for (const [verb, declaredEffects] of Object.entries(effects)) {
     idempotent: false,
     callers: ["human", "agent"],
     stability: "stable",
-    timeoutMs: verb === "timeout" ? 1500 : 10000,
+    timeoutMs:
+      verb === "timeout"
+        ? 1500
+        : verb === "snapshot"
+          ? SNAPSHOT_OPERATION_TIMEOUT_MS
+          : 10000,
   };
 }
 const block = join(root, "fixture");
@@ -251,7 +260,7 @@ try {
   ok(await invoke("config.show"), "empty config");
   assert.equal(existsSync(device), false, "empty config must remain read only");
   const added = await invoke("block.add", { path: "./fixture" });
-  assert.equal(added.error?.code, "ADMISSION_REQUIRED", JSON.stringify(added));
+  assert.equal(ok(added, "register fixture").admitted, false);
   const digest = ok(
     await invoke("block.check", { path: "./fixture" }),
     "check fixture",
@@ -314,7 +323,7 @@ try {
       "runner-output requirement must compose",
     ).digest;
     const outputAdded = await invoke("block.add", { path: "./output-parser" });
-    assert.equal(outputAdded.error?.code, "ADMISSION_REQUIRED");
+    assert.equal(ok(outputAdded, "register output parser").admitted, false);
     ok(
       await invoke("block.admit", { digest: outputDigest }),
       "admit output parser",
@@ -437,8 +446,11 @@ try {
     );
     const added = await invoke("block.add", { path: "./stateless" });
     assert.equal(
-      added.error?.code,
-      "ADMISSION_REQUIRED",
+      ok(
+        added,
+        "register stateless: a stateless operation with only non-state effects must compose",
+      ).admitted,
+      false,
       "a stateless operation with only non-state effects must compose",
     );
     const digest = ok(
@@ -618,7 +630,7 @@ try {
     const input = {
       paths: ["input.txt", "missing.txt"],
       maxBytes: 1024,
-      timeoutMs: 5000,
+      timeoutMs: SNAPSHOT_TIMEOUT_MS,
       maxOutputBytes: 1024,
     };
     const before = ok(

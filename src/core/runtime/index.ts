@@ -7,7 +7,7 @@ import type { ClockPort } from "../../ports/clock.ts";
 import { InvocationServices } from "./services.ts";
 import { bindContext } from "../../contract/context.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
-import { inputError } from "../../contract/input-error.ts";
+import { inputError, formatConfigProblem } from "../../contract/input-error.ts";
 import {
   parseUntrustedJson,
   DEFAULT_PARSE_LIMITS,
@@ -248,6 +248,7 @@ export class Runtime {
     let started = false;
     let timeoutMessage: (() => string) | undefined;
     let result: ResultEnvelope;
+    const clock = this.#options.clock ?? { now: () => Date.now() };
     try {
       const checked = validateInvocationRequest(value);
       if (!checked.ok) refuse("INPUT_INVALID", "invalid invocation request");
@@ -286,7 +287,6 @@ export class Runtime {
         this.#options.services === undefined
       )
         refuse("PROVIDER_MISSING", "bound clients need a service provider");
-      const clock = this.#options.clock ?? { now: () => Date.now() };
       const budget = invocationDeadline(
         {
           declared: declaration.timeoutMs,
@@ -303,22 +303,27 @@ export class Runtime {
         this.#limits.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
       );
       timeoutMessage = () => {
-        const instance = this.#catalog.config.blocks[operation.instance]!;
-        const configured = instance.operationTimeouts?.[operation.declaredOp];
         const host = this.#catalog.config.runtime?.timeoutMs;
         const embedding = this.#limits.timeoutMs;
         const value = started ? budget.timeoutMs : preparationTimeoutMs;
         if (!started && host !== value && embedding !== value)
-          return `Invocation host preparation deadline expired: configured operation and command timeouts add up to more than Node's largest supported timer (2147483647 ms, about 24.8 days). Fix: lower blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] or blocks.${operation.instance}.config.timeoutMs in .forge/config.yaml.`;
+          return formatConfigProblem(
+            `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`,
+            "Invocation host preparation deadline expired: configured operation and command timeouts add up to more than Node's largest supported timer (2147483647 ms, about 24.8 days)",
+            `lower blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] or blocks.${operation.instance}.config.timeoutMs`,
+          );
         const key =
           host === value
-            ? "runtime.timeoutMs in .forge/config.yaml"
+            ? "runtime.timeoutMs"
             : embedding === value
-              ? "RuntimeOptions.limits.timeoutMs in the embedding host"
-              : configured !== undefined
-                ? `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] in .forge/config.yaml`
-                : `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] in .forge/config.yaml`;
-        return `Invocation ${started ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s). Fix: increase ${key} to more than ${value / 1000} s.`;
+              ? "RuntimeOptions.limits.timeoutMs"
+              : `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`;
+        return formatConfigProblem(
+          key,
+          `Invocation ${started ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s)`,
+          `increase ${key} to more than ${value / 1000} s`,
+          embedding === value ? "embedding host" : ".forge/config.yaml",
+        );
       };
       invocation = new InvocationServices(
         clock.now() + preparationTimeoutMs,
@@ -469,7 +474,10 @@ export class Runtime {
             : "FAIL",
         error: {
           ...failure,
-          ...(failure.code === "INVOCATION_TIMEOUT" && timeoutMessage
+          ...(failure.code === "INVOCATION_TIMEOUT" &&
+          timeoutMessage &&
+          invocation !== undefined &&
+          clock.now() >= invocation.deadline
             ? { message: timeoutMessage() }
             : {}),
           retry: started

@@ -9,7 +9,10 @@ const installed = process.argv[2];
 const mcpOnly = process.argv[3] === "mcp";
 const bindingsOnly = process.argv[3] === "bindings";
 const reviewOnly = process.argv[3] === "review";
-const honestOnly = process.argv[3] === "honest";
+const honestScenario = process.argv[3]?.startsWith("honest:")
+  ? process.argv[3].slice("honest:".length)
+  : undefined;
+const honestOnly = process.argv[3] === "honest" || honestScenario !== undefined;
 const noHeadOnly = process.argv[3] === "no-head";
 const root = realpathSync(mkdtempSync(join(tmpdir(), "check-surfaces-")));
 const bin = join(installed, "dist/bin/forge.js");
@@ -246,6 +249,7 @@ async function honest() {
     ["timeout", "INCOMPLETE", 2],
     ["nothing", "NOT_EXECUTED", 2],
   ]) {
+    if (honestScenario !== undefined && mode !== honestScenario) continue;
     configure({
       commands:
         mode === "nothing"
@@ -290,7 +294,11 @@ async function honest() {
       failures.push(error);
     }
   }
-  if (failures.length) throw new AggregateError(failures, "check outcomes");
+  if (failures.length)
+    throw new AggregateError(
+      failures,
+      `check outcomes: ${honestScenario ?? "all"}`,
+    );
   console.log(
     "PASS honest CLI/MCP outcomes: PASS, child exit 7, missing executable, timeout, no commands, receipt readback, catalog.call",
   );

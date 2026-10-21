@@ -205,6 +205,35 @@ test("snapshot HEAD lookups have enough output independently of command retentio
   }
 }, 1000);
 
+test("snapshot requests use the invocation ceiling while commands keep their declared limit", async () => {
+  for (const timeoutMs of [1, 1500, 5000, 120000]) {
+    const { services } = fixture();
+    const snapshotBudgets: number[] = [];
+    const snapshot = services.files.snapshot.bind(services.files);
+    services.files.snapshot = (input) => {
+      snapshotBudgets.push(input.timeoutMs);
+      return snapshot(input);
+    };
+    const run = services.process.run.bind(services.process);
+    services.process.run = (executable, args, options) => {
+      expect(options.timeoutMs).toBe(timeoutMs);
+      return run(executable, args, options);
+    };
+    const receipt = await handlers["check.run"]({
+      input: {},
+      services,
+      config: { ...config, timeoutMs },
+      signal: new AbortController().signal,
+      deadline: Date.now() + 500000,
+    });
+    expect(receipt.status).toBe("PASS");
+    expect(snapshotBudgets).toHaveLength(2);
+    expect(
+      snapshotBudgets.every((budget) => budget > 120000 && budget <= 500000),
+    ).toBe(true);
+  }
+}, 1000);
+
 test("every command-string parser path rejects with INPUT_INVALID before service access", async () => {
   for (const command of ["tool && other", 'tool "unterminated', " "]) {
     const invalidConfig = { ...config, commands: { test: command } };

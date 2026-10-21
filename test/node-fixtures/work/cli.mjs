@@ -139,9 +139,9 @@ const { cpSync } = await import("node:fs");
 cpSync(join(installed, "dist/src/blocks/work"), join(root, "work-bytes"), {
   recursive: true,
 });
-const added = cli(["block", "add", "./work-bytes"], 2);
-assert.equal(added.error.code, "ADMISSION_REQUIRED");
-const digest = /sha256:[a-f0-9]{64}/.exec(added.error.repair)[0];
+const added = cli(["block", "add", "./work-bytes"]);
+assert.equal(added.result.admitted, false);
+const digest = added.result.digest;
 assert.equal(
   call("show", { id: created.id }, undefined, 2).error.code,
   "ADMISSION_REQUIRED",
