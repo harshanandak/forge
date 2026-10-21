@@ -144,22 +144,32 @@ test("an id with a prefix this project never used is refused, naming the prefixe
   );
 });
 
-test("a store from before prefixes were recorded accepts work, and keeps it once a new prefix is used", () => {
+test("an item from before prefixes were recorded counts as minted with work, and the record stays hidden", () => {
   const call = project();
-  call("issue.create", { title: "legacy" });
-  call.records.delete("prefix:work");
+  // An item written before this change: no recorded prefix.
+  call.records.set("issue:work-1", {
+    key: "issue:work-1",
+    revision: 1,
+    updatedAt: "2026-10-20T00:00:00Z",
+    value: {
+      id: "work-1",
+      title: "legacy",
+      status: "open",
+      labels: [],
+      dependsOn: [],
+      createdAt: "2026-10-20T00:00:00Z",
+    },
+  });
   const forge = { idPrefix: "forge" };
   expect(call("issue.show", { id: "work-1" }, forge).id).toBe("forge-1");
   expect(() => call("issue.show", { id: "acme-1" }, forge)).toThrow(
     "this project's ids carry forge, work",
   );
-  call("issue.create", { title: "new" }, forge);
-  expect(
-    [...call.records.keys()].filter((k) => k.startsWith("prefix:")),
-  ).toEqual(["prefix:forge", "prefix:work"]);
-  expect(call("issue.show", { id: "work-2" }, { idPrefix: "acme" }).id).toBe(
-    "acme-2",
-  );
+  const minted = call("issue.create", { title: "new" }, forge);
+  expect(minted).not.toHaveProperty("prefix");
+  const acme = { idPrefix: "acme" };
+  for (const alias of ["work-2", "forge-2", "acme-2"])
+    expect(call("issue.show", { id: alias }, acme).id).toBe("acme-2");
 });
 
 test("every operation that takes an id accepts an alias and answers with the current prefix", () => {

@@ -11,7 +11,10 @@ import type {
 } from "../../generated/types.ts";
 
 declare const fail: (code: string, message: string) => never;
-type Stored = Omit<TrackerItem, "lease" | "revision" | "updatedAt">;
+/** `prefix` is the id prefix the item was minted with; it is kept, never shown. */
+type Stored = Omit<TrackerItem, "lease" | "revision" | "updatedAt"> & {
+  readonly prefix?: string;
+};
 type DepInput = {
   readonly id: string;
   readonly target: string;
@@ -69,16 +72,16 @@ const kinds: readonly string[] = ["task", "bug", "feature", "epic"];
  */
 const STORED = "work-";
 const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
-const USED = "prefix:";
 type Ids = {
   readonly prefix: string;
   readonly stored: (id: string) => string;
   readonly shown: (id: string) => string;
 };
-/** The current prefix and every one ids were minted with; a store from before they were recorded minted `work`. */
+/** The current prefix and every one an item was minted with; an item from before they were recorded was minted as `work`. */
 function accepted(state: LeaseStateClient, prefix: string): readonly string[] {
-  const used = state.list(USED).map((record) => record.key.slice(USED.length));
-  if (!used.length && state.list("issue:").length) used.push("work");
+  const used = state
+    .list("issue:")
+    .map((record) => stored(record).prefix ?? "work");
   return [...new Set([prefix, ...used])];
 }
 function idsFor(state: LeaseStateClient, config: unknown): Ids {
@@ -107,12 +110,6 @@ function idsFor(state: LeaseStateClient, config: unknown): Ids {
         : id;
     },
   };
-}
-/** Records the prefix a new id is minted with (and `work` for a store from before prefixes were recorded). */
-function remember(state: LeaseStateClient, prefix: string): void {
-  for (const used of accepted(state, prefix))
-    if (!state.get(`${USED}${used}`))
-      persist(state, `${USED}${used}`, { prefix: used }, 0);
 }
 const key = (id: string): string => `issue:${id}`;
 function client(services: unknown): LeaseStateClient {
@@ -155,9 +152,11 @@ function item(
   record: StateRecord,
   ids: Ids,
 ): TrackerItem {
-  const { closeReason: _reason, ...value } = stored(record) as Stored & {
-    closeReason?: string;
-  };
+  const {
+    closeReason: _reason,
+    prefix: _prefix,
+    ...value
+  } = stored(record) as Stored & { closeReason?: string };
   const lease = live(state, value.id);
   return {
     ...value,
@@ -410,8 +409,6 @@ const operations: Operations<WorkOperations> = {
     const dependsOn = (input.dependsOn ?? []).map(ids.stored);
     const parent =
       input.parent === undefined ? undefined : ids.stored(input.parent);
-    if (parent !== undefined) get(state, parent, input.parent);
-    remember(state, ids.prefix);
     const records = state.list("issue:");
     const sequence =
       records.reduce((max, record) => {
@@ -422,8 +419,10 @@ const operations: Operations<WorkOperations> = {
       }, 0) + 1;
     const id = `${STORED}${sequence}`;
     const readSet = validateDependencies(state, id, dependsOn, ids);
+    if (parent !== undefined) get(state, parent, input.parent);
     const value: Stored = {
       id,
+      prefix: ids.prefix,
       title: input.title,
       status: "open",
       labels: input.labels ?? [],
