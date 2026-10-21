@@ -32,7 +32,9 @@ checks its schema, content integrity and expected input binding. Accepted state 
 provenance; an unkeyed content digest alone is not an authenticity signature.
 
 Recognized zero tests fail even on exit 0. Unknown output uses the exit code and reports
-an unknown count. Malformed reports, killed processes and truncated output are incomplete.
+an unknown count. Malformed reports and killed processes are incomplete. The verdict comes
+from the exit code and a report recognized while every output byte streams past; the
+retained head and tail are for display, and `truncated` only records that they were cut.
 Timeout results retain captured output. The process adapter owns termination and tree
 cleanup. The runner-output adapter recognizes report formats and imports no runner package.
 
@@ -96,6 +98,6 @@ pure validator supplies the cross-field check at invocation time.
 The process adapter hashes every raw byte as it arrives, retaining only the configured head
 and tail. Receipt stream evidence contains lossless base64 previews, full observed byte count,
 SHA-256 digest and whether the pipes drained completely. Text previews remain readable in
-`stdout` and `stderr`; truncated or incompletely drained streams have unknown test counts and
-make the run incomplete. Large input bindings use ordered, domain-separated chunk commitments;
+`stdout` and `stderr`. Streams that did not drain, or that the recognizer did not see byte for
+byte, have unknown test counts and make the run incomplete. Large input bindings use ordered, domain-separated chunk commitments;
 every host hash call fits the same 1 MiB ceiling, without splitting Unicode surrogate pairs.
