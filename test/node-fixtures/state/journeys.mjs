@@ -1443,7 +1443,7 @@ const cases = {
         await destination.close();
       }
       const fake = {
-        resolve: () => ({ kind: "resolved", path: "powershell.exe" }),
+        resolve: (executable) => ({ kind: "resolved", path: executable }),
         async run() {
           return { exitCode: 1, timedOut: false, truncated: false };
         },
