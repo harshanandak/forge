@@ -12,6 +12,15 @@ a package manager, runner or lint command. Detection observations already popula
 `list(config)` lists declarations; `show(id)` reads and verifies a stored receipt.
 Reads do not start commands or create state. State writes use the bound `StateClient`.
 
+`forge check run` derives its envelope from the accepted receipt: PASS is `ok:true`
+and exit 0; FAIL is `ok:false` and exit 1; INCOMPLETE and NOT_EXECUTED are `ok:false`
+and exit 2. These use the shared surface exit policy (`src/surface/result.ts`), never
+the child exit code. All outcomes keep the full receipt in `result`; MCP carries
+the same envelope and sets `isError` for non-PASS. Read failures from `result.runs`,
+repair the declared command/environment or timeout, and rerun. `check.show` reports
+read success independently of the stored verdict. A fresh repository needs a first
+commit: `git add -A && git commit -m "initial commit"`.
+
 `operations["check.run"]` is an async handler that awaits this engine. It forwards the
 invocation's `AbortSignal` to the process service and caps each command at the remaining
 invocation deadline. Cancellation or expiry prevents later commands and receipt writes.

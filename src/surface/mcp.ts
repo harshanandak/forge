@@ -39,6 +39,7 @@ function enveloped(candidate: McpCandidate): McpCandidate {
                 properties: {
                   ok: { const: false },
                   status: { enum: ["FAIL", "INCOMPLETE"] },
+                  result: candidate.outputSchema,
                 },
                 required: ["ok", "status", "error", "warnings"],
               },

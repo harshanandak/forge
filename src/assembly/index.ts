@@ -44,6 +44,7 @@ import { discoveryOperations } from "../generated/core-discovery.ts";
 import { createStateClient } from "./state-client.ts";
 import { version } from "../version.ts";
 import { withCheckRunBudget } from "./check-budget.ts";
+import { checkResult } from "./check-result.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { firstPartyBlocks } from "./first-party.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
@@ -691,7 +692,7 @@ export async function createAssembly(
           current.blocks,
           request,
         );
-        return await new Runtime(runtimeCatalog, trust, {
+        const result = await new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
             const clients: Record<string, unknown> = {};
@@ -846,6 +847,7 @@ export async function createAssembly(
             }
           },
         }).invoke(request);
+        return checkResult(runtimeCatalog, request.op, result);
       } catch (error) {
         return failure(request.op, error);
       }

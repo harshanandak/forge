@@ -2,7 +2,7 @@
   "operations": {
     "check.run": {
       "title": "Run declared checks",
-      "summary": "Run the project declarations with explicit budgets and retain truthful evidence."
+      "summary": "Run declared checks. PASS exits 0; FAIL exits 1; INCOMPLETE or NOT_EXECUTED exits 2. Non-PASS returns ok:false (MCP isError:true) with the full receipt in result. Retain it on nonzero exit; inspect result.runs and repair commands, environment or timeout. Requires a first Git commit."
     },
     "check.list": {
       "title": "List declared checks",
