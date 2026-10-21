@@ -222,6 +222,29 @@ test("aliased check outcomes derive from the receipt and retain accepted output"
     warnings: [],
   } as const;
   expect(checkResult(f.catalog, f.request.op, failure)).toBe(failure);
+  const metadata = {
+    ...failure,
+    error: {
+      ...failure.error,
+      message:
+        "maxMetadataBytes (10) cannot fit resolved declaration metadata; needs at least 100",
+    },
+  };
+  const located = checkResult(f.catalog, f.request.op, metadata);
+  expect(located).toMatchObject({
+    ok: false,
+    error: {
+      message:
+        ".forge/config.yaml: blocks.checks.config.maxMetadataBytes: maxMetadataBytes (10) cannot fit resolved declaration metadata; needs at least 100. Fix: edit blocks.checks.config.maxMetadataBytes to meet the reported budget.",
+    },
+  });
+  expect(
+    checkResult(
+      fixture(1000, undefined, false).catalog,
+      f.request.op,
+      metadata,
+    ),
+  ).toBe(metadata);
 }, 1000);
 
 test("a selected run exceeding 60 seconds finishes under its operation deadline", async () => {

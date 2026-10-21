@@ -148,7 +148,7 @@ test("affected check counterfactuals still fail on the built artifact", () => {
     const mutations = counterfactuals.filter(
       (mutation) =>
         mutation.from.startsWith("function commandArguments") ||
-        mutation.evidence === "config show:",
+        mutation.evidence === "check list:",
     );
     expect(mutations).toHaveLength(3);
     const baseline = spawnSync(

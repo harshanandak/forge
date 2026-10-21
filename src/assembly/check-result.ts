@@ -8,13 +8,38 @@ export function checkResult(
   op: string,
   envelope: ResultEnvelope,
 ): ResultEnvelope {
-  if (!envelope.ok) return envelope;
   const { block, operation } = catalog.resolve(op);
   if (
     block.manifest.id !== "forge/check" ||
     operation.declaredOp !== "check.run"
   )
     return envelope;
+  if (!envelope.ok) {
+    const schema =
+      block.manifest.configSchema === undefined
+        ? undefined
+        : block.resolvedSchema(block.manifest.configSchema);
+    const key = /^[A-Za-z][A-Za-z0-9]*/.exec(envelope.error.message)?.[0];
+    if (
+      !block.shipped ||
+      envelope.error.code !== "INPUT_INVALID" ||
+      key === undefined ||
+      !schema ||
+      typeof schema === "boolean" ||
+      typeof schema.properties !== "object" ||
+      schema.properties === null ||
+      !Object.hasOwn(schema.properties, key)
+    )
+      return envelope;
+    const path = `blocks.${operation.instance}.config.${key}`;
+    return {
+      ...envelope,
+      error: {
+        ...envelope.error,
+        message: `.forge/config.yaml: ${path}: ${envelope.error.message}. Fix: edit ${path} to meet the reported budget.`,
+      },
+    };
+  }
   const receipt = envelope.result as CheckReceipt;
   if (receipt.status === "PASS") return envelope;
   const remedy =

@@ -67,7 +67,7 @@ export const counterfactuals: readonly Counterfactual[] = [
     from: "forge.state@1",
     to: "forge.state@^1.0.0",
     journey: "mcp",
-    evidence: "config show:",
+    evidence: "check list:",
   },
   {
     file: "adapters/runner-output/index.js",
@@ -95,7 +95,7 @@ export const counterfactuals: readonly Counterfactual[] = [
     from: '"forge/check": new URL("../blocks/check/", import.meta.url),',
     to: "",
     journey: "surfaces",
-    evidence: "config show:",
+    evidence: "check list:",
   },
   {
     file: "blocks/check/entry.cjs",
