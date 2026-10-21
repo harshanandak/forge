@@ -187,8 +187,10 @@ export async function originRepositoryName(
       },
     );
     if (result.exitCode !== 0 || result.truncated) return undefined;
+    // A local checkout remote may point at its Git directory rather than its repository folder.
+    const origin = firstLine(result.stdout).replace(/[/\\]\.git[/\\]*$/, "");
     // The last path segment of an https, ssh or scp-style URL, or of a local path.
-    const name = /([^/\\:]+?)(?:\.git)?[/\\]*$/.exec(firstLine(result.stdout));
+    const name = /([^/\\:]+?)(?:\.git)?[/\\]*$/.exec(origin);
     return name?.[1];
   } catch (error) {
     if (error instanceof Error && error.name === "ProcessSpawnError")
