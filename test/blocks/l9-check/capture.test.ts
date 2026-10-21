@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { StreamCapture } from "../../../src/adapters/process/capture.ts";
+import {
+  captureStreams,
+  StreamCapture,
+} from "../../../src/adapters/process/capture.ts";
 
 test("stream capture retains bounded head and tail while hashing every byte", () => {
   const bytes = Buffer.from("first\u0000" + "middle".repeat(10000) + "last");
@@ -35,6 +38,26 @@ test("JSON escaping and base64 evidence fit the validated ten-byte reservation",
     );
     expect(actual - baseline).toBeLessThanOrEqual(20);
   }
+}, 1000);
+
+test("the observer sees every byte of both streams, past the capture bounds", () => {
+  const seen: string[] = [];
+  const { stdout, stderr } = captureStreams({
+    cwd: ".",
+    env: {},
+    timeoutMs: 1000,
+    maxOutputBytes: 2,
+    capture: { headBytes: 1, tailBytes: 1 },
+    observer: {
+      push: (stream, chunk) => {
+        seen.push(stream + ":" + Buffer.from(chunk).toString());
+      },
+    },
+  });
+  stdout.push(Buffer.from("abcdef"));
+  stderr.push(Buffer.from("xyz"));
+  expect(seen).toEqual(["stdout:abcdef", "stderr:xyz"]);
+  expect(stdout.text()).toBe("af");
 }, 1000);
 
 test("short, split multibyte and empty captures preserve exact raw-byte digests", () => {

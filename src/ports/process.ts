@@ -13,10 +13,16 @@ export interface SpawnOptions {
     readonly headBytes: number;
     readonly tailBytes: number;
   };
+  /** Sees every output byte as it arrives; capture bounds never apply to it. */
+  readonly observer?: OutputObserver;
   readonly stdin?: string;
   /** Cancellation stops the supervised scope before run settles. */
   readonly signal?: AbortSignal;
   readonly containment?: "supervised" | "strict";
+}
+
+export interface OutputObserver {
+  push(stream: "stdout" | "stderr", chunk: Uint8Array): void;
 }
 
 export type ContainmentCapability =
