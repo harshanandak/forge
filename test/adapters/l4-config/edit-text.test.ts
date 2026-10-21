@@ -6,6 +6,16 @@ setDefaultTimeout(30_000);
 
 const cases: ReadonlyArray<readonly [string, unknown, string]> = [
   [
+    "a: |\r\n  old\r\nb: keep\r\n",
+    { a: "new\nlines\n", b: "keep" },
+    "a: |\r\n  new\r\n  lines\r\nb: keep\r\n",
+  ],
+  [
+    "a: | # prose\n    old\nb: keep\n",
+    { a: "new\nlines\n", b: "keep" },
+    "a: | # prose\n    new\n    lines\nb: keep\n",
+  ],
+  [
     "a: 1 # unchanged\r\nb: 'old'\nc: 3\r\n",
     { a: 1, b: "new", c: 3 },
     "a: 1 # unchanged\r\nb: 'new'\nc: 3\r\n",

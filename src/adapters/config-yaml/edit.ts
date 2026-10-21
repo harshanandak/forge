@@ -238,10 +238,14 @@ function update(
         : isScalar(safe)
           ? safe.type
           : undefined;
+    const originalIndent = token.indent;
+    token.indent = indent;
     CST.setScalarValue(token, value, {
       ...(type === undefined ? {} : { type }),
       inFlow: flow,
     });
+    token.indent = originalIndent;
+    token.source = token.source.replace(/\r?\n/g, layout.newline);
     return token;
   }
   const replacement = tokenFor(value, indent, true, layout);
@@ -272,5 +276,12 @@ export function editYaml(text: string, value: unknown): string {
     step: indents.length ? Math.min(...indents) : 2,
   };
   source.value = update(document.contents, value, 0, false, layout);
-  return tokens.map((token) => CST.stringify(token)).join("");
+  const result = tokens.map((token) => CST.stringify(token)).join("");
+  const checked = parseDocument(result, { version: "1.2", schema: "core" });
+  if (
+    checked.errors.length ||
+    !jsonEqual(checked.toJS({ maxAliasCount: 0 }), value)
+  )
+    throw new Error("edited YAML does not match the planned values");
+  return result;
 }
