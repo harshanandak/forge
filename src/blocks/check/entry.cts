@@ -337,6 +337,29 @@ function validateBudgets(config: CheckConfig): {
   }
   return { totalBytes, declarationBytes };
 }
+/** The config as one run sees it: only the selected checks count toward its budgets. */
+function selectedConfig(
+  config: CheckConfig,
+  checks: readonly string[] | undefined,
+): { names: string[]; config: CheckConfig } {
+  const names = [...new Set(checks ?? Object.keys(config.commands))];
+  if (names.length > 256 || names.some((name) => !name || name.length > 200))
+    failure("INPUT_INVALID", "Select at most 256 named checks");
+  return {
+    names,
+    config: {
+      ...config,
+      commands: Object.fromEntries(
+        names.map((name) => [
+          name,
+          Object.hasOwn(config.commands, name)
+            ? config.commands[name]!
+            : { argv: [] },
+        ]),
+      ),
+    },
+  };
+}
 function aggregate(runs: readonly CheckRun[]): CheckStatus {
   if (runs.some((run) => run.status === "FAIL")) return "FAIL";
   if (runs.some((run) => run.status === "INCOMPLETE")) return "INCOMPLETE";
@@ -386,7 +409,6 @@ function createCheck(
       config: CheckConfig,
       scope?: CheckInvocationScope,
     ): Promise<CheckReceipt> {
-      validateBudgets(config);
       function active(): void {
         if (scope?.signal.aborted)
           failure("INVOCATION_CANCELLED", "Check invocation was cancelled");
@@ -405,25 +427,10 @@ function createCheck(
       const frozenConfig = structuredClone(config);
       const frozenInput = structuredClone(input);
       const env = Object.freeze({ ...services.environment });
-      const names = [
-        ...new Set(frozenInput.checks ?? Object.keys(frozenConfig.commands)),
-      ];
-      if (
-        names.length > 256 ||
-        names.some((name) => !name || name.length > 200)
-      )
-        invalid("Select at most 256 named checks");
-      const budgetConfig = {
-        ...frozenConfig,
-        commands: Object.fromEntries(
-          names.map((name) => [
-            name,
-            Object.hasOwn(frozenConfig.commands, name)
-              ? frozenConfig.commands[name]!
-              : { argv: [] },
-          ]),
-        ),
-      };
+      const { names, config: budgetConfig } = selectedConfig(
+        frozenConfig,
+        frozenInput.checks,
+      );
       validateBudgets(budgetConfig);
       const before = structuredClone(await services.snapshot());
       active();
@@ -667,7 +674,7 @@ type Call<T> = import("../../contract/author.ts").HandlerCall<T> & {
 };
 const operations = {
   async "check.run"(args: Call<RunInput>) {
-    validateBudgets(args.config);
+    validateBudgets(selectedConfig(args.config, args.input.checks).config);
     const services = args.services;
     const config = args.config;
     const engine = createCheck({
