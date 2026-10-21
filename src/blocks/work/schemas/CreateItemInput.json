@@ -1,4 +1,12 @@
 {
   "type": "object",
-  "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/CreateItemInput"
+  "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/CreateItemInput",
+  "properties": {
+    "title": {
+      "description": "Title of the new issue."
+    },
+    "kind": {
+      "description": "Kind of issue to create."
+    }
+  }
 }

@@ -1,6 +1,7 @@
 // A JSON Schema (2020-12) validator for the bounded keyword profile Forge's own schemas use.
 // Schemas are data; nothing here evaluates code. A schema using a keyword outside the profile is
 // refused when the registry is built, so a validator can never silently skip a rule.
+import { nameDistance } from "./distance.ts";
 
 export type SchemaObject = Readonly<Record<string, unknown>>;
 export type JsonSchema = boolean | SchemaObject;
@@ -9,6 +10,9 @@ export interface SchemaProblem {
   readonly pointer: string;
   readonly keyword: string;
   readonly message: string;
+  readonly expected?: string;
+  readonly received?: string;
+  readonly suggestion?: string;
 }
 
 export type ValidationResult<T> =
@@ -284,13 +288,17 @@ export class SchemaRegistry {
     return this.#locate(this.resolve(reference, base))?.schema;
   }
 
-  validate(reference: string, value: unknown): SchemaProblem[] {
+  validate(
+    reference: string,
+    value: unknown,
+    detailed = false,
+  ): SchemaProblem[] {
     const uri = this.resolve(reference);
     const located = this.#locate(uri);
     if (located === undefined) throw new Error(`no schema at ${uri}`);
     const outside = findNonJson(value);
     if (outside !== undefined) return [outside];
-    return this.#evaluate(located.schema, located.base, value, "");
+    return this.#evaluate(located.schema, located.base, value, "", detailed);
   }
 
   validator<T>(reference: string): Validator<T> {
@@ -462,26 +470,57 @@ export class SchemaRegistry {
     base: string,
     value: unknown,
     at: string,
+    detailed = false,
   ): SchemaProblem[] {
     if (schema === true) return [];
     if (schema === false) {
       return [
-        { pointer: at, keyword: "false", message: "no value is allowed here" },
+        {
+          pointer: at,
+          keyword: "false",
+          message: "no value is allowed here",
+          ...(detailed
+            ? {
+                expected: "no value",
+                received: JSON.stringify(value) ?? "missing",
+              }
+            : {}),
+        },
       ];
     }
     const problems: SchemaProblem[] = [];
-    const add = (keyword: string, message: string, pointer = at): void => {
-      problems.push({ pointer, keyword, message });
+    const add = (
+      keyword: string,
+      message: string,
+      pointer = at,
+      expected = message,
+      received = detailed ? (JSON.stringify(value) ?? "missing") : "",
+      suggestion?: string,
+    ): void => {
+      problems.push({
+        pointer,
+        keyword,
+        message,
+        ...(detailed
+          ? {
+              expected,
+              received,
+              ...(suggestion === undefined ? {} : { suggestion }),
+            }
+          : {}),
+      });
     };
     const sub = (s: unknown, v: unknown, p: string): SchemaProblem[] =>
-      this.#evaluate(s as JsonSchema, base, v, p);
+      this.#evaluate(s as JsonSchema, base, v, p, detailed);
 
     if (typeof schema.$ref === "string") {
       const uri = this.resolve(schema.$ref, base);
       const target = this.#locate(uri);
       if (target === undefined) add("$ref", `unresolvable reference ${uri}`);
       else
-        problems.push(...this.#evaluate(target.schema, target.base, value, at));
+        problems.push(
+          ...this.#evaluate(target.schema, target.base, value, at, detailed),
+        );
     }
 
     if (schema.type !== undefined) {
@@ -489,7 +528,12 @@ export class SchemaRegistry {
         Array.isArray(schema.type) ? schema.type : [schema.type]
       ).map(String);
       if (!types.some((type) => hasType(value, type))) {
-        add("type", `expected ${types.join(" or ")}, got ${typeOf(value)}`);
+        add(
+          "type",
+          `expected ${types.join(" or ")}, got ${typeOf(value)}`,
+          at,
+          types.join(" or "),
+        );
         return problems;
       }
     }
@@ -497,10 +541,20 @@ export class SchemaRegistry {
       Array.isArray(schema.enum) &&
       !schema.enum.some((e) => jsonEqual(e, value))
     ) {
-      add("enum", `expected one of ${JSON.stringify(schema.enum)}`);
+      add(
+        "enum",
+        `expected one of ${JSON.stringify(schema.enum)}`,
+        at,
+        `one of ${JSON.stringify(schema.enum)}`,
+      );
     }
     if ("const" in schema && !jsonEqual(schema.const, value)) {
-      add("const", `expected ${JSON.stringify(schema.const)}`);
+      add(
+        "const",
+        `expected ${JSON.stringify(schema.const)}`,
+        at,
+        JSON.stringify(schema.const),
+      );
     }
 
     if (typeof value === "string") {
@@ -599,6 +653,8 @@ export class SchemaRegistry {
               "required",
               `missing required property "${name}"`,
               `${at}/${escapePointer(name)}`,
+              this.#expected(properties[name] as JsonSchema | undefined, base),
+              "missing",
             );
           }
         }
@@ -618,7 +674,14 @@ export class SchemaRegistry {
           problems.push(...sub(properties[key], value[key], pointer));
         } else if (schema.additionalProperties !== undefined) {
           if (schema.additionalProperties === false) {
-            add("additionalProperties", `unknown property "${key}"`, pointer);
+            add(
+              "additionalProperties",
+              `unknown property "${key}"`,
+              pointer,
+              `one of ${Object.keys(properties).join(", ") || "no properties"}`,
+              detailed ? (JSON.stringify(value[key]) ?? "missing") : "",
+              detailed ? closestName(key, Object.keys(properties)) : undefined,
+            );
           } else {
             problems.push(
               ...sub(schema.additionalProperties, value[key], pointer),
@@ -658,6 +721,31 @@ export class SchemaRegistry {
     }
     return problems;
   }
+
+  #expected(schema: JsonSchema | undefined, base: string, hops = 0): string {
+    if (!isObject(schema)) return schema === false ? "no value" : "a value";
+    if (Array.isArray(schema.enum))
+      return `one of ${JSON.stringify(schema.enum)}`;
+    if (typeof schema.type === "string") return schema.type;
+    if (Array.isArray(schema.type)) return schema.type.join(" or ");
+    if (typeof schema.$ref === "string" && hops < 8) {
+      const target = this.#locate(this.resolve(schema.$ref, base));
+      if (target) return this.#expected(target.schema, target.base, hops + 1);
+    }
+    return "a value matching the declared schema";
+  }
+}
+
+function closestName(
+  name: string,
+  choices: readonly string[],
+): string | undefined {
+  return choices
+    .map((candidate) => ({
+      name: candidate,
+      score: nameDistance(name, candidate),
+    }))
+    .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name))[0]?.name;
 }
 
 /** The problems of the alternative that came closest, so a refusal says what to fix. */
@@ -673,6 +761,7 @@ function closest(results: readonly SchemaProblem[][]): SchemaProblem[] {
 export function validateWithSchema(
   schema: JsonSchema,
   value: unknown,
+  detailed = false,
 ): SchemaProblem[] {
   const outside = findNonJson(value);
   if (outside !== undefined) return [outside];
@@ -682,5 +771,5 @@ export function validateWithSchema(
       : [{ pointer: "", keyword: "false", message: "no value is allowed" }];
   }
   const id = typeof schema.$id === "string" ? schema.$id : "#";
-  return new SchemaRegistry([schema]).validate(id, value);
+  return new SchemaRegistry([schema]).validate(id, value, detailed);
 }

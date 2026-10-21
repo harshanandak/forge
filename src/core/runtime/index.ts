@@ -7,6 +7,7 @@ import type { ClockPort } from "../../ports/clock.ts";
 import { InvocationServices } from "./services.ts";
 import { bindContext } from "../../contract/context.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
+import { inputError } from "../../contract/input-error.ts";
 import {
   parseUntrustedJson,
   DEFAULT_PARSE_LIMITS,
@@ -17,6 +18,7 @@ import type {
   InvocationRequest,
   ResultEnvelope,
   ParseLimits,
+  DocsRecords,
 } from "../../generated/types.ts";
 import { Catalog, type CapturedBlock } from "../catalog/index.ts";
 import { TrustStore, refuse } from "../trust/index.ts";
@@ -258,8 +260,19 @@ export class Runtime {
         refuse("UNAVAILABLE", "this profile has no dry-run execution contract");
       const bound = bindContext(declaration, request.context);
       if (!bound.ok) throw new ForgeFailure(bound.error);
-      if (!block.validate(declaration.input, request.input))
-        refuse("INPUT_INVALID", "input does not match operation schema");
+      const problems = block.problems(declaration.input, request.input, true);
+      if (problems.length > 0) {
+        const docs = JSON.parse(block.text(block.manifest.docs)) as DocsRecords;
+        throw new ForgeFailure(
+          inputError(
+            request.op,
+            problems,
+            docs.operations?.[operation.declaredOp],
+            block.resolvedSchema(declaration.input) as Record<string, unknown>,
+            declaration.args,
+          ),
+        );
+      }
       const config =
         this.#catalog.config.blocks[operation.instance]?.config ?? {};
       if (
