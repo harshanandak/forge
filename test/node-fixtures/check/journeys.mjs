@@ -333,11 +333,7 @@ const cases = {
     );
     const pid = Number(/descendant:(\d+)/.exec(receipt.runs[0].stdout)?.[1]);
     assert.ok(pid > 0, "descendant started");
-    assert.equal(
-      await waitUntilGone([pid]),
-      true,
-      "timeout reaps descendant",
-    );
+    assert.equal(await waitUntilGone([pid]), true, "timeout reaps descendant");
   },
   async receipt() {
     const receipt = await check.run({ trigger: "manual" }, config("unknown"));
