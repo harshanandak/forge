@@ -642,6 +642,10 @@ try {
       writeFileSync(join(root, ".forge/config.yaml"), bytes);
       const show = cli(root, ["config", "show"], 6);
       assert.equal(show.ok, false);
+      assert.ok(
+        show.result,
+        `${name}: config show must retain readable invalid configuration`,
+      );
       assert.equal(show.result.valid, false);
       assert.equal(show.error.message, show.result.problems.join("\n"));
       assert.equal(
