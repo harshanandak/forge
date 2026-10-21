@@ -81,30 +81,14 @@ writeFileSync(join(root, "add.js"), "exports.add = (a, b) => a - b;\n");
 git("init", "-q");
 commit("fixture");
 
-const revision = cli(["config", "show"]).result.revision;
 const imported = cli([
   "template",
   "import",
   "--input",
-  JSON.stringify({ template: "delivery", expectRevision: revision }),
+  JSON.stringify({ template: "delivery" }),
 ]).result;
 assert.equal(imported.template, "harsha/delivery@0.1.0");
 passed.push("template import");
-// check passes its runner nothing by default; the project names what npm needs.
-cli([
-  "config",
-  "set",
-  "--input",
-  JSON.stringify({
-    path: "/blocks/check/config/environment",
-    value: Object.keys(env).filter((name) =>
-      /^(?:path|pathext|systemroot|windir|comspec|temp|tmp|home|appdata|localappdata|userprofile)$/i.test(
-        name,
-      ),
-    ),
-    expectRevision: cli(["config", "show"]).result.revision,
-  }),
-]);
 
 const synced = cli(["skills", "sync"]).result;
 for (const name of ["loop", "slice", "build", "open-pr", "review", "land"]) {
