@@ -11,6 +11,8 @@ Commands are the `package.json` scripts. `test/structure` holds the repo guards.
 - Work in a git worktree under `.worktrees/`, based on the fetched `origin/main`.
 - Commit with conventional titles (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:`). The pull request title is checked and becomes the squash-merge title and the changelog line.
 
+- After cloning, run `forge skills sync` and follow the `loop` skill; this repo runs on its own delivery template (`.forge/config.yaml`).
+
 ## Standards
 
 Read [CODING_STANDARDS.md](CODING_STANDARDS.md) before writing or reviewing code, adding a dependency, adding a test, or retiring something. It holds the boundaries, dependency, test and platform rules; most are enforced by a guard in `test/structure`.

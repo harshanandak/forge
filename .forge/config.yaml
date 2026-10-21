@@ -1,0 +1,165 @@
+schemaVersion: forge.config/1
+blocks:
+  work:
+    source:
+      builtin: forge/work
+    config:
+      labelOrder:
+        - p0
+        - p1
+        - p2
+        - p3
+        - p4
+  memory:
+    source:
+      builtin: forge/memory
+  check:
+    source:
+      builtin: forge/check
+owners:
+  /blocks/work/config/labelOrder:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:71a0ad5cb60e33c1797dcc178f91aff8ccdfd69db22cc30ab4ec10db91a6778c
+  /blocks/check/source:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:044a54361c2e8d913b36867a7d902e8ce665bd955c4ca6d57c053d6d741561f0
+  /values/slice/targetLines:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:1a1cf797fabe7f95836fabeca626907c77b3e6c9aff7c2290b396a238c69362e
+  /values/slice/splitAbove:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:9f69998560dcfd8016442e0a32e959191df095817a164ce844c64ec5a8b0cc1b
+  /values/slice/maxFiles:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:e629fa6598d732768f7c726b4b621285f9c3b85303900aa912017db7617d8bdb
+  /values/review/rounds:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35
+  /values/review/fix:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:efe4cc44a2d7188dbe16a52c960b4a7c58ea7abe1d9a4e3cac46534ad7af8b85
+  /values/review/file:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:3474b2a31ce74c68d53321986ea18c93e06d635d8fb5607896a7257d5da2d6bc
+  /values/review/reruns:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b
+  /values/merge/by:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:7649b444a37e5ea51af536af65bdde29d549803a064bdd0707db6a00c9285673
+  /values/merge/method:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:cd9cc926f3241010b04239acd3a0b018c12c2bcd9d42478b0bc33e28faf65641
+  /values/doors:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:b8e2a3586f2362406a29654fd4fd722e861cd7b77730f889afc8bceb2488bf4c
+  /values/fixes/maxFailedPerCheck:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35
+  /values/lanes/max:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce
+  /values/lanes/fullSuiteRuns:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b
+  /values/lanes/stallMinutes:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:4a44dc15364204a80fe80e9039455cc1608281820fe2b24f1e5233ade6af1dd5
+  /values/claims/ttlSeconds:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:3c5d8ca315f8c36d4cd4beecbc55b34c92a2d6eb1df730908df6f23dd2aa08f7
+  /values/questions/max:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d
+  /values/labels/priority:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:71a0ad5cb60e33c1797dcc178f91aff8ccdfd69db22cc30ab4ec10db91a6778c
+  /values/labels/deferred:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:71c182840c9aa4d36dcd8012122218a187dbcce3d51edd2338383fc91c7a5b3d
+  /values/labels/gap:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:3a116874f3c1997ed1017d7d160da068225b4838e4b86e1302882d667480f26e
+  /values/roles/orchestrator:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:ec109d66b0e82ab98ada5f28fa8bf34dda5beff3f384e5f1a5f8bc2c3ba63a3c
+  /values/roles/implementer:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:079c9d12005aad817f722d2f0a34ccc3185b5ec0ce06ee243f945e4e1bb7b4c7
+  /values/roles/reviewer:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:049c44e9b55584a1706091f95b467e6d2cc2704f7d187e66963c8eefc7442975
+  /values/roles/housekeeping:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:7592f6e8c7d725afbbae58205e6ae58364410165178e4af1048166405cb72712
+  /values/pr/models:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b
+  /values/pr/notVerified:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b
+  /values/pr/trailers:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:30a0924a3360be687d1df9fcbbfdff62c01bc0fd14036ab9076cf7f451568666
+  /values/pr/style:
+    from: harsha/delivery@0.1.0
+    baseline: sha256:9a4b0bb6c367f4f1c5c404cc1ef5e839c72faf27eedf721cd406906b369d3d21
+values:
+  slice:
+    targetLines: 800
+    splitAbove: 1500
+    maxFiles: 15
+  review:
+    rounds: 2
+    fix:
+      - P0
+      - P1
+    file:
+      - P2
+      - P3
+    reruns: 1
+  merge:
+    by: agent
+    method: squash
+  doors:
+    - publish
+    - force-push
+    - prod-write
+    - migration-apply
+    - delete-branch
+    - delete-worktree
+    - merge-to-autodeploy
+    - global-config
+  fixes:
+    maxFailedPerCheck: 2
+  lanes:
+    max: 3
+    fullSuiteRuns: 1
+    stallMinutes: 10
+  claims:
+    ttlSeconds: 7200
+  questions:
+    max: 5
+  labels:
+    priority:
+      - p0
+      - p1
+      - p2
+      - p3
+      - p4
+    deferred: review-deferred
+    gap: contract-gap
+  roles:
+    orchestrator: strong
+    implementer: fast
+    reviewer: other-family
+    housekeeping: cheapest
+  pr:
+    models: true
+    notVerified: true
+    trailers: none
+    style: plain opening; bold takeaways; What review found; Verification
+templates:
+  - template: harsha/delivery@0.1.0
+    digest: sha256:6e56944090a14d49f79add45feb686b01e6b141a5044ffd7f2178a436f2d830d
+    importedAt: 2026-10-21T00:40:16.541Z
