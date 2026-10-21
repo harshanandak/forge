@@ -24,13 +24,20 @@ export function withCheckRunBudget(
   const timeoutMs = runTimeoutMs(
     instance.config as unknown as CheckConfig,
     request.input as RunInput,
+    `blocks.${operation.instance}.config`,
   );
   const configured = instance.operationTimeouts?.[operation.declaredOp];
-  for (const ceiling of [configured, catalog.config.runtime?.timeoutMs]) {
+  for (const [key, ceiling] of [
+    [
+      `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`,
+      configured,
+    ],
+    ["runtime.timeoutMs", catalog.config.runtime?.timeoutMs],
+  ] as const) {
     if (ceiling !== undefined && ceiling < timeoutMs)
       refuse(
         "INPUT_INVALID",
-        `Selected run needs at least ${timeoutMs} ms; configured operation or host deadline is ${ceiling} ms`,
+        `Selected run needs at least ${timeoutMs / 1000} s; ${key} (${ceiling / 1000} s) in .forge/config.yaml is too short. Fix: raise it to at least ${timeoutMs / 1000} s, lower blocks.${operation.instance}.config.timeoutMs, or select fewer checks with --input '{"checks":["name"]}'.`,
       );
   }
   if (configured !== undefined) return catalog;

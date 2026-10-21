@@ -360,7 +360,11 @@ function selectedConfig(
     },
   };
 }
-function runTimeoutMs(config: CheckConfig, input: RunInput): number {
+function runTimeoutMs(
+  config: CheckConfig,
+  input: RunInput,
+  configPath = "blocks.check.config",
+): number {
   const selected = selectedConfig(config, input.checks);
   validateBudgets(selected.config);
   // Commands run sequentially, between two snapshots; leave time to seal the receipt.
@@ -373,7 +377,7 @@ function runTimeoutMs(config: CheckConfig, input: RunInput): number {
   )
     failure(
       "INPUT_INVALID",
-      "Selected run exceeds the finite operation timer budget",
+      `Selected commands' timeouts add up to more than the maximum operation timer budget of 2147483.647 s (including two snapshots and 1 s for finalization); ${configPath}.timeoutMs in .forge/config.yaml is ${config.timeoutMs / 1000} s each for ${selected.names.length} selected commands. Fix: lower ${configPath}.timeoutMs or select fewer checks with --input '{"checks":["name"]}'.`,
     );
   return timeoutMs;
 }

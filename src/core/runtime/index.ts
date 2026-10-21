@@ -244,6 +244,7 @@ export class Runtime {
     let handle: ServiceHandle | undefined;
     let request: InvocationRequest | undefined;
     let started = false;
+    let timeoutMessage: (() => string) | undefined;
     let result: ResultEnvelope;
     try {
       const checked = validateInvocationRequest(value);
@@ -288,6 +289,24 @@ export class Runtime {
         this.#catalog.config.runtime?.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
         this.#limits.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
       );
+      timeoutMessage = () => {
+        const instance = this.#catalog.config.blocks[operation.instance]!;
+        const configured = instance.operationTimeouts?.[operation.declaredOp];
+        const host = this.#catalog.config.runtime?.timeoutMs;
+        const embedding = this.#limits.timeoutMs;
+        const value = started ? budget.timeoutMs : preparationTimeoutMs;
+        if (!started && host !== value && embedding !== value)
+          return `Invocation host preparation deadline expired: timer safety maximum (${value / 1000} s). Fix: reduce host preparation time.`;
+        const key =
+          host === value
+            ? "runtime.timeoutMs in .forge/config.yaml"
+            : embedding === value
+              ? "RuntimeOptions.limits.timeoutMs in the embedding host"
+              : configured !== undefined
+                ? `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] in .forge/config.yaml`
+                : `operations["${operation.declaredOp}"].timeoutMs in block.json`;
+        return `Invocation ${started ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s). Fix: raise ${key} above ${value / 1000} s to allow more time.`;
+      };
       invocation = new InvocationServices(
         clock.now() + preparationTimeoutMs,
         () => {
@@ -437,6 +456,9 @@ export class Runtime {
             : "FAIL",
         error: {
           ...failure,
+          ...(failure.code === "INVOCATION_TIMEOUT" && timeoutMessage
+            ? { message: timeoutMessage() }
+            : {}),
           retry: started
             ? "reconcile_first"
             : failure.code === "INVOCATION_TIMEOUT"
