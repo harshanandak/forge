@@ -360,6 +360,27 @@ function selectedConfig(
     },
   };
 }
+function runTimeoutMs(
+  config: CheckConfig,
+  input: RunInput,
+  configPath = "blocks.check.config",
+): number {
+  const selected = selectedConfig(config, input.checks);
+  validateBudgets(selected.config);
+  // Commands run sequentially, between two snapshots; leave time to seal the receipt.
+  const timeoutMs = (selected.names.length + 2) * config.timeoutMs + 1000;
+  if (
+    !Number.isSafeInteger(config.timeoutMs) ||
+    config.timeoutMs < 1 ||
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs > 2_147_483_647
+  )
+    failure(
+      "INPUT_INVALID",
+      `Selected commands' timeouts add up to more than the maximum operation timer budget of 2147483.647 s (including two snapshots and 1 s for finalization); ${configPath}.timeoutMs in .forge/config.yaml is ${config.timeoutMs / 1000} s each for ${selected.names.length} selected commands. Fix: lower ${configPath}.timeoutMs or select fewer checks with --input '{"checks":["name"]}'.`,
+    );
+  return timeoutMs;
+}
 function aggregate(runs: readonly CheckRun[]): CheckStatus {
   if (runs.some((run) => run.status === "FAIL")) return "FAIL";
   if (runs.some((run) => run.status === "INCOMPLETE")) return "INCOMPLETE";
@@ -722,4 +743,5 @@ module.exports = {
   digest,
   verify,
   validateBudgets,
+  runTimeoutMs,
 };
