@@ -93,7 +93,7 @@ class SummaryLines {
   bytes = 0;
   jest: readonly string[] | undefined;
   vitest: readonly string[] | undefined;
-  pytest: string | undefined;
+  pytest: OutputReport | undefined;
   zero = false;
   hint = false;
   private pending: Buffer[] = [];
@@ -137,11 +137,16 @@ class SummaryLines {
       /no test(?:s| files)? (?:found|collected)|collected 0 items/i.test(text)
     )
       this.zero = true;
-    const pytest =
+    const candidate =
       /^[\t ]*(.*?)[\t ]+in[\t ]+\d+(?:\.\d+)?s(?:[\t ]+\(.*\))?[\t ]*=*[\t ]*$/.exec(
         text,
-      );
-    if (pytest) this.pytest = pytest[1] ?? "";
+      )?.[1];
+    // Any line can end "in 3s"; only one that parses as a summary replaces the last one seen.
+    const parsed =
+      candidate === undefined
+        ? undefined
+        : pytest(candidate.replace(/^=+\s*|\s*=+$/g, ""));
+    if (parsed?.kind === "recognized") this.pytest = parsed;
     if (/^\s*Tests:|^\s*Tests\s+\d+.*\(|"numTotalTests"/.test(text))
       this.hint = true;
   }
@@ -185,9 +190,10 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       stdout.end();
       stderr.end();
       const text = structured ? Buffer.concat(structured).toString("utf8") : "";
+      // An overflowing object is never read whole, so its counts may lie past what was kept.
       if (
         format === "json" ||
-        (structured && /"num(?:Total|Failed)Tests"/.test(text))
+        (structured && (overflow || /"num(?:Total|Failed)Tests"/.test(text)))
       )
         return overflow
           ? {
@@ -206,11 +212,8 @@ function recognizer(format: ReportFormat): OutputRecognizer {
           failed: 0,
           detail: "Runner reported zero tests",
         };
-      const last = (stderr.pytest ?? stdout.pytest)?.replace(
-        /^=+\s*|\s*=+$/g,
-        "",
-      );
-      if (last) return pytest(last);
+      const last = stdout.pytest ?? stderr.pytest;
+      if (last) return last;
       if (stdout.hint || stderr.hint) return malformed;
       return unknown;
     },

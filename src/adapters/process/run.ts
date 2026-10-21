@@ -15,7 +15,7 @@ import {
   validateHostOptions,
   type ContainmentOptions,
 } from "./containment.ts";
-import { StreamCapture } from "./capture.ts";
+import { captureStreams, type StreamCapture } from "./capture.ts";
 import { runProcessTree } from "./process-tree.ts";
 
 const MAX_TIMER_MS = 2147483647;
@@ -156,28 +156,18 @@ export async function runProcess(
         windowsHide: true,
         shell: false,
       });
-      const stdout = new StreamCapture(options.maxOutputBytes, options.capture),
-        stderr = new StreamCapture(options.maxOutputBytes, options.capture);
-      const capture = (
-        stream: StreamCapture,
-        name: "stdout" | "stderr",
-        chunk: Buffer,
-      ): void => {
+      const { stdout, stderr } = captureStreams(options);
+      const capture = (stream: StreamCapture, chunk: Buffer): void => {
         try {
           stream.push(chunk);
-          options.observer?.push(name, chunk);
         } catch (error) {
           void finish(
             error instanceof Error ? error : new Error("Output capture failed"),
           );
         }
       };
-      child.stdout?.on("data", (chunk: Buffer) =>
-        capture(stdout, "stdout", chunk),
-      );
-      child.stderr?.on("data", (chunk: Buffer) =>
-        capture(stderr, "stderr", chunk),
-      );
+      child.stdout?.on("data", (chunk: Buffer) => capture(stdout, chunk));
+      child.stderr?.on("data", (chunk: Buffer) => capture(stderr, chunk));
       let timedOut = false,
         interrupted = false,
         attached = false,

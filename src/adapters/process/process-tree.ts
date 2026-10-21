@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ProcessResult, SpawnOptions } from "../../ports/process.ts";
-import { StreamCapture } from "./capture.ts";
+import { captureStreams, type StreamCapture } from "./capture.ts";
 import { ProcessSpawnError } from "./errors.ts";
 import type { SpawnPlan } from "./plan.ts";
 import type { SupervisionOptions } from "./supervision.ts";
@@ -110,8 +110,7 @@ export function runProcessTree(
       detached: true,
       shell: false,
     });
-    const stdout = new StreamCapture(options.maxOutputBytes, options.capture),
-      stderr = new StreamCapture(options.maxOutputBytes, options.capture);
+    const { stdout, stderr } = captureStreams(options);
     let failure: Error | undefined;
     const capture = (stream: StreamCapture, chunk: Buffer): void => {
       try {

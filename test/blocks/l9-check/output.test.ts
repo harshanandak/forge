@@ -103,6 +103,27 @@ test("a structured report too large to read whole is malformed, never guessed", 
   expect(report.detail).toContain("cannot be read whole");
 }, 10000);
 
+test("an overflowing JSON object is malformed even when its counts lie past the retained prefix", () => {
+  const recognizer = output.recognize("auto");
+  recognizer.push("stdout", Buffer.from('{"testResults":"'));
+  recognizer.push("stdout", Buffer.alloc(8_388_608, "a"));
+  recognizer.push(
+    "stdout",
+    Buffer.from('","numTotalTests":1,"numFailedTests":1}'),
+  );
+  expect(recognizer.report().kind).toBe("malformed");
+}, 10000);
+
+test("only a line that parses as a pytest summary counts, and stdout wins over stderr", () => {
+  const summary = "======== 1 failed, 2 passed in 0.10s ========";
+  expect(
+    output.parse(`${summary}\nupload finished in 3s\n`, "", "auto"),
+  ).toMatchObject({ kind: "recognized", testCount: 3, failed: 1 });
+  expect(
+    output.parse(summary, "=== 5 passed in 0.20s ===", "auto"),
+  ).toMatchObject({ kind: "recognized", testCount: 3, failed: 1 });
+}, 1000);
+
 test("declared commands split quoted arguments without executing shell syntax", () => {
   expect(commandArguments('tool "path with spaces" test')).toEqual([
     "tool",
