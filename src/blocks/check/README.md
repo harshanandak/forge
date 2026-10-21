@@ -54,7 +54,9 @@ services, owns cancellation, and drains the process tree before returning. The b
 starts no timer, supervisor, cache or persistent process.
 
 Every team choice is visible configuration. Only `commands` must be set, and detection can
-supply it; every other key has a `default` in `schemas/config.json`, and `forge config explain`
+supply it. `commands` is declared as a whole: once the project sets any command, those are the
+commands and detection adds none; `forge config explain` shows each detected command it replaced.
+Every other key has a `default` in `schemas/config.json`, and `forge config explain`
 shows which value is in effect and where it came from. The keys: `commands`, `timeoutMs`, `maxOutputBytes`,
 `outputHeadBytes`, `outputTailBytes`, `maxMetadataBytes`, `maxReceiptBytes`,
 `report`, `stopOnFailure`, `inputs`, `maxInputBytes`, and `environment`. A command can
@@ -77,20 +79,22 @@ outputs and Forge state should not be inputs unless a changed-input result is in
 Internal HEAD lookups reserve 66 output bytes for a complete 64-character object id and
 CRLF, independently of the declared command output cap.
 
-Packed fixtures run the installed engine and generated surfaces on Node. A fresh shared
-packed consumer may be passed as `CHECK_PACKED_CONSUMER`; all counterfactuals mutate only
-private copies. `CHECK_ECOSYSTEM_TOOLS` and `CHECK_PYTHON_PACKAGES` optionally select
+Packed fixtures run the installed engine and generated surfaces on Node, against the one
+install `bun run test:pack` makes; all counterfactuals mutate only private copies. `CHECK_ECOSYSTEM_TOOLS` and `CHECK_PYTHON_PACKAGES` optionally select
 external test-only tool installations. Missing ecosystem executables are explicit skips,
 never simulated passes. The Make fixture requires actual recipe output.
 
 The pure `validateBudgets(config)` preflight runs at the start of both the captured handler
-and engine, before snapshots or process calls. Head and tail byte caps must sum to at most
+and engine, before snapshots or process calls, over the checks selected for that run (all
+commands when `checks` is omitted): a command the run does not select reserves nothing. Head and tail byte caps must sum to at most
 `maxOutputBytes`. `maxMetadataBytes` reserves room for all declared arguments, identifiers,
 stream commitments and other receipt fields. It must cover the measured declaration metadata.
 `maxReceiptBytes` caps the whole encoded receipt and cannot exceed the host crypto ceiling
 of 1,048,576 bytes. The validator requires metadata plus two streams per declared command
 to fit that total. Each retained raw byte reserves ten encoded bytes: at most six for its
-JSON text preview and four for base64 evidence. Conflicts name the budgets and the maximum
+JSON text preview and four for base64 evidence. The defaults (1024-byte head and tail, 32768
+metadata, 524288 receipt) reserve 40960 bytes per command and so fit 12 selected commands
+however large their output, since only the head and tail are kept. Conflicts name the budgets and the maximum
 retention that fits. Resolved paths and the actual subject must fit the metadata reservation
 before the first command starts. Config application remains JSON Schema only; the reusable
 pure validator supplies the cross-field check at invocation time.

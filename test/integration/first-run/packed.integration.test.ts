@@ -1,14 +1,9 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
+import { packedConsumer } from "../packed-consumer.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 function run(
@@ -37,50 +32,7 @@ test("a new user's first run works end to end from the packed package", () => {
   try {
     const node = Bun.which("node");
     if (!node) throw new Error("Node runtime required");
-    // Pack smoke shares its one npm install; standalone runs pack and install once here.
-    const sharedConsumer = process.env.FIRST_RUN_PACKED_CONSUMER;
-    const consumer = sharedConsumer ?? join(work, "consumer");
-    if (!sharedConsumer) {
-      const npm = [
-        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-      ].find(existsSync);
-      if (!npm) throw new Error("Node package installer required");
-      if (!existsSync(join(root, "dist/bin/forge.js")))
-        run(process.execPath, ["run", "build"], root);
-      const pack = JSON.parse(
-        run(
-          node,
-          [
-            npm,
-            "pack",
-            "--json",
-            "--ignore-scripts",
-            "--pack-destination",
-            work,
-          ],
-          root,
-        ),
-      ) as { filename: string }[];
-      mkdirSync(consumer);
-      writeFileSync(
-        join(consumer, "package.json"),
-        '{"name":"first-run-consumer","private":true}',
-      );
-      run(
-        node,
-        [
-          npm,
-          "install",
-          join(work, pack[0]!.filename),
-          "--offline",
-          "--no-audit",
-          "--no-fund",
-        ],
-        consumer,
-        180000,
-      );
-    }
+    const consumer = packedConsumer();
     // The journey runs as a Node-only user: no Bun on PATH.
     const env = { ...process.env };
     const pathKey =

@@ -1,6 +1,0 @@
-{
-  "childTimeoutMs": 240000,
-  "stepTimeoutMs": 300000,
-  "cleanupTimeoutMs": 5000,
-  "maxOutputBytes": 1048576
-}

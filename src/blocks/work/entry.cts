@@ -11,7 +11,10 @@ import type {
 } from "../../generated/types.ts";
 
 declare const fail: (code: string, message: string) => never;
-type Stored = Omit<TrackerItem, "lease" | "revision" | "updatedAt">;
+/** `prefix` is the id prefix the item was minted with; it is kept, never shown. */
+type Stored = Omit<TrackerItem, "lease" | "revision" | "updatedAt"> & {
+  readonly prefix?: string;
+};
 type DepInput = {
   readonly id: string;
   readonly target: string;
@@ -24,7 +27,10 @@ type LinkInput = {
   readonly url: string;
 };
 type WorkListInput = ListItemsInput & { readonly labels?: readonly string[] };
-type WorkConfig = { readonly labelOrder?: readonly string[] };
+type WorkConfig = {
+  readonly labelOrder?: readonly string[];
+  readonly idPrefix?: string;
+};
 type WorkOperations = TrackerOperations<"issue"> & {
   readonly "issue.ready": readonly [
     WorkListInput,
@@ -58,6 +64,53 @@ type WorkOperations = TrackerOperations<"issue"> & {
   ];
 };
 const kinds: readonly string[] = ["task", "bug", "feature", "epic"];
+/**
+ * Items are stored as `work-<n>`, the form they have always had, and shown as `<idPrefix>-<n>`.
+ * The number is the identity, so changing the prefix rewrites nothing. An id resolves only with
+ * the current prefix or one this project has minted ids with, so another project's id is refused
+ * instead of naming an unrelated item here. An id of another shape is used as given.
+ */
+const STORED = "work-";
+const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
+type Ids = {
+  readonly prefix: string;
+  readonly stored: (id: string) => string;
+  readonly shown: (id: string) => string;
+};
+/** The current prefix and every one an item was minted with; an item from before they were recorded was minted as `work`. */
+function accepted(state: LeaseStateClient, prefix: string): readonly string[] {
+  const used = state
+    .list("issue:")
+    .map((record) => stored(record).prefix ?? "work");
+  return [...new Set([prefix, ...used])];
+}
+function idsFor(state: LeaseStateClient, config: unknown): Ids {
+  const prefix = (config as WorkConfig | undefined)?.idPrefix ?? "work";
+  let known: readonly string[] | undefined;
+  return {
+    prefix,
+    stored(id) {
+      const match = QUALIFIED.exec(id);
+      if (!match) return id;
+      const given = match[1]!.toLowerCase();
+      if (given !== prefix) {
+        known ??= accepted(state, prefix);
+        if (!known.includes(given))
+          fail(
+            "INPUT_INVALID",
+            `Unknown id prefix ${given} in ${id}; this project's ids carry ${known.join(", ")}`,
+          );
+      }
+      return `${STORED}${match[2]}`;
+    },
+    shown(id) {
+      const number = id.slice(STORED.length);
+      return id.startsWith(STORED) && /^\d+$/.test(number)
+        ? `${prefix}-${number}`
+        : id;
+    },
+  };
+}
 const key = (id: string): string => `issue:${id}`;
 function client(services: unknown): LeaseStateClient {
   if (
@@ -78,9 +131,9 @@ function client(services: unknown): LeaseStateClient {
     );
   return state;
 }
-function get(state: LeaseStateClient, id: string): StateRecord {
+function get(state: LeaseStateClient, id: string, given = id): StateRecord {
   const record = state.get(key(id));
-  if (!record) fail("NOT_FOUND", `Issue ${id} was not found`);
+  if (!record) fail("NOT_FOUND", `Issue ${given} was not found`);
   return record;
 }
 function stored(record: StateRecord): Stored {
@@ -94,13 +147,22 @@ function live(state: LeaseStateClient, id: string) {
     ? lease
     : undefined;
 }
-function item(state: LeaseStateClient, record: StateRecord): TrackerItem {
-  const { closeReason: _reason, ...value } = stored(record) as Stored & {
-    closeReason?: string;
-  };
+function item(
+  state: LeaseStateClient,
+  record: StateRecord,
+  ids: Ids,
+): TrackerItem {
+  const {
+    closeReason: _reason,
+    prefix: _prefix,
+    ...value
+  } = stored(record) as Stored & { closeReason?: string };
   const lease = live(state, value.id);
   return {
     ...value,
+    id: ids.shown(value.id),
+    dependsOn: value.dependsOn.map(ids.shown),
+    ...(value.parent === undefined ? {} : { parent: ids.shown(value.parent) }),
     updatedAt: record.updatedAt,
     revision: record.revision,
     ...(lease ? { lease } : {}),
@@ -212,14 +274,13 @@ function validateDependencies(
   state: LeaseStateClient,
   id: string,
   dependencies: readonly string[],
+  ids: Ids,
 ): readonly { readonly key: string; readonly expectRevision: number }[] {
   const graph = dependencyGraph(state);
   if (!graph.check(id, dependencies)) {
-    if (graph.missing.size)
-      fail(
-        "NOT_FOUND",
-        `Issue ${graph.missing.values().next().value} was not found`,
-      );
+    const [missing] = graph.missing;
+    if (missing !== undefined)
+      fail("NOT_FOUND", `Issue ${ids.shown(missing)} was not found`);
     fail("INPUT_CONFLICT", "Dependencies must not contain a cycle");
   }
   return graph.readSet;
@@ -276,29 +337,36 @@ function list(
     records = records.toSorted(
       (a, b) => rank(order, stored(a)) - rank(order, stored(b)),
     );
+  const ids = idsFor(state, config);
   return {
     items: records
       .slice(0, input.limit ?? 1000)
-      .map((record) => item(state, record)),
+      .map((record) => item(state, record, ids)),
   };
 }
-function update(state: LeaseStateClient, input: UpdateItemInput): TrackerItem {
-  const record = get(state, input.id);
-  const value = stored(record);
+/** `id` and `dependsOn` are stored ids; `given` is the id as the caller wrote it. */
+function update(
+  state: LeaseStateClient,
+  input: UpdateItemInput,
+  ids: Ids,
+  given: string,
+): TrackerItem {
+  const value = stored(get(state, input.id, given));
   const readSet = input.dependsOn
-    ? validateDependencies(state, input.id, input.dependsOn)
+    ? validateDependencies(state, input.id, input.dependsOn, ids)
     : undefined;
-  const { id: _id, expectRevision, ...patch } = input;
+  const { id, expectRevision, ...patch } = input;
   return item(
     state,
     persist(
       state,
-      key(input.id),
+      key(id),
       { ...value, ...patch },
       expectRevision,
       undefined,
       readSet,
     ),
+    ids,
   );
 }
 function appended(
@@ -317,6 +385,7 @@ function grant(
   state: LeaseStateClient,
   id: string,
   lease: ReturnType<LeaseStateClient["acquire"]>,
+  ids: Ids,
 ): LeaseGrant {
   const read = state.lease(key(id));
   // A replay returns the original expiry even if a later renewal extended the current lease.
@@ -326,162 +395,211 @@ function grant(
     canonical(read.holder) !== canonical(lease.holder)
   )
     fail("INTERNAL", "Accepted lease did not match its readback");
-  return { id, generation: lease.generation, expiresAt: lease.expiresAt };
+  return {
+    id: ids.shown(id),
+    generation: lease.generation,
+    expiresAt: lease.expiresAt,
+  };
 }
 const operations: Operations<WorkOperations> = {
-  "issue.create": ({ input, services }) => {
+  "issue.create": ({ input, services, config }) => {
     const state = client(services);
+    const ids = idsFor(state, config);
     checkKind(input.kind);
+    const dependsOn = (input.dependsOn ?? []).map(ids.stored);
+    const parent =
+      input.parent === undefined ? undefined : ids.stored(input.parent);
     const records = state.list("issue:");
     const sequence =
-      records.reduce(
-        (max, record) =>
-          Math.max(max, Number(stored(record).id.replace(/^work-/, "")) || 0),
-        0,
-      ) + 1;
-    const id = `work-${sequence}`;
-    const readSet = validateDependencies(state, id, input.dependsOn ?? []);
-    if (input.parent) get(state, input.parent);
+      records.reduce((max, record) => {
+        const { id } = stored(record);
+        return id.startsWith(STORED)
+          ? Math.max(max, Number(id.slice(STORED.length)) || 0)
+          : max;
+      }, 0) + 1;
+    const id = `${STORED}${sequence}`;
+    const readSet = validateDependencies(state, id, dependsOn, ids);
+    if (parent !== undefined) get(state, parent, input.parent);
     const value: Stored = {
       id,
+      prefix: ids.prefix,
       title: input.title,
       status: "open",
       labels: input.labels ?? [],
-      dependsOn: input.dependsOn ?? [],
+      dependsOn,
       createdAt: new Date(state.now()).toISOString(),
       ...(input.kind ? { kind: input.kind } : {}),
       ...(input.body === undefined ? {} : { body: input.body }),
-      ...(input.parent === undefined ? {} : { parent: input.parent }),
+      ...(parent === undefined ? {} : { parent }),
     };
-    return item(state, persist(state, key(id), value, 0, undefined, readSet));
+    return item(
+      state,
+      persist(state, key(id), value, 0, undefined, readSet),
+      ids,
+    );
   },
-  "issue.show": ({ input, services }) => {
+  "issue.show": ({ input, services, config }) => {
     const state = client(services);
-    return item(state, get(state, input.id));
+    const ids = idsFor(state, config);
+    return item(state, get(state, ids.stored(input.id), input.id), ids);
   },
-  "issue.list": ({ input, services }) => list(client(services), input),
+  "issue.list": ({ input, services, config }) =>
+    list(client(services), input, undefined, config as WorkConfig | undefined),
   "issue.ready": ({ input, services, config }) =>
     list(client(services), input, "ready", config as WorkConfig | undefined),
-  "issue.blocked": ({ input, services }) =>
-    list(client(services), input, "blocked"),
-  "issue.stale": ({ input, services }) =>
-    list(client(services), input, "stale"),
-  "issue.update": ({ input, services }) => update(client(services), input),
-  "issue.claim": ({ input, services }) => {
+  "issue.blocked": ({ input, services, config }) =>
+    list(client(services), input, "blocked", config as WorkConfig | undefined),
+  "issue.stale": ({ input, services, config }) =>
+    list(client(services), input, "stale", config as WorkConfig | undefined),
+  "issue.update": ({ input, services, config }) => {
     const state = client(services);
-    if (stored(get(state, input.id)).status !== "open")
-      fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
-    const acquired = state.acquire(
-      key(input.id),
-      (input.ttlSeconds ?? 3600) * 1000,
+    const ids = idsFor(state, config);
+    return update(
+      state,
+      {
+        ...input,
+        id: ids.stored(input.id),
+        ...(input.dependsOn === undefined
+          ? {}
+          : { dependsOn: input.dependsOn.map(ids.stored) }),
+      },
+      ids,
+      input.id,
     );
+  },
+  "issue.claim": ({ input, services, config }) => {
+    const state = client(services);
+    const ids = idsFor(state, config);
+    const id = ids.stored(input.id);
+    if (stored(get(state, id, input.id)).status !== "open")
+      fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
+    const acquired = state.acquire(key(id), (input.ttlSeconds ?? 3600) * 1000);
     // Another holder may close between the initial read and acquisition.
-    if (stored(get(state, input.id)).status !== "open") {
-      state.release(key(input.id));
+    if (stored(get(state, id, input.id)).status !== "open") {
+      state.release(key(id));
       fail(
         "INPUT_CONFLICT",
         "The issue closed during acquisition; the grant was revoked",
       );
     }
-    return grant(state, input.id, acquired);
+    return grant(state, id, acquired, ids);
   },
-  "issue.renew": ({ input, services }) => {
+  "issue.renew": ({ input, services, config }) => {
     const state = client(services);
-    get(state, input.id);
+    const ids = idsFor(state, config);
+    const id = ids.stored(input.id);
+    get(state, id, input.id);
     return grant(
       state,
-      input.id,
-      state.renew(key(input.id), (input.ttlSeconds ?? 3600) * 1000),
+      id,
+      state.renew(key(id), (input.ttlSeconds ?? 3600) * 1000),
+      ids,
     );
   },
-  "issue.release": ({ input, services }) => {
+  "issue.release": ({ input, services, config }) => {
     const state = client(services);
-    get(state, input.id);
-    const released = state.release(key(input.id));
-    if (canonical(state.lease(key(input.id))) !== canonical(released))
+    const ids = idsFor(state, config);
+    const id = ids.stored(input.id);
+    get(state, id, input.id);
+    const released = state.release(key(id));
+    if (canonical(state.lease(key(id))) !== canonical(released))
       fail("INTERNAL", "Released lease did not match its readback");
-    return { id: input.id };
+    return { id: ids.shown(id) };
   },
-  "issue.close": ({ input, services }) => {
+  "issue.close": ({ input, services, config }) => {
     const state = client(services);
-    const record = get(state, input.id);
+    const ids = idsFor(state, config);
+    const id = ids.stored(input.id);
+    const record = get(state, id, input.id);
     // The reason and status share one accepted record; there is no second close write.
     const value = {
       ...stored(record),
       status: "closed",
       ...(input.reason === undefined ? {} : { closeReason: input.reason }),
     };
-    const written = persist(state, key(input.id), value, record.revision);
+    const written = persist(state, key(id), value, record.revision);
     const { closeReason: _reason, ...view } = written.value as Stored & {
       closeReason?: string;
     };
-    return item(state, { ...written, value: view });
+    return item(state, { ...written, value: view }, ids);
   },
-  "issue.comment": ({ input, services }) => {
+  "issue.comment": ({ input, services, config }) => {
     const state = client(services);
-    get(state, input.id);
-    const prefix = `comment:${input.id}:`;
+    const ids = idsFor(state, config);
+    const id = ids.stored(input.id);
+    get(state, id, input.id);
+    const prefix = `comment:${id}:`;
     const commentId = `${prefix}${state.list(prefix).length + 1}`;
-    persist(state, commentId, { id: input.id, body: input.body }, 0);
-    return { id: input.id, commentId };
+    persist(state, commentId, { id, body: input.body }, 0);
+    return { id: ids.shown(id), commentId };
   },
-  "issue.comments": ({ input, services }) => {
+  "issue.comments": ({ input, services, config }) => {
     const state = client(services);
-    get(state, input.id);
-    return { records: appended(state, `comment:${input.id}:`) };
+    const id = idsFor(state, config).stored(input.id);
+    get(state, id, input.id);
+    return { records: appended(state, `comment:${id}:`) };
   },
-  "issue.events": ({ input, services }) => {
+  "issue.events": ({ input, services, config }) => {
     const state = client(services);
-    get(state, input.id);
-    return { events: state.events(key(input.id)) };
+    const id = idsFor(state, config).stored(input.id);
+    get(state, id, input.id);
+    return { events: state.events(key(id)) };
   },
-  "issue.dep": ({ input, services }) => {
+  "issue.dep": ({ input, services, config }) => {
     const state = client(services);
-    const value = stored(get(state, input.id));
+    const ids = idsFor(state, config);
+    const id = ids.stored(input.id);
+    const value = stored(get(state, id, input.id));
+    const target = ids.stored(input.target);
     const dependsOn =
       input.action === "add"
-        ? [...new Set([...value.dependsOn, input.target])]
-        : value.dependsOn.filter((id) => id !== input.target);
+        ? [...new Set([...value.dependsOn, target])]
+        : value.dependsOn.filter((dependency) => dependency !== target);
     if (dependsOn.length > 256)
       fail("INPUT_INVALID", "At most 256 dependencies are allowed");
-    return update(state, {
-      id: input.id,
-      expectRevision: input.expectRevision,
-      dependsOn,
-    });
+    return update(
+      state,
+      { id, expectRevision: input.expectRevision, dependsOn },
+      ids,
+      input.id,
+    );
   },
-  "issue.link": ({ input, services }) => {
+  "issue.link": ({ input, services, config }) => {
     const state = client(services);
-    get(state, input.id);
+    const id = idsFor(state, config).stored(input.id);
+    get(state, id, input.id);
     if (!/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(input.url))
       fail("INPUT_INVALID", "Links require an http or https URL");
-    const prefix = `link:${input.id}:`;
+    const prefix = `link:${id}:`;
     return persist(
       state,
       `${prefix}${state.list(prefix).length + 1}`,
-      input,
+      { ...input, id },
       0,
-      key(input.id),
+      key(id),
     );
   },
-  "issue.links": ({ input, services }) => {
+  "issue.links": ({ input, services, config }) => {
     const state = client(services);
-    get(state, input.id);
-    return { records: appended(state, `link:${input.id}:`) };
+    const id = idsFor(state, config).stored(input.id);
+    get(state, id, input.id);
+    return { records: appended(state, `link:${id}:`) };
   },
-  "issue.lint": ({ services }) => {
+  "issue.lint": ({ services, config }) => {
     const state = client(services);
     const problems: string[] = [];
     const records = state.list("issue:");
     const graph = dependencyGraph(state, records);
+    const ids = idsFor(state, config);
     for (const record of records) {
       const value = stored(record);
+      const id = ids.shown(value.id);
       if (value.kind !== undefined && !kinds.includes(value.kind))
-        problems.push(`${value.id}: unknown kind`);
+        problems.push(`${id}: unknown kind`);
       if (!graph.check(value.id))
-        problems.push(`${value.id}: missing or cyclic dependency`);
+        problems.push(`${id}: missing or cyclic dependency`);
       if (value.parent !== undefined && !graph.read(value.parent))
-        problems.push(`${value.id}: missing parent`);
+        problems.push(`${id}: missing parent`);
     }
     return { problems };
   },
