@@ -18,8 +18,8 @@ blocks:
       builtin: forge/check
     config:
       commands:
-        test: bun run test
         typecheck: bun run check
+        test: bun run test:unit
         structure: bun run test:structure
 owners:
   /blocks/work/config/labelOrder:
