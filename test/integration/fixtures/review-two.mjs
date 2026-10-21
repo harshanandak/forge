@@ -599,8 +599,12 @@ try {
             "provider remains available",
           );
           assert.ok(
-            cli(root, ["config", "show"]).result.problems.some((problem) =>
-              problem.includes("client"),
+            cli(root, ["config", "show"], 6).result.problems.some(
+              (problem) =>
+                problem.includes("blocks.client.source:") &&
+                problem.includes(
+                  "Repair the source or configuration for client",
+                ),
             ),
           );
         }
@@ -636,13 +640,17 @@ try {
         },
       });
       writeFileSync(join(root, ".forge/config.yaml"), bytes);
-      const show = cli(root, ["config", "show"]);
+      const show = cli(root, ["config", "show"], 6);
+      assert.equal(show.ok, false);
       assert.ok(
-        show.result.problems.some(
-          (problem) =>
-            problem.includes("bad") && problem.includes("unavailable"),
-        ),
-        `${name}: invalid block is unavailable`,
+        show.result,
+        `${name}: config show must retain readable invalid configuration`,
+      );
+      assert.equal(show.result.valid, false);
+      assert.equal(show.error.message, show.result.problems.join("\n"));
+      assert.equal(
+        show.result.instances.find((entry) => entry.name === "bad").enabled,
+        false,
       );
       assert.equal(
         readFileSync(join(root, ".forge/config.yaml"), "utf8"),
@@ -659,6 +667,12 @@ try {
           `${name}: typed catalog diagnostic`,
         );
         assert.ok(assembly.catalog.unavailable()[0].error.code);
+        assert.ok(
+          show.result.problems.some((problem) =>
+            problem.includes(assembly.catalog.unavailable()[0].reason),
+          ),
+          `${name}: config show retains the typed unavailable reason`,
+        );
         assert.ok(
           assembly.catalog.list().some((entry) => entry.op === "good.echo"),
           `${name}: healthy operations survive`,
