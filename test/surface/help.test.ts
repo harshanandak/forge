@@ -2,6 +2,25 @@ import { expect, test } from "bun:test";
 import { runCli } from "../../src/surface/cli.ts";
 import { candidate, fakeCatalog } from "./fixtures/catalog.ts";
 import { validateDocsRecords } from "../../src/generated/validators.ts";
+import { renderExample } from "../../src/contract/example.ts";
+
+test("PowerShell JSON fallback keeps a phrase inside one native argument", () => {
+  const example = renderExample(
+    "sample.echo",
+    {
+      title: "Echo",
+      summary: "Echo.",
+      examples: [{ input: { value: "First task", labels: ["release"] } }],
+    },
+    { oneOf: [candidate().inputSchema] },
+  );
+  expect(example.split("\n    PowerShell 5.1: ")[1]).toBe(
+    String.raw`forge sample echo --input '{\"value\":\"First\u0020task\",\"labels\":[\"release\"]}'`,
+  );
+  expect(example.split("\n")[0]).toBe(
+    `POSIX: forge sample echo --input '{"value":"First task","labels":["release"]}'`,
+  );
+}, 30000);
 
 test("documentation examples require an input or runnable command", () => {
   const doc = (example: object) => ({

@@ -64,12 +64,20 @@ export function renderExample(
             (type === "string" || type === undefined)
               ? value
               : JSON.stringify(value);
+          const nativeRaw =
+            powershell && typeof value !== "string"
+              ? raw.replace(
+                  /\s/g,
+                  (character) =>
+                    `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+                )
+              : raw;
           const quoted = /^[a-zA-Z0-9_./:@=-]+$/.test(raw)
             ? raw
             : typeof value === "string" && !/["\\$`%!]/.test(raw)
               ? `"${raw}"`
               : powershell
-                ? `'${raw
+                ? `'${nativeRaw
                     .replace(/(\\*)"/g, '$1$1\\"')
                     .replace(/(\\+)$/g, "$1$1")
                     .replaceAll("'", "''")}'`
@@ -81,7 +89,7 @@ export function renderExample(
         .join(" ")}`;
     const posix = render(false);
     const powershell = render(true);
-    // Native argument passing in Windows PowerShell 5.1 needs literal JSON quotes escaped.
+    // PowerShell 5.1 splits whitespace inside escaped JSON quotes; JSON escapes preserve it.
     return posix === powershell
       ? posix
       : `POSIX: ${posix}\n    PowerShell 5.1: ${powershell}`;
