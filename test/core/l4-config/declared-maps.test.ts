@@ -52,7 +52,7 @@ test("with no declared commands, the detected commands are the commands", () => 
     build: "bun run build",
     format: "bun run format",
   });
-});
+}, 5000);
 
 test("declared commands are the commands: detection adds none, and explain shows why", () => {
   const p = project();
@@ -61,10 +61,9 @@ test("declared commands are the commands: detection adds none, and explain shows
     typecheck: "bun run check",
     test: "bun run test:unit",
   });
-  expect(p.config.explain({ path: "check.commands.typecheck" })).toMatchObject({
-    value: "bun run check",
-    source: "project",
-  });
+  expect(
+    p.config.explain({ path: "check.commands.typecheck" }),
+  ).toMatchObject({ value: "bun run check", source: "project" });
   const lint = p.config.explain({ path: "check.commands.lint" });
   expect(lint.set).toBe(false);
   expect(lint.entries).toEqual([
@@ -84,7 +83,7 @@ test("declared commands are the commands: detection adds none, and explain shows
       },
     },
   ]);
-});
+}, 5000);
 
 test("save does not write back detected commands the project's declaration replaced", () => {
   const p = project();
@@ -92,4 +91,4 @@ test("save does not write back detected commands the project's declaration repla
   const saved = p.config.save({ expectRevision: p.config.show().revision });
   expect(saved.saved).toEqual([]);
   expect(p.read()).not.toContain("bun run lint");
-});
+}, 5000);
