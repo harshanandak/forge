@@ -720,8 +720,8 @@ try {
       join(path, "index.cjs"),
       `module.exports = Object.fromEntries(['stateless','project','device'].map(context => ['scopes.'+context, ({input,services}) => { const slots=Object.keys(services); const count=services.records.list().length; if(context==='stateless') return {slots,count}; const record=services.records.put('record', {value:context}, {expectRevision:0}); return {slots,revision:record.revision}; }]));`,
     );
-    const added = cli(root, ["block", "add", "./scopes"], 2),
-      digest = added.error.repair.match(/sha256:[a-f0-9]{64}/)[0];
+    const added = cli(root, ["block", "add", "./scopes"]),
+      digest = added.result.digest;
     cli(root, ["block", "admit", digest]);
     cli(root, [
       "config",
@@ -806,9 +806,8 @@ try {
       true,
       "stateless state-reader with non-state effects must compose",
     );
-    const processAdded = cli(root, ["block", "add", "./stateless-process"], 2);
-    const processDigest =
-      processAdded.error.repair.match(/sha256:[a-f0-9]{64}/)[0];
+    const processAdded = cli(root, ["block", "add", "./stateless-process"]);
+    const processDigest = processAdded.result.digest;
     cli(root, ["block", "admit", processDigest]);
     cli(root, [
       "config",

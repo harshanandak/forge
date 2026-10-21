@@ -5,6 +5,11 @@ import { TrustStore } from "../../core/trust/index.ts";
 import { nodeFileCapture } from "./capture.ts";
 import { nodeRunIsolation } from "./isolation.ts";
 
+/** Command hint for the locally installed package; never installs or executes code. */
+export function localForgeCommand(args: readonly string[]): string {
+  return ["npx", "forge", ...args].join(" ");
+}
+
 /** Resolves installed packages only; never installs or runs package code. */
 export function createNodeBlockCatalog(
   baseDirectory: string,

@@ -413,7 +413,7 @@ try {
       );
       return JSON.parse(child.stdout);
     }
-    cli(["block", "add", `./${basename(f.directory)}`], 2);
+    cli(["block", "add", `./${basename(f.directory)}`]);
     cli(["block", "admit", f.block.digest]);
     assert.equal(
       cli(["sample", "run", "--input", '{"value":"cli-awaited"}']).result,
@@ -642,8 +642,8 @@ try {
       });
     try {
       assert.equal(
-        (await invoke("block.add", { path: "./counter" })).error?.code,
-        "ADMISSION_REQUIRED",
+        (await invoke("block.add", { path: "./counter" })).result?.admitted,
+        false,
       );
       const checked = await invoke("block.check", { path: "./counter" });
       assert.equal(

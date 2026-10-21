@@ -117,7 +117,9 @@ test("a path block reusing a built-in id is refused until admitted", async () =>
           },
         });
       const added = await call("block.add", { path: "./blocks/work" }, "human");
-      assert.equal(code(added), "ADMISSION_REQUIRED");
+      assert.equal(added.ok, true);
+      if (!added.ok) throw new Error("registration failed");
+      assert.equal((added.result as { admitted: boolean }).admitted, false);
       assert.equal(
         code(await call("sample.run", "hello", "agent")),
         "ADMISSION_REQUIRED",

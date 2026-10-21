@@ -1,4 +1,4 @@
-import { cliWords, flagName } from "./naming.ts";
+import { cliWords, flagName, RESERVED_FLAGS } from "./naming.ts";
 import type { OperationDocs } from "../generated/types.ts";
 import type { SchemaObject } from "./schema.ts";
 
@@ -40,6 +40,7 @@ export function renderExample(
     const args = values.every(
       ([key, value]) =>
         Object.hasOwn(properties, key) &&
+        !RESERVED_FLAGS.includes(flagName(key) ?? "") &&
         (typeof value === "string" ||
           record(properties[key])?.type !== undefined),
     )

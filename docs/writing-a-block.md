@@ -11,6 +11,31 @@ package. It has five files and no dependencies:
   receives `{input, config, services, signal, deadline}` and returns JSON
   (or a Promise of JSON). This handler only needs `input`.
 
+`docs.json` maps each operation name inside `operations`. `title` and `summary`
+are required; `description` and `examples` add help and runnable examples.
+For `hello.say`, the complete shape is:
+
+```json
+{
+  "operations": {
+    "hello.say": {
+      "title": "Say hello",
+      "summary": "Greet someone by name.",
+      "description": "Returns a greeting without reading or writing external state.",
+      "examples": [
+        {
+          "input": { "name": "World" },
+          "output": { "message": "Hello, World!" }
+        }
+      ]
+    }
+  }
+}
+```
+
+The guide runner checks this shape against the canonical docs schema and uses
+it in the packed journey. Replace `hello.say` with your declared operation name.
+
 ## Manifest fields
 
 `schemaVersion: forge.block/1` selects the manifest contract. `id` is
@@ -31,6 +56,12 @@ into a digest before executing code.
 - `idempotent: true` says repeating the operation has the same effect.
 - `callers: [human, agent]` allows both caller kinds to invoke it.
 - `stability: stable` marks the public operation contract stable.
+
+Input fields whose names map to reserved CLI flags, such as `text`, `json`,
+`help`, `input` or `dryRun`, must be passed using `--input JSON`. For an operation
+`greet.shout` with a `text` field, use `npx forge greet shout --input '{"text":"quiet"}'`
+(Windows PowerShell 5.1: `npx forge greet shout --input '{\"text\":\"quiet\"}'`).
+`--text` selects human-readable output; it cannot supply the input field.
 
 For optional fields and other contexts, see the canonical
 [manifest schema](https://github.com/harshanandak/forge/blob/main/schemas/block.json)
@@ -56,9 +87,10 @@ npx forge hello say --name World
 `check` succeeds with `ok: true`, a `blockId` of `example.org/hello`, a
 `sha256:` digest and `admitted: false`; it executes no handler and registers
 nothing. `add` writes the block source to `.forge/config.yaml`, then returns
-`ok: false`, `status: INCOMPLETE`, `ADMISSION_REQUIRED` and exit 2 until admitted.
-This is the expected next step: its `repair` contains `forge block admit` with
-the same digest returned by `check`. Replace `<digest>` with that exact digest.
+`ok: true`, exit 0, and `result` containing the `blockId`, `digest`,
+`admitted: false` and `next: npx forge block admit <digest>`. Human-readable
+output (`--text`) shows that exact `next` command too. Replace `<digest>` with
+the same digest returned by `check`.
 Admission is a human decision to execute these captured bytes; the local CLI
 authenticates the human, while MCP cannot admit code. `admit` returns
 `admitted: true`. The final command returns `ok: true` and

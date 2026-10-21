@@ -166,13 +166,7 @@ export async function openHarness(
   for (const name of blocks) {
     stageBlock(name, stage);
     const added = await call("block.add", { path: `./blocks/${name}` });
-    // On a device that already admitted these bytes, adding needs no second admission.
-    const digest = /sha256:[a-f0-9]{64}/.exec(
-      added.ok
-        ? (added.result as { digest: string }).digest
-        : (added.error?.repair ?? ""),
-    )?.[0];
-    if (!digest) throw new Error(`block.add ${name}: ${JSON.stringify(added)}`);
+    const { digest } = done(added) as { digest: string };
     done(await call("block.admit", { digest }));
     done(await call("config.grant", { digest, effects: effects[name] }));
   }

@@ -2,7 +2,7 @@ import type { ForgeError, OperationDocs } from "../generated/types.ts";
 import type { SchemaObject, SchemaProblem } from "./schema.ts";
 import { renderExample } from "./example.ts";
 
-function sentence(problem: SchemaProblem): string {
+function sentence(problem: SchemaProblem, source?: string): string {
   const field =
     problem.pointer
       .split("/")
@@ -12,7 +12,9 @@ function sentence(problem: SchemaProblem): string {
         (name, part) =>
           /^\d+$/.test(part)
             ? `${name}[${part}]`
-            : `${name}${name ? "." : ""}${part}`,
+            : source !== undefined && !/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(part)
+              ? `${name}[${JSON.stringify(part)}]`
+              : `${name}${name ? "." : ""}${part}`,
         "",
       ) || "input";
   if (problem.keyword === "required") return `${field} is required`;
@@ -32,6 +34,7 @@ export function inputError(
   docs?: OperationDocs,
   schema: SchemaObject = {},
   positions: readonly string[] = [],
+  source?: string,
 ): ForgeError {
   const fields = problems.map((problem) => ({
     pointer: problem.pointer,
@@ -57,7 +60,7 @@ export function inputError(
       : renderExample(op, docs, schema, positions);
   return {
     code: "INPUT_INVALID",
-    message: `Invalid input for ${op}:\n${problems.map(sentence).join("\n")}${call === undefined ? "" : `\nExample: ${call}`}`,
+    message: `Invalid input for ${op}:\n${problems.map((problem) => `${source === undefined ? "" : `${source}: `}${sentence(problem, source)}`).join("\n")}${call === undefined ? "" : `\nExample: ${call}`}`,
     retry: "never",
     observed: {
       problems: fields,

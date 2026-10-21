@@ -217,13 +217,9 @@ try {
         true,
         "exports-hidden package check",
       );
-      const added = cli(root, ["block", "add", spec], 2);
-      assert.equal(
-        added.error.code,
-        "ADMISSION_REQUIRED",
-        "exports-hidden package add",
-      );
-      const digest = added.error.repair.match(/sha256:[a-f0-9]{64}/)[0];
+      const added = cli(root, ["block", "add", spec]);
+      assert.equal(added.result.admitted, false, "exports-hidden package add");
+      const digest = added.result.digest;
       cli(root, ["block", "admit", digest]);
       assert.deepEqual(
         cli(root, [name, "echo", "from package"]).result,

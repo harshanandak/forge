@@ -251,7 +251,7 @@ try {
   ok(await invoke("config.show"), "empty config");
   assert.equal(existsSync(device), false, "empty config must remain read only");
   const added = await invoke("block.add", { path: "./fixture" });
-  assert.equal(added.error?.code, "ADMISSION_REQUIRED", JSON.stringify(added));
+  assert.equal(ok(added, "register fixture").admitted, false);
   const digest = ok(
     await invoke("block.check", { path: "./fixture" }),
     "check fixture",
@@ -314,7 +314,7 @@ try {
       "runner-output requirement must compose",
     ).digest;
     const outputAdded = await invoke("block.add", { path: "./output-parser" });
-    assert.equal(outputAdded.error?.code, "ADMISSION_REQUIRED");
+    assert.equal(ok(outputAdded, "register output parser").admitted, false);
     ok(
       await invoke("block.admit", { digest: outputDigest }),
       "admit output parser",
@@ -437,8 +437,8 @@ try {
     );
     const added = await invoke("block.add", { path: "./stateless" });
     assert.equal(
-      added.error?.code,
-      "ADMISSION_REQUIRED",
+      ok(added, "register stateless").admitted,
+      false,
       "a stateless operation with only non-state effects must compose",
     );
     const digest = ok(

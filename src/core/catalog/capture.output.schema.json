@@ -4,7 +4,11 @@
   "properties": {
     "blockId": { "type": "string" },
     "digest": { "type": "string" },
-    "admitted": { "type": "boolean" }
+    "admitted": { "type": "boolean" },
+    "next": {
+      "type": "string",
+      "description": "Explicit human admission command when registration succeeds pending admission."
+    }
   },
   "additionalProperties": false
 }

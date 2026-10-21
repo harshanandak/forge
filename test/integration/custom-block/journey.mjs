@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 assert.equal(process.versions.bun, undefined);
 const consumer = process.argv[2];
@@ -61,6 +62,12 @@ cpSync(join(installed, "examples/hello-block"), join(root, "hello-block"), {
   recursive: true,
 });
 const guide = readFileSync(join(installed, "docs/writing-a-block.md"), "utf8");
+const docs = JSON.parse(guide.match(/```json\n([\s\S]*?)```/)[1]);
+const { validateDocsRecords } = await import(
+  pathToFileURL(join(installed, "dist/src/generated/validators.js")).href
+);
+assert.equal(validateDocsRecords(docs).ok, true);
+writeFileSync(join(root, "hello-block/docs.json"), JSON.stringify(docs));
 const commands = guide
   .match(/```sh\n([\s\S]*?)```/)[1]
   .trim()
@@ -73,18 +80,25 @@ for (const command of commands) {
     .replace("<digest>", digest ?? "")
     .split(" ")
     .slice(1);
-  const adding = args[2] === "add";
-  const envelope = JSON.parse(
-    run(process.execPath, [npx, ...args], adding ? 2 : 0),
-  );
-  assert.equal(envelope.ok, !adding);
+  const envelope = JSON.parse(run(process.execPath, [npx, ...args]));
+  assert.equal(envelope.ok, true);
   if (args[2] === "check") {
     assert.equal(envelope.result.admitted, false);
     digest = envelope.result.digest;
   } else if (args[2] === "add") {
-    assert.equal(envelope.status, "INCOMPLETE");
-    assert.equal(envelope.error.code, "ADMISSION_REQUIRED");
-    assert.equal(envelope.error.repair, `forge block admit ${digest}`);
+    assert.equal(envelope.result.admitted, false);
+    assert.equal(envelope.result.digest, digest);
+    assert.equal(envelope.result.next, `npx forge block admit ${digest}`);
+    const text = run(process.execPath, [npx, ...args, "--text"]);
+    assert.ok(text.includes(`next: npx forge block admit ${digest}`));
+    const hidden = JSON.parse(
+      run(
+        process.execPath,
+        [npx, "forge", "hello", "say", "--name", "World"],
+        2,
+      ),
+    );
+    assert.equal(hidden.error.code, "ADMISSION_REQUIRED");
   } else if (args[2] === "admit") {
     assert.equal(envelope.result.admitted, true);
   } else {
