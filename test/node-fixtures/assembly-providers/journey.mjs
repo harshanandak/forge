@@ -437,7 +437,10 @@ try {
     );
     const added = await invoke("block.add", { path: "./stateless" });
     assert.equal(
-      ok(added, "register stateless").admitted,
+      ok(
+        added,
+        "register stateless: a stateless operation with only non-state effects must compose",
+      ).admitted,
       false,
       "a stateless operation with only non-state effects must compose",
     );
