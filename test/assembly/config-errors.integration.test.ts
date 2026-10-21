@@ -200,6 +200,77 @@ test("built CLI reports the actual config error and recovers after repair", () =
   }
 }, 110_000);
 
+test("config show reports unavailable trust before invalid config and recovers its verdict", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-config-trust-errors-"));
+  const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
+  const deviceRoot = join(root, "device");
+  const storePath = join(deviceRoot, "trust.sqlite");
+  mkdirSync(join(root, ".forge"));
+  mkdirSync(storePath, { recursive: true });
+  const cli = (args: string[], code: number) => {
+    const result = spawnSync("node", [bin, ...args], {
+      cwd: root,
+      env: { ...process.env, FORGE_DEVICE_ROOT: deviceRoot },
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(code);
+    expect(result.stderr).toBe("");
+    return result.stdout;
+  };
+  try {
+    for (const config of [
+      "blocks:\n  check:\n    commands: {}\n    timoutMs: 3000\n",
+      "blocks: [\n",
+    ]) {
+      writeFileSync(join(root, ".forge/config.yaml"), config);
+      expect(cli(["--help"], 0)).toStartWith("Usage: forge");
+      for (const args of [
+        ["config", "detect"],
+        ["catalog", "list"],
+        ["catalog", "describe", "config.show"],
+        ["template", "list"],
+      ])
+        expect(JSON.parse(cli(args, 0))).toMatchObject({ ok: true });
+      const unknown = JSON.parse(cli(["config", "shwo"], 3)) as ResultEnvelope;
+      expect(unknown).toMatchObject({
+        ok: false,
+        error: { code: "UNKNOWN_COMMAND" },
+      });
+      if (unknown.ok) throw Error("Expected unknown command");
+      expect(unknown.error.suggest).toContain("config.show");
+      expect(JSON.parse(cli(["check", "list"], 6))).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_INVALID" },
+      });
+      const unavailable = JSON.parse(
+        cli(["config", "show"], 1),
+      ) as ResultEnvelope;
+      expect(unavailable).toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE", retry: "never" },
+      });
+      if (unavailable.ok) throw Error("Expected unavailable trust store");
+      expect(unavailable.error.message).toContain(storePath);
+      expect(unavailable.error.message).toContain(
+        "is a directory, expected the Forge store file; move or delete it",
+      );
+      expect(unavailable).not.toHaveProperty("result");
+      rmSync(storePath, { recursive: true });
+      expect(JSON.parse(cli(["config", "show"], 6))).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_INVALID" },
+        result: { valid: false },
+      });
+      mkdirSync(storePath);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 110_000);
+
 test("affected check counterfactuals still fail on the built artifact", () => {
   const repo = resolve(import.meta.dirname, "../..");
   const root = mkdtempSync(join(tmpdir(), "forge-config-counterfactual-"));

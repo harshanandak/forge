@@ -71,12 +71,16 @@ export function assertFilesystem(
   const classification = classifyFilesystem(signals);
   if (classification.risk === "refuse")
     throw new Error(
-      `Store requires a local unsynced filesystem (${classification.kind})`,
+      `Store ${signals.path} is on a ${classification.kind} filesystem. Move the store to a local unsynced disk before opening it.`,
     );
-  if (classification.risk === "warn" && !warned.has(classification.kind)) {
+  if (
+    classification.kind !== "unknown" &&
+    classification.risk === "warn" &&
+    !warned.has(classification.kind)
+  ) {
     warned.add(classification.kind);
     stderr(
-      `Store filesystem warning: ${classification.kind}; prefer a local unsynced disk\n`,
+      `Store filesystem warning: ${signals.path} (${classification.kind}); move the store to a local unsynced disk\n`,
     );
   }
 }

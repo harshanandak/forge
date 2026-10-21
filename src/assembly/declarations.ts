@@ -6,7 +6,16 @@ import {
 } from "../contract/schema.ts";
 import { SCHEMA_DOCUMENTS } from "../generated/schemas.ts";
 import type { McpCandidate } from "../contract/mcp.ts";
-import type { OperationDeclaration } from "../generated/types.ts";
+import type {
+  OperationDeclaration,
+  OperationDocs,
+} from "../generated/types.ts";
+
+export const coreDocs: Readonly<Record<string, OperationDocs>> = (
+  JSON.parse(readFileSync(new URL("./docs.json", import.meta.url), "utf8")) as {
+    operations: Record<string, OperationDocs>;
+  }
+).operations;
 
 const BASE =
   "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/";
@@ -77,7 +86,7 @@ export const configCandidates: readonly McpCandidate[] = Object.entries(
   op,
   admitted: true,
   declaration,
-  docs: { title: op, summary: `Core operation ${op}.` },
+  docs: coreDocs[op]!,
   inputSchema: inline(
     configRegistry.lookup(`${BASE}${declaration.input}`),
     `${BASE}${declaration.input}`,

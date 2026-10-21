@@ -52,7 +52,11 @@ import { withCheckRunBudget } from "./check-budget.ts";
 import { checkResult } from "./check-result.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { firstPartyBlocks } from "./first-party.ts";
-import { configCandidates, validateConfigValue } from "./declarations.ts";
+import {
+  configCandidates,
+  coreDocs,
+  validateConfigValue,
+} from "./declarations.ts";
 import { LocalState } from "./state.ts";
 import { syncSkills, type TemplateFile } from "./skills.ts";
 import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
@@ -80,10 +84,7 @@ const grantCandidate: McpCandidate = {
     callers: ["human"],
     stability: "stable",
   },
-  docs: {
-    title: "Grant effects",
-    summary: "Allow named effects for human-admitted bytes.",
-  },
+  docs: coreDocs["config.grant"]!,
   inputSchema: {
     type: "object",
     required: ["digest", "effects"],
@@ -132,6 +133,8 @@ export interface Assembly {
   readonly root: string;
   readonly deviceRoot: string;
   readonly exposure: McpExposure;
+  /** Stateful discovery consumers load admission; plain help stays store-free. */
+  prepareTrust(): Promise<void>;
   close(): Promise<void>;
 }
 function trustRecord(value: unknown): TrustRecord | undefined {
@@ -182,7 +185,6 @@ export async function createAssembly(
     join(stateRoot, ".forge", "state.sqlite"),
   );
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
-  await trustState.open(false);
   let trustActor: Actor | undefined;
   const trust = new TrustStore({
     get: (digest) =>
@@ -469,12 +471,15 @@ export async function createAssembly(
           .filter((op) => checked.resolve(op).operation.instance === name)
           .map((op) => {
             const described = checked.describe(op);
-            const { operation } = checked.resolve(op);
+            const { block: captured, operation } = checked.resolve(op);
             return {
               ...described,
               admitted,
               docs: docs.operations[operation.declaredOp]!,
               inputSchema: described.inputSchema as McpCandidate["inputSchema"],
+              argumentSchema: captured.resolvedSchema(
+                operation.declaration.input,
+              ) as McpCandidate["inputSchema"],
               outputSchema:
                 described.outputSchema as McpCandidate["inputSchema"],
             };
@@ -625,7 +630,6 @@ export async function createAssembly(
       request: Parameters<Assembly["catalog"]["invoke"]>[0],
     ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
-        await trustState.open(false);
         const checked = validateInvocationRequest(request);
         if (!checked.ok) refuse("INPUT_INVALID", "Invalid invocation");
         const entry = [
@@ -657,6 +661,7 @@ export async function createAssembly(
           if (configHandler) {
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
+            if (request.op === "config.show") await trustState.open(false);
             const handled = configHandler(request.input);
             const current =
               request.op === "config.show" ? snapshot(call) : undefined;
@@ -716,6 +721,7 @@ export async function createAssembly(
             return success(request.op, output);
           }
           if (request.op === "skills.sync") {
+            await trustState.open(false);
             const show = call.config.show();
             return success(
               request.op,
@@ -741,6 +747,7 @@ export async function createAssembly(
             );
           }
           if (request.op === "block.check" || request.op === "block.add") {
+            await trustState.open(false);
             const spec = String(input.path);
             const source = sourceFor(spec);
             const block = captureBlock(
@@ -818,6 +825,7 @@ export async function createAssembly(
             });
           }
           if (request.op === "block.admit" || request.op === "config.grant") {
+            await trustState.open(false);
             const digest = String(input.digest);
             const candidates = [...snapshot(call).blocks.values()].filter(
               (block) => block.digest === digest,
@@ -867,7 +875,14 @@ export async function createAssembly(
           }
           refuse("UNKNOWN_COMMAND", "Operation is not assembled");
         }
-        const current = snapshot(call);
+        let current = snapshot(call);
+        const target = current.candidates.find(
+          (candidate) => candidate.op === request.op,
+        );
+        if (target && !target.admitted) {
+          await trustState.open(false);
+          current = snapshot(call);
+        }
         if (
           !current.catalog.list().includes(request.op) &&
           current.problems.length
@@ -1047,6 +1062,9 @@ export async function createAssembly(
     root,
     deviceRoot,
     exposure: composition(callScope().config.show()).mcp ?? {},
+    async prepareTrust() {
+      await trustState.open(false);
+    },
     async close() {
       try {
         await projectState.close();

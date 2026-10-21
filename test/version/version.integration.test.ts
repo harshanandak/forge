@@ -20,10 +20,8 @@ test("the command bin prints the version, discovers its catalog and refuses unkn
   for (const args of [[], ["--help"]]) {
     const help = Bun.spawnSync([process.execPath, bin, ...args]);
     expect(help.exitCode).toBe(0);
-    expect(JSON.parse(help.stdout.toString())).toMatchObject({
-      ok: true,
-      op: "catalog.list",
-    });
+    expect(help.stdout.toString()).toStartWith("Usage: forge");
+    expect(help.stderr.toString()).not.toContain("Store filesystem warning");
   }
   const bad = Bun.spawnSync([process.execPath, bin, "unknown-command"]);
   expect(bad.exitCode).toBe(3);
