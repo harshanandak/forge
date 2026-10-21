@@ -60,17 +60,9 @@ function project(files) {
     );
     return JSON.parse(result.stdout);
   };
-  const revision = () => cli(["config", "show"]).result.revision;
+  // A first import needs no prior config show: the project has no config file yet.
   const importDelivery = (expected = 0) =>
-    cli(
-      [
-        "template",
-        "import",
-        "--input",
-        JSON.stringify({ template: "delivery", expectRevision: revision() }),
-      ],
-      expected,
-    );
+    cli(["template", "import", "delivery"], expected);
   if (Object.keys(files).length === 0)
     return { root, cli, refused: importDelivery(6) };
   assert.equal(importDelivery().result.template, "harsha/delivery@0.1.0");
@@ -96,21 +88,7 @@ function project(files) {
       ],
     }),
   ]);
-  // The project passes its runner the environment it needs; check passes nothing by default.
-  cli([
-    "config",
-    "set",
-    "--input",
-    JSON.stringify({
-      path: "/blocks/check/config/environment",
-      value: Object.keys(env).filter((name) =>
-        /^(?:path|pathext|systemroot|windir|comspec|temp|tmp|home|appdata|localappdata|userprofile)$/i.test(
-          name,
-        ),
-      ),
-      expectRevision: revision(),
-    }),
-  ]);
+  // No environment config: check's default finds the project's own npm on PATH.
   return { root, cli };
 }
 

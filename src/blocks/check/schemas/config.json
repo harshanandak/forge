@@ -90,7 +90,21 @@
       "maximum": 67108864
     },
     "environment": {
-      "default": [],
+      "description": "Names of variables passed to each command; nothing else is inherited. The default lets the project's own toolchain be found and run on Linux, macOS and Windows; names a platform lacks are skipped.",
+      "default": [
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "windir",
+        "ComSpec",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA"
+      ],
       "type": "array",
       "maxItems": 256,
       "uniqueItems": true,

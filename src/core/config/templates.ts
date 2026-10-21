@@ -87,13 +87,14 @@ export interface TemplateApi {
       readonly edited: boolean;
     }[];
   };
+  /** Without expectRevision the edit expects no config file yet: a first import. */
   importTemplate(input: {
     readonly template: string;
-    readonly expectRevision: string;
+    readonly expectRevision?: string;
   }): ImportResult;
   remove(input: {
     readonly template: string;
-    readonly expectRevision: string;
+    readonly expectRevision?: string;
   }): RemoveResult;
 }
 
@@ -248,7 +249,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
 
   const editWith = <T>(
     op: string,
-    expectRevision: string,
+    expectRevision: string | undefined,
     change: (document: JsonObject) => T,
   ): WriteResult & { readonly detail: T } => {
     let detail: T | undefined;
