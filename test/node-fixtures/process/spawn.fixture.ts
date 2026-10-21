@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { isRunning } from "./liveness.ts";
+import { waitUntilGone } from "./liveness.ts";
 
 interface Adapter {
   createProcessPort(options: {
@@ -214,10 +214,12 @@ results["badCwd"] = await rejection(
 );
 
 // A command that starts a grandchild and then waits: timeout and cancellation must stop both.
+// The parent publishes the grandchild's pid by renaming a finished file into place, so the pid
+// file appearing is the "tree is ready" signal and is never read half-written.
 async function stoppedTree(
   name: string,
   extra: { timeoutMs?: number; signal?: AbortSignal },
-  onStarted: () => void = () => undefined,
+  onReady: () => void = () => undefined,
 ): Promise<Record<string, unknown>> {
   const pidFile = join(work, `${name}.pid`);
   const parentJs = join(work, `${name}.js`);
@@ -229,35 +231,43 @@ async function stoppedTree(
       // On Windows a non-detached child sits in libuv's kill-on-close job and would die with its
       // parent anyway; detaching it leaves only the tree kill to stop it.
       `const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', detached: ${windows} });`,
-      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+      `fs.writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, String(child.pid));`,
+      `fs.renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});`,
       "setInterval(()=>{},1000);",
     ].join("\n"),
   );
   const pending = run(process.execPath, [parentJs], extra);
-  for (let wait = 0; wait < 100 && !existsSync(pidFile); wait += 1)
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  onStarted();
+  let settled = false;
+  void pending.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  // Waits on the ready signal or the run ending, never on a clock: under load the parent may take
+  // any time to start, and the run's own timeout bounds this wait.
+  while (!settled && !existsSync(pidFile))
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  if (!settled) onReady();
   const result = await pending;
-  const grandchildPid = Number(readFileSync(pidFile, "utf8"));
+  const grandchildStarted = existsSync(pidFile);
   const childPid = (result["supervision"] as { commandPid?: number })
     .commandPid;
-  let alive = true;
-  for (let attempt = 0; attempt < 40 && alive; attempt += 1) {
-    if (isRunning(grandchildPid) || (childPid && isRunning(childPid))) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } else {
-      alive = false;
-    }
-  }
-  for (const pid of [grandchildPid, childPid ?? 0])
-    if (alive && pid > 0)
+  const pids = [
+    grandchildStarted ? Number(readFileSync(pidFile, "utf8")) : 0,
+    childPid ?? 0,
+  ].filter((pid) => pid > 0);
+  const stopped = await waitUntilGone(pids);
+  for (const pid of pids)
+    if (!stopped)
       try {
         process.kill(pid, "SIGKILL");
       } catch {
         // already gone
       }
-  return { ...result, treeAlive: alive };
+  return { ...result, grandchildStarted, treeAlive: !stopped };
 }
+// The timeout clock starts at spawn and covers the parent's own start-up, so under load the timeout
+// can end the parent before it starts the grandchild; then there is no grandchild to leak and the
+// outcome reports so. Cancellation waits for the ready signal, so it always ends a full tree.
 results["timeout"] = await stoppedTree("timeout", { timeoutMs: 1500 });
 const controller = new AbortController();
 results["cancel"] = await stoppedTree(

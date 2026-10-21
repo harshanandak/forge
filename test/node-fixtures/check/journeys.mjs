@@ -31,7 +31,7 @@ const { detectProject, createFolderFiles } = await load(
 // kill(pid, 0) until it is reaped. The state-aware probe counts it as stopped.
 const probe = process.env.CHECK_LIVENESS_PROBE;
 assert.ok(probe, "CHECK_LIVENESS_PROBE names the transpiled liveness probe");
-const { isRunning } = await import(pathToFileURL(probe).href);
+const { waitUntilGone } = await import(pathToFileURL(probe).href);
 const child = fileURLToPath(new URL("child.mjs", import.meta.url));
 const directory = realpathSync(mkdtempSync(join(tmpdir(), "check-journey-")));
 const opened = await sqliteStore.open({
@@ -230,12 +230,11 @@ const cases = {
       );
       assert.equal(launches, 1, "cancellation starts no subsequent check");
       const pids = JSON.parse(readFileSync(marker, "utf8"));
-      for (const pid of Object.values(pids))
-        assert.equal(
-          isRunning(pid),
-          false,
-          "cancellation stops every marked process",
-        );
+      assert.equal(
+        await waitUntilGone(Object.values(pids)),
+        true,
+        "cancellation stops every marked process",
+      );
       assert.deepEqual(
         state.list(),
         acceptedBefore,
@@ -334,7 +333,11 @@ const cases = {
     );
     const pid = Number(/descendant:(\d+)/.exec(receipt.runs[0].stdout)?.[1]);
     assert.ok(pid > 0, "descendant started");
-    assert.equal(isRunning(pid), false, "timeout reaps descendant");
+    assert.equal(
+      await waitUntilGone([pid]),
+      true,
+      "timeout reaps descendant",
+    );
   },
   async receipt() {
     const receipt = await check.run({ trigger: "manual" }, config("unknown"));
