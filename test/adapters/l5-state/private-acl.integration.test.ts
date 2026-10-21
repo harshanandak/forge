@@ -39,10 +39,29 @@ test.skipIf(process.platform !== "win32")(
     try {
       const file = join(dir, "store");
       writeFileSync(file, "store");
+      // Explicit allow and deny entries that /grant:r alone would keep.
+      const icacls = real.resolve(
+        join(env["SystemRoot"] ?? "C:\\Windows", "System32", "icacls.exe"),
+        env,
+      );
+      if (icacls.kind !== "resolved") throw new Error(icacls.reason);
+      for (const change of [
+        ["/grant", "*S-1-1-0:R"],
+        ["/deny", "*S-1-5-32-546:R"],
+      ]) {
+        const changed = await real.run(icacls, [file, ...change], {
+          cwd: dir,
+          env,
+          timeoutMs: 30000,
+          maxOutputBytes: 4096,
+        });
+        expect(changed.exitCode).toBe(0);
+      }
       results.length = 0;
-      await hardenPrivatePaths([file], recording, env);
+      await hardenPrivatePaths([file, dir], recording, env);
       // Progress records went to the bounded stderr before, crowding out any real error.
-      expect(results.map((result) => result.stderr)).toEqual([""]);
+      expect(results.map((result) => result.stderr).join("")).toBe("");
+      expect(results.length).toBeGreaterThan(0);
       await rejects(
         hardenPrivatePaths([join(dir, "missing")], recording, env),
         /Private ACL application or verification failed.*missing/,
