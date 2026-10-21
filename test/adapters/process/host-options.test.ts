@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { rejects } from "node:assert/strict";
+import { test } from "bun:test";
 import { runProcess } from "../../../src/adapters/process/run.ts";
 
 const supervision = {
@@ -16,7 +17,7 @@ test("a malformed strictContainment policy refuses before the POSIX fast path sp
     "linux",
     { supervision, strictContainment: "no" as unknown as boolean },
   );
-  await expect(run).rejects.toMatchObject({ code: "INVALID_OPTIONS" });
+  await rejects(run, { code: "INVALID_OPTIONS" });
 }, 5_000);
 
 test("strict containment refuses on Linux and macOS, which have no backend", async () => {
@@ -34,8 +35,6 @@ test("strict containment refuses on Linux and macOS, which have no backend", asy
       platform,
       { supervision },
     );
-    await expect(run).rejects.toMatchObject({
-      code: "CONTAINMENT_UNAVAILABLE",
-    });
+    await rejects(run, { code: "CONTAINMENT_UNAVAILABLE" });
   }
 }, 5_000);

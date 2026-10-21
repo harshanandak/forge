@@ -1,4 +1,5 @@
 // [integration] Real Windows ACL changes on disposable files, through the real process adapter.
+import { rejects } from "node:assert/strict";
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,9 +43,8 @@ test.skipIf(process.platform !== "win32")(
       await hardenPrivatePaths([file], recording, env);
       // Progress records went to the bounded stderr before, crowding out any real error.
       expect(results.map((result) => result.stderr)).toEqual([""]);
-      await expect(
+      await rejects(
         hardenPrivatePaths([join(dir, "missing")], recording, env),
-      ).rejects.toThrow(
         /Private ACL application or verification failed.*missing/,
       );
     } finally {
