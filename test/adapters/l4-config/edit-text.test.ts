@@ -5,6 +5,16 @@ import { DEFAULT_PARSE_LIMITS } from "../../../src/contract/untrusted.ts";
 setDefaultTimeout(30_000);
 
 const cases: ReadonlyArray<readonly [string, unknown, string]> = [
+  ["a: old # retained\n", { a: { b: 1 } }, "a: { b: 1 } # retained\n"],
+  ["a: old # retained\n", { a: [1, 2] }, "a: [ 1, 2 ] # retained\n"],
+  ["a: { b: old }\n", { a: { b: { c: 1 } } }, "a: { b: { c: 1 } }\n"],
+  ["a: [ old ]\n", { a: [[1, 2]] }, "a: [ [ 1, 2 ] ]\n"],
+  [" \r\n\r\n", { a: 1, b: 2 }, " \r\n\r\na: 1\r\nb: 2\r\n"],
+  ...["\n", "\r\n"].map((newline): readonly [string, unknown, string] => [
+    `blocks:${newline}  check:${newline}    reviewers:${newline}      - alice # primary`,
+    { blocks: { check: { reviewers: ["alice", "bob"] } } },
+    `blocks:${newline}  check:${newline}    reviewers:${newline}      - alice # primary${newline}      - bob${newline}`,
+  ]),
   [
     "a: |\r\n  old\r\nb: keep\r\n",
     { a: "new\nlines\n", b: "keep" },

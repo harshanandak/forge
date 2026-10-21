@@ -12,10 +12,7 @@ import {
   type Node,
 } from "yaml";
 import { jsonEqual } from "../../contract/schema.ts";
-
-function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { isObject } from "../../core/config/pointer.ts";
 
 interface Layout {
   readonly newline: string;
@@ -58,7 +55,7 @@ function update(
   if (jsonEqual(before, value)) return token;
   if (
     isMap(node) &&
-    object(value) &&
+    isObject(value) &&
     (token.type === "block-map" || token.type === "flow-collection")
   ) {
     const items: CST.CollectionItem[] = [];
@@ -78,6 +75,10 @@ function update(
       }
       item.start = [...carried, ...item.start];
       carried = [];
+      if (!item.value && value[key] === null) {
+        items.push(item);
+        continue;
+      }
       if (!item.value && token.type === "block-map") {
         const childIndent = token.indent + layout.step;
         item.value = tokenFor(value[key], childIndent, false, layout);
@@ -217,13 +218,22 @@ function update(
             last.end?.every((part) => part.type === "space")
           )
             last.end = [];
-        } else
+        } else {
           added.start.unshift({
             type: "space",
             offset: 0,
             indent: token.indent,
             source: " ".repeat(token.indent),
           });
+          const last = items.at(-1);
+          if (last && !CST.stringify(last).endsWith("\n"))
+            added.start.unshift({
+              type: "newline",
+              offset: 0,
+              indent: token.indent,
+              source: layout.newline,
+            });
+        }
         items.push(added);
       }
     }
@@ -250,13 +260,25 @@ function update(
   }
   const replacement = tokenFor(value, indent, true, layout);
   if ("end" in replacement) {
-    if ("end" in token) replacement.end = token.end ?? [];
-    else if (flow) replacement.end = [];
+    const closing = (part: CST.SourceToken): boolean =>
+      part.type === "flow-map-end" || part.type === "flow-seq-end";
+    const trailing =
+      "end" in token
+        ? (token.end ?? []).filter((part) => !closing(part))
+        : flow
+          ? []
+          : undefined;
+    if (trailing !== undefined)
+      replacement.end = [
+        ...(replacement.end ?? []).filter(closing),
+        ...trailing,
+      ];
   }
   return replacement;
 }
 
 export function editYaml(text: string, value: unknown): string {
+  const newline = text.includes("\r\n") ? "\r\n" : "\n";
   const tokens = [...new Parser().parse(text)];
   const [document] = new Composer({
     keepSourceTokens: true,
@@ -266,13 +288,15 @@ export function editYaml(text: string, value: unknown): string {
   const source = tokens.find((token) => token.type === "document");
   if (document === undefined || source?.type !== "document")
     return (
-      text + (text === "" || text.endsWith("\n") ? "" : "\n") + stringify(value)
+      text +
+      (text === "" || text.endsWith("\n") ? "" : newline) +
+      stringify(value).replaceAll("\n", newline)
     );
   const indents = [...text.matchAll(/^ +(?=\S)/gm)].map(
     (match) => match[0].length,
   );
   const layout = {
-    newline: text.includes("\r\n") ? "\r\n" : "\n",
+    newline,
     step: indents.length ? Math.min(...indents) : 2,
   };
   source.value = update(document.contents, value, 0, false, layout);

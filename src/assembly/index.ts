@@ -217,10 +217,12 @@ export async function createAssembly(
     shipped: ReturnType<typeof shippedTemplates>;
     config: ReturnType<typeof createConfig>;
     configOperations: ReturnType<typeof createConfigOperations>;
+    warnings: Array<{ code: string; message: string }>;
   };
   function callScope(derived: readonly DetectionObservation[] = []): CallScope {
     const captures = new Map<string, CapturedBlock | { failed: unknown }>();
     const shipped = shippedTemplates();
+    const warnings: CallScope["warnings"] = [];
     function captured(source: BlockSource): CapturedBlock {
       const key = JSON.stringify(source);
       let found = captures.get(key);
@@ -244,6 +246,8 @@ export async function createAssembly(
     const environment = {
       files: nodeConfigFiles(root),
       codec: yamlConfigCodec,
+      warn: (message: string) =>
+        warnings.push({ code: "CONFIG_FORMATTING_LOST", message }),
       clock: { now: () => Date.now() },
       detect: () => [
         ...detectProject(createFolderFiles(root)).observations,
@@ -272,6 +276,7 @@ export async function createAssembly(
     return {
       captured,
       shipped,
+      warnings,
       config: createConfig(environment),
       configOperations: createConfigOperations(environment),
     };
@@ -746,7 +751,7 @@ export async function createAssembly(
                 ),
                 result: output,
               };
-            return success(request.op, output);
+            return { ...success(request.op, output), warnings: call.warnings };
           }
           if (request.op === "skills.sync") {
             await trustState.open(false);

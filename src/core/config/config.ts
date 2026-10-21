@@ -63,6 +63,7 @@ export interface ConfigEnvironment extends StoreDeps, BlockLookup {
   /** Observations from the installed detector operations, read afresh on every call. */
   readonly detect: () => readonly unknown[];
   readonly limits?: ParseLimits;
+  readonly warn?: (message: string) => void;
 }
 
 export interface Instance {
@@ -369,6 +370,7 @@ export function planBytes(
       ? undefined
       : new TextDecoder("utf-8", { ignoreBOM: true }).decode(current.bytes),
     env,
+    env.warn,
   );
   const after = bytes === null ? undefined : next;
   return { bytes, changes: diff(current.document, after) };

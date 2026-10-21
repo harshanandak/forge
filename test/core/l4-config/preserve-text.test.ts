@@ -21,6 +21,51 @@ blocks:
 # end of team config
 `;
 
+for (const check of [
+  "  check: # keep instance\n    config: {} # deliberately empty\n",
+  "  check: {} # keep empty instance\n",
+  "  check: # keep null instance\n",
+]) {
+  test("editing git leaves an untouched empty check instance byte-identical", () => {
+    const p = makeProject();
+    projects.push(p);
+    const text = `blocks:\n  git:\n    base: 'main'\n${check}`;
+    p.env.files.write(".forge/config.yaml", new TextEncoder().encode(text));
+    p.config.set({
+      path: "git.base",
+      value: "develop",
+      expectRevision: p.config.show().revision,
+    });
+    expect(p.read()).toBe(text.replace("'main'", "'develop'"));
+  });
+}
+
+test("source-only template blocks remain removable after import into short form", () => {
+  const p = makeProject();
+  projects.push(p);
+  const text = "blocks:\n  git:\n    base: 'main' # user choice\n";
+  p.env.files.write(".forge/config.yaml", new TextEncoder().encode(text));
+  const imported = p.templates.importTemplate({
+    template: "forge/starter",
+    expectRevision: p.config.show().revision,
+  });
+  expect(
+    p.templates
+      .show({ template: "forge/starter" })
+      .owned.toSorted((a, b) => a.pointer.localeCompare(b.pointer)),
+  ).toEqual(imported.added.map((pointer) => ({ pointer, edited: false })));
+  const removed = p.templates.remove({
+    template: "forge/starter",
+    expectRevision: imported.revision,
+  });
+  expect(removed.removed).toEqual(imported.added);
+  expect(removed.kept).toEqual([]);
+  expect(p.config.show().instances.map((instance) => instance.name)).toEqual([
+    "git",
+  ]);
+  expect(p.config.show().templates).toEqual([]);
+});
+
 for (const text of [
   "\uFEFF# header\nblocks:\n  git:\n    base: 'main'\n",
   "# header\nschemaVersion: forge.config/1\nblocks:\n  git:\n    source: { builtin: forge/git }\n    config:\n      base: 'main'\n",

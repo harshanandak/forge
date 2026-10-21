@@ -168,7 +168,12 @@ export function encodeDocument(
   codec: ConfigCodecPort,
   originalText?: string,
   lookup: BlockLookup = {},
+  warn?: (message: string) => void,
 ): Uint8Array | null {
+  const matches = (text: string, planned: JsonObject): boolean => {
+    const decoded = codec.decode(text, DEFAULT_PARSE_LIMITS);
+    return decoded.ok && jsonEqual(decoded.value, planned);
+  };
   if (originalText !== undefined) {
     const original = codec.decode(originalText, DEFAULT_PARSE_LIMITS);
     if (original.ok && (isObject(original.value) || original.value === null)) {
@@ -177,13 +182,29 @@ export function encodeDocument(
         return configuresNothing(expandShortForm(structuredClone(value)))
           ? new TextEncoder().encode(originalText)
           : null;
-      return new TextEncoder().encode(
-        codec.edit(originalText, keepForm(document, value, lookup)),
+      const planned = keepForm(document, value, lookup);
+      let edited: string | undefined;
+      try {
+        const text = codec.edit(originalText, planned);
+        if (matches(text, planned)) edited = text;
+      } catch {
+        // Formatting is best effort; the validated values still decide the write.
+      }
+      if (edited !== undefined) return new TextEncoder().encode(edited);
+      warn?.(
+        `${CONFIG_FILE}: formatting could not be preserved; using whole-document serialization`,
       );
     }
   }
   if (configuresNothing(document)) return null;
-  return new TextEncoder().encode(codec.encode(document));
+  const text = codec.encode(document);
+  if (!matches(text, document))
+    throw new ForgeFailure({
+      code: "OUTPUT_INVALID",
+      message: `${CONFIG_FILE}: serialized config does not match the planned values; no file was written`,
+      retry: "never",
+    });
+  return new TextEncoder().encode(text);
 }
 
 export interface Change {

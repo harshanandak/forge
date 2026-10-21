@@ -21,12 +21,16 @@ export function keepForm(
   for (const [name, instance] of Object.entries(blocks)) {
     if (!isObject(instance)) continue;
     const was = isObject(previous[name]) ? previous[name] : {};
+    const sourceOwned =
+      isObject(next.owners) &&
+      Object.hasOwn(next.owners, formatPointer(["blocks", name, "source"]));
     const compact = Object.hasOwn(previous, name)
       ? !Object.hasOwn(was, "config")
       : short;
     if (
       (Object.hasOwn(previous, name) || short) &&
       !Object.hasOwn(was, "source") &&
+      !(sourceOwned && !Object.hasOwn(previous, name)) &&
       jsonEqual(instance.source, lookup.builtinSource?.(name))
     )
       delete instance.source;
@@ -54,7 +58,8 @@ export function keepForm(
           instance[key] = value;
         else remaining[key] = value;
       }
-      if (Object.keys(remaining).length > 0) instance.config = remaining;
+      if (Object.keys(remaining).length > 0 || Object.hasOwn(was, "config"))
+        instance.config = remaining;
       else delete instance.config;
     }
     if (previous[name] === null && Object.keys(instance).length === 0)
