@@ -9,20 +9,37 @@ function errno(code: string): NodeJS.ErrnoException {
 
 test("a group left with only zombies after SIGKILL counts as stopped, without waiting", async () => {
   const sent: (NodeJS.Signals | 0)[] = [];
+  // A clock that moves only when the stop sequence sleeps, so the sequence is the same under any load.
+  let now = 0;
+  const clock = {
+    now: () => now,
+    sleep: (ms: number) => Promise.resolve((now += ms)),
+  };
   // Zombies keep answering a signal-zero probe of their group until something reaps them.
-  const started = performance.now();
-  const stopped = await endProcessGroup(4242, timing, (pid, signal) => {
-    expect(pid).toBe(-4242);
-    sent.push(signal);
-  });
-  expect(stopped).toBe(true);
-  expect(sent[0]).toBe("SIGTERM");
-  // SIGKILL is re-sent so a child forked while the first one landed is caught too.
-  expect(sent.filter((signal) => signal === "SIGKILL")).toHaveLength(4);
-  // Only the SIGTERM grace (half the budget) is spent; nothing polls after SIGKILL.
-  expect(performance.now() - started).toBeLessThan(
-    timing.cleanupTimeoutMs * 0.9,
+  const stopped = await endProcessGroup(
+    4242,
+    timing,
+    (pid, signal) => {
+      expect(pid).toBe(-4242);
+      sent.push(signal);
+    },
+    undefined,
+    clock,
   );
+  expect(stopped).toBe(true);
+  // SIGTERM, a probe every poll interval through the grace (half the budget), then SIGKILL re-sent
+  // so a child forked while the first one landed is caught too. Nothing probes after SIGKILL.
+  const grace = timing.cleanupTimeoutMs / 2;
+  expect(sent).toEqual([
+    "SIGTERM",
+    ...Array<0>(grace / timing.pollIntervalMs).fill(0),
+    "SIGKILL",
+    "SIGKILL",
+    "SIGKILL",
+    "SIGKILL",
+  ]);
+  // Only the grace and the re-send spacing are spent, well inside the budget.
+  expect(now).toBe(grace + 3 * 25);
 }, 5_000);
 
 test("a group that exits after SIGTERM is never sent SIGKILL", async () => {

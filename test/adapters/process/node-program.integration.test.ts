@@ -32,8 +32,8 @@ interface Outcomes {
   envIsolation: Run;
   missingCommand: { kind: string; reason: string; remedy: string };
   badCwd: { code: string };
-  timeout: Run & { treeAlive: boolean };
-  cancel: Run & { treeAlive: boolean };
+  timeout: Run & { grandchildStarted: boolean; treeAlive: boolean };
+  cancel: Run & { grandchildStarted: boolean; treeAlive: boolean };
 }
 
 let outcomes: Outcomes;
@@ -140,9 +140,11 @@ test.each(["node", "bun"])(
       exitCode: null,
       treeAlive: false,
     });
+    // Cancellation fires only once the grandchild is up, so it always proves the whole tree stops.
     expect(ran.cancel).toMatchObject({
       timedOut: false,
       exitCode: null,
+      grandchildStarted: true,
       treeAlive: false,
     });
   },

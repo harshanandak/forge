@@ -8,6 +8,14 @@ import type { SupervisionOptions } from "./supervision.ts";
 
 type Kill = (pid: number, signal: NodeJS.Signals | 0) => void;
 
+/** The time source the stop sequence paces itself by; tests pass one they advance themselves. */
+export interface StopClock {
+  now(): number;
+  sleep(ms: number): Promise<unknown>;
+}
+
+const realClock: StopClock = { now: () => performance.now(), sleep };
+
 /** Extra group SIGKILLs after the first, to catch a child forked while the first one landed. */
 const SIGKILL_RESENDS = 3;
 const SIGKILL_RESEND_INTERVAL_MS = 25;
@@ -29,12 +37,13 @@ export async function endProcessGroup(
   timing: Pick<SupervisionOptions, "cleanupTimeoutMs" | "pollIntervalMs">,
   kill: Kill = (target, signal) => process.kill(target, signal),
   reaped: Promise<unknown> = Promise.resolve(),
+  clock: StopClock = realClock,
 ): Promise<boolean> {
-  const deadline = performance.now() + timing.cleanupTimeoutMs;
+  const deadline = clock.now() + timing.cleanupTimeoutMs;
   const grace = deadline - timing.cleanupTimeoutMs / 2;
   let state = signalGroup(kill, pid, "SIGTERM");
-  while (state === "present" && performance.now() < grace) {
-    await sleep(Math.min(timing.pollIntervalMs, grace - performance.now()));
+  while (state === "present" && clock.now() < grace) {
+    await clock.sleep(Math.min(timing.pollIntervalMs, grace - clock.now()));
     state = signalGroup(kill, pid, 0);
   }
   if (state === "gone") return true;
@@ -47,19 +56,16 @@ export async function endProcessGroup(
     state === "refused" ||
     (state === "present" && resends < SIGKILL_RESENDS)
   ) {
-    const left = deadline - performance.now();
+    const left = deadline - clock.now();
     if (left <= 0) break;
     if (state === "refused") {
       await within(reaped, left);
-      await sleep(
-        Math.min(
-          timing.pollIntervalMs,
-          Math.max(0, deadline - performance.now()),
-        ),
+      await clock.sleep(
+        Math.min(timing.pollIntervalMs, Math.max(0, deadline - clock.now())),
       );
     } else {
       resends++;
-      await sleep(Math.min(SIGKILL_RESEND_INTERVAL_MS, left));
+      await clock.sleep(Math.min(SIGKILL_RESEND_INTERVAL_MS, left));
     }
     state = signalGroup(kill, pid, "SIGKILL");
   }
