@@ -60,7 +60,7 @@ const pending = runWithin(
   },
   (error: unknown) => {
     finished = true;
-    return (error as Error).message;
+    return error;
   },
 );
 Object.defineProperty(globalThis, "setTimeout", timer);
@@ -86,16 +86,16 @@ try {
     connection!.write(mode === "success" ? "0" : "3");
   }
   const outcome = await pending;
-  assert.equal(
-    outcome,
+  const expected =
     mode === "success"
       ? "ok"
       : mode === "failure"
         ? "ready tree failed: exit 3"
         : mode === "timeout"
           ? "ready tree timed out after 2000 ms; its process tree was killed"
-          : `ready tree failed: exit ${mode}`,
-  );
+          : `ready tree failed: exit ${mode}`;
+  if (outcome instanceof Error && outcome.message !== expected) throw outcome;
+  assert.equal(outcome instanceof Error ? outcome.message : outcome, expected);
   assert.equal(
     isRunning(descendant),
     false,

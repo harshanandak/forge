@@ -4,6 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWithin } from "../../../tools/pack-smoke/bounded.ts";
 
+for (const state of ["vanished", "present"])
+  test(`a failed group inspection requires OS proof that the group is ${state}`, () => {
+    const node = Bun.which("node");
+    if (node === null)
+      throw new Error("Node is required for cleanup fault injection");
+    const result = spawnSync(
+      node,
+      [join(import.meta.dirname, "inspection.fixture.ts"), state],
+      { encoding: "utf8", timeout: 10000, windowsHide: true },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(`PASS inspection ${state}`);
+  }, 15000);
+
 test("a runner stuck before descendant startup fails naming its phase", async () => {
   const started = performance.now();
   let caught: unknown;

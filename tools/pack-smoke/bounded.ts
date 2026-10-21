@@ -12,10 +12,21 @@ async function groupStopped(pid: number): Promise<void> {
   const deadline = performance.now() + 1000;
   // Signal delivery precedes process exit. Zombies cannot run, but may remain until reaped.
   while (true) {
-    const { stdout } = await inspect("ps", ["-A", "-o", "pgid=,stat="], {
-      timeout: Math.max(1, Math.ceil(deadline - performance.now())),
-      maxBuffer: 1024 * 1024,
-    });
+    let stdout: string;
+    try {
+      ({ stdout } = await inspect("ps", ["-A", "-o", "pgid=,stat="], {
+        timeout: Math.max(1, Math.ceil(deadline - performance.now())),
+        maxBuffer: 1024 * 1024,
+      }));
+    } catch (error) {
+      // A failed snapshot proves nothing; ESRCH from the OS proves the group is gone.
+      try {
+        process.kill(-pid, 0);
+      } catch (probe) {
+        if ((probe as NodeJS.ErrnoException).code === "ESRCH") return;
+      }
+      throw error;
+    }
     if (
       !stdout.split("\n").some((line) => {
         const [group, state] = line.trim().split(/\s+/);
