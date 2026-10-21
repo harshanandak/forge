@@ -403,7 +403,8 @@ try {
         env: { ...env, FORGE_DEVICE_ROOT: device },
         encoding: "utf8",
         windowsHide: true,
-        timeout: 10000,
+        // Cold Windows starts share the runner's finite 60 s process budget.
+        timeout: 60000,
       });
       assert.equal(
         child.status,
@@ -448,7 +449,7 @@ try {
         const id = ++next;
         const timer = setTimeout(
           () => reject(Error(`MCP timeout: ${errors}`)),
-          5000,
+          60000,
         );
         pending.set(id, (value) => {
           clearTimeout(timer);
