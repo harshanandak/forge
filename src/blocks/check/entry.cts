@@ -360,6 +360,15 @@ function selectedConfig(
     },
   };
 }
+// Windows startup reached 266 ms and stop/drain 23 ms; reserve lifecycle slack per command.
+const COMMAND_LIFECYCLE_MS = 1000;
+// Each snapshot launches Git twice (1029 ms measured); short command timers must not size Git work.
+const SNAPSHOT_FLOOR_MS = 5000;
+// Durable receipt write/readback took 8 ms; leave bounded time for sealing and publication.
+const RECEIPT_FINALIZATION_MS = 1000;
+function snapshotTimeoutMs(config: CheckConfig): number {
+  return Math.max(config.timeoutMs, SNAPSHOT_FLOOR_MS);
+}
 function runTimeoutMs(
   config: CheckConfig,
   input: RunInput,
@@ -367,8 +376,11 @@ function runTimeoutMs(
 ): number {
   const selected = selectedConfig(config, input.checks);
   validateBudgets(selected.config);
-  // Commands run sequentially, between two snapshots; leave time to seal the receipt.
-  const timeoutMs = (selected.names.length + 2) * config.timeoutMs + 1000;
+  const snapshotMs = snapshotTimeoutMs(config);
+  const timeoutMs =
+    selected.names.length * (config.timeoutMs + COMMAND_LIFECYCLE_MS) +
+    2 * snapshotMs +
+    RECEIPT_FINALIZATION_MS;
   if (
     !Number.isSafeInteger(config.timeoutMs) ||
     config.timeoutMs < 1 ||
@@ -377,7 +389,7 @@ function runTimeoutMs(
   )
     failure(
       "INPUT_INVALID",
-      `Selected commands' timeouts add up to more than the maximum operation timer budget of 2147483.647 s (including two snapshots and 1 s for finalization); ${configPath}.timeoutMs in .forge/config.yaml is ${config.timeoutMs / 1000} s each for ${selected.names.length} selected commands. Fix: lower ${configPath}.timeoutMs or select fewer checks with --input '{"checks":["name"]}'.`,
+      `Selected commands' timeouts add up to more than the maximum operation timer budget of 2147483.647 s (including ${COMMAND_LIFECYCLE_MS / 1000} s per command for lifecycle overhead, two snapshots at ${snapshotMs / 1000} s each, and ${RECEIPT_FINALIZATION_MS / 1000} s for finalization); ${configPath}.timeoutMs in .forge/config.yaml is ${config.timeoutMs / 1000} s each for ${selected.names.length} selected commands. Fix: lower ${configPath}.timeoutMs or select fewer checks with --input '{"checks":["name"]}'.`,
     );
   return timeoutMs;
 }
@@ -710,7 +722,7 @@ const operations = {
         services.files.snapshot({
           paths: config.inputs,
           maxBytes: config.maxInputBytes,
-          timeoutMs: config.timeoutMs,
+          timeoutMs: snapshotTimeoutMs(config),
           maxOutputBytes: SNAPSHOT_HEAD_OUTPUT_BYTES,
         }),
     });

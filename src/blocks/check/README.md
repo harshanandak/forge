@@ -73,12 +73,18 @@ select its own `report`; otherwise it uses the declared block report. `exit-code
 report interpretation, `json` requires a structured report, and `auto` delegates recognition
 to the replaceable output adapter. No particular command, parser mode or stop policy is
 selected by the engine. For the built-in `check.run`, assembly uses the existing instance
-`operationTimeouts` mechanism to default the deadline to `(selected commands + 2) × timeoutMs + 1000`
-milliseconds: sequential commands, two snapshots, and receipt finalization. Selection and
-receipt preflight reuse the block's selected-run budget resolver. A total above the finite
-timer ceiling is rejected before execution. Explicit instance overrides and host ceilings
-remain authoritative; when shorter than the selected run's budget they are rejected before
-execution. Command timeouts remain bounded by that invocation deadline.
+`operationTimeouts` mechanism to default the deadline, in milliseconds, to
+`selected commands × (timeoutMs + 1000) + 2 × max(timeoutMs, 5000) + 1000`:
+sequential commands with lifecycle headroom, two snapshots with a five-second floor,
+and receipt finalization. The snapshot calls use that same floor so a short command
+timer does not truncate Git startup. Windows measurements found up to 266 ms per
+process startup, 1029 ms per snapshot, 23 ms to stop and drain a supervisor, and 8 ms
+for durable receipt write/readback; the allowances leave room for slower runners.
+Selection and receipt preflight reuse the block's selected-run budget resolver.
+A total above the finite timer ceiling is rejected before execution. Explicit instance
+overrides and host ceilings remain authoritative; when shorter than the selected run's
+budget they are rejected before execution. Command timeouts remain bounded by that
+invocation deadline.
 
 Safety ceilings: 256 named checks (names 1–200 characters), 1024 arguments per command,
 1–2147483647 ms per command, and 1–262144 bytes per output stream. Input configuration
