@@ -18,6 +18,7 @@
     "memory.search": {
       "title": "Search notes",
       "summary": "Find notes in this project and on this device that mention any word of the query, best match first.",
+      "examples": [{ "input": { "query": "release" } }],
       "description": "Inside a project a search covers that project's notes and the device's notes; each hit says its level and where it came from. Another project is searched only when you name it in projects, and its notes come back read-only. Any query word may match; notes with more, rarer words rank first. The searched stores share a window of the newest 1000 note records below the cursor; when truncated is true, call again with cursor set to next (and the same level and projects) to reach the rest. A walk is pinned to the newest notes when it began. Results come back as untrusted text with where each came from."
     },
     "memory.show": {
