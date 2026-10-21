@@ -79,31 +79,81 @@ test("Windows ACLs start only System32 whoami and icacls, never PowerShell", () 
     ]);
   }));
 
-test("a leftover explicit entry is cleared with /reset and read back again", () =>
+/**
+ * A file's DACL as icacls would change it, recording every state it passes through. `fail`
+ * makes the named icacls switch fail without changing anything.
+ */
+function aclFake(
+  start: readonly string[],
+  fail?: string,
+): { readonly port: ProcessPort; readonly states: string[][] } {
+  let aces = [...start];
+  const states: string[][] = [aces];
+  const { port } = fakePort((args) => {
+    const op = args[1] ?? "";
+    if (op === fail) return { exitCode: 5, stderr: "Access is denied." };
+    const named = new Set(args.slice(2).map((name) => name.slice(1)));
+    const trustee = (ace: string): string => ace.split(";")[5] ?? "";
+    if (op === "/inheritance:r")
+      aces = [
+        `A;;FA;;;${sid}`,
+        ...aces.filter((ace) => !/^A;ID;/.test(ace) && trustee(ace) !== sid),
+      ];
+    // The parent's defaults: the window Codex flagged, where other users can open the file.
+    else if (op === "/reset") aces = ["A;ID;FA;;;BA", "A;ID;FR;;;BU"];
+    else if (op === "/remove:g" || op === "/remove:d") {
+      const type = op === "/remove:g" ? "A" : "D";
+      aces = aces.filter(
+        (ace) => ace.split(";")[0] !== type || !named.has(trustee(ace)),
+      );
+    }
+    if (op === "/save")
+      writeFileSync(
+        args[2] ?? "",
+        `store\r\nD:PAI${aces.map((ace) => `(${ace})`).join("")}\r\n`,
+        "utf16le",
+      );
+    else states.push(aces);
+    return {};
+  });
+  return { port, states };
+}
+
+/** Trustees other than the current user that some state allows in. */
+const othersAllowed = (aces: readonly string[]): string[] =>
+  aces.filter((ace) => ace[0] === "A" && !ace.endsWith(sid));
+
+test("leftover explicit entries are removed by trustee, and no state is broader than the last", () =>
   withFile(async (file) => {
-    const calls: string[] = [];
-    let saves = 0;
-    const { port } = fakePort((args) => {
-      calls.push(args[1] ?? "");
-      if (args[1] === "/save") {
-        saves += 1;
-        const extra = saves === 1 ? "(A;;FR;;;WD)" : "";
-        writeFileSync(
-          args[2] ?? "",
-          `store\r\nD:PAI(A;;FA;;;${sid})${extra}\r\n`,
-          "utf16le",
-        );
-      }
-      return {};
-    });
-    await hardenPrivatePaths([file], port, env, "win32");
-    expect(calls).toEqual([
-      "/inheritance:r",
-      "/save",
-      "/reset",
-      "/inheritance:r",
-      "/save",
+    const { port, states } = aclFake([
+      "A;;FR;;;WD",
+      "D;;FA;;;BU",
+      "A;ID;FA;;;BA",
     ]);
+    await hardenPrivatePaths([file], port, env, "win32");
+    expect(states.at(-1)).toEqual([`A;;FA;;;${sid}`]);
+    for (const [index, state] of states.entries())
+      for (const allowed of othersAllowed(state))
+        expect(othersAllowed(states[index - 1] ?? state)).toContain(allowed);
+  }));
+
+test("a failing removal leaves the ACL no broader than before and fails closed", () =>
+  withFile(async (file) => {
+    const { port, states } = aclFake(
+      ["A;;FR;;;WD", "A;ID;FA;;;BA"],
+      "/remove:g",
+    );
+    expect(await failure([file], port)).toMatch(
+      /^Private ACL application or verification failed \(icacls\.exe exit 5/,
+    );
+    expect(othersAllowed(states.at(-1) ?? [])).toEqual(["A;;FR;;;WD"]);
+  }));
+
+test("an ACL entry that is neither allow nor deny is refused, not guessed at", () =>
+  withFile(async (file) => {
+    const { port, states } = aclFake(["OA;;FA;;;WD"]);
+    expect(await failure([file], port)).toMatch(/unexpected ACL entry OA/);
+    expect(states).toHaveLength(2);
   }));
 
 test("a slow icacls is reported as a timeout of icacls", () =>
@@ -139,6 +189,24 @@ test("the built-in Administrator reads back under its SDDL alias LA", () =>
     }, "S-1-5-21-1-2-3-500");
     expect(await failure([file], port)).toBe("resolved");
   }));
+
+for (const [service, alias] of [
+  ["S-1-5-19", "LS"],
+  ["S-1-5-20", "NS"],
+] as const)
+  test(`the ${alias} service account reads back under its SDDL alias`, () =>
+    withFile(async (file) => {
+      const { port } = fakePort((args) => {
+        if (args[1] === "/save")
+          writeFileSync(
+            args[2] ?? "",
+            `store\r\nD:PAI(A;;FA;;;${alias})\r\n`,
+            "utf16le",
+          );
+        return {};
+      }, service);
+      expect(await failure([file], port)).toBe("resolved");
+    }));
 
 test("LA is refused when the current user is not the built-in Administrator", () =>
   withFile(async (file) => {

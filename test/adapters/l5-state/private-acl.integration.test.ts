@@ -39,19 +39,24 @@ test.skipIf(process.platform !== "win32")(
     try {
       const file = join(dir, "store");
       writeFileSync(file, "store");
-      // An explicit entry that /grant:r alone would keep.
+      // Explicit allow and deny entries that /grant:r alone would keep.
       const icacls = real.resolve(
         join(env["SystemRoot"] ?? "C:\\Windows", "System32", "icacls.exe"),
         env,
       );
       if (icacls.kind !== "resolved") throw new Error(icacls.reason);
-      const granted = await real.run(icacls, [file, "/grant", "*S-1-1-0:R"], {
-        cwd: dir,
-        env,
-        timeoutMs: 30000,
-        maxOutputBytes: 4096,
-      });
-      expect(granted.exitCode).toBe(0);
+      for (const change of [
+        ["/grant", "*S-1-1-0:R"],
+        ["/deny", "*S-1-5-32-546:R"],
+      ]) {
+        const changed = await real.run(icacls, [file, ...change], {
+          cwd: dir,
+          env,
+          timeoutMs: 30000,
+          maxOutputBytes: 4096,
+        });
+        expect(changed.exitCode).toBe(0);
+      }
       results.length = 0;
       await hardenPrivatePaths([file, dir], recording, env);
       // Progress records went to the bounded stderr before, crowding out any real error.

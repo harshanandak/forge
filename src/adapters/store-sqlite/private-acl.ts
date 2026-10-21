@@ -52,9 +52,13 @@ export async function hardenPrivatePaths(
       await run("icacls.exe", grant);
       let dacl = await readBack();
       if (!isPrivate(dacl, expected)) {
-        // /grant:r keeps other explicit entries; only then is /reset worth two more starts.
-        await run("icacls.exe", [path, "/reset"]);
-        await run("icacls.exe", grant);
+        // /grant:r keeps other trustees' explicit entries. Each is removed by name: every call
+        // only takes access away, so a failure part-way never leaves the ACL broader than before.
+        const extra = extraTrustees(dacl, sddlTrustees(sid));
+        if (extra.allowed.length > 0)
+          await run("icacls.exe", [path, "/remove:g", ...extra.allowed]);
+        if (extra.denied.length > 0)
+          await run("icacls.exe", [path, "/remove:d", ...extra.denied]);
         dacl = await readBack();
       }
       if (!isPrivate(dacl, expected))
@@ -65,14 +69,45 @@ export async function hardenPrivatePaths(
   }
 }
 
-/**
- * The forms SDDL may write the current user's SID in: the machine's built-in Administrator
- * (RID 500, the account hosted runners use) reads back as LA, LocalSystem as SY.
- */
+/** SDDL SID string aliases a process can run as, from Microsoft's "SID strings" list. */
+const SID_ALIASES: readonly (readonly [RegExp, string])[] = [
+  [/^S-1-5-18$/, "SY"],
+  [/^S-1-5-19$/, "LS"],
+  [/^S-1-5-20$/, "NS"],
+  // The machine's built-in Administrator (RID 500), the account hosted runners use.
+  [/^S-1-5-21-\d+-\d+-\d+-500$/, "LA"],
+];
+
+/** The forms SDDL may write the current user's SID in. */
 function sddlTrustees(sid: string): readonly string[] {
-  if (sid === "S-1-5-18") return [sid, "SY"];
-  if (/^S-1-5-21-\d+-\d+-\d+-500$/.test(sid)) return [sid, "LA"];
-  return [sid];
+  const alias = SID_ALIASES.find(([pattern]) => pattern.test(sid))?.[1];
+  return alias === undefined ? [sid] : [sid, alias];
+}
+
+/**
+ * Other trustees' allow and deny entries, as icacls `*` names (it takes a SID or an SDDL alias).
+ * Anything but plain allow and deny entries is refused rather than guessed at.
+ */
+function extraTrustees(
+  dacl: string,
+  own: readonly string[],
+): { readonly allowed: readonly string[]; readonly denied: readonly string[] } {
+  const body = /^D:[A-Z]*((?:\([^()]*\))*)$/.exec(dacl)?.[1];
+  if (body === undefined) throw failed(`unexpected ACL ${dacl.slice(0, 300)}`);
+  const allowed = new Set<string>();
+  const denied = new Set<string>();
+  for (const [, ace = ""] of body.matchAll(/\(([^()]*)\)/g)) {
+    const fields = ace.split(";");
+    const trustee = fields[5] ?? "";
+    if (fields.length !== 6 || !/^[A-Z]{2}$|^S-1-[0-9-]+$/.test(trustee))
+      throw failed(`unexpected ACL entry ${ace.slice(0, 300)}`);
+    if (fields[0] === "A" && !own.includes(trustee))
+      allowed.add(`*${trustee}`);
+    else if (fields[0] === "D") denied.add(`*${trustee}`);
+    else if (fields[0] !== "A")
+      throw failed(`unexpected ACL entry ${ace.slice(0, 300)}`);
+  }
+  return { allowed: [...allowed], denied: [...denied] };
 }
 
 /** Protected, with one expected entry and nothing else. */
