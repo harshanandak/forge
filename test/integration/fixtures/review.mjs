@@ -125,6 +125,10 @@ try {
     rmSync(removedPackage, { recursive: true, force: true });
     const show = cli(root, ["config", "show"], 6);
     assert.equal(show.ok, false, "missing sources make config invalid");
+    assert.ok(
+      show.result,
+      "config show must retain readable invalid configuration",
+    );
     assert.equal(show.result.valid, false);
     assert.equal(show.error.message, show.result.problems.join("\n"));
     for (const name of ["removed", "uninstalled"])

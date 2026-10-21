@@ -103,7 +103,7 @@ export const firstSliceMutations: readonly FirstSliceMutation[] = [
     to: "throw error; const reason = error instanceof ForgeFailure",
     mode: "missing-sources",
     fixture: "review",
-    evidence: "config show:",
+    evidence: "config show must retain readable invalid configuration",
   },
   {
     file: "src/assembly/capture.js",
