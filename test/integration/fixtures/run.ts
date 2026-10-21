@@ -54,6 +54,9 @@ export async function runBounded<T, R>(
   limit: number,
   run: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
+  // A zero limit would start no worker and report success for work that never ran.
+  if (!Number.isInteger(limit) || limit < 1)
+    throw new RangeError(`limit must be a positive integer, got ${limit}`);
   const output: R[] = [];
   const failures: unknown[] = [];
   let next = 0;

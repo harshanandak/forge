@@ -15,10 +15,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { runWithin } from "./bounded.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 // One command that hangs fails with its name instead of stalling the job.
 const COMMAND_TIMEOUT_MS = 300_000;
+// The whole pack-smoke step took at most 132 s in recent CI (Windows, Node 24); 10 minutes is
+// over four times that and still well inside the job's 20-minute ceiling.
+const JOURNEYS_TIMEOUT_MS = 600_000;
 const BUN_FILES = ["bun", "bun.exe", "bun.cmd", "bunx", "bunx.exe", "bunx.cmd"];
 
 function fail(message: string): never {
@@ -69,7 +73,7 @@ function ok(result: SpawnSyncReturns<string>): string {
   return result.stdout;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   if (process.versions.bun !== undefined) fail("run this with Node, not Bun");
   const expected = (
     JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
@@ -227,24 +231,30 @@ function main(): void {
       ? process.env.npm_execpath
       : "bun";
     console.log("- running the packed journeys against this install");
-    const journeys = spawnSync(
-      bun,
-      ["test", "--parallel=2", "--timeout", "30000", "packed.integration.test"],
-      {
-        cwd: root,
-        env: { ...process.env, FORGE_PACKED_CONSUMER: consumer },
-        stdio: "inherit",
-        windowsHide: true,
-      },
-    );
-    if (journeys.error || journeys.status !== 0)
-      fail(
-        `packed journeys failed: ${journeys.error?.message ?? `exit ${String(journeys.status)}`}`,
+    try {
+      await runWithin(
+        "packed journeys",
+        bun,
+        [
+          "test",
+          "--parallel=2",
+          "--timeout",
+          "30000",
+          "packed.integration.test",
+        ],
+        {
+          cwd: root,
+          env: { ...process.env, FORGE_PACKED_CONSUMER: consumer },
+        },
+        JOURNEYS_TIMEOUT_MS,
       );
+    } catch (error) {
+      fail((error as Error).message);
+    }
     console.log("pack-smoke: PASS");
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
 }
 
-main();
+await main();

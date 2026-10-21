@@ -41,3 +41,18 @@ test("bounded fixtures cap concurrent work, keep output order and drain failures
   expect((caught as AggregateError).errors).toHaveLength(2);
   expect(failureFinished.toSorted()).toEqual([0, 1, 2]);
 }, 1000);
+
+test("a limit that is not a positive integer is rejected instead of running nothing", async () => {
+  for (const limit of [0, -1, 1.5, Number.NaN]) {
+    let ran = false;
+    const failure = await runBounded([0], limit, (index) => {
+      ran = true;
+      return Promise.resolve(index);
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(RangeError);
+    expect(ran).toBe(false);
+  }
+}, 1000);
