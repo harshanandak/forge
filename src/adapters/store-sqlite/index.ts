@@ -100,7 +100,20 @@ export function sqliteIdentityError(
   return error;
 }
 
-function assertSingleLink(file: { readonly nlink: bigint } | undefined): void {
+function assertSingleLink(
+  path: string,
+  file:
+    | {
+        readonly nlink: bigint;
+        isFile(): boolean;
+        isDirectory(): boolean;
+      }
+    | undefined,
+): void {
+  if (file && !file.isFile())
+    throw new Error(
+      `${path} is ${file.isDirectory() ? "a directory" : "not a regular file"}, expected the Forge store file; move or delete it`,
+    );
   // Path-scoped fences cannot exclude hard-link aliases (including NTFS).
   // Refuse them instead of maintaining a second identity-scoped lock protocol.
   if (file && file.nlink > 1n)
@@ -174,7 +187,7 @@ export function createSqliteStore(
           path === ":memory:" || !existsSync(path)
             ? undefined
             : statSync(path, { bigint: true });
-        assertSingleLink(expectedIdentity);
+        assertSingleLink(path, expectedIdentity);
         hooks.step?.("identity-checked");
         // Keep the opened inode pinned across SQLite's open; reject either side
         // of a pathname replacement rather than adopting its newer identity.
@@ -216,8 +229,8 @@ export function createSqliteStore(
         const current =
           path === ":memory:" ? undefined : statSync(path, { bigint: true });
         assertUnfenced();
-        assertSingleLink(identity);
-        assertSingleLink(current);
+        assertSingleLink(path, identity);
+        assertSingleLink(path, current);
         if (
           identity &&
           current &&
@@ -317,7 +330,7 @@ export function createSqliteStore(
             throw new StoreRestoringError();
           if (identity) {
             const current = statSync(path, { bigint: true });
-            assertSingleLink(current);
+            assertSingleLink(path, current);
             if (identity.dev !== current.dev || identity.ino !== current.ino)
               throw new Error("Store identity changed; reopen required");
           }
@@ -482,7 +495,7 @@ export function createSqliteStore(
                 db.exec("PRAGMA query_only=ON");
                 verify();
                 if (!memory) {
-                  assertSingleLink(statSync(path, { bigint: true }));
+                  assertSingleLink(path, statSync(path, { bigint: true }));
                   approvedMarker = changeMarker(path);
                 }
                 step("fenced");
@@ -525,7 +538,7 @@ export function createSqliteStore(
                 )
                   throw new Error("Candidate identity drift before swap");
                 const current = statSync(path, { bigint: true });
-                assertSingleLink(current);
+                assertSingleLink(path, current);
                 if (
                   current.dev !== identity?.dev ||
                   current.ino !== identity.ino ||
