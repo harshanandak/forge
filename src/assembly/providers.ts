@@ -87,8 +87,11 @@ export function processCleanupBudgetMs(options?: SupervisionOptions): number {
   const timing = options ?? CLEANUP;
   return 2 * timing.cleanupTimeoutMs + timing.drainTimeoutMs;
 }
-// Windows snapshots took 228–1029 ms; include room for a full supervised cleanup.
-export const SNAPSHOT_TIMEOUT_MS = 15000;
+// Windows load exceeded the old 4.75 s Git window. Each of two HEAD lookups
+// needs a 10 s startup window plus the process service's cleanup bound.
+const SNAPSHOT_HEAD_MS = 10000;
+export const SNAPSHOT_TIMEOUT_MS =
+  2 * (SNAPSHOT_HEAD_MS + processCleanupBudgetMs());
 /** An operation wrapping one snapshot also needs time to return its result. */
 export const SNAPSHOT_OPERATION_TIMEOUT_MS: number = SNAPSHOT_TIMEOUT_MS + 1000;
 export const ASSEMBLY_PROVIDES: readonly string[] = [

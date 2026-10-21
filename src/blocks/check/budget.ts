@@ -2,6 +2,13 @@ import entry from "./entry.cts";
 import type { CheckConfig, RunInput } from "./types.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 
+/** Shared with the engine's enforced receipt publication deadline. */
+export function finalizationTimeoutMs(maxReceiptBytes: number): number {
+  return (
+    entry as unknown as { finalizationTimeoutMs: typeof finalizationTimeoutMs }
+  ).finalizationTimeoutMs(maxReceiptBytes);
+}
+
 /** One selected-run resolver for receipt and operation budgets. */
 export function runTimeoutMs(
   config: CheckConfig,

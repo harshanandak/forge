@@ -384,8 +384,15 @@ function selectedConfig(
     },
   };
 }
-// Durable receipt write/readback took 8 ms; leave bounded time for sealing and publication.
-const RECEIPT_FINALIZATION_MS = 1000;
+// Windows 512 KiB seal/store/ACL/readback: median 7.47 s, max 11.77 s (5 samples).
+// Reserve 1 s overhead plus 16 KiB/s, over 4x slower than the measured median.
+const RECEIPT_FINALIZATION = { baseMs: 1000, bytesPerSecond: 16384 } as const;
+function finalizationTimeoutMs(maxReceiptBytes: number): number {
+  return (
+    RECEIPT_FINALIZATION.baseMs +
+    Math.ceil((maxReceiptBytes * 1000) / RECEIPT_FINALIZATION.bytesPerSecond)
+  );
+}
 function runTimeoutMs(
   config: CheckConfig,
   input: RunInput,
@@ -395,10 +402,11 @@ function runTimeoutMs(
   const selected = selectedConfig(config, input.checks);
   validateBudgets(selected.config, configPath);
   const { cleanupMs, snapshotMs } = timing;
+  const finalizationMs = finalizationTimeoutMs(config.maxReceiptBytes);
   const timeoutMs =
     selected.names.length * (config.timeoutMs + cleanupMs) +
     2 * snapshotMs +
-    RECEIPT_FINALIZATION_MS;
+    finalizationMs;
   if (
     !Number.isSafeInteger(config.timeoutMs) ||
     config.timeoutMs < 1 ||
@@ -407,7 +415,7 @@ function runTimeoutMs(
   )
     failure(
       "INPUT_INVALID",
-      `Selected commands' timeouts add up to more than the maximum operation timer budget of 2147483.647 s (including ${cleanupMs / 1000} s per command for cleanup and drain, two snapshots at ${snapshotMs / 1000} s each, and ${RECEIPT_FINALIZATION_MS / 1000} s for finalization); ${configPath}.timeoutMs in .forge/config.yaml is ${config.timeoutMs / 1000} s each for ${selected.names.length} selected commands. Fix: lower ${configPath}.timeoutMs or select fewer checks with --input '{"checks":["name"]}'.`,
+      `Selected commands' timeouts add up to more than the maximum operation timer budget of 2147483.647 s (including ${cleanupMs / 1000} s per command for cleanup and drain, two snapshots at ${snapshotMs / 1000} s each, and ${finalizationMs / 1000} s for finalization); ${configPath}.timeoutMs in .forge/config.yaml is ${config.timeoutMs / 1000} s each for ${selected.names.length} selected commands. Fix: lower ${configPath}.timeoutMs or select fewer checks with --input '{"checks":["name"]}'.`,
     );
   return timeoutMs;
 }
@@ -653,7 +661,8 @@ function createCheck(
       const after = await services.snapshot();
       active();
       const finalizationDeadline =
-        services.clock.now() + RECEIPT_FINALIZATION_MS;
+        services.clock.now() +
+        finalizationTimeoutMs(frozenConfig.maxReceiptBytes);
       const changed = hash(before) !== hash(after);
       const status = changed ? "INCOMPLETE" : aggregate(runs);
       const body = {
@@ -788,4 +797,5 @@ module.exports = {
   verify,
   validateBudgets,
   runTimeoutMs,
+  finalizationTimeoutMs,
 };

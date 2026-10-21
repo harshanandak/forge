@@ -222,6 +222,7 @@ test("snapshots cap long caller budgets and reject a late final HEAD", async () 
   const clock = spyOn(Date, "now").mockImplementation(() => now);
   let heads = 0;
   let late = false;
+  let slow = false;
   const port: ProcessPort = {
     capability: "forge.process/v1",
     resolve: () => ({ kind: "resolved", path: "git" }),
@@ -232,8 +233,13 @@ test("snapshots cap long caller budgets and reject a late final HEAD", async () 
       expect(options.timeoutMs).toBeLessThanOrEqual(
         SNAPSHOT_TIMEOUT_MS - processCleanupBudgetMs(),
       );
-      now += late && heads % 2 === 0 ? SNAPSHOT_TIMEOUT_MS : 100;
-      return Promise.resolve(result("a".repeat(40)));
+      const elapsed =
+        late && heads % 2 === 0 ? SNAPSHOT_TIMEOUT_MS : slow ? 6000 : 100;
+      now += elapsed;
+      return Promise.resolve({
+        ...result("a".repeat(40)),
+        timedOut: !late && elapsed > options.timeoutMs,
+      });
     },
   };
   let lease;
@@ -254,12 +260,16 @@ test("snapshots cap long caller budgets and reject a late final HEAD", async () 
     expect(await lease.value.snapshot(input)).toMatchObject({
       head: "a".repeat(40),
     });
+    slow = true;
+    expect(await lease.value.snapshot(input)).toMatchObject({
+      head: "a".repeat(40),
+    });
     late = true;
     const failure = await lease.value
       .snapshot(input)
       .catch((error: unknown) => error);
     expect(String(failure)).toContain("Snapshot deadline exceeded");
-    expect(heads).toBe(4);
+    expect(heads).toBe(6);
   } finally {
     clock.mockRestore();
     await lease?.close();
