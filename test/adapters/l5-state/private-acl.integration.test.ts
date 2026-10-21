@@ -38,10 +38,24 @@ test.skipIf(process.platform !== "win32")(
     try {
       const file = join(dir, "store");
       writeFileSync(file, "store");
+      // An explicit entry that /grant:r alone would keep.
+      const icacls = real.resolve(
+        join(env["SystemRoot"] ?? "C:\\Windows", "System32", "icacls.exe"),
+        env,
+      );
+      if (icacls.kind !== "resolved") throw new Error(icacls.reason);
+      const granted = await real.run(icacls, [file, "/grant", "*S-1-1-0:R"], {
+        cwd: dir,
+        env,
+        timeoutMs: 30000,
+        maxOutputBytes: 4096,
+      });
+      expect(granted.exitCode).toBe(0);
       results.length = 0;
-      await hardenPrivatePaths([file], recording, env);
+      await hardenPrivatePaths([file, dir], recording, env);
       // Progress records went to the bounded stderr before, crowding out any real error.
-      expect(results.map((result) => result.stderr)).toEqual([""]);
+      expect(results.map((result) => result.stderr).join("")).toBe("");
+      expect(results.length).toBeGreaterThan(0);
       await expect(
         hardenPrivatePaths([join(dir, "missing")], recording, env),
       ).rejects.toThrow(
