@@ -90,8 +90,10 @@ export function schemaMaps(schema: JsonSchema | undefined): string[] {
   return Object.entries(schema.properties).flatMap(([key, property]) =>
     isObject(property) &&
     property.type === "object" &&
-    property.properties === undefined &&
-    isObject(property.additionalProperties)
+    (property.properties === undefined ||
+      (isObject(property.properties) &&
+        Object.keys(property.properties).length === 0)) &&
+    property.additionalProperties !== false
       ? [key]
       : [],
   );
