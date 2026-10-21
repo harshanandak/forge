@@ -38,6 +38,10 @@ function cli(args, expected = 0, input, label = "") {
   );
   return JSON.parse(result.stdout);
 }
+function runReceipt(envelope, label = "check.run receipt") {
+  assert.ok(envelope?.result, `${label}: ${JSON.stringify(envelope)}`);
+  return envelope.result;
+}
 function git(args) {
   const result = spawnSync("git", args, {
     cwd: root,
@@ -120,7 +124,7 @@ function bindings() {
     maxReceiptBytes: 1048576,
     stopOnFailure: false,
   });
-  const receipt = cli(["check", "run"], 2).result;
+  const receipt = runReceipt(cli(["check", "run"], 2));
   assert.equal(
     receipt.runs.length,
     128,
@@ -194,12 +198,15 @@ async function mcp(expectedStatus = "PASS", expectedCommands = ["test"]) {
       expectedCommands,
     );
     const run = await rpc("tools/call", { name: "check_run", arguments: {} });
+    const receipt = runReceipt(
+      run.result?.structuredContent,
+      `MCP awaits the declared command: ${JSON.stringify(run.error ?? null)}`,
+    );
     assert.equal(
-      run.result?.structuredContent?.result?.status,
+      receipt.status,
       expectedStatus,
       `MCP awaits the declared command: ${JSON.stringify(run.error ?? run.result?.structuredContent?.error ?? null)}`,
     );
-    const receipt = run.result.structuredContent.result;
     assert.equal(run.result.structuredContent.ok, expectedStatus === "PASS");
     assert.equal(run.result.isError, expectedStatus !== "PASS");
     const read = await rpc("tools/call", {
@@ -256,15 +263,12 @@ async function honest() {
     try {
       const envelope = cli(["check", "run"], exit, undefined, mode);
       assert.equal(envelope.ok, status === "PASS");
-      assert.equal(envelope.result.status, status);
-      if (mode === "fail") assert.equal(envelope.result.runs[0].exitCode, 7);
-      if (mode === "timeout")
-        assert.equal(envelope.result.runs[0].timedOut, true);
+      const receipt = runReceipt(envelope);
+      assert.equal(receipt.status, status);
+      if (mode === "fail") assert.equal(receipt.runs[0].exitCode, 7);
+      if (mode === "timeout") assert.equal(receipt.runs[0].timedOut, true);
       if (mode === "fail") {
-        assert.deepEqual(
-          cli(["check", "show", envelope.result.id]).result,
-          envelope.result,
-        );
+        assert.deepEqual(cli(["check", "show", receipt.id]).result, receipt);
         const called = cli(
           [
             "catalog",
@@ -275,7 +279,7 @@ async function honest() {
           exit,
         );
         assert.equal(called.ok, status === "PASS");
-        assert.equal(called.result.status, status);
+        assert.equal(runReceipt(called).status, status);
       }
     } catch (error) {
       failures.push(error);
@@ -298,7 +302,7 @@ async function review() {
     outputHeadBytes: 1,
     outputTailBytes: 0,
   });
-  const first = cli(["check", "run"]).result;
+  const first = runReceipt(cli(["check", "run"]));
   assert.equal(
     first.runs.length,
     1,
@@ -309,7 +313,7 @@ async function review() {
     "cA==",
     "command retention stays at one byte",
   );
-  const second = cli(["check", "run"]).result;
+  const second = runReceipt(cli(["check", "run"]));
   assert.equal(
     first.inputsDigest,
     second.inputsDigest,
@@ -405,7 +409,7 @@ try {
     console.log("PASS packed large declaration input binding");
   } else {
     assert.deepEqual(cli(["check", "list"]).result.commands, ["test"]);
-    const first = cli(["check", "run"]).result;
+    const first = runReceipt(cli(["check", "run"]));
     assert.equal(first.status, "PASS", "installed CLI awaits command");
     assert.equal(
       first.runs[0].testCount,
@@ -426,21 +430,25 @@ try {
         commands: { test: { argv: [process.execPath, "command.mjs", mode] } },
       });
       assert.equal(
-        cli(["check", "run"], status === "PASS" ? 0 : status === "FAIL" ? 1 : 2)
-          .result.status,
+        runReceipt(
+          cli(
+            ["check", "run"],
+            status === "PASS" ? 0 : status === "FAIL" ? 1 : 2,
+          ),
+        ).status,
         status,
         `CLI ${mode} outcome`,
       );
     }
     configure({ commands: {} });
     assert.equal(
-      cli(["check", "run"], 2).result.status,
+      runReceipt(cli(["check", "run"], 2)).status,
       "NOT_EXECUTED",
       "CLI nothing declared",
     );
     configure({ commands: config.commands });
     writeFileSync(join(root, "input.txt"), "changed bytes\n");
-    const changed = cli(["check", "run"]).result;
+    const changed = runReceipt(cli(["check", "run"]));
     assert.notEqual(
       first.inputsDigest,
       changed.inputsDigest,
@@ -456,7 +464,7 @@ try {
       maxOutputBytes: 262144,
       stopOnFailure: false,
     });
-    maximumReceipt(cli(["check", "run"]).result);
+    maximumReceipt(runReceipt(cli(["check", "run"])));
     maximumReceipt(await mcp("PASS", ["first", "second"]));
     bindings();
     await review();
@@ -465,7 +473,11 @@ try {
       join(root, ".forge/config.yaml"),
       `blocks:\n  check:\n    commands:\n      test: { argv: ${JSON.stringify(config.commands.test.argv)} }\n`,
     );
-    assert.equal(cli(["check", "run"]).result.status, "PASS", "short form");
+    assert.equal(
+      runReceipt(cli(["check", "run"])).status,
+      "PASS",
+      "short form",
+    );
     assert.equal(
       cli(["config", "explain", "--input", '{"path":"check.timeoutMs"}']).result
         .source,
