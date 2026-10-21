@@ -266,8 +266,11 @@ for (const reference of ["local", "cross-file", "true-target"]) {
           }),
         ]),
       );
+      const saved = await call("config.save", { expectRevision: set.revision });
+      // The work prefix is still derived; the replaced commands must not be saved.
+      expect(saved.saved).toEqual(["/blocks/work/config/idPrefix"]);
       expect(
-        (await call("config.save", { expectRevision: set.revision })).saved,
+        (await call("config.save", { expectRevision: saved.revision })).saved,
       ).toEqual([]);
       expect(
         readFileSync(join(root, ".forge/config.yaml"), "utf8"),
