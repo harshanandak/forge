@@ -325,7 +325,7 @@ test("an expired check operation names its sized budget and config remedy", asyn
     'blocks.checks.operationTimeouts["check.run"]',
     ".forge/config.yaml",
     "361 s",
-    "raise",
+    "increase",
   ])
     expect(result.error.message).toContain(text);
 }, 1000);
