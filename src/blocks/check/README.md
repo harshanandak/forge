@@ -74,12 +74,14 @@ report interpretation, `json` requires a structured report, and `auto` delegates
 to the replaceable output adapter. No particular command, parser mode or stop policy is
 selected by the engine. For the built-in `check.run`, assembly uses the existing instance
 `operationTimeouts` mechanism to default the deadline, in milliseconds, to
-`selected commands × (timeoutMs + 1000) + 2 × max(timeoutMs, 5000) + 1000`:
-sequential commands with lifecycle headroom, two snapshots with a five-second floor,
-and receipt finalization. The snapshot calls use that same floor so a short command
-timer does not truncate Git startup. Windows measurements found up to 266 ms per
-process startup, 1029 ms per snapshot, 23 ms to stop and drain a supervisor, and 8 ms
-for durable receipt write/readback; the allowances leave room for slower runners.
+`N × (T + C) + 2S + F`: selected commands at their own timeout plus process cleanup,
+two independently bounded snapshots, and receipt finalization. Assembly derives `C`
+from the process service's supervision config: two sequential cleanup waits plus pipe
+drain (default `2 × 5000 + 250 = 10250` ms). The snapshot provider enforces `S = 15000`
+ms, reserving cleanup time inside each Git call's deadline. Windows snapshots took
+228–1029 ms. The engine enforces `F = 1000` ms for sealing and durable receipt
+write/readback (8 ms measured). Snapshot and finalization allowances do not grow
+with command timeouts.
 Selection and receipt preflight reuse the block's selected-run budget resolver.
 A total above the finite timer ceiling is rejected before execution. Explicit instance
 overrides and host ceilings remain authoritative; when shorter than the selected run's

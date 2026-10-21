@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import {
   existsSync,
   mkdtempSync,
@@ -8,7 +8,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAssemblyProviders } from "../../../src/assembly/providers.ts";
+import {
+  createAssemblyProviders,
+  processCleanupBudgetMs,
+  SNAPSHOT_TIMEOUT_MS,
+} from "../../../src/assembly/providers.ts";
 import type { ProcessPort, ProcessResult } from "../../../src/ports/process.ts";
 import type { ServiceScope } from "../../../src/core/runtime/index.ts";
 
@@ -82,7 +86,15 @@ test("clone-file methods follow the current handler deadline and drain an unawai
   try {
     const lease = await createAssemblyProviders(
       root,
-      { env: {} },
+      {
+        env: {},
+        supervision: {
+          cleanupTimeoutMs: 100,
+          pollIntervalMs: 25,
+          drainTimeoutMs: 50,
+          maxConcurrent: 1,
+        },
+      },
       port,
     ).openFiles(scope);
     expect(lease.value.read("input", 10)).toBe("data");
@@ -107,6 +119,59 @@ test("clone-file methods follow the current handler deadline and drain an unawai
     });
     await lease.close();
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 5000);
+
+test("snapshots cap long caller budgets and reject a late final HEAD", async () => {
+  const root = mkdtempSync(join(tmpdir(), "snapshot-budget-"));
+  const git = join(root, ".git");
+  mkdirSync(git);
+  let now = Date.now();
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  let heads = 0;
+  let late = false;
+  const port: ProcessPort = {
+    capability: "forge.process/v1",
+    resolve: () => ({ kind: "resolved", path: "git" }),
+    run(_program, args, options) {
+      if (args.includes("--absolute-git-dir"))
+        return Promise.resolve(result(`${git}\n${git}\n`));
+      heads++;
+      expect(options.timeoutMs).toBeLessThanOrEqual(
+        SNAPSHOT_TIMEOUT_MS - processCleanupBudgetMs(),
+      );
+      now += late && heads % 2 === 0 ? SNAPSHOT_TIMEOUT_MS : 100;
+      return Promise.resolve(result("a".repeat(40)));
+    },
+  };
+  let lease;
+  try {
+    lease = await createAssemblyProviders(root, { env: {} }, port).openFiles({
+      op: "sample.read",
+      effects: ["files:read"],
+      signal: new AbortController().signal,
+      deadline: now + 600000,
+      processContainment: "supervised",
+    });
+    const input = {
+      paths: [],
+      maxBytes: 100,
+      timeoutMs: 600000,
+      maxOutputBytes: 66,
+    };
+    expect(await lease.value.snapshot(input)).toMatchObject({
+      head: "a".repeat(40),
+    });
+    late = true;
+    const failure = await lease.value
+      .snapshot(input)
+      .catch((error: unknown) => error);
+    expect(String(failure)).toContain("Snapshot deadline exceeded");
+    expect(heads).toBe(4);
+  } finally {
+    clock.mockRestore();
+    await lease?.close();
     rmSync(root, { recursive: true, force: true });
   }
 }, 5000);

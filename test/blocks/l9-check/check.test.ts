@@ -89,6 +89,27 @@ const config = {
   environment: [],
 };
 
+test("receipt finalization rejects a write/readback exceeding its own allowance", async () => {
+  const { services, records } = fixture();
+  let now = services.clock.now();
+  const engine = createCheck({
+    ...services,
+    clock: { now: () => now },
+    state: {
+      ...services.state,
+      put(...args) {
+        now += 1000;
+        return services.state.put(...args);
+      },
+    },
+  });
+  const failure = await engine.run({}, config).catch((error: unknown) => error);
+  expect(String(failure)).toContain(
+    "Check receipt finalization deadline exceeded",
+  );
+  expect(records.size).toBe(1);
+}, 1000);
+
 test("report parsing and stop behavior are declared choices", async () => {
   const { check, environments } = fixture({ stdout: "Tests: 0 total" });
   const receipt = await check.run(

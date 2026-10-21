@@ -360,25 +360,19 @@ function selectedConfig(
     },
   };
 }
-// Windows startup reached 266 ms and stop/drain 23 ms; reserve lifecycle slack per command.
-const COMMAND_LIFECYCLE_MS = 1000;
-// Each snapshot launches Git twice (1029 ms measured); short command timers must not size Git work.
-const SNAPSHOT_FLOOR_MS = 5000;
 // Durable receipt write/readback took 8 ms; leave bounded time for sealing and publication.
 const RECEIPT_FINALIZATION_MS = 1000;
-function snapshotTimeoutMs(config: CheckConfig): number {
-  return Math.max(config.timeoutMs, SNAPSHOT_FLOOR_MS);
-}
 function runTimeoutMs(
   config: CheckConfig,
   input: RunInput,
+  timing: { readonly cleanupMs: number; readonly snapshotMs: number },
   configPath = "blocks.check.config",
 ): number {
   const selected = selectedConfig(config, input.checks);
   validateBudgets(selected.config);
-  const snapshotMs = snapshotTimeoutMs(config);
+  const { cleanupMs, snapshotMs } = timing;
   const timeoutMs =
-    selected.names.length * (config.timeoutMs + COMMAND_LIFECYCLE_MS) +
+    selected.names.length * (config.timeoutMs + cleanupMs) +
     2 * snapshotMs +
     RECEIPT_FINALIZATION_MS;
   if (
@@ -389,7 +383,7 @@ function runTimeoutMs(
   )
     failure(
       "INPUT_INVALID",
-      `Selected commands' timeouts add up to more than the maximum operation timer budget of 2147483.647 s (including ${COMMAND_LIFECYCLE_MS / 1000} s per command for lifecycle overhead, two snapshots at ${snapshotMs / 1000} s each, and ${RECEIPT_FINALIZATION_MS / 1000} s for finalization); ${configPath}.timeoutMs in .forge/config.yaml is ${config.timeoutMs / 1000} s each for ${selected.names.length} selected commands. Fix: lower ${configPath}.timeoutMs or select fewer checks with --input '{"checks":["name"]}'.`,
+      `Selected commands' timeouts add up to more than the maximum operation timer budget of 2147483.647 s (including ${cleanupMs / 1000} s per command for cleanup and drain, two snapshots at ${snapshotMs / 1000} s each, and ${RECEIPT_FINALIZATION_MS / 1000} s for finalization); ${configPath}.timeoutMs in .forge/config.yaml is ${config.timeoutMs / 1000} s each for ${selected.names.length} selected commands. Fix: lower ${configPath}.timeoutMs or select fewer checks with --input '{"checks":["name"]}'.`,
     );
   return timeoutMs;
 }
@@ -634,6 +628,8 @@ function createCheck(
       active();
       const after = await services.snapshot();
       active();
+      const finalizationDeadline =
+        services.clock.now() + RECEIPT_FINALIZATION_MS;
       const changed = hash(before) !== hash(after);
       const status = changed ? "INCOMPLETE" : aggregate(runs);
       const body = {
@@ -661,6 +657,12 @@ function createCheck(
       const stored = show(receipt.id);
       if (!stored || stored.digest !== receipt.digest)
         throw new Error("Check receipt readback failed");
+      active();
+      if (services.clock.now() >= finalizationDeadline)
+        failure(
+          "INVOCATION_TIMEOUT",
+          "Check receipt finalization deadline exceeded",
+        );
       return stored;
     },
   };
@@ -722,7 +724,7 @@ const operations = {
         services.files.snapshot({
           paths: config.inputs,
           maxBytes: config.maxInputBytes,
-          timeoutMs: snapshotTimeoutMs(config),
+          timeoutMs: Math.max(1, args.deadline - Date.now()),
           maxOutputBytes: SNAPSHOT_HEAD_OUTPUT_BYTES,
         }),
     });

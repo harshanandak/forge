@@ -706,6 +706,7 @@ export async function createAssembly(
           current.catalog,
           current.blocks,
           request,
+          options.providers,
         );
         const result = await new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,

@@ -6,12 +6,14 @@ import { ForgeFailure } from "../../contract/failure.ts";
 export function runTimeoutMs(
   config: CheckConfig,
   input: RunInput,
+  timing: { readonly cleanupMs: number; readonly snapshotMs: number },
   configPath?: string,
 ): number {
   return typedBudget(() =>
     (entry as unknown as { runTimeoutMs: typeof runTimeoutMs }).runTimeoutMs(
       config,
       input,
+      timing,
       configPath,
     ),
   );

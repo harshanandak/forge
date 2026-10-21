@@ -205,7 +205,7 @@ test("snapshot HEAD lookups have enough output independently of command retentio
   }
 }, 1000);
 
-test("snapshot timers have their own floor while command timers keep their declared limit", async () => {
+test("snapshot requests use the invocation ceiling while commands keep their declared limit", async () => {
   for (const timeoutMs of [1, 1500, 5000, 120000]) {
     const { services } = fixture();
     const snapshotBudgets: number[] = [];
@@ -227,10 +227,10 @@ test("snapshot timers have their own floor while command timers keep their decla
       deadline: Date.now() + 500000,
     });
     expect(receipt.status).toBe("PASS");
-    expect(snapshotBudgets).toEqual([
-      Math.max(timeoutMs, 5000),
-      Math.max(timeoutMs, 5000),
-    ]);
+    expect(snapshotBudgets).toHaveLength(2);
+    expect(
+      snapshotBudgets.every((budget) => budget > 120000 && budget <= 500000),
+    ).toBe(true);
   }
 }, 1000);
 
