@@ -189,7 +189,6 @@ function verify(
         !(run.stdoutEvidence as { complete: boolean }).complete ||
         !(run.stderrEvidence as { complete: boolean }).complete ||
         run.timedOut ||
-        run.truncated ||
         run.signal !== null ||
         run.testCount === 0)
     )
@@ -513,6 +512,8 @@ function createCheck(
           continue;
         }
         try {
+          // The verdict comes from every output byte; retained head and tail are display only.
+          const recognizer = services.output.recognize(report);
           const options: SpawnOptions = {
             cwd: services.root,
             env: { ...env },
@@ -527,6 +528,7 @@ function createCheck(
               headBytes: frozenConfig.outputHeadBytes,
               tailBytes: frozenConfig.outputTailBytes,
             },
+            observer: recognizer,
             ...(scope ? { signal: scope.signal } : {}),
           };
           const result = await services.process.run(
@@ -539,16 +541,17 @@ function createCheck(
             throw new Error(
               "Process service did not supply streaming evidence",
             );
+          const seen = recognizer.observed();
           const incompleteOutput =
-            result.truncated ||
             !result.outputEvidence.stdout.complete ||
-            !result.outputEvidence.stderr.complete;
+            !result.outputEvidence.stderr.complete ||
+            seen.stdout !== result.outputEvidence.stdout.totalBytes ||
+            seen.stderr !== result.outputEvidence.stderr.totalBytes;
           const parsed = incompleteOutput
             ? { kind: "unknown" as const, testCount: null, failed: null }
-            : services.output.parse(result.stdout, result.stderr, report);
+            : recognizer.report();
           const status: CheckStatus =
             result.timedOut ||
-            result.truncated ||
             incompleteOutput ||
             result.signal !== null ||
             result.exitCode === null ||
@@ -576,9 +579,9 @@ function createCheck(
             testCount: parsed.testCount,
             reason: result.timedOut
               ? "Command exceeded its time budget; retained output follows"
-              : result.truncated
-                ? "Output exceeded its byte budget"
-                : `Output report: ${parsed.kind}`,
+              : incompleteOutput
+                ? "Output was not observed in full"
+                : `Output report: ${parsed.kind}${result.truncated ? "; retained output is truncated for display" : ""}`,
           });
         } catch {
           active();

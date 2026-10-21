@@ -39,6 +39,7 @@ interface Adapter {
         maxOutputBytes: number;
         stdin?: string;
         signal?: AbortSignal;
+        observer?: { push(stream: string, chunk: Uint8Array): void };
       },
     ): Promise<Record<string, unknown>>;
   };
@@ -83,6 +84,7 @@ function run(
     stdin: string;
     cwd: string;
     signal: AbortSignal;
+    observer: { push(stream: string, chunk: Uint8Array): void };
   }> = {},
 ): Promise<Record<string, unknown>> {
   const env = extra.env ?? baseEnv;
@@ -97,6 +99,7 @@ function run(
     maxOutputBytes: extra.maxOutputBytes ?? 1_000_000,
     ...(extra.stdin === undefined ? {} : { stdin: extra.stdin }),
     ...(extra.signal === undefined ? {} : { signal: extra.signal }),
+    ...(extra.observer === undefined ? {} : { observer: extra.observer }),
   });
 }
 
@@ -186,11 +189,18 @@ results["stdin"] = await run(
   { stdin: "pipe me" },
 );
 
-results["truncated"] = await run(
-  "node",
-  ["-e", "process.stdout.write('x'.repeat(100000))"],
-  { maxOutputBytes: 1000 },
-);
+let observedBytes = 0;
+results["truncated"] = {
+  ...(await run("node", ["-e", "process.stdout.write('x'.repeat(100000))"], {
+    maxOutputBytes: 1000,
+    observer: {
+      push: (_stream, chunk) => {
+        observedBytes += chunk.length;
+      },
+    },
+  })),
+  observedBytes,
+};
 
 process.env["FORGE_LEAK_PROBE"] = "leaked";
 results["envIsolation"] = await run("node", [
