@@ -81,6 +81,24 @@ export function expandShortForm(document: JsonObject): JsonObject {
   return document;
 }
 
+/**
+ * Top-level properties a config schema declares as maps (named entries, no fixed keys). A map is
+ * declared as a whole: once a higher layer sets any entry, detected entries no longer fill it.
+ */
+export function schemaMaps(schema: JsonSchema | undefined): string[] {
+  if (!isObject(schema) || !isObject(schema.properties)) return [];
+  return Object.entries(schema.properties).flatMap(([key, property]) =>
+    isObject(property) &&
+    property.type === "object" &&
+    (property.properties === undefined ||
+      (isObject(property.properties) &&
+        Object.keys(property.properties).length === 0)) &&
+    property.additionalProperties !== false
+      ? [key]
+      : [],
+  );
+}
+
 /** Every `default` a config schema declares on its top-level properties. */
 export function schemaDefaults(
   schema: JsonSchema | undefined,

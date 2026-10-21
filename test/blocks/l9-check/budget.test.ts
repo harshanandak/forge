@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { rejects } from "node:assert/strict";
 import entry from "../../../src/blocks/check/entry.cts";
 import { checkCrypto } from "../../../src/blocks/check/support.ts";
@@ -259,4 +260,66 @@ test("large declaration bindings and UTF-8 boundary inputs use bounded, distinct
     pure.digest({ value: value + "x" }, f.crypto),
   );
   expect(Math.max(...f.hashSizes)).toBeLessThanOrEqual(ceiling);
+}, 5000);
+
+const eight = Object.fromEntries(
+  Array.from({ length: 8 }, (_, i) => [
+    "check" + i,
+    { argv: ["declared", "check" + i] },
+  ]),
+);
+
+test("budgets count only the selected checks: 1 of 8 fits budgets that 8 cannot", async () => {
+  // one command needs 32768 + 2 × 1024 × 10 = 53248 bytes; eight need 196608
+  const tiny: CheckConfig = {
+    ...config,
+    commands: eight,
+    outputHeadBytes: 512,
+    outputTailBytes: 512,
+    maxReceiptBytes: 65536,
+  };
+  expect(() => pure.validateBudgets(tiny)).toThrow("INPUT_INVALID");
+  const f = fixture();
+  const receipt = await f.engine.run({ checks: ["check3"] }, tiny);
+  expect(receipt.runs.map((run) => run.name)).toEqual(["check3"]);
+  // the captured handler's preflight passes and goes on to read services
+  await rejects(
+    pure["check.run"]({
+      config: tiny,
+      input: { checks: ["check3"] } as unknown as Record<string, never>,
+      services: new Proxy({} as CatalogServices, {
+        get() {
+          throw new Error("Service I/O after preflight");
+        },
+      }),
+      signal: new AbortController().signal,
+      deadline: Date.now() + 1000,
+    }),
+    { message: "Service I/O after preflight" },
+  );
+}, 5000);
+
+test("the schema's default budgets fit eight commands emitting large output", async () => {
+  const schema = JSON.parse(
+    readFileSync(
+      new URL("../../../src/blocks/check/schemas/config.json", import.meta.url),
+      "utf8",
+    ),
+  ) as { properties: Record<string, { default?: unknown }> };
+  const defaults = Object.fromEntries(
+    Object.entries(schema.properties).flatMap(([key, property]) =>
+      Object.hasOwn(property, "default") ? [[key, property.default]] : [],
+    ),
+  ) as Omit<CheckConfig, "commands">;
+  const declared: CheckConfig = {
+    ...defaults,
+    commands: eight,
+    environment: [],
+  };
+  const f = fixture();
+  const receipt = await f.engine.run({}, declared);
+  expect(receipt.runs).toHaveLength(8);
+  expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThanOrEqual(
+    declared.maxReceiptBytes,
+  );
 }, 5000);

@@ -153,12 +153,17 @@ function emptyObject(value: unknown): boolean {
   return isObject(value) && Object.keys(value).length === 0;
 }
 
-/** Merge the layers and say, for every value, which layer it came from and what it hides. */
+/**
+ * Merge the layers and say, for every value, which layer it came from and what it hides. `maps`
+ * are keys declared as a whole: detected entries fill one only while no higher layer sets any
+ * entry in it, so a project that declares its commands runs exactly those.
+ */
 export function resolveLayers(
   derived: DerivedLayer,
   document: JsonObject | undefined,
   invocation: readonly InvocationValue[] = [],
   defaults: readonly InvocationValue[] = [],
+  maps: readonly (readonly string[])[] = [],
 ): Layers {
   const owners = isObject(document?.owners) ? document.owners : {};
   const raw: Array<
@@ -200,33 +205,53 @@ export function resolveLayers(
     })),
   ];
 
-  // An empty object is a container that hides nothing beneath it, unless a lower layer sets that
-  // very key: then it is an explicit value and wins like any other.
+  // An empty object is explicit at or inside a declared map, or when a lower layer sets that
+  // very key. Other empty containers leave lower-layer objects intact.
   const explicit = (entry: (typeof raw)[number]): boolean =>
     !emptyObject(entry.value) ||
+    maps.some((map) => isPrefix(map, entry.segments)) ||
     raw.some(
       (other) =>
         LAYER_RANK[other.layer] < LAYER_RANK[entry.layer] &&
         isPrefix(other.segments, entry.segments) &&
         isPrefix(entry.segments, other.segments),
     );
+  // A derived entry inside a map the project (or the call) declares is replaced by that map.
+  const declaredMap = (
+    entry: (typeof raw)[number],
+  ): { layer: Layer; segments: readonly string[] } | undefined => {
+    if (entry.layer !== "derived") return undefined;
+    const map = maps.find((m) => isPrefix(m, entry.segments));
+    const declarer =
+      map &&
+      raw.find(
+        (other) =>
+          LAYER_RANK[other.layer] > LAYER_RANK[entry.layer] &&
+          explicit(other) &&
+          isPrefix(map, other.segments),
+      );
+    return declarer && map && { layer: declarer.layer, segments: map };
+  };
   const effective: JsonObject = {};
   for (const entry of [...raw].sort(
     (a, b) => LAYER_RANK[a.layer] - LAYER_RANK[b.layer],
   )) {
+    if (declaredMap(entry) !== undefined) continue;
     if (!explicit(entry) && isObject(getIn(effective, entry.segments)))
       continue;
     setIn(effective, entry.segments, clone(entry.value));
   }
 
   const entries = raw.map((entry): LayerEntry => {
-    const hider = raw.find(
-      (other) =>
-        LAYER_RANK[other.layer] > LAYER_RANK[entry.layer] &&
-        explicit(other) &&
-        (isPrefix(other.segments, entry.segments) ||
-          (isPrefix(entry.segments, other.segments) && !isObject(entry.value))),
-    );
+    const hider =
+      raw.find(
+        (other) =>
+          LAYER_RANK[other.layer] > LAYER_RANK[entry.layer] &&
+          explicit(other) &&
+          (isPrefix(other.segments, entry.segments) ||
+            (isPrefix(entry.segments, other.segments) &&
+              !isObject(entry.value))),
+      ) ?? declaredMap(entry);
     const { segments, ...rest } = entry;
     const pointer = formatPointer(segments);
     return hider === undefined
