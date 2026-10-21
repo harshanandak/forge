@@ -45,7 +45,11 @@ import { createStateClient } from "./state-client.ts";
 import { version } from "../version.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { firstPartyBlocks } from "./first-party.ts";
-import { configCandidates, validateConfigValue } from "./declarations.ts";
+import {
+  configCandidates,
+  coreDocs,
+  validateConfigValue,
+} from "./declarations.ts";
 import { LocalState } from "./state.ts";
 import { syncSkills, type TemplateFile } from "./skills.ts";
 import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
@@ -73,10 +77,7 @@ const grantCandidate: McpCandidate = {
     callers: ["human"],
     stability: "stable",
   },
-  docs: {
-    title: "Grant effects",
-    summary: "Allow named effects for human-admitted bytes.",
-  },
+  docs: coreDocs["config.grant"]!,
   inputSchema: {
     type: "object",
     required: ["digest", "effects"],
@@ -417,12 +418,15 @@ export async function createAssembly(
           .filter((op) => checked.resolve(op).operation.instance === name)
           .map((op) => {
             const described = checked.describe(op);
-            const { operation } = checked.resolve(op);
+            const { block: captured, operation } = checked.resolve(op);
             return {
               ...described,
               admitted,
               docs: docs.operations[operation.declaredOp]!,
               inputSchema: described.inputSchema as McpCandidate["inputSchema"],
+              argumentSchema: captured.resolvedSchema(
+                operation.declaration.input,
+              ) as McpCandidate["inputSchema"],
               outputSchema:
                 described.outputSchema as McpCandidate["inputSchema"],
             };
