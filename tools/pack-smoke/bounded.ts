@@ -21,6 +21,24 @@ export function runWithin(
       // Its own process group, so the deadline can end every descendant on POSIX.
       detached: !windows,
     });
+    const forward = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        // The group already exited.
+      }
+    };
+    const onInt = (): void => forward("SIGINT");
+    const onTerm = (): void => forward("SIGTERM");
+    if (!windows) {
+      process.on("SIGINT", onInt);
+      process.on("SIGTERM", onTerm);
+    }
+    const detach = (): void => {
+      process.off("SIGINT", onInt);
+      process.off("SIGTERM", onTerm);
+    };
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -38,10 +56,12 @@ export function runWithin(
     }, timeoutMs);
     child.once("error", (error) => {
       clearTimeout(timer);
+      detach();
       reject(new Error(`${phase}: ${error.message}`));
     });
     child.once("exit", (code, signal) => {
       clearTimeout(timer);
+      detach();
       if (timedOut)
         reject(
           new Error(

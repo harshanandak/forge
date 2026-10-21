@@ -14,8 +14,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { runWithin } from "./bounded.ts";
+import { environmentWithoutBun, resolveBun } from "./environment.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 // One command that hangs fails with its name instead of stalling the job.
@@ -23,26 +24,9 @@ const COMMAND_TIMEOUT_MS = 300_000;
 // The whole pack-smoke step took at most 132 s in recent CI (Windows, Node 24); 10 minutes is
 // over four times that and still well inside the job's 20-minute ceiling.
 const JOURNEYS_TIMEOUT_MS = 600_000;
-const BUN_FILES = ["bun", "bun.exe", "bun.cmd", "bunx", "bunx.exe", "bunx.cmd"];
 
 function fail(message: string): never {
   throw new Error(`pack-smoke: ${message}`);
-}
-
-/** The current environment with every directory that holds a Bun executable removed from PATH. */
-function environmentWithoutBun(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  const key =
-    Object.keys(env).find((k) => k.toLowerCase() === "path") ?? "PATH";
-  env[key] = (env[key] ?? "")
-    .split(delimiter)
-    .filter(
-      (dir) =>
-        dir !== "" && !BUN_FILES.some((file) => existsSync(join(dir, file))),
-    )
-    .join(delimiter);
-  delete env.BUN_INSTALL;
-  return env;
 }
 
 function run(
@@ -84,6 +68,7 @@ async function main(): Promise<void> {
   if (!existsSync(join(root, "dist", "bin", "forge.js")))
     fail("dist/ is missing; run `bun run build` first");
 
+  const bun = resolveBun();
   const env = environmentWithoutBun();
   if (run("bun", ["--version"], root, env).error === undefined)
     fail("bun is still resolvable on PATH; the smoke must run without Bun");
@@ -227,9 +212,6 @@ async function main(): Promise<void> {
     console.log(`- ${ok(node([api])).trim()}; each removed fix fails it`);
 
     // The packed journeys read the install and mutate private copies, so files run in parallel.
-    const bun = process.env.npm_execpath?.match(/bunx?(\.exe)?$/i)
-      ? process.env.npm_execpath
-      : "bun";
     console.log("- running the packed journeys against this install");
     try {
       await runWithin(
@@ -244,7 +226,7 @@ async function main(): Promise<void> {
         ],
         {
           cwd: root,
-          env: { ...process.env, FORGE_PACKED_CONSUMER: consumer },
+          env: { ...env, FORGE_PACKED_CONSUMER: consumer },
         },
         JOURNEYS_TIMEOUT_MS,
       );
