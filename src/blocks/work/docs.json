@@ -19,7 +19,10 @@
       "summary": "Update an issue while holding its lease at the revision read from show.",
       "examples": [
         {
-          "command": "forge issue update demo-1 --title 'Updated task' --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+          "command": "POSIX: forge issue update demo-1 --title \"Updated task\" --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge issue update demo-1 --title \"Updated task\" --expect-revision ((forge issue show demo-1 | ConvertFrom-Json).result.revision)"
         }
       ]
     },
@@ -77,7 +80,10 @@
       "summary": "Add or remove a dependency at an expected revision while holding the issue lease.",
       "examples": [
         {
-          "command": "forge issue dep --id demo-1 --target demo-2 --action add --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+          "command": "POSIX: forge issue dep --id demo-1 --target demo-2 --action add --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge issue dep --id demo-1 --target demo-2 --action add --expect-revision ((forge issue show demo-1 | ConvertFrom-Json).result.revision)"
         }
       ]
     },

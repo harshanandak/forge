@@ -12,6 +12,7 @@ import { localContext, localSession } from "./index.ts";
 export function assemblyMcp(assembly: Assembly): McpTransportPort {
   return {
     async open(options) {
+      await assembly.prepareTrust();
       const context = localContext(
         assembly,
         { kind: "agent", id: "mcp" },

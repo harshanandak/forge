@@ -29,7 +29,10 @@
       "summary": "Admit captured block bytes for this device.",
       "examples": [
         {
-          "command": "forge block admit \"$(forge block check ./example-block | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.digest')\""
+          "command": "POSIX: forge block admit \"$(forge block check ./example-block | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.digest')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge block admit ((forge block check ./example-block | ConvertFrom-Json).result.digest)"
         }
       ]
     },
@@ -44,7 +47,7 @@
     "config.explain": {
       "title": "Explain a value",
       "summary": "Show where a configuration value came from.",
-      "examples": [{ "input": { "path": "/blocks" } }]
+      "examples": [{ "input": { "path": "memory.levels" } }]
     },
     "config.detect": {
       "title": "Detect project settings",
@@ -55,7 +58,10 @@
       "summary": "Set one value at the revision read from config show.",
       "examples": [
         {
-          "command": "forge config set --input \"$(forge config show | node -pe 'JSON.stringify({path:\"/values/example\",value:\"hello\",expectRevision:JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision})')\""
+          "command": "POSIX: forge config set memory.levels.human nearest --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge config set memory.levels.human nearest --expect-revision ((forge config show | ConvertFrom-Json).result.revision)"
         }
       ]
     },
@@ -75,7 +81,10 @@
       "summary": "Apply edits at the revision read from config show.",
       "examples": [
         {
-          "command": "forge config apply --patch '[{\"op\":\"set\",\"path\":\"/values/example\",\"value\":true}]' --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+          "command": "POSIX: forge config apply --patch '[{\"op\":\"set\",\"path\":\"/values/example\",\"value\":true}]' --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge config apply --patch '[{\\\"op\\\":\\\"set\\\",\\\"path\\\":\\\"/values/example\\\",\\\"value\\\":true}]' --expect-revision ((forge config show | ConvertFrom-Json).result.revision)"
         }
       ]
     },
@@ -84,7 +93,10 @@
       "summary": "Save detected settings at the revision read from config show.",
       "examples": [
         {
-          "command": "forge config save --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+          "command": "POSIX: forge config save --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge config save --expect-revision ((forge config show | ConvertFrom-Json).result.revision)"
         }
       ]
     },
@@ -93,7 +105,10 @@
       "summary": "Allow named effects for human-admitted bytes.",
       "examples": [
         {
-          "command": "forge config grant --effects '[]' --digest \"$(forge block check ./example-block | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.digest')\""
+          "command": "POSIX: forge config grant --effects '[]' --digest \"$(forge block check ./example-block | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.digest')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge config grant --effects '[]' --digest ((forge block check ./example-block | ConvertFrom-Json).result.digest)"
         }
       ]
     },
@@ -111,7 +126,10 @@
       "summary": "Import a template into project configuration.",
       "examples": [
         {
-          "command": "forge template import delivery --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+          "command": "POSIX: forge template import delivery --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge template import delivery --expect-revision ((forge config show | ConvertFrom-Json).result.revision)"
         }
       ]
     },
@@ -120,7 +138,10 @@
       "summary": "Remove unchanged values owned by a template.",
       "examples": [
         {
-          "command": "forge template remove harsha/delivery --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+          "command": "POSIX: forge template remove harsha/delivery --expect-revision \"$(forge config show | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
+        },
+        {
+          "command": "PowerShell 5.1: forge template remove harsha/delivery --expect-revision ((forge config show | ConvertFrom-Json).result.revision)"
         }
       ]
     }

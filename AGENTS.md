@@ -3,6 +3,7 @@
 Forge (npm package `forge-workflow`, command `forge`) is an open building-block platform for AI coding agents. Blocks declare their operations once; the CLI and MCP tools are generated from that catalog. Core knows no workflow: stages, TDD and pull requests live in blocks and templates. Bun builds Forge; the published package runs on Node 24.15+ and 26 with npm and assumes nothing about a user's toolchain. The plan of record is in [harshanandak/forge-legacy](https://github.com/harshanandak/forge-legacy) (`docs/work/2026-10-16-platform-rebuild/`).
 
 Commands are the `package.json` scripts. `test/structure` holds the repo guards.
+Agents: use `forge <noun> <verb> --help --json` or `forge catalog describe <noun.verb>` for the full JSON contract.
 
 ## Gotchas
 

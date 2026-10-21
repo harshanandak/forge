@@ -127,6 +127,8 @@ export interface Assembly {
   readonly root: string;
   readonly deviceRoot: string;
   readonly exposure: McpExposure;
+  /** Stateful discovery consumers load admission; plain help stays store-free. */
+  prepareTrust(): Promise<void>;
   close(): Promise<void>;
 }
 function trustRecord(value: unknown): TrustRecord | undefined {
@@ -177,7 +179,6 @@ export async function createAssembly(
     join(stateRoot, ".forge", "state.sqlite"),
   );
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
-  await trustState.open(false);
   let trustActor: Actor | undefined;
   const trust = new TrustStore({
     get: (digest) =>
@@ -493,7 +494,6 @@ export async function createAssembly(
       request: Parameters<Assembly["catalog"]["invoke"]>[0],
     ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
-        await trustState.open(false);
         const checked = validateInvocationRequest(request);
         if (!checked.ok) refuse("INPUT_INVALID", "Invalid invocation");
         const entry = [
@@ -538,6 +538,7 @@ export async function createAssembly(
             return success(request.op, output);
           }
           if (request.op === "skills.sync") {
+            await trustState.open(false);
             const show = call.config.show();
             return success(
               request.op,
@@ -563,6 +564,7 @@ export async function createAssembly(
             );
           }
           if (request.op === "block.check" || request.op === "block.add") {
+            if (request.op === "block.add") await trustState.open(false);
             const spec = String(input.path);
             const source = sourceFor(spec);
             const block = captureBlock(
@@ -640,6 +642,7 @@ export async function createAssembly(
             });
           }
           if (request.op === "block.admit" || request.op === "config.grant") {
+            await trustState.open(false);
             const digest = String(input.digest);
             const candidates = [...snapshot(call).blocks.values()].filter(
               (block) => block.digest === digest,
@@ -689,7 +692,14 @@ export async function createAssembly(
           }
           refuse("UNKNOWN_COMMAND", "Operation is not assembled");
         }
-        const current = snapshot(call);
+        let current = snapshot(call);
+        const target = current.candidates.find(
+          (candidate) => candidate.op === request.op,
+        );
+        if (target && !target.admitted) {
+          await trustState.open(false);
+          current = snapshot(call);
+        }
         const runtimeCatalog = withCheckRunBudget(
           current.catalog,
           current.blocks,
@@ -860,6 +870,9 @@ export async function createAssembly(
     root,
     deviceRoot,
     exposure: composition(callScope().config.show()).mcp ?? {},
+    async prepareTrust() {
+      await trustState.open(false);
+    },
     async close() {
       try {
         await projectState.close();
