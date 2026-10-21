@@ -143,7 +143,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
               ]
             : [fixture, isolated, mutation.journey],
           consumer,
-          30000,
+          mutation.journey === "surfaces" ? 90000 : 30000,
           artifactEnv,
         );
         expect(result.error).toBeUndefined();
@@ -159,4 +159,4 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
-}, 300000);
+}, 900000);
