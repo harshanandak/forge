@@ -9,6 +9,20 @@ import {
 import type { OwnedHandle } from "../ports/lifetime.ts";
 import type { SqlDatabase, StorePort } from "../ports/store.ts";
 import { refuse } from "../core/trust/index.ts";
+import { ForgeFailure } from "../contract/failure.ts";
+import type { Unavailable } from "../generated/types.ts";
+
+export class StateUnavailable extends ForgeFailure {
+  readonly unavailable: Unavailable;
+  constructor(unavailable: Unavailable) {
+    super({
+      code: "UNAVAILABLE",
+      message: `${unavailable.reason}; ${unavailable.remedy}`,
+      retry: "never",
+    });
+    this.unavailable = unavailable;
+  }
+}
 
 interface Entry {
   readonly handle: OwnedHandle<SqlDatabase>;
@@ -56,7 +70,7 @@ export class LocalState {
       path: this.#path,
       readOnly: !write,
     });
-    if (!result.ok) refuse("UNAVAILABLE", result.unavailable.reason);
+    if (!result.ok) throw new StateUnavailable(result.unavailable);
     try {
       const owner = new StateOwner(result.handle.value, {
         now: () => Date.now(),

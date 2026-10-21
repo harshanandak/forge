@@ -12,20 +12,17 @@ import {
 } from "./dispatch.ts";
 import { failure, respond, type SurfaceResponse } from "./result.ts";
 import { discoveryOperations } from "./discovery.ts";
+import { renderHelp } from "./help.ts";
 
 const builtins = discoveryOperations.map((entry) => entry.op);
 
-function help(
-  catalog: SurfaceCatalog,
-  options: CallOptions,
-  op?: string,
-): unknown {
+function help(catalog: SurfaceCatalog, options: CallOptions, op?: string) {
   const entries = visible(catalog, options.caller);
   return {
     usage: "forge <noun> <verb> [arguments] [--input JSON] [--text]",
     options: [
       "--help",
-      "--json (default)",
+      "--json (full help contract; default for operation results)",
       "--text",
       "--input JSON",
       "--dry-run",
@@ -58,7 +55,8 @@ function mapArguments(
   tokens: readonly string[],
   entry: McpCandidate | undefined,
 ): unknown {
-  const properties = record(entry?.inputSchema.properties) ?? {};
+  const properties =
+    record((entry?.argumentSchema ?? entry?.inputSchema)?.properties) ?? {};
   const positions = entry?.declaration.args ?? [];
   const result: Record<string, unknown> = Object.create(null) as Record<
     string,
@@ -126,6 +124,7 @@ export async function runCli(
 ): Promise<SurfaceResponse> {
   let text = false;
   let helpRequested = false;
+  let jsonHelp = false;
   let dryRun = options.dryRun;
   let rawInput: string | undefined;
   const tokens: string[] = [];
@@ -145,10 +144,12 @@ export async function runCli(
       }
       if (token === "--text") {
         text = true;
+        jsonHelp = false;
         continue;
       }
       if (token === "--json") {
         text = false;
+        jsonHelp = true;
         continue;
       }
       if (token === "--help" || token === "-h") {
@@ -175,8 +176,13 @@ export async function runCli(
         : first.includes(".")
           ? first
           : `${first}.${tokens.shift() ?? ""}`;
-    if (helpRequested || op === undefined)
-      return respond(success("catalog.list", help(catalog, options, op)), text);
+    if (helpRequested || op === undefined) {
+      const result = help(catalog, options, op);
+      const response = respond(success("catalog.list", result), text);
+      return jsonHelp
+        ? response
+        : { ...response, stdout: renderHelp(result.operations, op) };
+    }
     if (![...builtins, ...catalog.list().map((c) => c.op)].includes(op))
       return respond(await dispatch(catalog, op, {}, options), text);
     let input: unknown;

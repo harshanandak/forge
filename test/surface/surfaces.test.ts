@@ -177,7 +177,9 @@ test("unadmitted operations stay out of discovery but named calls reach admissio
 
 test("a new catalog entry appears in help, describe and MCP with no surface changes", async () => {
   const catalog = fakeCatalog([candidate("fresh.inspect")]);
-  expect((await runCli(catalog, ["--help"])).stdout).toContain("fresh.inspect");
+  expect((await runCli(catalog, ["fresh", "--help"])).stdout).toContain(
+    "fresh inspect",
+  );
   expect(
     (await runCli(catalog, ["catalog", "describe", "fresh.inspect"])).envelope,
   ).toMatchObject({ ok: true, result: { op: "fresh.inspect" } });

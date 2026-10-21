@@ -48,12 +48,18 @@ export function writeCoreManifest(root: string = repoRoot): void {
     [catalog, trust],
   );
   const directory = join(root, "src/generated");
+  const docs = JSON.parse(
+    readFileSync(
+      new URL("../../src/assembly/docs.json", import.meta.url),
+      "utf8",
+    ),
+  ) as { operations: Record<string, unknown> };
   const candidates = Object.entries(manifest.operations).map(
     ([op, declaration]) => ({
       op,
       admitted: true,
       declaration,
-      docs: { title: op, summary: `Core operation ${op}.` },
+      docs: docs.operations[op] ?? { title: op, summary: `Run ${op}.` },
       inputSchema: JSON.parse(
         readFileSync(
           new URL(`../../src/core/${declaration.input}`, import.meta.url),

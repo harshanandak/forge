@@ -66,7 +66,7 @@ export function probeFilesystem(
       return { driveType: "network" };
     }
   } catch {
-    // An unavailable platform signal retains the existing unknown warning.
+    // An unavailable platform signal remains unknown.
   }
   return { driveType: "unknown" };
 }

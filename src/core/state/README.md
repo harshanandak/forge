@@ -22,7 +22,7 @@ The adapter closes the live connection, refuses lingering SQLite sidecars, retai
 
 The recovery adapter binds approval to file identity and content, pins open descriptors, retains a separate exclusive private copy, and checks the source, backup, recovery copy and sidecars through the supplied commit verifier. Keep the retained copy for recovery. `hardenPrivatePaths` applies and reads back a protected owner-only Windows ACL through `ProcessPort`; other systems use private file modes. Pass their verifier to `restore` for the final fenced approval check.
 
-Filesystem classification is pure over host signals; its adapter rejects recognized cloud and network paths. Missing platform probes produce a once-per-process stderr warning, rather than asserting a local disk. Hosts should supply drive and mount evidence to `classifyFilesystem` when available.
+Filesystem classification is pure over host signals; its adapter rejects recognized cloud and network paths, naming the store path and directing the user to a local unsynced disk. Missing platform probes remain unknown and produce no warning. Cross-filesystem access warns once per process. Hosts should supply drive and mount evidence to `classifyFilesystem` when available.
 
 ## Integration and evidence
 
