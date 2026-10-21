@@ -40,13 +40,27 @@ function typedBudget<T>(read: () => T): T {
 }
 
 /** Reusable cross-field validation with no service or context access. */
-export function validateBudgets(config: CheckConfig): {
+export function validateBudgets(
+  config: CheckConfig,
+  configPath?: string,
+): {
   readonly totalBytes: number;
   readonly declarationBytes: number;
 } {
   return typedBudget(() =>
     (
       entry as unknown as { validateBudgets: typeof validateBudgets }
-    ).validateBudgets(config),
+    ).validateBudgets(config, configPath),
   );
+}
+
+/** Loading validates each declaration; aggregate receipt sizing still belongs to the selected run. */
+export function validateConfiguration(
+  config: CheckConfig,
+  configPath: string,
+): void {
+  const commands = Object.entries(config.commands);
+  if (commands.length === 0) validateBudgets(config, configPath);
+  for (const [name, command] of commands)
+    validateBudgets({ ...config, commands: { [name]: command } }, configPath);
 }

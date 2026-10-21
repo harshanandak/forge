@@ -1,9 +1,14 @@
 import type { McpCandidate } from "../contract/mcp.ts";
-import type { InvocationRequest, ResultEnvelope } from "../generated/types.ts";
+import type {
+  ForgeError,
+  InvocationRequest,
+  ResultEnvelope,
+} from "../generated/types.ts";
 
 /** Metadata only: discovery must never load an operation's executable code. */
 export interface SurfaceCatalog {
   list(): readonly McpCandidate[];
+  diagnose?(op: string): ForgeError | undefined;
   invoke(request: InvocationRequest): Promise<ResultEnvelope>;
 }
 

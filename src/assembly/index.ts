@@ -20,7 +20,9 @@ import { TrustStore, refuse, type TrustRecord } from "../core/trust/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
 import { bindContext } from "../contract/context.ts";
-import { validateWithSchema } from "../contract/schema.ts";
+import { schemaDiagnostic, validateWithSchema } from "../contract/schema.ts";
+import { validateConfiguration } from "../blocks/check/budget.ts";
+import type { CheckConfig } from "../blocks/check/types.ts";
 import {
   validateConfigDocument,
   validateDocsRecords,
@@ -301,7 +303,11 @@ export async function createAssembly(
       ),
     };
   }
-  function ready(block: CapturedBlock, instance: BlockInstance): DocsRecords {
+  function ready(
+    block: CapturedBlock,
+    instance: BlockInstance,
+    name: string,
+  ): DocsRecords {
     const docs = validateDocsRecords(
       JSON.parse(block.text(block.manifest.docs)) as unknown,
     );
@@ -312,11 +318,30 @@ export async function createAssembly(
       )
     )
       refuse("INPUT_INVALID", "Block docs do not cover its operations");
-    if (
-      block.manifest.configSchema &&
-      !block.validate(block.manifest.configSchema, instance.config ?? {})
-    )
-      refuse("INPUT_INVALID", "Block configuration does not match its schema");
+    if (block.manifest.configSchema) {
+      const problems = block.problems(
+        block.manifest.configSchema,
+        instance.config ?? {},
+      );
+      if (problems.length)
+        refuse(
+          "INPUT_INVALID",
+          problems
+            .map((problem) =>
+              schemaDiagnostic(
+                problem,
+                instance.config ?? {},
+                `blocks.${name}.config`,
+              ),
+            )
+            .join("\n"),
+        );
+    }
+    if (block.shipped && block.manifest.id === "forge/check")
+      validateConfiguration(
+        instance.config as unknown as CheckConfig,
+        `blocks.${name}.config`,
+      );
     for (const required of block.manifest.requires ?? []) {
       const provider = instance.bind?.[required.slot];
       const state = interfaceSatisfies("forge.state@1.0.0", required.interface);
@@ -361,7 +386,11 @@ export async function createAssembly(
     error: unknown,
   ): UnavailableBlock {
     const reason =
-      error instanceof Error ? error.message : "Block could not be prepared";
+      error instanceof ForgeFailure
+        ? error.error.message
+        : error instanceof Error
+          ? error.message
+          : "Block could not be prepared";
     return {
       name,
       source: instance.source,
@@ -393,8 +422,24 @@ export async function createAssembly(
     for (const [name, instance] of Object.entries(document.blocks)) {
       if (instance.enabled === false) continue;
       try {
+        if ("builtin" in instance.source) {
+          const builtin = instance.source.builtin;
+          const problems = validateWithSchema(
+            { type: "string", enum: Object.keys(firstPartyBlocks) },
+            builtin,
+          );
+          if (problems.length)
+            refuse(
+              "INPUT_INVALID",
+              problems
+                .map((p) =>
+                  schemaDiagnostic(p, builtin, `blocks.${name}.source.builtin`),
+                )
+                .join("\n"),
+            );
+        }
         const block = call.captured(instance.source);
-        const docs = ready(block, instance);
+        const docs = ready(block, instance, name);
         const proposed = new Map(blocks);
         proposed.set(name, block);
         const checked = new Catalog(
@@ -460,15 +505,35 @@ export async function createAssembly(
       unavailable,
       problems: [
         ...show.problems,
-        ...unavailable.map(
-          (block) =>
-            `Block ${block.name} is unavailable: ${block.reason}. ${block.remedy}`,
+        ...unavailable.map((block) =>
+          block.error.code === "INPUT_INVALID"
+            ? block.reason
+            : `.forge/config.yaml: blocks.${block.name}.source: ${block.reason}. ${block.remedy}`,
         ),
       ],
     };
   }
   const catalog: Assembly["catalog"] = {
     unavailable: () => snapshot(callScope()).unavailable,
+    diagnose(op) {
+      const current = snapshot(callScope());
+      if (
+        [
+          ...configCandidates,
+          grantCandidate,
+          ...discoveryOperations,
+          ...current.candidates,
+        ].some((entry) => entry.op === op) ||
+        current.problems.length === 0
+      )
+        return undefined;
+      return {
+        code: current.unavailable[0]?.error.code ?? "INPUT_INVALID",
+        message: current.problems.join("\n"),
+        retry: "reconcile_first",
+        reconcileWith: "config.show",
+      };
+    },
     list: () => [
       ...configCandidates,
       grantCandidate,
@@ -523,15 +588,61 @@ export async function createAssembly(
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
             const handled = configHandler(request.input);
+            const current =
+              request.op === "config.show" ? snapshot(call) : undefined;
+            const unavailable = new Set(
+              current?.unavailable.map((block) => block.name),
+            );
+            const shown = handled as ShowResult;
             const output =
               request.op === "config.show"
                 ? {
-                    ...(handled as ShowResult),
-                    problems: snapshot(call).problems,
+                    ...shown,
+                    valid: current!.problems.length === 0,
+                    problems: current!.problems,
+                    instances: shown.instances.map((instance) =>
+                      unavailable.has(instance.name)
+                        ? { ...instance, enabled: false }
+                        : instance,
+                    ),
+                    values: shown.values.map((value) =>
+                      unavailable.has(value.pointer.split("/")[2] ?? "")
+                        ? { ...value, active: false }
+                        : value,
+                    ),
+                    effective: {
+                      ...shown.effective,
+                      blocks: Object.fromEntries(
+                        Object.entries(
+                          (shown.effective.blocks ?? {}) as Record<
+                            string,
+                            unknown
+                          >,
+                        ).map(([name, instance]) => {
+                          if (!unavailable.has(name)) return [name, instance];
+                          const { config: _config, ...rest } =
+                            instance as Record<string, unknown>;
+                          return [name, { ...rest, enabled: false }];
+                        }),
+                      ),
+                    },
                   }
                 : handled;
             if (!validateConfigValue(entry.declaration, "output", output))
               refuse("OUTPUT_INVALID", "Invalid config output");
+            if (current && current.problems.length)
+              return {
+                ...failure(
+                  request.op,
+                  new ForgeFailure({
+                    code: "INPUT_INVALID",
+                    message: current.problems.join("\n"),
+                    retry: "reconcile_first",
+                    reconcileWith: "config.show",
+                  }),
+                ),
+                result: output,
+              };
             return success(request.op, output);
           }
           if (request.op === "skills.sync") {
@@ -580,7 +691,7 @@ export async function createAssembly(
             };
             const blocks = new Map(current.blocks);
             blocks.set(name, block);
-            ready(block, instance);
+            ready(block, instance, name);
             const checkedCatalog = new Catalog(
               availableComposition(proposed, blocks),
               blocks,
@@ -687,6 +798,14 @@ export async function createAssembly(
           refuse("UNKNOWN_COMMAND", "Operation is not assembled");
         }
         const current = snapshot(call);
+        if (
+          !current.catalog.list().includes(request.op) &&
+          current.problems.length
+        )
+          refuse(
+            current.unavailable[0]?.error.code ?? "INPUT_INVALID",
+            current.problems.join("\n"),
+          );
         const runtimeCatalog = withCheckRunBudget(
           current.catalog,
           current.blocks,

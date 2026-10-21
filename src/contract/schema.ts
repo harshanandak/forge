@@ -9,6 +9,68 @@ export interface SchemaProblem {
   readonly pointer: string;
   readonly keyword: string;
   readonly message: string;
+  readonly hint?: string;
+}
+
+/** Closest declared spelling; the schema, rather than a list of special cases, owns the names. */
+export function closestNames(name: string, names: readonly string[]): string[] {
+  const distance = (other: string): number => {
+    let row = Array.from({ length: other.length + 1 }, (_, i) => i);
+    for (let i = 0; i < name.length; i++) {
+      const next = [i + 1];
+      for (let j = 0; j < other.length; j++)
+        next.push(
+          Math.min(
+            next[j]! + 1,
+            row[j + 1]! + 1,
+            row[j]! + (name[i] === other[j] ? 0 : 1),
+          ),
+        );
+      row = next;
+    }
+    return row[other.length]!;
+  };
+  return names
+    .map((key) => ({ key, score: distance(key) }))
+    .filter(({ score }) => score <= Math.max(2, Math.floor(name.length / 3)))
+    .sort((a, b) => a.score - b.score || a.key.localeCompare(b.key))
+    .slice(0, 8)
+    .map(({ key }) => key);
+}
+
+/** Render the existing validator's problem at its document location, retaining the actual value. */
+export function schemaDiagnostic(
+  problem: SchemaProblem,
+  value: unknown,
+  prefix = "",
+  file = ".forge/config.yaml",
+): string {
+  const segments = problem.pointer.split("/").slice(1).map(unescapePointer);
+  let received = value;
+  for (const segment of segments)
+    received =
+      isObject(received) || Array.isArray(received)
+        ? (received as Readonly<Record<string, unknown>>)[segment]
+        : undefined;
+  const path = [prefix, ...segments].filter(Boolean).join(".") || "/";
+  const actual = JSON.stringify(received) ?? "missing";
+  const message =
+    problem.keyword === "type"
+      ? problem.message.replace(/, got .*/, `, got ${actual}`)
+      : `${problem.message}; got ${actual}`;
+  const expectation = problem.message
+    .replace(/, got .*/, "")
+    .replace(/^expected /, "");
+  const fix =
+    problem.hint ??
+    (problem.keyword === "additionalProperties"
+      ? `remove ${path}`
+      : problem.keyword === "required"
+        ? `add ${path}`
+        : problem.keyword === "oneOf" || problem.keyword === "anyOf"
+          ? `use one of the allowed shapes at ${path}`
+          : `set ${path} to ${problem.keyword === "type" ? `a valid ${expectation}` : problem.keyword === "enum" || problem.keyword === "const" ? expectation : `a value that ${expectation}`}`);
+  return `${file}: ${path}: ${message}. Fix: ${fix}.`;
 }
 
 export type ValidationResult<T> =
@@ -497,7 +559,23 @@ export class SchemaRegistry {
       Array.isArray(schema.enum) &&
       !schema.enum.some((e) => jsonEqual(e, value))
     ) {
-      add("enum", `expected one of ${JSON.stringify(schema.enum)}`);
+      const suggested =
+        typeof value === "string"
+          ? closestNames(
+              value,
+              schema.enum.filter(
+                (entry): entry is string => typeof entry === "string",
+              ),
+            )[0]
+          : undefined;
+      problems.push({
+        pointer: at,
+        keyword: "enum",
+        message: `expected one of ${JSON.stringify(schema.enum)}`,
+        ...(suggested === undefined
+          ? {}
+          : { hint: `use ${JSON.stringify(suggested)}` }),
+      });
     }
     if ("const" in schema && !jsonEqual(schema.const, value)) {
       add("const", `expected ${JSON.stringify(schema.const)}`);
@@ -618,7 +696,17 @@ export class SchemaRegistry {
           problems.push(...sub(properties[key], value[key], pointer));
         } else if (schema.additionalProperties !== undefined) {
           if (schema.additionalProperties === false) {
-            add("additionalProperties", `unknown property "${key}"`, pointer);
+            const suggested = closestNames(key, Object.keys(properties))[0];
+            problems.push({
+              pointer,
+              keyword: "additionalProperties",
+              message: `unknown property "${key}"`,
+              ...(suggested === undefined
+                ? {}
+                : {
+                    hint: `did you mean ${suggested}? Rename ${key} to ${suggested}`,
+                  }),
+            });
           } else {
             problems.push(
               ...sub(schema.additionalProperties, value[key], pointer),

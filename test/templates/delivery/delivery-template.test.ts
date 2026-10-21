@@ -39,7 +39,7 @@ async function open<T>(
       input,
       localCall(assembly),
     );
-    return { ...result, ...(record(result.ok ? result.result : {}) ?? {}) };
+    return { ...result, ...(record(result.result) ?? {}) };
   };
   // fills in the current revision for writes
   const call: Call = async (op, input = {}) =>

@@ -1,0 +1,198 @@
+import { expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import type { ResultEnvelope } from "../../src/generated/types.ts";
+import { counterfactuals } from "../node-fixtures/check/counterfactuals.ts";
+
+test("built CLI reports the actual config error and recovers after repair", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-config-errors-cli-"));
+  const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
+  mkdirSync(join(root, ".forge"));
+  const initialized = spawnSync("git", ["init", "--quiet"], {
+    cwd: root,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 5000,
+  });
+  expect(initialized.status, initialized.stderr).toBe(0);
+  const file = join(root, ".forge/config.yaml");
+  const cli = (args: string[], code: number): ResultEnvelope => {
+    const result = spawnSync("node", [bin, ...args], {
+      cwd: root,
+      env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(code);
+    return JSON.parse(result.stdout) as ResultEnvelope;
+  };
+  try {
+    for (const [name, config, key, fix] of [
+      [
+        "typo",
+        { timoutMs: 3000 },
+        "blocks.check.config.timoutMs",
+        "did you mean timeoutMs?",
+      ],
+      [
+        "type",
+        { timeoutMs: "soon" },
+        "blocks.check.config.timeoutMs",
+        "a valid integer",
+      ],
+      [
+        "source",
+        { source: { builtin: "forge/chekc" } },
+        "blocks.check.source.builtin",
+        'use "forge/check"',
+      ],
+      ["yaml", "blocks: [\n", "strict YAML", "Fix:"],
+      [
+        "quote",
+        { commands: { test: 'tool "unterminated' } },
+        "blocks.check.config.commands.test",
+        '{"argv":["tool","unterminated"]}',
+      ],
+      [
+        "shell",
+        { commands: { test: "tool && other" } },
+        "blocks.check.config.commands.test",
+        '{"argv":["tool","&&","other"]}',
+      ],
+    ] as const) {
+      writeFileSync(
+        file,
+        typeof config === "string"
+          ? config
+          : JSON.stringify({
+              blocks: { check: { commands: {}, ...config }, memory: {} },
+            }),
+      );
+      const shown = cli(["config", "show"], 6);
+      expect(shown).toMatchObject({ ok: false, result: { valid: false } });
+      const called = cli(["check", "list"], 6);
+      if (shown.ok || called.ok) throw Error("Expected invalid config");
+      expect(called.error.message).toBe(shown.error.message);
+      expect(called.error.message).toContain(key);
+      expect(called.error.message).toContain(fix);
+      if (name === "yaml") expect(called.error.message).toContain("blocks: [");
+      const text = spawnSync("node", [bin, "check", "list", "--text"], {
+        cwd: root,
+        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 30_000,
+      });
+      expect(text.status).toBe(6);
+      console.log(`${name} (exit 6):\n${text.stdout}`);
+      if (name !== "yaml")
+        expect(cli(["memory", "search", "audit"], 0).ok).toBe(true);
+    }
+    writeFileSync(
+      file,
+      JSON.stringify({
+        blocks: {
+          verify: {
+            source: { builtin: "forge/check" },
+            rename: { check: "verify" },
+            commands: { test: 'tool "unterminated' },
+          },
+        },
+      }),
+    );
+    const aliased = cli(["verify", "run"], 6);
+    if (aliased.ok) throw Error("Expected invalid command");
+    expect(aliased.error.message).toContain(
+      "blocks.verify.config.commands.test",
+    );
+    writeFileSync(file, "blocks:\n  check:\n    commands: {}\n");
+    expect(cli(["config", "show"], 0)).toMatchObject({
+      ok: true,
+      result: { valid: true },
+    });
+    expect(cli(["check", "list"], 0)).toMatchObject({
+      ok: true,
+      result: { commands: [] },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 110_000);
+
+test("affected check counterfactuals still fail on the built artifact", () => {
+  const repo = resolve(import.meta.dirname, "../..");
+  const root = mkdtempSync(join(tmpdir(), "forge-config-counterfactual-"));
+  try {
+    cpSync(join(repo, "dist"), join(root, "dist"), { recursive: true });
+    cpSync(join(repo, "templates"), join(root, "templates"), {
+      recursive: true,
+    });
+    cpSync(join(repo, "package.json"), join(root, "package.json"));
+    symlinkSync(
+      join(repo, "node_modules"),
+      join(root, "node_modules"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const mutations = counterfactuals.filter(
+      (mutation) =>
+        mutation.from.startsWith("function commandArguments") ||
+        mutation.evidence === "config show:",
+    );
+    expect(mutations).toHaveLength(3);
+    const baseline = spawnSync(
+      "node",
+      [join(repo, "test/node-fixtures/check/surfaces.mjs"), root, "review"],
+      {
+        cwd: root,
+        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 60_000,
+      },
+    );
+    expect(baseline.error).toBeUndefined();
+    expect(baseline.status, baseline.stdout + baseline.stderr).toBe(0);
+    for (const mutation of mutations) {
+      const file = join(root, "dist/src", mutation.file);
+      const original = readFileSync(file, "utf8");
+      expect(original.split(mutation.from)).toHaveLength(2);
+      writeFileSync(file, original.replace(mutation.from, mutation.to));
+      try {
+        const result = spawnSync(
+          "node",
+          [
+            join(repo, "test/node-fixtures/check/surfaces.mjs"),
+            root,
+            mutation.journey,
+          ],
+          {
+            cwd: root,
+            env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+            encoding: "utf8",
+            windowsHide: true,
+            timeout: 30_000,
+          },
+        );
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stdout + result.stderr).not.toBe(0);
+        expect(result.stderr).toContain(mutation.evidence);
+      } finally {
+        writeFileSync(file, original);
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 110_000);

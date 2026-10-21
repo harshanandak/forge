@@ -55,7 +55,7 @@ test("assembled check.run preserves command config errors and exit 6", async () 
         "Shell syntax needs a project-owned script; declare an argument array instead.",
       ],
       ['tool "unterminated', "Declared command contains an unclosed quote."],
-    ]) {
+    ] as const) {
       writeFileSync(
         join(root, ".forge/config.yaml"),
         JSON.stringify({ blocks: { check: { commands: { test: command } } } }),
@@ -69,8 +69,14 @@ test("assembled check.run preserves command config errors and exit 6", async () 
         ok: false,
         op: "check.run",
         status: "FAIL",
-        error: { code: "INPUT_INVALID", message, retry: "never" },
+        error: { code: "INPUT_INVALID" },
       });
+      if (response.envelope.ok) throw Error("Expected invalid command");
+      expect(response.envelope.error.message).toContain(message);
+      expect(response.envelope.error.message).toContain(
+        ".forge/config.yaml: blocks.check.config.commands.test:",
+      );
+      expect(response.envelope.error.message).toContain('Fix: use {"argv":[');
       expect(response.exitCode).toBe(6);
     }
     for (const [changes, key, value, remedy] of [
@@ -96,7 +102,7 @@ test("assembled check.run preserves command config errors and exit 6", async () 
       );
       expect(response.envelope).toMatchObject({
         ok: false,
-        error: { code: "INPUT_INVALID", retry: "never" },
+        error: { code: "INPUT_INVALID", retry: "reconcile_first" },
       });
       expect(response.exitCode).toBe(6);
       if (!response.envelope.ok) {

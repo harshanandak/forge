@@ -4,6 +4,7 @@
   "type": "object",
   "description": "The effective config with every value traced to its layer and origin. Detection alone never adds an instance.",
   "required": [
+    "valid",
     "file",
     "revision",
     "configured",
@@ -16,6 +17,7 @@
     "effective"
   ],
   "properties": {
+    "valid": { "type": "boolean" },
     "file": {
       "$ref": "../../../../schemas/common.json#/$defs/RelativePath"
     },

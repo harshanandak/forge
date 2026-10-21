@@ -2,6 +2,7 @@
 // change one thing at a time with compare-and-set edits; or import a template (templates.ts).
 // Reads never write: show, explain and detect only read files.
 import { ForgeFailure } from "../../contract/failure.ts";
+import { schemaDiagnostic } from "../../contract/schema.ts";
 import type {
   BlockSource,
   ParseLimits,
@@ -71,6 +72,7 @@ export interface Instance {
 }
 
 export interface ShowResult {
+  readonly valid: boolean;
   readonly file: string;
   readonly revision: string;
   /** False when the project has no config file (or an empty one): everything comes from detection. */
@@ -140,7 +142,7 @@ function usable(
   for (const problem of problems) {
     const unit = formatPointer(excludedAt(problem.pointer));
     const found = byUnit.get(unit) ?? [];
-    found.push(`${problem.pointer || "/"} ${problem.message}`);
+    found.push(schemaDiagnostic({ keyword: "path", ...problem }, filled));
     byUnit.set(unit, found);
   }
   const excluded = [...byUnit.entries()]
@@ -474,6 +476,7 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
         });
       }
       return {
+        valid: current.unreadable === undefined && excluded.length === 0,
         file: CONFIG_FILE,
         revision: current.revision,
         configured:
