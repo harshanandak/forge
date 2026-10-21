@@ -32,7 +32,7 @@ const check = (text: string): number =>
 test("the guard rejects a skip decided by a build probe or CI", () => {
   expect(
     check(
-      'const missing = !existsSync(built) && !process.env.CI;\nconst builtTest = missing ? test.skip : test;\n',
+      "const missing = !existsSync(built) && !process.env.CI;\nconst builtTest = missing ? test.skip : test;\n",
     ),
   ).toBe(1);
   expect(
@@ -40,7 +40,9 @@ test("the guard rejects a skip decided by a build probe or CI", () => {
       'const built = existsSync("dist/x.js");\nconst gone = !built;\nconst t = gone ? test.skip : test;\n',
     ),
   ).toBe(1);
-  expect(check('test.skipIf(!existsSync("dist/bin/forge.js"))("a", () => {});\n')).toBe(1);
+  expect(
+    check('test.skipIf(!existsSync("dist/bin/forge.js"))("a", () => {});\n'),
+  ).toBe(1);
   expect(check('describe.skipIf(!process.env.CI)("a", () => {});\n')).toBe(1);
 }, 30_000);
 
@@ -60,7 +62,8 @@ test("the guard accepts platform skips and existence checks that fail", () => {
   ).toHaveLength(1);
   expect(
     findUnbuiltIntegrationLane({
-      "test:integration": "bun run build && bun test --parallel .integration.test",
+      "test:integration":
+        "bun run build && bun test --parallel .integration.test",
     }),
   ).toEqual([]);
 }, 30_000);

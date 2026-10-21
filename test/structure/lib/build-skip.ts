@@ -43,7 +43,7 @@ export function findBuildDependentSkips(
   return files.flatMap(({ path, text }) => {
     const masked = maskLiterals(text);
     const tainted = new Set<string>();
-    for (let grew = true; grew; ) {
+    for (let grew = true; grew;) {
       grew = false;
       for (const [, name, init] of masked.matchAll(CONST_INIT))
         if (
