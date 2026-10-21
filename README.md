@@ -50,6 +50,12 @@ forge issue --help --json
 forge catalog describe issue.create
 ```
 
+## Write a block
+
+Copy the complete [hello block](examples/hello-block) and follow
+[Writing a block](docs/writing-a-block.md) to check, add, admit and run it.
+The example and guide also ship in the npm package.
+
 ## MCP
 
 After importing the template, add this top-level section to

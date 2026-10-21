@@ -1,0 +1,15 @@
+{
+  "operations": {
+    "hello.say": {
+      "title": "Say hello",
+      "summary": "Greet someone by name.",
+      "description": "Returns a greeting without reading or writing external state.",
+      "examples": [
+        {
+          "input": { "name": "World" },
+          "output": { "message": "Hello, World!" }
+        }
+      ]
+    }
+  }
+}

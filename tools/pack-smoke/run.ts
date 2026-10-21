@@ -116,11 +116,17 @@ async function main(): Promise<void> {
       "dist/src/index.d.ts",
       "templates/delivery/forge.template.json",
       "templates/delivery/skills/loop/SKILL.md",
+      "examples/hello-block/forge.block.json",
+      "examples/hello-block/index.cjs",
+      "examples/hello-block/input.schema.json",
+      "examples/hello-block/output.schema.json",
+      "examples/hello-block/docs.json",
+      "docs/writing-a-block.md",
     ])
       if (!files.includes(needed)) fail(`tarball is missing ${needed}`);
     const stray = files.filter(
       (file) =>
-        !/^(?:dist\/|templates\/|package\.json$|LICENSE$|README\.md$)/.test(
+        !/^(?:dist\/|templates\/|examples\/hello-block\/|docs\/writing-a-block\.md$|package\.json$|LICENSE$|README\.md$)/.test(
           file,
         ),
     );
@@ -231,7 +237,11 @@ async function main(): Promise<void> {
         ],
         {
           cwd: root,
-          env: { ...env, FORGE_PACKED_CONSUMER: consumer },
+          env: {
+            ...env,
+            FORGE_PACKED_CONSUMER: consumer,
+            FORGE_AUTHOR_NPM_ROOT: dirname(process.execPath),
+          },
         },
         JOURNEYS_TIMEOUT_MS,
       );
