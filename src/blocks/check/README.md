@@ -63,8 +63,13 @@ shows which value is in effect and where it came from. The keys: `commands`, `ti
 select its own `report`; otherwise it uses the declared block report. `exit-code` disables
 report interpretation, `json` requires a structured report, and `auto` delegates recognition
 to the replaceable output adapter. No particular command, parser mode or stop policy is
-selected by the engine. The ordinary instance `operationTimeouts` map overrides the
-manifest's operation budgets; command timeouts remain bounded by that invocation deadline.
+selected by the engine. For the built-in `check.run`, assembly uses the existing instance
+`operationTimeouts` mechanism to default the deadline to `(selected commands + 2) × timeoutMs + 1000`
+milliseconds: sequential commands, two snapshots, and receipt finalization. Selection and
+receipt preflight reuse the block's selected-run budget resolver. A total above the finite
+timer ceiling is rejected before execution. Explicit instance overrides and host ceilings
+remain authoritative; when shorter than the selected run's budget they are rejected before
+execution. Command timeouts remain bounded by that invocation deadline.
 
 Safety ceilings: 256 named checks (names 1–200 characters), 1024 arguments per command,
 1–2147483647 ms per command, and 1–262144 bytes per output stream. Input configuration

@@ -360,6 +360,23 @@ function selectedConfig(
     },
   };
 }
+function runTimeoutMs(config: CheckConfig, input: RunInput): number {
+  const selected = selectedConfig(config, input.checks);
+  validateBudgets(selected.config);
+  // Commands run sequentially, between two snapshots; leave time to seal the receipt.
+  const timeoutMs = (selected.names.length + 2) * config.timeoutMs + 1000;
+  if (
+    !Number.isSafeInteger(config.timeoutMs) ||
+    config.timeoutMs < 1 ||
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs > 2_147_483_647
+  )
+    failure(
+      "INPUT_INVALID",
+      "Selected run exceeds the finite operation timer budget",
+    );
+  return timeoutMs;
+}
 function aggregate(runs: readonly CheckRun[]): CheckStatus {
   if (runs.some((run) => run.status === "FAIL")) return "FAIL";
   if (runs.some((run) => run.status === "INCOMPLETE")) return "INCOMPLETE";
@@ -722,4 +739,5 @@ module.exports = {
   digest,
   verify,
   validateBudgets,
+  runTimeoutMs,
 };

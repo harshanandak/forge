@@ -43,6 +43,7 @@ import type { SurfaceCatalog } from "../surface/catalog.ts";
 import { discoveryOperations } from "../generated/core-discovery.ts";
 import { createStateClient } from "./state-client.ts";
 import { version } from "../version.ts";
+import { withCheckRunBudget } from "./check-budget.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { firstPartyBlocks } from "./first-party.ts";
 import { configCandidates, validateConfigValue } from "./declarations.ts";
@@ -685,7 +686,12 @@ export async function createAssembly(
           refuse("UNKNOWN_COMMAND", "Operation is not assembled");
         }
         const current = snapshot(call);
-        return await new Runtime(current.catalog, trust, {
+        const runtimeCatalog = withCheckRunBudget(
+          current.catalog,
+          current.blocks,
+          request,
+        );
+        return await new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
             const clients: Record<string, unknown> = {};

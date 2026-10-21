@@ -1,5 +1,12 @@
 import entry from "./entry.cts";
-import type { CheckConfig } from "./types.ts";
+import type { CheckConfig, RunInput } from "./types.ts";
+
+/** One selected-run resolver for receipt and operation budgets. */
+export function runTimeoutMs(config: CheckConfig, input: RunInput): number {
+  return (
+    entry as unknown as { runTimeoutMs: typeof runTimeoutMs }
+  ).runTimeoutMs(config, input);
+}
 
 /** Reusable cross-field validation with no service or context access. */
 export function validateBudgets(config: CheckConfig): {
