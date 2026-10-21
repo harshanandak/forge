@@ -268,6 +268,8 @@ export class Runtime {
             request.op,
             problems,
             docs.operations?.[operation.declaredOp],
+            block.resolvedSchema(declaration.input) as Record<string, unknown>,
+            declaration.args,
           ),
         );
       }

@@ -10,6 +10,7 @@ import type { SurfaceCatalog } from "../../../src/surface/catalog.ts";
 import type { OperationDocs } from "../../../src/generated/types.ts";
 import { SchemaRegistry } from "../../../src/contract/schema.ts";
 import { inputError } from "../../../src/contract/input-error.ts";
+import { candidate, fakeCatalog } from "../../surface/fixtures/catalog.ts";
 
 setDefaultTimeout(30_000);
 
@@ -109,19 +110,23 @@ for (const [name, input, path, problem] of [
     expect(field?.problem).toBe(problem);
     expect(typeof field?.expected).toBe("string");
     expect(typeof field?.received).toBe("string");
-    expect(cli.envelope.error.message).toContain(path);
+    expect(cli.envelope.error.message).not.toContain(path);
     expect(cli.envelope.error.message).toContain(
-      "Example: forge issue create --input",
+      'Example: forge issue create --title "First task" --kind task',
     );
-    const docs = catalog
-      .list()
-      .find((entry) => entry.op === "issue.create")!.docs;
-    expect(cli.envelope.error.message).toContain(
-      JSON.stringify(docs.examples![0]!.input),
+    const help = await runCli(catalog, ["issue", "create", "--help"]);
+    expect(help.stdout).toContain(
+      `Example: ${(cli.envelope.error.observed as { example: string }).example}`,
     );
+    if (name === "empty")
+      expect(cli.envelope.error.message).toContain("title is required");
+    if (name === "wrong type")
+      expect(cli.envelope.error.message).toBe(
+        'Invalid input for issue.create:\ntitle must be text; received 42\nExample: forge issue create --title "First task" --kind task',
+      );
     if (name === "unknown property")
       expect(cli.envelope.error.message).toContain(
-        'closest valid name: "title"',
+        'Unknown field "titel"; did you mean "title"?',
       );
   });
 }
@@ -132,9 +137,12 @@ test("positional misuse names the argument, expected form and canonical example"
     context,
   });
   expect(reply.exitCode).toBe(6);
-  expect(reply.stdout).toContain("/arguments/0");
-  expect(reply.stdout).toContain("received");
-  expect(reply.stdout).toContain("Example: forge issue create --input");
+  if (reply.envelope.ok) throw new Error("expected refusal");
+  expect(reply.envelope.error.message).toContain(
+    'Unexpected argument "Task"; pass --title "Task"',
+  );
+  expect(reply.envelope.error.message).not.toContain("/arguments/0");
+  expect(reply.stdout).toContain("Example: forge issue create --title");
 });
 
 test("all failing fields, nested references, array paths and escaped names retain diagnostics", () => {
@@ -169,11 +177,46 @@ test("all failing fields, nested references, array paths and escaped names retai
     "/a~1b/0/count",
     "/a~1b/0/cout",
   ]);
+  expect(error.message).toContain("missing is required");
   expect(error.message).toContain(
-    "/missing: missing required; expected string; received missing",
+    'a/b[0].count must be integer; received "many"',
   );
   expect(error.message).toContain(
-    '/a~1b/0/count: wrong type; expected integer; received "many"',
+    'Unknown field "a/b[0].cout"; did you mean "count"?',
   );
-  expect(error.message).toContain('closest valid name: "count"');
+  expect(error.message).not.toContain("/a~1b/0");
+});
+
+test("positional advice follows schemas and lists flags when no unique field fits", async () => {
+  for (const [properties, required, expected] of [
+    [{ caption: { type: "string" } }, ["caption"], 'pass --caption "Task"'],
+    [{ count: { type: "integer" } }, ["count"], "use --count, --input JSON"],
+    [
+      { left: { type: "string" }, right: { type: "string" } },
+      [],
+      "use --left, --right, --input JSON",
+    ],
+    [
+      { mode: { type: "string", enum: ["fast"] } },
+      ["mode"],
+      "use --mode, --input JSON",
+    ],
+    [
+      { code: { type: "string", pattern: "^[0-9]+$" } },
+      ["code"],
+      "use --code, --input JSON",
+    ],
+  ] as const) {
+    const entry = {
+      ...candidate("sample.run", { args: [] }),
+      inputSchema: { type: "object", properties, required },
+    };
+    const catalog = fakeCatalog([entry]);
+    const reply = await runCli(catalog, ["sample", "run", "Task"]);
+    if (reply.envelope.ok) throw new Error("expected refusal");
+    expect(reply.envelope.error.message).toBe(
+      `Invalid input for sample.run:\nUnexpected argument "Task"; ${expected}`,
+    );
+    expect(catalog.calls).toHaveLength(0);
+  }
 });

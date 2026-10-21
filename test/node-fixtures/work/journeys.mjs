@@ -409,7 +409,13 @@ try {
       true,
     );
     error("NOT_FOUND", () =>
-      call("create", { title: "Missing dependency", dependsOn: ["absent"] }),
+      call("create", {
+        title: "Missing dependency",
+        dependsOn: [`${parent.id.replace(/-\d+$/, "")}-999999999`],
+      }),
+    );
+    error("INPUT_INVALID", () =>
+      call("create", { title: "Malformed dependency", dependsOn: ["absent"] }),
     );
     console.log(
       "PASS dependencies: blocking, cycle refusal, closure readback and missing reference refusal",

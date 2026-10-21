@@ -1,11 +1,37 @@
 import type { ForgeError, OperationDocs } from "../generated/types.ts";
-import type { SchemaProblem } from "./schema.ts";
+import type { SchemaObject, SchemaProblem } from "./schema.ts";
+import { renderExample } from "./example.ts";
+
+function sentence(problem: SchemaProblem): string {
+  const field =
+    problem.pointer
+      .split("/")
+      .slice(1)
+      .map((part) => part.replaceAll("~1", "/").replaceAll("~0", "~"))
+      .reduce(
+        (name, part) =>
+          /^\d+$/.test(part)
+            ? `${name}[${part}]`
+            : `${name}${name ? "." : ""}${part}`,
+        "",
+      ) || "input";
+  if (problem.keyword === "required") return `${field} is required`;
+  if (problem.keyword === "type")
+    return `${field} must be ${problem.expected === "string" ? "text" : (problem.expected ?? "a valid value")}; received ${problem.received ?? "missing"}`;
+  if (problem.keyword === "additionalProperties")
+    return `Unknown field ${JSON.stringify(field)}${problem.suggestion === undefined ? "" : `; did you mean ${JSON.stringify(problem.suggestion)}?`}`;
+  if (problem.message.startsWith("Unexpected argument "))
+    return problem.message;
+  return `${field} ${problem.message}`;
+}
 
 /** The validator owns the facts; every transport renders the same diagnostics and docs example. */
 export function inputError(
   op: string,
   problems: readonly SchemaProblem[],
   docs?: OperationDocs,
+  schema: SchemaObject = {},
+  positions: readonly string[] = [],
 ): ForgeError {
   const fields = problems.map((problem) => ({
     pointer: problem.pointer,
@@ -25,14 +51,13 @@ export function inputError(
       ? {}
       : { suggestion: problem.suggestion }),
   }));
-  const example = docs?.examples?.[0];
   const call =
-    example === undefined
+    docs?.examples?.[0] === undefined
       ? undefined
-      : `forge ${op.replace(".", " ")} --input '${JSON.stringify(example.input).replaceAll("'", "'\\''")}'`;
+      : renderExample(op, docs, schema, positions);
   return {
     code: "INPUT_INVALID",
-    message: `Invalid input for ${op}:\n${fields.map((field) => `${field.pointer || "/"}: ${field.problem}; expected ${field.expected}; received ${field.received}${field.suggestion === undefined ? "" : `; closest valid name: ${JSON.stringify(field.suggestion)}`}`).join("\n")}${call === undefined ? "" : `\nExample: ${call}`}`,
+    message: `Invalid input for ${op}:\n${problems.map(sentence).join("\n")}${call === undefined ? "" : `\nExample: ${call}`}`,
     retry: "never",
     observed: {
       problems: fields,

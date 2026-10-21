@@ -125,7 +125,15 @@ export class BlockCatalog {
         { ...entry.inputSchema, $id: id },
       ]).validate(id, request.input, true);
       if (problems.length > 0)
-        throw new ForgeFailure(inputError(request.op, problems, entry.docs));
+        throw new ForgeFailure(
+          inputError(
+            request.op,
+            problems,
+            entry.docs,
+            entry.inputSchema,
+            entry.declaration.args,
+          ),
+        );
       if (request.dryRun && request.op !== "block.check")
         refuse("UNAVAILABLE", "block mutations have no dry-run contract");
       const input = request.input as Record<string, string>;

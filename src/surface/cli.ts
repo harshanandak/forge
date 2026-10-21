@@ -1,7 +1,8 @@
 import type { McpCandidate } from "../contract/mcp.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { inputError } from "../contract/input-error.ts";
-import { propertyFromFlag } from "../contract/naming.ts";
+import { flagName, propertyFromFlag } from "../contract/naming.ts";
+import { validateWithSchema } from "../contract/schema.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import {
   dispatch,
@@ -57,6 +58,7 @@ function mapArguments(
 ): unknown {
   const properties =
     record((entry?.argumentSchema ?? entry?.inputSchema)?.properties) ?? {};
+  const schema = entry?.argumentSchema ?? entry?.inputSchema ?? {};
   const positions = entry?.declaration.args ?? [];
   const result: Record<string, unknown> = Object.create(null) as Record<
     string,
@@ -91,7 +93,26 @@ function mapArguments(
       result[key] = argumentValue(raw, properties[key]);
     } else {
       const key = positions[position++];
-      if (key === undefined)
+      if (key === undefined) {
+        const fitting = Object.keys(properties).filter((name) => {
+          const property = record(properties[name]);
+          return (
+            !Object.hasOwn(result, name) &&
+            !positions.includes(name) &&
+            property?.type === "string" &&
+            validateWithSchema(property, token).length === 0
+          );
+        });
+        const required = fitting.filter(
+          (name) =>
+            Array.isArray(schema.required) && schema.required.includes(name),
+        );
+        const choices = required.length > 0 ? required : fitting;
+        const suggestion = choices.length === 1 ? choices[0] : undefined;
+        const remedy =
+          suggestion === undefined
+            ? `use ${[...Object.keys(properties).map((name) => `--${flagName(name)}`), "--input JSON"].join(", ")}`
+            : `pass --${flagName(suggestion)} ${JSON.stringify(token)}`;
         throw new ForgeFailure(
           inputError(
             entry?.op ?? "",
@@ -99,15 +120,18 @@ function mapArguments(
               {
                 pointer: `/arguments/${position - 1}`,
                 keyword: "false",
-                message: "Unexpected positional argument",
+                message: `Unexpected argument ${JSON.stringify(token)}; ${remedy}`,
                 expected:
                   "declared flags or --input JSON; no positional argument at this position",
                 received: JSON.stringify(token),
               },
             ],
             entry?.docs,
+            schema,
+            positions,
           ),
         );
+      }
       if (Object.hasOwn(result, key))
         throw new Error(`Duplicate argument ${key}.`);
       result[key] = argumentValue(token, properties[key]);

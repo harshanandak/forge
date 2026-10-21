@@ -518,7 +518,13 @@ export async function createAssembly(
           );
           if (problems.length > 0)
             throw new ForgeFailure(
-              inputError(request.op, problems, entry.docs),
+              inputError(
+                request.op,
+                problems,
+                entry.docs,
+                entry.argumentSchema ?? entry.inputSchema,
+                entry.declaration.args,
+              ),
             );
           if (request.dryRun && entry.declaration.effects.length)
             refuse("UNAVAILABLE", "This operation has no dry-run contract");
