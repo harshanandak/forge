@@ -101,8 +101,7 @@ function extraTrustees(
     const trustee = fields[5] ?? "";
     if (fields.length !== 6 || !/^[A-Z]{2}$|^S-1-[0-9-]+$/.test(trustee))
       throw failed(`unexpected ACL entry ${ace.slice(0, 300)}`);
-    if (fields[0] === "A" && !own.includes(trustee))
-      allowed.add(`*${trustee}`);
+    if (fields[0] === "A" && !own.includes(trustee)) allowed.add(`*${trustee}`);
     else if (fields[0] === "D") denied.add(`*${trustee}`);
     else if (fields[0] !== "A")
       throw failed(`unexpected ACL entry ${ace.slice(0, 300)}`);
