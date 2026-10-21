@@ -8,6 +8,8 @@ type Data = {
   role: "writer" | "reader";
   directory: string;
   content: string;
+  /** What the target held before the round; seeing it is not a torn write. */
+  stale: string;
   rounds: number;
   /** [0] arrivals at the barrier, [1] last released round, [2] last round whose writers all returned. */
   state: SharedArrayBuffer;
@@ -16,7 +18,7 @@ type Data = {
 // The file is absent before its first publish; Windows also refuses an open while a rename replaces it.
 const UNREADABLE = new Set(["ENOENT", "EPERM", "EBUSY", "EACCES"]);
 
-const { role, directory, content, rounds, state } = workerData as Data;
+const { role, directory, content, stale, rounds, state } = workerData as Data;
 const flags = new Int32Array(state);
 const until = (index: number, round: number) => {
   for (
@@ -40,7 +42,8 @@ for (let round = 1; round <= rounds; round += 1) {
   let incomplete = false;
   while (!incomplete && Atomics.load(flags, 2) < round) {
     try {
-      incomplete = readFileSync(file, "utf8") !== content;
+      const seen = readFileSync(file, "utf8");
+      incomplete = seen !== content && seen !== stale;
     } catch (error) {
       if (!(
         error instanceof Error &&
