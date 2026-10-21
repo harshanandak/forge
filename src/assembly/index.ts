@@ -53,6 +53,7 @@ import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
   createAssemblyProviders,
+  projectStateRoot,
   type ProviderOptions,
 } from "./providers.ts";
 
@@ -166,7 +167,11 @@ export async function createAssembly(
   const deviceRoot = resolve(options.deviceRoot);
   const providers = createAssemblyProviders(root, options.providers);
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
-  const projectState = new LocalState(join(root, ".forge", "state.sqlite"));
+  // Every git worktree of one repository shares one store; config and files stay at `root`.
+  const stateRoot = await projectStateRoot(root, options.providers);
+  const projectState = new LocalState(
+    join(stateRoot, ".forge", "state.sqlite"),
+  );
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
   await trustState.open(false);
   let trustActor: Actor | undefined;
@@ -755,6 +760,7 @@ export async function createAssembly(
                     );
                   const opened = openLevels({
                     root,
+                    stateRoot,
                     projectState,
                     deviceState,
                     namespace,
