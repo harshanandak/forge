@@ -131,16 +131,15 @@ jobs:
       - run: bun run build
       - name: Unit tests
         run: bun run test:unit
-      # Pack once: every packed suite shares the smoke's temporary npm install.
-      # Other integration files stay serial alongside it, after the parallel unit lane.
-      - name: Process integration tests and pack smoke
+      - name: Integration tests
+        run: bun run test:integration
+      # Pack once: every packed journey runs against the smoke's one npm install.
+      - name: Pack smoke
         env:
           # Node legs split counterfactuals; Bun keeps the full set on Node 24 only.
           # macOS has only the Node 24 leg, so its second half runs on Linux and Windows.
           STATE_NODE_LEG: ${{ matrix.node }}
-        # The external step ceiling also covers a stalled parent event loop.
-        timeout-minutes: 6
-        run: node tools/integration-step.ts "$(command -v bun)"
+        run: bun run test:pack
 
   # The one required check. Skipped heavy legs pass only when the change is documentation-only.
   ci-gate:

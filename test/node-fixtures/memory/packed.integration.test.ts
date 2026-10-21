@@ -1,21 +1,18 @@
 import { expect, test } from "bun:test";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   cpSync,
-  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { runBounded } from "../../../tools/packed-pool.ts";
-import { runFixtures } from "../../integration/fixtures/run.ts";
+import { join } from "node:path";
+import { runBounded, runFixtures } from "../../integration/fixtures/run.ts";
+import { packedConsumer } from "../../integration/packed-consumer.ts";
 import { packedCoverage, selectShard } from "../state/counterfactuals.ts";
 import { counterfactuals } from "./counterfactuals.ts";
 
-const root = resolve(import.meta.dirname, "../../..");
 const fixture = join(import.meta.dirname, "journeys.mjs");
 const JOURNEYS = ["device", "fence", "levels"] as const;
 
@@ -42,19 +39,6 @@ async function timedAsync<T>(
   } finally {
     timing(label, started);
   }
-}
-function run(command: string, args: string[], cwd = root): string {
-  const result = spawnSync(command, args, {
-    cwd,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 120_000,
-  });
-  if (result.status !== 0)
-    throw new Error(
-      `${command}: ${result.error?.message ?? result.stderr}\n${result.stdout}`,
-    );
-  return result.stdout;
 }
 function launch(command: string, args: string[], cwd: string) {
   return new Promise<{ status: number | null; stdout: string; stderr: string }>(
@@ -102,60 +86,11 @@ test("integration: packed memory journeys, each failing with its fix removed", a
     counterfactuals,
     packedCoverage(process.env.STATE_NODE_LEG).shard,
   );
-  const sharedConsumer =
-    process.env.MEMORY_PACKED_CONSUMER || process.env.FORGE_PACKED_CONSUMER;
+  const consumer = packedConsumer();
   // Private copies remain below the consumer so dependencies resolve from its shared install.
-  const work = mkdtempSync(
-    join(sharedConsumer ?? tmpdir(), "forge-packed-memory-"),
-  );
+  const work = mkdtempSync(join(consumer, "forge-packed-memory-"));
   try {
     const node = nodeBinary();
-    // Pack smoke installs the package once and shares it; run alone, build, pack and install here.
-    const consumer = sharedConsumer ?? work;
-    if (!sharedConsumer) {
-      timed("build", () => run(process.execPath, ["run", "build"]));
-      const npm = [
-        ...(process.env.FORGE_SMOKE_NPM_CLI
-          ? [process.env.FORGE_SMOKE_NPM_CLI]
-          : []),
-        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-      ].find((path) => existsSync(path));
-      if (!npm)
-        throw new Error("Cannot locate the Node installation's npm CLI");
-      const packed = JSON.parse(
-        timed("pack", () =>
-          run(node, [
-            npm,
-            "pack",
-            "--json",
-            "--ignore-scripts",
-            "--pack-destination",
-            work,
-          ]),
-        ),
-      ) as { filename: string }[];
-      writeFileSync(
-        join(consumer, "package.json"),
-        '{"name":"memory-consumer","version":"1.0.0","private":true}',
-      );
-      timed("install", () =>
-        run(
-          node,
-          [
-            npm,
-            "install",
-            join(work, packed[0]!.filename),
-            "--no-audit",
-            "--no-fund",
-          ],
-          consumer,
-        ),
-      );
-    } else {
-      for (const phase of ["build", "pack", "install"])
-        console.log(`Packed memory ${phase}: 0 ms (shared smoke)`);
-    }
     const installed = join(consumer, "node_modules/forge-workflow");
     const positives = JOURNEYS.map((journey) => ({
       label: journey,

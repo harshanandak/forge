@@ -128,11 +128,18 @@ export function findPackageShapeViolations(
       );
     }
   }
-  if (typeof scripts.test !== "string" || !scripts.test.includes("--timeout")) {
-    fail(
-      "package.json",
-      'script "test" must pass an explicit --timeout to bun test',
-    );
+  if (typeof scripts.test !== "string")
+    fail("package.json", 'script "test" is required');
+  for (const [name, value] of Object.entries(scripts)) {
+    if (
+      typeof value === "string" &&
+      /\bbun test\b/.test(value) &&
+      !value.includes("--timeout")
+    )
+      fail(
+        "package.json",
+        `script "${name}" must pass an explicit --timeout to bun test`,
+      );
   }
   if (pkg.type !== "module") fail("package.json", '"type" must be "module"');
   if (typeof asObject(pkg.engines).node !== "string")

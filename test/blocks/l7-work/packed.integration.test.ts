@@ -8,14 +8,14 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { counterfactuals } from "../../node-fixtures/work/counterfactuals.ts";
 import {
   packedCoverage,
   selectShard,
 } from "../../node-fixtures/state/counterfactuals.ts";
 import { runFixtures } from "../../integration/fixtures/run.ts";
+import { packedConsumer } from "../../integration/packed-consumer.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 function timed<T>(label: string, action: () => T): T {
@@ -42,62 +42,15 @@ function run(
     timeout: 90000,
   });
 }
-function good(
-  command: string,
-  args: string[],
-  cwd: string,
-  env?: NodeJS.ProcessEnv,
-): string {
-  const result = run(command, args, cwd, env);
-  expect(result.status, result.stdout + result.stderr).toBe(0);
-  return result.stdout;
-}
 test("installed work block: CLI readback, lease fixtures and remove-the-fix checks", async () => {
   const started = performance.now();
-  const sharedConsumer = process.env.WORK_PACKED_CONSUMER;
+  const consumer = packedConsumer();
   // Keep mutable roots short and private; ancestor lookup reuses installed
   // dependencies without copying or modifying the smoke's base package.
-  const work = mkdtempSync(join(sharedConsumer ?? tmpdir(), "fw-"));
+  const work = mkdtempSync(join(consumer, "fw-"));
   try {
     const node = Bun.which("node");
     if (!node) throw new Error("Node is required");
-    const consumer = sharedConsumer ?? work;
-    if (sharedConsumer) {
-      for (const phase of ["build", "pack", "install"])
-        console.log(`Packed work ${phase}: 0 ms (reused smoke consumer)`);
-    } else {
-      timed("build", () => good(process.execPath, ["run", "build"], root));
-      const npm = [
-        ...(process.env.FORGE_SMOKE_NPM_CLI
-          ? [process.env.FORGE_SMOKE_NPM_CLI]
-          : []),
-        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-      ].find(existsSync);
-      if (!npm) throw new Error("npm CLI is required");
-      const packed = JSON.parse(
-        timed("pack", () =>
-          good(node, [npm, "pack", "--json", "--pack-destination", work], root),
-        ),
-      ) as { filename: string }[];
-      writeFileSync(
-        join(consumer, "package.json"),
-        '{"name":"packed-work-consumer","version":"1.0.0","private":true}',
-      );
-      timed("install", () =>
-        good(
-          node,
-          [
-            npm,
-            "install",
-            join(work, packed[0]!.filename),
-            "--no-audit",
-            "--no-fund",
-          ],
-          consumer,
-        ),
-      );
-    }
     const installed = join(consumer, "node_modules/forge-workflow");
     const env = { ...process.env };
     const path =

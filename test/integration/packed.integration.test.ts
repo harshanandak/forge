@@ -6,23 +6,21 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, join } from "node:path";
 import {
   packedCoverage,
   selectShard,
 } from "../node-fixtures/state/counterfactuals.ts";
 import { firstSliceMutations } from "./counterfactuals.ts";
 import { runFixtures } from "./fixtures/run.ts";
+import { packedConsumer } from "./packed-consumer.ts";
 
-const root = resolve(import.meta.dirname, "../..");
 function timed<T>(label: string, action: () => T): T {
   const started = performance.now();
   try {
@@ -32,28 +30,6 @@ function timed<T>(label: string, action: () => T): T {
       `Packed first slice ${label}: ${Math.round(performance.now() - started)} ms`,
     );
   }
-}
-function run(
-  label: string,
-  command: string,
-  args: string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const result = timed(label, () =>
-    spawnSync(command, args, {
-      cwd,
-      env,
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 90000,
-    }),
-  );
-  if (result.status !== 0)
-    throw new Error(
-      `${result.error?.message ?? "process failed"}\n${result.stdout}\n${result.stderr}`,
-    );
-  return result.stdout;
 }
 function withoutBun(): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -78,69 +54,21 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
     packedCoverage(process.env.STATE_NODE_LEG).shard,
   );
   const started = performance.now();
-  const sharedConsumer = process.env.FORGE_PACKED_CONSUMER;
+  const shared = packedConsumer();
   // A child workspace resolves the smoke's install through its ancestors without
   // sharing project files. Counterfactuals still mutate only their private copy.
-  const work = mkdtempSync(
-    join(
-      sharedConsumer ?? tmpdir(),
-      sharedConsumer ? "fs-" : "forge-first-slice-",
-    ),
-  );
+  // Short names keep project identities below the contract's length limit on
+  // macOS's long temporary-directory prefix.
+  const work = mkdtempSync(join(shared, "fs-"));
   try {
     const node = Bun.which("node");
     if (!node) throw new Error("Node is required");
-    // Keep project identities below the contract's length limit on macOS's long
-    // temporary-directory prefix, including the private mutation workspace.
-    const consumer = sharedConsumer ? work : join(work, "consumer");
-    if (!sharedConsumer) mkdirSync(consumer);
+    const consumer = work;
     writeFileSync(
       join(consumer, "package.json"),
       '{"name":"packed-consumer","version":"1.0.0","private":true,"type":"module"}',
     );
     const env = withoutBun();
-    if (sharedConsumer) {
-      console.log("Packed first slice: reusing smoke's pack and npm install");
-    } else {
-      run("build", process.execPath, ["run", "build"], root);
-      const npm = [
-        ...(process.env.FORGE_SMOKE_NPM_CLI
-          ? [process.env.FORGE_SMOKE_NPM_CLI]
-          : []),
-        join(dirname(node), "node_modules/npm/bin/npm-cli.js"),
-        join(dirname(node), "../lib/node_modules/npm/bin/npm-cli.js"),
-      ].find((path) => existsSync(path));
-      if (!npm) throw new Error("npm CLI is required");
-      const packed = JSON.parse(
-        run(
-          "npm pack",
-          node,
-          [
-            npm,
-            "pack",
-            "--json",
-            "--ignore-scripts",
-            "--pack-destination",
-            work,
-          ],
-          root,
-        ),
-      ) as { filename: string }[];
-      run(
-        "npm install",
-        node,
-        [
-          npm,
-          "install",
-          join(work, packed[0]!.filename),
-          "--no-audit",
-          "--no-fund",
-          "--prefer-offline",
-        ],
-        consumer,
-        env,
-      );
-    }
     const fixtures = [
       "journey",
       "writer",
@@ -188,10 +116,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
     console.log(
       `Packed first slice positive fixtures: ${Math.round(performance.now() - positiveStarted)} ms`,
     );
-    const installed = join(
-      sharedConsumer ?? consumer,
-      "node_modules/forge-workflow",
-    );
+    const installed = join(shared, "node_modules/forge-workflow");
     const isolated = join(
       consumer,
       "node_modules/forge-first-slice-counterfactual",

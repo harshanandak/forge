@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { runBounded } from "../../../tools/packed-pool.ts";
 
 export type Fixture = {
   label: string;
@@ -47,6 +46,30 @@ async function runFixture(fixture: Fixture, prefix: string): Promise<string> {
       `${prefix} ${fixture.label}: ${Math.round(performance.now() - started)} ms`,
     );
   }
+}
+
+/** Run at most `limit` items at once; every item settles before failures are thrown, so callers can clean up. */
+export async function runBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  run: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const output: R[] = [];
+  const failures: unknown[] = [];
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      for (let index = next++; index < items.length; index = next++) {
+        try {
+          output[index] = await run(items[index]!, index);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+    }),
+  );
+  if (failures.length) throw new AggregateError(failures, "Fixtures failed");
+  return output;
 }
 
 export async function runFixtures(
