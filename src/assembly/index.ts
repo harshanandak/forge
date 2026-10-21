@@ -21,6 +21,7 @@ import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
 import { bindContext } from "../contract/context.ts";
 import { validateWithSchema } from "../contract/schema.ts";
+import { inputError } from "../contract/input-error.ts";
 import {
   validateConfigDocument,
   validateDocsRecords,
@@ -510,14 +511,20 @@ export async function createAssembly(
             );
           const bound = bindContext(entry.declaration, request.context);
           if (!bound.ok) throw new ForgeFailure(bound.error);
-          const [problem] = validateWithSchema(
+          const problems = validateWithSchema(
             entry.inputSchema,
             request.input,
+            true,
           );
-          if (problem)
-            refuse(
-              "INPUT_INVALID",
-              `Input does not match declared schema: ${problem.pointer || "/"} ${problem.message}`,
+          if (problems.length > 0)
+            throw new ForgeFailure(
+              inputError(
+                request.op,
+                problems,
+                entry.docs,
+                entry.argumentSchema ?? entry.inputSchema,
+                entry.declaration.args,
+              ),
             );
           if (request.dryRun && entry.declaration.effects.length)
             refuse("UNAVAILABLE", "This operation has no dry-run contract");

@@ -253,3 +253,13 @@ test("idPrefix is a schema value: lowercase letters, digits and single hyphens, 
     [],
   );
 });
+
+test("malformed ids are rejected before lookup with the current prefix example", () => {
+  const call = project();
+  for (const id of ["not/an/issue", "forge", "forge-", "forge-one"]) {
+    expect(() => call("issue.show", { id }, { idPrefix: "forge" })).toThrow(
+      `INPUT_INVALID: Invalid issue id ${JSON.stringify(id)}; expected <prefix>-<n> (for example forge-1)`,
+    );
+  }
+  expect(call.records.size).toBe(0);
+});

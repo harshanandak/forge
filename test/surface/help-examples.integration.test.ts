@@ -35,6 +35,22 @@ for (const shell of shells) {
           [op, "--help"],
           localCall(assembly),
         );
+        if (op === "issue.create") {
+          const invalid = await runCli(
+            assembly.catalog,
+            [op],
+            localCall(assembly),
+          );
+          expect(invalid.exitCode).toBe(6);
+          if (invalid.envelope.ok) throw new Error("expected input refusal");
+          const example = (
+            invalid.envelope.error.observed as { example: string }
+          ).example;
+          expect(example).toBe(
+            'forge issue create --title "First task" --kind task',
+          );
+          expect(help.stdout).toContain(`Example: ${example}`);
+        }
         const examples = help.stdout.split("\n").flatMap((line) => {
           const match =
             /^ {4}(?:Example: )?(?:(POSIX|PowerShell 5.1): )?(forge .+)$/.exec(
@@ -77,7 +93,12 @@ for (const shell of shells) {
         expect(result.error).toBeUndefined();
         expect(result.stdout).not.toContain("INPUT_INVALID");
         expect(result.status).toBe(0);
-        expect(JSON.parse(result.stdout)).toMatchObject({ ok: true });
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          ok: true,
+          ...(op === "issue.create"
+            ? { result: { title: "First task", kind: "task" } }
+            : {}),
+        });
       }
     } finally {
       await assembly.close();
