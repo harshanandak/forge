@@ -525,11 +525,12 @@ try {
     });
     assert.match(result.stdout, /^\{/, "bootstrap must return a JSON failure");
     const failure = JSON.parse(result.stdout);
-    assert.equal(result.status, 1);
+    assert.equal(result.status, 1, "broken trust store must fail loudly");
     assert.equal(failure.ok, false);
     assert.equal(failure.status, "FAIL");
     assert.equal(failure.error.code, "UNAVAILABLE");
     assert.equal(failure.error.retry, "never");
+    assert.match(failure.error.message, /directory|EISDIR|unable to open/i);
     assert.deepEqual(failure.warnings, []);
     assert.doesNotMatch(
       result.stderr,

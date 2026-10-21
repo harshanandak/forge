@@ -525,6 +525,7 @@ export async function createAssembly(
           if (configHandler) {
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
+            if (request.op === "config.show") await trustState.open(false);
             const handled = configHandler(request.input);
             const output =
               request.op === "config.show"
@@ -564,7 +565,7 @@ export async function createAssembly(
             );
           }
           if (request.op === "block.check" || request.op === "block.add") {
-            if (request.op === "block.add") await trustState.open(false);
+            await trustState.open(false);
             const spec = String(input.path);
             const source = sourceFor(spec);
             const block = captureBlock(
