@@ -61,9 +61,10 @@ test("declared commands are the commands: detection adds none, and explain shows
     typecheck: "bun run check",
     test: "bun run test:unit",
   });
-  expect(
-    p.config.explain({ path: "check.commands.typecheck" }),
-  ).toMatchObject({ value: "bun run check", source: "project" });
+  expect(p.config.explain({ path: "check.commands.typecheck" })).toMatchObject({
+    value: "bun run check",
+    source: "project",
+  });
   const lint = p.config.explain({ path: "check.commands.lint" });
   expect(lint.set).toBe(false);
   expect(lint.entries).toEqual([
