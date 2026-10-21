@@ -59,11 +59,12 @@ export function createMcpHandlers(
     (!Number.isSafeInteger(exposure.budget) || exposure.budget < 0)
   )
     throw new RangeError("MCP budget must be a non-negative safe integer.");
-  const selected = selectMcpTools(catalog.list().map(enveloped), exposure);
+  const candidates = catalog.list();
+  const selected = selectMcpTools(candidates.map(enveloped), exposure);
   const byName = new Map(
     selected.tools.map((tool) => [
       tool.name,
-      catalog.list().find((c) => {
+      candidates.find((c) => {
         const name = mcpToolName(c.op, exposure.toolPrefix);
         return name === tool.name;
       }),
@@ -73,13 +74,11 @@ export function createMcpHandlers(
   // the runtime can return ADMISSION_REQUIRED; visible() still hides their metadata.
   const reachable = new Set(
     selectMcpTools(
-      catalog.list().map((candidate) => ({ ...candidate, admitted: true })),
+      candidates.map((candidate) => ({ ...candidate, admitted: true })),
       { ...exposure, budget: 0 },
     ).overflow,
   );
-  const exposed = catalog
-    .list()
-    .filter((candidate) => reachable.has(candidate.op));
+  const exposed = candidates.filter((candidate) => reachable.has(candidate.op));
   const restricted: SurfaceCatalog = {
     list: () => exposed,
     invoke: (request) => catalog.invoke(request),
