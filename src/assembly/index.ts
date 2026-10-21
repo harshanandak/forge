@@ -31,6 +31,7 @@ import type {
   Actor,
   BlockSource,
   ConfigDocument,
+  DetectionObservation,
   ForgeError,
   BlockInstance,
   DocsRecords,
@@ -53,6 +54,7 @@ import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
   createAssemblyProviders,
+  idPrefixObservation,
   projectStateRoot,
   type ProviderOptions,
 } from "./providers.ts";
@@ -193,13 +195,15 @@ export async function createAssembly(
   // Each block is captured once per call: config reads its schema from the same capture the
   // catalog runs. The cache belongs to one call and is passed down it, so overlapping calls
   // never share or clear each other's captures, and nothing is kept once the call ends.
+  // `derived` holds what git answers for this call (the id prefix): an invocation asks git each
+  // time, so a long-lived server follows a changed origin; listings leave it to its default.
   type CallScope = {
     captured(source: BlockSource): CapturedBlock;
     shipped: ReturnType<typeof shippedTemplates>;
     config: ReturnType<typeof createConfig>;
     configOperations: ReturnType<typeof createConfigOperations>;
   };
-  function callScope(): CallScope {
+  function callScope(derived: readonly DetectionObservation[] = []): CallScope {
     const captures = new Map<string, CapturedBlock | { failed: unknown }>();
     const shipped = shippedTemplates();
     function captured(source: BlockSource): CapturedBlock {
@@ -226,7 +230,10 @@ export async function createAssembly(
       files: nodeConfigFiles(root),
       codec: yamlConfigCodec,
       clock: { now: () => Date.now() },
-      detect: () => detectProject(createFolderFiles(root)).observations,
+      detect: () => [
+        ...detectProject(createFolderFiles(root)).observations,
+        ...derived,
+      ],
       templates: shipped,
       builtinSource: (name: string): BlockSource | undefined =>
         firstPartyBlocks[`forge/${name}`] === undefined
@@ -465,7 +472,15 @@ export async function createAssembly(
       grantCandidate,
       ...snapshot(callScope()).candidates,
     ],
-    invoke: (request) => direct.invoke(callScope(), request),
+    async invoke(request) {
+      let derived: readonly DetectionObservation[];
+      try {
+        derived = await idPrefixObservation(root, stateRoot, options.providers);
+      } catch (error) {
+        return failure(request.op, error);
+      }
+      return direct.invoke(callScope(derived), request);
+    },
   };
   const direct = {
     async invoke(
