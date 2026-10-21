@@ -213,6 +213,31 @@ test("a git submodule keeps its store in its own folder", async () => {
   expect(existsSync(join(submodule, ".forge/state.sqlite"))).toBe(true);
 }, 60_000);
 
+test("issue ids carry the repository's name in every worktree, and earlier names keep resolving", async () => {
+  // No remote yet: the main checkout's folder names the project, even from the linked worktree.
+  const before = done(
+    await (
+      await open(linked)
+    )("issue.create", { title: "Named" }),
+  );
+  expect(before.id).toMatch(/^repo-\d+$/);
+  const number = String(before.id).slice("repo-".length);
+  await git(
+    main,
+    "remote",
+    "add",
+    "origin",
+    "https://example.invalid/o/Forge.git",
+  );
+  const fromLinked = await open(linked);
+  const after = done(await fromLinked("issue.create", { title: "Renamed" }));
+  expect(after.id).toMatch(/^forge-\d+$/);
+  for (const alias of [`repo-${number}`, `work-${number}`])
+    expect(done(await fromLinked("issue.show", { id: alias })).id).toBe(
+      `forge-${number}`,
+    );
+}, 60_000);
+
 test("a project outside git keeps its store in its own folder", async () => {
   const plain = join(work, "plain");
   mkdirSync(plain);

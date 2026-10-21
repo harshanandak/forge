@@ -53,6 +53,7 @@ import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
   createAssemblyProviders,
+  idPrefixObservation,
   projectStateRoot,
   type ProviderOptions,
 } from "./providers.ts";
@@ -169,6 +170,11 @@ export async function createAssembly(
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   // Every git worktree of one repository shares one store; config and files stay at `root`.
   const stateRoot = await projectStateRoot(root, options.providers);
+  const derivedIdPrefix = await idPrefixObservation(
+    root,
+    stateRoot,
+    options.providers,
+  );
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
   );
@@ -226,7 +232,10 @@ export async function createAssembly(
       files: nodeConfigFiles(root),
       codec: yamlConfigCodec,
       clock: { now: () => Date.now() },
-      detect: () => detectProject(createFolderFiles(root)).observations,
+      detect: () => [
+        ...detectProject(createFolderFiles(root)).observations,
+        ...derivedIdPrefix,
+      ],
       templates: shipped,
       builtinSource: (name: string): BlockSource | undefined =>
         firstPartyBlocks[`forge/${name}`] === undefined

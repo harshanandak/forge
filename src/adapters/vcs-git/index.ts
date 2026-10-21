@@ -162,6 +162,41 @@ export async function mainCheckoutPath(
   }
 }
 
+/**
+ * The repository's name as its `origin` remote names it (`forge` for `.../forge.git`), so every
+ * clone and worktree of one repository agrees whatever its folder is called. Undefined outside a
+ * repository (no git is started then), without an origin, or when git cannot answer.
+ */
+export async function originRepositoryName(
+  dir: string,
+  options: VcsAdapterOptions,
+): Promise<string | undefined> {
+  if (nearestGitEntry(dir) === undefined) return undefined;
+  const env = gitEnvironment(options.env);
+  const found = options.process.resolve("git", env);
+  if (found.kind === "unavailable") return undefined;
+  try {
+    const result = await options.process.run(
+      found,
+      ["config", "--get", "remote.origin.url"],
+      {
+        cwd: resolvePath(dir),
+        env,
+        timeoutMs: options.timeoutMs,
+        maxOutputBytes: options.maxOutputBytes,
+      },
+    );
+    if (result.exitCode !== 0 || result.truncated) return undefined;
+    // The last path segment of an https, ssh or scp-style URL, or of a local path.
+    const name = /([^/\\:]+?)(?:\.git)?[/\\]*$/.exec(firstLine(result.stdout));
+    return name?.[1];
+  } catch (error) {
+    if (error instanceof Error && error.name === "ProcessSpawnError")
+      return undefined;
+    throw error;
+  }
+}
+
 const REF_UNSAFE = /[\0\r\n]/;
 const REMOTE_NAME =
   /^[A-Za-z0-9_][A-Za-z0-9._-]*(?:\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/;

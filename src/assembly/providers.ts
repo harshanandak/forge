@@ -1,8 +1,13 @@
 import { realpathSync } from "node:fs";
+import { basename } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { createProcessPort } from "../adapters/process/index.ts";
 import { createRunnerOutput } from "../adapters/runner-output/index.ts";
-import { mainCheckoutPath } from "../adapters/vcs-git/index.ts";
+import {
+  mainCheckoutPath,
+  originRepositoryName,
+} from "../adapters/vcs-git/index.ts";
+import type { DetectionObservation } from "../generated/types.ts";
 import type { RunnerOutputPort } from "../ports/runner-output.ts";
 import type { SupervisionOptions } from "../adapters/process/supervision.ts";
 import {
@@ -153,17 +158,61 @@ function hostEnv(options: ProviderOptions): Readonly<Record<string, string>> {
   });
 }
 
+function gitOptions(options: ProviderOptions) {
+  return {
+    process: createProcessPort({ supervision: options.supervision ?? CLEANUP }),
+    env: hostEnv(options),
+    timeoutMs: 10000,
+    maxOutputBytes: 16384,
+  };
+}
+
 /** Where project state lives: in a linked git worktree, the same folder in the main working tree. */
 export function projectStateRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string> {
-  return mainCheckoutPath(root, {
-    process: createProcessPort({ supervision: options.supervision ?? CLEANUP }),
-    env: hostEnv(options),
-    timeoutMs: 10000,
-    maxOutputBytes: 16384,
-  });
+  return mainCheckoutPath(root, gitOptions(options));
+}
+
+/** A name as an issue id prefix: lowercase letters, digits and single hyphens; undefined when none remain. */
+export function idPrefix(name: string): string | undefined {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .slice(0, 32)
+      .replace(/^-+|-+$/g, "") || undefined
+  );
+}
+
+/**
+ * The work block's derived `idPrefix`: the origin repository's name, else the main checkout's
+ * folder name, so every worktree of one repository mints the same ids. It fills the `work`
+ * instance like the detected check commands fill `check`; a set value always wins.
+ */
+export async function idPrefixObservation(
+  root: string,
+  stateRoot: string,
+  options: ProviderOptions = {},
+): Promise<readonly DetectionObservation[]> {
+  const repository = await originRepositoryName(root, gitOptions(options));
+  const value = idPrefix(repository ?? basename(stateRoot));
+  return value === undefined
+    ? []
+    : [
+        {
+          key: "/blocks/work/config/idPrefix",
+          value,
+          origin: {
+            detector: "project.detect",
+            note:
+              repository === undefined
+                ? "the project folder's name"
+                : "the origin remote's repository name",
+          },
+        },
+      ];
 }
 
 export function createAssemblyProviders(
