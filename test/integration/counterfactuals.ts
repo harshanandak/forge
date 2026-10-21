@@ -99,8 +99,8 @@ export const firstSliceMutations: readonly FirstSliceMutation[] = [
 
   {
     file: "src/assembly/index.js",
-    from: "const reason = error instanceof Error",
-    to: "throw error; const reason = error instanceof Error",
+    from: "const reason = error instanceof ForgeFailure",
+    to: "throw error; const reason = error instanceof ForgeFailure",
     mode: "missing-sources",
     fixture: "review",
     evidence: "config show:",
