@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import * as childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import { runWithin } from "../../../tools/pack-smoke/bounded.ts";
 
 for (const event of ["exit", "error"] as const)
@@ -44,37 +45,15 @@ for (const event of ["exit", "error"] as const)
       expect(process.listenerCount(signal)).toBe(counts[index]!);
   }, 30000);
 
-test("POSIX cleanup errors reject and remove signal listeners before returning", async () => {
-  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-  Object.defineProperty(process, "platform", { value: "linux" });
-  const child = Object.assign(new EventEmitter(), { pid: 12345 });
-  const spawn = spyOn(childProcess, "spawn").mockReturnValue(
-    child as unknown as childProcess.ChildProcess,
+test("POSIX cleanup errors reject and remove signal listeners before returning", () => {
+  const node = Bun.which("node");
+  if (node === null) throw new Error("Node is required for cleanup injection");
+  const result = childProcess.spawnSync(
+    node,
+    [join(import.meta.dirname, "cleanup.fixture.ts"), "live"],
+    { encoding: "utf8", timeout: 10000, windowsHide: true },
   );
-  const refused = Object.assign(new Error("kill refused"), { code: "EPERM" });
-  const kill = spyOn(process, "kill").mockImplementation(() => {
-    throw refused;
-  });
-  const counts = [
-    process.listenerCount("SIGINT"),
-    process.listenerCount("SIGTERM"),
-  ];
-  try {
-    const result = runWithin("journeys", "bun", [], {}, 10000).catch(
-      (error: unknown) => error,
-    );
-    child.emit("exit", 3, null);
-    const error = (await result) as Error;
-    expect(error.message).toBe("journeys: process group cleanup failed");
-    expect(error.cause).toBe(refused);
-    expect(kill).toHaveBeenCalledWith(-child.pid, "SIGKILL");
-    expect([
-      process.listenerCount("SIGINT"),
-      process.listenerCount("SIGTERM"),
-    ]).toEqual(counts);
-  } finally {
-    spawn.mockRestore();
-    kill.mockRestore();
-    Object.defineProperty(process, "platform", platform);
-  }
-}, 30000);
+  expect(result.error).toBeUndefined();
+  expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  expect(result.stdout).toContain("PASS cleanup live");
+}, 15000);
