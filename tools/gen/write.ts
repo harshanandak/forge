@@ -13,7 +13,9 @@ import { fileURLToPath } from "node:url";
 // has the target open. Both clear as soon as the other side finishes, so they are retried, not reported.
 const BUSY = new Set(["EPERM", "EBUSY", "EACCES"]);
 const BUSY_RETRY_MS = 2_000;
-const pause = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+const pause = new Int32Array(
+  new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
+);
 
 function code(error: unknown): string | undefined {
   return error instanceof Error && "code" in error
@@ -34,11 +36,22 @@ function whileBusy<T>(step: () => T): T {
   }
 }
 
+/** The two calls a concurrent writer can find busy; a test injects the busy errors here. */
+export type GeneratedFiles = {
+  read: (file: string) => string;
+  rename: (from: string, to: string) => void;
+};
+
+const nodeFiles: GeneratedFiles = {
+  read: (file) => readFileSync(file, "utf8"),
+  rename: renameSync,
+};
+
 /** The file's text, or undefined before its first publish. */
-function current(file: string): string | undefined {
+function current(file: string, files: GeneratedFiles): string | undefined {
   return whileBusy(() => {
     try {
-      return readFileSync(file, "utf8");
+      return files.read(file);
     } catch (error) {
       if (code(error) === "ENOENT") return undefined;
       throw error;
@@ -47,9 +60,13 @@ function current(file: string): string | undefined {
 }
 
 /** Leave current output alone; publish changed output only after its temp file is complete. */
-export function writeGenerated(target: string | URL, content: string): boolean {
+export function writeGenerated(
+  target: string | URL,
+  content: string,
+  files: GeneratedFiles = nodeFiles,
+): boolean {
   const file = target instanceof URL ? fileURLToPath(target) : target;
-  if (current(file) === content) return false;
+  if (current(file, files) === content) return false;
 
   mkdirSync(dirname(file), { recursive: true });
   const temporary = join(
@@ -60,11 +77,11 @@ export function writeGenerated(target: string | URL, content: string): boolean {
     writeFileSync(temporary, content);
     return whileBusy(() => {
       try {
-        renameSync(temporary, file);
+        files.rename(temporary, file);
         return true;
       } catch (error) {
         // Another writer may already have published the same bytes; then nothing is left to replace.
-        if (current(file) === content) return false;
+        if (current(file, files) === content) return false;
         throw error;
       }
     });
