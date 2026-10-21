@@ -14,6 +14,8 @@ import type { StateRecord } from "../../../src/generated/types.ts";
 import { operations } from "../../../src/blocks/check/operations.ts";
 import { hash } from "../../../src/blocks/check/receipt.ts";
 import { captured } from "./fakes.ts";
+import { exitCode } from "../../../src/surface/result.ts";
+import { finalizationTimeoutMs } from "../../../src/blocks/check/budget.ts";
 
 function fixture(result: Partial<ProcessResult> = {}) {
   const records = new Map<string, StateRecord>();
@@ -88,6 +90,124 @@ const config = {
   maxInputBytes: 1048576,
   environment: [],
 };
+
+test("receipt finalization rejects a write/readback exceeding its own allowance", async () => {
+  const { services, records } = fixture();
+  let now = services.clock.now();
+  const engine = createCheck({
+    ...services,
+    clock: { now: () => now },
+    state: {
+      ...services.state,
+      put(...args) {
+        now += finalizationTimeoutMs(config.maxReceiptBytes);
+        return services.state.put(...args);
+      },
+    },
+  });
+  const failure = await engine.run({}, config).catch((error: unknown) => error);
+  expect(String(failure)).toContain(
+    "Check receipt finalization deadline exceeded",
+  );
+  expect(records.size).toBe(1);
+}, 1000);
+
+for (const [childExit, status, exit] of [
+  [0, "PASS", 0],
+  [7, "FAIL", 1],
+] as const) {
+  test(`an exactly cap-sized receipt survives a slow write and exits from ${status}`, async () => {
+    const cap = 524288;
+    const { services, records } = fixture();
+    let now = services.clock.now();
+    let outputBytes = 0;
+    let writeMs = 0;
+    const engine = createCheck({
+      ...services,
+      clock: { now: () => now },
+      process: {
+        ...services.process,
+        run(_executable, _args, options) {
+          const stdout = "x".repeat(Math.ceil(outputBytes / 2));
+          const stderr = "x".repeat(Math.floor(outputBytes / 2));
+          const evidence = captured(
+            {
+              stdout,
+              stderr,
+              exitCode: childExit,
+              signal: null,
+              timedOut: false,
+              truncated: true,
+              durationMs: 1,
+            },
+            options,
+          );
+          // Fill the encoded boundary exactly, independently of the conservative
+          // retention reservation. Each fake stream stays below maxOutputBytes.
+          return Promise.resolve({ ...evidence, stdout, stderr });
+        },
+      },
+      state: {
+        ...services.state,
+        put(...args) {
+          now += writeMs;
+          return services.state.put(...args);
+        },
+      },
+    });
+    const capped = {
+      ...config,
+      maxReceiptBytes: cap,
+      maxOutputBytes: 262144,
+      outputHeadBytes: 0,
+      outputTailBytes: 0,
+    };
+    // Calibrate fixed metadata, then the decimal stream byte counters.
+    for (let i = 0; i < 2; i++) {
+      const probe = await engine.run({}, capped);
+      outputBytes +=
+        cap - Buffer.byteLength(JSON.stringify(probe)) - (i === 0 ? 32 : 0);
+      records.clear();
+    }
+    writeMs = 20000;
+    const receipt = await engine.run({}, capped, {
+      signal: new AbortController().signal,
+      deadline: now + 21000,
+    });
+    expect(Buffer.byteLength(JSON.stringify(receipt))).toBe(cap);
+    expect(Math.ceil(outputBytes / 2)).toBeLessThanOrEqual(
+      capped.maxOutputBytes,
+    );
+    expect(receipt.status).toBe(status);
+    expect(engine.show(receipt.id)).toEqual(receipt);
+    expect(records.size).toBe(1);
+    // The surface maps the accepted receipt's status to the process exit code.
+    expect(
+      exitCode(
+        status === "PASS"
+          ? {
+              ok: true,
+              op: "check.run",
+              status: "OK",
+              result: receipt,
+              warnings: [],
+            }
+          : {
+              ok: false,
+              op: "check.run",
+              status: "FAIL",
+              error: {
+                code: "CHECK_FAIL",
+                message: "Checks failed",
+                retry: "never",
+              },
+              result: receipt,
+              warnings: [],
+            },
+      ),
+    ).toBe(exit);
+  }, 5000);
+}
 
 test("report parsing and stop behavior are declared choices", async () => {
   const { check, environments } = fixture({ stdout: "Tests: 0 total" });
