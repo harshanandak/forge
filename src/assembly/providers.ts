@@ -90,7 +90,7 @@ export function processCleanupBudgetMs(options?: SupervisionOptions): number {
 // Windows load exceeded the old 4.75 s Git window. Each of two HEAD lookups
 // needs a 10 s startup window plus the process service's cleanup bound.
 const SNAPSHOT_HEAD_MS = 10000;
-export const SNAPSHOT_TIMEOUT_MS =
+export const SNAPSHOT_TIMEOUT_MS: number =
   2 * (SNAPSHOT_HEAD_MS + processCleanupBudgetMs());
 /** An operation wrapping one snapshot also needs time to return its result. */
 export const SNAPSHOT_OPERATION_TIMEOUT_MS: number = SNAPSHOT_TIMEOUT_MS + 1000;
