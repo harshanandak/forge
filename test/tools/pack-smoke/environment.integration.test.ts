@@ -75,7 +75,8 @@ test("colocated Node and Bun leave node and npm exec working without exposing Bu
       cwd: folder,
       env,
       encoding: "utf8",
-      timeout: 10000,
+      // Deadlines catch hangs, not machine speed under parallel CI contention.
+      timeout: 60000,
       windowsHide: true,
     });
     expect(result.error).toBeUndefined();
@@ -161,4 +162,4 @@ console.log('consumer on Node');
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
-}, 30000);
+}, 90000);

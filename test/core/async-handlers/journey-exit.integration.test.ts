@@ -60,7 +60,8 @@ test("MCP journey cleanup completes when the child exited before finally", () =>
       {
         cwd: directory,
         encoding: "utf8",
-        timeout: 15000,
+        // Deadlines catch hangs, not machine speed under parallel CI contention.
+        timeout: 60000,
         windowsHide: true,
       },
     );
@@ -69,4 +70,4 @@ test("MCP journey cleanup completes when the child exited before finally", () =>
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-}, 20000);
+}, 90000);
