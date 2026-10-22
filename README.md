@@ -45,10 +45,10 @@ before proceeding. Skills are written under `.agents/skills`.
 
 Project state writes register the store's location on this device. If that
 store later disappears, state reads and writes report its missing path. Restore
-the store from backup, or explicitly start a new store and identity by putting
-`--reinitialize-store` before an enabled project-write command, for example
-`forge --reinitialize-store issue create --title "First task"` when the work
-block is enabled. Fresh project reads create nothing.
+the store from backup, or run `forge store reinit` to start a new empty store
+and identity. Recovery replaces the old same-root device registration and refuses
+if a store is present. It grants no permission to later calls. Fresh project reads
+create nothing.
 Detection requires the device registration: older stores become registered on
 their next write, and losing both stores removes the evidence of prior state.
 

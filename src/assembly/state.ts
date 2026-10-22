@@ -1,5 +1,5 @@
 ﻿import { dirname } from "node:path";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
 import { createSqliteStore } from "../adapters/store-sqlite/index.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
@@ -9,6 +9,8 @@ import {
 } from "../adapters/store-sqlite/private-files.ts";
 import {
   ensurePrivateDirectory,
+  createPrivateFile,
+  securedFileOps,
   type DirectoryCreatePort,
 } from "../adapters/store-sqlite/file-ops.ts";
 import type { OwnedHandle } from "../ports/lifetime.ts";
@@ -69,13 +71,32 @@ export class LocalState {
     this.#directories = directories;
     this.#missing = missing;
   }
-  #serial<T>(work: () => Promise<T>): Promise<T> {
+  #serial<T>(work: () => T | Promise<T>): Promise<T> {
     const result = this.#queue.then(work);
     this.#queue = result.then(
       () => undefined,
       () => undefined,
     );
     return result;
+  }
+  /** Reserve a new store atomically; recovery must never open an existing database. */
+  async create(): Promise<void> {
+    return this.#serial(() => {
+      if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
+      if (process.platform === "win32")
+        security ??= privateFileGuard(windowsPrivateFiles());
+      const files = security ? securedFileOps(security) : undefined;
+      ensurePrivateDirectory(dirname(this.#path), this.#directories);
+      try {
+        closeSync(createPrivateFile(this.#path, "wx", files));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        refuse(
+          "INPUT_CONFLICT",
+          `Forge store already exists at ${this.#path}. Fix: keep the existing store, or restore a backup instead.`,
+        );
+      }
+    });
   }
   async #entry(write: boolean): Promise<Entry | undefined> {
     if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");

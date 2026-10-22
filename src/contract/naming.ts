@@ -21,6 +21,7 @@ export const CORE_NOUNS: readonly string[] = [
   "host",
   "skills",
   "state",
+  "store",
   "template",
 ];
 
@@ -56,7 +57,6 @@ export const RESERVED_FLAGS: readonly string[] = [
   "quiet",
   "request-id",
   "version",
-  "reinitialize-store",
 ];
 
 export interface ParsedOperation {

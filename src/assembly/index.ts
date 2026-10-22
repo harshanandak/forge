@@ -118,8 +118,6 @@ const grantCandidate: McpCandidate = {
 export interface AssemblyOptions {
   readonly root: string;
   readonly deviceRoot: string;
-  /** Explicit recovery permits the next write to create a missing project store. */
-  readonly reinitializeStore?: boolean;
   /**
    * Whether this host serves a project. Left out, it does when its root holds the project's Forge
    * config (.forge/config.yaml), checked on each call; a host with no project says false.
@@ -194,10 +192,7 @@ export async function createAssembly(
     join(stateRoot, ".forge", "state.sqlite"),
     undefined,
     undefined,
-    async (write) => {
-      if (!(write && options.reinitializeStore))
-        await requireRegisteredStore(deviceState, stateRoot);
-    },
+    () => requireRegisteredStore(deviceState, stateRoot),
   );
   let trustActor: Actor | undefined;
   const trust = new TrustStore({
@@ -701,6 +696,34 @@ export async function createAssembly(
           if (request.dryRun && entry.declaration.effects.length)
             refuse("UNAVAILABLE", "This operation has no dry-run contract");
           const input = request.input as Record<string, unknown>;
+          if (request.op === "store.reinit") {
+            if (bound.context.variant !== "project")
+              refuse("CONTEXT_MISSING", "Store recovery requires a project");
+            const recovery = new LocalState(
+              join(stateRoot, ".forge", "state.sqlite"),
+            );
+            const opened = openLevels({
+              root,
+              stateRoot,
+              projectState: recovery,
+              deviceState,
+              namespace: "forge/core-project",
+              actor: bound.context.actor,
+              servesProject: true,
+              caller: request.caller,
+              write: true,
+              requestId: request.requestId,
+              replaceRegistration: true,
+            });
+            try {
+              await recovery.create();
+              const project = await opened.levels.project();
+              return success(request.op, project!.identity);
+            } finally {
+              await opened.close();
+              await recovery.close();
+            }
+          }
           const configHandler = call.configOperations[request.op];
           if (configHandler) {
             if (!validateConfigValue(entry.declaration, "input", request.input))
@@ -1165,13 +1188,10 @@ export function localContext(
 export function localSession(fallback: string): string {
   return process.env.FORGE_SESSION || fallback;
 }
-export async function createLocalAssembly(
-  reinitializeStore = false,
-): Promise<Assembly> {
+export async function createLocalAssembly(): Promise<Assembly> {
   return createAssembly({
     root: process.cwd(),
     deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
-    reinitializeStore,
   });
 }
 

@@ -90,19 +90,10 @@ for (const lost of ["database", "directory"] as const) {
           error: { code: "UNAVAILABLE", retry: "never" },
         });
         if (result.ok) throw Error("Expected missing store failure");
-        expect(result.error.message).toContain(path);
-        expect(result.error.message).toContain("restore from backup");
-        expect(result.error.message).toContain("explicitly re-initialize");
-        expect(result.error.message).toContain(
-          "forge --reinitialize-store <enabled project-write command>",
+        expect(result.error.message).toBe(
+          `Missing Forge store at ${path}. Fix: restore it from a backup, or run forge store reinit to start a new empty store.`,
         );
         expect(existsSync(path)).toBe(false);
-        expect(
-          p.cli(["--reinitialize-store", "issue", "list"], 1),
-        ).toMatchObject({
-          ok: false,
-          error: { code: "UNAVAILABLE", message: result.error.message },
-        });
         for (const write of [
           ["issue", "claim", "project-1"],
           ["issue", "create", "--title", "Accidental reset"],
@@ -124,22 +115,14 @@ for (const lost of ["database", "directory"] as const) {
           result: { title: "Original" },
         });
         rmSync(path);
-        // Only the explicit recovery flag permits a new store.
-        expect(
-          p.cli(
-            [
-              "--reinitialize-store",
-              "issue",
-              "create",
-              "--title",
-              "Start over",
-            ],
-            0,
-          ),
-        ).toMatchObject({ ok: true, result: { id: "project-1" } });
+        // Recovery creates only the empty store, never an incidental issue.
+        expect(p.cli(["store", "reinit"], 0)).toMatchObject({
+          ok: true,
+          op: "store.reinit",
+        });
         expect(p.cli(["issue", "list"], 0)).toMatchObject({
           ok: true,
-          result: { items: [{ title: "Start over" }] },
+          result: { items: [] },
         });
       } finally {
         rmSync(p.work, { recursive: true, force: true });
@@ -147,3 +130,47 @@ for (const lost of ["database", "directory"] as const) {
     }, 90_000);
   }
 }
+
+test("store reinit refuses an existing store without changing its records", () => {
+  const p = project();
+  try {
+    p.cli(["issue", "create", "--title", "Keep me"], 0);
+    expect(p.cli(["store", "reinit"], 4)).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT" },
+    });
+    expect(p.cli(["issue", "show", "project-1"], 0)).toMatchObject({
+      ok: true,
+      result: { title: "Keep me" },
+    });
+  } finally {
+    rmSync(p.work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("store reinit is universally available without an enabled block", () => {
+  const p = project();
+  try {
+    writeFileSync(join(p.root, ".forge/config.yaml"), "{}\n");
+    expect(p.cli(["store", "reinit"], 0)).toMatchObject({
+      ok: true,
+      op: "store.reinit",
+    });
+    expect(existsSync(join(p.root, ".forge/state.sqlite"))).toBe(true);
+  } finally {
+    rmSync(p.work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("the removed recovery flag cannot start an MCP server", () => {
+  const p = project();
+  try {
+    expect(p.cli(["--reinitialize-store", "--mcp"], 3)).toMatchObject({
+      ok: false,
+      error: { code: "UNKNOWN_COMMAND" },
+    });
+    expect(existsSync(join(p.root, ".forge/state.sqlite"))).toBe(false);
+  } finally {
+    rmSync(p.work, { recursive: true, force: true });
+  }
+}, 60_000);

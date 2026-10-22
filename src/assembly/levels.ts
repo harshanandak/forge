@@ -144,7 +144,7 @@ export async function requireRegisteredStore(
     if (wasRegisteredAt(lease.value, root))
       refuse(
         "UNAVAILABLE",
-        `Missing Forge store at ${join(root, ".forge", "state.sqlite")}. Fix: restore from backup, or explicitly re-initialize with forge --reinitialize-store <enabled project-write command> to start a new store.`,
+        `Missing Forge store at ${join(root, ".forge", "state.sqlite")}. Fix: restore it from a backup, or run forge store reinit to start a new empty store.`,
       );
   } finally {
     await lease.close();
@@ -166,6 +166,8 @@ export function openLevels(options: {
   /** The operation declared its record write effect; its stores open writable. */
   readonly write: boolean;
   readonly requestId: string;
+  /** Only the explicit recovery invocation replaces registrations for this root. */
+  readonly replaceRegistration?: boolean;
 }): { readonly levels: StoreLevels; close(): Promise<void> } {
   const { root, actor, namespace, requestId } = options;
   const handles: OwnedHandle<unknown>[] = [];
@@ -217,6 +219,25 @@ export function openLevels(options: {
     device.put(REGISTRY_NAMESPACE, key, { name, root: where }, actor, {
       expectRevision: current?.revision ?? 0,
     });
+    if (options.replaceRegistration) {
+      let from = REGISTRY_PREFIX;
+      for (;;) {
+        const page = device.listRange(REGISTRY_NAMESPACE, {
+          from,
+          to: REGISTRY_END,
+          limit: REGISTRY_PAGE,
+        });
+        for (const record of page) {
+          const entry = registered(record.value);
+          if (record.key !== key && entry && relative(entry.root, where) === "")
+            device.delete(REGISTRY_NAMESPACE, record.key, actor, {
+              expectRevision: record.revision,
+            });
+        }
+        if (page.length < REGISTRY_PAGE) break;
+        from = `${page.at(-1)!.key}\0`;
+      }
+    }
   }
   async function openOwn(): Promise<ProjectStore | undefined> {
     const lease = await options.projectState.acquire(options.write);

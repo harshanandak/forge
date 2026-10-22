@@ -14,10 +14,7 @@ export async function runLocalCommand(
       process.stdout.write(`${version}\n`);
       return 0;
     }
-    // A host recovery switch, consumed only before the command, never inside its input.
-    const reinitializeStore = argv[0] === "--reinitialize-store";
-    if (reinitializeStore) argv = argv.slice(1);
-    const assembly = await createLocalAssembly(reinitializeStore);
+    const assembly = await createLocalAssembly();
     try {
       return await runCommand(argv, {
         catalog: assembly.catalog,

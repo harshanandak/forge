@@ -1,5 +1,10 @@
 {
   "operations": {
+    "store.reinit": {
+      "title": "Reinitialize a missing store",
+      "summary": "Create a new empty project store and identity, replacing its old device registration. Refuse if a store is present.",
+      "examples": [{ "input": {} }]
+    },
     "catalog.describe": {
       "title": "Describe a command",
       "summary": "Show the full declaration and schemas for a command.",
