@@ -2,7 +2,7 @@ import { Readable, Writable } from "node:stream";
 import type { McpExposure } from "../generated/types.ts";
 import type { McpTransportPort } from "../ports/mcp-transport.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
-import { runCli } from "./cli.ts";
+import { parseCliArguments, runCli } from "./cli.ts";
 import type { CallOptions } from "./dispatch.ts";
 import { runHook } from "./hook.ts";
 import { createMcpHandlers } from "./mcp.ts";
@@ -16,6 +16,15 @@ export interface CommandOptions {
   readonly exposure?: McpExposure;
   readonly input?: Readable;
   readonly output?: Writable;
+}
+
+export function commandOperation(argv: readonly string[]): string | undefined {
+  if (argv[0] === "--hook") return argv[1];
+  try {
+    return parseCliArguments(argv).op ?? "catalog.list";
+  } catch {
+    return undefined;
+  }
 }
 
 /** Assembly injects the catalog and transport; no block or adapter is selected here. */
@@ -68,7 +77,12 @@ export async function runCommand(
   const response =
     argv[0] === "--hook"
       ? argv.length === 2 && argv[1] !== undefined
-        ? await runHook(options.catalog, argv[1], input, options.call)
+        ? await runHook(
+            options.catalog,
+            commandOperation(argv)!,
+            input,
+            options.call,
+          )
         : respond(failure("INPUT_INVALID", "Expected --hook <noun.verb>."))
       : await runCli(options.catalog, argv, options.call);
   output.write(response.stdout);

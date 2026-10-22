@@ -154,66 +154,92 @@ function mapArguments(
   return result;
 }
 
+interface CliFlags {
+  text: boolean;
+  helpRequested: boolean;
+  jsonHelp: boolean;
+  dryRun: boolean | undefined;
+  rawInput: string | undefined;
+}
+
+/** Shared CLI token normalization, including flags preceding the operation. */
+export function parseCliArguments(
+  argv: readonly string[],
+  flags: CliFlags = {
+    text: false,
+    helpRequested: false,
+    jsonHelp: false,
+    dryRun: undefined,
+    rawInput: undefined,
+  },
+): CliFlags & { tokens: string[]; op: string | undefined } {
+  const tokens: string[] = [];
+  let literal = false;
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (token === undefined) continue;
+    if (literal) {
+      tokens.push(token);
+      continue;
+    }
+    if (token === "--") {
+      literal = true;
+      tokens.push(token);
+      continue;
+    }
+    if (token === "--text") {
+      flags.text = true;
+      flags.jsonHelp = false;
+      continue;
+    }
+    if (token === "--json") {
+      flags.text = false;
+      flags.jsonHelp = true;
+      continue;
+    }
+    if (token === "--help" || token === "-h") {
+      flags.helpRequested = true;
+      continue;
+    }
+    if (token === "--dry-run") {
+      flags.dryRun = true;
+      continue;
+    }
+    if (token === "--input" || token.startsWith("--input=")) {
+      if (flags.rawInput !== undefined) throw new Error("Duplicate --input.");
+      flags.rawInput = token === "--input" ? argv[++i] : token.slice(8);
+      if (flags.rawInput === undefined)
+        throw new Error("Missing JSON for --input.");
+      continue;
+    }
+    tokens.push(token);
+  }
+  const first = tokens.shift();
+  const op =
+    first === undefined
+      ? undefined
+      : first.includes(".")
+        ? first
+        : `${first}.${tokens.shift() ?? ""}`;
+  return { ...flags, tokens, op };
+}
+
 /** Parse only surface flags here; operation arguments come exclusively from catalog schemas. */
 export async function runCli(
   catalog: SurfaceCatalog,
   argv: readonly string[],
   options: CallOptions = { caller: "agent" },
 ): Promise<SurfaceResponse> {
-  let text = false;
-  let helpRequested = false;
-  let jsonHelp = false;
-  let dryRun = options.dryRun;
-  let rawInput: string | undefined;
-  const tokens: string[] = [];
-  let literal = false;
+  const flags = {
+    text: false,
+    helpRequested: false,
+    jsonHelp: false,
+    dryRun: options.dryRun,
+    rawInput: undefined as string | undefined,
+  };
   try {
-    for (let i = 0; i < argv.length; i++) {
-      const token = argv[i];
-      if (token === undefined) continue;
-      if (literal) {
-        tokens.push(token);
-        continue;
-      }
-      if (token === "--") {
-        literal = true;
-        tokens.push(token);
-        continue;
-      }
-      if (token === "--text") {
-        text = true;
-        jsonHelp = false;
-        continue;
-      }
-      if (token === "--json") {
-        text = false;
-        jsonHelp = true;
-        continue;
-      }
-      if (token === "--help" || token === "-h") {
-        helpRequested = true;
-        continue;
-      }
-      if (token === "--dry-run") {
-        dryRun = true;
-        continue;
-      }
-      if (token === "--input" || token.startsWith("--input=")) {
-        if (rawInput !== undefined) throw new Error("Duplicate --input.");
-        rawInput = token === "--input" ? argv[++i] : token.slice(8);
-        if (rawInput === undefined)
-          throw new Error("Missing JSON for --input.");
-        continue;
-      }
-      tokens.push(token);
-    }
-    const first = tokens.shift();
-    const op =
-      first === undefined
-        ? undefined
-        : first.includes(".")
-          ? first
-          : `${first}.${tokens.shift() ?? ""}`;
+    const { text, helpRequested, jsonHelp, dryRun, rawInput, tokens, op } =
+      parseCliArguments(argv, flags);
     const entries = catalog.list();
     const entry = [...discoveryOperations, ...entries].find((c) => c.op === op);
     if (
@@ -260,14 +286,14 @@ export async function runCli(
     if (error instanceof ForgeFailure)
       return respond(
         { ok: false, status: "FAIL", error: error.error, warnings: [] },
-        text,
+        flags.text,
       );
     return respond(
       failure(
         "INPUT_INVALID",
         error instanceof Error ? error.message : "Invalid arguments.",
       ),
-      text,
+      flags.text,
     );
   }
 }
