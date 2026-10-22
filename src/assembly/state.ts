@@ -1,5 +1,5 @@
-﻿import { dirname } from "node:path";
-import { closeSync, existsSync, fstatSync } from "node:fs";
+﻿import { dirname, join } from "node:path";
+import { closeSync, existsSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
 import { createSqliteStore } from "../adapters/store-sqlite/index.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
@@ -11,7 +11,9 @@ import {
   ensurePrivateDirectory,
   createPrivateFile,
   securedFileOps,
-  removeOwnedFile,
+  makePrivateTempDirectory,
+  removeDurable,
+  linkDurable,
   type DirectoryCreatePort,
 } from "../adapters/store-sqlite/file-ops.ts";
 import type { OwnedHandle } from "../ports/lifetime.ts";
@@ -80,32 +82,54 @@ export class LocalState {
     );
     return result;
   }
-  /** Reserve a new store atomically; recovery must never open an existing database. */
-  async create<T>(initialize: () => Promise<T>): Promise<T> {
-    const rollback = await this.#serial(() => {
+  /** Initialize privately, then publish exclusively; failed recovery never unlinks a public store. */
+  async create<T>(initialize: (staged: LocalState) => Promise<T>): Promise<T> {
+    const existing = (): never =>
+      refuse(
+        "INPUT_CONFLICT",
+        `Forge store already exists at ${this.#path}. Fix: keep the existing store, or restore a backup instead.`,
+      );
+    const pending = await this.#serial(() => {
       if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
       if (process.platform === "win32")
         security ??= privateFileGuard(windowsPrivateFiles());
       const files = security ? securedFileOps(security) : undefined;
       ensurePrivateDirectory(dirname(this.#path), this.#directories);
+      if (existsSync(this.#path)) existing();
+      const directory = makePrivateTempDirectory(
+        `${this.#path}.reinit-`,
+        files,
+      );
+      const path = join(directory, "state.sqlite");
       try {
-        const fd = createPrivateFile(this.#path, "wx", files);
-        const identity = fstatSync(fd);
-        closeSync(fd);
-        return () => removeOwnedFile(this.#path, identity, files);
+        closeSync(createPrivateFile(path, "wx", files));
+        return {
+          directory,
+          path,
+          files,
+          state: new LocalState(path, this.#store, this.#directories),
+        };
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        refuse(
-          "INPUT_CONFLICT",
-          `Forge store already exists at ${this.#path}. Fix: keep the existing store, or restore a backup instead.`,
-        );
+        removeDurable(directory, { recursive: true }, files);
+        throw error;
       }
     });
     try {
-      return await initialize();
-    } catch (error) {
-      rollback();
-      throw error;
+      let result: T;
+      try {
+        result = await initialize(pending.state);
+      } finally {
+        await pending.state.close();
+      }
+      try {
+        linkDurable(pending.path, this.#path, pending.files);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") existing();
+        throw error;
+      }
+      return result;
+    } finally {
+      removeDurable(pending.directory, { recursive: true }, pending.files);
     }
   }
   async #entry(write: boolean): Promise<Entry | undefined> {

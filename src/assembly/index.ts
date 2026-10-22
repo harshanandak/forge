@@ -699,32 +699,29 @@ export async function createAssembly(
           if (request.op === "store.reinit") {
             if (bound.context.variant !== "project")
               refuse("CONTEXT_MISSING", "Store recovery requires a project");
+            const actor = bound.context.actor;
             const recovery = new LocalState(
               join(stateRoot, ".forge", "state.sqlite"),
             );
-            const opened = openLevels({
-              root,
-              stateRoot,
-              projectState: recovery,
-              deviceState,
-              namespace: "forge/core-project",
-              actor: bound.context.actor,
-              servesProject: true,
-              caller: request.caller,
-              write: true,
-              requestId: request.requestId,
-              replaceRegistration: true,
-            });
-            return await recovery.create(async () => {
+            return await recovery.create(async (staged) => {
+              const opened = openLevels({
+                root,
+                stateRoot,
+                projectState: staged,
+                deviceState,
+                namespace: "forge/core-project",
+                actor,
+                servesProject: true,
+                caller: request.caller,
+                write: true,
+                requestId: request.requestId,
+                replaceRegistration: true,
+              });
               try {
                 const project = await opened.levels.project();
                 return success(request.op, project!.identity);
               } finally {
-                try {
-                  await opened.close();
-                } finally {
-                  await recovery.close();
-                }
+                await opened.close();
               }
             });
           }
