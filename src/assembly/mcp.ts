@@ -1,6 +1,5 @@
 ﻿import { createMcpHandlers } from "../surface/mcp.ts";
 import { dispatch } from "../surface/dispatch.ts";
-import { createMcpTransport } from "../adapters/mcp-transport/index.ts";
 import { mcpToolName } from "../contract/naming.ts";
 import { isAgentCallable, selectMcpTools } from "../contract/mcp.ts";
 import type { McpTransportPort } from "../ports/mcp-transport.ts";
@@ -41,6 +40,8 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
         createMcpHandlers(assembly.catalog, exposure, {
           context,
         });
+      const { createMcpTransport } =
+        await import("../adapters/mcp-transport/index.ts");
       return createMcpTransport().open({
         ...options,
         handlers: {

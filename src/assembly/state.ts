@@ -1,7 +1,12 @@
 ﻿import { dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
-import { sqliteStore } from "../adapters/store-sqlite/index.ts";
+import { createSqliteStore } from "../adapters/store-sqlite/index.ts";
+import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
+import {
+  privateFileGuard,
+  type PrivateFileGuard,
+} from "../adapters/store-sqlite/private-files.ts";
 import {
   ensurePrivateDirectory,
   type DirectoryCreatePort,
@@ -11,6 +16,17 @@ import type { SqlDatabase, StorePort } from "../ports/store.ts";
 import { refuse } from "../core/trust/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import type { Unavailable } from "../generated/types.ts";
+
+let security: PrivateFileGuard | undefined;
+const sqliteStore: StorePort = {
+  open(options) {
+    if (process.platform === "win32")
+      security ??= privateFileGuard(windowsPrivateFiles());
+    return createSqliteStore(process.cwd(), security ? { security } : {}).open(
+      options,
+    );
+  },
+};
 
 export class StateUnavailable extends ForgeFailure {
   readonly unavailable: Unavailable;

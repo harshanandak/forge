@@ -49,11 +49,11 @@ export const providerCounterfactuals = [
     evidence: "environment selection must require its declared effect",
   },
   {
-    file: "adapters/fs/clone-files.js",
-    from: "if (!options.read)",
-    to: "if (false)",
+    file: "assembly/index.js",
+    from: "!scope.effects.some(",
+    to: "false && !scope.effects.some(",
     mode: "files-effect",
-    evidence: "file reads must require their declared effect",
+    evidence: "file roots must require their declared effect",
   },
   {
     file: "adapters/fs/clone-files.js",
