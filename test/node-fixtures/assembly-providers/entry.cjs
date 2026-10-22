@@ -21,6 +21,7 @@ module.exports = {
     services.files.read(input.path, input.maxBytes, input.area) ?? null,
   "provider.deniedfiles": ({ services }) =>
     services.files.read("input.txt", 1024),
+  "provider.deniedroots": ({ services }) => services.files.root,
   "provider.deniedwrite": ({ services }) =>
     services.files.write("unauthorized.txt", "unexpected"),
   "provider.write": ({ input, services }) => {

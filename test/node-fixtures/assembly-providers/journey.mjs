@@ -70,6 +70,7 @@ const effects = {
   deniedenv: [],
   read: ["files:read"],
   deniedfiles: [],
+  deniedroots: [],
   deniedwrite: [],
   write: ["files:write"],
   remove: ["files:write"],
@@ -498,6 +499,11 @@ try {
     );
   }
   if (["all", "files-effect"].includes(mode)) {
+    assert.equal(
+      (await invoke("provider.deniedroots")).error?.code,
+      "EFFECT_UNDECLARED",
+      "file roots must require their declared effect",
+    );
     assert.equal(
       (await invoke("provider.deniedfiles")).error?.code,
       "EFFECT_UNDECLARED",
