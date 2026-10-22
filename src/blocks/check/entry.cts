@@ -384,9 +384,9 @@ function selectedConfig(
     },
   };
 }
-// Windows 512 KiB seal/store/ACL/readback: median 7.47 s, max 11.77 s (5 samples).
-// Reserve 1 s overhead plus 16 KiB/s, over 4x slower than the measured median.
-const RECEIPT_FINALIZATION = { baseMs: 1000, bytesPerSecond: 16384 } as const;
+// Native private ACLs: 512 KiB seal/store/readback max 1.20 s under load (5 samples).
+// Reserve 1 s overhead plus 128 KiB/s, over four times that measured maximum.
+const RECEIPT_FINALIZATION = { baseMs: 1000, bytesPerSecond: 131072 } as const;
 function finalizationTimeoutMs(maxReceiptBytes: number): number {
   return (
     RECEIPT_FINALIZATION.baseMs +

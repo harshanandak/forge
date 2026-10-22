@@ -353,6 +353,36 @@ export function createAssemblyProviders(
       };
     },
     async openFiles(scope: ServiceScope): Promise<OwnedHandle<FilesService>> {
+      // A block can declare the slot for other operations. Do not discover Git when this
+      // operation declared no file access; every attempted use still fails closed.
+      if (
+        !scope.effects.some(
+          (effect) => effect === "files:read" || effect === "files:write",
+        )
+      ) {
+        const denied = (): never =>
+          refuse(
+            "EFFECT_UNDECLARED",
+            "Clone file access requires files:read or files:write",
+          );
+        return {
+          ownership: "owned",
+          value: {
+            root,
+            get roots() {
+              return denied();
+            },
+            read: denied,
+            write: denied,
+            remove: denied,
+            inspect: denied,
+            list: denied,
+            lock: denied,
+            snapshot: denied,
+          },
+          close: () => Promise.resolve(),
+        };
+      }
       if (scope.processContainment === "strict") {
         const capability = await port.containment?.();
         if (!capability?.available)

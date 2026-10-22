@@ -690,9 +690,12 @@ export async function createAssembly(
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
             if (request.op === "config.show") await trustState.open(false);
-            const handled = configHandler(request.input);
             const current =
               request.op === "config.show" ? snapshot(call) : undefined;
+            const handled =
+              current && input.invocation === undefined
+                ? current.show
+                : configHandler(request.input);
             const unavailable = new Set(
               current?.unavailable.map((block) => block.name),
             );
@@ -972,6 +975,25 @@ export async function createAssembly(
                   interfaceSatisfies("forge.files@1.0.0", binding.interface)
                 ) {
                   if (
+                    !scope.effects.some(
+                      (effect) =>
+                        effect === "files:read" || effect === "files:write",
+                    )
+                  ) {
+                    clients[binding.slot] = new Proxy(
+                      {},
+                      {
+                        get() {
+                          refuse(
+                            "EFFECT_UNDECLARED",
+                            "Clone file access requires files:read or files:write",
+                          );
+                        },
+                      },
+                    );
+                    continue;
+                  }
+                  if (
                     context.variant !== "project" &&
                     context.variant !== "leased"
                   )
@@ -1070,7 +1092,9 @@ export async function createAssembly(
     catalog,
     root,
     deviceRoot,
-    exposure: composition(callScope().config.show()).mcp ?? {},
+    get exposure() {
+      return composition(callScope().config.show()).mcp ?? {};
+    },
     async prepareTrust() {
       await trustState.open(false);
     },

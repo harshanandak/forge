@@ -50,6 +50,18 @@ forge issue --help --json
 forge catalog describe issue.create
 ```
 
+For a project-local installation (`npm install --save-dev forge-workflow`),
+invoke the installed entry point directly in frequent scripts or agent commands:
+
+```sh
+node node_modules/forge-workflow/dist/bin/forge.js issue list
+```
+
+This avoids npm's `npx` startup and package resolution on every invocation.
+The globally installed `forge` command also runs the installed entry point.
+Windows measurements and the profiling method are in
+[Local read performance](docs/local-read-performance.md).
+
 ## Write a block
 
 Copy the complete [hello block](examples/hello-block) and follow

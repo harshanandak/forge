@@ -420,14 +420,14 @@ test("selected command budgets include two snapshots and finite finalization tim
   const f = fixture();
   const selected = withCheckRunBudget(f.catalog, f.blocks, f.request);
   expect(selected.config.blocks.checks?.operationTimeouts?.["check.run"]).toBe(
-    244250,
+    216250,
   );
   const all = withCheckRunBudget(f.catalog, f.blocks, {
     ...f.request,
     input: {},
   });
   expect(all.config.blocks.checks?.operationTimeouts?.["check.run"]).toBe(
-    374500,
+    346500,
   );
   expect(f.catalog.config.blocks.checks?.operationTimeouts).toBeUndefined();
   expect(
@@ -439,17 +439,17 @@ test("selected command budgets include two snapshots and finite finalization tim
         maxConcurrent: 1,
       },
     }).config.blocks.checks?.operationTimeouts?.["check.run"],
-  ).toBe(238500);
+  ).toBe(210500);
   const short = fixture(1500);
   expect(
     withCheckRunBudget(short.catalog, short.blocks, short.request).config.blocks
       .checks?.operationTimeouts?.["check.run"],
-  ).toBe(125750);
+  ).toBe(97750);
   const long = fixture(600000);
   expect(
     withCheckRunBudget(long.catalog, long.blocks, long.request).config.blocks
       .checks?.operationTimeouts?.["check.run"],
-  ).toBe(724250);
+  ).toBe(696250);
 }, 1000);
 
 test("sufficient explicit budgets, other operations and unshipped bytes keep their budgets", () => {
@@ -471,7 +471,7 @@ test("explicit operation or host ceilings cannot silently shorten a selected run
     'blocks.checks.operationTimeouts["check.run"]',
     ".forge/config.yaml",
     "10 s",
-    "at least 244.25 s",
+    "at least 216.25 s",
     "blocks.checks.config.timeoutMs",
     "--input",
   ])
@@ -489,7 +489,7 @@ test("explicit operation or host ceilings cannot silently shorten a selected run
     "runtime.timeoutMs (60 s)",
   );
   expect(() => withCheckRunBudget(capped, host.blocks, host.request)).toThrow(
-    "raise it to at least 244.25 s",
+    "raise it to at least 216.25 s",
   );
 }, 1000);
 
@@ -560,7 +560,7 @@ test("an expired check operation names its sized budget and config remedy", asyn
   for (const text of [
     'blocks.checks.operationTimeouts["check.run"]',
     ".forge/config.yaml",
-    "244.25 s",
+    "216.25 s",
     '.forge/config.yaml: blocks.checks.operationTimeouts["check.run"]:',
     "increase",
   ])

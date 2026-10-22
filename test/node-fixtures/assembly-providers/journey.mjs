@@ -70,11 +70,13 @@ const effects = {
   deniedenv: [],
   read: ["files:read"],
   deniedfiles: [],
+  deniedroots: [],
   deniedwrite: [],
   write: ["files:write"],
   remove: ["files:write"],
   snapshot: ["files:read"],
   crypto: [],
+  roots: ["files:read"],
 };
 for (const [verb, declaredEffects] of Object.entries(effects)) {
   operations[`provider.${verb}`] = {
@@ -498,6 +500,11 @@ try {
   }
   if (["all", "files-effect"].includes(mode)) {
     assert.equal(
+      (await invoke("provider.deniedroots")).error?.code,
+      "EFFECT_UNDECLARED",
+      "file roots must require their declared effect",
+    );
+    assert.equal(
       (await invoke("provider.deniedfiles")).error?.code,
       "EFFECT_UNDECLARED",
       "file reads must require their declared effect",
@@ -604,8 +611,10 @@ try {
       createHash("sha256").update("fixture").digest("hex"),
     );
     assert.match(crypto.uuid, /^[0-9a-f-]{36}$/);
-    assert.equal(crypto.roots.project, realpathSync.native(root));
-    assert.equal(crypto.roots.git, realpathSync.native(join(root, ".git")));
+    const files = ok(await invoke("provider.roots"), "declared file roots");
+    assert.equal(files.root, realpathSync.native(root));
+    assert.equal(files.roots.project, realpathSync.native(root));
+    assert.equal(files.roots.git, realpathSync.native(join(root, ".git")));
     ok(
       await invoke("provider.write", {
         path: "provider-router",

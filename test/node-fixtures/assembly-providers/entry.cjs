@@ -21,6 +21,7 @@ module.exports = {
     services.files.read(input.path, input.maxBytes, input.area) ?? null,
   "provider.deniedfiles": ({ services }) =>
     services.files.read("input.txt", 1024),
+  "provider.deniedroots": ({ services }) => services.files.root,
   "provider.deniedwrite": ({ services }) =>
     services.files.write("unauthorized.txt", "unexpected"),
   "provider.write": ({ input, services }) => {
@@ -32,10 +33,12 @@ module.exports = {
     return true;
   },
   "provider.snapshot": ({ input, services }) => services.files.snapshot(input),
+  "provider.roots": ({ services }) => ({
+    root: services.files.root,
+    roots: services.files.roots,
+  }),
   "provider.crypto": ({ input, services }) => ({
     digest: services.crypto.sha256(input.text),
     uuid: services.crypto.randomUUID(),
-    root: services.files.root,
-    roots: services.files.roots,
   }),
 };
