@@ -258,6 +258,9 @@ export async function createAssembly(
         firstPartyBlocks[`forge/${name}`] === undefined
           ? undefined
           : { builtin: `forge/${name}` },
+      blockManifest(_name: string, source: BlockSource) {
+        return captured(source).manifest;
+      },
       blockConfig(_name: string, source: BlockSource) {
         let block: CapturedBlock;
         try {

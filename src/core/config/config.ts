@@ -2,9 +2,12 @@
 // change one thing at a time with compare-and-set edits; or import a template (templates.ts).
 // Reads never write: show, explain and detect only read files.
 import { ForgeFailure } from "../../contract/failure.ts";
+import { operationTimeoutProblems } from "../../contract/operation-timeouts.ts";
 import { formatProblem as schemaDiagnostic } from "../../contract/input-error.ts";
 import type {
+  BlockManifest,
   BlockSource,
+  ConfigDocument,
   ParseLimits,
   TemplateProvenance,
 } from "../../generated/types.ts";
@@ -358,6 +361,29 @@ export function planBytes(
       setIn(explicit, path, getIn(next, path));
   }
   checkDocument(next);
+  const proposed = next as unknown as ConfigDocument;
+  const manifests = new Map<string, BlockManifest>();
+  if (env.blockManifest !== undefined)
+    for (const [name, instance] of Object.entries(proposed.blocks)) {
+      if (
+        instance.enabled === false ||
+        Object.keys(instance.operationTimeouts ?? {}).length === 0
+      )
+        continue;
+      try {
+        manifests.set(name, env.blockManifest(name, instance.source));
+      } catch {
+        // Unavailable sources are reported by the catalog, not timeout validation.
+      }
+    }
+  const problems = operationTimeoutProblems(proposed, manifests);
+  if (problems.length > 0) {
+    const first = problems[0]!;
+    throw new ForgeFailure({
+      ...first,
+      message: problems.map((problem) => problem.message).join("\n"),
+    });
+  }
   // check what the block will run with, so a detected or default value counts without being saved
   const { effective } = resolve(env, next, [], deriveLayer(env.detect()));
   for (const [name, schema] of blockSchemas(next, env))
