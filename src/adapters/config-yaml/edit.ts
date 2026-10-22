@@ -180,6 +180,24 @@ function update(
     value.length > 0 &&
     (token.type === "block-seq" || token.type === "flow-collection")
   ) {
+    const previous = node.items.map((child): unknown =>
+      isNode(child) ? child.toJSON() : child,
+    );
+    // Positional reuse would attach a removed or moved item's comments to another value.
+    if (
+      value.length < previous.length ||
+      value.some(
+        (child, index) =>
+          !jsonEqual(previous[index], child) &&
+          previous.some((old) => jsonEqual(old, child)),
+      )
+    )
+      return tokenFor(
+        value,
+        token.indent,
+        token.type === "flow-collection",
+        layout,
+      );
     const items: CST.CollectionItem[] = [];
     for (const [index, child] of value.entries()) {
       const item = token.items[index];

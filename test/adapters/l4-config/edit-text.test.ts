@@ -4,6 +4,35 @@ import { DEFAULT_PARSE_LIMITS } from "../../../src/contract/untrusted.ts";
 
 setDefaultTimeout(30_000);
 
+for (const newline of ["\n", "\r\n"]) {
+  for (const [name, items] of [
+    ["remove a middle item", ["alice", "carol"]],
+    ["remove the first item", ["bob", "carol"]],
+    ["reorder two retained items", ["bob", "alice"]],
+    ["reorder items", ["carol", "bob", "alice"]],
+  ] as const) {
+    test(`only the sequence is replaced when we ${name} (${JSON.stringify(newline)})`, () => {
+      const before = [
+        "# header",
+        "a:",
+        "  - 'alice' # primary",
+        "  - 'bob' # backup",
+        "  - 'carol' # last",
+        "b: 'unchanged' # outside",
+        "",
+      ].join(newline);
+      const after = [
+        "# header",
+        "a:",
+        ...items.map((item) => `  - ${item}`),
+        "b: 'unchanged' # outside",
+        "",
+      ].join(newline);
+      expect(codec.edit(before, { a: [...items], b: "unchanged" })).toBe(after);
+    });
+  }
+}
+
 const cases: ReadonlyArray<readonly [string, unknown, string]> = [
   ["a: old # retained\n", { a: { b: 1 } }, "a: { b: 1 } # retained\n"],
   ["a: old # retained\n", { a: [1, 2] }, "a: [ 1, 2 ] # retained\n"],

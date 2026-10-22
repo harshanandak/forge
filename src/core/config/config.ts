@@ -371,6 +371,7 @@ export function planBytes(
       : new TextDecoder("utf-8", { ignoreBOM: true }).decode(current.bytes),
     env,
     env.warn,
+    env.limits,
   );
   const after = bytes === null ? undefined : next;
   return { bytes, changes: diff(current.document, after) };

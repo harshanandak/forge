@@ -9,7 +9,11 @@ import {
   type SchemaProblem,
   validateWithSchema,
 } from "../../contract/schema.ts";
-import type { BlockSource, ForgeError } from "../../generated/types.ts";
+import type {
+  BlockSource,
+  ForgeError,
+  ParseLimits,
+} from "../../generated/types.ts";
 import {
   validateBlockSource,
   validateConfigDocument,
@@ -169,13 +173,14 @@ export function encodeDocument(
   originalText?: string,
   lookup: BlockLookup = {},
   warn?: (message: string) => void,
+  limits: ParseLimits = DEFAULT_PARSE_LIMITS,
 ): Uint8Array | null {
   const matches = (text: string, planned: JsonObject): boolean => {
-    const decoded = codec.decode(text, DEFAULT_PARSE_LIMITS);
+    const decoded = codec.decode(text, limits);
     return decoded.ok && jsonEqual(decoded.value, planned);
   };
   if (originalText !== undefined) {
-    const original = codec.decode(originalText, DEFAULT_PARSE_LIMITS);
+    const original = codec.decode(originalText, limits);
     if (original.ok && (isObject(original.value) || original.value === null)) {
       const value = original.value ?? {};
       if (configuresNothing(document))
