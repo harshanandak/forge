@@ -1,36 +1,20 @@
 import { isMap, isNode, isScalar, parseDocument } from "yaml";
 import type { ConfigTextEdit } from "../../ports/config-codec.ts";
 
-/** LCS over lines, retaining positions and multiplicity, with a bounded scratch budget. */
+/** Protected lines must survive in order, including repeated lines and their endings. */
 function lostLines(
   before: string,
   after: string,
   allowed: ReadonlySet<number>,
 ): boolean {
-  const a = before.split("\n"),
-    b = after.split("\n");
-  if (a.length * b.length > 2_000_000) return true;
-  const rows = Array.from(
-    { length: a.length + 1 },
-    () => new Uint32Array(b.length + 1),
-  );
-  for (let i = a.length - 1; i >= 0; i--)
-    for (let j = b.length - 1; j >= 0; j--)
-      rows[i]![j] =
-        a[i] === b[j]
-          ? rows[i + 1]![j + 1]! + 1
-          : Math.max(rows[i + 1]![j]!, rows[i]![j + 1]!);
-  let i = 0,
-    j = 0;
-  while (i < a.length) {
-    if (j < b.length && a[i] === b[j]) {
-      i++;
-      j++;
-    } else if (j < b.length && rows[i]![j + 1]! > rows[i + 1]![j]!) j++;
-    else {
-      if (!allowed.has(i)) return true;
-      i++;
-    }
+  const a = before.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) ?? [],
+    b = after.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) ?? [];
+  let j = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (allowed.has(i)) continue;
+    while (j < b.length && a[i] !== b[j]) j++;
+    if (j === b.length) return true;
+    j++;
   }
   return false;
 }
@@ -40,11 +24,22 @@ export function editText(
   edits: readonly ConfigTextEdit[],
 ): { text: string; formattingLost: boolean } {
   if (edits.length === 0) return { text: original, formattingLost: false };
-  const input = original.replace(/\r\n/g, "\n");
+  const input = original.replace(/\r\n|\r/g, "\n");
   const doc = parseDocument(input);
   const allowed = new Set<number>();
-  const line = (offset: number) =>
-    input.slice(0, offset).split("\n").length - 1;
+  const lineStarts = [0];
+  for (let i = 0; i < input.length; i++)
+    if (input[i] === "\n") lineStarts.push(i + 1);
+  const line = (offset: number) => {
+    let low = 0,
+      high = lineStarts.length;
+    while (low + 1 < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (lineStarts[mid]! <= offset) low = mid;
+      else high = mid;
+    }
+    return low;
+  };
   // Capture ranges before mutation; deleting a pair includes its key and inline comment.
   for (const edit of edits) {
     const path = edit.from ?? edit.path;
@@ -67,9 +62,10 @@ export function editText(
           : input.indexOf("\n", valueEnd) < 0
             ? input.length
             : input.indexOf("\n", valueEnd) + 1;
-    if (start !== undefined && end !== undefined)
-      for (let n = line(start); n <= line(Math.max(start, end - 1)); n++)
-        allowed.add(n);
+    if (start !== undefined && end !== undefined) {
+      const last = line(Math.max(start, end - 1));
+      for (let n = line(start); n <= last; n++) allowed.add(n);
+    }
   }
   for (const edit of edits) {
     const previous = doc.getIn(edit.from ?? edit.path, true);
@@ -110,6 +106,7 @@ export function editText(
   if (input.trim() === "") text = input + text;
   if (original.startsWith("\uFEFF")) text = "\uFEFF" + text;
   if (original.includes("\r\n")) text = text.replaceAll("\n", "\r\n");
+  else if (original.includes("\r")) text = text.replaceAll("\n", "\r");
   const formattingLost = lostLines(original, text, allowed);
   return { text, formattingLost };
 }

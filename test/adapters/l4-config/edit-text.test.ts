@@ -1,4 +1,4 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { yamlConfigCodec as codec } from "../../../src/adapters/config-yaml/index.ts";
 import { DEFAULT_PARSE_LIMITS } from "../../../src/contract/untrusted.ts";
 import type { ConfigTextEdit } from "../../../src/ports/config-codec.ts";
@@ -85,6 +85,60 @@ test("duplicate standalone comments are counted positionally", () => {
     [{ path: ["a"] }],
   );
   expect(result.formattingLost).toBe(true);
+});
+test("repeated list values do not consume protected lines", () => {
+  const before =
+    "blocks:\n  check:\n    config:\n      reviewers:\n        - a\n        - a\n        - a\n";
+  expect(
+    codec.edit!(before, [
+      { path: ["blocks", "check", "config", "reviewers", 0], value: "b" },
+      { path: ["blocks", "check", "config", "reviewers", 2], value: "b" },
+    ]),
+  ).toEqual({
+    text: before.replace("- a", "- b").replace(/- a\n$/, "- b\n"),
+    formattingLost: false,
+  });
+});
+test("bare CR line endings survive edits with untouched comments and values", () => {
+  const before = "# header\ra: old\rb: 'kept' # outside\r";
+  expect(codec.edit!(before, [{ path: ["a"], value: "new" }])).toEqual({
+    text: before.replace("a: old", "a: new"),
+    formattingLost: false,
+  });
+});
+test("batch range lookup bounds line splitting work by document size", () => {
+  const count = 300;
+  const before = Array.from(
+    { length: count },
+    (_, i) => `key${i}:\n  value: old\n`,
+  ).join("");
+  const edits = Array.from({ length: count }, (_, i) => ({
+    path: [`key${i}`, "value"],
+    value: "new",
+  }));
+  let splitUnits = 0;
+  const split = Object.getOwnPropertyDescriptor(String.prototype, "split")!
+    .value as string["split"];
+  const probe = spyOn(String.prototype, "split").mockImplementation(function (
+    this: string,
+    separator:
+      string | { [Symbol.split](value: string, limit?: number): string[] },
+    limit?: number,
+  ) {
+    if (separator === "\n") splitUnits += this.length;
+    return Reflect.apply(split, this, [separator, limit]) as string[];
+  });
+  let result;
+  try {
+    result = codec.edit!(before, edits);
+  } finally {
+    probe.mockRestore();
+  }
+  expect(result).toEqual({
+    text: before.replaceAll("value: old", "value: new"),
+    formattingLost: false,
+  });
+  expect(splitUnits).toBeLessThanOrEqual(before.length * 4);
 });
 for (const items of [
   ["alice", "carol"],
