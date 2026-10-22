@@ -75,6 +75,7 @@ const effects = {
   remove: ["files:write"],
   snapshot: ["files:read"],
   crypto: [],
+  roots: ["files:read"],
 };
 for (const [verb, declaredEffects] of Object.entries(effects)) {
   operations[`provider.${verb}`] = {
@@ -604,8 +605,10 @@ try {
       createHash("sha256").update("fixture").digest("hex"),
     );
     assert.match(crypto.uuid, /^[0-9a-f-]{36}$/);
-    assert.equal(crypto.roots.project, realpathSync.native(root));
-    assert.equal(crypto.roots.git, realpathSync.native(join(root, ".git")));
+    const files = ok(await invoke("provider.roots"), "declared file roots");
+    assert.equal(files.root, realpathSync.native(root));
+    assert.equal(files.roots.project, realpathSync.native(root));
+    assert.equal(files.roots.git, realpathSync.native(join(root, ".git")));
     ok(
       await invoke("provider.write", {
         path: "provider-router",

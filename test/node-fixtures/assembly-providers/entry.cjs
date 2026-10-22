@@ -32,10 +32,12 @@ module.exports = {
     return true;
   },
   "provider.snapshot": ({ input, services }) => services.files.snapshot(input),
+  "provider.roots": ({ services }) => ({
+    root: services.files.root,
+    roots: services.files.roots,
+  }),
   "provider.crypto": ({ input, services }) => ({
     digest: services.crypto.sha256(input.text),
     uuid: services.crypto.randomUUID(),
-    root: services.files.root,
-    roots: services.files.roots,
   }),
 };

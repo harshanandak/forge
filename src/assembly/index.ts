@@ -975,6 +975,25 @@ export async function createAssembly(
                   interfaceSatisfies("forge.files@1.0.0", binding.interface)
                 ) {
                   if (
+                    !scope.effects.some(
+                      (effect) =>
+                        effect === "files:read" || effect === "files:write",
+                    )
+                  ) {
+                    clients[binding.slot] = new Proxy(
+                      {},
+                      {
+                        get() {
+                          refuse(
+                            "EFFECT_UNDECLARED",
+                            "Clone file access requires files:read or files:write",
+                          );
+                        },
+                      },
+                    );
+                    continue;
+                  }
+                  if (
                     context.variant !== "project" &&
                     context.variant !== "leased"
                   )
