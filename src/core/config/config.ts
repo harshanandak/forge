@@ -57,6 +57,7 @@ import {
 } from "./store.ts";
 
 export interface ConfigEnvironment extends StoreDeps, BlockLookup {
+  readonly warn?: (message: string) => void;
   readonly files: ConfigFiles;
   readonly codec: ConfigCodecPort;
   readonly clock: ClockPort;
@@ -350,7 +351,12 @@ export function planBytes(
   next: JsonObject,
 ): { bytes: Uint8Array | null; changes: Change[] } {
   if (!Object.hasOwn(next, "blocks")) next.blocks = {};
-  fillSources(next, env);
+  const explicit = clone(next);
+  for (const pointer of fillSources(next, env)) {
+    const path = parsePointer(pointer) ?? [];
+    if (!hasIn(current.document, path.slice(0, 2)))
+      setIn(explicit, path, getIn(next, path));
+  }
   checkDocument(next);
   // check what the block will run with, so a detected or default value counts without being saved
   const { effective } = resolve(env, next, [], deriveLayer(env.detect()));
@@ -359,8 +365,17 @@ export function planBytes(
       name,
       schema.check(getIn(effective, ["blocks", name, "config"]) ?? {}),
     );
-  const bytes = encodeDocument(next, env.codec);
-  const after = bytes === null ? undefined : next;
+  const bytes = encodeDocument(
+    explicit,
+    env.codec,
+    current.bytes === undefined
+      ? undefined
+      : new TextDecoder("utf-8", { ignoreBOM: true }).decode(current.bytes),
+    current.document ?? emptyDocument(),
+    env.warn,
+    env.limits,
+  );
+  const after = bytes === null ? undefined : explicit;
   return { bytes, changes: diff(current.document, after) };
 }
 

@@ -213,12 +213,14 @@ export async function createAssembly(
   // `derived` holds what git answers for this call (the id prefix): an invocation asks git each
   // time, so a long-lived server follows a changed origin; listings leave it to its default.
   type CallScope = {
+    warnings: ResultEnvelope["warnings"];
     captured(source: BlockSource): CapturedBlock;
     shipped: ReturnType<typeof shippedTemplates>;
     config: ReturnType<typeof createConfig>;
     configOperations: ReturnType<typeof createConfigOperations>;
   };
   function callScope(derived: readonly DetectionObservation[] = []): CallScope {
+    const warnings: Array<ResultEnvelope["warnings"][number]> = [];
     const captures = new Map<string, CapturedBlock | { failed: unknown }>();
     const shipped = shippedTemplates();
     function captured(source: BlockSource): CapturedBlock {
@@ -242,6 +244,8 @@ export async function createAssembly(
       return found;
     }
     const environment = {
+      warn: (message: string) =>
+        warnings.push({ code: "CONFIG_FORMATTING_LOST", message }),
       files: nodeConfigFiles(root),
       codec: yamlConfigCodec,
       clock: { now: () => Date.now() },
@@ -270,6 +274,7 @@ export async function createAssembly(
       },
     };
     return {
+      warnings,
       captured,
       shipped,
       config: createConfig(environment),
@@ -749,7 +754,7 @@ export async function createAssembly(
                 ),
                 result: output,
               };
-            return success(request.op, output);
+            return { ...success(request.op, output), warnings: call.warnings };
           }
           if (request.op === "skills.sync") {
             await trustState.open(false);
@@ -826,14 +831,19 @@ export async function createAssembly(
               )
                 throw error;
             }
-            return success(request.op, {
-              blockId: block.manifest.id,
-              digest: block.digest,
-              admitted,
-              ...(request.op === "block.add" && !admitted
-                ? { next: localForgeCommand(["block", "admit", block.digest]) }
-                : {}),
-            });
+            return {
+              ...success(request.op, {
+                blockId: block.manifest.id,
+                digest: block.digest,
+                admitted,
+                ...(request.op === "block.add" && !admitted
+                  ? {
+                      next: localForgeCommand(["block", "admit", block.digest]),
+                    }
+                  : {}),
+              }),
+              warnings: call.warnings,
+            };
           }
           if (request.op === "block.admit" || request.op === "config.grant") {
             await trustState.open(false);
