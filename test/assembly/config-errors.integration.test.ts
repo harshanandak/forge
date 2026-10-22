@@ -110,6 +110,18 @@ test("built CLI reports the actual config error and recovers after repair", () =
   try {
     for (const [name, config, key, fix] of [
       [
+        "timeout typo",
+        { operationTimeouts: { "check.rnu": 3000 } },
+        'blocks.check.operationTimeouts["check.rnu"]',
+        "did you mean check.run?",
+      ],
+      [
+        "timeout from unbound block",
+        { operationTimeouts: { "memory.search": 3000 } },
+        'blocks.check.operationTimeouts["memory.search"]',
+        "block is not bound",
+      ],
+      [
         "typo",
         { timoutMs: 3000 },
         "blocks.check.config.timoutMs",

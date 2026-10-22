@@ -10,6 +10,20 @@ setDefaultTimeout(30_000);
 
 const cases = [
   [
+    "timeout typo",
+    { operationTimeouts: { "check.rnu": 3000 } },
+    'blocks.check.operationTimeouts["check.rnu"]',
+    "did you mean check.run?",
+    "Fix:",
+  ],
+  [
+    "timeout from unbound block",
+    { operationTimeouts: { "memory.search": 3000 } },
+    'blocks.check.operationTimeouts["memory.search"]',
+    "block is not bound",
+    "Fix:",
+  ],
+  [
     "typo",
     { timoutMs: 3000 },
     "blocks.check.config.timoutMs",
