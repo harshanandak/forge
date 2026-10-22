@@ -93,8 +93,26 @@ for (const lost of ["database", "directory"] as const) {
         expect(result.error.message).toContain(path);
         expect(result.error.message).toContain("restore from backup");
         expect(result.error.message).toContain("explicitly re-initialize");
-        expect(result.error.message).toContain("forge issue create");
+        expect(result.error.message).toContain(
+          "forge --reinitialize-store <enabled project-write command>",
+        );
         expect(existsSync(path)).toBe(false);
+        expect(
+          p.cli(["--reinitialize-store", "issue", "list"], 1),
+        ).toMatchObject({
+          ok: false,
+          error: { code: "UNAVAILABLE", message: result.error.message },
+        });
+        for (const write of [
+          ["issue", "claim", "project-1"],
+          ["issue", "create", "--title", "Accidental reset"],
+        ]) {
+          expect(p.cli(write, 1)).toMatchObject({
+            ok: false,
+            error: { code: "UNAVAILABLE", message: result.error.message },
+          });
+          expect(existsSync(path)).toBe(false);
+        }
         // Restoring the database recovers the original data without re-initializing.
         if (lost === "database") copyFileSync(saved, path);
         else {
@@ -106,9 +124,18 @@ for (const lost of ["database", "directory"] as const) {
           result: { title: "Original" },
         });
         rmSync(path);
-        // An explicit state write starts over; reads never do so on the caller's behalf.
+        // Only the explicit recovery flag permits a new store.
         expect(
-          p.cli(["issue", "create", "--title", "Start over"], 0),
+          p.cli(
+            [
+              "--reinitialize-store",
+              "issue",
+              "create",
+              "--title",
+              "Start over",
+            ],
+            0,
+          ),
         ).toMatchObject({ ok: true, result: { id: "project-1" } });
         expect(p.cli(["issue", "list"], 0)).toMatchObject({
           ok: true,

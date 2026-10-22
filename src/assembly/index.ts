@@ -118,6 +118,8 @@ const grantCandidate: McpCandidate = {
 export interface AssemblyOptions {
   readonly root: string;
   readonly deviceRoot: string;
+  /** Explicit recovery permits the next write to create a missing project store. */
+  readonly reinitializeStore?: boolean;
   /**
    * Whether this host serves a project. Left out, it does when its root holds the project's Forge
    * config (.forge/config.yaml), checked on each call; a host with no project says false.
@@ -192,7 +194,10 @@ export async function createAssembly(
     join(stateRoot, ".forge", "state.sqlite"),
     undefined,
     undefined,
-    () => requireRegisteredStore(deviceState, stateRoot),
+    async (write) => {
+      if (!(write && options.reinitializeStore))
+        await requireRegisteredStore(deviceState, stateRoot);
+    },
   );
   let trustActor: Actor | undefined;
   const trust = new TrustStore({
@@ -1157,10 +1162,13 @@ export function localContext(
 export function localSession(fallback: string): string {
   return process.env.FORGE_SESSION || fallback;
 }
-export async function createLocalAssembly(): Promise<Assembly> {
+export async function createLocalAssembly(
+  reinitializeStore = false,
+): Promise<Assembly> {
   return createAssembly({
     root: process.cwd(),
     deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
+    reinitializeStore,
   });
 }
 

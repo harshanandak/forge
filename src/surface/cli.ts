@@ -34,6 +34,7 @@ function help(catalog: SurfaceCatalog, options: CallOptions, op?: string) {
       "--dry-run",
       "--hook <noun.verb> (JSON stdin)",
       "--mcp (assembled stdio transport)",
+      "--reinitialize-store (before the command; permit a write to replace a missing project store)",
     ],
     operations:
       op === undefined

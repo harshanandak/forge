@@ -56,6 +56,7 @@ export const RESERVED_FLAGS: readonly string[] = [
   "quiet",
   "request-id",
   "version",
+  "reinitialize-store",
 ];
 
 export interface ParsedOperation {

@@ -1,4 +1,4 @@
-import { basename, join, relative } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 import { realpathSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { StateOwner } from "../core/state/index.ts";
@@ -93,7 +93,10 @@ function registered(
 ): { name: string; root: string } | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const { name, root } = value as { name?: unknown; root?: unknown };
-  return typeof name === "string" && typeof root === "string"
+  return typeof name === "string" &&
+    typeof root === "string" &&
+    isAbsolute(root) &&
+    !root.includes("\0")
     ? { name, root }
     : undefined;
 }
@@ -109,10 +112,11 @@ function canonicalRoot(root: string): string {
   }
 }
 
-function registeredAt(
+/** Saved roots are canonical observations, never paths to resolve again. */
+function wasRegisteredAt(
   device: StateOwner | undefined,
   root: string,
-): ProjectIdentity | undefined {
+): boolean {
   root = canonicalRoot(root);
   let from = REGISTRY_PREFIX;
   while (device) {
@@ -123,16 +127,12 @@ function registeredAt(
     });
     for (const record of page) {
       const entry = registered(record.value);
-      if (entry && relative(canonicalRoot(entry.root), root) === "")
-        return {
-          id: record.key.slice(REGISTRY_PREFIX.length),
-          name: entry.name,
-        };
+      if (entry && relative(entry.root, root) === "") return true;
     }
     if (page.length < REGISTRY_PAGE) break;
     from = `${page.at(-1)!.key}\0`;
   }
-  return undefined;
+  return false;
 }
 
 export async function requireRegisteredStore(
@@ -141,10 +141,10 @@ export async function requireRegisteredStore(
 ): Promise<void> {
   const lease = await deviceState.acquire(false);
   try {
-    if (registeredAt(lease.value, root))
+    if (wasRegisteredAt(lease.value, root))
       refuse(
         "UNAVAILABLE",
-        `Missing Forge store at ${join(root, ".forge", "state.sqlite")}. Fix: restore from backup, or explicitly re-initialize with forge issue create --title <title> to start a new store.`,
+        `Missing Forge store at ${join(root, ".forge", "state.sqlite")}. Fix: restore from backup, or explicitly re-initialize with forge --reinitialize-store <enabled project-write command> to start a new store.`,
       );
   } finally {
     await lease.close();
@@ -184,7 +184,7 @@ export function openLevels(options: {
     project: { id: projectRoot, root: projectRoot },
   });
 
-  function mint(owner: StateOwner, known?: string): string {
+  function mint(owner: StateOwner): string {
     for (;;) {
       const existing = identityOf(owner);
       if (existing) return existing;
@@ -192,7 +192,7 @@ export function openLevels(options: {
         owner.put(
           IDENTITY_NAMESPACE,
           IDENTITY_KEY,
-          { id: known ?? randomBytes(8).toString("hex") },
+          { id: randomBytes(8).toString("hex") },
           actor,
           {
             expectRevision:
@@ -213,11 +213,7 @@ export function openLevels(options: {
     const current = device.get(REGISTRY_NAMESPACE, key);
     const known = registered(current?.value);
     const where = canonicalRoot(options.stateRoot);
-    if (
-      known?.name === name &&
-      relative(canonicalRoot(known.root), where) === ""
-    )
-      return;
+    if (known?.name === name && relative(known.root, where) === "") return;
     device.put(REGISTRY_NAMESPACE, key, { name, root: where }, actor, {
       expectRevision: current?.revision ?? 0,
     });
@@ -229,10 +225,7 @@ export function openLevels(options: {
     const name = projectName(root);
     let id = identityOf(owner);
     if (options.write && owner) {
-      id ??= mint(
-        owner,
-        registeredAt(await deviceOwner(), options.stateRoot)?.id,
-      );
+      id ??= mint(owner);
       await register(id, name);
     }
     if (!id) return undefined;

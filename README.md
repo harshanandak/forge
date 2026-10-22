@@ -44,9 +44,11 @@ by create. Check results include a receipt and a status; inspect that status
 before proceeding. Skills are written under `.agents/skills`.
 
 Project state writes register the store's location on this device. If that
-store later disappears, state reads report its missing path instead of an empty
-project. Restore the store from backup, or explicitly start over with
-`forge issue create --title "First task"`. Fresh project reads create nothing.
+store later disappears, state reads and writes report its missing path. Restore
+the store from backup, or explicitly start a new store and identity by putting
+`--reinitialize-store` before an enabled project-write command, for example
+`forge --reinitialize-store issue create --title "First task"` when the work
+block is enabled. Fresh project reads create nothing.
 Detection requires the device registration: older stores become registered on
 their next write, and losing both stores removes the evidence of prior state.
 
