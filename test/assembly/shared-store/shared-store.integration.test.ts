@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -283,4 +284,25 @@ test("a project outside git keeps its store in its own folder", async () => {
   const call = await open(plain);
   done(await call("issue.create", { title: "Alone" }));
   expect(existsSync(join(plain, ".forge/state.sqlite"))).toBe(true);
+}, 60_000);
+
+test("a linked worktree reports the missing shared store's canonical path", async () => {
+  const fromLinked = await open(linked);
+  const fromMain = await open(main);
+  done(await fromMain("issue.create", { title: "Before store loss" }));
+  const path = join(realpathSync.native(main), ".forge/state.sqlite");
+  const backup = join(main, ".forge/state.saved");
+  renameSync(path, backup);
+  try {
+    const result = await fromLinked("issue.list", {});
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "UNAVAILABLE" },
+    });
+    if (result.ok) throw Error("Expected missing shared store");
+    expect(result.error.message).toContain(path);
+    expect(existsSync(join(linked, ".forge/state.sqlite"))).toBe(false);
+  } finally {
+    renameSync(backup, path);
+  }
 }, 60_000);

@@ -66,7 +66,7 @@ import {
 import { LocalState } from "./state.ts";
 import { syncSkills, type TemplateFile } from "./skills.ts";
 import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
-import { openLevels, PROJECT_STATE } from "./levels.ts";
+import { openLevels, PROJECT_STATE, requireRegisteredStore } from "./levels.ts";
 import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
@@ -187,10 +187,13 @@ export async function createAssembly(
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   // Every git worktree of one repository shares one store; config and files stay at `root`.
   const stateRoot = await projectStateRoot(root, options.providers);
+  const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
+    undefined,
+    undefined,
+    () => requireRegisteredStore(deviceState, stateRoot),
   );
-  const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
   let trustActor: Actor | undefined;
   const trust = new TrustStore({
     get: (digest) =>
@@ -1019,7 +1022,16 @@ export async function createAssembly(
                 const namespace = current.blocks.get(instance)!.manifest.id;
                 // This host's project and, read-only, other projects: a declared capability,
                 // bound to the host's project and never to a project named in the request.
-                if (interfaceSatisfies(PROJECT_STATE, binding.interface)) {
+                const projectLevels = interfaceSatisfies(
+                  PROJECT_STATE,
+                  binding.interface,
+                );
+                const projectWrite =
+                  context.variant !== "device" &&
+                  scope.effects.includes(
+                    `${current.catalog.resolve(scope.op).operation.declaredOp.split(".")[0]!}:write`,
+                  );
+                if (projectLevels || projectWrite) {
                   if (context.variant === "stateless")
                     refuse(
                       "CONTEXT_MISSING",
@@ -1033,8 +1045,9 @@ export async function createAssembly(
                     namespace,
                     actor: context.actor,
                     servesProject:
-                      options.project ??
-                      existsSync(join(root, ".forge", "config.yaml")),
+                      projectWrite ||
+                      (options.project ??
+                        existsSync(join(root, ".forge", "config.yaml"))),
                     // The authenticated caller, never the actor kind a caller put in its context.
                     caller: request.caller,
                     write: scope.effects.includes(
@@ -1047,8 +1060,12 @@ export async function createAssembly(
                     value: undefined,
                     close: () => opened.close(),
                   });
-                  clients[binding.slot] = opened.levels;
-                  continue;
+                  if (projectLevels) {
+                    clients[binding.slot] = opened.levels;
+                    continue;
+                  }
+                  // Register ordinary project writes too, retaining their original lease context.
+                  await opened.levels.project();
                 }
                 const storage =
                   context.variant === "device" ? deviceState : projectState;

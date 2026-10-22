@@ -54,6 +54,7 @@ export class LocalState {
   readonly #path: string;
   readonly #store: StorePort;
   readonly #directories: DirectoryCreatePort | undefined;
+  readonly #missing: (() => Promise<void>) | undefined;
   readonly #entries = new Map<boolean, Entry>();
   #queue: Promise<void> = Promise.resolve();
   #closed = false;
@@ -61,10 +62,12 @@ export class LocalState {
     path: string,
     store: StorePort = sqliteStore,
     directories?: DirectoryCreatePort,
+    missing?: () => Promise<void>,
   ) {
     this.#path = path;
     this.#store = store;
     this.#directories = directories;
+    this.#missing = missing;
   }
   #serial<T>(work: () => Promise<T>): Promise<T> {
     const result = this.#queue.then(work);
@@ -80,7 +83,10 @@ export class LocalState {
       this.#entries.get(true) ??
       (!write ? this.#entries.get(false) : undefined);
     if (current) return current;
-    if (!write && !existsSync(this.#path)) return undefined;
+    if (!write && !existsSync(this.#path)) {
+      await this.#missing?.();
+      return undefined;
+    }
     if (write) ensurePrivateDirectory(dirname(this.#path), this.#directories);
     const result = await this.#store.open({
       path: this.#path,

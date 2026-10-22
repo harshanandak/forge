@@ -1,4 +1,5 @@
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
+import { realpathSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { StateOwner } from "../core/state/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
@@ -97,6 +98,59 @@ function registered(
     : undefined;
 }
 
+/** The existing device registry survives a lost project store; config alone proves nothing. */
+function canonicalRoot(root: string): string {
+  try {
+    return realpathSync.native(root);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    return root;
+  }
+}
+
+function registeredAt(
+  device: StateOwner | undefined,
+  root: string,
+): ProjectIdentity | undefined {
+  root = canonicalRoot(root);
+  let from = REGISTRY_PREFIX;
+  while (device) {
+    const page = device.listRange(REGISTRY_NAMESPACE, {
+      from,
+      to: REGISTRY_END,
+      limit: REGISTRY_PAGE,
+    });
+    for (const record of page) {
+      const entry = registered(record.value);
+      if (entry && relative(canonicalRoot(entry.root), root) === "")
+        return {
+          id: record.key.slice(REGISTRY_PREFIX.length),
+          name: entry.name,
+        };
+    }
+    if (page.length < REGISTRY_PAGE) break;
+    from = `${page.at(-1)!.key}\0`;
+  }
+  return undefined;
+}
+
+export async function requireRegisteredStore(
+  deviceState: LocalState,
+  root: string,
+): Promise<void> {
+  const lease = await deviceState.acquire(false);
+  try {
+    if (registeredAt(lease.value, root))
+      refuse(
+        "UNAVAILABLE",
+        `Missing Forge store at ${join(root, ".forge", "state.sqlite")}. Fix: restore from backup, or explicitly re-initialize with forge issue create --title <title> to start a new store.`,
+      );
+  } finally {
+    await lease.close();
+  }
+}
+
 export function openLevels(options: {
   readonly root: string;
   /** The folder holding the project store; registered so every git worktree records one place. */
@@ -130,7 +184,7 @@ export function openLevels(options: {
     project: { id: projectRoot, root: projectRoot },
   });
 
-  function mint(owner: StateOwner): string {
+  function mint(owner: StateOwner, known?: string): string {
     for (;;) {
       const existing = identityOf(owner);
       if (existing) return existing;
@@ -138,7 +192,7 @@ export function openLevels(options: {
         owner.put(
           IDENTITY_NAMESPACE,
           IDENTITY_KEY,
-          { id: randomBytes(8).toString("hex") },
+          { id: known ?? randomBytes(8).toString("hex") },
           actor,
           {
             expectRevision:
@@ -158,8 +212,12 @@ export function openLevels(options: {
     const key = `${REGISTRY_PREFIX}${id}`;
     const current = device.get(REGISTRY_NAMESPACE, key);
     const known = registered(current?.value);
-    const where = options.stateRoot;
-    if (known?.name === name && known.root === where) return;
+    const where = canonicalRoot(options.stateRoot);
+    if (
+      known?.name === name &&
+      relative(canonicalRoot(known.root), where) === ""
+    )
+      return;
     device.put(REGISTRY_NAMESPACE, key, { name, root: where }, actor, {
       expectRevision: current?.revision ?? 0,
     });
@@ -171,7 +229,10 @@ export function openLevels(options: {
     const name = projectName(root);
     let id = identityOf(owner);
     if (options.write && owner) {
-      id = mint(owner);
+      id ??= mint(
+        owner,
+        registeredAt(await deviceOwner(), options.stateRoot)?.id,
+      );
       await register(id, name);
     }
     if (!id) return undefined;
