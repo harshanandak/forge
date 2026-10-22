@@ -287,11 +287,12 @@ test("a selected run exceeding 60 seconds finishes under its operation deadline"
   });
 }, 1000);
 
-for (const [count, snapshotMs, cleanupMs, expectedMs] of [
-  [1, 2200, 1000, 7000],
-  [6, 100, 4000, 33300],
+for (const [count, snapshotMs, cleanupMs, writeMs, expectedMs] of [
+  [1, 2200, 1000, 100, 7000],
+  [6, 100, 4000, 100, 33300],
+  [1, 100, 4000, 6001, 11701],
 ] as const) {
-  test(`${count} timed-out commands seal a receipt after ${cleanupMs} ms cleanup each`, async () => {
+  test(`${count} timed-out commands seal a receipt after ${cleanupMs} ms cleanup and ${writeMs} ms durable commit`, async () => {
     const f = fixture(1500, undefined, true, count);
     const request = { ...f.request, input: {} };
     const config = {
@@ -339,7 +340,7 @@ for (const [count, snapshotMs, cleanupMs, expectedMs] of [
         list: () => [...records.values()],
         events: () => [],
         put(key, value) {
-          now += 100;
+          now += writeMs;
           const record: StateRecord = {
             namespace: "forge/check",
             key,

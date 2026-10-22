@@ -660,9 +660,11 @@ function createCheck(
       active();
       const after = await services.snapshot();
       active();
+      // The invocation already reserves finalization time, including storage contention.
       const finalizationDeadline =
+        scope?.deadline ??
         services.clock.now() +
-        finalizationTimeoutMs(frozenConfig.maxReceiptBytes);
+          finalizationTimeoutMs(frozenConfig.maxReceiptBytes);
       const changed = hash(before) !== hash(after);
       const status = changed ? "INCOMPLETE" : aggregate(runs);
       const body = {

@@ -87,11 +87,20 @@ Idle Windows snapshots took 228–1029 ms, but under load a HEAD lookup exceeded
 the old 4.75-second startup window. The engine and sizing share
 `finalizationTimeoutMs` in `entry.cts`:
 `F = 1000 + ceil(maxReceiptBytes × 1000 / 131072)` ms (5000 ms at 512 KiB).
-The fixed second covers overhead; the 128 KiB/s floor allows slow durable storage.
+The fixed second covers overhead; the 128 KiB/s floor reserves durable storage time
+in the overall operation budget. A scoped run uses the runtime's one invocation
+deadline for finalization, including its durable commit and verified readback.
+It does not start a second, shorter clock after the final snapshot: Windows lock
+waits and commit latency can consume that clock even when the operation has time
+left. Native embeddings without an invocation scope retain the finite F deadline.
 Five Windows Node 24 samples sealing, writing and reading back a 512 KiB payload
 through an open native-ACL SQLite state owner took 421.30–1199.21 ms (median
 562.43 ms) under load. Store opening and directory preparation precede this
-finalization window. The five-second allowance exceeds four times that maximum.
+finalization window. The five-second reservation exceeds four times that maximum,
+but is not a separate deadline on scoped runs. A later four-process Windows sample
+measured encoding at 62–82 ms, write at 615–1018 ms and readback at 2–48 ms.
+ACL reads totaled 0.12–0.21 ms per invocation, outside finalization. Commit contention
+dominates; the reserved rate is not a bound on a durable commit under load.
 The existing 1 MiB receipt ceiling bounds F at 9000 ms.
 Snapshot and finalization allowances do not grow with command timeouts.
 Selection and receipt preflight reuse the block's selected-run budget resolver.
