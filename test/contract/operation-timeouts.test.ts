@@ -5,7 +5,10 @@ import type {
   BlockManifest,
   ConfigDocument,
 } from "../../src/generated/types.ts";
-import { validateConfigDocument } from "../../src/generated/validators.ts";
+import {
+  validateConfigDocument,
+  validateForgeError,
+} from "../../src/generated/validators.ts";
 
 setDefaultTimeout(10_000);
 
@@ -144,7 +147,7 @@ test("schema-limit invalid overrides bound diagnostics and suggestion work", () 
     schemaVersion: "forge.config/1",
     blocks: Object.fromEntries(
       Array.from({ length: 256 }, (_, i) => [
-        `instance${i}`,
+        `${"i".repeat(37)}${String(i).padStart(3, "0")}`,
         {
           source: { path: "./sample" },
           rename: { ["a".repeat(21)]: `local${i}` },
@@ -160,7 +163,7 @@ test("schema-limit invalid overrides bound diagnostics and suggestion work", () 
     new Map(
       Object.keys(document.blocks).map((name) => [
         name,
-        { ...manifest, operations },
+        { ...manifest, id: `${"a".repeat(100)}/${"b".repeat(31)}`, operations },
       ]),
     ),
   );
@@ -170,6 +173,15 @@ test("schema-limit invalid overrides bound diagnostics and suggestion work", () 
   expect(result.ok).toBe(false);
   if (result.ok) throw Error("Expected invalid overrides");
   expect(result.errors).toHaveLength(5);
+  for (const error of result.errors)
+    expect(validateForgeError(error).ok).toBe(true);
+  expect(result.errors[0]?.repair).toContain("and 125 more");
+  expect(
+    validateForgeError({
+      ...result.errors[0],
+      message: result.errors.map((error) => error.message).join("\n"),
+    }).ok,
+  ).toBe(true);
   expect(result.errors[4]?.message).toContain("131068 more unknown");
   expect(enumerations).toBeLessThanOrEqual(1024);
 }, 60_000);

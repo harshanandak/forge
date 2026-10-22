@@ -88,6 +88,28 @@ test("preview reports the undeclared timeout key without writing", async () => {
   expect(readFileSync(file, "utf8")).toBe(initial);
 });
 
+test("preview of an unrelated edit tolerates a missing timeout block source", async () => {
+  writeFileSync(
+    file,
+    JSON.stringify({
+      blocks: {
+        check: { commands: {} },
+        missing: {
+          source: { path: "./missing" },
+          operationTimeouts: { "missing.run": 3000 },
+        },
+      },
+    }),
+  );
+  const preview = await call("config", "preview", {
+    patch: [{ op: "set", path: "/blocks/check/config/commands", value: {} }],
+  });
+  expect(preview, JSON.stringify(preview)).toMatchObject({
+    ok: true,
+    result: { valid: true },
+  });
+});
+
 for (const verb of ["apply", "set"] as const)
   test(`${verb} refuses undeclared timeout keys before writing`, async () => {
     const expectRevision = await revision();

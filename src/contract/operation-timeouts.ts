@@ -25,13 +25,17 @@ export function operationTimeoutProblems(
         continue;
       }
       declared ??= Object.keys(manifest.operations).sort();
-      const closest = declared
+      const ranked = declared
         .map((op) => ({ op, distance: nameDistance(key, op, 2) }))
+        .sort((a, b) => a.distance - b.distance || a.op.localeCompare(b.op));
+      const closest = ranked
         .filter(({ distance }) => distance <= 2)
-        .sort((a, b) => a.distance - b.distance || a.op.localeCompare(b.op))
-        .slice(0, 8)
+        .slice(0, 3)
         .map(({ op }) => op);
-      const fix = `${closest.length ? `did you mean ${closest.join(" or ")}? ` : ""}replace ${JSON.stringify(key)} with an operation declared by this bound block before local renames (${declared.join(", ") || "none"}), or remove this override`;
+      const listed = ranked.slice(0, 3).map(({ op }) => op);
+      const remaining = declared.length - listed.length;
+      const declarations = `${listed.join(", ") || "none"}${remaining > 0 ? `, and ${remaining} more` : ""}`;
+      const fix = `${closest.length ? `did you mean ${closest.join(" or ")}? ` : ""}replace ${JSON.stringify(key)} with an operation declared by this bound block before local renames (${declarations}), or remove this override`;
       errors.push({
         code: "INPUT_INVALID",
         message: formatConfigProblem(

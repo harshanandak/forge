@@ -370,7 +370,11 @@ export function planBytes(
         Object.keys(instance.operationTimeouts ?? {}).length === 0
       )
         continue;
-      manifests.set(name, env.blockManifest(name, instance.source));
+      try {
+        manifests.set(name, env.blockManifest(name, instance.source));
+      } catch {
+        // Unavailable sources are reported by the catalog, not timeout validation.
+      }
     }
   const problems = operationTimeoutProblems(proposed, manifests);
   if (problems.length > 0) {
