@@ -46,7 +46,12 @@ export function keepForm(
             ? path
             : `./${path}`
           : instance.source.package;
-      if (typeof use === "string") {
+      const projected: JsonObject = { use };
+      expandShortForm({ blocks: { [name]: projected } });
+      if (
+        typeof use === "string" &&
+        jsonEqual(projected.source, instance.source)
+      ) {
         instance.use = use;
         delete instance.source;
       }

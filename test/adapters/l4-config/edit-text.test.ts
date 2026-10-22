@@ -34,6 +34,23 @@ for (const newline of ["\n", "\r\n"]) {
 }
 
 const cases: ReadonlyArray<readonly [string, unknown, string]> = [
+  ...["\n", "\r\n"].flatMap((nl): Array<readonly [string, unknown, string]> => [
+    [
+      `values:${nl}  retries: 1${nl}  # Keep retries low on shared runners${nl}blocks: {}${nl}`,
+      { values: { retries: 2 }, blocks: {} },
+      `values:${nl}  retries: 2${nl}  # Keep retries low on shared runners${nl}blocks: {}${nl}`,
+    ],
+    [
+      `values:${nl}  - 1${nl}  # Keep retries low on shared runners${nl}blocks: {}${nl}`,
+      { values: [2], blocks: {} },
+      `values:${nl}  - 2${nl}  # Keep retries low on shared runners${nl}blocks: {}${nl}`,
+    ],
+    [
+      `values:${nl}  mode: |- # Chosen for staging${nl}    auto${nl}blocks: {}${nl}`,
+      { values: { mode: false }, blocks: {} },
+      `values:${nl}  mode: false # Chosen for staging${nl}blocks: {}${nl}`,
+    ],
+  ]),
   ["a: old # retained\n", { a: { b: 1 } }, "a: { b: 1 } # retained\n"],
   ["a: old # retained\n", { a: [1, 2] }, "a: [ 1, 2 ] # retained\n"],
   ["a: { b: old }\n", { a: { b: { c: 1 } } }, "a: { b: { c: 1 } }\n"],

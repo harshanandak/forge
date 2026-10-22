@@ -1,5 +1,7 @@
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { makeProject, type Fixture } from "./lib/project.ts";
+import { encodeDocument } from "../../../src/core/config/document.ts";
+import { yamlConfigCodec } from "../../../src/adapters/config-yaml/index.ts";
 
 setDefaultTimeout(30_000);
 const projects: Fixture[] = [];
@@ -20,6 +22,73 @@ blocks:
 
 # end of team config
 `;
+
+test("a CST gap warns and still writes the planned values", () => {
+  const warnings: string[] = [];
+  const bytes = encodeDocument(
+    { schemaVersion: "forge.config/1", values: {}, blocks: {} },
+    yamlConfigCodec,
+    "values:\n  retries: 1\n  # Keep this explanation\nblocks: {}\n",
+    {},
+    (message) => warnings.push(message),
+  );
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("formatting could not be preserved");
+  expect(new TextDecoder().decode(bytes ?? undefined)).toContain("values: {}");
+});
+
+test("editing a short package source retains its version on reload", () => {
+  const p = makeProject();
+  projects.push(p);
+  p.env.files.write(
+    ".forge/config.yaml",
+    new TextEncoder().encode('blocks:\n  demo:\n    use: "@team/demo"\n'),
+  );
+  const source = { package: "@team/demo", version: "1.2.3" };
+  const result = p.config.set({
+    path: "/blocks/demo/source",
+    value: source,
+    expectRevision: p.config.show().revision,
+  });
+  expect(result.changes).not.toEqual([]);
+  expect(
+    p.config.show().instances.find((item) => item.name === "demo")?.source,
+  ).toEqual(source);
+  expect(p.read()).toContain("version: 1.2.3");
+});
+
+test("a template path without a dot stays unedited and removable in short form", () => {
+  const p = makeProject();
+  projects.push(p);
+  p.env.files.write(
+    ".forge/config.yaml",
+    new TextEncoder().encode("blocks: {}\n"),
+  );
+  p.installed.set("team/demo", {
+    schemaVersion: "forge.template/1",
+    id: "team/demo",
+    version: "1.0.0",
+    summary: "Local demo",
+    config: {
+      schemaVersion: "forge.config/1",
+      blocks: { demo: { source: { path: "blocks/demo" } } },
+    },
+  });
+  const imported = p.templates.importTemplate({
+    template: "team/demo",
+    expectRevision: p.config.show().revision,
+  });
+  expect(p.templates.show({ template: "team/demo" }).owned).toEqual(
+    imported.added.map((pointer) => ({ pointer, edited: false })),
+  );
+  const removed = p.templates.remove({
+    template: "team/demo",
+    expectRevision: imported.revision,
+  });
+  expect(removed.kept).toEqual([]);
+  expect(removed.removed).toEqual(imported.added);
+  expect(p.config.show().instances).toEqual([]);
+});
 
 for (const check of [
   "  check: # keep instance\n    config: {} # deliberately empty\n",

@@ -17,6 +17,19 @@ import { isObject } from "../../core/config/pointer.ts";
 interface Layout {
   readonly newline: string;
   readonly step: number;
+  readonly replaced: Array<readonly [number, number, number]>;
+}
+
+function comments(value: unknown): Array<{ offset: number; source: string }> {
+  if (Array.isArray(value)) return value.flatMap(comments);
+  if (!isObject(value)) return [];
+  if (
+    value.type === "comment" &&
+    typeof value.offset === "number" &&
+    typeof value.source === "string"
+  )
+    return [{ offset: value.offset, source: value.source }];
+  return Object.values(value).flatMap(comments);
 }
 
 function tokenFor(
@@ -67,6 +80,8 @@ function update(
       const key = String(pair.key.value);
       seen.add(key);
       if (!Object.hasOwn(value, key)) {
+        for (const child of [pair.key, pair.value])
+          if (isNode(child) && child.range) layout.replaced.push(child.range);
         // Standalone comments describe the surrounding file, not a deleted value.
         const start = [...item.start];
         if (start.at(-1)?.type === "space") start.pop();
@@ -161,15 +176,17 @@ function update(
       if (items.length === 0) return tokenFor({}, indent, true, layout);
       if (items[0] !== token.items[0] && items[0]?.start[0]?.type === "space")
         items[0].start.shift();
-      // A CST block-map item always has a key and separator.
-      token.items = items.filter(
-        (
-          item,
-        ): item is CST.CollectionItem & {
-          key: CST.Token | null;
-          sep: CST.SourceToken[];
-        } => item.key !== undefined && item.sep !== undefined,
-      );
+      token.items = [
+        ...items.filter(
+          (
+            item,
+          ): item is CST.CollectionItem & {
+            key: CST.Token | null;
+            sep: CST.SourceToken[];
+          } => item.key !== undefined && item.sep !== undefined,
+        ),
+        ...token.items.slice(node.items.length),
+      ];
       if (carried.length) token.items.push({ start: carried });
     }
     return token;
@@ -191,13 +208,15 @@ function update(
           !jsonEqual(previous[index], child) &&
           previous.some((old) => jsonEqual(old, child)),
       )
-    )
+    ) {
+      if (node.range) layout.replaced.push(node.range);
       return tokenFor(
         value,
         token.indent,
         token.type === "flow-collection",
         layout,
       );
+    }
     const items: CST.CollectionItem[] = [];
     for (const [index, child] of value.entries()) {
       const item = token.items[index];
@@ -255,7 +274,7 @@ function update(
         items.push(added);
       }
     }
-    token.items = items;
+    token.items = [...items, ...token.items.slice(node.items.length)];
     return token;
   }
   if (isScalar(node) && CST.isScalar(token) && typeof value === "string") {
@@ -277,15 +296,23 @@ function update(
     return token;
   }
   const replacement = tokenFor(value, indent, true, layout);
+  if (node.range) layout.replaced.push(node.range);
   if ("end" in replacement) {
     const closing = (part: CST.SourceToken): boolean =>
       part.type === "flow-map-end" || part.type === "flow-seq-end";
     const trailing =
-      "end" in token
-        ? (token.end ?? []).filter((part) => !closing(part))
-        : flow
-          ? []
-          : undefined;
+      token.type === "block-scalar"
+        ? token.props.filter(
+            (part): part is CST.SourceToken =>
+              part.type === "space" ||
+              part.type === "comment" ||
+              part.type === "newline",
+          )
+        : "end" in token
+          ? (token.end ?? []).filter((part) => !closing(part))
+          : flow
+            ? []
+            : undefined;
     if (trailing !== undefined)
       replacement.end = [
         ...(replacement.end ?? []).filter(closing),
@@ -298,6 +325,7 @@ function update(
 export function editYaml(text: string, value: unknown): string {
   const newline = text.includes("\r\n") ? "\r\n" : "\n";
   const tokens = [...new Parser().parse(text)];
+  const originalComments = comments(tokens);
   const [document] = new Composer({
     keepSourceTokens: true,
     version: "1.2",
@@ -313,9 +341,10 @@ export function editYaml(text: string, value: unknown): string {
   const indents = [...text.matchAll(/^ +(?=\S)/gm)].map(
     (match) => match[0].length,
   );
-  const layout = {
+  const layout: Layout = {
     newline,
     step: indents.length ? Math.min(...indents) : 2,
+    replaced: [],
   };
   source.value = update(document.contents, value, 0, false, layout);
   const result = tokens.map((token) => CST.stringify(token)).join("");
@@ -325,5 +354,20 @@ export function editYaml(text: string, value: unknown): string {
     !jsonEqual(checked.toJS({ maxAliasCount: 0 }), value)
   )
     throw new Error("edited YAML does not match the planned values");
+  const retained = new Map<string, number>();
+  for (const comment of comments([...new Parser().parse(result)]))
+    retained.set(comment.source, (retained.get(comment.source) ?? 0) + 1);
+  for (const comment of originalComments) {
+    if (
+      layout.replaced.some(
+        ([start, , end]) => comment.offset >= start && comment.offset < end,
+      )
+    )
+      continue;
+    const count = retained.get(comment.source) ?? 0;
+    if (count === 0)
+      throw new Error("edited YAML lost a comment outside a replaced value");
+    retained.set(comment.source, count - 1);
+  }
   return result;
 }
