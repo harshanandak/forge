@@ -828,14 +828,19 @@ export async function createAssembly(
               )
                 throw error;
             }
-            return success(request.op, {
-              blockId: block.manifest.id,
-              digest: block.digest,
-              admitted,
-              ...(request.op === "block.add" && !admitted
-                ? { next: localForgeCommand(["block", "admit", block.digest]) }
-                : {}),
-            });
+            return {
+              ...success(request.op, {
+                blockId: block.manifest.id,
+                digest: block.digest,
+                admitted,
+                ...(request.op === "block.add" && !admitted
+                  ? {
+                      next: localForgeCommand(["block", "admit", block.digest]),
+                    }
+                  : {}),
+              }),
+              warnings: call.warnings,
+            };
           }
           if (request.op === "block.admit" || request.op === "config.grant") {
             await trustState.open(false);

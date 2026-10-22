@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  cpSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -8,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createAssembly, localCall } from "../../../dist/src/assembly/index.js";
 import { yamlConfigCodec } from "../../../dist/src/adapters/config-yaml/index.js";
 import { dispatch } from "../../../dist/src/surface/dispatch.js";
@@ -50,6 +52,19 @@ try {
   assert.match(
     readFileSync(join(root, ".forge/config.yaml"), "utf8"),
     /timeoutMs: 1234/,
+  );
+  cpSync(
+    fileURLToPath(new URL("../../../examples/hello-block", import.meta.url)),
+    join(root, "hello"),
+    { recursive: true },
+  );
+  const added = await call("block.add", { path: "./hello" });
+  assert.equal(added.ok, true, JSON.stringify(added));
+  assert.deepEqual(added.warnings, applied.warnings);
+  assert.deepEqual(
+    (await call("config.show")).warnings,
+    [],
+    "warnings belong to one call",
   );
   console.log(
     "PASS config fallback: persisted planned values, file warning, call-local warnings",
