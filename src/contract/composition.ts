@@ -9,6 +9,7 @@ import type {
   OperationDeclaration,
 } from "../generated/types.ts";
 import { nounCollisions, parseOperationName } from "./naming.ts";
+import { operationTimeoutProblems } from "./operation-timeouts.ts";
 import { interfaceSatisfies, parseInterfaceVersionRef } from "./version.ts";
 
 /** Interfaces core itself provides to every block; `core` is their binding target. */
@@ -51,7 +52,8 @@ export function resolveComposition(
   manifests: ReadonlyMap<string, BlockManifest>,
   coreProvides: readonly string[] = CORE_PROVIDES,
 ): CompositionResult {
-  const errors: ForgeError[] = [];
+  const errors: ForgeError[] = operationTimeoutProblems(config, manifests);
+  if (errors.length > 0) return { ok: false, errors };
   const operations = new Map<string, ResolvedOperation>();
   const nounOwners = new Map<string, string>();
   const enabled = Object.entries(config.blocks).filter(
