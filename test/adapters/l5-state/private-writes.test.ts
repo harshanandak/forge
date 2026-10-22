@@ -1,9 +1,44 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import {
+  lstatSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { privateFileGuard } from "../../../src/adapters/store-sqlite/private-files.ts";
+
+test("a broadened file ACL fails closed even when file metadata is unchanged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "forge-acl-cache-"));
+  try {
+    const file = join(dir, "file");
+    writeFileSync(file, "private");
+    const sid = "S-1-5-21-1-2-3-1001";
+    let descriptor = `D:P(A;;FA;;;${sid})`;
+    const guard = privateFileGuard({
+      sid,
+      read: () => descriptor,
+      protect: () => {
+        throw new Error("A file ACL must be refused, never repaired");
+      },
+    });
+    guard.file(file);
+    const before = lstatSync(file, { bigint: true });
+    // Model Windows changing a DACL without publishing a new stat change time.
+    descriptor = `D:P(A;;FA;;;${sid})(A;;FR;;;WD)`;
+    expect(lstatSync(file, { bigint: true })).toEqual(before);
+    expect(() => guard.file(file)).toThrow(file);
+    expect(() => guard.file(file)).toThrow("fix its owner-only permissions");
+    descriptor = `D:P(A;;FA;;;${sid})`;
+    guard.file(file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 5000);
 
 async function storeWrites(parent: string): Promise<void> {
   const dir = realpathSync(parent);
