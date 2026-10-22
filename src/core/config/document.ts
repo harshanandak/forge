@@ -8,12 +8,20 @@ import {
   type SchemaProblem,
   validateWithSchema,
 } from "../../contract/schema.ts";
-import type { BlockSource, ForgeError } from "../../generated/types.ts";
+import type {
+  BlockSource,
+  ForgeError,
+  ParseLimits,
+} from "../../generated/types.ts";
+import { DEFAULT_PARSE_LIMITS } from "../../contract/untrusted.ts";
 import {
   validateBlockSource,
   validateConfigDocument,
 } from "../../generated/validators.ts";
-import type { ConfigCodecPort } from "../../ports/config-codec.ts";
+import type {
+  ConfigCodecPort,
+  ConfigTextEdit,
+} from "../../ports/config-codec.ts";
 import { atomicSource } from "./layers.ts";
 import {
   formatPointer,
@@ -22,7 +30,7 @@ import {
   leaves,
   parsePointer,
 } from "./pointer.ts";
-import { absoluteUses } from "./short.ts";
+import { absoluteUses, expandShortForm } from "./short.ts";
 import { CONFIG_FILE } from "./store.ts";
 
 export const CONFIG_VERSION = "forge.config/1";
@@ -165,9 +173,89 @@ export function checkInstanceConfig(
 export function encodeDocument(
   document: JsonObject,
   codec: ConfigCodecPort,
+  original?: string,
+  before: JsonObject = emptyDocument(),
+  warn?: (message: string) => void,
+  limits: ParseLimits = DEFAULT_PARSE_LIMITS,
 ): Uint8Array | null {
+  if (original !== undefined && jsonEqual(before, document))
+    return new TextEncoder().encode(original);
   if (configuresNothing(document)) return null;
-  return new TextEncoder().encode(codec.encode(document));
+  const valid = (text: string): boolean => {
+    const parsed = codec.decode(text, limits);
+    return (
+      parsed.ok &&
+      isObject(parsed.value) &&
+      jsonEqual(expandShortForm(parsed.value), document)
+    );
+  };
+  let text: string | undefined;
+  let lost = false;
+  if (original !== undefined && codec.edit) {
+    const raw = codec.decode(original, limits);
+    const edits: ConfigTextEdit[] = [];
+    const walk = (a: unknown, b: unknown, path: (string | number)[]) => {
+      if (jsonEqual(a, b)) return;
+      if (
+        raw.ok &&
+        isObject(raw.value) &&
+        path[0] === "blocks" &&
+        path[2] === "config" &&
+        path.length === 4
+      ) {
+        const blocks = raw.value.blocks;
+        const instance = isObject(blocks) ? blocks[String(path[1])] : undefined;
+        if (isObject(instance) && Object.hasOwn(instance, String(path[3])))
+          edits.push({ path, from: [...path.slice(0, 2), path[3]!], value: a });
+      }
+      if (
+        (isObject(a) && isObject(b) && !atomicSource(path.map(String))) ||
+        (Array.isArray(a) && Array.isArray(b) && a.length === b.length)
+      ) {
+        for (const key of new Set([...Object.keys(a), ...Object.keys(b)]))
+          walk(
+            (a as Record<string, unknown>)[key],
+            (b as Record<string, unknown>)[key],
+            [...path, Array.isArray(a) ? Number(key) : key],
+          );
+        return;
+      }
+      let from: (string | number)[] | undefined;
+      if (raw.ok && isObject(raw.value) && path[0] === "blocks") {
+        const blocks = raw.value.blocks;
+        const instance = isObject(blocks) ? blocks[String(path[1])] : undefined;
+        if (isObject(instance)) {
+          if (path[2] === "source" && Object.hasOwn(instance, "use"))
+            from = path.slice(0, 2).concat("use");
+        }
+      }
+      edits.push({
+        path,
+        ...(from ? { from } : {}),
+        ...(b === undefined ? {} : { value: b }),
+      });
+    };
+    walk(before, document, []);
+    try {
+      const edited = codec.edit(original, edits);
+      lost = edited.formattingLost;
+      if (valid(edited.text)) text = edited.text;
+    } catch {
+      /* A codec edit failure uses the validated serializer below. */
+    }
+  }
+  if (text === undefined) {
+    text = codec.encode(document);
+    if (!valid(text))
+      throw new ForgeFailure({
+        code: "INPUT_INVALID",
+        message: "encoded config differs from the plan or exceeds parse limits",
+        retry: "never",
+      });
+    lost = original !== undefined;
+  }
+  if (lost) warn?.(`${CONFIG_FILE}: formatting could not be preserved`);
+  return new TextEncoder().encode(text);
 }
 
 export interface Change {
