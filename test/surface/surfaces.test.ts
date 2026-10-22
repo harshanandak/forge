@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { runCli } from "../../src/surface/cli.ts";
 import { runHook } from "../../src/surface/hook.ts";
 import { createMcpHandlers } from "../../src/surface/mcp.ts";
+import { discoveryOperations } from "../../src/surface/discovery.ts";
 import { exitCode, failure } from "../../src/surface/result.ts";
 import { candidate, fakeCatalog } from "./fixtures/catalog.ts";
 import { SchemaRegistry } from "../../src/contract/schema.ts";
@@ -340,7 +341,10 @@ test("stable budget is configurable; discovery preserves human and read-only bou
   );
   const catalog = fakeCatalog(entries);
   const handlers = createMcpHandlers(catalog);
-  expect(handlers.listTools()).toHaveLength(46);
+  const coreTools = discoveryOperations
+    .filter(({ declaration }) => declaration.callers.includes("agent"))
+    .map(({ op }) => op.replaceAll(".", "_"));
+  expect(handlers.listTools()).toHaveLength(40 + coreTools.length);
   expect(
     handlers
       .listTools()
@@ -348,7 +352,13 @@ test("stable budget is configurable; discovery preserves human and read-only bou
         (t) => t.name === "sample_private" || t.name === "sample_experimental",
       ),
   ).toBe(false);
-  expect(createMcpHandlers(catalog, { budget: 0 }).listTools()).toHaveLength(6);
+  expect(
+    createMcpHandlers(catalog, { budget: 0 })
+      .listTools()
+      .map(({ name }) => name)
+      .sort(),
+  ).toEqual(coreTools.sort());
+  expect(coreTools).not.toContain("store_reinit");
   expect(
     (await handlers.callTool("catalog_call", { op: "sample.op44", input: {} }))
       ?.ok,

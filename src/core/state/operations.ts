@@ -8,6 +8,6 @@ export const operations: Record<string, OperationDeclaration> = {
     effects: ["store:write"],
     idempotent: false,
     stability: "stable",
-    callers: ["human", "agent"],
+    callers: ["human"],
   },
 };

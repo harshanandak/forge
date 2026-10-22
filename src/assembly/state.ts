@@ -1,5 +1,5 @@
 ﻿import { dirname } from "node:path";
-import { closeSync, existsSync } from "node:fs";
+import { closeSync, existsSync, fstatSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
 import { createSqliteStore } from "../adapters/store-sqlite/index.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
@@ -11,6 +11,7 @@ import {
   ensurePrivateDirectory,
   createPrivateFile,
   securedFileOps,
+  removeOwnedFile,
   type DirectoryCreatePort,
 } from "../adapters/store-sqlite/file-ops.ts";
 import type { OwnedHandle } from "../ports/lifetime.ts";
@@ -80,15 +81,18 @@ export class LocalState {
     return result;
   }
   /** Reserve a new store atomically; recovery must never open an existing database. */
-  async create(): Promise<void> {
-    return this.#serial(() => {
+  async create<T>(initialize: () => Promise<T>): Promise<T> {
+    const rollback = await this.#serial(() => {
       if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
       if (process.platform === "win32")
         security ??= privateFileGuard(windowsPrivateFiles());
       const files = security ? securedFileOps(security) : undefined;
       ensurePrivateDirectory(dirname(this.#path), this.#directories);
       try {
-        closeSync(createPrivateFile(this.#path, "wx", files));
+        const fd = createPrivateFile(this.#path, "wx", files);
+        const identity = fstatSync(fd);
+        closeSync(fd);
+        return () => removeOwnedFile(this.#path, identity, files);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         refuse(
@@ -97,6 +101,12 @@ export class LocalState {
         );
       }
     });
+    try {
+      return await initialize();
+    } catch (error) {
+      rollback();
+      throw error;
+    }
   }
   async #entry(write: boolean): Promise<Entry | undefined> {
     if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");

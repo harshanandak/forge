@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
+import { StateOwner } from "../../../src/core/state/index.ts";
 import { done, openHarness } from "./lib.ts";
 
 test("reinit retires the old registration so a peer resolves the new identity by name", async () => {
@@ -73,12 +74,23 @@ test("one MCP session has no standing recovery permission after reinit", async (
   try {
     expect(
       handlers.listTools().filter((tool) => tool.name === "store_reinit"),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(
       await call("memory.add", { text: "original", level: "project" }),
     ).toMatchObject({ ok: true });
     rmSync(path);
-    expect(await call("store.reinit", {})).toMatchObject({ ok: true });
+    expect(await call("store.reinit", {})).toMatchObject({
+      ok: false,
+      error: { code: "UNKNOWN_COMMAND" },
+    });
+    expect(await h.call("store.reinit", {}, { caller: "agent" })).toMatchObject(
+      {
+        ok: false,
+        error: { code: "ADMISSION_REQUIRED" },
+      },
+    );
+    expect(existsSync(path)).toBe(false);
+    expect(await h.call("store.reinit", {})).toMatchObject({ ok: true });
     expect(
       await call("memory.search", { query: "original", level: "project" }),
     ).toMatchObject({ ok: true });
@@ -104,3 +116,49 @@ test("one MCP session has no standing recovery permission after reinit", async (
     await h.close();
   }
 }, 60_000);
+
+for (const step of ["initialize", "register"] as const) {
+  test(`failed reinit during ${step} removes its reservation and allows retry`, async () => {
+    const h = await openHarness([]);
+    const path = join(h.root, ".forge/state.sqlite");
+    try {
+      done(await h.call("store.reinit", {}));
+      rmSync(path);
+      const initialize = Object.getOwnPropertyDescriptor(
+        StateOwner.prototype,
+        "initialize",
+      )!.value as StateOwner["initialize"];
+      const put = Object.getOwnPropertyDescriptor(StateOwner.prototype, "put")!
+        .value as StateOwner["put"];
+      const injected = new Error(`injected ${step} failure`);
+      const spy =
+        step === "initialize"
+          ? spyOn(StateOwner.prototype, "initialize").mockImplementation(
+              function (this: StateOwner) {
+                initialize.call(this);
+                throw injected;
+              },
+            )
+          : spyOn(StateOwner.prototype, "put").mockImplementation(function (
+              this: StateOwner,
+              ...args: Parameters<typeof put>
+            ) {
+              if (args[0] === "forge/core-projects") throw injected;
+              return put.apply(this, args);
+            });
+      let failed;
+      try {
+        failed = await h.call("store.reinit", {});
+      } finally {
+        spy.mockRestore();
+      }
+      expect(failed).toMatchObject({ ok: false });
+      if (failed?.ok === false)
+        expect(failed.error.message).toContain(injected.message);
+      expect(existsSync(path)).toBe(false);
+      expect(await h.call("store.reinit", {})).toMatchObject({ ok: true });
+    } finally {
+      await h.close();
+    }
+  }, 60_000);
+}

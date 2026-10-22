@@ -674,7 +674,7 @@ export async function createAssembly(
           if (!entry.declaration.callers.includes(request.caller))
             refuse(
               "ADMISSION_REQUIRED",
-              "Only a human may change admission or effect grants",
+              `Only a human may invoke ${request.op}`,
             );
           const bound = bindContext(entry.declaration, request.context);
           if (!bound.ok) throw new ForgeFailure(bound.error);
@@ -715,14 +715,18 @@ export async function createAssembly(
               requestId: request.requestId,
               replaceRegistration: true,
             });
-            try {
-              await recovery.create();
-              const project = await opened.levels.project();
-              return success(request.op, project!.identity);
-            } finally {
-              await opened.close();
-              await recovery.close();
-            }
+            return await recovery.create(async () => {
+              try {
+                const project = await opened.levels.project();
+                return success(request.op, project!.identity);
+              } finally {
+                try {
+                  await opened.close();
+                } finally {
+                  await recovery.close();
+                }
+              }
+            });
           }
           const configHandler = call.configOperations[request.op];
           if (configHandler) {

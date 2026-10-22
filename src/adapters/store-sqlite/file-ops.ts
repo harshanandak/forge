@@ -2,6 +2,8 @@ import {
   chmodSync,
   closeSync,
   fsyncSync,
+  fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readSync,
@@ -102,14 +104,33 @@ export function createPrivateFile(
 ): number {
   fs?.security?.directory(dirname(path));
   const fd = openSync(path, flags, 0o600);
+  const identity = fstatSync(fd);
   try {
     fs?.security?.file(path);
     syncParentDirectory(path, fs);
   } catch (error) {
     closeSync(fd);
+    removeOwnedFile(path, identity, fs);
     throw error;
   }
   return fd;
+}
+
+/** A failed creator may remove only the file it reserved, never a replacement. */
+export function removeOwnedFile(
+  path: string,
+  identity: { readonly dev: number; readonly ino: number },
+  fs?: DirectorySyncPort,
+): void {
+  let current;
+  try {
+    current = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (current.dev === identity.dev && current.ino === identity.ino)
+    removeDurable(path, undefined, fs);
 }
 
 export function openStoreFile(
