@@ -9,6 +9,7 @@ import {
   validateWithSchema,
 } from "../../contract/schema.ts";
 import type {
+  BlockManifest,
   BlockSource,
   ForgeError,
   ParseLimits,
@@ -35,8 +36,13 @@ import { CONFIG_FILE } from "./store.ts";
 
 export const CONFIG_VERSION = "forge.config/1";
 
-/** Hooks the assembly supplies from the catalog; both are optional. */
+/** Hooks the assembly supplies for source and schema resolution; optional for embeddings. */
 export interface BlockLookup {
+  /** Resolve the source in the completed proposed document, including source-changing edits. */
+  readonly blockManifest?: (
+    instance: string,
+    source: BlockSource,
+  ) => BlockManifest;
   /** The source of an instance name people configure without adding it first (a builtin block's own name). */
   readonly builtinSource?: (instance: string) => BlockSource | undefined;
   /**

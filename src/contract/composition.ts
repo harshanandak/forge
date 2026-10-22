@@ -9,8 +9,7 @@ import type {
   OperationDeclaration,
 } from "../generated/types.ts";
 import { nounCollisions, parseOperationName } from "./naming.ts";
-import { formatConfigProblem } from "./input-error.ts";
-import { closestNames } from "./schema.ts";
+import { operationTimeoutProblems } from "./operation-timeouts.ts";
 import { interfaceSatisfies, parseInterfaceVersionRef } from "./version.ts";
 
 /** Interfaces core itself provides to every block; `core` is their binding target. */
@@ -53,7 +52,8 @@ export function resolveComposition(
   manifests: ReadonlyMap<string, BlockManifest>,
   coreProvides: readonly string[] = CORE_PROVIDES,
 ): CompositionResult {
-  const errors: ForgeError[] = [];
+  const errors: ForgeError[] = operationTimeoutProblems(config, manifests);
+  if (errors.length > 0) return { ok: false, errors };
   const operations = new Map<string, ResolvedOperation>();
   const nounOwners = new Map<string, string>();
   const enabled = Object.entries(config.blocks).filter(
@@ -86,22 +86,6 @@ export function resolveComposition(
           repair: `rename one of: ${[...declaredNouns].filter((n) => n !== undefined).join(", ")}`,
         });
       }
-    }
-    for (const key of Object.keys(instance.operationTimeouts ?? {})) {
-      if (Object.hasOwn(manifest.operations, key)) continue;
-      const declared = Object.keys(manifest.operations).sort();
-      const closest = closestNames(key, declared);
-      const fix = `${closest.length ? `did you mean ${closest.join(" or ")}? ` : ""}replace ${JSON.stringify(key)} with an operation declared by this bound block before local renames (${declared.join(", ") || "none"}), or remove this override`;
-      errors.push({
-        code: "INPUT_INVALID",
-        message: formatConfigProblem(
-          `blocks.${name}.operationTimeouts[${JSON.stringify(key)}]`,
-          `operation ${JSON.stringify(key)} is not declared by bound block ${JSON.stringify(manifest.id)} (the operation is unknown or its block is not bound to this instance)`,
-          fix,
-        ),
-        retry: "never",
-        repair: fix,
-      });
     }
     // projected noun -> the noun this instance declared under it, to catch renames that land together
     const projected = new Map<string, string>();

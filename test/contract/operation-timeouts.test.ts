@@ -1,11 +1,28 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { resolveComposition } from "../../src/contract/composition.ts";
+import { nameDistance } from "../../src/contract/distance.ts";
 import type {
   BlockManifest,
   ConfigDocument,
 } from "../../src/generated/types.ts";
+import { validateConfigDocument } from "../../src/generated/validators.ts";
 
 setDefaultTimeout(10_000);
+
+test("bounded spelling distance preserves close matches and caps distant names", () => {
+  for (const [a, b, distance] of [
+    ["", "", 0],
+    ["", "ab", 2],
+    ["sample.create", "sample.craete", 2],
+    ["abc", "abcde", 2],
+    ["abcde", "abc", 2],
+    ["kitten", "sitting", 3],
+    ["a", "a-long-name", 10],
+  ] as const) {
+    expect(nameDistance(a, b)).toBe(distance);
+    expect(nameDistance(a, b, 2)).toBe(Math.min(distance, 3));
+  }
+});
 
 const manifest: BlockManifest = {
   schemaVersion: "forge.block/1",
@@ -98,3 +115,61 @@ test("timeout keys use the bound manifest's original names before local renames"
       .ok,
   ).toBe(false);
 });
+
+test("schema-limit invalid overrides bound diagnostics and suggestion work", () => {
+  let enumerations = 0;
+  const operations = new Proxy(
+    Object.fromEntries(
+      Array.from({ length: 128 }, (_, i) => [
+        `${"a".repeat(21)}.${"a".repeat(18)}${String(i).padStart(3, "0")}`,
+        manifest.operations["sample.create"]!,
+      ]),
+    ),
+    {
+      ownKeys(target) {
+        enumerations += 1;
+        if (enumerations > 1024)
+          throw Error("unbounded suggestion candidate enumeration");
+        return Reflect.ownKeys(target);
+      },
+    },
+  );
+  const overrides = Object.fromEntries(
+    Array.from({ length: 512 }, (_, i) => [
+      `${"a".repeat(21)}.${"a".repeat(17)}b${String(i).padStart(3, "0")}`,
+      3000,
+    ]),
+  );
+  const document: ConfigDocument = {
+    schemaVersion: "forge.config/1",
+    blocks: Object.fromEntries(
+      Array.from({ length: 256 }, (_, i) => [
+        `instance${i}`,
+        {
+          source: { path: "./sample" },
+          rename: { ["a".repeat(21)]: `local${i}` },
+          operationTimeouts: overrides,
+        },
+      ]),
+    ),
+  };
+  expect(validateConfigDocument(document).ok).toBe(true);
+  const start = performance.now();
+  const result = resolveComposition(
+    document,
+    new Map(
+      Object.keys(document.blocks).map((name) => [
+        name,
+        { ...manifest, operations },
+      ]),
+    ),
+  );
+  const elapsed = performance.now() - start;
+  console.info(`schema-limit timeout validation: ${elapsed.toFixed(1)} ms`);
+  expect(elapsed).toBeLessThan(5000);
+  expect(result.ok).toBe(false);
+  if (result.ok) throw Error("Expected invalid overrides");
+  expect(result.errors).toHaveLength(5);
+  expect(result.errors[4]?.message).toContain("131068 more unknown");
+  expect(enumerations).toBeLessThanOrEqual(1024);
+}, 60_000);
