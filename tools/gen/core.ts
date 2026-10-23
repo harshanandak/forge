@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { assembleCoreManifest } from "../../src/core/catalog/index.ts";
 import { operations as catalog } from "../../src/core/catalog/operations.ts";
 import { operations as trust } from "../../src/core/trust/operations.ts";
+import { operations as state } from "../../src/core/state/operations.ts";
 import { repoRoot } from "./types.ts";
 import { writeGenerated } from "./write.ts";
 
@@ -45,7 +46,7 @@ export function writeCoreManifest(root: string = repoRoot): void {
       entry: "index.cjs",
       docs: "docs.json",
     },
-    [catalog, trust],
+    [catalog, trust, state],
   );
   const directory = join(root, "src/generated");
   const docs = JSON.parse(

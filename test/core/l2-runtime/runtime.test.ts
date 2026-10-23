@@ -7,6 +7,7 @@ const addBlock = (root: string, trust: TrustStore) =>
   add(root, trust, nodeFileCapture);
 import { operations as catalogOperations } from "../../../src/core/catalog/operations.ts";
 import { operations as trustOperations } from "../../../src/core/trust/operations.ts";
+import { operations as stateOperations } from "../../../src/core/state/operations.ts";
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -529,7 +530,7 @@ test("outside text is bounded before validation and SecretRef never accepts plai
 }, 5000);
 
 test("owned core fragments assemble without duplicate operations", () => {
-  const fragments = [catalogOperations, trustOperations];
+  const fragments = [catalogOperations, trustOperations, stateOperations];
   const base = {
     schemaVersion: "forge.block/1" as const,
     id: "forge/core",
@@ -540,7 +541,7 @@ test("owned core fragments assemble without duplicate operations", () => {
     docs: "docs.json",
   };
   const manifest = assembleCoreManifest(base, fragments);
-  assert.equal(Object.keys(manifest.operations).length, 7);
+  assert.deepEqual(manifest.operations, Object.assign({}, ...fragments));
   assert.throws(
     () => assembleCoreManifest(base, [...fragments, fragments[0]!]),
     /duplicate core operation/,
@@ -556,15 +557,12 @@ test("core manifest is generated from area declarations at check and build time"
   );
   assert.ok(existsSync(path), "assembled core manifest must be generated");
   const manifest = JSON.parse(readFileSync(path, "utf8")) as BlockManifest;
-  assert.deepEqual(Object.keys(manifest.operations).sort(), [
-    "block.add",
-    "block.admit",
-    "block.check",
-    "catalog.call",
-    "catalog.describe",
-    "catalog.list",
-    "skills.sync",
-  ]);
+  assert.deepEqual(manifest.operations, {
+    ...catalogOperations,
+    ...trustOperations,
+    ...stateOperations,
+  });
+  assert.deepEqual(manifest.operations["store.reinit"]?.callers, ["human"]);
   for (const area of ["catalog", "trust"])
     assert.equal(
       existsSync(

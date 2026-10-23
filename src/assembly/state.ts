@@ -1,5 +1,5 @@
-﻿import { dirname } from "node:path";
-import { existsSync } from "node:fs";
+﻿import { dirname, join } from "node:path";
+import { closeSync, existsSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
 import { createSqliteStore } from "../adapters/store-sqlite/index.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
@@ -9,6 +9,11 @@ import {
 } from "../adapters/store-sqlite/private-files.ts";
 import {
   ensurePrivateDirectory,
+  createPrivateFile,
+  securedFileOps,
+  makePrivateTempDirectory,
+  removeDurable,
+  linkDurable,
   type DirectoryCreatePort,
 } from "../adapters/store-sqlite/file-ops.ts";
 import type { OwnedHandle } from "../ports/lifetime.ts";
@@ -54,6 +59,7 @@ export class LocalState {
   readonly #path: string;
   readonly #store: StorePort;
   readonly #directories: DirectoryCreatePort | undefined;
+  readonly #missing: ((write: boolean) => Promise<void>) | undefined;
   readonly #entries = new Map<boolean, Entry>();
   #queue: Promise<void> = Promise.resolve();
   #closed = false;
@@ -61,12 +67,14 @@ export class LocalState {
     path: string,
     store: StorePort = sqliteStore,
     directories?: DirectoryCreatePort,
+    missing?: (write: boolean) => Promise<void>,
   ) {
     this.#path = path;
     this.#store = store;
     this.#directories = directories;
+    this.#missing = missing;
   }
-  #serial<T>(work: () => Promise<T>): Promise<T> {
+  #serial<T>(work: () => T | Promise<T>): Promise<T> {
     const result = this.#queue.then(work);
     this.#queue = result.then(
       () => undefined,
@@ -74,13 +82,66 @@ export class LocalState {
     );
     return result;
   }
+  /** Initialize privately, then publish exclusively; failed recovery never unlinks a public store. */
+  async create<T>(initialize: (staged: LocalState) => Promise<T>): Promise<T> {
+    const existing = (): never =>
+      refuse(
+        "INPUT_CONFLICT",
+        `Forge store already exists at ${this.#path}. Fix: keep the existing store, or restore a backup instead.`,
+      );
+    const pending = await this.#serial(() => {
+      if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
+      if (process.platform === "win32")
+        security ??= privateFileGuard(windowsPrivateFiles());
+      const files = security ? securedFileOps(security) : undefined;
+      ensurePrivateDirectory(dirname(this.#path), this.#directories);
+      if (existsSync(this.#path)) existing();
+      const directory = makePrivateTempDirectory(
+        `${this.#path}.reinit-`,
+        files,
+      );
+      const path = join(directory, "state.sqlite");
+      try {
+        closeSync(createPrivateFile(path, "wx", files));
+        return {
+          directory,
+          path,
+          files,
+          state: new LocalState(path, this.#store, this.#directories),
+        };
+      } catch (error) {
+        removeDurable(directory, { recursive: true }, files);
+        throw error;
+      }
+    });
+    try {
+      let result: T;
+      try {
+        result = await initialize(pending.state);
+      } finally {
+        await pending.state.close();
+      }
+      try {
+        linkDurable(pending.path, this.#path, pending.files);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") existing();
+        throw error;
+      }
+      return result;
+    } finally {
+      removeDurable(pending.directory, { recursive: true }, pending.files);
+    }
+  }
   async #entry(write: boolean): Promise<Entry | undefined> {
     if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
     const current =
       this.#entries.get(true) ??
       (!write ? this.#entries.get(false) : undefined);
     if (current) return current;
-    if (!write && !existsSync(this.#path)) return undefined;
+    if (!existsSync(this.#path)) {
+      await this.#missing?.(write);
+      if (!write) return undefined;
+    }
     if (write) ensurePrivateDirectory(dirname(this.#path), this.#directories);
     const result = await this.#store.open({
       path: this.#path,

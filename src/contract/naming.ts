@@ -21,6 +21,7 @@ export const CORE_NOUNS: readonly string[] = [
   "host",
   "skills",
   "state",
+  "store",
   "template",
 ];
 

@@ -43,6 +43,15 @@ The demo's first issue is `demo-1`. In another repository, use the id returned
 by create. Check results include a receipt and a status; inspect that status
 before proceeding. Skills are written under `.agents/skills`.
 
+Project state writes register the store's location on this device. If that
+store later disappears, state reads and writes report its missing path. Restore
+the store from backup, or run `forge store reinit` to start a new empty store
+and identity. Recovery replaces the old same-root device registration and refuses
+if a store is present. It grants no permission to later calls. Fresh project reads
+create nothing.
+Detection requires the device registration: older stores become registered on
+their next write, and losing both stores removes the evidence of prior state.
+
 Help is short text. Operation results default to JSON. For full schemas:
 
 ```sh

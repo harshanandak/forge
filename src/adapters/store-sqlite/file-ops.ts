@@ -2,6 +2,7 @@ import {
   chmodSync,
   closeSync,
   fsyncSync,
+  linkSync,
   mkdirSync,
   openSync,
   readSync,
@@ -191,6 +192,16 @@ export function renameDurable(
   (fs.renameSync ?? renameSync)(from, to);
   syncParentDirectory(to, fs);
   if (dirname(from) !== dirname(to)) syncParentDirectory(from, fs);
+}
+
+/** Publish a completed file without replacing a competing creator's destination. */
+export function linkDurable(
+  from: string,
+  to: string,
+  fs?: DirectorySyncPort,
+): void {
+  linkSync(from, to);
+  syncParentDirectory(to, fs);
 }
 
 export function removeDurable(
