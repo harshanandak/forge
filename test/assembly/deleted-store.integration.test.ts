@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -18,7 +19,9 @@ import type { ResultEnvelope } from "../../src/generated/types.ts";
 const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
 
 function project() {
-  const work = mkdtempSync(join(tmpdir(), "forge-deleted-store-"));
+  const work = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "forge-deleted-store-")),
+  );
   const root = join(work, "project");
   const device = join(work, "device");
   mkdirSync(join(root, ".forge"), { recursive: true });

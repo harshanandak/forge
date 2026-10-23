@@ -23,7 +23,7 @@ function cli(args, expected = 0) {
   assert.equal(
     result.status,
     expected,
-    `${args.slice(0, 2).join(" ")}: ${result.stdout} ${result.stderr}`,
+    `${args.slice(0, 2).join(" ")}: error=${result.error?.message ?? "none"}, signal=${result.signal ?? "none"}\n${result.stdout} ${result.stderr}`,
   );
   return JSON.parse(result.stdout);
 }
