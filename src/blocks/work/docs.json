@@ -50,8 +50,8 @@
     },
     "issue.close": {
       "title": "Issue close",
-      "summary": "Close an issue while holding its lease.",
-      "examples": [{ "input": { "id": "demo-1" } }]
+      "summary": "Close while holding the lease, with a verified PASS receipt or a written withoutReceipt reason.",
+      "examples": [{ "input": { "id": "demo-1", "receipt": "<id>" } }]
     },
     "issue.ready": {
       "title": "Issue ready",

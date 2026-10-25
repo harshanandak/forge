@@ -120,7 +120,11 @@ assert.equal(read.value.body, "Written through the installed CLI");
 assert.deepEqual(read.updatedBy, actor);
 const closed = call(
   "close",
-  { id: created.id, reason: "acceptance passed" },
+  {
+    id: created.id,
+    reason: "acceptance passed",
+    withoutReceipt: "CLI fixture",
+  },
   grant.generation,
 ).result;
 assert.equal(closed.status, "closed");

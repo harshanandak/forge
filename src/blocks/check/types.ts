@@ -28,6 +28,26 @@ export interface CheckConfig {
   readonly inputs: readonly string[];
   readonly maxInputBytes: number;
   readonly environment: readonly string[];
+  readonly gate?: {
+    readonly requiredChecks?: "github-required" | readonly string[];
+    readonly receiptChecks?: readonly string[];
+    readonly doorPaths?: readonly string[];
+  };
+}
+export interface GateInput {
+  readonly pr: number;
+}
+export interface GateResult {
+  readonly verdict: "PASS" | "REFUSED";
+  readonly head: string;
+  readonly receipt?: string;
+  readonly checks: readonly { readonly name: string; readonly state: string }[];
+  readonly unresolvedThreads: number;
+  readonly doorPaths: readonly string[];
+  readonly reasons: readonly {
+    readonly code: string;
+    readonly detail: string;
+  }[];
 }
 export interface RunInput {
   readonly checks?: readonly string[];

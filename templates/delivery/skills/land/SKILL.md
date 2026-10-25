@@ -9,22 +9,16 @@ Orchestrator only. A worker never merges. Merge by: {{values.merge.by}}.
 
 ## Merge conditions: all of them, read fresh
 
-1. `gh pr view <n> --json state,mergeStateStatus,headRefOid` shows `OPEN` and `CLEAN`. Anything else (`BLOCKED`, `BEHIND`, `DIRTY`, `UNSTABLE`, `UNKNOWN`) is a no.
-2. A passing check receipt exists for that exact head: `forge check show --input '{"id":"<receipt>"}'`. Its head equals `headRefOid` and `result.status` is PASS; show exiting 0 only means the read succeeded. For a new run, only PASS exits 0 with `ok:true`; FAIL exits 1, INCOMPLETE or NOT_EXECUTED exits 2, all with `ok:false` and the full receipt in `result`. A receipt for an older head is no receipt.
-3. No open review threads, counted over every page; it must print `0`:
+Run `forge check gate --input '{"pr":<n>}'`. Require exit 0, `ok:true` and `result.verdict` PASS. Keep its `head` as `<head>` and `receipt` as `<id>`.
 
-```
-gh api graphql --paginate -F owner='{owner}' -F repo='{repo}' -F n=<n> -f query='query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}' --jq '.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved|not)|.id' | wc -l
-```
+The gate requires an open, clean PR, a verified PASS receipt for its current head covering the configured `receiptChecks`, successful required CI checks, no unresolved review threads across every page, and no changed file matching configured `doorPaths`. It reads the head again before returning. REFUSED exits 1 with reasons; fix them through `review` and rerun the gate.
 
-4. No one-way door is open. A merge that deploys, publishes or migrates is a door ({{values.doors}}): it needs the owner's reply naming that action. Silence or "continue" is not a yes.
-
-Any no: do not merge. Go back to `review`, or ask the owner about the door, then stop.
+A matched door path always refuses: the owner merges that PR by hand. A merge that deploys, publishes or migrates is also a door ({{values.doors}}): it needs the owner's reply naming that action. Silence or "continue" is not a yes.
 
 ## Merge, pinned
 
 ```
-gh pr merge <n> --{{values.merge.method}} --match-head-commit <headRefOid>
+gh pr merge <n> --{{values.merge.method}} --match-head-commit <head>
 ```
 
 A refused merge because the head moved means read the conditions again from step 1. Never merge without the pin.
@@ -33,7 +27,7 @@ A refused merge because the head moved means read the conditions again from step
 
 1. `gh pr view <n> --json state,mergeCommit` shows `MERGED`; keep the merge commit SHA.
 2. CI on base for that commit: `gh run list --branch <base> --commit <sha>`. Wait for it through the harness, not a sleep loop. Red there is a new bug: file it at p0 or p1 and fix forward.
-3. Close the issue. The worker released its claim, so take it again first: `forge issue claim --input '{"id":"<slice>","ttlSeconds":{{values.claims.ttlSeconds}}}'`, then `forge issue close --input '{"id":"<slice>","reason":"merged in <sha>"}'`.
+3. Close the issue. The worker released its claim, so take it again first: `forge issue claim --input '{"id":"<slice>","ttlSeconds":{{values.claims.ttlSeconds}}}'`, then `forge issue close --input '{"id":"<slice>","reason":"merged in <sha>","receipt":"<id>"}'` using the gate's receipt.
 4. Worktree: list what is in it first (`git -C <path> status --short` and `git -C <path> log origin/<base>..HEAD --oneline`). Remove it only when both are empty; anything left is filed or pushed first. Removing a worktree with work in it is a one-way door.
 5. Stop watching: in T3 Code, `unwatch_pull_request`.
 

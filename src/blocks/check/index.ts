@@ -15,6 +15,11 @@ export function createCheck(services: CheckServices): CheckBlock {
 }
 
 export interface CheckBlock {
+  gate(
+    input: import("./types.ts").GateInput,
+    config: import("./types.ts").CheckConfig,
+    scope?: import("./types.ts").CheckInvocationScope,
+  ): Promise<import("./types.ts").GateResult>;
   list(config: import("./types.ts").CheckConfig): string[];
   show(id: string): import("./types.ts").CheckReceipt | undefined;
   run(

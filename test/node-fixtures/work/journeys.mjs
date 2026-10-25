@@ -166,9 +166,17 @@ try {
       call("links", { id: item.id }).records[0].value.url,
       "https://example.com/task",
     );
+    error("RECEIPT_REQUIRED", () =>
+      call(
+        "close",
+        { id: item.id, reason: "merged in abc" },
+        context("alice", grant.generation),
+      ),
+    );
+    assert.equal(call("show", { id: item.id }).status, "open");
     const closed = call(
       "close",
-      { id: item.id, reason: "accepted" },
+      { id: item.id, reason: "accepted", withoutReceipt: "Record fixture" },
       context("alice", grant.generation),
     );
     assert.equal(closed.status, "closed");
@@ -339,7 +347,12 @@ try {
       error("LEASE_EXPIRED", () =>
         call(
           op,
-          { id: item.id, title: "expired", expectRevision: 1 },
+          {
+            id: item.id,
+            title: "expired",
+            expectRevision: 1,
+            withoutReceipt: "Lease fixture",
+          },
           context("alice", 1),
         ),
       );
@@ -359,7 +372,12 @@ try {
       error("LEASE_STALE", () =>
         call(
           op,
-          { id: item.id, expectRevision: 1, title: "stale" },
+          {
+            id: item.id,
+            expectRevision: 1,
+            title: "stale",
+            withoutReceipt: "Lease fixture",
+          },
           context("alice", 1),
         ),
       );
@@ -374,7 +392,11 @@ try {
     const same = call("claim", ref, context("alice", "acquire"));
     assert.equal(same.generation, 4);
     error("LEASE_STALE", () =>
-      call("close", { id: item.id }, context("alice", 3)),
+      call(
+        "close",
+        { id: item.id, withoutReceipt: "Lease fixture" },
+        context("alice", 3),
+      ),
     );
     console.log(
       "PASS leases: initial, competing first claimants, replay, renewal errors, expiry, K2 reacquisition, fencing, release, same-holder reacquisition",
@@ -403,7 +425,11 @@ try {
         context("alice", 1),
       ),
     );
-    call("close", { id: parent.id }, context("alice", 1));
+    call(
+      "close",
+      { id: parent.id, withoutReceipt: "Dependency fixture" },
+      context("alice", 1),
+    );
     assert.equal(
       call("ready").items.some((x) => x.id === child.id),
       true,

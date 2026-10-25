@@ -71,6 +71,7 @@ import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
   createAssemblyProviders,
+  createReceiptsService,
   idPrefixObservation,
   projectStateRoot,
   type ProviderOptions,
@@ -1035,6 +1036,30 @@ export async function createAssembly(
                   interfaceSatisfies("forge.crypto@1.0.0", binding.interface)
                 ) {
                   clients[binding.slot] = providers.crypto(scope);
+                  continue;
+                }
+                if (
+                  interfaceSatisfies("forge.receipts@1.0.0", binding.interface)
+                ) {
+                  if (
+                    context.variant !== "project" &&
+                    context.variant !== "leased"
+                  )
+                    refuse(
+                      "CONTEXT_MISSING",
+                      "Receipts require project context",
+                    );
+                  const configured = [...current.blocks.values()].some(
+                    (block) => block.manifest.id === "forge/check",
+                  );
+                  const lease = await projectState.acquire(false);
+                  leases.push(lease);
+                  clients[binding.slot] = createReceiptsService(scope, {
+                    get: (key) =>
+                      configured
+                        ? lease.value?.get("forge/check", key)
+                        : undefined,
+                  });
                   continue;
                 }
                 if (

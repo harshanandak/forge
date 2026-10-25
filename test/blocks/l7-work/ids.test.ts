@@ -237,7 +237,13 @@ test("every operation that takes an id accepts an alias and answers with the cur
     items: Item[];
   };
   expect(listed.items.map((item) => item.id)).toEqual(["acme-1", "acme-2"]);
-  expect(call("issue.close", { id: "work-1" }, acme).id).toBe("acme-1");
+  expect(
+    call(
+      "issue.close",
+      { id: "work-1", withoutReceipt: "Prefix fixture" },
+      acme,
+    ).id,
+  ).toBe("acme-1");
 });
 
 test("idPrefix is a schema value: lowercase letters, digits and single hyphens, defaulting to work", () => {

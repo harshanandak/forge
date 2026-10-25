@@ -43,6 +43,7 @@ const handlers = entry as unknown as {
   ): Promise<CheckReceipt>;
   "check.list"(args: Args<Record<string, never>>): {
     commands: readonly string[];
+    receiptChecks: readonly string[];
   };
   "check.show"(args: Args<{ id: string }>): CheckReceipt | null;
 };
@@ -138,7 +139,10 @@ test("captured handlers consume the shared service interfaces and read their acc
     signal: new AbortController().signal,
     deadline: Date.now() + 1000,
   };
-  expect(handlers["check.list"](args)).toEqual({ commands: ["test"] });
+  expect(handlers["check.list"](args)).toEqual({
+    commands: ["test"],
+    receiptChecks: [],
+  });
   expect(observed).toEqual([]);
   const receipt = await handlers["check.run"](args);
   expect(receipt.status).toBe("PASS");

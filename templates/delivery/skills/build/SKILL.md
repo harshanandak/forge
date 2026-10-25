@@ -46,7 +46,7 @@ After {{values.fixes.maxFailedPerCheck}} failed fixes on the same check, stop ed
 
 ## Finish
 
-1. Run every check on the final tree: `forge check run --input '{}'`. Require exit 0, `ok:true` and receipt status PASS. Read it back with `forge check show --input '{"id":"<receipt>"}'`; its head must be your head. A successful show reads evidence; it does not mean the stored checks passed.
+1. Read `forge check list --input '{}'`. Run its configured `receiptChecks` on the final tree: `forge check run --input '{"checks":["<name>"]}'`, supplying every name. If `receiptChecks` is empty, select at least one relevant declared check. Run the slice's named regression check too; CI carries the remaining project checks. Require exit 0, `ok:true` and receipt status PASS. Read it back with `forge check show --input '{"id":"<receipt>"}'`; its subject must equal your head. A successful show reads evidence; it does not mean the stored checks passed.
 2. Push, open the PR (`open-pr`), then link it while you still hold the claim: `forge issue link --input '{"id":"<slice>","relation":"delivers","url":"<pr url>"}'`.
 3. Release: `forge issue release --input '{"id":"<slice>"}'`. The orchestrator claims again to merge and close.
 4. Stop at push. Never merge. Cite the receipt ids and what was not checked in the PR's Verification section.

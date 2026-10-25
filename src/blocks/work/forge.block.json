@@ -21,6 +21,10 @@
     {
       "slot": "state",
       "interface": "forge.state@1"
+    },
+    {
+      "slot": "receipts",
+      "interface": "forge.receipts@1"
     }
   ],
   "operations": {

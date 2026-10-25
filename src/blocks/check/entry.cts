@@ -15,6 +15,8 @@ import type {
   CheckStatus,
   CheckInvocationScope,
   RunInput,
+  GateInput,
+  GateResult,
 } from "./types.ts";
 import type { SpawnOptions } from "../../ports/process.ts";
 
@@ -427,6 +429,11 @@ function aggregate(runs: readonly CheckRun[]): CheckStatus {
   return "PASS";
 }
 interface CheckBlock {
+  gate(
+    input: GateInput,
+    config: CheckConfig,
+    scope?: CheckInvocationScope,
+  ): Promise<GateResult>;
   list(config: CheckConfig): string[];
   show(id: string): CheckReceipt | undefined;
   run(
@@ -459,6 +466,9 @@ function createCheck(
     return value;
   }
   return {
+    gate(input, config, scope) {
+      return gate(services, input, config, scope);
+    },
     list(config: CheckConfig) {
       return Object.keys(config.commands);
     },
@@ -744,11 +754,399 @@ function commandArguments(text: string, configPath?: string): string[] {
   return args;
 }
 
+function doorMatches(path: string, glob: string): boolean {
+  let pattern = "^";
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i]!;
+    if (char === "*" && glob[i + 1] === "*") {
+      i++;
+      if (glob[i + 1] === "/") {
+        pattern += "(?:.*/)?";
+        i++;
+      } else pattern += ".*";
+    } else if (char === "*") pattern += "[^/]*";
+    else if (char === "?") pattern += "[^/]";
+    else pattern += char.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  }
+  return new RegExp(`${pattern}$`).test(path);
+}
+
+const THREAD_QUERY =
+  "query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
+
+async function gate(
+  services: Pick<
+    CheckServices,
+    "process" | "state" | "root" | "environment" | "clock"
+  > & { readonly crypto: CryptoService },
+  input: GateInput,
+  config: CheckConfig,
+  scope?: CheckInvocationScope,
+): Promise<GateResult> {
+  const reasons: { code: string; detail: string }[] = [];
+  const checks: { name: string; state: string }[] = [];
+  const doors: string[] = [];
+  let head = "",
+    receipt: string | undefined,
+    unresolvedThreads = 0;
+  const refuse = (code: string, detail: string) => {
+    reasons.push({ code, detail });
+  };
+  const deadline = scope?.deadline ?? services.clock.now() + 60000;
+  function active() {
+    if (
+      !Number.isSafeInteger(deadline) ||
+      scope?.signal.aborted ||
+      services.clock.now() >= deadline
+    )
+      throw new Error("Gate invocation cancelled or expired");
+  }
+  function invalid(): never {
+    throw new Error("Invalid GitHub evidence");
+  }
+  async function gh(
+    args: readonly string[],
+    allowedExits: readonly number[] = [0],
+  ): Promise<string> {
+    active();
+    const executable = services.process.resolve("gh", services.environment);
+    if (executable.kind !== "resolved")
+      throw new Error("GitHub CLI unavailable");
+    const result = await services.process.run(executable, args, {
+      cwd: services.root,
+      env: { ...services.environment },
+      timeoutMs: Math.max(
+        1,
+        Math.min(config.timeoutMs, deadline - services.clock.now()),
+      ),
+      maxOutputBytes: 262144,
+      ...(scope ? { signal: scope.signal } : {}),
+    });
+    active();
+    if (
+      result.exitCode === null ||
+      !allowedExits.includes(result.exitCode) ||
+      result.signal !== null ||
+      result.timedOut ||
+      result.truncated ||
+      (result.outputEvidence &&
+        (!result.outputEvidence.stdout.complete ||
+          !result.outputEvidence.stderr.complete))
+    )
+      throw new Error("GitHub command did not complete successfully");
+    return result.stdout;
+  }
+  async function view() {
+    const value: unknown = JSON.parse(
+      await gh([
+        "pr",
+        "view",
+        String(input.pr),
+        "--json",
+        "headRefOid,state,mergeStateStatus,url,changedFiles",
+      ]),
+    );
+    if (
+      !isRecord(value) ||
+      typeof value.headRefOid !== "string" ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value.headRefOid) ||
+      typeof value.state !== "string" ||
+      typeof value.mergeStateStatus !== "string" ||
+      typeof value.url !== "string" ||
+      !integer(value.changedFiles) ||
+      value.changedFiles < 0 ||
+      value.changedFiles > 3000
+    )
+      invalid();
+    return value as {
+      headRefOid: string;
+      state: string;
+      mergeStateStatus: string;
+      url: string;
+      changedFiles: number;
+    };
+  }
+  try {
+    if (!Number.isSafeInteger(input.pr) || input.pr < 1) invalid();
+    const pr = await view();
+    head = pr.headRefOid;
+    if (pr.state !== "OPEN" || pr.mergeStateStatus !== "CLEAN")
+      refuse(
+        "PR_NOT_MERGEABLE",
+        "Pull request must be OPEN with merge state CLEAN",
+      );
+    const candidates = services.state.list("runs/");
+    const verified = candidates.flatMap((record) => {
+      const value = record.value;
+      return isRecord(value) &&
+        typeof value.inputsDigest === "string" &&
+        verify(value, value.inputsDigest, services.crypto) &&
+        record.key === `runs/${value.id}` &&
+        Number.isFinite(Date.parse(value.checkedAt))
+        ? [value]
+        : [];
+    });
+    const current = verified.filter((value) => value.subject === head);
+    const passing = current.filter((value) => value.status === "PASS");
+    const receiptChecks = config.gate?.receiptChecks ?? [];
+    const eligible = passing.filter(
+      (value) =>
+        value.runs.length > 0 &&
+        receiptChecks.every((name) =>
+          value.checked.some(
+            (check) => check.name === name && check.status === "PASS",
+          ),
+        ),
+    );
+    eligible.sort(
+      (a, b) =>
+        Date.parse(b.checkedAt) - Date.parse(a.checkedAt) ||
+        b.id.localeCompare(a.id),
+    );
+    receipt = eligible[0]?.id;
+    if (!receipt) {
+      const code = !candidates.length
+        ? "RECEIPT_MISSING"
+        : !verified.length
+          ? "RECEIPT_INVALID"
+          : !current.length
+            ? "RECEIPT_HEAD_MISMATCH"
+            : !passing.length
+              ? "RECEIPT_NOT_PASS"
+              : "RECEIPT_CHECK_MISSING";
+      refuse(
+        code,
+        "No verified PASS receipt for this head covers all configured receipt checks",
+      );
+    }
+    const required = config.gate?.requiredChecks ?? "github-required";
+    const checkArgs = [
+      "pr",
+      "checks",
+      String(input.pr),
+      "--json",
+      "name,state,bucket",
+    ];
+    if (required === "github-required") checkArgs.push("--required");
+    const checkData: unknown = JSON.parse(await gh(checkArgs, [0, 1, 8]));
+    if (!Array.isArray(checkData)) invalid();
+    for (const value of checkData) {
+      if (
+        !isRecord(value) ||
+        typeof value.name !== "string" ||
+        !value.name ||
+        typeof value.state !== "string" ||
+        !value.state ||
+        typeof value.bucket !== "string"
+      )
+        invalid();
+      if (required === "github-required" || required.includes(value.name)) {
+        checks.push({ name: value.name, state: value.state });
+        if (value.state !== "SUCCESS" || value.bucket !== "pass")
+          refuse(
+            "REQUIRED_CHECK_FAILED",
+            `Required check ${value.name} is not SUCCESS`,
+          );
+      }
+    }
+    if (required !== "github-required")
+      for (const name of required) {
+        if (!checks.some((check) => check.name === name))
+          refuse("REQUIRED_CHECK_MISSING", `Required check ${name} is absent`);
+      }
+    if (!checks.length)
+      refuse(
+        "REQUIRED_CHECKS_EMPTY",
+        "Required checks must resolve to a nonempty list",
+      );
+    const repository =
+      /^https:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(pr.url);
+    if (!repository || Number(repository[4]) !== input.pr) invalid();
+    const pages: unknown = JSON.parse(
+      await gh([
+        "api",
+        "graphql",
+        "--paginate",
+        "--slurp",
+        "--hostname",
+        repository[1]!,
+        "-F",
+        `owner=${repository[2]}`,
+        "-F",
+        `repo=${repository[3]}`,
+        "-F",
+        `n=${input.pr}`,
+        "-f",
+        `query=${THREAD_QUERY}`,
+      ]),
+    );
+    if (!Array.isArray(pages) || pages.length === 0) invalid();
+    const cursors = new Set<string>();
+    for (const [index, page] of pages.entries()) {
+      if (
+        !isRecord(page) ||
+        "errors" in page ||
+        !isRecord(page.data) ||
+        !isRecord(page.data.repository) ||
+        !isRecord(page.data.repository.pullRequest)
+      )
+        invalid();
+      const threads = page.data.repository.pullRequest.reviewThreads;
+      if (
+        !isRecord(threads) ||
+        !Array.isArray(threads.nodes) ||
+        !isRecord(threads.pageInfo)
+      )
+        invalid();
+      const info = threads.pageInfo;
+      if (
+        info.hasNextPage !== index < pages.length - 1 ||
+        !(info.endCursor === null || typeof info.endCursor === "string")
+      )
+        invalid();
+      if (info.hasNextPage) {
+        if (
+          typeof info.endCursor !== "string" ||
+          !info.endCursor ||
+          cursors.has(info.endCursor)
+        )
+          invalid();
+        cursors.add(info.endCursor);
+      }
+      for (const node of threads.nodes) {
+        if (
+          !isRecord(node) ||
+          typeof node.id !== "string" ||
+          !node.id ||
+          typeof node.isResolved !== "boolean"
+        )
+          invalid();
+        if (!node.isResolved) unresolvedThreads++;
+      }
+    }
+    if (unresolvedThreads)
+      refuse(
+        "UNRESOLVED_THREADS",
+        `${unresolvedThreads} unresolved review thread(s)`,
+      );
+    const filePages: unknown = JSON.parse(
+      await gh([
+        "api",
+        `repos/${repository[2]}/${repository[3]}/pulls/${input.pr}/files?per_page=100`,
+        "--paginate",
+        "--slurp",
+        "--hostname",
+        repository[1]!,
+      ]),
+    );
+    if (!Array.isArray(filePages) || filePages.length === 0) invalid();
+    const filenames = new Set<string>();
+    for (const page of filePages) {
+      if (!Array.isArray(page) || page.length > 100) invalid();
+      for (const file of page) {
+        if (
+          !isRecord(file) ||
+          typeof file.filename !== "string" ||
+          !file.filename.trim() ||
+          typeof file.status !== "string" ||
+          ![
+            "added",
+            "removed",
+            "modified",
+            "renamed",
+            "copied",
+            "changed",
+            "unchanged",
+          ].includes(file.status) ||
+          filenames.has(file.filename) ||
+          (file.status === "renamed" &&
+            (typeof file.previous_filename !== "string" ||
+              !file.previous_filename.trim())) ||
+          (file.previous_filename !== undefined &&
+            (typeof file.previous_filename !== "string" ||
+              !file.previous_filename.trim()))
+        )
+          invalid();
+        filenames.add(file.filename);
+        for (const path of [file.filename, file.previous_filename]) {
+          if (path === undefined) continue;
+          if (
+            typeof path !== "string" ||
+            path.startsWith("/") ||
+            path.includes("\\") ||
+            [...path].some((char) => char.charCodeAt(0) < 32) ||
+            path.split("/").includes("..")
+          )
+            invalid();
+          if (
+            (config.gate?.doorPaths ?? []).some((glob) =>
+              doorMatches(path, glob),
+            ) &&
+            !doors.includes(path)
+          )
+            doors.push(path);
+        }
+      }
+    }
+    if (filenames.size !== pr.changedFiles) invalid();
+    if (doors.length)
+      refuse(
+        "DOOR_PATH_TOUCHED",
+        "Pull request changes configured door paths; owner review is required",
+      );
+    const after = await view();
+    if (after.headRefOid !== head)
+      refuse(
+        "HEAD_MOVED",
+        "Pull request head changed while the gate read evidence",
+      );
+    if (after.state !== "OPEN" || after.mergeStateStatus !== "CLEAN")
+      refuse("PR_NOT_MERGEABLE", "Pull request is no longer OPEN and CLEAN");
+  } catch {
+    refuse(
+      "GITHUB_EVIDENCE_INVALID",
+      "Gate evidence could not be read completely and verified; retry after repairing the CLI, access or response",
+    );
+  }
+  return {
+    verdict: reasons.length ? "REFUSED" : "PASS",
+    head,
+    ...(receipt ? { receipt } : {}),
+    checks,
+    unresolvedThreads,
+    doorPaths: doors,
+    reasons,
+  };
+}
+
 type Call<T> = import("../../contract/author.ts").HandlerCall<T> & {
   readonly config: CheckConfig;
   readonly services: CatalogServices;
 };
 const operations = {
+  async "check.gate"(args: Call<GateInput>) {
+    const services = args.services;
+    return await gate(
+      {
+        process: services.process,
+        state: services.state,
+        crypto: services.crypto,
+        root: services.files.root,
+        environment: services.environment.select([
+          ...new Set([
+            ...args.config.environment,
+            "GH_TOKEN",
+            "GH_HOST",
+            "GH_ENTERPRISE_TOKEN",
+          ]),
+        ]),
+        clock: { now: () => Date.now() },
+      },
+      args.input,
+      args.config,
+      { signal: args.signal, deadline: args.deadline },
+    );
+  },
   async "check.run"(args: Call<RunInput>) {
     validateBudgets(selectedConfig(args.config, args.input.checks).config);
     const services = args.services;
@@ -775,7 +1173,10 @@ const operations = {
     });
   },
   "check.list"(args: Call<Readonly<Record<string, never>>>) {
-    return { commands: Object.keys(args.config.commands) };
+    return {
+      commands: Object.keys(args.config.commands),
+      receiptChecks: args.config.gate?.receiptChecks ?? [],
+    };
   },
   "check.show"(args: Call<{ readonly id: string }>) {
     const record = args.services.state.get(`runs/${args.input.id}`);
