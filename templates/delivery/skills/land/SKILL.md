@@ -39,7 +39,8 @@ A refused merge because the head moved means read the conditions again from step
 
 ## Learn
 
-- Save facts a future session on other work would need: `forge memory add --input '{"text":"...","tags":["..."]}'`. Standing rules get the tag `rule`.
+- Save facts a future session on other work would need: `forge memory add --input '{"text":"...","level":"device","scope":"<name>","tags":["..."]}'`. Use the plain repo name from `gh repo view --json name --jq .name` as `<name>`.
+- Propose a standing rule with `forge decision propose --input '{"title":"...","text":"..."}'`. It binds only after a human runs `decision.adopt`.
 - A mistake that repeated: fix it with a test or lint first, a skill line second, an AGENTS.md line last.
 
 ## Re-plan

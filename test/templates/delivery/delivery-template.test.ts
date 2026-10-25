@@ -16,6 +16,7 @@ import {
 } from "../../../src/assembly/index.ts";
 import { dispatch, record } from "../../../src/surface/dispatch.ts";
 import { lintSkill } from "../../../src/surface/skills.ts";
+import { openHarness } from "../../blocks/memory/lib.ts";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const SKILLS = ["build", "land", "loop", "open-pr", "review", "slice"] as const;
@@ -169,6 +170,63 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       "gh pr merge <n> --squash --match-head-commit <headRefOid>",
     );
     expect(text.land).toContain("publish, force-push, prod-write");
+  });
+}, 30_000);
+
+test("integration: land's rendered memory call writes device memory with no level default", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const land = readFileSync(join(root, rendered("land")), "utf8");
+    const command = new RegExp("forge memory add --input '([^']+)'").exec(land);
+    expect(command).not.toBeNull();
+    const input = JSON.parse(
+      command![1]!.replaceAll("...", "x").replaceAll("<name>", "forge"),
+    ) as Record<string, unknown>;
+    // Rendering uses stub entries; execute the documented input against the real memory block.
+    const memory = await openHarness(["memory"]);
+    try {
+      expect(
+        await memory.call("memory.add", input, { caller: "agent" }),
+      ).toMatchObject({ ok: true, result: { note: { level: "device" } } });
+    } finally {
+      await memory.close();
+    }
+    const slice = readFileSync(join(root, rendered("slice")), "utf8");
+    const search = new RegExp("forge memory search --input '([^']+)'").exec(
+      slice,
+    );
+    expect(search).not.toBeNull();
+    const searchInput = JSON.parse(search![1]!) as Record<string, unknown>;
+    expect(input.scope).toBe("forge");
+    expect(searchInput.scope).toBe("<name>");
+    for (const text of [land, slice])
+      expect(text).toContain("gh repo view --json name --jq .name");
+  });
+}, 30_000);
+
+test("rendered delivery skills do not give rule tags standing authority", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    for (const name of SKILLS) {
+      const text = readFileSync(join(root, rendered(name)), "utf8");
+      expect(text).not.toContain('"tag":"rule"');
+      expect(text).not.toContain('tag "rule"');
+      expect(text).not.toContain("tag `rule`");
+    }
+  });
+}, 30_000);
+
+test("the rendered loop reads adopted decisions as standing rules", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const loop = readFileSync(join(root, rendered("loop")), "utf8");
+    expect(loop).toContain(
+      `forge decision list --input '{"status":"adopted"}'`,
+    );
+    const land = readFileSync(join(root, rendered("land")), "utf8");
+    expect(land).toContain("forge decision propose --input");
+    expect(land).toContain("decision.adopt");
+    expect(land).toContain("human");
   });
 }, 30_000);
 
