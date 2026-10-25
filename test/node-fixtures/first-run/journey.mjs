@@ -158,7 +158,12 @@ const merged = run(process.execPath, [
 assert.equal(merged.status, 0, merged.stderr);
 passed.push("merge by head");
 
-cli(["issue", "close", slice.id]);
+cli([
+  "issue",
+  "close",
+  "--input",
+  JSON.stringify({ id: slice.id, receipt: green.id }),
+]);
 assert.equal(cli(["issue", "show", slice.id]).result.status, "closed");
 // The tracker item carries no links; `issue links` reads them back.
 const links = JSON.stringify(cli(["issue", "links", slice.id]).result);

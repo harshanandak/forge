@@ -17,7 +17,11 @@ blocks:
     source:
       builtin: forge/check
     config:
+      gate:
+        requiredChecks: ["CI Gate"]
+        receiptChecks: ["typecheck", "structure"]
       commands:
+        receipt-regression: bun test test/blocks/l9-check/gate.test.ts test/blocks/l7-work/close.test.ts test/assembly/shared-store/shared-store.integration.test.ts test/templates/delivery/delivery-template.test.ts
         typecheck: bun run check
         test: bun run test:unit
         structure: bun run test:structure

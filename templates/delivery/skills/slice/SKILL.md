@@ -39,4 +39,4 @@ forge issue create --input '{"title":"...","kind":"task","labels":["p2"],"parent
 
 ## When a slice is done
 
-Re-plan: take the next ready slice (`forge issue ready --input '{}'`), re-slice, re-frame, or close slices it superseded with `forge issue close --input '{"id":"<id>","reason":"superseded by <id>"}'` (close needs the claim).
+Re-plan: take the next ready slice (`forge issue ready --input '{}'`), re-slice, re-frame, or close slices it superseded with `forge issue close --input '{"id":"<id>","withoutReceipt":"superseded by <id>"}'` (close needs the claim). Any caller may use `withoutReceipt` for an explicit written reason; it is stored on the issue and does not claim delivery evidence.

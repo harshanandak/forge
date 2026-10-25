@@ -1,5 +1,9 @@
 {
   "operations": {
+    "check.gate": {
+      "title": "Check merge evidence",
+      "summary": "Read fresh GitHub pull request evidence and require a verified current-head PASS receipt, successful required checks, zero unresolved review threads, and no configured door paths. PASS exits 0; REFUSED exits 1 with reasons in result."
+    },
     "check.run": {
       "title": "Run declared checks",
       "summary": "Run declared checks. PASS exits 0; FAIL exits 1; INCOMPLETE or NOT_EXECUTED exits 2. Non-PASS returns ok:false (MCP isError:true) with the full receipt in result. Retain it on nonzero exit; inspect result.runs and repair commands, environment or timeout. Requires a first Git commit."

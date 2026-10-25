@@ -1,5 +1,6 @@
 import type { Operations, TrackerOperations } from "../../contract/author.ts";
 import type { LeaseStateClient } from "../../assembly/state-client.ts";
+import type { ReceiptsService } from "../../assembly/providers.ts";
 import type {
   StateRecord,
   TrackerItem,
@@ -515,10 +516,37 @@ const operations: Operations<WorkOperations> = {
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
     const record = get(state, id, input.id);
+    if (input.receipt !== undefined) {
+      const receipts = (services as { receipts?: ReceiptsService }).receipts;
+      if (!receipts || typeof receipts.get !== "function")
+        fail(
+          "RECEIPTS_UNAVAILABLE",
+          "Cannot verify receipt: the receipts slot is unbound; bind forge.receipts@1 or omit receipt and supply withoutReceipt",
+        );
+      const receipt = receipts.get(input.receipt);
+      if (!receipt || receipt.status !== "PASS")
+        fail(
+          "RECEIPT_INVALID",
+          "Closing requires an existing verified PASS receipt",
+        );
+    } else if (!input.withoutReceipt?.trim()) {
+      fail(
+        "RECEIPT_REQUIRED",
+        "Supply a PASS receipt or an explicit withoutReceipt reason",
+      );
+    }
+    const {
+      receipt: _previousReceipt,
+      withoutReceipt: _previousExemption,
+      ...previous
+    } = stored(record);
     // The reason and status share one accepted record; there is no second close write.
     const value = {
-      ...stored(record),
+      ...previous,
       status: "closed",
+      ...(input.receipt === undefined
+        ? { withoutReceipt: input.withoutReceipt! }
+        : { receipt: input.receipt }),
       ...(input.reason === undefined ? {} : { closeReason: input.reason }),
     };
     const written = persist(state, key(id), value, record.revision);

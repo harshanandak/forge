@@ -161,13 +161,14 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       expect(text[name]).not.toMatch(/templates\/|\.mjs/);
     expect(text["open-pr"]).toContain('"relation":"delivers"');
     expect(text["open-pr"]).toContain("`link_pull_request`");
-    // the merge conditions: CLEAN, receipt on the pinned head, no open threads, no open door
-    expect(text.land).toContain("`OPEN` and `CLEAN`");
-    expect(text.land).toContain("Its head equals `headRefOid`");
-    expect(text.land).toContain("gh api graphql --paginate");
-    expect(text.land).toContain("|.id' | wc -l");
+    // The executable gate owns the merge conditions and returns the pinned head and receipt.
+    expect(text.land).toContain("forge check gate");
+    expect(text.land).toContain("head moved means run the gate again");
+    expect(text.land).toContain('"receipt":"<id>"');
+    expect(text.build).toContain("receiptChecks");
+    expect(text.slice).toContain('"withoutReceipt":"superseded by <id>"');
     expect(text.land).toContain(
-      "gh pr merge <n> --squash --match-head-commit <headRefOid>",
+      "gh pr merge <n> --squash --match-head-commit <head>",
     );
     expect(text.land).toContain("publish, force-push, prod-write");
   });

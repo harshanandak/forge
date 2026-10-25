@@ -17,6 +17,45 @@
     "maxReceiptBytes"
   ],
   "properties": {
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "requiredChecks": {
+          "default": "github-required",
+          "oneOf": [
+            { "const": "github-required" },
+            {
+              "type": "array",
+              "uniqueItems": true,
+              "maxItems": 256,
+              "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+            }
+          ]
+        },
+        "receiptChecks": {
+          "default": [],
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 256,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        },
+        "doorPaths": {
+          "default": [],
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 1024,
+          "description": "Repository-relative globs without / or ./ prefixes or braces: * and ? match within a path segment; ** matches across segments.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^(?!/|\\./)[^{}\\\\\\u0000-\\u001f]+$"
+          }
+        }
+      }
+    },
     "report": {
       "default": "auto",
       "enum": ["auto", "json", "exit-code"]

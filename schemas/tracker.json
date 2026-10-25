@@ -32,6 +32,13 @@
           "$ref": "common.json#/$defs/Segment"
         },
         "status": { "$ref": "#/$defs/ItemStatus" },
+        "receipt": { "$ref": "#/$defs/ItemId" },
+        "withoutReceipt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "\\S"
+        },
         "labels": {
           "type": "array",
           "maxItems": 64,
@@ -171,7 +178,14 @@
       "required": ["id"],
       "properties": {
         "id": { "$ref": "#/$defs/ItemId" },
-        "reason": { "type": "string", "maxLength": 2000 }
+        "reason": { "type": "string", "maxLength": 2000 },
+        "receipt": { "$ref": "#/$defs/ItemId" },
+        "withoutReceipt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "\\S"
+        }
       },
       "additionalProperties": false
     }

@@ -100,17 +100,27 @@ test("claim, link and close are three plain commands in one session", async () =
     JSON.stringify({ id, relation: "pr", url: "https://example.com/pr/1" }),
   ]);
   expect(linked.ok).toBe(true);
-  const closed = await forge(["issue", "close", "--input", `{"id":"${id}"}`]);
+  const withoutReceipt = "Lease fixture completed without delivery checks";
+  const closed = await forge([
+    "issue",
+    "close",
+    "--input",
+    JSON.stringify({ id, withoutReceipt }),
+  ]);
   expect(closed).toMatchObject({ ok: true, result: { id, status: "closed" } });
+  const shown = await forge(["issue", "show", id]);
+  expect(shown.result).toMatchObject({ id, status: "closed", withoutReceipt });
 }, 30_000);
 
 test("another session cannot link or close a claim it does not hold", async () => {
   const id = await created();
   expect((await forge(["issue", "claim", id])).ok).toBe(true);
   const link = JSON.stringify({ id, relation: "pr", url: "https://x.dev/1" });
+  const withoutReceipt = "Lease fixture completed without delivery checks";
+  const close = JSON.stringify({ id, withoutReceipt });
   for (const argv of [
     ["issue", "link", "--input", link],
-    ["issue", "close", id],
+    ["issue", "close", "--input", close],
   ]) {
     const refused = await forge(argv, "agent-two");
     expect(refused).toMatchObject({
@@ -120,7 +130,9 @@ test("another session cannot link or close a claim it does not hold", async () =
   }
   const shown = await forge(["issue", "show", id]);
   expect(shown.result?.status).toBe("open");
-  expect((await forge(["issue", "close", id])).ok).toBe(true);
+  expect((await forge(["issue", "close", "--input", close])).ok).toBe(true);
+  const closed = await forge(["issue", "show", id]);
+  expect(closed.result).toMatchObject({ id, status: "closed", withoutReceipt });
 }, 30_000);
 
 test("a held command on an unclaimed item still names the missing lease", async () => {

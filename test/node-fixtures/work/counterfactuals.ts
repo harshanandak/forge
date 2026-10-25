@@ -6,6 +6,13 @@ export const counterfactuals: readonly {
   readonly evidence: string;
 }[] = [
   {
+    file: "blocks/work/entry.cjs",
+    from: "!input.withoutReceipt?.trim()",
+    to: "false",
+    journey: "records",
+    evidence: "expected RECEIPT_REQUIRED",
+  },
+  {
     file: "core/state/index.js",
     from: "const current = this.lease(namespace, subject);",
     to: "const loaded = this.lease(namespace, subject); const current = loaded && Date.parse(loaded.expiresAt) <= now ? undefined : loaded;",

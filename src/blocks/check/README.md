@@ -12,6 +12,30 @@ a package manager, runner or lint command. Detection observations already popula
 `list(config)` lists declarations; `show(id)` reads and verifies a stored receipt.
 Reads do not start commands or create state. State writes use the bound `StateClient`.
 
+`forge check gate --input '{"pr":123}'` reads merge evidence with the GitHub CLI (`gh`)
+through the process port. It requires an OPEN, CLEAN pull request, the newest verified
+PASS receipt for its head covering `gate.receiptChecks`, successful required CI checks,
+zero unresolved review threads across every page, and no changed `gate.doorPaths`.
+CI comes from the captured head commit's paginated status-check rollup (check runs and
+commit statuses). Changed files come from the paginated compare API pinned to the captured
+base and head SHAs, including rename sources and destinations. Compare returns files on
+its first page only. The unique file count must equal the PR's `changedFiles`; PRs above
+the compare API's 300-file ceiling refuse. All API reads use the PR URL's hostname.
+It reads the base and head again after collecting evidence and refuses if either moved. PASS exits 0;
+REFUSED exits 1 with the complete result and refusal reasons retained. Missing, malformed,
+truncated or failed CLI evidence refuses. The operation writes no state.
+
+`gate.requiredChecks` defaults to `"github-required"`, resolved by each commit context's
+`isRequired(pullRequestNumber: ...)` field.
+An explicit list requires every named check; an empty resolved list refuses.
+`gate.receiptChecks` and `gate.doorPaths` default to `[]`. An empty receipt check list
+still requires a PASS receipt with at least one run. `check.list` returns `receiptChecks`
+alongside command names. Door patterns use repository-relative `/` paths: `*` and `?`
+match within a segment, and `**` spans segments (`**/release.yml` also matches the root).
+Leading `/` or `./`, braces, backslashes and control characters are rejected by the config schema.
+The gate selects the configured environment plus `GH_TOKEN`, `GH_HOST` and
+`GH_ENTERPRISE_TOKEN` for `gh`; values are never included in the result.
+
 `forge check run` derives its envelope from the accepted receipt: PASS is `ok:true`
 and exit 0; FAIL is `ok:false` and exit 1; INCOMPLETE and NOT_EXECUTED are `ok:false`
 and exit 2. These use the shared surface exit policy (`src/surface/result.ts`), never
@@ -49,7 +73,7 @@ cleanup. The runner-output adapter recognizes report formats and imports no runn
 
 ## Catalog services and configuration
 
-The first-party registration makes `check.run`, `check.list`, and `check.show` discoverable
+The first-party registration makes `check.run`, `check.list`, `check.show`, and `check.gate` discoverable
 through the generated CLI and MCP. The captured `entry.cjs` contains the engine, command
 parser and receipt checks. It imports no runtime code. The host supplies the declared
 `process`, `files`, `environment`, `crypto`, `output` and `state` slots. The same pure

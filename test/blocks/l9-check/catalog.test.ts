@@ -43,6 +43,7 @@ const handlers = entry as unknown as {
   ): Promise<CheckReceipt>;
   "check.list"(args: Args<Record<string, never>>): {
     commands: readonly string[];
+    receiptChecks: readonly string[];
   };
   "check.show"(args: Args<{ id: string }>): CheckReceipt | null;
 };
@@ -138,7 +139,10 @@ test("captured handlers consume the shared service interfaces and read their acc
     signal: new AbortController().signal,
     deadline: Date.now() + 1000,
   };
-  expect(handlers["check.list"](args)).toEqual({ commands: ["test"] });
+  expect(handlers["check.list"](args)).toEqual({
+    commands: ["test"],
+    receiptChecks: [],
+  });
   expect(observed).toEqual([]);
   const receipt = await handlers["check.run"](args);
   expect(receipt.status).toBe("PASS");
@@ -166,6 +170,25 @@ test("declared config rejects missing choices and out-of-range budgets", () => {
     const missing = { ...config } as Record<string, unknown>;
     delete missing[key];
     expect(validateWithSchema(schema, missing).length).toBeGreaterThan(0);
+  }
+}, 1000);
+
+for (const glob of [
+  "/migrations/**",
+  "./migrations/**",
+  "{migrations,deploy}/**",
+])
+  test(`door globs reject unsupported pattern ${glob}`, () => {
+    expect(
+      validateWithSchema(schema, { ...config, gate: { doorPaths: [glob] } })
+        .length,
+    ).toBeGreaterThan(0);
+  }, 1000);
+test("door globs accept supported syntax", () => {
+  for (const glob of ["migrations/**", "**/release.yml", "deploy/*.?ml"]) {
+    expect(
+      validateWithSchema(schema, { ...config, gate: { doorPaths: [glob] } }),
+    ).toEqual([]);
   }
 }, 1000);
 

@@ -38,6 +38,16 @@
     }
   ],
   "operations": {
+    "check.gate": {
+      "input": "schemas/gate.input.json",
+      "output": "schemas/gate.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": ["external:process", "files:read", "environment:read"],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
     "check.run": {
       "input": "schemas/run.input.json",
       "output": "schemas/run.output.json",

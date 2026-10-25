@@ -4,7 +4,7 @@
 
 Project operations require an actor and project. Claims also require a session and supply no generation. Renewal, release, update, close, dependency edits and links require the current lease generation. No context is invented by the work block.
 
-The CLI and MCP surfaces supply both, so `forge issue claim <id>`, `forge issue link ...` and `forge issue close <id>` are plain commands:
+The CLI and MCP surfaces supply both, so `forge issue claim <id>`, `forge issue link ...` and `forge issue close --input '{"id":"<id>","receipt":"<receipt>"}'` need no explicit context:
 
 - **Session.** The caller's session is `FORGE_SESSION` when set. Otherwise every CLI command uses one fixed session (`local-cli`), so separate commands share a claim, and each MCP server uses its own random session for its lifetime. Two agents that use the CLI in one checkout set different `FORGE_SESSION` values so they never share a claim.
 - **Generation.** A held operation that names an item `id` and no generation takes the generation of that item's live lease, read through `issue.show`. Only the number is filled in. The state owner still checks that the lease belongs to the caller's actor and session, so another session's link or close is refused with `LEASE_NOT_HELD`, and an item with no live lease is refused with `CONTEXT_MISSING`.
@@ -14,6 +14,10 @@ The CLI and MCP surfaces supply both, so `forge issue claim <id>`, `forge issue 
 The provider knows four optional kinds: `task`, `bug`, `feature`, and `epic`. Omitted kinds stay omitted; unknown kinds are refused. A claim without an explicit duration lasts 3600 seconds; `ttlSeconds` may select 1 through 604800 seconds.
 
 Issues, comments and links use records in the `forge/work` namespace. Leases and events remain owned by the generic state owner; this block opens no SQL and adds no parallel claim table. All record writes are read back before returning. Comments are plain text and carry the state owner's actor and timestamp. Comments and links are read in numeric append order, including after the ninth entry. `issue.comments`, `issue.links`, and `issue.events` expose that accepted history. Close reasons are retained in the accepted event data without extending the tracker item contract.
+
+Closing requires `receipt`, naming an existing verified PASS receipt from the configured check block, or `withoutReceipt`, a nonblank written exemption available to any caller. The read-only `forge.receipts@1` binding supplies verified evidence; work never reads the check namespace. The receipt id or exemption survives `issue.show`. `reason` remains a separate close note and cannot waive the receipt requirement. An unknown, damaged or non-PASS receipt is refused before any write, including when an exemption is also supplied.
+
+The receipts slot is optional so state-only hosts can compose work independently. Without that binding, a supplied `receipt` is refused with `RECEIPTS_UNAVAILABLE`, even if `withoutReceipt` is also supplied. Omit `receipt` to close with an explicit `withoutReceipt` reason; omitting both still returns `RECEIPT_REQUIRED`.
 
 `issue.list`, `issue.ready`, `issue.blocked` and `issue.stale` accept `labels`; an item matches when it carries every given label. Priority is a label, not a field. Set `labelOrder` in the block config (for example `["p0","p1","p2","p3","p4"]`) and `issue.ready` sorts each item by the first listed label it carries, then by stored order; items with none of them come last. The default is an empty list, which leaves the order unchanged.
 

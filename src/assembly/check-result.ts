@@ -1,6 +1,6 @@
 import type { Catalog } from "../core/catalog/index.ts";
 import type { ResultEnvelope } from "../generated/types.ts";
-import type { CheckReceipt } from "../blocks/check/types.ts";
+import type { CheckReceipt, GateResult } from "../blocks/check/types.ts";
 
 /** Runtime has validated the receipt; every surface consumes this same outcome. */
 export function checkResult(
@@ -9,6 +9,25 @@ export function checkResult(
   envelope: ResultEnvelope,
 ): ResultEnvelope {
   const { block, operation } = catalog.resolve(op);
+  if (
+    block.manifest.id === "forge/check" &&
+    operation.declaredOp === "check.gate" &&
+    envelope.ok
+  ) {
+    const gate = envelope.result as GateResult;
+    if (gate.verdict === "PASS") return envelope;
+    return {
+      ...envelope,
+      ok: false,
+      status: "FAIL",
+      error: {
+        code: "CHECK_GATE_REFUSED",
+        message:
+          "Merge gate refused; inspect result.reasons and repair the evidence before merging.",
+        retry: "reconcile_first",
+      },
+    };
+  }
   if (
     block.manifest.id !== "forge/check" ||
     operation.declaredOp !== "check.run"

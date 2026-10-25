@@ -8,18 +8,26 @@ import type {
   CheckReceipt,
   CheckServices,
   RunInput,
+  GateInput,
+  GateResult,
 } from "./types.ts";
 import configSchema from "./schemas/config.json" with { type: "json" };
 
 /** The owner-approved v2 call shape; L1 supplies these fields after its merge. */
 export type CheckHandlerCall<Input> = HandlerCall<Input> & CheckInvocationScope;
 export interface CheckOperations {
+  readonly "check.gate": (
+    args: CheckHandlerCall<GateInput>,
+  ) => Promise<GateResult>;
   readonly "check.run": (
     args: CheckHandlerCall<RunInput>,
   ) => Promise<CheckReceipt>;
   readonly "check.list": (
     args: CheckHandlerCall<Readonly<Record<string, never>>>,
-  ) => { readonly commands: readonly string[] };
+  ) => {
+    readonly commands: readonly string[];
+    readonly receiptChecks: readonly string[];
+  };
   readonly "check.show": (
     args: CheckHandlerCall<{ readonly id: string }>,
   ) => CheckReceipt | null;
@@ -68,6 +76,16 @@ function config(value: unknown): CheckConfig {
   return value as CheckConfig;
 }
 export const operations: CheckOperations = {
+  async "check.gate"(args) {
+    return await createCheck(services(args.services)).gate(
+      args.input,
+      config(args.config),
+      {
+        signal: args.signal,
+        deadline: args.deadline,
+      },
+    );
+  },
   async "check.run"(args) {
     return await createCheck(services(args.services)).run(
       args.input,
@@ -78,6 +96,7 @@ export const operations: CheckOperations = {
   "check.list"(args) {
     return {
       commands: createCheck(services(args.services)).list(config(args.config)),
+      receiptChecks: config(args.config).gate?.receiptChecks ?? [],
     };
   },
   "check.show"(args) {

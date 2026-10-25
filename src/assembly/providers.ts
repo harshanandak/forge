@@ -27,6 +27,8 @@ import type { OwnedHandle } from "../ports/lifetime.ts";
 import type { ServiceScope } from "../core/runtime/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
+import { verifyReceipt } from "../blocks/check/receipt.ts";
+import type { StateClient } from "../ports/state.ts";
 
 export type { CloneFilesService } from "../adapters/fs/clone-files.ts";
 export type {
@@ -52,6 +54,32 @@ export interface EnvironmentService {
 export interface CryptoService {
   sha256(text: string): string;
   randomUUID(): string;
+}
+export interface ReceiptsService {
+  get(id: string): { readonly id: string; readonly status: string } | undefined;
+}
+/** Exposes verified evidence, never the backing namespace or its write methods. */
+export function createReceiptsService(
+  scope: ServiceScope,
+  state: Pick<StateClient, "get">,
+): ReceiptsService {
+  return Object.freeze({
+    get(id: string) {
+      active(scope);
+      const value = state.get(`runs/${id}`)?.value;
+      if (value === undefined) return undefined;
+      if (
+        typeof value !== "object" ||
+        value === null ||
+        !("inputsDigest" in value) ||
+        typeof value.inputsDigest !== "string" ||
+        !verifyReceipt(value, value.inputsDigest) ||
+        value.id !== id
+      )
+        refuse("RECEIPT_INVALID", "Receipt integrity failed");
+      return Object.freeze({ id: value.id, status: value.status });
+    },
+  });
 }
 export interface ProcessService extends ProcessPort {
   readonly cwd: string;
@@ -102,6 +130,7 @@ export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.crypto@1.0.0",
   "forge.runner-output@1.0.0",
   "forge.project-state@1.0.0",
+  "forge.receipts@1.0.0",
 ];
 export function assemblyProvides(required: string): boolean {
   return ASSEMBLY_PROVIDES.some((provided) =>

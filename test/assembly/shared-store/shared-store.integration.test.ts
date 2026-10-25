@@ -72,6 +72,7 @@ async function open(root: string) {
     op: string,
     input: unknown,
     caller: "agent" | "human" = "agent",
+    leaseGeneration?: number,
   ) => {
     const actor = {
       kind: caller,
@@ -88,6 +89,7 @@ async function open(root: string) {
         session: { id: `s-${root}` },
         project: { id: root, root },
         device: { id: assembly.deviceRoot },
+        ...(leaseGeneration === undefined ? {} : { leaseGeneration }),
       },
     });
   };
@@ -177,6 +179,27 @@ test("an issue made in the main checkout is visible and claimable from a linked 
   };
   expect(ready.items.map((item) => item.id)).not.toContain(created.id);
   expect(existsSync(join(linked, ".forge/state.sqlite"))).toBe(false);
+}, 60_000);
+
+test("an agent cannot use land's old close reason to bypass the receipt requirement", async () => {
+  const call = await open(main);
+  const { id } = done(await call("issue.create", { title: "Receipt bypass" }));
+  const { generation } = done(
+    await call("issue.claim", { id, ttlSeconds: 60 }),
+  );
+  const result = await call(
+    "issue.close",
+    { id, reason: "merged in abc" },
+    "agent",
+    generation as number,
+  );
+  expect(result).toMatchObject({
+    ok: false,
+    error: { code: "RECEIPT_REQUIRED" },
+  });
+  expect(done(await call("issue.show", { id }))).toMatchObject({
+    status: "open",
+  });
 }, 60_000);
 
 test("both checkouts can write at once and each sees the other's issues", async () => {
@@ -312,6 +335,148 @@ test("a project outside git keeps its store in its own folder", async () => {
   done(await call("issue.create", { title: "Alone" }));
   expect(existsSync(join(plain, ".forge/state.sqlite"))).toBe(true);
 }, 60_000);
+
+test("assembled close verifies stored receipts and exposes no write capability", async () => {
+  const target = join(main, "quality");
+  const checkSource = resolve(source, "../check");
+  cpSync(checkSource, target, {
+    recursive: true,
+    filter: (path) => !path.endsWith(".cts"),
+  });
+  const operation = (effects: string[]) => ({
+    input: "fixture.json",
+    output: "fixture.json",
+    context: "project",
+    effects,
+    idempotent: false,
+    callers: ["human", "agent"],
+    stability: "experimental",
+    timeoutMs: 15000,
+  });
+  const manifest = JSON.parse(
+    readFileSync(join(target, "forge.block.json"), "utf8"),
+  ) as { requires: unknown[]; operations: Record<string, unknown> };
+  manifest.requires.push({ slot: "receipts", interface: "forge.receipts@1" });
+  manifest.operations["proof.store"] = operation(["proof:write"]);
+  manifest.operations["proof.inspect"] = operation([]);
+  writeFileSync(join(target, "forge.block.json"), JSON.stringify(manifest));
+  const docs = JSON.parse(readFileSync(join(target, "docs.json"), "utf8")) as {
+    operations: Record<string, unknown>;
+  };
+  for (const name of ["proof.store", "proof.inspect"])
+    docs.operations[name] = {
+      title: name,
+      summary: "Exercise receipt binding.",
+    };
+  writeFileSync(join(target, "docs.json"), JSON.stringify(docs));
+  writeFileSync(join(target, "fixture.json"), "{}");
+  writeFileSync(
+    join(target, "entry.cjs"),
+    new Bun.Transpiler({ loader: "ts" }).transformSync(
+      readFileSync(join(checkSource, "entry.cts"), "utf8"),
+    ) +
+      "\nObject.assign(module.exports,{'proof.store':({input,services})=>services.state.put('runs/'+input.id,input,{expectRevision:0}),'proof.inspect':({services})=>Object.keys(services.receipts)});",
+  );
+  const call = await open(main);
+  const { revision } = done(await call("config.show", {}, "human"));
+  done(
+    await call(
+      "config.apply",
+      {
+        expectRevision: revision,
+        patch: [
+          {
+            op: "set",
+            path: "/blocks/check",
+            value: {
+              source: { path: "./quality" },
+              config: {
+                commands: {
+                  pass: { argv: ["git", "--version"] },
+                  fail: { argv: ["git", "not-a-command"] },
+                },
+                report: "exit-code",
+                inputs: ["quality/fixture.json"],
+                environment: ["PATH", "PATHEXT", "SystemRoot", "TEMP", "TMP"],
+              },
+            },
+          },
+        ],
+      },
+      "human",
+    ),
+  );
+  const { digest } = done(
+    await call("block.check", { path: "./quality" }, "human"),
+  );
+  done(await call("block.admit", { digest }, "human"));
+  done(
+    await call(
+      "config.grant",
+      {
+        digest,
+        effects: [
+          "proof:write",
+          "check:write",
+          "process:write",
+          "external:process",
+          "external:write",
+          "files:read",
+          "environment:read",
+        ],
+      },
+      "human",
+    ),
+  );
+  expect(await call("proof.inspect", {})).toMatchObject({
+    ok: true,
+    result: ["get"],
+  });
+  const pass = done(await call("check.run", { checks: ["pass"] }));
+  const failed = await call("check.run", { checks: ["fail"] });
+  expect(failed).toMatchObject({ ok: false, status: "FAIL" });
+  const failedReceipt = failed.result as { id: string };
+  done(
+    await call("proof.store", {
+      ...pass,
+      id: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      reason: "tampered",
+    }),
+  );
+  for (const receipt of [
+    failedReceipt.id,
+    "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "unknown",
+  ]) {
+    const { id } = done(
+      await call("issue.create", { title: "Refuse evidence" }),
+    );
+    const { generation } = done(await call("issue.claim", { id }));
+    expect(
+      await call("issue.close", { id, receipt }, "agent", generation as number),
+    ).toMatchObject({ ok: false, error: { code: "RECEIPT_INVALID" } });
+    expect(done(await call("issue.show", { id }))).toMatchObject({
+      status: "open",
+      revision: 1,
+    });
+  }
+  const { id } = done(await call("issue.create", { title: "Delivered" }));
+  const { generation } = done(await call("issue.claim", { id }));
+  expect(
+    done(
+      await call(
+        "issue.close",
+        { id, receipt: pass.id },
+        "agent",
+        generation as number,
+      ),
+    ),
+  ).toMatchObject({ status: "closed", receipt: pass.id });
+  expect(done(await call("issue.show", { id }))).toMatchObject({
+    status: "closed",
+    receipt: pass.id,
+  });
+}, 120_000);
 
 test("a linked worktree reports the missing shared store's canonical path", async () => {
   const fromLinked = await open(linked);
