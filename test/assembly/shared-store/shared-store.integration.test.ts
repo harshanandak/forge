@@ -181,6 +181,59 @@ test("an issue made in the main checkout is visible and claimable from a linked 
   expect(existsSync(join(linked, ".forge/state.sqlite"))).toBe(false);
 }, 60_000);
 
+test("the shared project's name stays stable when opened from differently named worktrees", async () => {
+  const fromMain = await open(main);
+  const fromLinked = await open(linked);
+  const observer = await open(work);
+  for (const call of [fromMain, fromLinked]) {
+    const { revision } = done(await call("config.show", {}, "human"));
+    done(
+      await call(
+        "config.apply",
+        {
+          expectRevision: revision,
+          patch: [
+            {
+              op: "set",
+              path: "/blocks/memory",
+              value: { source: { builtin: "forge/memory" } },
+            },
+          ],
+        },
+        "human",
+      ),
+    );
+  }
+  let projectId: string | undefined;
+  for (const call of [fromMain, fromLinked, fromMain]) {
+    const added = done(
+      await call("memory.add", { text: "stable-name heron", level: "project" }),
+    ) as {
+      id: string;
+      note: { origin: { project: { id: string; name: string } } };
+    };
+    projectId ??= added.note.origin.project.id;
+    const identity = { id: projectId, name: "repo" };
+    expect(added.note.origin.project).toEqual(identity);
+    for (const read of [fromMain, fromLinked]) {
+      const shown = done(await read("memory.show", { id: added.id }));
+      expect(shown).toMatchObject({ note: { origin: { project: identity } } });
+    }
+    const pulled = done(
+      await observer("memory.search", {
+        query: "stable-name heron",
+        projects: ["repo"],
+      }),
+    ) as {
+      hits: { id: string; origin: { project: { id: string; name: string } } }[];
+    };
+    expect(pulled.hits.map((hit) => hit.id)).toContain(added.id);
+    expect(pulled.hits.every((hit) => hit.origin.project.name === "repo")).toBe(
+      true,
+    );
+  }
+}, 60_000);
+
 test("an agent cannot use land's old close reason to bypass the receipt requirement", async () => {
   const call = await open(main);
   const { id } = done(await call("issue.create", { title: "Receipt bypass" }));

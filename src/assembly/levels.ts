@@ -243,7 +243,7 @@ export function openLevels(options: {
     const lease = await options.projectState.acquire(options.write);
     handles.push(lease);
     const owner = lease.value;
-    const name = projectName(root);
+    const name = projectName(options.stateRoot);
     let id = identityOf(owner);
     if (options.write && owner) {
       id ??= mint(owner);
