@@ -248,6 +248,20 @@ test("recognized zero tests fail; unknown output uses the exit code and unknown 
   );
 }, 1000);
 
+test("Bun summaries give receipts a count and reject failures even on exit zero", async () => {
+  for (const [total, failed, status] of [
+    [3, 0, "PASS"],
+    [3, 1, "FAIL"],
+    [0, 0, "FAIL"],
+  ] as const) {
+    const receipt = await fixture({
+      stderr: ` ${total - failed} pass\n ${failed} fail\nRan ${total} tests across 1 file. [1ms]\n`,
+    }).check.run({}, config);
+    expect(receipt.status).toBe(status);
+    expect(receipt.runs[0]?.testCount).toBe(total);
+  }
+}, 1000);
+
 test("changing input files during execution cannot yield a passing receipt", async () => {
   const { services } = fixture();
   let reads = 0;

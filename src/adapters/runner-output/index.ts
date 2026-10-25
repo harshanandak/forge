@@ -94,6 +94,9 @@ class SummaryLines {
   jest: readonly string[] | undefined;
   vitest: readonly string[] | undefined;
   pytest: OutputReport | undefined;
+  bunPassed: number | undefined;
+  bunFailed: number | undefined;
+  bunTotal: number | undefined;
   zero = false;
   hint = false;
   private pending: Buffer[] = [];
@@ -133,6 +136,14 @@ class SummaryLines {
     if (!text) return;
     this.jest ??= /^\s*Tests:\s*(.*?)\s*(\d+)\s+total\s*$/.exec(text)?.slice(1);
     this.vitest ??= /^\s*Tests\s+(.*?)\((\d+)\)\s*$/.exec(text)?.slice(1);
+    const bunOutcome = /^\s*(\d+) (pass|fail)\s*$/.exec(text);
+    if (bunOutcome) {
+      if (bunOutcome[2] === "pass") this.bunPassed = Number(bunOutcome[1]);
+      else this.bunFailed = Number(bunOutcome[1]);
+    }
+    const bunTotal =
+      /^\s*Ran (\d+) tests? across \d+ files?\.(?:\s+\[.*\])?\s*$/.exec(text);
+    if (bunTotal) this.bunTotal = Number(bunTotal[1]);
     if (
       /no test(?:s| files)? (?:found|collected)|collected 0 items/i.test(text)
     )
@@ -205,6 +216,28 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       if (jest) return summary("Jest", jest);
       const vitest = stdout.vitest ?? stderr.vitest;
       if (vitest) return summary("Vitest", vitest);
+      for (const stream of [stdout, stderr]) {
+        const {
+          bunPassed: passed,
+          bunFailed: failed,
+          bunTotal: total,
+        } = stream;
+        if (passed === undefined && failed === undefined && total === undefined)
+          continue;
+        if (
+          !count(passed) ||
+          !count(failed) ||
+          !count(total) ||
+          passed > total - failed
+        )
+          return malformed;
+        return {
+          kind: "recognized",
+          testCount: total,
+          failed,
+          detail: "Bun test summary",
+        };
+      }
       if (stdout.zero || stderr.zero)
         return {
           kind: "recognized",

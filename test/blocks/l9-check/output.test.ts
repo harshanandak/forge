@@ -3,6 +3,47 @@ import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts
 import { commandArguments } from "../../../src/blocks/check/command.ts";
 const output = createRunnerOutput();
 
+test("Bun summaries preserve total tests and failures on either stream", () => {
+  for (const [text, total, failed] of [
+    [" 3 pass\n 0 fail\nRan 3 tests across 2 files. [12.00ms]", 3, 0],
+    [" 1 pass\n 1 skip\n 2 fail\nRan 4 tests across 2 files. [12.00ms]", 4, 2],
+    [" 0 pass\n 0 fail\nRan 0 tests across 0 files.", 0, 0],
+    [" 1 pass\n 0 fail\nRan 1 test across 1 file. [1ms]", 1, 0],
+  ] as const) {
+    for (const stream of ["stdout", "stderr"] as const) {
+      const recognizer = output.recognize("auto");
+      const bytes = Buffer.from(`\u001b[32m${text}\u001b[0m\r\n`);
+      for (const byte of bytes) recognizer.push(stream, Uint8Array.of(byte));
+      expect(recognizer.report()).toMatchObject({
+        kind: "recognized",
+        testCount: total,
+        failed,
+      });
+    }
+    expect(output.parse(text, "", "exit-code").kind).toBe("unknown");
+  }
+}, 1000);
+
+test("Bun summaries require complete, safe counts from the same stream", () => {
+  for (const text of [
+    " 3 pass\n 0 fail",
+    "Ran 3 tests across 2 files.",
+    " 3 pass\nRan 3 tests across 2 files.",
+    " 3 pass\n 4 fail\nRan 3 tests across 2 files.",
+    " 3 pass\n 0 fail\nRan 2 tests across 2 files.",
+    " 0 pass\n 0 fail\nRan 9007199254740992 tests across 2 files.",
+  ]) {
+    expect(output.parse(text, "", "auto").kind).toBe("malformed");
+  }
+  expect(
+    output.parse("3 pass\n", "0 fail\nRan 3 tests across 2 files.", "auto")
+      .kind,
+  ).toBe("malformed");
+  expect(output.parse("the build had 3 pass checks", "", "auto").kind).toBe(
+    "unknown",
+  );
+}, 1000);
+
 test("pytest summaries count outcomes without counting warnings, deselection or reruns", () => {
   const samples = [
     ["1 passed, 1 warning in 0.12s\r\n", 1, 0],
