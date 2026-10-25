@@ -1,5 +1,12 @@
 // [integration] Real git worktrees: every worktree of one repository reads and writes one project store.
-import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
 import {
   cpSync,
   existsSync,
@@ -13,10 +20,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 import { createProcessPort } from "../../../src/adapters/process/index.ts";
 import { createAssembly, type Assembly } from "../../../src/assembly/index.ts";
+import { blockCapture } from "../../../src/assembly/capture.ts";
+import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { idPrefixObservation } from "../../../src/assembly/providers.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
+import { stageBlock } from "../../blocks/memory/lib.ts";
 
 setDefaultTimeout(60_000);
 
@@ -109,6 +121,12 @@ async function enableWork(root: string): Promise<void> {
       "human",
     ),
   );
+  expect(parse(readFileSync(join(root, ".forge/config.yaml"), "utf8"))).toEqual(
+    {
+      schemaVersion: "forge.config/1",
+      blocks: { work: value },
+    },
+  );
   const { digest } = done(
     await call("block.check", { path: "./blocks/work" }, "human"),
   );
@@ -120,8 +138,16 @@ async function enableWork(root: string): Promise<void> {
 
 let main: string;
 let linked: string;
+let capture: ReturnType<typeof spyOn<typeof blockCapture, "open">>;
 beforeAll(async () => {
   work = realpathSync(mkdtempSync(join(tmpdir(), "forge-shared-")));
+  // Source assemblies need the compiled builtin that the installed package already ships.
+  const staged = stageBlock("memory", join(work, "builtins"));
+  const memory = fileURLToPath(firstPartyBlocks["forge/memory"]!);
+  const open = blockCapture.open.bind(blockCapture);
+  capture = spyOn(blockCapture, "open").mockImplementation((path) =>
+    open(path === memory ? staged : path),
+  );
   main = join(work, "repo");
   linked = join(work, "linked");
   mkdirSync(main);
@@ -133,6 +159,7 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(async () => {
   for (const assembly of opened) await assembly.close();
+  capture.mockRestore();
   rmSync(work, { recursive: true, force: true });
 }, 60_000);
 

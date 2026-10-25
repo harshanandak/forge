@@ -222,6 +222,155 @@ async function device() {
   console.log("PASS device");
 }
 
+async function anywhere() {
+  assert.equal(cli(["memory", "search", "plainfolder"]).result.matched, 0);
+  assert.equal(
+    existsSync(deviceRoot),
+    false,
+    "a fresh read must not create device state",
+  );
+  assert.equal(
+    existsSync(join(root, ".forge")),
+    false,
+    "a fresh read must not create project state",
+  );
+  const note = cli(["memory", "add", "plainfolder device note"]).result;
+  assert.equal(note.status, "added");
+  assert.match(
+    note.id,
+    /^device\//,
+    "a person outside a project defaults to device",
+  );
+  const other = join(work, "other");
+  mkdirSync(other);
+  assert.equal(
+    cli(["memory", "search", "plainfolder"], 0, other).result.hits[0].id,
+    note.id,
+  );
+  assert.equal(
+    cli(["memory", "show", note.id], 0, other).result.note.id,
+    note.id,
+  );
+  for (const args of [
+    [
+      "memory",
+      "add",
+      "--input",
+      JSON.stringify({ text: "project only", level: "project" }),
+    ],
+    ["memory", "export", "--input", JSON.stringify({ level: "project" })],
+    [
+      "memory",
+      "move",
+      "--input",
+      JSON.stringify({ id: note.id, to: "project", expectRevision: 1 }),
+    ],
+  ])
+    assert.equal(cli(args, 1).error.code, "LEVEL_UNAVAILABLE");
+  const server = await connect(other);
+  try {
+    assert.equal(
+      (await server.call("memory_search", { query: "plainfolder" })).result
+        .hits[0].id,
+      note.id,
+    );
+    assert.equal(
+      (await server.call("memory_add", { text: "no agent level" })).error.code,
+      "LEVEL_REQUIRED",
+    );
+    const added = await server.call("memory_add", {
+      text: "plainfolder agent note",
+      level: "device",
+    });
+    assert.equal(added.ok, true);
+    assert.match(added.result.id, /^device\//);
+    assert.equal(
+      (
+        await server.call("memory_add", {
+          text: "no project",
+          level: "project",
+        })
+      ).error.code,
+      "LEVEL_UNAVAILABLE",
+    );
+  } finally {
+    await server.close();
+  }
+  // Explicit project initialization preserves a policy distinct from the fallback.
+  setup("memory", root, { levels: { human: "required", agent: "required" } });
+  assert.equal(
+    cli(["memory", "add", "must choose a level"], 1).error.code,
+    "LEVEL_REQUIRED",
+    "a configured human policy is preserved",
+  );
+  assert.equal(cli(["memory", "search", "plainfolder"]).result.hits.length, 2);
+  assert.equal(existsSync(join(root, ".forge", "state.sqlite")), false);
+  assert.equal(
+    existsSync(join(other, ".forge")),
+    false,
+    "device-only calls never create a project",
+  );
+  assert.equal(existsSync(join(deviceRoot, "records.sqlite")), true);
+  console.log("PASS anywhere");
+}
+
+async function projectBoundary() {
+  for (const [verb, input] of [
+    ["propose", { title: "plain folder", text: "must not create a project" }],
+    ["adopt", { id: "ADR-999" }],
+    ["list", {}],
+  ]) {
+    assert.equal(
+      cli(["decision", verb, "--input", JSON.stringify(input)], null).error
+        ?.code,
+      "CONTEXT_MISSING",
+      `decision ${verb} requires a project`,
+    );
+    assert.equal(
+      existsSync(join(root, ".forge")),
+      false,
+      "a refused decision must not create project state",
+    );
+    assert.equal(
+      existsSync(deviceRoot),
+      false,
+      "a refused decision must not open device stores or register a project",
+    );
+  }
+  console.log("PASS projectBoundary");
+}
+
+async function initializeSession() {
+  const server = await connect();
+  try {
+    // Config operations are experimental and absent from default MCP exposure. Initialize via
+    // the CLI's config.apply while this same MCP host stays alive.
+    setup("memory", root, { levels: { human: "nearest", agent: "nearest" } });
+    const added = await server.call("memory_add", {
+      text: "project created during this session",
+      level: "project",
+    });
+    assert.equal(
+      added.ok,
+      true,
+      `project write after initialization: ${JSON.stringify(added)}`,
+    );
+    assert.match(added.result.id, /^project\//);
+    const nearest = await server.call("memory_add", {
+      text: "nearest project after initialization",
+    });
+    assert.equal(nearest.ok, true, JSON.stringify(nearest));
+    assert.match(
+      nearest.result.id,
+      /^project\//,
+      "nearest uses the project initialized in this session",
+    );
+  } finally {
+    await server.close();
+  }
+  console.log("PASS initializeSession");
+}
+
 async function fence() {
   setup("memory");
   cli([
@@ -497,7 +646,14 @@ async function levels() {
   console.log("PASS levels");
 }
 
-const journeys = { device, fence, levels };
+const journeys = {
+  device,
+  anywhere,
+  projectBoundary,
+  initializeSession,
+  fence,
+  levels,
+};
 
 // Each journey has its own deadline; a journey spawns the CLI a dozen or so times.
 let deadline;
