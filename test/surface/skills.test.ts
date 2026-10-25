@@ -175,6 +175,27 @@ test("a fresh assembly loads persisted admission only when syncing skills", asyn
   });
 }, 30_000);
 
+test("the generated issue skill lists the resolved issue.create input fields within the size limit", async () => {
+  await withProject(async (assembly, root) => {
+    expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
+      ok: true,
+    });
+    const text = readFileSync(
+      join(root, ".agents/skills/issue/SKILL.md"),
+      "utf8",
+    );
+    const create = text.split("## `issue.create`")[1]?.split("\n## ")[0];
+    for (const field of ["title", "kind", "parent", "labels", "body"])
+      expect(create).toContain(`\`${field}\``);
+    expect(create).toContain("`title` string (required)");
+    expect(create).toContain("`kind` string (optional)");
+    expect(create).toContain("`parent` string (optional)");
+    expect(create).toContain("`labels` string[] (optional)");
+    expect(create).toContain("`body` string (optional)");
+    expect(lintSkill(text, assembly.catalog.list())).toEqual([]);
+  });
+}, 30_000);
+
 test("an enabled but unadmitted block gets no skill and none of its text reaches any file", async () => {
   await withProject(
     async (assembly, root) => {

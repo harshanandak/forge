@@ -75,7 +75,7 @@ function section(candidate: McpCandidate, prefix: string | undefined): string {
     "",
     `- CLI: \`forge ${(cliWords(op) ?? [op]).join(" ")} --input '<json>'\``,
     `- MCP: \`${mcpToolName(op, prefix) ?? "catalog_call"}\``,
-    `- Input: ${fields(candidate.inputSchema)}`,
+    `- Input: ${fields(candidate.argumentSchema ?? candidate.inputSchema)}`,
     `- Effects: ${effects}; ${declaration.idempotent ? "idempotent" : "not idempotent"}`,
     "",
   ].join("\n");
