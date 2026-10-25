@@ -14,7 +14,7 @@ import { packedCoverage, selectShard } from "../state/counterfactuals.ts";
 import { counterfactuals } from "./counterfactuals.ts";
 
 const fixture = join(import.meta.dirname, "journeys.mjs");
-const JOURNEYS = ["device", "fence", "levels"] as const;
+const JOURNEYS = ["device", "anywhere", "fence", "levels"] as const;
 
 function timing(label: string, started: number): void {
   console.log(

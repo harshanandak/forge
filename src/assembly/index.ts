@@ -77,6 +77,10 @@ import {
 } from "./providers.ts";
 
 const TRUST_NAMESPACE = "forge/core-trust";
+const DEVICE_MEMORY: BlockInstance = {
+  source: { builtin: "forge/memory" },
+  config: { levels: { human: "nearest", agent: "required" } },
+};
 const grantCandidate: McpCandidate = {
   op: "config.grant",
   admitted: true,
@@ -445,7 +449,21 @@ export async function createAssembly(
     unavailable: readonly UnavailableBlock[];
     problems: readonly string[];
   } {
-    const show = call.config.show();
+    const configured = call.config.show();
+    // A device-only host needs no project file to select the shipped memory block.
+    const show: ShowResult =
+      options.project === false && !configured.configured
+        ? {
+            ...configured,
+            instances: [
+              { name: "memory", source: DEVICE_MEMORY.source, enabled: true },
+            ],
+            effective: {
+              ...configured.effective,
+              blocks: { memory: DEVICE_MEMORY },
+            },
+          }
+        : configured;
     const document = composition(show);
     const blocks = new Map<string, CapturedBlock>();
     const candidates: McpCandidate[] = [];
@@ -1190,9 +1208,11 @@ export function localSession(fallback: string): string {
   return process.env.FORGE_SESSION || fallback;
 }
 export async function createLocalAssembly(): Promise<Assembly> {
+  const root = process.cwd();
   return createAssembly({
-    root: process.cwd(),
+    root,
     deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
+    project: existsSync(join(root, ".forge", "config.yaml")),
   });
 }
 

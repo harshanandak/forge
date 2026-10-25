@@ -6,11 +6,32 @@ export interface Counterfactual {
   readonly to: string;
   /** Replace every occurrence rather than the first. */
   readonly all?: true;
-  readonly journey: "device" | "fence" | "levels";
+  readonly journey: "device" | "anywhere" | "fence" | "levels";
   readonly evidence: string;
 }
 
 export const counterfactuals: readonly Counterfactual[] = [
+  {
+    file: "assembly/index.js",
+    from: "options.project === false && !configured.configured",
+    to: "false",
+    journey: "anywhere",
+    evidence: "Unknown operation: memory.search",
+  },
+  {
+    file: "assembly/index.js",
+    from: 'project: existsSync(join(root, ".forge", "config.yaml")),',
+    to: "project: true,",
+    journey: "anywhere",
+    evidence: "Unknown operation: memory.search",
+  },
+  {
+    file: "assembly/index.js",
+    from: 'servesProject: projectWrite || (options.project ?? existsSync(join(root, ".forge", "config.yaml"))),',
+    to: "servesProject: true,",
+    journey: "anywhere",
+    evidence: "a person outside a project defaults to device",
+  },
   {
     // Memory declared for the project would write the project's store, not the device's.
     file: "blocks/memory/forge.block.json",

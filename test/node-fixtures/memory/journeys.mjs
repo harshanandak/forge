@@ -222,6 +222,93 @@ async function device() {
   console.log("PASS device");
 }
 
+async function anywhere() {
+  assert.equal(cli(["memory", "search", "plainfolder"]).result.matched, 0);
+  assert.equal(
+    existsSync(deviceRoot),
+    false,
+    "a fresh read must not create device state",
+  );
+  assert.equal(
+    existsSync(join(root, ".forge")),
+    false,
+    "a fresh read must not create project state",
+  );
+  const note = cli(["memory", "add", "plainfolder device note"]).result;
+  assert.equal(note.status, "added");
+  assert.match(
+    note.id,
+    /^device\//,
+    "a person outside a project defaults to device",
+  );
+  const other = join(work, "other");
+  mkdirSync(other);
+  assert.equal(
+    cli(["memory", "search", "plainfolder"], 0, other).result.hits[0].id,
+    note.id,
+  );
+  assert.equal(
+    cli(["memory", "show", note.id], 0, other).result.note.id,
+    note.id,
+  );
+  for (const args of [
+    [
+      "memory",
+      "add",
+      "--input",
+      JSON.stringify({ text: "project only", level: "project" }),
+    ],
+    ["memory", "export", "--input", JSON.stringify({ level: "project" })],
+    [
+      "memory",
+      "move",
+      "--input",
+      JSON.stringify({ id: note.id, to: "project", expectRevision: 1 }),
+    ],
+  ])
+    assert.equal(cli(args, 1).error.code, "LEVEL_UNAVAILABLE");
+  const server = await connect(other);
+  try {
+    assert.equal(
+      (await server.call("memory_search", { query: "plainfolder" })).result
+        .hits[0].id,
+      note.id,
+    );
+    assert.equal(
+      (await server.call("memory_add", { text: "no agent level" })).error.code,
+      "LEVEL_REQUIRED",
+    );
+    const added = await server.call("memory_add", {
+      text: "plainfolder agent note",
+      level: "device",
+    });
+    assert.equal(added.ok, true);
+    assert.match(added.result.id, /^device\//);
+    assert.equal(
+      (
+        await server.call("memory_add", {
+          text: "no project",
+          level: "project",
+        })
+      ).error.code,
+      "LEVEL_UNAVAILABLE",
+    );
+  } finally {
+    await server.close();
+  }
+  // Explicit project initialization still works; its memory shares the same device.
+  setup("memory");
+  assert.equal(cli(["memory", "search", "plainfolder"]).result.hits.length, 2);
+  assert.equal(existsSync(join(root, ".forge", "state.sqlite")), false);
+  assert.equal(
+    existsSync(join(other, ".forge")),
+    false,
+    "device-only calls never create a project",
+  );
+  assert.equal(existsSync(join(deviceRoot, "records.sqlite")), true);
+  console.log("PASS anywhere");
+}
+
 async function fence() {
   setup("memory");
   cli([
@@ -497,7 +584,7 @@ async function levels() {
   console.log("PASS levels");
 }
 
-const journeys = { device, fence, levels };
+const journeys = { device, anywhere, fence, levels };
 
 // Each journey has its own deadline; a journey spawns the CLI a dozen or so times.
 let deadline;
