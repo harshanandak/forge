@@ -74,7 +74,9 @@ test("forge/check has a default, within its bounds, for every key but commands",
     schemaDefaults(checkSchema).map((d) => [d.key, d.value]),
   );
   expect(Object.keys(defaults).sort()).toEqual(
-    checkSchema.required.filter((k) => k !== "commands").sort(),
+    Object.keys(checkSchema.properties)
+      .filter((k) => k !== "commands")
+      .sort(),
   );
   expect(
     validateWithSchema(checkSchema, { ...defaults, commands: { t: "x" } }),

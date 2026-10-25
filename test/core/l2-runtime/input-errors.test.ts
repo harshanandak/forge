@@ -1,6 +1,7 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { resolve } from "node:path";
 import { blockCapture } from "../../../src/assembly/capture.ts";
+import { ASSEMBLY_PROVIDES } from "../../../src/assembly/providers.ts";
 import { captureBlock, Catalog } from "../../../src/core/catalog/index.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
 import { TrustStore } from "../../../src/core/trust/index.ts";
@@ -38,6 +39,8 @@ function fixture() {
       blocks: { work: { source: { path: "./work" } } },
     },
     new Map([["work", block]]),
+    undefined,
+    ASSEMBLY_PROVIDES,
   );
   const runtime = new Runtime(catalog, new TrustStore());
   const docs = (
