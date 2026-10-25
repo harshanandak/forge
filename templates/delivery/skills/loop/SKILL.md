@@ -58,7 +58,7 @@ End state: <PR open with every check passing | fix batch pushed>.
 Stop rule: stop at push. Never merge. Do not merge the base branch unless asked.
 Receipts: red, then green, for <named check>; then every check on the final tree.
 Session: export FORGE_SESSION=<your task name> before any claim.
-Standing rules: forge memory search, query "rule", tag "rule".
+Adopted decision titles: see below for pagination.
 ```
 
-Standing rules live in memory: `forge memory search --input '{"query":"rule","tag":"rule"}'`. Restart from a checkpoint (`forge issue comment` on the slice) instead of fighting a polluted context.
+Standing rules are adopted decisions. List titles only (no decision text): `forge decision list --input '{"status":"adopted"}'`. While `truncated` is true, repeat with `after` set to the returned `next`: `forge decision list --input '{"status":"adopted","after":<next>}'`, even if a page is empty. Request the adopted text from the owner when needed. Restart from a checkpoint (`forge issue comment` on the slice).

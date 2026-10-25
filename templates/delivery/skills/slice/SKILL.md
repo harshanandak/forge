@@ -16,9 +16,9 @@ forge issue create --input '{"title":"...","kind":"task","labels":["p2"],"parent
 
 ## Frame, only when the done condition cannot be stated
 
-- Facts are your job: read the code, and `forge memory search --input '{"query":"..."}'` and `forge decision list --input '{}'` for prior choices.
+- Facts are your job: read the code, and `forge memory search --input '{"query":"...","scope":"<name>"}'` and `forge decision list --input '{}'` for prior choices. Use the lowercase repo name from `gh repo view --json name --jq '.name|ascii_downcase'` as `<name>`.
 - Choices are the owner's. Ask at most {{values.questions.max}} lettered questions, each with a default. Silence means every default.
-- Record each answer: `forge decision propose --input '{"title":"...","text":"..."}'`. A human adopts it.
+- Record each answer: `forge decision propose --input '{"title":"...","text":"..."}'`. On `format_missing`, follow the returned `repair`, then propose again. Only after `proposed`, hand it to a human for adoption.
 - Plan in depth only for the one or two hard choices.
 
 ## Slice body: all six sections
