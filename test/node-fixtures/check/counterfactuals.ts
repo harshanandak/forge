@@ -78,8 +78,8 @@ export const counterfactuals: readonly Counterfactual[] = [
   },
   {
     file: "blocks/check/entry.cjs",
-    from: "const result = await services.process.run(",
-    to: "const result = services.process.run(",
+    from: "const result = await services.process.run(executable, argv.slice(1), options);",
+    to: "const result = services.process.run(executable, argv.slice(1), options);",
     journey: "mcp",
     evidence: "MCP awaits the declared command",
   },
@@ -99,8 +99,8 @@ export const counterfactuals: readonly Counterfactual[] = [
   },
   {
     file: "blocks/check/entry.cjs",
-    from: "const result = await services.process.run(",
-    to: "const result = services.process.run(",
+    from: "const result = await services.process.run(executable, argv.slice(1), options);",
+    to: "const result = services.process.run(executable, argv.slice(1), options);",
     journey: "handler",
     evidence: "async handler awaits the actual process service",
   },
@@ -117,8 +117,8 @@ export const counterfactuals: readonly Counterfactual[] = [
   },
   {
     file: "blocks/check/operations.js",
-    from: "signal: args.signal",
-    to: "signal: new AbortController().signal",
+    from: ".run(args.input, config(args.config), { signal: args.signal,",
+    to: ".run(args.input, config(args.config), { signal: new AbortController().signal,",
     journey: "handler",
     evidence: "cancelled handler starts no process",
   },
