@@ -222,6 +222,7 @@ test("rendered delivery skills do not give rule tags standing authority", async 
     for (const name of SKILLS) {
       const text = readFileSync(join(root, rendered(name)), "utf8");
       expect(text).not.toContain('"tag":"rule"');
+      expect(text).not.toMatch(/"tags"\s*:\s*\[[^\]]*"rule"/);
       expect(text).not.toContain('tag "rule"');
       expect(text).not.toContain("tag `rule`");
     }
