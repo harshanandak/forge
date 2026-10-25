@@ -21,6 +21,7 @@ blocks:
         requiredChecks: ["CI Gate"]
         receiptChecks: ["typecheck", "structure"]
       commands:
+        skills-regression: bun test test/surface/skills.test.ts test/assembly/template-skills/template-skills.test.ts test/templates/delivery/delivery-template.test.ts
         receipt-regression: bun test test/blocks/l9-check/gate.test.ts test/blocks/l7-work/close.test.ts test/assembly/shared-store/shared-store.integration.test.ts test/templates/delivery/delivery-template.test.ts
         typecheck: bun run check
         test: bun run test:unit
