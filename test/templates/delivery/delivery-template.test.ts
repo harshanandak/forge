@@ -173,14 +173,28 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
   });
 }, 30_000);
 
-test("integration: land's rendered memory call writes device memory with no level default", async () => {
+test("integration: rendered memory save and search accept a lowercase repository scope", async () => {
   await withDelivery(async (root, call) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
     const land = readFileSync(join(root, rendered("land")), "utf8");
     const command = new RegExp("forge memory add --input '([^']+)'").exec(land);
     expect(command).not.toBeNull();
+    const slice = readFileSync(join(root, rendered("slice")), "utf8");
+    // gh's built-in jq ascii_downcase was also checked against Product-Suite with gh repo view.
+    for (const text of [land, slice])
+      expect(text).toContain(
+        "gh repo view --json name --jq '.name|ascii_downcase'",
+      );
+    const scope = "Product-Suite".toLowerCase();
     const input = JSON.parse(
-      command![1]!.replaceAll("...", "x").replaceAll("<name>", "forge"),
+      command![1]!.replaceAll("...", "lesson").replaceAll("<name>", scope),
+    ) as Record<string, unknown>;
+    const search = new RegExp("forge memory search --input '([^']+)'").exec(
+      slice,
+    );
+    expect(search).not.toBeNull();
+    const searchInput = JSON.parse(
+      search![1]!.replaceAll("...", "lesson").replaceAll("<name>", scope),
     ) as Record<string, unknown>;
     // Rendering uses stub entries; execute the documented input against the real memory block.
     const memory = await openHarness(["memory"]);
@@ -188,19 +202,17 @@ test("integration: land's rendered memory call writes device memory with no leve
       expect(
         await memory.call("memory.add", input, { caller: "agent" }),
       ).toMatchObject({ ok: true, result: { note: { level: "device" } } });
+      expect(
+        await memory.call("memory.search", searchInput, { caller: "agent" }),
+      ).toMatchObject({
+        ok: true,
+        result: { hits: [expect.objectContaining({ scope: "product-suite" })] },
+      });
     } finally {
       await memory.close();
     }
-    const slice = readFileSync(join(root, rendered("slice")), "utf8");
-    const search = new RegExp("forge memory search --input '([^']+)'").exec(
-      slice,
-    );
-    expect(search).not.toBeNull();
-    const searchInput = JSON.parse(search![1]!) as Record<string, unknown>;
-    expect(input.scope).toBe("forge");
-    expect(searchInput.scope).toBe("<name>");
-    for (const text of [land, slice])
-      expect(text).toContain("gh repo view --json name --jq .name");
+    expect(input.scope).toBe("product-suite");
+    expect(searchInput.scope).toBe(input.scope);
   });
 }, 30_000);
 
@@ -216,17 +228,28 @@ test("rendered delivery skills do not give rule tags standing authority", async 
   });
 }, 30_000);
 
-test("the rendered loop reads adopted decisions as standing rules", async () => {
+test("the rendered loop pages through adopted decision titles and proposals handle missing format", async () => {
   await withDelivery(async (root, call) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
     const loop = readFileSync(join(root, rendered("loop")), "utf8");
     expect(loop).toContain(
       `forge decision list --input '{"status":"adopted"}'`,
     );
-    const land = readFileSync(join(root, rendered("land")), "utf8");
-    expect(land).toContain("forge decision propose --input");
-    expect(land).toContain("decision.adopt");
-    expect(land).toContain("human");
+    expect(loop).toContain('"after":<next>');
+    expect(loop).toContain("`truncated` is true");
+    expect(loop).toContain("even if a page is empty");
+    expect(loop).toContain("titles only");
+    expect(loop).toContain("no decision text");
+    expect(loop).toContain("see below for pagination");
+    for (const name of ["land", "slice"]) {
+      const text = readFileSync(join(root, rendered(name)), "utf8");
+      expect(text).toContain("forge decision propose --input");
+      expect(text).toContain("`format_missing`");
+      expect(text).toContain("returned `repair`");
+      expect(text).toContain("propose again");
+      expect(text).toContain("Only after `proposed`");
+      expect(text).toContain("human");
+    }
   });
 }, 30_000);
 

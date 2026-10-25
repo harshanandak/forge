@@ -39,8 +39,8 @@ A refused merge because the head moved means read the conditions again from step
 
 ## Learn
 
-- Save facts a future session on other work would need: `forge memory add --input '{"text":"...","level":"device","scope":"<name>","tags":["..."]}'`. Use the plain repo name from `gh repo view --json name --jq .name` as `<name>`.
-- Propose a standing rule with `forge decision propose --input '{"title":"...","text":"..."}'`. It binds only after a human runs `decision.adopt`.
+- Save facts a future session would need: `forge memory add --input '{"text":"...","level":"device","scope":"<name>","tags":["..."]}'`. Use the lowercase repo name from `gh repo view --json name --jq '.name|ascii_downcase'` as `<name>`.
+- Propose a standing rule: `forge decision propose --input '{"title":"...","text":"..."}'`. On `format_missing`, follow the returned `repair`, then propose again. Only after `proposed`, hand it to a human for `decision.adopt`; adoption makes it binding.
 - A mistake that repeated: fix it with a test or lint first, a skill line second, an AGENTS.md line last.
 
 ## Re-plan
