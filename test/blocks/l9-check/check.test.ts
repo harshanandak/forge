@@ -248,6 +248,61 @@ test("recognized zero tests fail; unknown output uses the exit code and unknown 
   );
 }, 1000);
 
+test("Bun summaries give receipts a count and reject failures even on exit zero", async () => {
+  for (const [total, failed, status] of [
+    [3, 0, "PASS"],
+    [3, 1, "FAIL"],
+    [0, 0, "FAIL"],
+  ] as const) {
+    const receipt = await fixture({
+      stderr: ` ${total - failed} pass\n ${failed} fail\nRan ${total} tests across 1 file. [1ms]\n`,
+    }).check.run({}, config);
+    expect(receipt.status).toBe(status);
+    expect(receipt.runs[0]?.testCount).toBe(total);
+  }
+}, 1000);
+
+test("conflicting and bailed Bun reports fail receipts even on exit zero", async () => {
+  const failing = "1 pass\n1 fail\nRan 2 tests across 1 file.\n";
+  for (const result of [
+    { stderr: failing + "0 fail" },
+    { stderr: failing + "1 pass\n0 fail\nRan 1 test across 1 file." },
+    {
+      stderr:
+        "Ran 1 test across 1 file. [579.00ms]\nBailed out after 1 failure",
+    },
+    { stdout: "Tests: 2 passed, 2 total", stderr: failing },
+    {
+      stdout: "Tests: 1 passed, 1 total",
+      stderr:
+        failing + "0 pass\n0 fail\nRan 9007199254740991 tests across 1 file.",
+    },
+    {
+      stdout: "Tests: 1 passed, 1 total",
+      stderr:
+        "0 pass\n0 fail\nRan 9007199254740991 tests across 1 file.\n" + failing,
+    },
+  ]) {
+    const receipt = await fixture({ ...result, exitCode: 0 }).check.run(
+      {},
+      config,
+    );
+    expect(receipt.status).toBe("FAIL");
+  }
+  for (const stderr of [
+    "1 pass\n0 fail\nRan 1 test across 1 file.",
+    "1 passed in 0.12s",
+  ]) {
+    const receipt = await fixture({
+      stdout: "1 pass",
+      stderr,
+      exitCode: 0,
+    }).check.run({}, config);
+    expect(receipt.status).toBe("PASS");
+    expect(receipt.runs[0]?.testCount).toBe(1);
+  }
+}, 1000);
+
 test("changing input files during execution cannot yield a passing receipt", async () => {
   const { services } = fixture();
   let reads = 0;

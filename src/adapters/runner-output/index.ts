@@ -88,14 +88,26 @@ function pytest(line: string): OutputReport {
   };
 }
 
+function retainFailure(
+  current: OutputReport | undefined,
+  next: OutputReport,
+): OutputReport {
+  return current?.failed ? current : next;
+}
+
 /** Scans one stream line by line, keeping only the summary lines it has seen. */
 class SummaryLines {
   bytes = 0;
-  jest: readonly string[] | undefined;
-  vitest: readonly string[] | undefined;
+  jest: OutputReport | undefined;
+  vitest: OutputReport | undefined;
   pytest: OutputReport | undefined;
+  bun: OutputReport | undefined;
+  bunHint = false;
   zero = false;
   hint = false;
+  private bunPassed: number | undefined;
+  private bunFailed: number | undefined;
+  private bunBailTotal: number | undefined;
   private pending: Buffer[] = [];
   private pendingBytes = 0;
   private overlong = false;
@@ -121,6 +133,34 @@ class SummaryLines {
       this.pending = [];
     } else this.pending.push(Buffer.from(part));
   }
+  private bunSummary(total: number, failed: number): void {
+    const valid = count(total) && count(failed) && failed <= total;
+    const next: OutputReport = valid
+      ? {
+          kind: "recognized",
+          testCount: total,
+          failed,
+          detail: "Bun test summary",
+        }
+      : malformed;
+    const fallback = retainFailure(this.bun, next);
+    const testCount = total + (this.bun?.testCount ?? 0);
+    const failures = failed + (this.bun?.failed ?? 0);
+    this.bun =
+      valid &&
+      this.bun?.kind !== "malformed" &&
+      count(testCount) &&
+      count(failures)
+        ? {
+            kind: "recognized",
+            testCount,
+            failed: failures,
+            detail: "Bun test summary",
+          }
+        : fallback.failed
+          ? fallback
+          : malformed;
+  }
   private line(): void {
     const text = this.overlong
       ? ""
@@ -131,8 +171,47 @@ class SummaryLines {
     this.pendingBytes = 0;
     this.overlong = false;
     if (!text) return;
-    this.jest ??= /^\s*Tests:\s*(.*?)\s*(\d+)\s+total\s*$/.exec(text)?.slice(1);
-    this.vitest ??= /^\s*Tests\s+(.*?)\((\d+)\)\s*$/.exec(text)?.slice(1);
+    const jest = /^\s*Tests:\s*(.*?)\s*(\d+)\s+total\s*$/.exec(text)?.slice(1);
+    if (jest) this.jest = retainFailure(this.jest, summary("Jest", jest));
+    const vitest = /^\s*Tests\s+(.*?)\((\d+)\)\s*$/.exec(text)?.slice(1);
+    if (vitest)
+      this.vitest = retainFailure(this.vitest, summary("Vitest", vitest));
+    const bunOutcome = /^\s*(\d+) (pass|fail)\s*$/.exec(text);
+    if (bunOutcome) {
+      this.bunHint = true;
+      if (bunOutcome[2] === "pass") this.bunPassed = Number(bunOutcome[1]);
+      else this.bunFailed = Number(bunOutcome[1]);
+    }
+    const bunTotal =
+      /^\s*Ran (\d+) tests? across \d+ files?\.(?:\s+\[.*\])?\s*$/.exec(text);
+    if (bunTotal) {
+      this.bunHint = true;
+      const total = Number(bunTotal[1]);
+      const passed = this.bunPassed,
+        failed = this.bunFailed;
+      // Bail prints a footer without counters, followed by its failure count.
+      this.bunBailTotal =
+        passed === undefined && failed === undefined ? total : undefined;
+      if (
+        count(passed) &&
+        count(failed) &&
+        count(total) &&
+        passed <= total - failed
+      )
+        this.bunSummary(total, failed);
+      else if (passed !== undefined && failed !== undefined)
+        this.bun = retainFailure(this.bun, malformed);
+      this.bunPassed = undefined;
+      this.bunFailed = undefined;
+    }
+    const bail = /^\s*Bailed out after (\d+) failures?\s*$/.exec(text);
+    if (bail) {
+      this.bunHint = true;
+      const failed = Number(bail[1]);
+      if (this.bunBailTotal !== undefined && failed > 0)
+        this.bunSummary(this.bunBailTotal, failed);
+      this.bunBailTotal = undefined;
+    }
     if (
       /no test(?:s| files)? (?:found|collected)|collected 0 items/i.test(text)
     )
@@ -141,12 +220,13 @@ class SummaryLines {
       /^[\t ]*(.*?)[\t ]+in[\t ]+\d+(?:\.\d+)?s(?:[\t ]+\(.*\))?[\t ]*=*[\t ]*$/.exec(
         text,
       )?.[1];
-    // Any line can end "in 3s"; only one that parses as a summary replaces the last one seen.
+    // Any line can end "in 3s"; only a parsed summary is evidence.
     const parsed =
       candidate === undefined
         ? undefined
         : pytest(candidate.replace(/^=+\s*|\s*=+$/g, ""));
-    if (parsed?.kind === "recognized") this.pytest = parsed;
+    if (parsed?.kind === "recognized")
+      this.pytest = retainFailure(this.pytest, parsed);
     if (/^\s*Tests:|^\s*Tests\s+\d+.*\(|"numTotalTests"/.test(text))
       this.hint = true;
   }
@@ -190,31 +270,45 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       stdout.end();
       stderr.end();
       const text = structured ? Buffer.concat(structured).toString("utf8") : "";
+      const reports: OutputReport[] = [];
       // An overflowing object is never read whole, so its counts may lie past what was kept.
       if (
         format === "json" ||
         (structured && (overflow || /"num(?:Total|Failed)Tests"/.test(text)))
       )
-        return overflow
-          ? {
-              ...malformed,
-              detail: `Structured report exceeds ${REPORT_LIMIT} bytes and cannot be read whole`,
-            }
-          : jsonReport(text.trim());
-      const jest = stdout.jest ?? stderr.jest;
-      if (jest) return summary("Jest", jest);
-      const vitest = stdout.vitest ?? stderr.vitest;
-      if (vitest) return summary("Vitest", vitest);
+        reports.push(
+          overflow
+            ? {
+                ...malformed,
+                detail: `Structured report exceeds ${REPORT_LIMIT} bytes and cannot be read whole`,
+              }
+            : jsonReport(text.trim()),
+        );
+      for (const report of [
+        stdout.jest,
+        stderr.jest,
+        stdout.vitest,
+        stderr.vitest,
+        stdout.bun,
+        stderr.bun,
+      ])
+        if (report) reports.push(report);
       if (stdout.zero || stderr.zero)
-        return {
+        reports.push({
           kind: "recognized",
           testCount: 0,
           failed: 0,
           detail: "Runner reported zero tests",
-        };
-      const last = stdout.pytest ?? stderr.pytest;
-      if (last) return last;
-      if (stdout.hint || stderr.hint) return malformed;
+        });
+      for (const report of [stdout.pytest, stderr.pytest])
+        if (report) reports.push(report);
+      const failed = reports.find(
+        (report) => report.kind === "recognized" && report.failed! > 0,
+      );
+      if (failed) return failed;
+      if (reports.length) return reports[0]!;
+      if (stdout.hint || stderr.hint || stdout.bunHint || stderr.bunHint)
+        return malformed;
       return unknown;
     },
   };
