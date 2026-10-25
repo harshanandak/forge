@@ -297,7 +297,11 @@ try {
   assert.equal(test.origin.file, "package.json");
   assert.equal(test.origin.pointer, "/scripts/test");
   assert.equal(show.result.configured, false);
-  assert.deepEqual(show.result.instances, []);
+  assert.deepEqual(
+    show.result.instances,
+    [{ name: "memory", source: { builtin: "forge/memory" }, enabled: true }],
+    "only device memory is available without project configuration",
+  );
   assert.equal(
     existsSync(join(root, ".forge")),
     false,

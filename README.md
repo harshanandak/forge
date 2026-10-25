@@ -71,6 +71,22 @@ The globally installed `forge` command also runs the installed entry point.
 Windows measurements and the profiling method are in
 [Local read performance](docs/local-read-performance.md).
 
+## Device memory
+
+Device memory works from any folder, without importing a template or creating a
+project config:
+
+```sh
+forge memory add "Remember the release checklist"
+forge memory search "release checklist"
+```
+
+Outside a Forge project, people default to device memory; agents must specify
+`level: "device"`. Notes are shared with other folders and projects on the same
+device. Project-level writes, moves and exports require a Forge project. Reads
+create no stores, and device-only calls create no project state. A configured
+project keeps its own block selection and level policy.
+
 ## Write a block
 
 Copy the complete [hello block](examples/hello-block) and follow

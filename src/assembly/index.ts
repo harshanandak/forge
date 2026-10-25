@@ -77,6 +77,10 @@ import {
 } from "./providers.ts";
 
 const TRUST_NAMESPACE = "forge/core-trust";
+const DEVICE_MEMORY: BlockInstance = {
+  source: { builtin: "forge/memory" },
+  config: { levels: { human: "nearest", agent: "required" } },
+};
 const grantCandidate: McpCandidate = {
   op: "config.grant",
   admitted: true,
@@ -216,6 +220,7 @@ export async function createAssembly(
   // `derived` holds what git answers for this call (the id prefix): an invocation asks git each
   // time, so a long-lived server follows a changed origin; listings leave it to its default.
   type CallScope = {
+    inProject: boolean;
     warnings: ResultEnvelope["warnings"];
     captured(source: BlockSource): CapturedBlock;
     shipped: ReturnType<typeof shippedTemplates>;
@@ -280,6 +285,8 @@ export async function createAssembly(
       },
     };
     return {
+      inProject:
+        options.project ?? existsSync(join(root, ".forge", "config.yaml")),
       warnings,
       captured,
       shipped,
@@ -445,7 +452,21 @@ export async function createAssembly(
     unavailable: readonly UnavailableBlock[];
     problems: readonly string[];
   } {
-    const show = call.config.show();
+    const configured = call.config.show();
+    // A device-only host needs no project file to select the shipped memory block.
+    const show: ShowResult =
+      !call.inProject && !configured.configured
+        ? {
+            ...configured,
+            instances: [
+              { name: "memory", source: DEVICE_MEMORY.source, enabled: true },
+            ],
+            effective: {
+              ...configured.effective,
+              blocks: { memory: DEVICE_MEMORY },
+            },
+          }
+        : configured;
     const document = composition(show);
     const blocks = new Map<string, CapturedBlock>();
     const candidates: McpCandidate[] = [];
@@ -935,6 +956,15 @@ export async function createAssembly(
         const target = current.candidates.find(
           (candidate) => candidate.op === request.op,
         );
+        if (
+          !call.inProject &&
+          (target?.declaration.context === "project" ||
+            target?.declaration.context === "leased")
+        )
+          refuse(
+            "CONTEXT_MISSING",
+            `${request.op} requires a Forge project; initialize this folder with config.apply first`,
+          );
         if (target && !target.admitted) {
           await trustState.open(false);
           current = snapshot(call);
@@ -1076,10 +1106,7 @@ export async function createAssembly(
                     deviceState,
                     namespace,
                     actor: context.actor,
-                    servesProject:
-                      projectWrite ||
-                      (options.project ??
-                        existsSync(join(root, ".forge", "config.yaml"))),
+                    servesProject: call.inProject,
                     // The authenticated caller, never the actor kind a caller put in its context.
                     caller: request.caller,
                     write: scope.effects.includes(
@@ -1190,8 +1217,9 @@ export function localSession(fallback: string): string {
   return process.env.FORGE_SESSION || fallback;
 }
 export async function createLocalAssembly(): Promise<Assembly> {
+  const root = process.cwd();
   return createAssembly({
-    root: process.cwd(),
+    root,
     deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
   });
 }
