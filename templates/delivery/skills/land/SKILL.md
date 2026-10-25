@@ -21,7 +21,7 @@ A matched door path always refuses: the owner merges that PR by hand. A merge th
 gh pr merge <n> --{{values.merge.method}} --match-head-commit <head>
 ```
 
-A refused merge because the head moved means read the conditions again from step 1. Never merge without the pin.
+A refused merge because the head moved means run the gate again. Never merge without the pin.
 
 ## Verify
 

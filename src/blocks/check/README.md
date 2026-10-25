@@ -16,19 +16,23 @@ Reads do not start commands or create state. State writes use the bound `StateCl
 through the process port. It requires an OPEN, CLEAN pull request, the newest verified
 PASS receipt for its head covering `gate.receiptChecks`, successful required CI checks,
 zero unresolved review threads across every page, and no changed `gate.doorPaths`.
-Changed files come from the paginated pull request files API, including rename sources
-and destinations. The unique file count must equal the PR's `changedFiles`; PRs above
-the API's 3000-file ceiling refuse. Both API reads use the PR URL's hostname.
-It reads the head again after collecting evidence and refuses if it moved. PASS exits 0;
+CI comes from the captured head commit's paginated status-check rollup (check runs and
+commit statuses). Changed files come from the paginated compare API pinned to the captured
+base and head SHAs, including rename sources and destinations. Compare returns files on
+its first page only. The unique file count must equal the PR's `changedFiles`; PRs above
+the compare API's 300-file ceiling refuse. All API reads use the PR URL's hostname.
+It reads the base and head again after collecting evidence and refuses if either moved. PASS exits 0;
 REFUSED exits 1 with the complete result and refusal reasons retained. Missing, malformed,
 truncated or failed CLI evidence refuses. The operation writes no state.
 
-`gate.requiredChecks` defaults to `"github-required"`, resolved by `gh pr checks --required`.
+`gate.requiredChecks` defaults to `"github-required"`, resolved by each commit context's
+`isRequired(pullRequestNumber: ...)` field.
 An explicit list requires every named check; an empty resolved list refuses.
 `gate.receiptChecks` and `gate.doorPaths` default to `[]`. An empty receipt check list
 still requires a PASS receipt with at least one run. `check.list` returns `receiptChecks`
 alongside command names. Door patterns use repository-relative `/` paths: `*` and `?`
 match within a segment, and `**` spans segments (`**/release.yml` also matches the root).
+Leading `/` or `./`, braces, backslashes and control characters are rejected by the config schema.
 The gate selects the configured environment plus `GH_TOKEN`, `GH_HOST` and
 `GH_ENTERPRISE_TOKEN` for `gh`; values are never included in the result.
 

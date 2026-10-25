@@ -173,6 +173,25 @@ test("declared config rejects missing choices and out-of-range budgets", () => {
   }
 }, 1000);
 
+for (const glob of [
+  "/migrations/**",
+  "./migrations/**",
+  "{migrations,deploy}/**",
+])
+  test(`door globs reject unsupported pattern ${glob}`, () => {
+    expect(
+      validateWithSchema(schema, { ...config, gate: { doorPaths: [glob] } })
+        .length,
+    ).toBeGreaterThan(0);
+  }, 1000);
+test("door globs accept supported syntax", () => {
+  for (const glob of ["migrations/**", "**/release.yml", "deploy/*.?ml"]) {
+    expect(
+      validateWithSchema(schema, { ...config, gate: { doorPaths: [glob] } }),
+    ).toEqual([]);
+  }
+}, 1000);
+
 test("snapshot HEAD lookups have enough output independently of command retention", async () => {
   for (const width of [40, 64]) {
     for (const cap of [1, 40, 64]) {

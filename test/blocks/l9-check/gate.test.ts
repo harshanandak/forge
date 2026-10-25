@@ -18,6 +18,37 @@ import { exitCode } from "../../../src/surface/result.ts";
 import type { Catalog } from "../../../src/core/catalog/index.ts";
 
 const head = "a".repeat(40);
+const base = "c".repeat(40);
+
+function ciPage(checks: unknown, oid = head, endCursor: string | null = null) {
+  return {
+    data: {
+      repository: {
+        object: {
+          oid,
+          statusCheckRollup: {
+            contexts: {
+              totalCount: Array.isArray(checks) ? checks.length : 0,
+              nodes: Array.isArray(checks)
+                ? checks.map((check: { name?: unknown; state?: unknown }) => ({
+                    __typename: "CheckRun",
+                    name: check.name,
+                    status:
+                      check.state === "IN_PROGRESS"
+                        ? "IN_PROGRESS"
+                        : "COMPLETED",
+                    conclusion: check.state,
+                    isRequired: true,
+                  }))
+                : checks,
+              pageInfo: { hasNextPage: endCursor !== null, endCursor },
+            },
+          },
+        },
+      },
+    },
+  };
+}
 const config: CheckConfig = {
   commands: { structure: "tool check" },
   timeoutMs: 1000,
@@ -39,8 +70,14 @@ function fixture() {
   let now = 1_700_000_000_000;
   let views = 0;
   let laterHead = head;
+  let bounce = false;
+  const headHistory: string[] = [];
+  let pinnedChecks: unknown;
+  let pinnedFilePages: unknown;
+  let ciPages: unknown;
+  let comparePages: unknown;
+  let laterBase = base;
   let checks: unknown = [{ name: "CI Gate", state: "SUCCESS", bucket: "pass" }];
-  let checksExit = 0;
   let pages: unknown = [
     {
       data: {
@@ -113,21 +150,43 @@ function fixture() {
         expect(options.env.GH_TOKEN).toBe("test-placeholder");
         if (throwProcess) throw new Error("process failed");
         let stdout: string;
-        if (args[0] === "pr" && args[1] === "view")
+        if (args[0] === "pr" && args[1] === "view") {
+          headHistory.push(views === 0 ? head : laterHead);
           stdout = JSON.stringify({
             headRefOid: ++views === 1 ? head : laterHead,
+            baseRefOid: views === 1 ? base : laterBase,
             state,
             mergeStateStatus,
             url: "https://github.com/org/repo/pull/7",
             changedFiles,
           });
-        else if (args[0] === "pr" && args[1] === "checks")
+        } else if (args[0] === "pr" && args[1] === "checks")
           stdout = JSON.stringify(checks);
-        else if (args[0] === "api")
-          stdout = JSON.stringify(args[1] === "graphql" ? pages : filePages);
-        else throw new Error(`Unexpected gh command: ${args.join(" ")}`);
+        else if (args[0] === "api") {
+          if (args.some((arg) => arg.includes("statusCheckRollup"))) {
+            expect(args).toContain(`head=${head}`);
+            stdout = JSON.stringify(
+              ciPages ?? [ciPage(pinnedChecks ?? checks)],
+            );
+          } else if (args[1]?.includes("/compare/")) {
+            expect(args[1]).toContain(`${base}...${head}`);
+            const files = pinnedFilePages ?? filePages;
+            stdout = JSON.stringify(
+              comparePages ??
+                (Array.isArray(files)
+                  ? files.map((_page, index) => ({
+                      base_commit: { sha: base },
+                      ...(index === 0 ? { files: files.flat() } : {}),
+                    }))
+                  : files),
+            );
+          } else
+            stdout = JSON.stringify(args[1] === "graphql" ? pages : filePages);
+        } else throw new Error(`Unexpected gh command: ${args.join(" ")}`);
+        if (bounce && headHistory.length === 1)
+          headHistory.push("b".repeat(40));
         return Promise.resolve({
-          exitCode: args[1] === "checks" ? checksExit : 0,
+          exitCode: 0,
           signal: null,
           stdout,
           stderr: "",
@@ -143,6 +202,7 @@ function fixture() {
   return {
     records,
     calls,
+    headHistory,
     services,
     async receipt(options: { head?: string; exit?: number } = {}) {
       receiptHead = options.head ?? head;
@@ -158,8 +218,13 @@ function fixture() {
     },
     alter(options: {
       laterHead?: string;
+      laterBase?: string;
+      bounce?: boolean;
+      pinnedChecks?: unknown;
+      pinnedFilePages?: unknown;
+      ciPages?: unknown;
+      comparePages?: unknown;
       checks?: unknown;
-      checksExit?: number;
       pages?: unknown;
       filePages?: unknown;
       changedFiles?: number;
@@ -169,6 +234,12 @@ function fixture() {
       throwProcess?: boolean;
     }) {
       laterHead = options.laterHead ?? laterHead;
+      laterBase = options.laterBase ?? laterBase;
+      bounce = options.bounce ?? bounce;
+      pinnedChecks = options.pinnedChecks ?? pinnedChecks;
+      pinnedFilePages = options.pinnedFilePages ?? pinnedFilePages;
+      ciPages = options.ciPages ?? ciPages;
+      comparePages = options.comparePages ?? comparePages;
       checks = options.checks ?? checks;
       pages = options.pages ?? pages;
       filePages = options.filePages ?? filePages;
@@ -177,7 +248,6 @@ function fixture() {
       mergeStateStatus = options.mergeStateStatus ?? mergeStateStatus;
       corrupt = options.corrupt ?? corrupt;
       throwProcess = options.throwProcess ?? throwProcess;
-      checksExit = options.checksExit ?? checksExit;
     },
   };
 }
@@ -205,7 +275,12 @@ test("gate passes only with a verified current-head receipt and complete GitHub 
     reasons: [],
   });
   expect(f.calls.filter((args) => args[1] === "view")).toHaveLength(2);
-  expect(f.calls.find((args) => args[1] === "checks")).toContain("--required");
+  expect(
+    f.calls.some((args) =>
+      args.some((arg) => arg.includes("isRequired(pullRequestNumber:$n)")),
+    ),
+  ).toBe(true);
+  expect(f.calls.some((args) => args[1] === "checks")).toBe(false);
   expect(f.calls.find((args) => args[0] === "api")).toContain("--paginate");
   expect(f.calls.find((args) => args[0] === "api")).toContain("--slurp");
 }, 1000);
@@ -264,8 +339,6 @@ for (const [name, checks, code] of [
     await f.receipt();
     f.alter({
       checks,
-      checksExit:
-        name === "failing check" ? 1 : name === "pending check" ? 8 : 0,
     });
     await refuses(f, code);
   }, 1000);
@@ -280,7 +353,6 @@ test("named required checks must be present; unrelated failure is not required",
   const g = fixture();
   await g.receipt();
   g.alter({
-    checksExit: 1,
     checks: [
       { name: "CI Gate", state: "SUCCESS", bucket: "pass" },
       { name: "optional", state: "FAILURE", bucket: "fail" },
@@ -377,7 +449,7 @@ test("gate refuses renaming a protected source outside its door glob", async () 
   });
 }, 1000);
 
-test("gate checks renamed destinations and later file pages", async () => {
+test("gate checks renamed destinations in paginated comparisons", async () => {
   const f = fixture();
   await f.receipt();
   f.alter({
@@ -400,7 +472,7 @@ test("gate checks renamed destinations and later file pages", async () => {
   expect(result.verdict).toBe("REFUSED");
   expect(result.doorPaths).toEqual(["migrations/critical.sql"]);
   const requests = f.calls.filter((args) => args[0] === "api");
-  expect(requests).toHaveLength(2);
+  expect(requests).toHaveLength(3);
   for (const args of requests)
     expect(
       args.slice(
@@ -421,7 +493,7 @@ test("gate refuses incomplete, capped or malformed file evidence", async () => {
     },
     { filePages: [[{ filename: "new.sql", status: "unknown" }]] },
     { changedFiles: 2 },
-    { changedFiles: 3001 },
+    { changedFiles: 301 },
     {
       changedFiles: 2,
       filePages: [
@@ -444,6 +516,102 @@ test("gate refuses a head that moves during evidence collection", async () => {
   await f.receipt();
   f.alter({ laterHead: "b".repeat(40) });
   await refuses(f, "HEAD_MOVED");
+}, 1000);
+
+test("gate cannot use B's clean files when the head moves A -> B -> A", async () => {
+  const f = fixture();
+  await f.receipt();
+  f.alter({
+    bounce: true,
+    pinnedFilePages: [
+      [{ filename: "migrations/critical.sql", status: "modified" }],
+    ],
+  });
+  const result = await f.gate({
+    ...config,
+    gate: { doorPaths: ["migrations/**"] },
+  });
+  expect(f.headHistory).toEqual([head, "b".repeat(40), head]);
+  expect(result.verdict).toBe("REFUSED");
+  expect(result.doorPaths).toEqual(["migrations/critical.sql"]);
+}, 1000);
+
+test("gate cannot use B's green CI when the head moves A -> B -> A", async () => {
+  const f = fixture();
+  await f.receipt();
+  f.alter({
+    bounce: true,
+    pinnedChecks: [{ name: "CI Gate", state: "FAILURE", bucket: "fail" }],
+  });
+  await refuses(f, "REQUIRED_CHECK_FAILED");
+  expect(f.headHistory).toEqual([head, "b".repeat(40), head]);
+}, 1000);
+
+test("gate refuses unbound or incomplete commit CI evidence", async () => {
+  const wrongHead = ciPage([], "b".repeat(40));
+  const missingPage = ciPage([]);
+  missingPage.data.repository.object.statusCheckRollup.contexts.pageInfo = {
+    hasNextPage: true,
+    endCursor: "more",
+  };
+  const missingContext = ciPage([]);
+  missingContext.data.repository.object.statusCheckRollup.contexts.totalCount = 1;
+  for (const ciPages of [
+    [],
+    [wrongHead],
+    [missingPage],
+    [missingContext],
+    [{ errors: [{ message: "denied" }] }],
+  ]) {
+    const f = fixture();
+    await f.receipt();
+    f.alter({ ciPages });
+    await refuses(f, "GITHUB_EVIDENCE_INVALID");
+  }
+}, 1000);
+
+test("gate reads required CI on later pages and supports commit statuses", async () => {
+  const first = ciPage([]);
+  first.data.repository.object.statusCheckRollup.contexts.totalCount = 1;
+  first.data.repository.object.statusCheckRollup.contexts.pageInfo = {
+    hasNextPage: true,
+    endCursor: "more",
+  };
+  const last = ciPage([]);
+  last.data.repository.object.statusCheckRollup.contexts.totalCount = 1;
+  last.data.repository.object.statusCheckRollup.contexts.nodes = [
+    {
+      __typename: "StatusContext",
+      context: "CI Gate",
+      state: "SUCCESS",
+      isRequired: true,
+    },
+  ];
+  const f = fixture();
+  await f.receipt();
+  f.alter({ ciPages: [first, last] });
+  expect((await f.gate()).checks).toEqual([
+    { name: "CI Gate", state: "SUCCESS" },
+  ]);
+  expect((await f.gate()).verdict).toBe("PASS");
+}, 1000);
+
+test("gate refuses a changed base and unbound compare evidence", async () => {
+  const f = fixture();
+  await f.receipt();
+  f.alter({ laterBase: "d".repeat(40) });
+  await refuses(f, "BASE_MOVED");
+  const g = fixture();
+  await g.receipt();
+  g.alter({
+    comparePages: [
+      {
+        base_commit: { sha: "d".repeat(40) },
+        files: [{ filename: "src/main.ts", status: "modified" }],
+      },
+    ],
+  });
+  await refuses(g, "GITHUB_EVIDENCE_INVALID");
 }, 1000);
 
 for (const [state, mergeStateStatus] of [

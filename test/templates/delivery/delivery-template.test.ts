@@ -163,6 +163,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["open-pr"]).toContain("`link_pull_request`");
     // The executable gate owns the merge conditions and returns the pinned head and receipt.
     expect(text.land).toContain("forge check gate");
+    expect(text.land).toContain("head moved means run the gate again");
     expect(text.land).toContain('"receipt":"<id>"');
     expect(text.build).toContain("receiptChecks");
     expect(text.slice).toContain('"withoutReceipt":"superseded by <id>"');

@@ -773,6 +773,8 @@ function doorMatches(path: string, glob: string): boolean {
 
 const THREAD_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
+const CHECK_QUERY =
+  "query($owner:String!,$repo:String!,$n:Int!,$head:GitObjectID!,$endCursor:String){repository(owner:$owner,name:$repo){object(oid:$head){... on Commit{oid statusCheckRollup{contexts(first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{__typename ... on CheckRun{name status conclusion isRequired(pullRequestNumber:$n)} ... on StatusContext{context state isRequired(pullRequestNumber:$n)}}}}}}}}";
 
 async function gate(
   services: Pick<
@@ -843,23 +845,26 @@ async function gate(
         "view",
         String(input.pr),
         "--json",
-        "headRefOid,state,mergeStateStatus,url,changedFiles",
+        "headRefOid,baseRefOid,state,mergeStateStatus,url,changedFiles",
       ]),
     );
     if (
       !isRecord(value) ||
       typeof value.headRefOid !== "string" ||
       !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value.headRefOid) ||
+      typeof value.baseRefOid !== "string" ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value.baseRefOid) ||
       typeof value.state !== "string" ||
       typeof value.mergeStateStatus !== "string" ||
       typeof value.url !== "string" ||
       !integer(value.changedFiles) ||
       value.changedFiles < 0 ||
-      value.changedFiles > 3000
+      value.changedFiles > 300
     )
       invalid();
     return value as {
       headRefOid: string;
+      baseRefOid: string;
       state: string;
       mergeStateStatus: string;
       url: string;
@@ -920,35 +925,103 @@ async function gate(
       );
     }
     const required = config.gate?.requiredChecks ?? "github-required";
-    const checkArgs = [
-      "pr",
-      "checks",
-      String(input.pr),
-      "--json",
-      "name,state,bucket",
-    ];
-    if (required === "github-required") checkArgs.push("--required");
-    const checkData: unknown = JSON.parse(await gh(checkArgs, [0, 1, 8]));
-    if (!Array.isArray(checkData)) invalid();
-    for (const value of checkData) {
+    const repository =
+      /^https:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(pr.url);
+    if (!repository || Number(repository[4]) !== input.pr) invalid();
+    const checkPages: unknown = JSON.parse(
+      await gh([
+        "api",
+        "graphql",
+        "--paginate",
+        "--slurp",
+        "--hostname",
+        repository[1]!,
+        "-F",
+        `owner=${repository[2]}`,
+        "-F",
+        `repo=${repository[3]}`,
+        "-F",
+        `n=${input.pr}`,
+        "-F",
+        `head=${head}`,
+        "-f",
+        `query=${CHECK_QUERY}`,
+      ]),
+    );
+    if (!Array.isArray(checkPages) || !checkPages.length) invalid();
+    let checkCount = 0;
+    let expectedChecks: number | undefined;
+    const checkCursors = new Set<string>();
+    for (const [index, page] of checkPages.entries()) {
       if (
-        !isRecord(value) ||
-        typeof value.name !== "string" ||
-        !value.name ||
-        typeof value.state !== "string" ||
-        !value.state ||
-        typeof value.bucket !== "string"
+        !isRecord(page) ||
+        "errors" in page ||
+        !isRecord(page.data) ||
+        !isRecord(page.data.repository) ||
+        !isRecord(page.data.repository.object)
       )
         invalid();
-      if (required === "github-required" || required.includes(value.name)) {
-        checks.push({ name: value.name, state: value.state });
-        if (value.state !== "SUCCESS" || value.bucket !== "pass")
-          refuse(
-            "REQUIRED_CHECK_FAILED",
-            `Required check ${value.name} is not SUCCESS`,
-          );
+      const commit = page.data.repository.object;
+      if (commit.oid !== head || !isRecord(commit.statusCheckRollup)) invalid();
+      const contexts = commit.statusCheckRollup.contexts;
+      if (
+        !isRecord(contexts) ||
+        !Array.isArray(contexts.nodes) ||
+        !integer(contexts.totalCount) ||
+        contexts.totalCount < 0 ||
+        !isRecord(contexts.pageInfo)
+      )
+        invalid();
+      expectedChecks ??= contexts.totalCount;
+      if (contexts.totalCount !== expectedChecks) invalid();
+      const info = contexts.pageInfo;
+      if (
+        info.hasNextPage !== index < checkPages.length - 1 ||
+        !(info.endCursor === null || typeof info.endCursor === "string")
+      )
+        invalid();
+      if (info.hasNextPage) {
+        if (
+          typeof info.endCursor !== "string" ||
+          !info.endCursor ||
+          checkCursors.has(info.endCursor)
+        )
+          invalid();
+        checkCursors.add(info.endCursor);
+      }
+      for (const value of contexts.nodes) {
+        if (!isRecord(value) || typeof value.isRequired !== "boolean")
+          invalid();
+        const run = value.__typename === "CheckRun";
+        if (!run && value.__typename !== "StatusContext") invalid();
+        const name = run ? value.name : value.context;
+        const state =
+          run && value.status === "COMPLETED"
+            ? value.conclusion
+            : (value.state ?? value.status);
+        if (
+          typeof name !== "string" ||
+          !name ||
+          typeof state !== "string" ||
+          !state
+        )
+          invalid();
+        checkCount++;
+        if (
+          required === "github-required"
+            ? value.isRequired
+            : required.includes(name)
+        ) {
+          checks.push({ name, state });
+          if (state !== "SUCCESS" || (run && value.status !== "COMPLETED"))
+            refuse(
+              "REQUIRED_CHECK_FAILED",
+              `Required check ${name} is not SUCCESS`,
+            );
+        }
       }
     }
+    if (checkCount !== expectedChecks) invalid();
     if (required !== "github-required")
       for (const name of required) {
         if (!checks.some((check) => check.name === name))
@@ -959,9 +1032,6 @@ async function gate(
         "REQUIRED_CHECKS_EMPTY",
         "Required checks must resolve to a nonempty list",
       );
-    const repository =
-      /^https:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(pr.url);
-    if (!repository || Number(repository[4]) !== input.pr) invalid();
     const pages: unknown = JSON.parse(
       await gh([
         "api",
@@ -1032,7 +1102,7 @@ async function gate(
     const filePages: unknown = JSON.parse(
       await gh([
         "api",
-        `repos/${repository[2]}/${repository[3]}/pulls/${input.pr}/files?per_page=100`,
+        `repos/${repository[2]}/${repository[3]}/compare/${pr.baseRefOid}...${head}?per_page=100`,
         "--paginate",
         "--slurp",
         "--hostname",
@@ -1041,9 +1111,20 @@ async function gate(
     );
     if (!Array.isArray(filePages) || filePages.length === 0) invalid();
     const filenames = new Set<string>();
-    for (const page of filePages) {
-      if (!Array.isArray(page) || page.length > 100) invalid();
-      for (const file of page) {
+    for (const [index, page] of filePages.entries()) {
+      if (
+        !isRecord(page) ||
+        !isRecord(page.base_commit) ||
+        page.base_commit.sha !== pr.baseRefOid
+      )
+        invalid();
+      // Compare returns all files on page one, capped at 300; later pages contain commits only.
+      if (index > 0) {
+        if (page.files !== undefined) invalid();
+        continue;
+      }
+      if (!Array.isArray(page.files) || page.files.length > 300) invalid();
+      for (const file of page.files) {
         if (
           !isRecord(file) ||
           typeof file.filename !== "string" ||
@@ -1099,6 +1180,11 @@ async function gate(
       refuse(
         "HEAD_MOVED",
         "Pull request head changed while the gate read evidence",
+      );
+    if (after.baseRefOid !== pr.baseRefOid)
+      refuse(
+        "BASE_MOVED",
+        "Pull request base changed while the gate read evidence",
       );
     if (after.state !== "OPEN" || after.mergeStateStatus !== "CLEAN")
       refuse("PR_NOT_MERGEABLE", "Pull request is no longer OPEN and CLEAN");
