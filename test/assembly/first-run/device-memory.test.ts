@@ -26,7 +26,6 @@ test("device-only discovery exposes memory without creating a project or device 
   const assembly = await createAssembly({
     root,
     deviceRoot,
-    project: false,
     providers: { env: {} },
   });
   try {

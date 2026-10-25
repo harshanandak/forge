@@ -6,31 +6,44 @@ export interface Counterfactual {
   readonly to: string;
   /** Replace every occurrence rather than the first. */
   readonly all?: true;
-  readonly journey: "device" | "anywhere" | "fence" | "levels";
+  readonly journey:
+    | "device"
+    | "anywhere"
+    | "projectBoundary"
+    | "initializeSession"
+    | "fence"
+    | "levels";
   readonly evidence: string;
 }
 
 export const counterfactuals: readonly Counterfactual[] = [
   {
     file: "assembly/index.js",
-    from: "options.project === false && !configured.configured",
+    from: "!call.inProject && !configured.configured",
     to: "false",
     journey: "anywhere",
     evidence: "Unknown operation: memory.search",
   },
   {
     file: "assembly/index.js",
-    from: 'project: existsSync(join(root, ".forge", "config.yaml")),',
-    to: "project: true,",
-    journey: "anywhere",
-    evidence: "Unknown operation: memory.search",
+    from: 'deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),',
+    to: 'deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"), project: existsSync(join(root, ".forge", "config.yaml")),',
+    journey: "initializeSession",
+    evidence: "project write after initialization",
   },
   {
     file: "assembly/index.js",
-    from: 'servesProject: projectWrite || (options.project ?? existsSync(join(root, ".forge", "config.yaml"))),',
+    from: "servesProject: call.inProject,",
     to: "servesProject: true,",
     journey: "anywhere",
     evidence: "a person outside a project defaults to device",
+  },
+  {
+    file: "assembly/index.js",
+    from: '!call.inProject && (target?.declaration.context === "project" || target?.declaration.context === "leased")',
+    to: "false",
+    journey: "projectBoundary",
+    evidence: "decision propose requires a project",
   },
   {
     // Memory declared for the project would write the project's store, not the device's.
