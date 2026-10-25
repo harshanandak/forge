@@ -520,8 +520,8 @@ const operations: Operations<WorkOperations> = {
       const receipts = (services as { receipts?: ReceiptsService }).receipts;
       if (!receipts || typeof receipts.get !== "function")
         fail(
-          "SERVICE_MISSING",
-          "Closing with a receipt requires the receipts binding",
+          "RECEIPTS_UNAVAILABLE",
+          "Cannot verify receipt: the receipts slot is unbound; bind forge.receipts@1 or omit receipt and supply withoutReceipt",
         );
       const receipt = receipts.get(input.receipt);
       if (!receipt || receipt.status !== "PASS")
