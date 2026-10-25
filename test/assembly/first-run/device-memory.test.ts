@@ -19,7 +19,7 @@ test("device-only discovery exposes memory without creating a project or device 
   const deviceRoot = join(root, "device");
   const staged = stageBlock("memory", join(root, "builtins"));
   const source = fileURLToPath(firstPartyBlocks["forge/memory"]!);
-  const open = blockCapture.open;
+  const open = blockCapture.open.bind(blockCapture);
   const capture = spyOn(blockCapture, "open").mockImplementation((path) =>
     open(path === source ? staged : path),
   );
