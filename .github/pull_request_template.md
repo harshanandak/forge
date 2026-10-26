@@ -54,6 +54,6 @@ Tracking: <issue ids>
 
 ## Models
 
-- Planned: <model>, <role>
-- Implemented: <model> via <harness>
-- Reviewed: <model or review tool>
+- Planned: <display name> (<model id>, reasoning <level>) via <harness>
+- Implemented: <display name> (<model id>, reasoning <level>) via <harness>
+- Reviewed: <display name> (<model id>, reasoning <level>) via <harness>, or `not yet reviewed`

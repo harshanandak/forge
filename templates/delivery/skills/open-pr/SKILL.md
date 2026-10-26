@@ -25,7 +25,7 @@ Fill the repo's PR template. Style: plain opening; bold takeaways; What review f
 - **What review found**: each blocker as a bold user-visible failure and a one-line fix. Empty on the first push.
 - **Verification**: the receipt ids from `forge check run`, the test that fails without the change, the CI run for this head.
 - **Not verified**: what you did not check. Always present, never empty-by-omission.
-- **Models**: who planned, implemented and reviewed. No tool-branding footer.
+- **Models**: for each of planned, implemented and reviewed, give the model's display name, model id, reasoning level and harness, e.g. `Implemented: GPT-6.1-Sol (gpt-6.1-sol, reasoning high) via Codex in T3 Code`. Use `not yet reviewed` when there is no review. Roles alone are not allowed. No tool-branding footer.
 - `Tracking: <issue id>`.
 
 No machine-local data: no drive paths, usernames or links to files only on your machine.
