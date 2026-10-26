@@ -21,6 +21,7 @@ const JOURNEYS = [
   "initializeSession",
   "fence",
   "levels",
+  "rules",
 ] as const;
 
 function timing(label: string, started: number): void {

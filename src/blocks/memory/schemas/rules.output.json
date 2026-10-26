@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "text": {
+      "$ref": "defs.json#/$defs/Untrusted",
+      "properties": {
+        "text": { "type": "string", "maxLength": 1200 }
+      }
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "True when the bounded scan may leave older rules unread, or matching rule text was clipped or omitted."
+    }
+  },
+  "additionalProperties": false,
+  "required": ["text", "truncated"]
+}

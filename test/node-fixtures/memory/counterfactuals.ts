@@ -12,11 +12,19 @@ export interface Counterfactual {
     | "projectBoundary"
     | "initializeSession"
     | "fence"
-    | "levels";
+    | "levels"
+    | "rules";
   readonly evidence: string;
 }
 
 export const counterfactuals: readonly Counterfactual[] = [
+  {
+    file: "blocks/memory/index.cjs",
+    from: '!fields.tags.includes("rule")',
+    to: "true",
+    journey: "rules",
+    evidence: "device rule loaded at session start",
+  },
   {
     file: "assembly/index.js",
     from: "!call.inProject && !configured.configured",

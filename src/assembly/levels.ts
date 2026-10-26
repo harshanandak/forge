@@ -57,6 +57,8 @@ export interface StoreLevels {
   readonly caller: Caller;
   /** True when this host serves a project. Nothing is opened to answer it. */
   readonly inProject: boolean;
+  /** The normalized default scope, available without opening or creating a project store. */
+  readonly projectName?: string;
   /**
    * The host's project store. A writing operation mints the project's identity on first use and
    * records the project on the device; a reading one never creates a store and gets undefined when
@@ -307,9 +309,17 @@ export function openLevels(options: {
     };
   }
 
+  const defaultScope = basename(options.stateRoot)
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[^a-z0-9]+/, "")
+    .slice(0, 64);
   const levels: StoreLevels = {
     caller: options.caller,
     inProject: options.servesProject,
+    ...(options.servesProject && defaultScope
+      ? { projectName: defaultScope }
+      : {}),
     project() {
       if (!options.servesProject) return Promise.resolve(undefined);
       own ??= openOwn();

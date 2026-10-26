@@ -19,6 +19,7 @@ test("forge/memory is a registered first-party source that resolves to its folde
 const operations = {
   "memory.add": { effects: ["memory:write"], humanOnly: false },
   "memory.search": { effects: [], humanOnly: false },
+  "memory.rules": { effects: [], humanOnly: false },
   "memory.show": { effects: [], humanOnly: false },
   "memory.forget": { effects: ["memory:write"], humanOnly: true },
   "memory.export": { effects: [], humanOnly: false },
@@ -54,5 +55,6 @@ test("every operation is fully described in the catalog, so any surface can be g
     mine.find((entry) => entry.op === op)?.declaration.context;
   expect(context("memory.add")).toBe("device");
   expect(context("memory.search")).toBe("device");
+  expect(context("memory.rules")).toBe("device");
   expect(context("decision.propose")).toBe("project");
 }, 60_000);
