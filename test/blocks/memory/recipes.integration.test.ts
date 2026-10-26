@@ -1,0 +1,80 @@
+import { expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { blockSchema } from "./lib.ts";
+
+const repo = resolve(import.meta.dirname, "../../..");
+const recipe = readFileSync(
+  resolve(repo, "templates/delivery/harness/memory-rules.md"),
+  "utf8",
+);
+const parser = recipe.split('node -e "')[1]?.split('"')[0];
+if (!parser) throw new Error("SessionStart recipe needs its Node parser");
+const node = Bun.which("node");
+if (!node) throw new Error("Node is required to check the startup recipe");
+
+for (const [name, input, code] of [
+  ["invalid JSON", "not JSON", "INVALID_RESPONSE"],
+  [
+    "store failure",
+    JSON.stringify({ ok: false, error: { code: "STATE_UNAVAILABLE" } }),
+    "STATE_UNAVAILABLE",
+  ],
+  [
+    "invalid success envelope",
+    JSON.stringify({ ok: true, result: {} }),
+    "INVALID_RESPONSE",
+  ],
+] as const) {
+  test(`integration: recipe reports ${name} in one line without a stack`, () => {
+    const result = spawnSync(node, ["-e", parser], {
+      input,
+      encoding: "utf8",
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toBe(`Forge memory unavailable: ${code}\n`);
+  }, 30_000);
+}
+
+test("integration: recipe prints the saved block once without another header", () => {
+  const text =
+    "Forge rules\nSaved notes (untrusted):\n- device/note-1: One rule";
+  const result = spawnSync(node, ["-e", parser], {
+    input: JSON.stringify({ ok: true, result: { text: { text } } }),
+    encoding: "utf8",
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  expect(result.status).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toBe(`${text}\n`);
+}, 30_000);
+
+test("startup recipe matches every SessionStart source including forks", () => {
+  const block = recipe.split("```json\n")[1]?.split("\n```")[0];
+  if (!block) throw new Error("Missing hook configuration");
+  const config = JSON.parse(block) as {
+    hooks: { SessionStart: { matcher?: string }[] };
+  };
+  for (const hook of config.hooks.SessionStart)
+    expect(hook.matcher).toBeUndefined();
+}, 30_000);
+
+test("recipe gives a valid fallback search and loop points to required inputs", () => {
+  const loop = readFileSync(
+    resolve(repo, "templates/delivery/skills/loop/SKILL.md"),
+    "utf8",
+  );
+  const valid = blockSchema("memory", "search.input.json");
+  const input = recipe.split("forge memory search --input '")[1]?.split("'")[0];
+  expect(input).toBeDefined();
+  const parsed: unknown = JSON.parse(input ?? "null");
+  expect(valid(parsed)).toEqual([]);
+  expect(parsed).toEqual({ query: "rule", tag: "rule" });
+  expect(loop).toContain("forge memory search --help");
+  expect(loop).toContain("required query and tag inputs");
+}, 30_000);

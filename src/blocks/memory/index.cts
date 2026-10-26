@@ -500,35 +500,74 @@ module.exports = {
       ? await ownProject(services)
       : undefined;
     if (project) sources.push(project);
-    let truncated = false;
-    const groups = sources
-      .map((source) => {
-        const records = notePage(source, {
-          limit: RULE_SCAN + 1,
+    let text = "Forge rules\nSaved notes (untrusted):";
+    const available = RULE_CHARS - text.length - RULE_TRUNCATED.length;
+    const share = Math.floor(available / sources.length);
+    const groups = sources.map((source) => ({
+      source,
+      notes: [] as { prefix: string; body: string }[],
+      length: 0,
+      scanned: 0,
+      before: undefined as number | undefined,
+      ended: false,
+    }));
+    const read = (group: (typeof groups)[number], needed: number) => {
+      while (
+        !group.ended &&
+        group.scanned < SEARCH_WINDOW &&
+        group.length < needed
+      ) {
+        const limit = Math.min(RULE_SCAN, SEARCH_WINDOW - group.scanned);
+        const records = notePage(group.source, {
+          ...(group.before === undefined ? {} : { before: group.before }),
+          limit,
           descending: true,
         });
-        if (records.length > RULE_SCAN) truncated = true;
-        return records
-          .slice(0, RULE_SCAN)
-          .filter(
-            (note) =>
-              note.value.deleted !== true && note.value.tags.includes("rule"),
+        group.scanned += records.length;
+        group.before = records.at(-1)?.number;
+        group.ended = records.length < limit;
+        for (const note of records) {
+          const value: unknown = note.value;
+          if (typeof value !== "object" || value === null) continue;
+          const fields = value as {
+            deleted?: unknown;
+            tags?: unknown;
+            text?: unknown;
+          };
+          if (
+            fields.deleted === true ||
+            !Array.isArray(fields.tags) ||
+            !fields.tags.includes("rule") ||
+            typeof fields.text !== "string"
+          )
+            continue;
+          const prefix = `\n- ${note.id}: `;
+          const body = neutralize(fields.text).replace(
+            /[\r\n\u2028\u2029]+/gu,
+            " ",
           );
-      })
-      .filter((notes) => notes.length > 0);
-    let text = "Forge rules\nSaved notes (untrusted):";
-    // Each matching level gets space, so one long device note cannot hide project rules.
-    const budget =
-      groups.length === 0
-        ? 0
-        : Math.floor(
-            (RULE_CHARS - text.length - RULE_TRUNCATED.length) / groups.length,
-          );
-    for (const notes of groups) {
+          group.notes.push({ prefix, body });
+          group.length += prefix.length + body.length;
+        }
+      }
+    };
+    // First protect each level's share, then lend space a shorter level does not need.
+    for (const group of groups) read(group, share);
+    const budgets = groups.map(
+      (group) =>
+        available -
+        groups.reduce(
+          (used, other) =>
+            used + (other === group ? 0 : Math.min(other.length, share)),
+          0,
+        ),
+    );
+    for (const [index, group] of groups.entries()) read(group, budgets[index]!);
+    let truncated = groups.some((group) => !group.ended);
+    for (const [index, group] of groups.entries()) {
+      const budget = budgets[index]!;
       let rendered = "";
-      for (const note of notes) {
-        const prefix = `\n- ${note.id}: `;
-        const body = neutralize(note.value.text);
+      for (const { prefix, body } of group.notes) {
         const remaining = budget - rendered.length;
         if (prefix.length + body.length <= remaining) {
           rendered += prefix + body;
@@ -545,7 +584,8 @@ module.exports = {
       }
       text += rendered;
     }
-    if (groups.length === 0) text += "\nNo matching rules.";
+    if (groups.every((group) => group.notes.length === 0))
+      text += "\nNo matching rules.";
     if (truncated) text += RULE_TRUNCATED;
     return { text: fence(text, "memory:rules"), truncated };
   },

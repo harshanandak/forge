@@ -20,8 +20,8 @@ export interface Counterfactual {
 export const counterfactuals: readonly Counterfactual[] = [
   {
     file: "blocks/memory/index.cjs",
-    from: 'note.value.deleted !== true && note.value.tags.includes("rule")',
-    to: "false",
+    from: '!fields.tags.includes("rule")',
+    to: "true",
     journey: "rules",
     evidence: "device rule loaded at session start",
   },

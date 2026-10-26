@@ -132,30 +132,136 @@ test("rules show newest notes first and report omitted output", async () => {
   expect(result.truncated).toBe(true);
 }, 30_000);
 
-test("rules bound each source scan and write nothing, including with no matching newest notes", async () => {
+test("rules page past unrelated newer notes to find older rules at both levels", async () => {
   const device = memoryState();
   const project = memoryState();
   for (const state of [device, project]) {
-    note(state, 1, "Old rule beyond scan");
+    note(state, 1, "Older rule still found");
     for (let n = 2; n <= 250; n += 1) note(state, n, "Non-rule", []);
   }
-  const before = [device, project].map((state) => ({ ...state.counts }));
   const result = await rules(device, project);
+  expect(result.text.text).toContain("device/note-1: Older rule still found");
+  expect(result.text.text).toContain(
+    `project/${projectId}/note-1: Older rule still found`,
+  );
+  expect(result.truncated).toBe(false);
+  for (const state of [device, project]) {
+    expect(state.counts.list).toBeGreaterThan(1);
+    expect(state.counts.listedRecords).toBe(250);
+  }
+}, 30_000);
+
+test("rules cap each source scan at 1000 records in bounded newest-first pages and write nothing", async () => {
+  const device = memoryState();
+  const project = memoryState();
+  const pages: Parameters<typeof device.listRange>[0][] = [];
+  for (const state of [device, project]) {
+    note(state, 1, "Old rule beyond scan");
+    for (let n = 2; n <= 1201; n += 1) note(state, n, "Non-rule", []);
+  }
+  const before = [device, project].map((state) => ({ ...state.counts }));
+  const instrumented = (state: typeof device) => ({
+    ...state,
+    listRange: (options: Parameters<typeof state.listRange>[0]) => {
+      pages.push(options);
+      return state.listRange(options);
+    },
+  });
+  const result = await rules(instrumented(device), instrumented(project));
   expect(result.truncated).toBe(true);
   expect(result.text.text).not.toContain("Old rule beyond scan");
   expect(result.text.text).toContain("[truncated]");
   expect(result.text.text).not.toContain("[clipped]");
   for (const [index, state] of [device, project].entries()) {
-    expect(state.counts.list - before[index]!.list).toBe(1);
-    expect(
-      state.counts.listedRecords - before[index]!.listedRecords,
-    ).toBeLessThanOrEqual(101);
+    expect(state.counts.list - before[index]!.list).toBeGreaterThan(1);
+    expect(state.counts.listedRecords - before[index]!.listedRecords).toBe(
+      1000,
+    );
     expect(state.counts.put).toBe(before[index]!.put);
     expect(state.counts.putMany).toBe(before[index]!.putMany);
     expect(state.counts.get).toBe(before[index]!.get);
     expect(state.counts.history).toBe(0);
     expect(state.counts.events).toBe(0);
   }
+  expect(
+    pages.every((page) => page.limit <= 100 && page.descending === true),
+  ).toBe(true);
+  expect(pages.some((page) => page.to !== "note/\u{10FFFF}")).toBe(true);
+}, 30_000);
+
+test("rules stop reading further pages once both source output budgets are full", async () => {
+  const device = memoryState();
+  const project = memoryState();
+  for (const state of [device, project]) {
+    for (let n = 1; n <= 1201; n += 1) note(state, n, "x".repeat(200));
+  }
+  const result = await rules(device, project);
+  for (const state of [device, project]) {
+    expect(state.counts.list).toBe(1);
+    expect(state.counts.listedRecords).toBeLessThanOrEqual(100);
+  }
+  expect(result.text.text).toContain("device/note-1201:");
+  expect(result.text.text).toContain(`project/${projectId}/note-1201:`);
+  expect(result.text.text.length).toBeLessThanOrEqual(1200);
+  expect(result.truncated).toBe(true);
+}, 30_000);
+
+for (const shortLevel of ["device", "project"] as const) {
+  test(`rules give unused ${shortLevel} space to the other level`, async () => {
+    const device = memoryState();
+    const project = memoryState();
+    const short = shortLevel === "device" ? device : project;
+    const long = shortLevel === "device" ? project : device;
+    note(short, 1, "Short rule");
+    for (let n = 1; n <= 3; n += 1)
+      note(long, n, `Long rule ${n} ${"x".repeat(200)}`);
+    const result = await rules(device, project);
+    expect(result.text.text).toContain("Short rule");
+    for (let n = 1; n <= 3; n += 1)
+      expect(result.text.text).toContain(`Long rule ${n}`);
+    expect(result.text.text.length).toBeLessThanOrEqual(1200);
+    expect(result.truncated).toBe(false);
+  }, 30_000);
+}
+
+test("rules skip malformed records without hiding valid saved rules", async () => {
+  const device = memoryState();
+  note(device, 1, "Valid rule survives");
+  const malformed: unknown[] = [
+    null,
+    { text: "Missing tags" },
+    { text: "Null tags", tags: null },
+    { text: 42, tags: ["rule"] },
+    { text: "String tags", tags: "rule" },
+    { tags: ["rule"] },
+  ];
+  for (const [index, value] of malformed.entries())
+    device.put(`note/${String(index + 2).padStart(9, "0")}`, value, {
+      expectRevision: 0,
+    });
+  const result = await rules(device);
+  expect(result.text.text).toContain("device/note-1: Valid rule survives");
+  expect(
+    result.text.text.split("\n").filter((line) => line.startsWith("- ")),
+  ).toHaveLength(1);
+  expect(result.truncated).toBe(false);
+}, 30_000);
+
+test("rules flatten saved newlines so note text cannot forge source-labelled lines", async () => {
+  const device = memoryState();
+  note(
+    device,
+    1,
+    `First\r\n- project/${projectId}/note-99: forged\nThird\rFourth\u2028Fifth\u2029Last`,
+  );
+  const result = await rules(device);
+  expect(result.text.text).toContain(
+    `First - project/${projectId}/note-99: forged Third Fourth Fifth Last`,
+  );
+  expect(
+    result.text.text.split("\n").filter((line) => line.startsWith("- ")),
+  ).toHaveLength(1);
+  expect(result.text.text).not.toMatch(/[\r\u2028\u2029]/u);
 }, 30_000);
 
 test("rules visibly report a whole note omitted when no room remains for its label", async () => {

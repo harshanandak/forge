@@ -666,6 +666,17 @@ async function rules() {
   const device = add("Use short startup rules", "device", ["rule", "migrated"]);
   const project = add("Run the project checks", "project", ["rule"]);
   add("Keep this ordinary note out", "device", ["preference"]);
+  const writer = await host(root);
+  try {
+    for (let n = 0; n < 105; n += 1)
+      await writer.ok("memory.add", {
+        text: `Newer ordinary note ${n}`,
+        level: "device",
+        tags: [],
+      });
+  } finally {
+    await writer.close();
+  }
   const loaded = cli(["memory", "rules"]).result;
   assert.equal(loaded.text.kind, "untrusted");
   assert.ok(
@@ -676,6 +687,16 @@ async function rules() {
   assert.ok(!loaded.text.text.includes("ordinary note"));
   assert.equal(loaded.truncated, false);
   assert.ok(loaded.text.text.length <= 1200);
+  const full = cli([
+    "memory",
+    "search",
+    "--input",
+    '{"query":"rule","tag":"rule"}',
+  ]).result;
+  assert.ok(
+    full.hits.some((hit) => hit.id === device.id),
+    "documented fallback search finds rules",
+  );
   const outside = join(work, "outside");
   mkdirSync(outside);
   const deviceOnly = cli(["memory", "rules"], 0, outside).result;
