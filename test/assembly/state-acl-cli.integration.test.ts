@@ -66,6 +66,43 @@ test("an ACL refusal without an executable repair retains its own guidance", () 
   expect(error.error.message).toBe(reason);
 });
 
+for (const folder of [".forge", "device"] as const) {
+  test.skipIf(process.platform !== "win32")(
+    `CLI pins an inherited-private ${folder} folder against later parent grants`,
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "forge-cli-pin-folder-"));
+      const native = windowsPrivateFiles();
+      const directory = join(root, folder);
+      const path = join(
+        directory,
+        folder === ".forge" ? "state.sqlite" : "trust.sqlite",
+      );
+      let state: LocalState | undefined;
+      try {
+        native.protect(root, `D:P(A;OICI;FA;;;${native.sid})`);
+        mkdirSync(directory);
+        expect(native.read(directory)).toMatch(/^D:(?:AI)?\(A;OICIID;FA;;;/);
+        state = new LocalState(path);
+        await state.open(true);
+        await state.close();
+        state = undefined;
+        const pinned = native.read(directory);
+        expect(pinned).toMatch(/^D:P(?:AI)?\(A;OICI;FA;;;/);
+        const fileAcl = native.read(path);
+        native.protect(root, `D:P(A;OICI;FA;;;${native.sid})(A;OICI;FR;;;WD)`);
+        expect(native.read(root)).toContain(";;;WD)");
+        expect(native.read(directory)).toBe(pinned);
+        expect(native.read(path)).toBe(fileAcl);
+        state = new LocalState(path);
+        expect(await state.open(true)).toBeDefined();
+      } finally {
+        await state?.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+}
+
 test.skipIf(process.platform !== "win32")(
   "CLI ACL refusal ends its message with a directly executable PowerShell repair",
   async () => {

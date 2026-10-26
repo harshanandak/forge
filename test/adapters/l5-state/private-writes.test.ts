@@ -33,8 +33,8 @@ test("failed CLI folder hardening names the Forge folder without move guidance",
       message = String(error);
     }
     expect(attempts).toBe(1);
-    expect(message).toContain(
-      `The Forge folder could not be made private: ${root}.`,
+    expect(message).toBe(
+      `Error: Private ACL verification failed for ${root}. The Forge folder could not be made private.`,
     );
     expect(message).not.toContain("Move the store");
     expect(message).not.toContain("let Forge create");

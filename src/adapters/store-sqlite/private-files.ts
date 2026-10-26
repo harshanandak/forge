@@ -53,9 +53,10 @@ export function privateFileGuard(
     const entry = `(A;OICI;FA;;;${native.sid})`;
     const ownTrustees = [native.sid, ...(native.aliases ?? [])];
     const trustees = ownTrustees.join("|");
+    const borrowedDirectory = directory && options.protectDirectories === false;
     const privateAcl = (sddl: string): boolean =>
       new RegExp(
-        `^D:(?:P)?(?:AI)?\\(A;${directory ? "OICI(?:ID)?" : "(?:ID)?"};FA;;;(?:${trustees})\\)$`,
+        `^D:${directory && !borrowedDirectory ? "P(?:AI)?" : "(?:P)?(?:AI)?"}\\(A;${directory ? (borrowedDirectory ? "OICI(?:ID)?" : "OICI") : "(?:ID)?"};FA;;;(?:${trustees})\\)$`,
       ).test(sddl);
     try {
       if (!privateAcl(native.read(path))) {
@@ -74,7 +75,7 @@ export function privateFileGuard(
         throw new Error(
           options.protectDirectories === false
             ? `${prefix} Move the store into a folder only you can access.`
-            : `${prefix} The Forge folder could not be made private: ${path}.`,
+            : `${prefix} The Forge folder could not be made private.`,
           { cause: error },
         );
       let owner: string | undefined;
