@@ -48,6 +48,11 @@ async function store(path = ":memory:") {
   assert.equal(result.ok, true, JSON.stringify(result));
   return result.handle;
 }
+async function writeStoreImage(path, image) {
+  const handle = await store(path);
+  await handle.close();
+  writeFileSync(path, Buffer.from(image, "base64"));
+}
 async function filePair() {
   const directory = mkdtempSync(join(tmpdir(), "forge-whole-file-"));
   const handles = [
@@ -463,7 +468,7 @@ const cases = {
         "PRAGMA foreign_keys=OFF; INSERT INTO domain_child VALUES (99)",
       ]) {
         const path = join(dir, "candidate.db");
-        writeFileSync(path, Buffer.from(snapshot.image, "base64"));
+        await writeStoreImage(path, snapshot.image);
         const candidate = await store(path);
         if (sql.startsWith("PRAGMA foreign_keys=OFF")) {
           const { DatabaseSync } = await import("node:sqlite");
@@ -566,7 +571,7 @@ const cases = {
       ];
       for (const [sql, params] of corruptions) {
         const path = join(dir, "candidate.db");
-        writeFileSync(path, Buffer.from(snapshot.image, "base64"));
+        await writeStoreImage(path, snapshot.image);
         const candidate = await store(path);
         let image;
         try {
