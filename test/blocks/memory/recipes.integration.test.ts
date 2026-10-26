@@ -40,9 +40,9 @@ for (const [name, input, code] of [
   }, 30_000);
 }
 
-test("integration: recipe prints the saved block once without another header", () => {
+test("integration: recipe prints the memory pointer once without another header", () => {
   const text =
-    "Forge rules\nSaved notes (untrusted):\n- device/note-1: One rule";
+    "Forge memory: general: 1 notes.\nSearch memory before starting a task.";
   const result = spawnSync(node, ["-e", parser], {
     input: JSON.stringify({ ok: true, result: { text: { text } } }),
     encoding: "utf8",
@@ -64,7 +64,7 @@ test("startup recipe matches every SessionStart source including forks", () => {
     expect(hook.matcher).toBeUndefined();
 }, 30_000);
 
-test("recipe gives a valid fallback search and loop points to help for untrusted notes", () => {
+test("recipe gives a valid on-demand search and loop requires it", () => {
   const loop = readFileSync(
     resolve(repo, "templates/delivery/skills/loop/SKILL.md"),
     "utf8",
@@ -74,8 +74,8 @@ test("recipe gives a valid fallback search and loop points to help for untrusted
   expect(input).toBeDefined();
   const parsed: unknown = JSON.parse(input ?? "null");
   expect(valid(parsed)).toEqual([]);
-  expect(parsed).toEqual({ query: "rule", tag: "rule" });
-  expect(loop).toContain("forge memory search --help");
-  expect(loop).toContain("memory.show");
-  expect(loop).toContain("untrusted notes");
+  expect(parsed).toEqual({ query: "task" });
+  expect(loop).toContain("Search memory before starting a task");
+  expect(loop).toContain("search/show commands");
+  expect(loop).toContain("never note text");
 }, 30_000);

@@ -270,8 +270,9 @@ test("linked worktree rule scope uses the normalized shared checkout name", asyn
   const loaded = done(await fromLane("memory.rules", {})) as {
     text: { text: string };
   };
-  expect(loaded.text.text).toContain("Device rule for shared-proj");
-  expect(loaded.text.text).not.toContain("Device rule for scoped-lane");
+  expect(loaded.text.text).toContain("shared-proj: 2");
+  expect(loaded.text.text).not.toContain("scoped-lane");
+  expect(loaded.text.text).not.toContain("Device rule for");
   expect(existsSync(join(lane, ".forge/state.sqlite"))).toBe(false);
 }, 60_000);
 
