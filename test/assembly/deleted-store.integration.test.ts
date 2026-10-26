@@ -34,7 +34,11 @@ function project() {
     cli(args: string[], status: number): ResultEnvelope {
       const result = spawnSync("node", [bin, ...args], {
         cwd: root,
-        env: { ...process.env, FORGE_DEVICE_ROOT: device },
+        env: {
+          ...process.env,
+          FORGE_DEVICE_ROOT: device,
+          FORGE_SESSION: "deleted-store",
+        },
         encoding: "utf8",
         windowsHide: true,
         timeout: 30_000,
