@@ -676,22 +676,24 @@ export async function createAssembly(
       ...snapshot(callScope()).candidates,
     ],
     async invoke(request) {
-      let derived: readonly DetectionObservation[];
+      const derived: DetectionObservation[] = [];
+      const call = callScope(derived);
       try {
-        derived = [
+        derived.push(
           ...(await idPrefixObservation(root, stateRoot, options.providers)),
-          ...(callScope()
-            .config.show()
+        );
+        if (
+          call.config
+            .show()
             .instances.some(
               (instance) => instance.name === "agent" && instance.enabled,
             )
-            ? agentAdapterObservation()
-            : []),
-        ];
+        )
+          derived.push(...agentAdapterObservation());
       } catch (error) {
         return failure(request.op, error);
       }
-      const result = await direct.invoke(callScope(derived), request);
+      const result = await direct.invoke(call, request);
       if (
         !result.ok &&
         process.env.T3CODE_CLI_PATH &&
