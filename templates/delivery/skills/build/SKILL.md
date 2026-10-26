@@ -7,7 +7,7 @@ description: "Use when implementing a slice: claiming it, getting an isolated wo
 
 ## Claim
 
-1. `export FORGE_SESSION=<your task name>` first. Two CLI agents in one checkout must never share a claim.
+1. T3 chats use the session step in `loop` first. Separate CLI workers: `export FORGE_SESSION=<your task name>` before claiming.
 2. `forge issue claim --input '{"id":"<slice>","ttlSeconds":{{values.claims.ttlSeconds}}}'`.
 3. Refused because someone holds it: do not start. Steer the live worker instead. Never two workers on one slice.
 4. During long work, renew before the claim lapses: `forge issue renew --input '{"id":"<slice>","ttlSeconds":{{values.claims.ttlSeconds}}}'`.

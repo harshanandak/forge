@@ -681,7 +681,23 @@ export async function createAssembly(
       } catch (error) {
         return failure(request.op, error);
       }
-      return direct.invoke(callScope(derived), request);
+      const result = await direct.invoke(callScope(derived), request);
+      if (
+        !result.ok &&
+        process.env.T3CODE_CLI_PATH &&
+        !process.env.FORGE_SESSION?.trim() &&
+        result.error.lease?.holder?.session.id.startsWith("t3:") &&
+        (result.error.code === "LEASE_HELD" ||
+          result.error.code === "LEASE_NOT_HELD")
+      )
+        return {
+          ...result,
+          error: {
+            ...result.error,
+            message: `${result.error.message}\nSame T3 chat after a harness switch? Rerun with FORGE_SESSION=t3:<threadId> from t3_thread_configuration. Separate workers: keep your own session and stop.`,
+          },
+        };
+      return result;
     },
   };
   const direct = {

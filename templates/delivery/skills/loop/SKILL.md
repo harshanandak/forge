@@ -9,6 +9,8 @@ Every wake is a fresh read. Never trust what you remember: read, act, then stop.
 
 ## Wake
 
+In T3 chats, call the t3-code MCP tool `t3_thread_configuration` once with no arguments. Use its `threadId` to export `FORGE_SESSION=t3:<threadId>` for every forge command, including after a harness switch. Workers you launch keep their own task session, never the chat's `t3:` session.
+
 1. Work: `forge issue ready --input '{}'` (ranked by priority label), `forge issue stale --input '{}'`, then `forge issue show --input '{"id":"<id>"}'` for your slice.
 2. PRs: `gh pr view <n> --json state,headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`. In T3 Code, `list_thread_pull_requests` lists the PRs linked to this thread.
 3. Act only on what changed since your last push, then stop. Forge never watches: the harness wakes you (T3 `watch_pull_request`, Claude Code Monitor or `/loop`).
@@ -57,7 +59,7 @@ Slice: <issue id>. Read it with forge issue show; its body is the spec.
 End state: <PR open with every check passing | fix batch pushed>.
 Stop rule: stop at push. Never merge. Do not merge the base branch unless asked.
 Receipts: red, then green, for <named check>; then every check on the final tree.
-Session: export FORGE_SESSION=<your task name> before any claim.
+Session: export FORGE_SESSION=<your task name> before any claim; never use the chat's t3: session.
 Adopted decision titles: see below for pagination.
 ```
 

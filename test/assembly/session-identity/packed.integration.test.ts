@@ -66,6 +66,7 @@ function fixture() {
     "CODEX_THREAD_ID",
     "CODEX_SESSION_ID",
     "CODEX_COMPANION_SESSION_ID",
+    "T3CODE_CLI_PATH",
   ])
     delete base[key];
   function cli(
@@ -73,10 +74,11 @@ function fixture() {
     input: object,
     env: NodeJS.ProcessEnv = {},
     expected: boolean | null = true,
+    noun = "issue",
   ) {
     const result = spawnSync(
       "node",
-      [bin, "issue", verb, "--input", JSON.stringify(input)],
+      [bin, noun, verb, "--input", JSON.stringify(input)],
       {
         cwd: root,
         env: { ...base, ...env },
@@ -231,6 +233,111 @@ function foreignWritesRefused(
   }
   return results;
 }
+
+test.each([
+  {
+    name: "same chat after switching",
+    holder: "t3:chat",
+    caller: {},
+    t3: true,
+    hint: true,
+  },
+  {
+    name: "separate worker",
+    holder: "t3:chat",
+    caller: { FORGE_SESSION: "worker" },
+    t3: true,
+    hint: false,
+  },
+  {
+    name: "non-T3 holder",
+    holder: "other-chat",
+    caller: {},
+    t3: true,
+    hint: false,
+  },
+  { name: "outside T3", holder: "t3:chat", caller: {}, t3: false, hint: false },
+])(
+  "T3 lease recovery hint: $name",
+  ({ holder, caller, t3, hint }) => {
+    const f = fixture();
+    try {
+      const id = f.create();
+      const claude = {
+        CLAUDE_CODE_SESSION_ID: "claude-chat",
+        FORGE_SESSION: holder,
+      };
+      const codex = { CODEX_SESSION_ID: "codex-chat", ...caller };
+      f.cli("claim", { id }, claude);
+      for (const [verb, code] of [
+        ["claim", "LEASE_HELD"],
+        ["renew", "LEASE_NOT_HELD"],
+      ] as const) {
+        const plain = f.cli(verb, { id }, codex, false);
+        const result = f.cli(
+          verb,
+          { id },
+          { ...codex, ...(t3 ? { T3CODE_CLI_PATH: "disposable-t3-cli" } : {}) },
+          false,
+        );
+        expect(result.error?.code).toBe(code);
+        expect(plain.error?.code).toBe(code);
+        expect(plain.error?.message).not.toContain("t3_thread_configuration");
+        expect(result.error?.message).toBe(
+          `${plain.error?.message}${hint ? "\nSame T3 chat after a harness switch? Rerun with FORGE_SESSION=t3:<threadId> from t3_thread_configuration. Separate workers: keep your own session and stop." : ""}`,
+        );
+      }
+      expect(f.cli("show", { id }).result?.lease?.holder.session.id).toBe(
+        holder,
+      );
+      if (!hint) return;
+      f.cli("release", { id }, claude);
+      const shared = {
+        FORGE_SESSION: "t3:chat",
+        T3CODE_CLI_PATH: "disposable-t3-cli",
+      };
+      f.cli("claim", { id }, { ...claude, ...shared });
+      f.cli("renew", { id }, { ...codex, ...shared });
+      expect(f.cli("show", { id }).result?.lease?.holder.session).toMatchObject(
+        {
+          id: "t3:chat",
+          harness: "codex",
+        },
+      );
+    } finally {
+      f.cleanup();
+    }
+  },
+  120_000,
+);
+
+test("T3 no-lease refusal gives no chat recovery hint", () => {
+  const f = fixture();
+  try {
+    const id = f.create();
+    const result = f.cli(
+      "call",
+      {
+        op: "issue.renew",
+        input: { id },
+        context: {
+          actor: { kind: "human", id: "local-cli" },
+          project: { id: f.root, root: f.root },
+          session: { id: "worker", device: "disposable-device" },
+          leaseGeneration: 1,
+        },
+      },
+      { T3CODE_CLI_PATH: "disposable-t3-cli" },
+      false,
+      "catalog",
+    );
+    expect(result.error?.code).toBe("LEASE_NOT_HELD");
+    expect(result.error?.message).toMatch(/^issue:\S+ has no lease$/);
+    expect(result.error?.message).not.toContain("t3_thread_configuration");
+  } finally {
+    f.cleanup();
+  }
+}, 30_000);
 
 test("CLI persisted device identity fences all holder writes after same-path device replacement without leaking paths", () => {
   const f = fixture();
