@@ -1,2 +1,3 @@
 id: codex
+skills: .agents/skills
 detect: [CODEX_THREAD_ID]

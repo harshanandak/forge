@@ -311,6 +311,93 @@ test("the lint rejects unknown operations and oversized skills; core and human-o
   ]);
 }, 30_000);
 
+const routingCases: readonly [string, string][] = [
+  ["gpt-5", "gpt-custom"],
+  ["gpt-6.1-sol", "GPT 6.1 Sol"],
+  ["claude-opus-4-6", "claude-code"],
+  ["claude-sonnet-4", ".claude-plugin"],
+  ["claude-haiku-4", "Claude Code"],
+  ["claude-fable-1", "claude-helper"],
+  ["claude-3-7", "claude-model"],
+  ["gemini-3-pro", "Gemini 3 Pro"],
+  ["deepseek-v4", "deepseeker"],
+  ["o3", "o3-mini"],
+  ["Opus", "opuses"],
+  ["Sonnet", "sonnets"],
+  ["Haiku", "haikus"],
+  ["--model gpt-5", "--model ${MODEL}"],
+  ["--model=gpt-5", '--model "$MODEL"'],
+  ["-m gpt-5", "git commit -m message"],
+  ["-m gpt-5", 'git commit -m "..."'],
+  ["python -m gpt-5", "python -m pytest"],
+  ["grep -m o3", "grep -m 1"],
+  ["--model deepseek-v4", "--model custom"],
+  ["--model gpt-5", "Mental model"],
+  ["effort: minimal", "effort: minimalism"],
+  ["effort: low", "effort: lower"],
+  ["effort: medium", "effort: medium-sized"],
+  ["effort: high", "Effort: one line"],
+  ["effort: xhigh", "effort: xhigher"],
+  ["effort: max", "effort: maximum"],
+  ["effort=high", "effort=high-level"],
+  ["reasoning: high", "reasoning: high-level"],
+  ["reasoning=high", "reasoning=high-level"],
+  ["reasoning_effort: high", "reasoning_effort: default"],
+  ["reasoning_effort=high", "reasoning_effort=default"],
+  ["model_reasoning_effort: high", "model_reasoning_effort: default"],
+  ["model_reasoning_effort=high", "model_reasoning_effort=default"],
+  ["-c effort=high", "-c effort=default"],
+  ["-c reasoning=high", "-c reasoning=default"],
+  ["-c reasoning_effort=high", "-c reasoning_effort=default"],
+  ["-c model_reasoning_effort=high", "-c model_reasoning_effort=default"],
+  ["--effort high", "--effort high-level"],
+  ["--effort=high", "--effort=default"],
+  ["reasoning high", "reasoning high-level"],
+  ["reasoning minimal", "reasoning none"],
+  ["effort: high", "reasoningEffort: high"],
+  ['"effort": "high"', '"effort": "<effort>"'],
+  ['{"reasoning": "high"}', '{"reasoning": "<effort>"}'],
+  ['model_reasoning_effort="high"', 'model_reasoning_effort="{effort}"'],
+  ["gpt-5", "<gpt-5>"],
+  ["claude-opus-4-6", "{claude-opus-4-6}"],
+  ["gpt-5", "{{gpt-5}}"],
+  ["reasoning high", "<reasoning high>"],
+  ["effort: high", "effort: {high}"],
+  ["<!-- --model gpt-5 -->", "--model <model id>"],
+  ["--effort high", "--effort <effort>"],
+  ["-m o3", "-m {model}"],
+  [
+    "reasoning high",
+    "Implemented: <display name> (<model id>, reasoning <effort>) via <harness>",
+  ],
+  ["gpt-5", "Codex and T3 Code select the model."],
+];
+
+test.each(routingCases)(
+  "the lint rejects literal routing in %s",
+  (body) => {
+    const front = "---\nname: sample\ndescription: sample\n---\n\n";
+    for (const content of [body, `\`${body}\``]) {
+      const problems = lintSkill(`${front}${content}\n`, []);
+      expect(problems.length).toBeGreaterThan(0);
+      expect(problems[0]).toContain("literal model or effort");
+      expect(problems[0]).toContain("line 6");
+      expect(problems[0]).toMatch(/in `.+` on line 6$/);
+    }
+  },
+  30_000,
+);
+
+test.each(routingCases)(
+  "the lint allows the paired alternative to %s: %s",
+  (_body, allowed) => {
+    const front = "---\nname: sample\ndescription: sample\n---\n\n";
+    for (const content of [allowed, `\`${allowed}\``])
+      expect(lintSkill(`${front}${content}\n`, [])).toEqual([]);
+  },
+  30_000,
+);
+
 test("input fields are shown for display only; non-object and $ref/anyOf inputs never become syntax", () => {
   const base = candidate("sample.echo");
   const properties = {

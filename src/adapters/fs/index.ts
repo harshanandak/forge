@@ -16,6 +16,7 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
   writeSync,
@@ -93,6 +94,25 @@ function resolveIn(root: string, path: string, finalLink: FinalLink): string {
     current = real;
   }
   return current;
+}
+
+/** Prune only empty parents of a deleted file, through the named containing folder. */
+export function removeEmptyParents(
+  root: string,
+  path: string,
+  folder: string,
+): void {
+  let parent = path.split("/").slice(0, -1).join("/");
+  while (parent === folder || parent.startsWith(`${folder}/`)) {
+    try {
+      rmdirSync(resolveIn(root, parent, "refuse"));
+    } catch (error) {
+      if (errorCode(error) === "ENOTEMPTY" || errorCode(error) === "EEXIST")
+        return;
+      if (errorCode(error) !== "ENOENT") throw error;
+    }
+    parent = parent.split("/").slice(0, -1).join("/");
+  }
 }
 
 export function nodeConfigFiles(root: string): ConfigFiles {
