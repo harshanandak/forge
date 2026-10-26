@@ -646,6 +646,50 @@ async function levels() {
   console.log("PASS levels");
 }
 
+async function rules() {
+  const empty = cli(["memory", "rules"]).result;
+  assert.match(empty.text.text, /^Forge rules\n/);
+  assert.equal(
+    existsSync(deviceRoot),
+    false,
+    "empty rules create no device store",
+  );
+  assert.equal(
+    existsSync(join(root, ".forge")),
+    false,
+    "empty rules create no project",
+  );
+  setup("memory");
+  const add = (text, level, tags) =>
+    cli(["memory", "add", "--input", JSON.stringify({ text, level, tags })])
+      .result;
+  const device = add("Use short startup rules", "device", ["rule", "migrated"]);
+  const project = add("Run the project checks", "project", ["rule"]);
+  add("Keep this ordinary note out", "device", ["preference"]);
+  const loaded = cli(["memory", "rules"]).result;
+  assert.equal(loaded.text.kind, "untrusted");
+  assert.ok(
+    loaded.text.text.includes(`${device.id}: Use short startup rules`),
+    "device rule loaded at session start",
+  );
+  assert.ok(loaded.text.text.includes(`${project.id}: Run the project checks`));
+  assert.ok(!loaded.text.text.includes("ordinary note"));
+  assert.equal(loaded.truncated, false);
+  assert.ok(loaded.text.text.length <= 1200);
+  const outside = join(work, "outside");
+  mkdirSync(outside);
+  const deviceOnly = cli(["memory", "rules"], 0, outside).result;
+  assert.ok(deviceOnly.text.text.includes(device.id));
+  assert.ok(!deviceOnly.text.text.includes(project.id));
+  assert.equal(existsSync(join(outside, ".forge")), false);
+  add("Long device rule " + "x".repeat(2000), "device", ["rule"]);
+  const capped = cli(["memory", "rules"]).result;
+  assert.equal(capped.truncated, true);
+  assert.ok(capped.text.text.length <= 1200);
+  assert.ok(capped.text.text.includes(project.id));
+  console.log("PASS rules");
+}
+
 const journeys = {
   device,
   anywhere,
@@ -653,6 +697,7 @@ const journeys = {
   initializeSession,
   fence,
   levels,
+  rules,
 };
 
 // Each journey has its own deadline; a journey spawns the CLI a dozen or so times.

@@ -111,6 +111,9 @@ const DECISION_END = "decision/\u{10FFFF}";
 const DECISION_ID_PREFIX = "decision-id/";
 const DECISION_COUNTER = "meta/decision-counter";
 const SEARCH_WINDOW = 1000;
+const RULE_SCAN = 100;
+const RULE_CHARS = 1200;
+const RULE_TRUNCATED = "\n[truncated]";
 const EXPORT_READ = 100;
 // The runtime stops a block after one second and refuses output over 1 MiB. A write costs a few
 // milliseconds and one operation is one commit, so a restore takes few notes; an export chunk is
@@ -491,6 +494,62 @@ const TOMBSTONE = {
 } as const;
 
 module.exports = {
+  "memory.rules": async ({ services }: { services: Services }) => {
+    const sources = [deviceSource(services.state)];
+    const project = services.levels.inProject
+      ? await ownProject(services)
+      : undefined;
+    if (project) sources.push(project);
+    let truncated = false;
+    const groups = sources
+      .map((source) => {
+        const records = notePage(source, {
+          limit: RULE_SCAN + 1,
+          descending: true,
+        });
+        if (records.length > RULE_SCAN) truncated = true;
+        return records
+          .slice(0, RULE_SCAN)
+          .filter(
+            (note) =>
+              note.value.deleted !== true && note.value.tags.includes("rule"),
+          );
+      })
+      .filter((notes) => notes.length > 0);
+    let text = "Forge rules\nSaved notes (untrusted):";
+    // Each matching level gets space, so one long device note cannot hide project rules.
+    const budget =
+      groups.length === 0
+        ? 0
+        : Math.floor(
+            (RULE_CHARS - text.length - RULE_TRUNCATED.length) / groups.length,
+          );
+    for (const notes of groups) {
+      let rendered = "";
+      for (const note of notes) {
+        const prefix = `\n- ${note.id}: `;
+        const body = neutralize(note.value.text);
+        const remaining = budget - rendered.length;
+        if (prefix.length + body.length <= remaining) {
+          rendered += prefix + body;
+          continue;
+        }
+        truncated = true;
+        const marker = " [clipped]";
+        if (remaining > prefix.length + marker.length)
+          rendered +=
+            prefix +
+            body.slice(0, remaining - prefix.length - marker.length) +
+            marker;
+        break;
+      }
+      text += rendered;
+    }
+    if (groups.length === 0) text += "\nNo matching rules.";
+    if (truncated) text += RULE_TRUNCATED;
+    return { text: fence(text, "memory:rules"), truncated };
+  },
+
   "memory.add": async ({
     input,
     config,
