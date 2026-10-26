@@ -169,6 +169,61 @@ test("lease: renewal needs the current generation from the holder, before expiry
   ).toMatchObject({ ok: false, error: { code: "LEASE_NOT_HELD" } });
 }, 30_000);
 
+test("lease: device-qualified holders ignore display metadata and reject device omission or changes", () => {
+  const holder: LeaseHolder = {
+    actor: { kind: "human", id: "local-cli" },
+    session: {
+      id: "chat",
+      device: "device-one",
+      agent: "first",
+      harness: "claude-code",
+    },
+  };
+  const lease = leased(holder, 1, HOUR);
+  const request = (candidate: LeaseHolder) =>
+    decideLease(lease, {
+      mode: "held",
+      subject: "w",
+      generation: 1,
+      nowMs: 10,
+      holder: candidate,
+    });
+  expect(
+    request({
+      ...holder,
+      session: { ...holder.session, agent: "second", harness: "codex" },
+    }).ok,
+  ).toBe(true);
+  for (const candidate of [
+    { ...holder, session: { ...holder.session, device: "device-two" } },
+    { ...holder, session: { ...holder.session, id: "other-chat" } },
+    { ...holder, session: { id: "chat" } },
+  ])
+    expect(request(candidate)).toMatchObject({
+      ok: false,
+      error: { code: "LEASE_NOT_HELD" },
+    });
+  expect(
+    decideLease(leased({ ...holder, session: { id: "chat" } }, 1, HOUR), {
+      mode: "held",
+      subject: "w",
+      generation: 1,
+      nowMs: 10,
+      holder,
+    }),
+  ).toMatchObject({ ok: false, error: { code: "LEASE_NOT_HELD" } });
+  // Explicit contexts without a device retain their actor boundary.
+  expect(
+    decideLease(leased(a, 1, HOUR), {
+      mode: "held",
+      subject: "w",
+      generation: 1,
+      nowMs: 10,
+      holder: { actor: b.actor, session: a.session },
+    }),
+  ).toMatchObject({ ok: false, error: { code: "LEASE_NOT_HELD" } });
+}, 30_000);
+
 test("lease: anyone, including the previous holder, reacquires only after expiry; release then claim is generation + 1", () => {
   expect(
     decideLease(leased(a, 1, HOUR), {

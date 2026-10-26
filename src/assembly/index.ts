@@ -1231,15 +1231,40 @@ export function localContext(
     actor,
     project: { id: assembly.root, root: assembly.root },
     device: { id: assembly.deviceRoot },
-    ...(session === undefined ? {} : { session: { id: session } }),
+    ...(session === undefined
+      ? {}
+      : {
+          session: {
+            id: session,
+            device: assembly.deviceRoot,
+            harness: localHarness(),
+            agent: process.env.FORGE_AGENT || localHarness(),
+          },
+        }),
   };
 }
 /**
- * The caller's session: FORGE_SESSION when set, otherwise the given fallback. The CLI falls back to
- * one fixed session so separate commands share a claim; each MCP server falls back to its own.
+ * Codex takes precedence over an inherited Claude session when it runs inside Claude Code.
+ * A manual CLI shares the fallback; each MCP server supplies its own fallback.
  */
 export function localSession(fallback: string): string {
-  return process.env.FORGE_SESSION || fallback;
+  return (
+    process.env.FORGE_SESSION ||
+    process.env.CODEX_THREAD_ID ||
+    process.env.CODEX_SESSION_ID ||
+    process.env.CLAUDE_CODE_SESSION_ID ||
+    fallback
+  );
+}
+function localHarness(): string {
+  return (
+    process.env.FORGE_HARNESS ||
+    (process.env.CODEX_THREAD_ID || process.env.CODEX_SESSION_ID
+      ? "codex"
+      : process.env.CLAUDE_CODE_SESSION_ID
+        ? "claude-code"
+        : "local-cli")
+  );
 }
 export async function createLocalAssembly(): Promise<Assembly> {
   const root = process.cwd();
