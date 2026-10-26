@@ -67,6 +67,13 @@ async function normalization() {
 const bin = fileURLToPath(new URL("dist/bin/forge.js", packageUrl));
 const mode = process.argv[2] ?? "all";
 const work = mkdtempSync(join(process.cwd(), "review-two-"));
+if (process.platform === "win32") {
+  const { windowsPrivateFiles } = await import(
+    new URL("dist/src/adapters/process/windows-acl.js", packageUrl)
+  );
+  const native = windowsPrivateFiles();
+  native.protect(work, `D:P(A;OICI;FA;;;${native.sid})`);
+}
 let cliCalls = 0;
 let cliTime = 0;
 function spawnCli(args, options) {

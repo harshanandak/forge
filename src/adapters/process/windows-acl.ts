@@ -27,6 +27,12 @@ export function windowsPrivateFiles(): PrivateFiles {
   const get = advapi.func(
     "bool __stdcall GetFileSecurityW(str16 path, uint32_t info, void *descriptor, uint32_t size, _Out_ uint32_t *needed)",
   );
+  const getOwner = advapi.func(
+    "bool __stdcall GetSecurityDescriptorOwner(void *descriptor, _Out_ void **owner, _Out_ int32_t *defaulted)",
+  );
+  const getNamed = advapi.func(
+    "uint32_t __stdcall GetNamedSecurityInfoW(str16 path, int type, uint32_t info, void *owner, void *group, void *dacl, void *sacl, _Out_ void **descriptor)",
+  );
   const toText = advapi.func(
     "bool __stdcall ConvertSecurityDescriptorToStringSecurityDescriptorW(void *descriptor, uint32_t revision, uint32_t info, _Out_ void **text, void *size)",
   );
@@ -54,6 +60,13 @@ export function windowsPrivateFiles(): PrivateFiles {
       free(pointer);
     }
   };
+  const descriptorSid = (descriptor: unknown): string => {
+    const owner: unknown[] = [null];
+    check(getOwner(descriptor, owner, [0]));
+    const text: unknown[] = [null];
+    check(sidText(owner[0], text));
+    return takeText(text[0]);
+  };
   const token: unknown[] = [null];
   check(tokenOpen(current(), 8, token));
   let sid: string;
@@ -66,14 +79,37 @@ export function windowsPrivateFiles(): PrivateFiles {
   } finally {
     close(token[0]);
   }
+  const aliases: string[] = [];
+  for (const alias of ["SY", "LS", "NS", "LA"]) {
+    const descriptor: unknown[] = [null];
+    try {
+      check(fromText(`O:${alias}`, 1, descriptor, null));
+      if (descriptorSid(descriptor[0]) === sid) aliases.push(alias);
+    } finally {
+      if (descriptor[0] !== null) free(descriptor[0]);
+    }
+  }
   return {
     sid,
-    read(path) {
+    aliases,
+    owner(path) {
       const bytes = Buffer.alloc(65536);
-      check(get(path, 4, bytes, bytes.length, [0]));
-      const text: unknown[] = [null];
-      check(toText(bytes, 1, 4, text, null));
-      return takeText(text[0]);
+      check(get(path, 1, bytes, bytes.length, [0]));
+      return descriptorSid(bytes);
+    },
+    read(path) {
+      // The named API resolves inherited ACE flags that GetFileSecurityW omits.
+      const descriptor: unknown[] = [null];
+      const status = getNamed(path, 1, 4, null, null, null, null, descriptor);
+      if (status !== 0)
+        throw new Error(`Windows security API failed (${String(status)})`);
+      try {
+        const text: unknown[] = [null];
+        check(toText(descriptor[0], 1, 4, text, null));
+        return takeText(text[0]);
+      } finally {
+        free(descriptor[0]);
+      }
     },
     protect(path, descriptor) {
       const pointer: unknown[] = [null];
