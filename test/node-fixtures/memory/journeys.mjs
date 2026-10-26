@@ -648,83 +648,86 @@ async function levels() {
 
 async function rules() {
   const empty = cli(["memory", "rules"]).result;
-  assert.match(empty.text.text, /^Forge rules\n/);
+  assert.match(empty.text.text, /^Forge memory: general: 0 notes\./);
   assert.equal(
     existsSync(deviceRoot),
     false,
-    "empty rules create no device store",
+    "empty pointer creates no device store",
   );
   assert.equal(
     existsSync(join(root, ".forge")),
     false,
-    "empty rules create no project",
+    "empty pointer creates no project",
   );
   setup("memory");
-  const add = (text, level, tags) =>
-    cli(["memory", "add", "--input", JSON.stringify({ text, level, tags })])
-      .result;
-  const device = add("Use short startup rules", "device", ["rule", "migrated"]);
-  const project = add("Run the project checks", "project", ["rule"]);
-  add("Keep this ordinary note out", "device", ["preference"]);
-  const writer = await host(root);
-  try {
-    for (let n = 0; n < 105; n += 1)
-      await writer.ok("memory.add", {
-        text: `Newer ordinary note ${n}`,
-        level: "device",
-        tags: [],
-      });
-    for (const [text, scope] of [
-      ["General startup rule", "general"],
-      ["Folder startup rule", mode === "rules" ? "myproj" : "project"],
-      ["Other project rule " + "x".repeat(2000), "scoreeasy"],
-    ])
-      await writer.ok("memory.add", {
-        text,
-        scope,
-        level: "device",
-        tags: ["rule"],
-      });
-  } finally {
-    await writer.close();
-  }
+  const marker = "task PRIVATE_STARTUP_MARKER\v\f\u0085\u2028\u2029";
+  const add = (level, scope, tags = []) =>
+    cli([
+      "memory",
+      "add",
+      "--input",
+      JSON.stringify({ text: marker, level, scope, tags }),
+    ]).result;
+  const device = add("device", "general", ["rule"]);
+  add("device", undefined);
+  const scope = mode === "rules" ? "myproj" : "project";
+  add("device", scope);
+  add("project", undefined);
+  add("project", "general");
+  add("device", "other-project", ["rule"]);
+  add("project", "other-project");
   const loaded = cli(["memory", "rules"]).result;
-  assert.equal(loaded.text.kind, "untrusted");
   assert.ok(
-    loaded.text.text.includes(`${device.id}: Use short startup rules`),
-    "device rule loaded at session start",
+    loaded.text.text.includes("general: 3"),
+    "general device notes are counted",
   );
-  assert.ok(loaded.text.text.includes(`${project.id}: Run the project checks`));
-  assert.ok(!loaded.text.text.includes("ordinary note"));
-  assert.ok(loaded.text.text.includes("General startup rule"));
-  assert.ok(loaded.text.text.includes("Folder startup rule"));
-  assert.ok(!loaded.text.text.includes("Other project rule"));
-  assert.equal(loaded.truncated, false);
-  assert.ok(loaded.text.text.length <= 1200);
-  const full = cli([
+  assert.ok(
+    loaded.text.text.includes(scope + ": 2"),
+    "current scope counts both levels",
+  );
+  assert.ok(loaded.text.text.length < 400);
+  const textOutput = spawnSync(
+    process.execPath,
+    [bin, "memory", "rules", "--text"],
+    {
+      cwd: root,
+      env,
+      encoding: "utf8",
+      timeout: 20000,
+      windowsHide: true,
+    },
+  );
+  assert.equal(textOutput.status, 0);
+  for (const output of [JSON.stringify(loaded), textOutput.stdout]) {
+    assert.ok(!output.includes("PRIVATE_STARTUP_MARKER"));
+    assert.ok(!output.includes(device.id));
+    assert.doesNotMatch(output, /[\v\f\u0085\u2028\u2029]/u);
+  }
+  assert.ok(loaded.text.text.includes("Search memory before starting a task."));
+  const commands = [
+    ...loaded.text.text.matchAll(
+      new RegExp("forge memory (search|show) --input '([^']+)'", "g"),
+    ),
+  ];
+  assert.deepEqual(
+    commands.map((match) => match[1]),
+    ["search", "show"],
+  );
+  const search = cli(["memory", "search", "--input", commands[0][2]]).result;
+  assert.ok(search.hits.length > 0);
+  const shown = cli([
     "memory",
-    "search",
+    "show",
     "--input",
-    '{"query":"rule","tag":"rule"}',
+    commands[1][2].replace("<id>", search.hits[0].id),
   ]).result;
-  assert.ok(
-    full.hits.some((hit) => hit.id === device.id),
-    "documented fallback search finds rules",
-  );
+  assert.equal(shown.note.text.text, marker);
   const outside = join(work, "outside");
   mkdirSync(outside);
   const deviceOnly = cli(["memory", "rules"], 0, outside).result;
-  assert.ok(deviceOnly.text.text.includes(device.id));
-  assert.ok(deviceOnly.text.text.includes("General startup rule"));
-  assert.ok(!deviceOnly.text.text.includes("Folder startup rule"));
-  assert.ok(!deviceOnly.text.text.includes("Other project rule"));
-  assert.ok(!deviceOnly.text.text.includes(project.id));
+  assert.ok(deviceOnly.text.text.includes("general: 2"));
+  assert.ok(!deviceOnly.text.text.includes(scope + ":"));
   assert.equal(existsSync(join(outside, ".forge")), false);
-  add("Long device rule " + "x".repeat(2000), "device", ["rule"]);
-  const capped = cli(["memory", "rules"]).result;
-  assert.equal(capped.truncated, true);
-  assert.ok(capped.text.text.length <= 1200);
-  assert.ok(capped.text.text.includes(project.id));
   console.log("PASS rules");
 }
 
