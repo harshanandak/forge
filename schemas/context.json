@@ -32,10 +32,14 @@
       "additionalProperties": false
     },
     "Session": {
+      "description": "A session may carry device identity and display metadata. Device plus id identifies local holders; agent and harness are descriptive only.",
       "type": "object",
       "required": ["id"],
       "properties": {
-        "id": { "type": "string", "minLength": 1, "maxLength": 200 }
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "device": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "agent": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "harness": { "type": "string", "minLength": 1, "maxLength": 200 }
       },
       "additionalProperties": false
     },

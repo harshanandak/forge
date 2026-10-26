@@ -25,6 +25,18 @@ export const eventKeyIndex: Migration = {
   ],
 };
 
+/** Older binaries must refuse stores whose lease authority uses device and session. */
+export const deviceSessionIdentity: Migration = {
+  id: "003_device_session_identity",
+  statements: ["SELECT 1"],
+};
+
+export const stateMigrations: readonly Migration[] = [
+  baseline,
+  eventKeyIndex,
+  deviceSessionIdentity,
+];
+
 export function identifier(value: string): string {
   if (!/^[a-z][a-z0-9_]*$/.test(value))
     throw new Error("Invalid SQL identifier");
@@ -68,7 +80,7 @@ export class NewerStoreError extends Error {
 
 export function migrate(
   db: SqlDatabase,
-  migrations: readonly Migration[] = [baseline],
+  migrations: readonly Migration[] = stateMigrations,
   after?: () => void,
 ): void {
   const ids = new Set<string>();

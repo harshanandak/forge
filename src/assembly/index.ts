@@ -64,6 +64,11 @@ import {
   validateConfigValue,
 } from "./declarations.ts";
 import { LocalState } from "./state.ts";
+import {
+  harnessIdentity,
+  localIdentityResolver,
+  sessionIdentity,
+} from "./identity.ts";
 import { syncSkills, type TemplateFile } from "./skills.ts";
 import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
 import { openLevels, PROJECT_STATE, requireRegisteredStore } from "./levels.ts";
@@ -676,7 +681,23 @@ export async function createAssembly(
       } catch (error) {
         return failure(request.op, error);
       }
-      return direct.invoke(callScope(derived), request);
+      const result = await direct.invoke(callScope(derived), request);
+      if (
+        !result.ok &&
+        process.env.T3CODE_CLI_PATH &&
+        !process.env.FORGE_SESSION?.trim() &&
+        result.error.lease?.holder?.session.id.startsWith("t3:") &&
+        (result.error.code === "LEASE_HELD" ||
+          result.error.code === "LEASE_NOT_HELD")
+      )
+        return {
+          ...result,
+          error: {
+            ...result.error,
+            message: `${result.error.message}\nSame T3 chat after a harness switch? Rerun with FORGE_SESSION=t3:<threadId> from t3_thread_configuration. Separate workers: keep your own session and stop.`,
+          },
+        };
+      return result;
     },
   };
   const direct = {
@@ -1231,15 +1252,23 @@ export function localContext(
     actor,
     project: { id: assembly.root, root: assembly.root },
     device: { id: assembly.deviceRoot },
-    ...(session === undefined ? {} : { session: { id: session } }),
+    ...(session === undefined
+      ? {}
+      : {
+          session: {
+            id: session.trim(),
+            harness: localHarness(),
+            agent: process.env.FORGE_AGENT?.trim() || localHarness(),
+          },
+        }),
   };
 }
-/**
- * The caller's session: FORGE_SESSION when set, otherwise the given fallback. The CLI falls back to
- * one fixed session so separate commands share a claim; each MCP server falls back to its own.
- */
+/** Each native harness session contributes to one tagged, ordered identity. */
 export function localSession(fallback: string): string {
-  return process.env.FORGE_SESSION || fallback;
+  return sessionIdentity(process.env, fallback);
+}
+function localHarness(): string {
+  return harnessIdentity(process.env);
 }
 export async function createLocalAssembly(): Promise<Assembly> {
   const root = process.cwd();
@@ -1251,14 +1280,18 @@ export async function createLocalAssembly(): Promise<Assembly> {
 
 export function localCall(
   assembly: Assembly,
-  session: string = localSession("local-cli"),
 ): import("../surface/dispatch.ts").CallOptions {
   return {
     caller: "human",
     context: localContext(
       assembly,
       { kind: "human", id: "local-cli" },
-      session,
+      localSession("local-cli"),
+    ),
+    resolveContext: localIdentityResolver(
+      assembly.deviceRoot,
+      { ...process.env },
+      process.stdin.isTTY === true,
     ),
   };
 }

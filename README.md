@@ -71,6 +71,46 @@ The globally installed `forge` command also runs the installed entry point.
 Windows measurements and the profiling method are in
 [Local read performance](docs/local-read-performance.md).
 
+## Claim identity
+
+An issue claim belongs to a device plus a session. Agent and harness names are
+labels: renewal records the current caller's names, and refusals and `issue show`
+identify the holder. CLI and MCP calls keep their own caller classification;
+renewal and release events name the caller that performed the operation.
+
+A trimmed, nonempty `FORGE_SESSION` takes precedence. Otherwise Forge combines
+the native Codex and Claude session IDs present, in that fixed order, into a
+readable key tagged `codex:<id>` and `claude-code:<id>`, joined with `+`.
+IDs are percent-encoded to keep separators unambiguous. Codex uses its root
+`CODEX_SESSION_ID`, falling back to `CODEX_THREAD_ID` on older builds;
+Claude uses `CLAUDE_CODE_SESSION_ID`. Nested harnesses
+get distinct identities; native subagents inheriting the same IDs share their
+session intentionally. `CODEX_COMPANION_SESSION_ID` is plugin metadata and does
+not count. Without a session source, a terminal with TTY stdin uses `local-cli`;
+non-TTY CLI and MCP calls refuse every leased operation, including claims,
+renewals and releases. Set `FORGE_SESSION` for those calls. To recover a claim
+made from an interactive terminal, set `FORGE_SESSION=local-cli` on the same
+device.
+
+Forge creates a device ID as `<sanitized-lowercase-hostname>-<UUID>` once in
+`device-id` under `FORGE_DEVICE_ROOT` (default `~/.forge`) and reads it thereafter.
+The hostname uses only lowercase letters, digits and hyphens, with `device` as
+the fallback. Existing identity files are preserved. `FORGE_DEVICE_ID` overrides that
+file for cloned images and CI. An unavailable identity refuses acquisition rather
+than using the root path. Reads do not create identity files. Deliberately sharing
+a claim across harnesses requires the same `FORGE_SESSION`; across machines it
+also requires the same `FORGE_DEVICE_ID`, because device remains part of the key.
+
+This release makes a one-way state-store upgrade. Back up project and device
+stores before upgrading, and upgrade every Forge installation on a machine
+together. Pre-change builds fail against upgraded stores with schema or context
+errors; they do not reliably recognize the new migration marker. The device
+store also carries the marker, so old-build writes fail across all projects on
+that machine. Retain migration `003_device_session_identity`; rollback requires
+restoring the pre-upgrade backups and using the older build. Existing leases without a device
+still accept their original actor and session. See the
+[work block documentation](src/blocks/work/README.md) for the full rules.
+
 ## Device memory
 
 Device memory works from any folder, without importing a template or creating a

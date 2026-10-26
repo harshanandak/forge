@@ -33,10 +33,16 @@ export type LeaseDecision =
 
 function sameHolder(a: LeaseHolder, b: LeaseHolder): boolean {
   return (
-    a.actor.kind === b.actor.kind &&
-    a.actor.id === b.actor.id &&
-    a.session.id === b.session.id
+    a.session.id === b.session.id &&
+    (a.session.device !== undefined
+      ? a.session.device === b.session.device
+      : a.actor.kind === b.actor.kind && a.actor.id === b.actor.id)
   );
+}
+
+function holderDescription(holder: LeaseHolder): string {
+  const { actor, session } = holder;
+  return `device ${session.device ?? "unspecified"}, agent ${session.agent ?? actor.id}, harness ${session.harness ?? "unspecified"}, session ${session.id}`;
 }
 
 function isLive(lease: LeaseRecord, nowMs: number): boolean {
@@ -81,7 +87,7 @@ export function decideLease(
         "LEASE_HELD",
         subject,
         current,
-        `${subject} is leased until ${current.expiresAt}; read its state to reconcile instead of retrying`,
+        `${subject} is leased by ${holderDescription(current.holder)} until ${current.expiresAt}; read its state to reconcile instead of retrying`,
       );
     }
     const generation = current.generation + 1;
@@ -133,7 +139,7 @@ export function decideLease(
       "LEASE_NOT_HELD",
       subject,
       current,
-      `${subject} is not leased by this actor and session`,
+      `${subject} is leased by ${holderDescription(current.holder)} until ${current.expiresAt}; this caller does not hold that lease`,
     );
   }
   if (Date.parse(current.expiresAt) <= nowMs) {
