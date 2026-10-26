@@ -8,6 +8,7 @@ import type {
   ListItemsInput,
   ItemRef,
   LeaseGrant,
+  LeaseHolder,
   StateEvent,
 } from "../../generated/types.ts";
 
@@ -393,11 +394,15 @@ function grant(
   ids: Ids,
 ): LeaseGrant {
   const read = state.lease(key(id));
+  const identity = ({ actor, session }: LeaseHolder): unknown =>
+    session.device === undefined
+      ? { actor, id: session.id }
+      : { device: session.device, id: session.id };
   // A replay returns the original expiry even if a later renewal extended the current lease.
   if (
     !read ||
     read.generation !== lease.generation ||
-    canonical(read.holder) !== canonical(lease.holder)
+    canonical(identity(read.holder)) !== canonical(identity(lease.holder))
   )
     fail("INTERNAL", "Accepted lease did not match its readback");
   return {

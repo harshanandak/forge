@@ -7,6 +7,7 @@ import type { Assembly } from "./index.ts";
 import { randomUUID } from "node:crypto";
 import { localContext, localSession } from "./index.ts";
 import { StateUnavailable } from "./state.ts";
+import { localIdentityResolver } from "./identity.ts";
 
 /** Hidden, unadmitted names still reach the same runtime refusal through direct MCP calls. */
 export function assemblyMcp(assembly: Assembly): McpTransportPort {
@@ -36,9 +37,16 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
         localSession(`mcp-${randomUUID()}`),
       );
       const exposure = assembly.exposure;
+      const resolveContext = localIdentityResolver(
+        assembly.deviceRoot,
+        false,
+        { ...process.env },
+        process.stdin.isTTY === true,
+      );
       const handlers = () =>
         createMcpHandlers(assembly.catalog, exposure, {
           context,
+          resolveContext,
         });
       const { createMcpTransport } =
         await import("../adapters/mcp-transport/index.ts");
@@ -73,6 +81,7 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
               : dispatch(assembly.catalog, candidate.op, args, {
                   caller: "agent",
                   context,
+                  resolveContext,
                   ...(exposure.readOnly === undefined
                     ? {}
                     : { readOnly: exposure.readOnly }),

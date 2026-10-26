@@ -64,6 +64,11 @@ import {
   validateConfigValue,
 } from "./declarations.ts";
 import { LocalState } from "./state.ts";
+import {
+  harnessIdentity,
+  localIdentityResolver,
+  sessionIdentity,
+} from "./identity.ts";
 import { syncSkills, type TemplateFile } from "./skills.ts";
 import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
 import { openLevels, PROJECT_STATE, requireRegisteredStore } from "./levels.ts";
@@ -1235,36 +1240,19 @@ export function localContext(
       ? {}
       : {
           session: {
-            id: session,
-            device: assembly.deviceRoot,
+            id: session.trim(),
             harness: localHarness(),
-            agent: process.env.FORGE_AGENT || localHarness(),
+            agent: process.env.FORGE_AGENT?.trim() || localHarness(),
           },
         }),
   };
 }
-/**
- * Codex takes precedence over an inherited Claude session when it runs inside Claude Code.
- * A manual CLI shares the fallback; each MCP server supplies its own fallback.
- */
+/** Each native harness session contributes to one tagged, ordered identity. */
 export function localSession(fallback: string): string {
-  return (
-    process.env.FORGE_SESSION ||
-    process.env.CODEX_THREAD_ID ||
-    process.env.CODEX_SESSION_ID ||
-    process.env.CLAUDE_CODE_SESSION_ID ||
-    fallback
-  );
+  return sessionIdentity(process.env, fallback);
 }
 function localHarness(): string {
-  return (
-    process.env.FORGE_HARNESS ||
-    (process.env.CODEX_THREAD_ID || process.env.CODEX_SESSION_ID
-      ? "codex"
-      : process.env.CLAUDE_CODE_SESSION_ID
-        ? "claude-code"
-        : "local-cli")
-  );
+  return harnessIdentity(process.env);
 }
 export async function createLocalAssembly(): Promise<Assembly> {
   const root = process.cwd();
@@ -1276,14 +1264,20 @@ export async function createLocalAssembly(): Promise<Assembly> {
 
 export function localCall(
   assembly: Assembly,
-  session: string = localSession("local-cli"),
+  session?: string,
 ): import("../surface/dispatch.ts").CallOptions {
   return {
     caller: "human",
     context: localContext(
       assembly,
       { kind: "human", id: "local-cli" },
-      session,
+      session?.trim() || localSession("local-cli"),
+    ),
+    resolveContext: localIdentityResolver(
+      assembly.deviceRoot,
+      Boolean(session?.trim()),
+      { ...process.env },
+      process.stdin.isTTY === true,
     ),
   };
 }

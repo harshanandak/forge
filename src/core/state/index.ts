@@ -29,7 +29,7 @@ import type { SqlDatabase, SqlRow } from "../../ports/store.ts";
 import type { Handle } from "../../ports/lifetime.ts";
 import {
   baseline,
-  eventKeyIndex,
+  stateMigrations,
   migrate,
   type Migration,
 } from "./migrations.ts";
@@ -218,13 +218,14 @@ function acquisitionEvent(
 function changedLeaseEvent(
   namespace: string,
   previous: LeaseRecord,
+  holder: LeaseHolder,
   at: string,
   expiresAt?: string,
 ): StateEvent {
   const lease =
     expiresAt === undefined
-      ? { ...previous, releasedAt: at }
-      : { ...previous, expiresAt };
+      ? { ...previous, holder, releasedAt: at }
+      : { ...previous, holder, expiresAt };
   return {
     type: `${namespace}:lease.${expiresAt === undefined ? "released" : "renewed"}@1`,
     namespace,
@@ -548,6 +549,7 @@ function verifyEventDerivedState(
                   changedLeaseEvent(
                     event.namespace,
                     prior!,
+                    lease.holder,
                     event.at,
                     lease.expiresAt,
                   ),
@@ -564,7 +566,14 @@ function verifyEventDerivedState(
               nowMs: Date.parse(event.at),
             }).ok ||
             json(event) !==
-              json(changedLeaseEvent(event.namespace, prior!, event.at))
+              json(
+                changedLeaseEvent(
+                  event.namespace,
+                  prior!,
+                  lease.holder,
+                  event.at,
+                ),
+              )
           )
             reject("state_leases", id);
         } else return reject("state_events", id);
@@ -649,7 +658,7 @@ function dataTables(db: SqlDatabase): readonly string[] {
 export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
-  #knownMigrations = new Set([baseline.id, eventKeyIndex.id]);
+  #knownMigrations = new Set(stateMigrations.map((migration) => migration.id));
   constructor(db: SqlDatabase, clock: ClockPort) {
     this.#db = db;
     this.#clock = clock;
@@ -667,11 +676,7 @@ export class StateOwner {
     }
     migrate(
       this.#db,
-      [
-        baseline,
-        eventKeyIndex,
-        ...domains.flatMap((domain) => domain.migrations),
-      ],
+      [...stateMigrations, ...domains.flatMap((domain) => domain.migrations)],
       () => {
         registerTables(
           this.#db,
@@ -694,8 +699,7 @@ export class StateOwner {
       },
     );
     this.#knownMigrations = new Set([
-      baseline.id,
-      eventKeyIndex.id,
+      ...stateMigrations.map((migration) => migration.id),
       ...domains.flatMap((domain) =>
         domain.migrations.map((migration) => migration.id),
       ),
@@ -1197,6 +1201,7 @@ export class StateOwner {
       const event = changedLeaseEvent(
         namespace,
         current,
+        fence.holder,
         at,
         durationMs === undefined ? undefined : this.#expiry(now, durationMs),
       );
@@ -1319,7 +1324,12 @@ export class StateOwner {
               }).ok
             )
               continue;
-            const event = changedLeaseEvent(String(row.namespace), lease, at);
+            const event = changedLeaseEvent(
+              String(row.namespace),
+              lease,
+              lease.holder,
+              at,
+            );
             const released = event.data as LeaseRecord;
             candidate.run(
               "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",

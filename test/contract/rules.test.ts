@@ -211,8 +211,8 @@ test("lease: device-qualified holders ignore display metadata and reject device 
       nowMs: 10,
       holder,
     }),
-  ).toMatchObject({ ok: false, error: { code: "LEASE_NOT_HELD" } });
-  // Explicit contexts without a device retain their actor boundary.
+  ).toMatchObject({ ok: true, kind: "held" });
+  // A stored legacy holder retains its actor boundary, including qualified callers.
   expect(
     decideLease(leased(a, 1, HOUR), {
       mode: "held",
@@ -222,6 +222,31 @@ test("lease: device-qualified holders ignore display metadata and reject device 
       holder: { actor: b.actor, session: a.session },
     }),
   ).toMatchObject({ ok: false, error: { code: "LEASE_NOT_HELD" } });
+}, 30_000);
+
+test("lease: a refused held request describes the current holder and expiry", () => {
+  const holder: LeaseHolder = {
+    actor: a.actor,
+    session: {
+      id: "chat",
+      device: "device",
+      agent: "worker",
+      harness: "codex",
+    },
+  };
+  const decision = decideLease(leased(holder, 1, HOUR), {
+    mode: "held",
+    subject: "w",
+    holder: b,
+    generation: 1,
+    nowMs: 10,
+  });
+  expect(decision.ok).toBe(false);
+  if (decision.ok) throw new Error("expected refusal");
+  expect(decision.error.message).toContain(
+    "device device, agent worker, harness codex, session chat",
+  );
+  expect(decision.error.message).toContain(at(HOUR));
 }, 30_000);
 
 test("lease: anyone, including the previous holder, reacquires only after expiry; release then claim is generation + 1", () => {

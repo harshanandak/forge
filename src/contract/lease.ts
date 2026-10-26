@@ -34,7 +34,7 @@ export type LeaseDecision =
 function sameHolder(a: LeaseHolder, b: LeaseHolder): boolean {
   return (
     a.session.id === b.session.id &&
-    (a.session.device !== undefined || b.session.device !== undefined
+    (a.session.device !== undefined
       ? a.session.device === b.session.device
       : a.actor.kind === b.actor.kind && a.actor.id === b.actor.id)
   );
@@ -139,7 +139,7 @@ export function decideLease(
       "LEASE_NOT_HELD",
       subject,
       current,
-      `${subject} is not leased by this actor and session`,
+      `${subject} is leased by ${holderDescription(current.holder)} until ${current.expiresAt}; this caller does not hold that lease`,
     );
   }
   if (Date.parse(current.expiresAt) <= nowMs) {

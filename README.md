@@ -71,6 +71,35 @@ The globally installed `forge` command also runs the installed entry point.
 Windows measurements and the profiling method are in
 [Local read performance](docs/local-read-performance.md).
 
+## Claim identity
+
+An issue claim belongs to a device plus a session. Agent and harness names are
+labels: renewal records the current caller's names, and refusals and `issue show`
+identify the holder. CLI and MCP calls keep their own caller classification;
+renewal and release events name the caller that performed the operation.
+
+A trimmed, nonempty `FORGE_SESSION` takes precedence. Otherwise Forge combines
+the native Codex and Claude session IDs present, in that fixed order, into a
+tagged hash. Codex uses its root `CODEX_SESSION_ID`, falling back to
+`CODEX_THREAD_ID` on older builds; Claude uses `CLAUDE_CODE_SESSION_ID`. Nested harnesses
+get distinct identities; native subagents inheriting the same IDs share their
+session intentionally. `CODEX_COMPANION_SESSION_ID` is plugin metadata and does
+not count. Without a session source, only a terminal with TTY stdin may claim;
+non-interactive agents must set `FORGE_SESSION`.
+
+Forge creates a non-path device ID once in `device-id` under `FORGE_DEVICE_ROOT`
+(default `~/.forge`) and reads it thereafter. `FORGE_DEVICE_ID` overrides that
+file for cloned images and CI. An unavailable identity refuses acquisition rather
+than using the root path. Reads do not create identity files. Deliberately sharing
+a claim across harnesses requires the same `FORGE_SESSION`; across machines it
+also requires the same `FORGE_DEVICE_ID`, because device remains part of the key.
+
+This release makes a one-way state-store upgrade. Back up the store before
+upgrading: older builds refuse the new migration marker, and going back requires
+restoring a backup taken before the upgrade. Existing leases without a device
+still accept their original actor and session. See the
+[work block documentation](src/blocks/work/README.md) for the full rules.
+
 ## Device memory
 
 Device memory works from any folder, without importing a template or creating a
