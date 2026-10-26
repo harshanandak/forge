@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { ForgeFailure } from "../contract/failure.ts";
 import { isAgentCallable } from "../contract/mcp.ts";
 import { closestNames } from "../contract/schema.ts";
 import type {
   AmbientContext,
   Caller,
   ResultEnvelope,
+  OperationDeclaration,
 } from "../generated/types.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import { failure } from "./result.ts";
@@ -17,6 +19,13 @@ export interface CallOptions {
   readonly context?: AmbientContext;
   readonly requestId?: string;
   readonly dryRun?: boolean;
+  readonly explicitContext?: boolean;
+  /** The embedding resolves local identity only when the declared context needs it. */
+  readonly resolveContext?: (
+    declaration: OperationDeclaration,
+    context: AmbientContext,
+    explicitContext: boolean,
+  ) => AmbientContext;
 }
 
 export function success(op: string, result: unknown): ResultEnvelope {
@@ -92,6 +101,11 @@ export async function dispatch(
       caller: options.caller,
       ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
       context: request.context,
+      explicitContext:
+        options.explicitContext === true || args.context !== undefined,
+      ...(options.resolveContext === undefined
+        ? {}
+        : { resolveContext: options.resolveContext }),
       requestId: request.requestId,
       ...(options.dryRun === undefined && request.dryRun === undefined
         ? {}
@@ -115,16 +129,35 @@ export async function dispatch(
     );
   }
   try {
+    const declaration = catalog
+      .list()
+      .find((entry) => entry.op === op)?.declaration;
+    const context =
+      declaration === undefined || options.resolveContext === undefined
+        ? (options.context ?? {})
+        : options.resolveContext(
+            declaration,
+            options.context ?? {},
+            options.explicitContext === true,
+          );
     return await catalog.invoke({
       schemaVersion: "forge.invocation/1",
       requestId: options.requestId ?? randomUUID(),
       op,
       input,
       caller: options.caller,
-      context: await heldContext(catalog, op, input, options),
+      context: await heldContext(catalog, op, input, { ...options, context }),
       ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof ForgeFailure)
+      return {
+        ok: false,
+        op,
+        status: "FAIL",
+        error: error.error,
+        warnings: [],
+      };
     return failure("INTERNAL", "The runtime did not return a result envelope.");
   }
 }

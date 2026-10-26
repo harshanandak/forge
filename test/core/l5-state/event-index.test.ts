@@ -94,7 +94,11 @@ test("an existing store gains the index when it is next opened for writing", asy
       real
         .all("SELECT id FROM state_migrations ORDER BY id")
         .map((row) => String(row.id)),
-    ).toEqual(["001_state_010", "002_state_events_key_index"]);
+    ).toEqual([
+      "001_state_010",
+      "002_state_events_key_index",
+      "003_device_session_identity",
+    ]);
     // Opening again changes nothing, and history still reads.
     owner.initialize();
     owner.put(ns, "a", 1, actor, { expectRevision: 0 });

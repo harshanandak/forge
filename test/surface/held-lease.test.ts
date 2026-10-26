@@ -15,6 +15,7 @@ import {
   type Assembly,
 } from "../../src/assembly/index.ts";
 import { runCli } from "../../src/surface/cli.ts";
+import { localIdentityResolver } from "../../src/assembly/identity.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
 let work: string;
@@ -27,11 +28,12 @@ type Envelope = {
 };
 /** `forge <argv>` through the generated CLI, as one plain command in the given session. */
 async function forge(argv: readonly string[], session = "agent-one") {
-  const response = await runCli(
-    assembly.catalog,
-    argv,
-    localCall(assembly, session),
-  );
+  const previous = process.env.FORGE_SESSION;
+  process.env.FORGE_SESSION = session;
+  const options = localCall(assembly);
+  if (previous === undefined) delete process.env.FORGE_SESSION;
+  else process.env.FORGE_SESSION = previous;
+  const response = await runCli(assembly.catalog, argv, options);
   return JSON.parse(response.stdout) as Envelope;
 }
 
@@ -142,4 +144,64 @@ test("a held command on an unclaimed item still names the missing lease", async 
     ok: false,
     error: { code: "CONTEXT_MISSING" },
   });
+}, 30_000);
+
+test("a terminal claim refuses every unsourced non-TTY leased write and supports explicit script recovery", async () => {
+  const id = await created();
+  async function call(
+    verb: string,
+    input: object,
+    tty: boolean,
+    explicit = false,
+  ) {
+    const options = localCall(assembly);
+    const response = await runCli(
+      assembly.catalog,
+      ["issue", verb, "--input", JSON.stringify(input)],
+      {
+        ...options,
+        context: { ...options.context, session: { id: "local-cli" } },
+        resolveContext: localIdentityResolver(
+          assembly.deviceRoot,
+          explicit ? { FORGE_SESSION: "local-cli" } : {},
+          tty,
+        ),
+      },
+    );
+    return JSON.parse(response.stdout) as Envelope & {
+      error?: { message: string };
+    };
+  }
+  expect((await call("claim", { id }, true)).ok).toBe(true);
+  const before = await forge(["issue", "show", id]);
+  for (const [verb, input] of [
+    ["claim", { id }],
+    ["renew", { id }],
+    ["close", { id, withoutReceipt: "Terminal recovery fixture" }],
+    ["release", { id }],
+    ["update", { id, title: "Should not change" }],
+    ["link", { id, relation: "pr", url: "https://example.com/pr/2" }],
+    ["dep", { id, target: "another-item", action: "add", expectRevision: 1 }],
+  ] as const) {
+    const refused = await call(verb, input, false);
+    expect(refused, verb).toMatchObject({
+      ok: false,
+      error: { code: "CONTEXT_MISSING" },
+    });
+    expect(refused.error?.message, verb).toContain("FORGE_SESSION");
+  }
+  expect(await forge(["issue", "show", id])).toEqual(before);
+  expect((await call("renew", { id }, false, true)).ok).toBe(true);
+  expect((await call("release", { id }, false, true)).ok).toBe(true);
+  expect((await call("claim", { id }, false, true)).ok).toBe(true);
+  expect(
+    (
+      await call(
+        "close",
+        { id, withoutReceipt: "Terminal recovery fixture" },
+        false,
+        true,
+      )
+    ).ok,
+  ).toBe(true);
 }, 30_000);

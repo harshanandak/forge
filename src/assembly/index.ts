@@ -64,6 +64,11 @@ import {
   validateConfigValue,
 } from "./declarations.ts";
 import { LocalState } from "./state.ts";
+import {
+  harnessIdentity,
+  localIdentityResolver,
+  sessionIdentity,
+} from "./identity.ts";
 import { syncSkills, type TemplateFile } from "./skills.ts";
 import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
 import { openLevels, PROJECT_STATE, requireRegisteredStore } from "./levels.ts";
@@ -1231,15 +1236,23 @@ export function localContext(
     actor,
     project: { id: assembly.root, root: assembly.root },
     device: { id: assembly.deviceRoot },
-    ...(session === undefined ? {} : { session: { id: session } }),
+    ...(session === undefined
+      ? {}
+      : {
+          session: {
+            id: session.trim(),
+            harness: localHarness(),
+            agent: process.env.FORGE_AGENT?.trim() || localHarness(),
+          },
+        }),
   };
 }
-/**
- * The caller's session: FORGE_SESSION when set, otherwise the given fallback. The CLI falls back to
- * one fixed session so separate commands share a claim; each MCP server falls back to its own.
- */
+/** Each native harness session contributes to one tagged, ordered identity. */
 export function localSession(fallback: string): string {
-  return process.env.FORGE_SESSION || fallback;
+  return sessionIdentity(process.env, fallback);
+}
+function localHarness(): string {
+  return harnessIdentity(process.env);
 }
 export async function createLocalAssembly(): Promise<Assembly> {
   const root = process.cwd();
@@ -1251,14 +1264,18 @@ export async function createLocalAssembly(): Promise<Assembly> {
 
 export function localCall(
   assembly: Assembly,
-  session: string = localSession("local-cli"),
 ): import("../surface/dispatch.ts").CallOptions {
   return {
     caller: "human",
     context: localContext(
       assembly,
       { kind: "human", id: "local-cli" },
-      session,
+      localSession("local-cli"),
+    ),
+    resolveContext: localIdentityResolver(
+      assembly.deviceRoot,
+      { ...process.env },
+      process.stdin.isTTY === true,
     ),
   };
 }
