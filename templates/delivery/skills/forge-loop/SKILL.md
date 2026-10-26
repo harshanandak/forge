@@ -1,11 +1,12 @@
 ---
-name: loop
-description: "Use at the start of any session, wake-up or resume in a repo on the delivery template, and when writing a brief for a worker. Reads fresh state, picks the role (orchestrator or worker), routes each loop step to its skill, and holds the autonomy and stop rules."
+name: forge-loop
+description: "Route or resume delivery from fresh state."
+disable-model-invocation: true
 ---
 
-# loop
+# forge-loop
 
-Every wake is a fresh read. Never trust what you remember: read, act, then stop.
+Every wake is a fresh read: read, route, then stop. Read the chosen skill before acting.
 
 ## Wake
 
@@ -25,13 +26,14 @@ At session start, run `forge memory rules` unless a hook supplied it: `result.te
 
 ## Steps and their skill
 
-| Step                                     | Skill     |
-| ---------------------------------------- | --------- |
-| 1 intake, 2 frame, 3 slice               | `slice`   |
-| 4 claim and workspace, 5 build, 6 check  | `build`   |
-| 7 open PR                                | `open-pr` |
-| 8 review triage (each wake while open)   | `review`  |
-| 9 merge, 10 verify, 11 learn and re-plan | `land`    |
+| Step                                               | Skill          |
+| -------------------------------------------------- | -------------- |
+| 1 intake, vague intent or unresolved decisions     | `forge-intake` |
+| 2 frame, 3 slice after intake                      | `slice`        |
+| 4 claim and workspace, 5 build, 6 check            | `build`        |
+| 7 open PR                                          | `open-pr`      |
+| 8 review triage, red PR on each wake               | `review`       |
+| 9 merge, 10 verify, 11 learn and re-plan; red base | `land`         |
 
 ## Two links, never mixed
 
@@ -54,7 +56,7 @@ Proceed on reversible actions without asking. Stop only for:
 
 ## Worker brief
 
-Pass ids, not pasted content. Fill this and nothing more:
+Pass ids; fill this brief:
 
 ```
 Slice: <issue id>. Read it with forge issue show; its body is the spec.

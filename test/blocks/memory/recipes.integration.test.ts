@@ -63,9 +63,9 @@ test("startup recipe matches every SessionStart source including forks", () => {
     expect(hook.matcher).toBeUndefined();
 }, 30_000);
 
-test("recipe gives a valid on-demand search and loop requires it", () => {
+test("recipe gives a valid on-demand search and forge-loop requires it", () => {
   const loop = readFileSync(
-    resolve(repo, "templates/delivery/skills/loop/SKILL.md"),
+    resolve(repo, "templates/delivery/skills/forge-loop/SKILL.md"),
     "utf8",
   );
   expect(recipe).toContain('forge memory search "<topic>"');

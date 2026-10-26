@@ -91,7 +91,15 @@ assert.equal(imported.template, "harsha/delivery@0.1.2");
 passed.push("template import");
 
 const synced = cli(["skills", "sync"]).result;
-for (const name of ["loop", "slice", "build", "open-pr", "review", "land"]) {
+for (const name of [
+  "forge-loop",
+  "forge-intake",
+  "slice",
+  "build",
+  "open-pr",
+  "review",
+  "land",
+]) {
   const file = `.agents/skills/${name}/SKILL.md`;
   assert.ok(synced.written.includes(file), `skills sync wrote ${file}`);
   assert.ok(existsSync(join(root, file)));

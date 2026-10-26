@@ -11,7 +11,7 @@ Agents: use `forge <noun> <verb> --help --json` or `forge catalog describe <noun
 - CI is the gate and there are no local git hooks. Run what you touched locally; the full matrix runs on the pull request. Fix the cause of a failing check; never skip one with `--no-verify` or `core.hooksPath` tricks.
 - Work in a git worktree under `.worktrees/`, based on the fetched `origin/main`.
 - Commit with conventional titles (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:`). The pull request title is checked and becomes the squash-merge title and the changelog line.
-- After cloning, run `forge skills sync` and follow the `loop` skill; this repo runs on its own delivery template (`.forge/config.yaml`).
+- After cloning, run `forge skills sync` and follow the `forge-loop` skill; this repo runs on its own delivery template (`.forge/config.yaml`).
 - Checks: PASS exits 0; FAIL 1; INCOMPLETE/NOT_EXECUTED 2. Non-PASS keeps the receipt with `ok:false`.
 
 ## Standards
