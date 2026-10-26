@@ -51,7 +51,7 @@ test("this repository's copied config syncs the current delivery skills", () => 
     writeFileSync(
       path,
       config.replace(
-        /^  agent:\r?\n    source:\r?\n      builtin: forge\/agent\r?\n/m,
+        /^ {2}agent:\r?\n {4}source:\r?\n {6}builtin: forge\/agent\r?\n/m,
         "",
       ),
     );

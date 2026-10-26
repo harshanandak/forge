@@ -1265,7 +1265,8 @@ export async function createAssembly(
               return problem;
             },
           );
-          error = new ForgeFailure({ ...error.error, message });
+          const enriched = new ForgeFailure({ ...error.error, message });
+          return failure(request.op, enriched);
         }
         return failure(request.op, error);
       }
