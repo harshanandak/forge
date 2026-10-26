@@ -31,7 +31,11 @@ test("the delivery template ships in the npm package and runs the project's own 
     const node = Bun.which("node");
     if (!node) throw new Error("Node runtime required");
     const installed = join(packedConsumer(), "node_modules/forge-workflow");
-    for (const file of ["forge.template.json", "skills/loop/SKILL.md"])
+    for (const file of [
+      "forge.template.json",
+      "skills/forge-loop/SKILL.md",
+      "skills/forge-intake/SKILL.md",
+    ])
       expect(existsSync(join(installed, "templates/delivery", file))).toBe(
         true,
       );

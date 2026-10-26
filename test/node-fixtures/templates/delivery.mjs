@@ -122,7 +122,7 @@ const npm = project({
   "package-lock.json": '{"lockfileVersion":3}',
 });
 const synced = npm.cli(["skills", "sync"]).result;
-for (const name of ["build", "loop", "slice"])
+for (const name of ["build", "forge-loop", "forge-intake", "slice"])
   assert.ok(
     synced.written.includes(`.agents/skills/${name}/SKILL.md`),
     `skills sync renders ${name} from the installed package`,

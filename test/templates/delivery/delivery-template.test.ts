@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,7 +20,15 @@ import { lintSkill } from "../../../src/surface/skills.ts";
 import { openHarness } from "../../blocks/memory/lib.ts";
 
 const repo = resolve(import.meta.dirname, "../../..");
-const SKILLS = ["build", "land", "loop", "open-pr", "review", "slice"] as const;
+const SKILLS = [
+  "build",
+  "forge-intake",
+  "forge-loop",
+  "land",
+  "open-pr",
+  "review",
+  "slice",
+] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
 type Call = (op: string, input?: object) => Promise<Record<string, unknown>>;
@@ -119,7 +128,35 @@ async function withDelivery(
   }
 }
 
-test("the delivery template renders all six skills: linted, at most 4 KB, values filled in", async () => {
+test("delivery sync replaces loop with forge-loop and forge-intake", async () => {
+  await withDelivery(async (root, call, lint) => {
+    const synced = await call("skills.sync");
+    expect(synced).toMatchObject({ ok: true });
+    expect(synced.written).toEqual(
+      expect.arrayContaining([
+        rendered("forge-loop"),
+        rendered("forge-intake"),
+      ]),
+    );
+    expect(existsSync(join(root, rendered("loop")))).toBe(false);
+    const router = readFileSync(join(root, rendered("forge-loop")), "utf8");
+    const intake = readFileSync(join(root, rendered("forge-intake")), "utf8");
+    expect(router).toContain("disable-model-invocation: true");
+    expect(router).toContain("vague intent");
+    expect(router).toContain("`forge-intake`");
+    expect(intake).toContain("disable-model-invocation: false");
+    expect(intake).toContain("forge route get <role> --text");
+    expect(lint(router)).toEqual([]);
+    expect(lint(intake)).toEqual([]);
+    const credits = readFileSync(join(repo, "CREDITS"), "utf8");
+    for (const source of ["grilling", "ask-matt"])
+      expect(credits).toContain(source);
+    expect(credits).toContain("https://github.com/mattpocock/skills");
+    expect(credits).toContain("MIT");
+  });
+}, 30_000);
+
+test("the delivery template renders all seven skills: linted, at most 4 KB, values filled in", async () => {
   await withDelivery(async (root, call, lint) => {
     const synced = await call("skills.sync");
     expect(synced).toMatchObject({ ok: true });
@@ -137,9 +174,14 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       expect(Buffer.byteLength(text[name]!)).toBeLessThanOrEqual(4096);
       expect(text[name]).not.toContain("{{");
     }
-    expect(text.loop).toContain("At most 3 workers at once");
-    expect(text.loop).toContain("publish, force-push, prod-write");
-    expect(text.slice).toContain("at most 5 questions");
+    expect(text["forge-loop"]).toContain("At most 3 workers at once");
+    expect(text["forge-loop"]).toContain("publish, force-push, prod-write");
+    expect(text.slice).toContain("Route open decisions to `forge-intake`");
+    expect(text.slice).toContain(
+      "unclear goal or done condition to forge-intake",
+    );
+    expect(text.slice).not.toContain("Silence means every default");
+    expect(text.slice).not.toContain("at most 5");
     expect(text.slice).toContain(
       "Target 800 changed lines and at most 15 files",
     );
@@ -148,16 +190,22 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text.build).toContain(
       `forge issue claim --input '{"id":"<slice>"}'`,
     );
-    expect(text.loop).toContain("t3_thread_configuration");
-    expect(text.loop).toContain("FORGE_SESSION=t3:<threadId>");
-    expect(text.loop).toContain("every forge command");
-    expect(text.loop).toContain(
+    expect(text["forge-loop"]).toContain("t3_thread_configuration");
+    expect(text["forge-loop"]).toContain("FORGE_SESSION=t3:<threadId>");
+    expect(text["forge-loop"]).toContain("every forge command");
+    expect(text["forge-loop"]).toContain(
       "Workers you launch keep their own task session",
     );
-    expect(text.loop).toContain(
+    expect(text["forge-loop"]).toContain(
       "Session: export FORGE_SESSION=<your task name> before any claim; never use the chat's t3: session.",
     );
-    expect(text.build).toContain("T3 chats use the session step in `loop`");
+    expect(text.build).not.toContain("`forge-loop`");
+    expect(text.build).toContain("t3_thread_configuration");
+    expect(text.build).toContain("FORGE_SESSION=t3:<threadId>");
+    expect(text.build).toContain("forge memory rules");
+    expect(text.build).toContain(
+      "`result.text.text` is a pointer, never note text",
+    );
     expect(text.build).toContain("After 2 failed fixes on the same check");
     expect(text.review).toContain("At most 2 rounds");
     expect(text.review).toContain("Fix only P0, P1 findings");
@@ -285,10 +333,10 @@ test("rendered delivery skills do not give rule tags standing authority", async 
   });
 }, 30_000);
 
-test("the rendered loop pages through adopted decision titles and proposals handle missing format", async () => {
+test("the rendered forge-loop pages through adopted decision titles and proposals handle missing format", async () => {
   await withDelivery(async (root, call) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
-    const loop = readFileSync(join(root, rendered("loop")), "utf8");
+    const loop = readFileSync(join(root, rendered("forge-loop")), "utf8");
     expect(loop).toContain("forge memory rules");
     expect(loop).toContain("unless a hook supplied it");
     expect(loop).toContain(
@@ -346,7 +394,7 @@ const GUIDANCE = [
   ["merge.method", "land", "gh pr merge <n> --squash"],
   [
     "doors",
-    "loop",
+    "forge-loop",
     "publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config",
   ],
   [
@@ -354,17 +402,16 @@ const GUIDANCE = [
     "build",
     "After 2 failed fixes on the same check",
   ],
-  ["lanes.max", "loop", "At most 3 workers at once"],
-  ["lanes.fullSuiteRuns", "loop", "1 full-suite run at a time"],
-  ["lanes.stallMinutes", "loop", "silent for 10 minutes"],
-  ["questions.max", "slice", "Ask at most 5 lettered questions"],
+  ["lanes.max", "forge-loop", "At most 3 workers at once"],
+  ["lanes.fullSuiteRuns", "forge-loop", "1 full-suite run at a time"],
+  ["lanes.stallMinutes", "forge-loop", "silent for 10 minutes"],
   ["labels.priority", "slice", "Priority is one label of p0, p1, p2, p3, p4"],
   ["labels.deferred", "review", '"review-deferred"'],
   ["labels.gap", "build", "`contract-gap` issue"],
-  ["roles.orchestrator", "loop", "orchestrator strong"],
-  ["roles.implementer", "loop", "implementer fast"],
-  ["roles.reviewer", "loop", "reviewer other-family"],
-  ["roles.housekeeping", "loop", "housekeeping cheapest"],
+  ["roles.orchestrator", "forge-loop", "orchestrator strong"],
+  ["roles.implementer", "forge-loop", "implementer fast"],
+  ["roles.reviewer", "forge-loop", "reviewer other-family"],
+  ["roles.housekeeping", "forge-loop", "housekeeping cheapest"],
   [
     "pr.models",
     "open-pr",

@@ -41,7 +41,9 @@ forge issue show demo-1
 
 The demo's first issue is `demo-1`. In another repository, use the id returned
 by create. Check results include a receipt and a status; inspect that status
-before proceeding. Skills are written under `.agents/skills`.
+before proceeding. Skills are written under `.agents/skills`. Start or resume
+with `/forge-loop`; it routes vague requests to `forge-intake` for decision
+rounds before framing and slicing.
 
 Project state writes register the store's location on this device. If that
 store later disappears, state reads and writes report its missing path. Restore

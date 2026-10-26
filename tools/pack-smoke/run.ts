@@ -110,12 +110,14 @@ async function main(): Promise<void> {
     for (const needed of [
       "package.json",
       "LICENSE",
+      "CREDITS",
       "README.md",
       "dist/bin/forge.js",
       "dist/src/index.js",
       "dist/src/index.d.ts",
       "templates/delivery/forge.template.json",
-      "templates/delivery/skills/loop/SKILL.md",
+      "templates/delivery/skills/forge-loop/SKILL.md",
+      "templates/delivery/skills/forge-intake/SKILL.md",
       "examples/hello-block/forge.block.json",
       "examples/hello-block/index.cjs",
       "examples/hello-block/input.schema.json",
@@ -126,7 +128,7 @@ async function main(): Promise<void> {
       if (!files.includes(needed)) fail(`tarball is missing ${needed}`);
     const stray = files.filter(
       (file) =>
-        !/^(?:dist\/|templates\/|examples\/hello-block\/|docs\/writing-a-block\.md$|package\.json$|LICENSE$|README\.md$)/.test(
+        !/^(?:dist\/|templates\/|examples\/hello-block\/|docs\/writing-a-block\.md$|package\.json$|LICENSE$|CREDITS$|README\.md$)/.test(
           file,
         ),
     );

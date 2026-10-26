@@ -1,5 +1,8 @@
 schemaVersion: forge.config/1
 blocks:
+  agent:
+    source:
+      builtin: forge/agent
   work:
     source:
       builtin: forge/work
