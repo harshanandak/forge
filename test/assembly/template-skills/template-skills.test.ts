@@ -34,7 +34,7 @@ type Call = (op: string, input?: object) => Promise<Record<string, unknown>>;
 
 /** A project with no blocks that imported tpl/forge.template.json, which carries values and one skill. */
 async function withTemplate(
-  run: (root: string, call: Call) => Promise<void>,
+  run: (root: string, call: Call) => Promise<void> | void,
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "forge-template-skills-"));
   const put = (path: string, text: string): void => {
@@ -171,7 +171,7 @@ test("sync copies nested binary companions and checks every copy without writing
 }, 30_000);
 
 test("sync deduplicates normalized adapter directories", async () => {
-  await withTemplate(async (root) => {
+  await withTemplate((root) => {
     const synced = syncSkills(
       root,
       [],
@@ -212,12 +212,10 @@ test("check reports obsolete companions and sync retires them with their managed
       template: "acme/delivery",
       expectRevision: "",
     });
-    expect(await call("skills.sync")).toMatchObject({
-      removed: expect.arrayContaining([
-        RENDERED,
-        `.agents/skills/${companion}`,
-      ]),
-    });
+    const retired = await call("skills.sync");
+    expect(retired.ok).toBe(true);
+    expect(retired.removed).toContain(RENDERED);
+    expect(retired.removed).toContain(`.agents/skills/${companion}`);
   });
 }, 30_000);
 
@@ -228,10 +226,9 @@ test("sync never adopts an unmarked directory through a new companion", async ()
     const mine = join(root, ".agents/skills/review/custom.txt");
     writeFileSync(mine, "mine");
     for (let attempt = 0; attempt < 2; attempt++) {
-      expect(await call("skills.sync")).toMatchObject({
-        ok: true,
-        skipped: expect.arrayContaining([RENDERED]),
-      });
+      const synced = await call("skills.sync");
+      expect(synced.ok).toBe(true);
+      expect(synced.skipped).toContain(RENDERED);
       expect(readFileSync(mine, "utf8")).toBe("mine");
       expect(existsSync(join(root, RENDERED))).toBe(false);
     }
@@ -260,7 +257,7 @@ for (const link of ["review/link", "linked-skill"])
 
 for (const kind of ["parent", "absolute", "symlink"] as const)
   test(`sync refuses ${kind} adapter directory before any copy is written`, async () => {
-    await withTemplate(async (root) => {
+    await withTemplate((root) => {
       const outside = mkdtempSync(join(tmpdir(), "forge-skills-outside-"));
       try {
         if (kind === "symlink")
