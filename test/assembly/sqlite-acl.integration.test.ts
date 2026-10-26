@@ -2,6 +2,7 @@
 import { expect, test, setDefaultTimeout } from "bun:test";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -86,8 +87,9 @@ for (const entry of ["singleton", "factory"] as const) {
         if (!opened.ok) {
           expect(opened.unavailable.reason).toContain("Private ACL");
           expect(opened.unavailable.reason).toContain(
-            "Move the store into a folder only you can access, or let Forge create the folder.",
+            "Move the store into a folder only you can access.",
           );
+          expect(opened.unavailable.reason).not.toContain("let Forge create");
           expect(opened.unavailable.reason).not.toContain(
             "Repair in PowerShell:",
           );
@@ -100,6 +102,41 @@ for (const entry of ["singleton", "factory"] as const) {
         expect(readFileSync(sentinel, "utf8")).toBe("borrowed data");
         expect(existsSync(path)).toBe(false);
         expect(readdirSync(root)).toEqual(["borrowed.txt"]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform !== "win32")(
+    `public SQLite ${entry} writes in an inherited private subfolder without changing its DACL`,
+    async () => {
+      const root = mkdtempSync(
+        join(tmpdir(), "forge-public-sqlite-inherited-"),
+      );
+      const native = windowsPrivateFiles();
+      try {
+        native.protect(root, `D:P(A;OICI;FA;;;${native.sid})`);
+        const folder = join(root, "plain-subfolder");
+        mkdirSync(folder);
+        const descriptor = native.read(folder);
+        expect(descriptor).toMatch(/^D:(?:AI)?\(A;OICIID;FA;;;/);
+        const opened = await store(folder).open({
+          path: join(folder, "state.sqlite"),
+          readOnly: false,
+        });
+        expect(native.read(folder)).toBe(descriptor);
+        if (!opened.ok) throw new Error(opened.unavailable.reason);
+        try {
+          opened.handle.value.exec("CREATE TABLE sample(value INTEGER)");
+          opened.handle.value.run("INSERT INTO sample VALUES (?)", [42]);
+          expect(
+            opened.handle.value.get("SELECT value FROM sample")?.value,
+          ).toBe(42n);
+          expect(native.read(folder)).toBe(descriptor);
+        } finally {
+          await opened.handle.close();
+        }
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -198,8 +235,9 @@ for (const entry of ["singleton", "factory"] as const) {
               expect(reason).not.toContain("DirectorySecurity");
             } else {
               expect(reason).toContain(
-                "Move the store into a folder only you can access, or let Forge create the folder.",
+                "Move the store into a folder only you can access.",
               );
+              expect(reason).not.toContain("let Forge create");
               expect(reason).not.toContain("Repair in PowerShell:");
               expect(reason).not.toMatch(
                 /SetAccessControl|SetSecurityDescriptorSddlForm|DirectorySecurity|Set-Acl|icacls/i,

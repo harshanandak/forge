@@ -55,7 +55,7 @@ export function privateFileGuard(
     const trustees = ownTrustees.join("|");
     const privateAcl = (sddl: string): boolean =>
       new RegExp(
-        `^D:${directory ? "P(?:AI)?" : "(?:P)?(?:AI)?"}\\(A;${directory ? "OICI" : "(?:ID)?"};FA;;;(?:${trustees})\\)$`,
+        `^D:(?:P)?(?:AI)?\\(A;${directory ? "OICI(?:ID)?" : "(?:ID)?"};FA;;;(?:${trustees})\\)$`,
       ).test(sddl);
     try {
       if (!privateAcl(native.read(path))) {
@@ -72,7 +72,9 @@ export function privateFileGuard(
       const prefix = `Private ACL verification failed for ${path}.`;
       if (directory)
         throw new Error(
-          `${prefix} Move the store into a folder only you can access, or let Forge create the folder.`,
+          options.protectDirectories === false
+            ? `${prefix} Move the store into a folder only you can access.`
+            : `${prefix} The Forge folder could not be made private: ${path}.`,
           { cause: error },
         );
       let owner: string | undefined;

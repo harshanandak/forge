@@ -12,6 +12,38 @@ import { join } from "node:path";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { privateFileGuard } from "../../../src/adapters/store-sqlite/private-files.ts";
 
+test("failed CLI folder hardening names the Forge folder without move guidance", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-acl-folder-failure-"));
+  const sid = "S-1-5-21-1-2-3-1001";
+  let attempts = 0;
+  try {
+    const guard = privateFileGuard({
+      sid,
+      owner: () => sid,
+      read: () => "D:AI(A;OICI;FA;;;WD)",
+      protect: () => {
+        attempts++;
+        throw new Error("injected hardening failure");
+      },
+    });
+    let message = "";
+    try {
+      guard.directory(root);
+    } catch (error) {
+      message = String(error);
+    }
+    expect(attempts).toBe(1);
+    expect(message).toContain(
+      `The Forge folder could not be made private: ${root}.`,
+    );
+    expect(message).not.toContain("Move the store");
+    expect(message).not.toContain("let Forge create");
+    expect(message).not.toContain("Repair in PowerShell:");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 5000);
+
 test("a broadened file ACL fails closed even when file metadata is unchanged", () => {
   const dir = mkdtempSync(join(tmpdir(), "forge-acl-cache-"));
   try {

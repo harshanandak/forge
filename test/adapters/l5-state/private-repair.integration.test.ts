@@ -57,8 +57,9 @@ test.skipIf(process.platform !== "win32")(
       }
       expect(message).toContain("Private ACL verification failed");
       expect(message).toContain(
-        "Move the store into a folder only you can access, or let Forge create the folder.",
+        "Move the store into a folder only you can access.",
       );
+      expect(message).not.toContain("let Forge create");
       expect(message).not.toContain("Repair in PowerShell:");
       expect(message).not.toMatch(
         /SetAccessControl|SetSecurityDescriptorSddlForm|DirectorySecurity|Set-Acl|icacls/i,
