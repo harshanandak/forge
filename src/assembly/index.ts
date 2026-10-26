@@ -837,28 +837,47 @@ export async function createAssembly(
           if (request.op === "skills.sync") {
             await trustState.open(false);
             const show = call.config.show();
-            return success(
-              request.op,
-              syncSkills(
-                root,
-                catalog.list(),
-                composition(show).mcp?.toolPrefix,
-                typeof input.dir === "string" ? input.dir : undefined,
-                {
-                  sources: show.templates.flatMap((t): TemplateFile[] => {
-                    if (t.source !== undefined)
-                      return [{ root, file: t.source }];
-                    const dir = call.shipped.dirOf(
-                      t.template.slice(0, t.template.lastIndexOf("@")),
-                    );
-                    return dir === undefined
-                      ? []
-                      : [{ root: dir, file: TEMPLATE_FILE }];
-                  }),
-                  values: show.effective.values,
-                },
-              ),
+            const legacyClaimTtl = show.values.find(
+              (value) =>
+                value.active && value.pointer === "/values/claims/ttlSeconds",
             );
+            const configuredClaimTtl = show.values.some(
+              (value) =>
+                value.active &&
+                value.layer !== "default" &&
+                value.pointer === "/blocks/work/config/claimTtlSeconds",
+            );
+            const warnings = [...call.warnings];
+            if (legacyClaimTtl && !configuredClaimTtl)
+              warnings.push({
+                code: "CLAIM_TTL_CONFIG_MOVE",
+                message: `Move /values/claims/ttlSeconds to /blocks/work/config/claimTtlSeconds with value ${JSON.stringify(legacyClaimTtl.value)} to preserve the claim lease duration.`,
+              });
+            return {
+              ...success(
+                request.op,
+                syncSkills(
+                  root,
+                  catalog.list(),
+                  composition(show).mcp?.toolPrefix,
+                  typeof input.dir === "string" ? input.dir : undefined,
+                  {
+                    sources: show.templates.flatMap((t): TemplateFile[] => {
+                      if (t.source !== undefined)
+                        return [{ root, file: t.source }];
+                      const dir = call.shipped.dirOf(
+                        t.template.slice(0, t.template.lastIndexOf("@")),
+                      );
+                      return dir === undefined
+                        ? []
+                        : [{ root: dir, file: TEMPLATE_FILE }];
+                    }),
+                    values: show.effective.values,
+                  },
+                ),
+              ),
+              warnings,
+            };
           }
           if (request.op === "block.check" || request.op === "block.add") {
             await trustState.open(false);

@@ -4,6 +4,7 @@ blocks:
     source:
       builtin: forge/work
     config:
+      claimTtlSeconds: 7200
       labelOrder:
         - p0
         - p1

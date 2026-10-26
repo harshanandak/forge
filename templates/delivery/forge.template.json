@@ -1,7 +1,7 @@
 {
   "schemaVersion": "forge.template/1",
   "id": "harsha/delivery",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "summary": "The owner's delivery loop over the work, memory and check blocks: slice, build with receipts, review in bounded rounds, merge on a pinned head. Operations read block configuration; skills carry delivery guidance.",
   "config": {
     "schemaVersion": "forge.config/1",

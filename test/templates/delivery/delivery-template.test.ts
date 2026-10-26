@@ -332,6 +332,56 @@ const GUIDANCE = [
   ],
 ] as const;
 
+test("skills sync warns about the legacy claim default until it is explicitly moved", async () => {
+  await withDelivery(async (root, call) => {
+    expect(
+      await call("config.apply", {
+        expectRevision: "",
+        patch: [
+          { op: "remove", path: "/blocks/work/config/claimTtlSeconds" },
+          { op: "set", path: "/values/claims/ttlSeconds", value: 7200 },
+        ],
+      }),
+    ).toMatchObject({ ok: true });
+    const file = join(root, ".forge/config.yaml");
+    const before = readFileSync(file, "utf8");
+    expect(await call("skills.sync")).toMatchObject({
+      ok: true,
+      warnings: [
+        {
+          code: "CLAIM_TTL_CONFIG_MOVE",
+          message:
+            "Move /values/claims/ttlSeconds to /blocks/work/config/claimTtlSeconds with value 7200 to preserve the claim lease duration.",
+        },
+      ],
+    });
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(
+      await call("config.set", {
+        path: "/blocks/work/config/claimTtlSeconds",
+        value: 123,
+        expectRevision: "",
+      }),
+    ).toMatchObject({ ok: true });
+    const configured = readFileSync(file, "utf8");
+    expect(await call("skills.sync")).toMatchObject({ ok: true, warnings: [] });
+    expect(readFileSync(file, "utf8")).toBe(configured);
+  });
+}, 30_000);
+
+test("the upgraded delivery template is listed as a new version and this repo keeps two-hour claims", async () => {
+  await withDelivery(async (_root, call) => {
+    const listed = await call("template.list");
+    expect(listed.ok).toBe(true);
+    expect(listed.templates).toContainEqual(
+      expect.objectContaining({ id: "harsha/delivery", version: "0.1.1" }),
+    );
+    expect(readFileSync(join(repo, ".forge/config.yaml"), "utf8")).toContain(
+      "      claimTtlSeconds: 7200",
+    );
+  });
+}, 30_000);
+
 test("every delivery guidance value is literal skill prose, absent from template configuration", async () => {
   await withDelivery(async (root, call) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
