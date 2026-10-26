@@ -28,6 +28,13 @@ const { createProcessPort } = await import(
 const bin = fileURLToPath(new URL("dist/bin/forge.js", packageUrl));
 const mode = process.argv[2] ?? "all";
 const root = mkdtempSync(join(process.cwd(), "async-"));
+if (process.platform === "win32") {
+  const { windowsPrivateFiles } = await import(
+    new URL("dist/src/adapters/process/windows-acl.js", packageUrl)
+  );
+  const native = windowsPrivateFiles();
+  native.protect(root, `D:P(A;OICI;FA;;;${native.sid})`);
+}
 const env = Object.fromEntries(
   Object.entries(process.env).filter(([key]) =>
     ["path", "pathext", "systemroot", "windir", "home", "tmp", "temp"].includes(

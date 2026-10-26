@@ -38,7 +38,9 @@ export class StateUnavailable extends ForgeFailure {
   constructor(unavailable: Unavailable) {
     super({
       code: "UNAVAILABLE",
-      message: `${unavailable.reason}; ${unavailable.remedy}`,
+      message: unavailable.reason.includes("Private ACL")
+        ? unavailable.reason
+        : `${unavailable.reason}; ${unavailable.remedy}`,
       retry: "never",
     });
     this.unavailable = unavailable;
