@@ -78,6 +78,7 @@ import {
   createAssemblyProviders,
   createReceiptsService,
   idPrefixObservation,
+  agentAdapterObservation,
   projectStateRoot,
   type ProviderOptions,
 } from "./providers.ts";
@@ -677,7 +678,16 @@ export async function createAssembly(
     async invoke(request) {
       let derived: readonly DetectionObservation[];
       try {
-        derived = await idPrefixObservation(root, stateRoot, options.providers);
+        derived = [
+          ...(await idPrefixObservation(root, stateRoot, options.providers)),
+          ...(callScope()
+            .config.show()
+            .instances.some(
+              (instance) => instance.name === "agent" && instance.enabled,
+            )
+            ? agentAdapterObservation()
+            : []),
+        ];
       } catch (error) {
         return failure(request.op, error);
       }

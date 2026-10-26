@@ -40,7 +40,7 @@ test("a fresh project imports the delivery template by name alone", async () => 
   await freshProject(async (call) => {
     expect(
       await call("template.import", { template: "delivery" }),
-    ).toMatchObject({ ok: true, template: "harsha/delivery@0.1.1" });
+    ).toMatchObject({ ok: true, template: "harsha/delivery@0.1.2" });
   });
 }, 30_000);
 

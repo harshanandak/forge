@@ -24,6 +24,7 @@ blocks:
         requiredChecks: ["CI Gate"]
         receiptChecks: ["typecheck", "structure"]
       commands:
+        agent-regression: bun test test/blocks/agent test/integration/agent test/assembly/providers test/assembly/config-defaults test/assembly/first-run/first-run.test.ts --path-ignore-patterns '**/packed.integration.test.ts'
         memory-rules-regression: bun test test/blocks/memory/rules.test.ts test/blocks/memory/catalog.test.ts test/blocks/memory/recipes.integration.test.ts test/assembly/shared-store/shared-store.integration.test.ts
         acl-regression: bun test test/adapters/l5-state test/assembly/sqlite-acl.integration.test.ts test/assembly/state-acl-cli.integration.test.ts
         session-identity: bun test test/assembly/session-identity/packed.integration.test.ts

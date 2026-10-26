@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["adapters"],
+  "properties": {
+    "adapters": {
+      "type": "array",
+      "default": [],
+      "items": { "$ref": "adapter.json" }
+    }
+  }
+}

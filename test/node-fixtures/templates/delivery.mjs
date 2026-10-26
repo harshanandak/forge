@@ -21,6 +21,9 @@ function project(files) {
   for (const [name, text] of Object.entries(files))
     writeFileSync(join(root, name), text);
   const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") };
+  for (const name of Object.keys(env))
+    if (["CLAUDECODE", "CODEX_THREAD_ID"].includes(name.toUpperCase()))
+      delete env[name];
   // check runs against a clean clone of the committed tree
   for (const args of [
     ["init", "-q"],
@@ -45,10 +48,10 @@ function project(files) {
     });
     assert.equal(git.status, 0, git.stderr);
   }
-  const cli = (args, expected = 0) => {
+  const cli = (args, expected = 0, detect = {}) => {
     const result = spawnSync(process.execPath, [bin, ...args], {
       cwd: root,
-      env,
+      env: { ...env, ...detect },
       encoding: "utf8",
       windowsHide: true,
       timeout: 30000,
@@ -65,7 +68,21 @@ function project(files) {
     cli(["template", "import", "delivery"], expected);
   if (Object.keys(files).length === 0)
     return { root, cli, refused: importDelivery(6) };
-  assert.equal(importDelivery().result.template, "harsha/delivery@0.1.1");
+  assert.equal(importDelivery().result.template, "harsha/delivery@0.1.2");
+  for (const [detect, harness] of [
+    [{ CLAUDECODE: "1" }, "claude"],
+    [{ CODEX_THREAD_ID: "test" }, "codex"],
+    [{}, "current"],
+  ])
+    assert.equal(
+      cli(["route", "get", "build"], 0, detect).result.line,
+      `current high standard ${harness} single-family`,
+    );
+  assert.equal(cli(["route", "get", "deploy"], 6).error.code, "INPUT_INVALID");
+  assert.match(
+    cli(["route", "get", "build", "--max"], 6).error.message,
+    /~\/.forge\/routing.yaml/,
+  );
   // Built-in blocks run only once admitted by digest and granted their effects.
   cpSync(join(installed, "dist/src/blocks/check"), join(root, "check-bytes"), {
     recursive: true,

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/agent",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "configSchema": "schemas/config.json",
+  "nouns": {
+    "route": { "interface": "1.0.0" }
+  },
+  "requires": [{ "slot": "environment", "interface": "forge.environment@1" }],
+  "operations": {
+    "route.get": {
+      "input": "schemas/route.input.json",
+      "output": "schemas/route.output.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": ["environment:read"],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental",
+      "args": ["role"]
+    }
+  },
+  "docs": "docs.json",
+  "files": ["schemas/adapter.json"]
+}
