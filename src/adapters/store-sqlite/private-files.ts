@@ -37,8 +37,11 @@ export function privateFileGuard(native: PrivateFiles): PrivateFileGuard {
       const after = lstatSync(path, { bigint: true });
       if (after.dev !== info.dev || after.ino !== info.ino) fail(path);
     } catch (error) {
+      const literal = `'${path.replaceAll("'", "''")}'`;
+      const descriptor = `D:P(A;${directory ? "OICI" : ""};FA;;;${native.sid})`;
+      const repair = `$acl = New-Object System.Security.AccessControl.${directory ? "DirectorySecurity" : "FileSecurity"}; $acl.SetSecurityDescriptorSddlForm('${descriptor}', [System.Security.AccessControl.AccessControlSections]::Access); [System.IO.${directory ? "Directory" : "File"}]::SetAccessControl(${literal}, $acl)`;
       throw new Error(
-        `Private ACL verification failed for ${path}; fix its owner-only permissions before retrying`,
+        `Private ACL verification failed for ${path}. Stop Forge connections, then repair and retry. Repair in PowerShell: ${repair}`,
         { cause: error },
       );
     }

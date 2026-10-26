@@ -32,7 +32,8 @@ test("a broadened file ACL fails closed even when file metadata is unchanged", (
     descriptor = `D:P(A;;FA;;;${sid})(A;;FR;;;WD)`;
     expect(lstatSync(file, { bigint: true })).toEqual(before);
     expect(() => guard.file(file)).toThrow(file);
-    expect(() => guard.file(file)).toThrow("fix its owner-only permissions");
+    expect(() => guard.file(file)).toThrow("Repair in PowerShell:");
+    expect(() => guard.file(file)).toThrow("SetSecurityDescriptorSddlForm");
     descriptor = `D:P(A;;FA;;;${sid})`;
     guard.file(file);
   } finally {

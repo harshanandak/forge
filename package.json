@@ -34,8 +34,8 @@
       "default": "./dist/src/core/state/index.js"
     },
     "./adapters/sqlite": {
-      "types": "./dist/src/adapters/store-sqlite/index.d.ts",
-      "default": "./dist/src/adapters/store-sqlite/index.js"
+      "types": "./dist/src/assembly/sqlite.d.ts",
+      "default": "./dist/src/assembly/sqlite.js"
     },
     "./author": {
       "types": "./dist/src/contract/author.d.ts",
