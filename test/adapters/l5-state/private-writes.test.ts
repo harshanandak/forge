@@ -93,32 +93,75 @@ test("N store writes inherit one private directory without N ACL subprocesses", 
   }
 }, 5000);
 
-test("legacy inherited file access is narrowed only for its full-control owner", () => {
-  const dir = mkdtempSync(join(tmpdir(), "forge-acl-upgrade-"));
-  const sid = "S-1-5-21-1-2-3-1001";
-  const file = join(dir, "file");
-  writeFileSync(file, "private data");
-  try {
-    let descriptor = `D:AI(A;ID;FA;;;${sid})(A;ID;FR;;;WD)`;
+for (const readOnly of [true, false]) {
+  test(`existing inherited file ACL is refused without writes (readOnly=${readOnly})`, async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "forge-acl-refuse-")));
+    const sid = "S-1-5-21-1-2-3-1001";
+    const file = join(dir, "file");
+    const initial = `D:AI(A;ID;FA;;;${sid})(A;ID;FR;;;WD)`;
+    let descriptor = initial;
     const writes: string[] = [];
-    const guard = privateFileGuard({
-      sid,
-      owner: () => sid,
-      read: () => descriptor,
-      protect: (_path, next) => {
-        writes.push(next);
-        descriptor = next;
-      },
+    const fixture = await createSqliteStore(dir).open({
+      path: file,
+      readOnly: false,
     });
-    guard.file(file);
-    expect(writes).toEqual([`D:P(A;;FA;;;${sid})`]);
-    expect(descriptor).toBe(`D:P(A;;FA;;;${sid})`);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}, 5000);
+    if (!fixture.ok) throw new Error(fixture.unavailable.reason);
+    fixture.handle.value.exec("CREATE TABLE sample(value INTEGER)");
+    await fixture.handle.close();
+    try {
+      const security = privateFileGuard({
+        sid,
+        owner: () => sid,
+        read: (path) => (path === dir ? `D:P(A;OICI;FA;;;${sid})` : descriptor),
+        protect: (_path, next) => {
+          writes.push(next);
+          descriptor = next;
+        },
+      });
+      const opened = await createSqliteStore(dir, { security }).open({
+        path: file,
+        readOnly,
+      });
+      if (opened.ok) await opened.handle.close();
+      expect(writes).toEqual([]);
+      expect(descriptor).toBe(initial);
+      expect(opened.ok).toBe(false);
+      if (!opened.ok)
+        expect(opened.unavailable.reason).toContain("Repair in PowerShell:\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 5000);
+}
 
-test("an ownership handoff before narrowing refuses without an executable repair", () => {
+for (const owner of ["S-1-5-32-544", "S-1-5-18"]) {
+  test(`a private file is accepted independently of its owner (${owner})`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "forge-acl-private-owner-"));
+    const file = join(dir, "file");
+    const sid = "S-1-5-21-1-2-3-1001";
+    writeFileSync(file, "private data");
+    let ownerReads = 0;
+    try {
+      const guard = privateFileGuard({
+        sid,
+        owner: () => {
+          ownerReads++;
+          return owner;
+        },
+        read: () => `D:P(A;;FA;;;${sid})`,
+        protect: () => {
+          throw new Error("A private file must not be changed");
+        },
+      });
+      expect(() => guard.file(file)).not.toThrow();
+      expect(ownerReads).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 5000);
+}
+
+test("an ownership handoff before offering repair refuses without an executable command", () => {
   const dir = mkdtempSync(join(tmpdir(), "forge-acl-owner-handoff-"));
   const sid = "S-1-5-21-1-2-3-1001";
   const foreign = "S-1-5-21-1-2-3-1002";

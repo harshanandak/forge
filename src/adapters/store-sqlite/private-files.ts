@@ -6,11 +6,9 @@ export interface PrivateFileGuard {
   file(path: string): void;
 }
 
-function canNarrow(
+function canRepairFile(
   descriptor: string,
   trustees: readonly string[],
-  directory: boolean,
-  inheritedOnly: boolean,
 ): boolean {
   const body = /^D:[A-Z]*((?:\([^()]*\))*)$/.exec(descriptor)?.[1];
   if (body === undefined) return false;
@@ -25,15 +23,8 @@ function canNarrow(
   )
     return false;
   const own = (ace: readonly string[]): boolean => trustees.includes(ace[5]!);
-  return (
-    entries.some(
-      (ace) =>
-        own(ace) &&
-        ace[2] === "FA" &&
-        !ace[1]!.includes("IO") &&
-        (!directory || (ace[1]!.includes("OI") && ace[1]!.includes("CI"))),
-    ) &&
-    entries.every((ace) => !inheritedOnly || own(ace) || ace[1]!.includes("ID"))
+  return entries.some(
+    (ace) => own(ace) && ace[2] === "FA" && !ace[1]!.includes("IO"),
   );
 }
 
@@ -66,36 +57,26 @@ export function privateFileGuard(
       new RegExp(
         `^D:${directory ? "P(?:AI)?" : "(?:P)?(?:AI)?"}\\(A;${directory ? "OICI" : "(?:ID)?"};FA;;;(?:${trustees})\\)$`,
       ).test(sddl);
-    let owner: string | undefined;
-    let descriptor: string | undefined;
     try {
-      owner = native.owner(path);
-      descriptor = native.read(path);
-      if (!directory && owner !== native.sid) fail(path);
-      if (!privateAcl(descriptor)) {
-        if (directory) {
-          if (options.protectDirectories === false && !created) fail(path);
-        } else if (!canNarrow(descriptor, ownTrustees, false, true)) fail(path);
+      if (!privateAcl(native.read(path))) {
+        if (!directory || (options.protectDirectories === false && !created))
+          fail(path);
         const before = lstatSync(path, { bigint: true });
         if (before.dev !== info.dev || before.ino !== info.ino) fail(path);
-        if (!directory) {
-          owner = native.owner(path);
-          if (owner !== native.sid) fail(path);
-        }
-        native.protect(
-          path,
-          directory ? `D:P${entry}` : `D:P(A;;FA;;;${native.sid})`,
-        );
+        native.protect(path, `D:P${entry}`);
         if (!privateAcl(native.read(path))) fail(path);
       }
       const after = lstatSync(path, { bigint: true });
       if (after.dev !== info.dev || after.ino !== info.ino) fail(path);
-      if (!directory) {
-        owner = native.owner(path);
-        if (owner !== native.sid) fail(path);
-      }
     } catch (error) {
       const prefix = `Private ACL verification failed for ${path}.`;
+      if (directory)
+        throw new Error(
+          `${prefix} Move the store into a folder only you can access, or let Forge create the folder.`,
+          { cause: error },
+        );
+      let owner: string | undefined;
+      let descriptor: string | undefined;
       try {
         owner = native.owner(path);
         descriptor = native.read(path);
@@ -108,17 +89,14 @@ export function privateFileGuard(
           `${prefix} Owner: ${owner ?? "unknown"}. Ask that owner or an administrator to review its permissions.`,
           { cause: error },
         );
-      if (
-        descriptor === undefined ||
-        !canNarrow(descriptor, ownTrustees, directory, false)
-      )
+      if (descriptor === undefined || !canRepairFile(descriptor, ownTrustees))
         throw new Error(
-          `${prefix} Its access restrictions cannot be safely narrowed automatically. Ask the owner or an administrator to review its permissions.`,
+          `${prefix} Its access restrictions require review by the owner or an administrator before repair.`,
           { cause: error },
         );
       const literal = powershellLiteral(path);
-      const replacement = `D:P(A;${directory ? "OICI" : ""};FA;;;${native.sid})`;
-      const repair = `$acl = New-Object System.Security.AccessControl.${directory ? "DirectorySecurity" : "FileSecurity"}; $acl.SetSecurityDescriptorSddlForm(${powershellLiteral(replacement)}, [System.Security.AccessControl.AccessControlSections]::Access); $item = Get-Item -LiteralPath ${literal}; if ($PSVersionTable.PSEdition -eq ${powershellLiteral("Core")}) { [System.IO.FileSystemAclExtensions]::SetAccessControl($item, $acl) } else { $item.SetAccessControl($acl) }`;
+      const replacement = `D:P(A;;FA;;;${native.sid})`;
+      const repair = `$acl = New-Object System.Security.AccessControl.FileSecurity; $acl.SetSecurityDescriptorSddlForm(${powershellLiteral(replacement)}, [System.Security.AccessControl.AccessControlSections]::Access); $item = Get-Item -LiteralPath ${literal}; if ($PSVersionTable.PSEdition -eq ${powershellLiteral("Core")}) { [System.IO.FileSystemAclExtensions]::SetAccessControl($item, $acl) } else { $item.SetAccessControl($acl) }`;
       throw new Error(
         `${prefix} Stop Forge connections, then repair and retry. Repair in PowerShell:\n${repair}`,
         { cause: error },

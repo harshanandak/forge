@@ -83,8 +83,18 @@ for (const entry of ["singleton", "factory"] as const) {
         const opened = await store(root).open({ path, readOnly: false });
         if (opened.ok) await opened.handle.close();
         expect(opened.ok).toBe(false);
-        if (!opened.ok)
+        if (!opened.ok) {
           expect(opened.unavailable.reason).toContain("Private ACL");
+          expect(opened.unavailable.reason).toContain(
+            "Move the store into a folder only you can access, or let Forge create the folder.",
+          );
+          expect(opened.unavailable.reason).not.toContain(
+            "Repair in PowerShell:",
+          );
+          expect(opened.unavailable.reason).not.toMatch(
+            /SetAccessControl|SetSecurityDescriptorSddlForm|DirectorySecurity|Set-Acl|icacls/i,
+          );
+        }
         expect(native.read(root)).toBe(descriptor);
         expect(native.read(sentinel)).toBe(sentinelDescriptor);
         expect(readFileSync(sentinel, "utf8")).toBe("borrowed data");
@@ -145,46 +155,67 @@ for (const entry of ["singleton", "factory"] as const) {
     },
   );
 
-  test.skipIf(process.platform !== "win32")(
-    `public SQLite ${entry} narrows inherited legacy file access on a read-only open`,
-    async () => {
-      const root = mkdtempSync(join(tmpdir(), "forge-public-sqlite-legacy-"));
-      const native = windowsPrivateFiles();
-      try {
-        native.protect(root, `D:P(A;OICI;FA;;;${native.sid})(A;OICI;FR;;;WD)`);
-        const parentDescriptor = native.read(root);
-        const path = join(root, "state.sqlite");
-        const legacy = await rawSqliteStore(root).open({
-          path,
-          readOnly: false,
-        });
-        if (!legacy.ok) throw new Error(legacy.unavailable.reason);
-        legacy.handle.value.exec(
-          "CREATE TABLE sample(value INTEGER); INSERT INTO sample VALUES (42)",
-        );
-        await legacy.handle.close();
-        const inherited = native.read(path);
-        expect(inherited).toContain(";ID;");
-        expect(inherited).toContain(";;;WD)");
-        const bytes = readFileSync(path);
-        const opened = await store(root).open({ path, readOnly: true });
-        if (!opened.ok) throw new Error(opened.unavailable.reason);
+  for (const readOnly of [true, false]) {
+    test.skipIf(process.platform !== "win32")(
+      `public SQLite ${entry} refuses inherited broad file access without changes on a ${readOnly ? "read-only" : "writable"} open`,
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "forge-public-sqlite-legacy-"));
+        const native = windowsPrivateFiles();
         try {
-          expect(opened.handle.value.all("SELECT value FROM sample")).toEqual([
-            { value: 42n },
-          ]);
-          privateFileGuard(native).file(path);
-          expect(native.read(path)).not.toContain(";;;WD)");
+          native.protect(
+            root,
+            `D:P(A;OICI;FA;;;${native.sid})(A;OICI;FR;;;WD)`,
+          );
+          const path = join(root, "state.sqlite");
+          const legacy = await rawSqliteStore(root).open({
+            path,
+            readOnly: false,
+          });
+          if (!legacy.ok) throw new Error(legacy.unavailable.reason);
+          legacy.handle.value.exec(
+            "CREATE TABLE sample(value INTEGER); INSERT INTO sample VALUES (42)",
+          );
+          await legacy.handle.close();
+          const inherited = native.read(path);
+          expect(inherited).toContain(";ID;");
+          expect(inherited).toContain(";;;WD)");
+          expect(native.owner(path)).toBe(native.sid);
+          const parentDescriptor = native.read(root);
+          const fileDescriptor = native.read(path);
+          const bytes = readFileSync(path);
+          const opened = await store(root).open({ path, readOnly });
+          if (opened.ok) await opened.handle.close();
+          expect(opened.ok).toBe(false);
+          if (!opened.ok) {
+            const reason = opened.unavailable.reason;
+            expect(reason).toContain("Private ACL");
+            if (readOnly) {
+              expect(reason).toContain("Repair in PowerShell:");
+              expect(reason).toContain(
+                "System.Security.AccessControl.FileSecurity",
+              );
+              expect(reason).toContain(`D:P(A;;FA;;;${native.sid})`);
+              expect(reason).not.toContain("DirectorySecurity");
+            } else {
+              expect(reason).toContain(
+                "Move the store into a folder only you can access, or let Forge create the folder.",
+              );
+              expect(reason).not.toContain("Repair in PowerShell:");
+              expect(reason).not.toMatch(
+                /SetAccessControl|SetSecurityDescriptorSddlForm|DirectorySecurity|Set-Acl|icacls/i,
+              );
+            }
+          }
+          expect(native.read(path)).toBe(fileDescriptor);
+          expect(native.owner(path)).toBe(native.sid);
           expect(native.read(root)).toBe(parentDescriptor);
           expect(readFileSync(path)).toEqual(bytes);
         } finally {
-          await opened.handle.close();
+          rmSync(root, { recursive: true, force: true });
         }
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
-    },
-  );
+      },
+    );
+  }
 
   test.skipIf(process.platform !== "win32")(
     `public SQLite ${entry} keeps memory export and restore spill files private`,
