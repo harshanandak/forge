@@ -2,7 +2,7 @@
   "operations": {
     "route.get": {
       "title": "Get a role's agent route",
-      "summary": "Use the current model at high effort and standard speed. Detect the harness from adapter environment names in id order, or use current when none match. Max requires ~/.forge/routing.yaml.",
+      "summary": "Use the current model at high effort and standard speed. Detect the harness when exactly one adapter matches its environment names, or use current when none or multiple match. Max requires ~/.forge/routing.yaml.",
       "examples": [{ "command": "forge route get build --text" }]
     }
   }

@@ -682,14 +682,13 @@ export async function createAssembly(
         derived.push(
           ...(await idPrefixObservation(root, stateRoot, options.providers)),
         );
-        if (
-          call.config
-            .show()
-            .instances.some(
-              (instance) => instance.name === "agent" && instance.enabled,
-            )
-        )
-          derived.push(...agentAdapterObservation());
+        for (const instance of call.config.show().instances)
+          if (
+            instance.enabled &&
+            "builtin" in instance.source &&
+            instance.source.builtin === "forge/agent"
+          )
+            derived.push(...agentAdapterObservation(instance.name));
       } catch (error) {
         return failure(request.op, error);
       }

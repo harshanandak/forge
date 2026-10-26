@@ -292,7 +292,9 @@ export async function idPrefixObservation(
 }
 
 /** Shipped adapter data is derived, so importing delivery persists only block wiring. */
-export function agentAdapterObservation(): readonly DetectionObservation[] {
+export function agentAdapterObservation(
+  instance: string,
+): readonly DetectionObservation[] {
   const directory = new URL("agents/", firstPartyTemplates.delivery);
   const adapters = readdirSync(directory)
     .filter((name) => name.endsWith(".yaml"))
@@ -307,7 +309,7 @@ export function agentAdapterObservation(): readonly DetectionObservation[] {
     });
   return [
     {
-      key: "/blocks/agent/config/adapters",
+      key: `/blocks/${instance}/config/adapters`,
       value: adapters,
       origin: {
         detector: "project.detect",

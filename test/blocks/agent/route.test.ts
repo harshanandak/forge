@@ -79,7 +79,7 @@ test("route returns the current-model fallback with no adapters", () => {
   });
 });
 
-test("detection tries adapter ids in order without mutating configuration", () => {
+test("multiple matching adapters use current without mutating configuration", () => {
   const adapters = [
     { id: "codex", detect: ["CODEX_THREAD_ID"] },
     { id: "claude", detect: ["CLAUDECODE"] },
@@ -88,10 +88,38 @@ test("detection tries adapter ids in order without mutating configuration", () =
     CODEX_THREAD_ID: "test",
     CLAUDECODE: "1",
   });
-  expect(result.harness).toBe("claude");
-  expect(result.line).toBe("current high standard claude single-family");
-  expect(selected[0]).toEqual(["CLAUDECODE"]);
+  expect(result.harness).toBe("current");
+  expect(result.line).toBe("current high standard current single-family");
+  expect(selected).toEqual([["CODEX_THREAD_ID"], ["CLAUDECODE"]]);
   expect(adapters.map(({ id }) => id)).toEqual(["codex", "claude"]);
+});
+
+test("exactly one matching adapter detects Claude or Codex", () => {
+  const adapters = [
+    { id: "claude", detect: ["CLAUDECODE"] },
+    { id: "codex", detect: ["CODEX_THREAD_ID"] },
+  ];
+  for (const [name, harness] of [
+    ["CLAUDECODE", "claude"],
+    ["CODEX_THREAD_ID", "codex"],
+  ] as const) {
+    const { result, selected } = route(adapters, { [name]: "test" });
+    expect(result.harness).toBe(harness);
+    expect(result.line).toBe(`current high standard ${harness} single-family`);
+    expect(selected).toEqual([["CLAUDECODE"], ["CODEX_THREAD_ID"]]);
+  }
+});
+
+test("companion variables alone do not detect a harness", () => {
+  expect(
+    route(
+      [
+        { id: "claude", detect: ["CLAUDECODE"] },
+        { id: "codex", detect: ["CODEX_THREAD_ID"] },
+      ],
+      { CODEX_COMPANION_SESSION_ID: "companion", T3CODE_CLI_PATH: "fixture" },
+    ).result.harness,
+  ).toBe("current");
 });
 
 test("empty and missing variables do not detect an adapter", () => {

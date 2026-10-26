@@ -73,6 +73,16 @@ test("no detect variable uses current", () => {
   );
   expect(result.status).toBe(0);
 });
+test("nested harness variables use current instead of guessing the innermost harness", () => {
+  const result = run(["route", "get", "build", "--text"], {
+    CLAUDECODE: "1",
+    CODEX_THREAD_ID: "test",
+  });
+  expect(result.stdout).toContain(
+    "line: current high standard current single-family",
+  );
+  expect(result.status).toBe(0);
+});
 test("the shipped Codex adapter detects only its exact variable", () => {
   const result = run(["route", "get", "build", "--text"], {
     CODEX_THREAD_ID: "test",
@@ -122,6 +132,42 @@ test("explicit project adapters replace the derived list", () => {
     });
     expect(result.stdout).toContain(
       "line: current high standard current single-family",
+    );
+    expect(result.status).toBe(0);
+  } finally {
+    writeFileSync(config, original);
+  }
+});
+test("a renamed forge/agent instance still detects the harness", () => {
+  const config = join(root, ".forge/config.yaml");
+  const original = readFileSync(config, "utf8");
+  try {
+    const show = JSON.parse(run(["config", "show"]).stdout) as {
+      result: { revision: string };
+    };
+    const changed = run([
+      "config",
+      "apply",
+      "--input",
+      JSON.stringify({
+        expectRevision: show.result.revision,
+        patch: [
+          { op: "remove", path: "/blocks/agent" },
+          {
+            op: "set",
+            path: "/blocks/router",
+            value: { source: { builtin: "forge/agent" } },
+          },
+        ],
+      }),
+    ]);
+    expect(changed.stdout).toContain('"ok":true');
+    expect(changed.status).toBe(0);
+    const result = run(["route", "get", "build", "--text"], {
+      CLAUDECODE: "1",
+    });
+    expect(result.stdout).toContain(
+      "line: current high standard claude single-family",
     );
     expect(result.status).toBe(0);
   } finally {
