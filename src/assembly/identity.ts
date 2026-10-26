@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import type {
@@ -18,7 +17,14 @@ function natives(env: Environment): readonly (readonly [string, string])[] {
       : "CODEX_SESSION_ID";
   return [codex, "CLAUDE_CODE_SESSION_ID"].flatMap((key) => {
     const value = trimmed(env[key]);
-    return value === undefined ? [] : [[key, value] as const];
+    return value === undefined
+      ? []
+      : [
+          [
+            key === "CLAUDE_CODE_SESSION_ID" ? "claude-code" : "codex",
+            value,
+          ] as const,
+        ];
   });
 }
 export function sessionIdentity(env: Environment, fallback: string): string {
@@ -27,7 +33,9 @@ export function sessionIdentity(env: Environment, fallback: string): string {
   const values = natives(env);
   return values.length === 0
     ? fallback.trim()
-    : `native:${createHash("sha256").update(JSON.stringify(values)).digest("hex")}`;
+    : values
+        .map(([harness, id]) => `${harness}:${encodeURIComponent(id)}`)
+        .join("+");
 }
 export function harnessIdentity(env: Environment): string {
   const codex = trimmed(env.CODEX_THREAD_ID) || trimmed(env.CODEX_SESSION_ID);
@@ -45,7 +53,6 @@ export function harnessIdentity(env: Environment): string {
 }
 export function localIdentityResolver(
   root: string,
-  explicitSession: boolean,
   env: Environment,
   stdinTTY: boolean,
 ) {
@@ -57,8 +64,6 @@ export function localIdentityResolver(
     if (declaration.context !== "leased") return context;
     const acquire = declaration.leaseMode === "acquire";
     if (
-      acquire &&
-      !explicitSession &&
       !(explicitContext && context.session?.id.trim()) &&
       !trimmed(env.FORGE_SESSION) &&
       natives(env).length === 0 &&
@@ -67,7 +72,7 @@ export function localIdentityResolver(
       throw new ForgeFailure({
         code: "CONTEXT_MISSING",
         message:
-          "Non-interactive claims require FORGE_SESSION; set it to a stable session identifier.",
+          "Non-interactive leased operations require FORGE_SESSION; set it to a stable session identifier.",
         retry: "reconcile_first",
       });
     if (explicitContext && context.session?.device?.trim())

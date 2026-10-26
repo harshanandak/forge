@@ -313,7 +313,7 @@ test("replay cannot replace a legacy actor while adding qualified holder metadat
   }
 }, 30000);
 
-test("a qualified store records a harmless version marker and older migration lists refuse it without writes", async () => {
+test("a migration list without 003_device_session_identity refuses a qualified store without writes", async () => {
   const source = await open(false);
   try {
     migrate(source.db, [baseline, eventKeyIndex]);

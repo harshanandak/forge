@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeDeviceIdentity } from "../../../src/adapters/fs/device-identity.ts";
 import { publishExclusive } from "../../../src/adapters/fs/durable-io.ts";
@@ -55,7 +55,9 @@ test("device reads are inert; acquisition persists a private nonpath identity an
     expect(devices.read()).toBeUndefined();
     expect(existsSync(f.device)).toBe(false);
     const id = devices.acquire();
-    expect(id).toMatch(/^device-[0-9a-f-]{36}$/);
+    expect(id).toMatch(/^[a-z0-9-]+-[0-9a-f-]{36}$/);
+    if (/^[a-z0-9-]+$/i.test(hostname()))
+      expect(id).toBe(`${hostname().toLowerCase()}-${id.slice(-36)}`);
     expect(readFileSync(join(f.device, "device-id"), "utf8")).toBe(`${id}\n`);
     expect(nodeDeviceIdentity(f.device).acquire()).toBe(id);
     expect(readdirSync(f.device)).toEqual(["device-id"]);
@@ -101,17 +103,25 @@ test("a competing publisher wins exclusively; failed publication refuses without
 test("only acquisition creates identity; held reads existing or override; project and stateless ignore failures", () => {
   const f = fixture();
   try {
-    const resolve = localIdentityResolver(f.device, true, {}, false);
+    const resolve = localIdentityResolver(
+      f.device,
+      { FORGE_SESSION: "test" },
+      false,
+    );
     expect(resolve(held, context).session?.device).toBeUndefined();
     expect(existsSync(f.device)).toBe(false);
     const acquired = resolve(declaration, context);
-    expect(acquired.session?.device).toMatch(/^device-/);
+    expect(acquired.session?.device).toMatch(/^[a-z0-9-]+-[0-9a-f-]{36}$/);
     expect(resolve(held, context).session?.device).toBe(
       acquired.session?.device,
     );
     const invalidRoot = join(f.root, "file");
     writeFileSync(invalidRoot, "not-directory");
-    const invalid = localIdentityResolver(invalidRoot, true, {}, false);
+    const invalid = localIdentityResolver(
+      invalidRoot,
+      { FORGE_SESSION: "test" },
+      false,
+    );
     for (const variant of ["project", "stateless", "device"] as const)
       expect(invalid({ ...declaration, context: variant }, context)).toEqual(
         context,
@@ -121,8 +131,7 @@ test("only acquisition creates identity; held reads existing or override; projec
     );
     const override = localIdentityResolver(
       invalidRoot,
-      true,
-      { FORGE_DEVICE_ID: "  ci-device  " },
+      { FORGE_SESSION: "test", FORGE_DEVICE_ID: "  ci-device  " },
       false,
     );
     expect(override(declaration, context).session?.device).toBe("ci-device");
@@ -137,8 +146,7 @@ test("held calls without an identity file retain legacy authority but cannot hol
   try {
     const resolved = localIdentityResolver(
       f.device,
-      true,
-      {},
+      { FORGE_SESSION: "test" },
       false,
     )(held, context);
     const holder = { actor: resolved.actor!, session: resolved.session! };
@@ -203,7 +211,7 @@ test("CLI and MCP share fallback refusal; explicit catalog context is deliberate
   try {
     const options = {
       context,
-      resolveContext: localIdentityResolver(f.device, false, {}, false),
+      resolveContext: localIdentityResolver(f.device, {}, false),
     };
     const cli = await dispatch(
       catalog,
@@ -251,11 +259,11 @@ test("CLI and MCP share fallback refusal; explicit catalog context is deliberate
     const device = record(record(explicit.result)?.session)?.device;
     if (typeof device !== "string")
       throw new Error("Expected a persisted device identity");
-    expect(device).toMatch(/^device-/);
+    expect(device).toMatch(/^[a-z0-9-]+-[0-9a-f-]{36}$/);
     expect(
-      localIdentityResolver(f.device, false, {}, true)(declaration, context)
-        .session?.device,
-    ).toMatch(/^device-/);
+      localIdentityResolver(f.device, {}, true)(declaration, context).session
+        ?.device,
+    ).toMatch(/^[a-z0-9-]+-[0-9a-f-]{36}$/);
     expect(calls).toBe(1);
     const supplied = await dispatch(
       catalog,

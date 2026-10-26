@@ -245,7 +245,7 @@ test("CLI persisted device identity fences all holder writes after same-path dev
     };
     f.cli("claim", { id }, owner);
     const deviceId = readFileSync(join(f.device, "device-id"), "utf8").trim();
-    expect(deviceId).toMatch(/^device-[a-f0-9-]+$/);
+    expect(deviceId).toMatch(/^[a-z0-9-]+-[0-9a-f-]{36}$/);
     if (process.platform === "win32")
       f.cli(
         "renew",
@@ -437,6 +437,100 @@ test("non-TTY CLI and MCP refuse claims without a session source and name FORGE_
     f.cleanup();
   }
 }, 90000);
+
+test("an injected TTY claim on the built CLI refuses unsourced non-TTY holder writes and permits explicit session recovery", async () => {
+  const f = fixture();
+  const server = mcp(f);
+  try {
+    const id = f.create();
+    const [{ createAssembly }, { localIdentityResolver }, { runCli }] =
+      await Promise.all([
+        import(
+          pathToFileURL(join(repo, "dist/src/assembly/index.js")).href
+        ) as Promise<typeof import("../../../src/assembly/index.ts")>,
+        import(
+          pathToFileURL(join(repo, "dist/src/assembly/identity.js")).href
+        ) as Promise<typeof import("../../../src/assembly/identity.ts")>,
+        import(
+          pathToFileURL(join(repo, "dist/src/surface/cli.js")).href
+        ) as Promise<typeof import("../../../src/surface/cli.ts")>,
+      ]);
+    const assembly = await createAssembly({
+      root: f.root,
+      deviceRoot: f.device,
+    });
+    try {
+      const injectedTTY = true;
+      const response = await runCli(
+        assembly.catalog,
+        ["issue", "claim", "--input", JSON.stringify({ id })],
+        {
+          caller: "human",
+          context: {
+            actor: { kind: "human", id: "local-cli" },
+            session: {
+              id: "local-cli",
+              agent: "local-cli",
+              harness: "local-cli",
+            },
+            project: { id: f.root, root: f.root },
+            device: { id: f.device },
+          },
+          resolveContext: localIdentityResolver(f.device, {}, injectedTTY),
+        },
+      );
+      expect(response.exitCode, response.stdout).toBe(0);
+      expect(JSON.parse(response.stdout)).toMatchObject({ ok: true });
+    } finally {
+      await assembly.close();
+    }
+    const before = f.cli("show", { id }).result!;
+    expect(before).toMatchObject({
+      status: "open",
+      lease: { holder: { session: { id: "local-cli" } } },
+    });
+    expect(before.lease!.holder.session.device).toBe(
+      readFileSync(join(f.device, "device-id"), "utf8").trim(),
+    );
+    await server.initialize();
+    for (const [verb, input] of [
+      ["renew", { id }],
+      ["close", { id, withoutReceipt: "Injected TTY recovery fixture" }],
+      ["release", { id }],
+    ] as const) {
+      const cli = f.cli(verb, input, {}, false);
+      expect(cli, verb).toMatchObject({
+        ok: false,
+        error: { code: "CONTEXT_MISSING" },
+      });
+      expect(cli.error?.message, verb).toContain("FORGE_SESSION");
+      expect(f.cli("show", { id }).result, verb).toEqual(before);
+      const tool = await server.call(`issue_${verb}`, input);
+      expect(tool, verb).toMatchObject({
+        ok: false,
+        error: { code: "CONTEXT_MISSING" },
+      });
+      expect(tool.error?.message, verb).toContain("FORGE_SESSION");
+      expect(f.cli("show", { id }).result, verb).toEqual(before);
+    }
+    const owner = { FORGE_SESSION: "local-cli" };
+    f.cli("renew", { id }, owner);
+    expect(f.cli("show", { id }).result!.lease!.holder.session).toEqual(
+      before.lease!.holder.session,
+    );
+    f.cli("release", { id }, owner);
+    expect(f.cli("show", { id }).result?.lease).toBeUndefined();
+    f.cli("claim", { id }, owner);
+    expect(f.cli("show", { id }).result!.lease!.holder.session).toEqual(
+      before.lease!.holder.session,
+    );
+    f.close(id, owner);
+    expect(f.cli("show", { id }).result!.status).toBe("closed");
+  } finally {
+    await server.close();
+    f.cleanup();
+  }
+}, 120000);
 
 test("CLI upgrades legacy actor/session leases without requiring a generated device ID before renew, close or release", async () => {
   const f = fixture();

@@ -8,6 +8,18 @@ import {
   harnessIdentity,
   sessionIdentity,
 } from "../../../src/assembly/identity.ts";
+import { validateAmbientContext } from "../../../src/generated/validators.ts";
+
+test("session device schema accepts 256 characters and refuses 257", () => {
+  expect(
+    validateAmbientContext({ session: { id: "chat", device: "d".repeat(256) } })
+      .ok,
+  ).toBe(true);
+  expect(
+    validateAmbientContext({ session: { id: "chat", device: "d".repeat(257) } })
+      .ok,
+  ).toBe(false);
+}, 10000);
 
 const keys = [
   "FORGE_SESSION",
@@ -117,7 +129,7 @@ test("Codex native subagents share the root session despite different thread ids
   ).toBe(sessionIdentity({ CODEX_THREAD_ID: "thread" }, "fallback"));
 }, 10000);
 
-test("native tuples separate source names; companion ids contribute neither key nor harness", () => {
+test("native keys name harnesses readably; companion ids contribute neither key nor harness", () => {
   const raw = "same-native-value";
   const keys = [
     "CODEX_THREAD_ID",
@@ -127,7 +139,25 @@ test("native tuples separate source names; companion ids contribute neither key 
   const sessions = keys.map((key) =>
     sessionIdentity({ [key]: raw }, "fallback"),
   );
-  expect(new Set(sessions).size).toBe(3);
+  expect(sessions).toEqual([
+    "codex:same-native-value",
+    "codex:same-native-value",
+    "claude-code:same-native-value",
+  ]);
+  expect(
+    sessionIdentity(
+      { CODEX_SESSION_ID: "chat-1", CLAUDE_CODE_SESSION_ID: "chat-2" },
+      "fallback",
+    ),
+  ).toBe("codex:chat-1+claude-code:chat-2");
+  expect(
+    sessionIdentity({ CODEX_SESSION_ID: "a+claude-code:b" }, "fallback"),
+  ).not.toBe(
+    sessionIdentity(
+      { CODEX_SESSION_ID: "a", CLAUDE_CODE_SESSION_ID: "b" },
+      "fallback",
+    ),
+  );
   expect(sessionIdentity({ CODEX_COMPANION_SESSION_ID: raw }, "fallback")).toBe(
     "fallback",
   );

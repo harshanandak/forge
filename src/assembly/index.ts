@@ -1264,18 +1264,16 @@ export async function createLocalAssembly(): Promise<Assembly> {
 
 export function localCall(
   assembly: Assembly,
-  session?: string,
 ): import("../surface/dispatch.ts").CallOptions {
   return {
     caller: "human",
     context: localContext(
       assembly,
       { kind: "human", id: "local-cli" },
-      session?.trim() || localSession("local-cli"),
+      localSession("local-cli"),
     ),
     resolveContext: localIdentityResolver(
       assembly.deviceRoot,
-      Boolean(session?.trim()),
       { ...process.env },
       process.stdin.isTTY === true,
     ),

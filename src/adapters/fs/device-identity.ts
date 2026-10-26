@@ -7,6 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { hostname } from "node:os";
 import type { DeviceIdentity } from "../../ports/device-identity.ts";
 import {
   createPrivateDirectory,
@@ -79,7 +80,13 @@ export function nodeDeviceIdentity(
         temporary = join(root, `.device-id-${randomUUID()}.tmp`);
         const fd = createPrivateFile(temporary, false);
         try {
-          writeFileSync(fd, `device-${randomUUID()}\n`);
+          const host =
+            hostname()
+              .toLowerCase()
+              .replace(/[^a-z0-9-]/g, "-")
+              .replace(/^-+|-+$/g, "")
+              .slice(0, 219) || "device";
+          writeFileSync(fd, `${host}-${randomUUID()}\n`);
           fsyncSync(fd);
         } finally {
           closeSync(fd);

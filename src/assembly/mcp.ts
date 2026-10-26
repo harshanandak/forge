@@ -39,7 +39,6 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
       const exposure = assembly.exposure;
       const resolveContext = localIdentityResolver(
         assembly.deviceRoot,
-        false,
         { ...process.env },
         process.stdin.isTTY === true,
       );
