@@ -7,6 +7,8 @@ description: "Use when implementing a slice: claiming it, getting an isolated wo
 
 ## Claim
 
+For an existing delivery import, move its former `values.claims.ttlSeconds` to the work block's `claimTtlSeconds` config (7200 if unchanged) before syncing updated skills.
+
 1. T3 chats use the session step in `loop` first. Separate CLI workers: `export FORGE_SESSION=<your task name>` before claiming.
 2. `forge issue claim --input '{"id":"<slice>"}'`.
 3. Refused because someone holds it: do not start. Steer the live worker instead. Never two workers on one slice.
