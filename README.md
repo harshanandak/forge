@@ -127,11 +127,12 @@ device. Project-level writes, moves and exports require a Forge project. Reads
 create no stores, and device-only calls create no project state. A configured
 project keeps its own block selection and level policy.
 
-Run `forge memory rules` at session start to read the saved notes tagged `rule`
-from this device and the current project. The rendered block is capped at 1,200
-characters (roughly 300 English tokens). See the
+Run `forge memory rules` at session start for a pointer under 400 characters:
+note counts for general and this project's scope, with commands to search by
+topic and show relevant notes on demand. It prints no note text or ids. Use only
+search hits in the named scopes or unscoped. See the
 [per-harness recipes](templates/delivery/harness/memory-rules.md) for automatic
-loading and the single AGENTS.md fallback.
+startup pointers and the single AGENTS.md fallback.
 
 ## Write a block
 

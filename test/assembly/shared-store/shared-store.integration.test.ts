@@ -234,7 +234,7 @@ test("the shared project's name stays stable when opened from differently named 
   }
 }, 60_000);
 
-test("linked worktree rule scope uses the normalized shared checkout name", async () => {
+test("linked worktree memory pointer scope uses the normalized shared checkout name", async () => {
   const shared = join(work, "Shared-Proj");
   const lane = join(work, "Scoped-Lane");
   mkdirSync(join(shared, ".forge"), { recursive: true });
@@ -270,8 +270,9 @@ test("linked worktree rule scope uses the normalized shared checkout name", asyn
   const loaded = done(await fromLane("memory.rules", {})) as {
     text: { text: string };
   };
-  expect(loaded.text.text).toContain("Device rule for shared-proj");
-  expect(loaded.text.text).not.toContain("Device rule for scoped-lane");
+  expect(loaded.text.text).toContain("shared-proj 2");
+  expect(loaded.text.text).not.toContain("scoped-lane");
+  expect(loaded.text.text).not.toContain("Device rule for");
   expect(existsSync(join(lane, ".forge/state.sqlite"))).toBe(false);
 }, 60_000);
 

@@ -288,7 +288,7 @@ test("the rendered loop pages through adopted decision titles and proposals hand
     expect(await call("skills.sync")).toMatchObject({ ok: true });
     const loop = readFileSync(join(root, rendered("loop")), "utf8");
     expect(loop).toContain("forge memory rules");
-    expect(loop).toContain("if a hook has not already loaded Forge rules");
+    expect(loop).toContain("unless a hook supplied it");
     expect(loop).toContain(
       `forge decision list --input '{"status":"adopted"}'`,
     );
