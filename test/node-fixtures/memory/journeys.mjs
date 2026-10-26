@@ -648,7 +648,7 @@ async function levels() {
 
 async function rules() {
   const empty = cli(["memory", "rules"]).result;
-  assert.match(empty.text.text, /^Forge memory: general: 0 notes\./);
+  assert.match(empty.text.text, /^Forge memory notes: general 0\./);
   assert.equal(
     existsSync(deviceRoot),
     false,
@@ -660,7 +660,7 @@ async function rules() {
     "empty pointer creates no project",
   );
   setup("memory");
-  const marker = "task PRIVATE_STARTUP_MARKER\v\f\u0085\u2028\u2029";
+  const marker = "deploy PRIVATE_STARTUP_MARKER\v\f\u0085\u2028\u2029";
   const add = (level, scope, tags = []) =>
     cli([
       "memory",
@@ -678,11 +678,11 @@ async function rules() {
   add("project", "other-project");
   const loaded = cli(["memory", "rules"]).result;
   assert.ok(
-    loaded.text.text.includes("general: 3"),
+    loaded.text.text.includes("general 3"),
     "general device notes are counted",
   );
   assert.ok(
-    loaded.text.text.includes(scope + ": 2"),
+    loaded.text.text.includes(scope + " 2"),
     "current scope counts both levels",
   );
   assert.ok(loaded.text.text.length < 400);
@@ -703,30 +703,23 @@ async function rules() {
     assert.ok(!output.includes(device.id));
     assert.doesNotMatch(output, /[\v\f\u0085\u2028\u2029]/u);
   }
-  assert.ok(loaded.text.text.includes("Search memory before starting a task."));
-  const commands = [
-    ...loaded.text.text.matchAll(
-      new RegExp("forge memory (search|show) --input '([^']+)'", "g"),
+  assert.ok(
+    loaded.text.text.includes(
+      "use only hits scoped general or " + scope + " or unscoped",
     ),
-  ];
-  assert.deepEqual(
-    commands.map((match) => match[1]),
-    ["search", "show"],
   );
-  const search = cli(["memory", "search", "--input", commands[0][2]]).result;
+  assert.ok(loaded.text.text.includes('forge memory search "<topic>"'));
+  assert.ok(loaded.text.text.includes("forge memory show <id>"));
+  assert.ok(!loaded.text.text.includes("--input"));
+  const search = cli(["memory", "search", "deploy"]).result;
   assert.ok(search.hits.length > 0);
-  const shown = cli([
-    "memory",
-    "show",
-    "--input",
-    commands[1][2].replace("<id>", search.hits[0].id),
-  ]).result;
+  const shown = cli(["memory", "show", search.hits[0].id]).result;
   assert.equal(shown.note.text.text, marker);
   const outside = join(work, "outside");
   mkdirSync(outside);
   const deviceOnly = cli(["memory", "rules"], 0, outside).result;
-  assert.ok(deviceOnly.text.text.includes("general: 2"));
-  assert.ok(!deviceOnly.text.text.includes(scope + ":"));
+  assert.ok(deviceOnly.text.text.includes("general 2"));
+  assert.ok(!deviceOnly.text.text.includes(scope + " "));
   assert.equal(existsSync(join(outside, ".forge")), false);
   console.log("PASS rules");
 }

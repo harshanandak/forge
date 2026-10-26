@@ -510,25 +510,42 @@ module.exports = {
     const counts = new Map<string, number>([["general", 0]]);
     if (scope !== undefined) counts.set(scope, 0);
     for (const source of sources) {
-      for (const record of source.state.list(NOTE_PREFIX)) {
-        const value = record.value as Partial<NoteValue> | null;
-        if (!value || typeof value.text !== "string" || value.deleted === true)
-          continue;
-        const noteScope =
-          value.scope ??
-          (source.level === "project" ? scope : undefined) ??
-          "general";
-        const count = counts.get(noteScope);
-        if (count !== undefined) counts.set(noteScope, count + 1);
+      let after = 0;
+      for (;;) {
+        const records = notePage(source, {
+          after,
+          limit: LIST_LIMIT,
+          descending: false,
+        });
+        for (const note of records) {
+          const value = note.value as Partial<NoteValue> | null;
+          if (
+            !value ||
+            typeof value.text !== "string" ||
+            value.deleted === true
+          )
+            continue;
+          const noteScope =
+            value.scope ??
+            (source.level === "project" ? scope : undefined) ??
+            "general";
+          const count = counts.get(noteScope);
+          if (count !== undefined) counts.set(noteScope, count + 1);
+        }
+        const last = records.at(-1);
+        if (records.length < LIST_LIMIT || !last) break;
+        after = last.number;
       }
     }
     const text = [
-      "Forge memory: " +
-        [...counts].map(([name, count]) => name + ": " + count).join("; ") +
-        " notes.",
-      "Search memory before starting a task.",
-      `forge memory search --input '{"query":"task"}'`,
-      `forge memory show --input '{"id":"<id>"}'`,
+      "Forge memory notes: " +
+        [...counts].map(([name, count]) => name + " " + count).join(", ") +
+        ".",
+      "Before a task, search memory for its topic; use only hits scoped " +
+        [...counts.keys()].join(" or ") +
+        " or unscoped.",
+      'forge memory search "<topic>"',
+      "forge memory show <id>",
     ].join("\n");
     return { text: fence(text, "memory:rules") };
   },

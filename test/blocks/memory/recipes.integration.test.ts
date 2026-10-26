@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { blockSchema } from "./lib.ts";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const recipe = readFileSync(
@@ -42,7 +41,7 @@ for (const [name, input, code] of [
 
 test("integration: recipe prints the memory pointer once without another header", () => {
   const text =
-    "Forge memory: general: 1 notes.\nSearch memory before starting a task.";
+    "Forge memory notes: general 1.\nBefore a task, search memory for its topic.";
   const result = spawnSync(node, ["-e", parser], {
     input: JSON.stringify({ ok: true, result: { text: { text } } }),
     encoding: "utf8",
@@ -69,12 +68,9 @@ test("recipe gives a valid on-demand search and loop requires it", () => {
     resolve(repo, "templates/delivery/skills/loop/SKILL.md"),
     "utf8",
   );
-  const valid = blockSchema("memory", "search.input.json");
-  const input = recipe.split("forge memory search --input '")[1]?.split("'")[0];
-  expect(input).toBeDefined();
-  const parsed: unknown = JSON.parse(input ?? "null");
-  expect(valid(parsed)).toEqual([]);
-  expect(parsed).toEqual({ query: "task" });
+  expect(recipe).toContain('forge memory search "<topic>"');
+  expect(recipe).toContain("forge memory show <id>");
+  expect(recipe).toContain("only hits in the named scopes or unscoped");
   expect(loop).toContain("Search memory before starting a task");
   expect(loop).toContain("search/show commands");
   expect(loop).toContain("never note text");
