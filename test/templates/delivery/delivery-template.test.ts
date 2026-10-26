@@ -365,7 +365,11 @@ const GUIDANCE = [
   ["roles.implementer", "loop", "implementer fast"],
   ["roles.reviewer", "loop", "reviewer other-family"],
   ["roles.housekeeping", "loop", "housekeeping cheapest"],
-  ["pr.models", "open-pr", "**Models**: for each of planned, implemented and reviewed"],
+  [
+    "pr.models",
+    "open-pr",
+    "**Models**: for each of planned, implemented and reviewed",
+  ],
   ["pr.notVerified", "open-pr", "**Not verified**: what you did not check"],
   ["pr.trailers", "open-pr", "trailers: none"],
   [
