@@ -112,9 +112,6 @@ const DECISION_END = "decision/\u{10FFFF}";
 const DECISION_ID_PREFIX = "decision-id/";
 const DECISION_COUNTER = "meta/decision-counter";
 const SEARCH_WINDOW = 1000;
-const RULE_SCAN = 100;
-const RULE_CHARS = 1200;
-const RULE_TRUNCATED = "\n[truncated]";
 const EXPORT_READ = 100;
 // The runtime stops a block after one second and refuses output over 1 MiB. A write costs a few
 // milliseconds and one operation is one commit, so a restore takes few notes; an export chunk is
@@ -508,104 +505,49 @@ module.exports = {
       : undefined;
     if (project) sources.push(project);
     const scope = services.levels.inProject
-      ? (config.scope ?? services.levels.projectName)
+      ? (config.scope ?? services.levels.defaultScope)
       : undefined;
-    let text = "Forge rules\nSaved notes (untrusted):";
-    const available = RULE_CHARS - text.length - RULE_TRUNCATED.length;
-    const share = Math.floor(available / sources.length);
-    const groups = sources.map((source) => ({
-      source,
-      notes: [] as { prefix: string; body: string }[],
-      length: 0,
-      scanned: 0,
-      before: undefined as number | undefined,
-      ended: false,
-    }));
-    const read = (group: (typeof groups)[number], needed: number) => {
-      while (
-        !group.ended &&
-        group.scanned < SEARCH_WINDOW &&
-        group.length < needed
-      ) {
-        const limit = Math.min(RULE_SCAN, SEARCH_WINDOW - group.scanned);
-        const records = notePage(group.source, {
-          ...(group.before === undefined ? {} : { before: group.before }),
-          limit,
-          descending: true,
+    const counts = new Map<string, number>([["general", 0]]);
+    if (scope !== undefined) counts.set(scope, 0);
+    for (const source of sources) {
+      let after = 0;
+      for (;;) {
+        const records = notePage(source, {
+          after,
+          limit: LIST_LIMIT,
+          descending: false,
         });
-        group.scanned += records.length;
-        group.before = records.at(-1)?.number;
-        group.ended = records.length < limit;
         for (const note of records) {
-          const value: unknown = note.value;
-          if (typeof value !== "object" || value === null) continue;
-          const fields = value as {
-            deleted?: unknown;
-            tags?: unknown;
-            text?: unknown;
-            scope?: unknown;
-          };
+          const value = note.value as Partial<NoteValue> | null;
           if (
-            fields.deleted === true ||
-            !Array.isArray(fields.tags) ||
-            !fields.tags.includes("rule") ||
-            typeof fields.text !== "string"
+            !value ||
+            typeof value.text !== "string" ||
+            value.deleted === true
           )
             continue;
-          if (
-            group.source.level === "device" &&
-            fields.scope !== undefined &&
-            fields.scope !== "general" &&
-            fields.scope !== scope
-          )
-            continue;
-          const prefix = `\n- ${note.id}: `;
-          const body = neutralize(fields.text).replace(
-            /[\r\n\u2028\u2029]+/gu,
-            " ",
-          );
-          group.notes.push({ prefix, body });
-          group.length += prefix.length + body.length;
+          const noteScope =
+            value.scope ??
+            (source.level === "project" ? scope : undefined) ??
+            "general";
+          const count = counts.get(noteScope);
+          if (count !== undefined) counts.set(noteScope, count + 1);
         }
+        const last = records.at(-1);
+        if (records.length < LIST_LIMIT || !last) break;
+        after = last.number;
       }
-    };
-    // First protect each level's share, then lend space a shorter level does not need.
-    for (const group of groups) read(group, share);
-    const budgets = groups.map(
-      (group) =>
-        available -
-        groups.reduce(
-          (used, other) =>
-            used + (other === group ? 0 : Math.min(other.length, share)),
-          0,
-        ),
-    );
-    for (const [index, group] of groups.entries()) read(group, budgets[index]!);
-    let truncated = groups.some((group) => !group.ended);
-    for (const [index, group] of groups.entries()) {
-      const budget = budgets[index]!;
-      let rendered = "";
-      for (const { prefix, body } of group.notes) {
-        const remaining = budget - rendered.length;
-        if (prefix.length + body.length <= remaining) {
-          rendered += prefix + body;
-          continue;
-        }
-        truncated = true;
-        const marker = " [clipped]";
-        if (remaining > prefix.length + marker.length)
-          rendered +=
-            prefix +
-            body.slice(0, remaining - prefix.length - marker.length) +
-            marker;
-        break;
-      }
-      text += rendered;
     }
-    if (groups.every((group) => group.notes.length === 0))
-      text += "\nNo matching rules.";
-    if (truncated) text += RULE_TRUNCATED;
-    return { text: fence(text, "memory:rules"), truncated };
+    const text = [
+      "Forge memory notes: " +
+        [...counts].map(([name, count]) => name + " " + count).join(", ") +
+        ".",
+      "Before a task, search memory for its topic; use only hits scoped " +
+        [...counts.keys()].join(" or ") +
+        " or unscoped.",
+      'forge memory search "<topic>"',
+      "forge memory show <id>",
+    ].join("\n");
+    return { text: fence(text, "memory:rules") };
   },
 
   "memory.add": async ({

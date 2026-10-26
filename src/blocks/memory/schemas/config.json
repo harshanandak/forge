@@ -4,7 +4,7 @@
   "properties": {
     "scope": {
       "$ref": "defs.json#/$defs/Scope",
-      "description": "The device rule scope for this project. Defaults to the project folder name. Rules scoped general or left unscoped are also included."
+      "description": "The memory scope for this project in the startup pointer. Defaults to the normalized project folder name. General notes are counted too."
     },
     "decisions": {
       "type": "object",
