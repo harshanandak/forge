@@ -32,14 +32,11 @@ export type LeaseDecision =
   | { readonly ok: false; readonly error: ForgeError };
 
 function sameHolder(a: LeaseHolder, b: LeaseHolder): boolean {
-  if (a.session.device !== undefined || b.session.device !== undefined)
-    return (
-      a.session.device === b.session.device && a.session.id === b.session.id
-    );
   return (
-    a.actor.kind === b.actor.kind &&
-    a.actor.id === b.actor.id &&
-    a.session.id === b.session.id
+    a.session.id === b.session.id &&
+    (a.session.device !== undefined || b.session.device !== undefined
+      ? a.session.device === b.session.device
+      : a.actor.kind === b.actor.kind && a.actor.id === b.actor.id)
   );
 }
 
