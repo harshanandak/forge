@@ -361,6 +361,6 @@ test("every delivery guidance value is literal skill prose, absent from template
           join(repo, `templates/delivery/skills/${name}/SKILL.md`),
           "utf8",
         ),
-      ).not.toMatch(/\{\{\s*values\./);
+      ).not.toContain("{{");
   });
 }, 30_000);
