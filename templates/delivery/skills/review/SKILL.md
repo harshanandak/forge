@@ -1,6 +1,6 @@
 ---
 name: review
-description: "Use when an open PR has new checks, comments or review threads, on each wake while it is open. Triages only what is newer than the last push, fixes {{values.review.fix}} inside the done boundary, files {{values.review.file}} as issues, replies to and resolves every thread from any author, and stops after {{values.review.rounds}} rounds."
+description: "Use when an open PR has new checks, comments or review threads, on each wake while it is open. Triages only what is newer than the last push, fixes P0, P1 inside the done boundary, files P2, P3 as issues, replies to and resolves every thread from any author, and stops after 2 rounds."
 ---
 
 # review
@@ -19,8 +19,8 @@ gh api graphql --paginate -F owner='{owner}' -F repo='{repo}' -F n=<n> -f query=
 ## Each finding
 
 1. Check it against the source. A bot can be wrong; say so with the line that shows it.
-2. Fix only {{values.review.fix}} findings on lines this PR changed, inside the slice's done boundary.
-3. Everything else ({{values.review.file}}, or outside the boundary) is filed, not fixed: `forge issue create --input '{"title":"...","kind":"task","labels":["{{values.labels.deferred}}","p2"],"parent":"<epic>","body":"from <pr url> thread <id>"}'`.
+2. Fix only P0, P1 findings on lines this PR changed, inside the slice's done boundary.
+3. Everything else (P2, P3, or outside the boundary) is filed, not fixed: `forge issue create --input '{"title":"...","kind":"task","labels":["review-deferred","p2"],"parent":"<epic>","body":"from <pr url> thread <id>"}'`.
 4. Commit and push fixes before replying, so the reply can cite the SHA.
 
 ## Reply and resolve every thread
@@ -37,12 +37,12 @@ The second must print `true`. Reply text: "Fixed in <sha>: ..." or "Filed as <is
 ## Red checks
 
 1. `gh pr checks <n>`, then `gh run view <run> --log-failed`.
-2. Red on base too (`gh run list --branch <base>`)? Not this PR's bug. Rerun up to {{values.review.reruns}} time with `gh run rerun <run> --failed`, file or comment on the flake issue, and label it. Never fix it in this PR.
+2. Red on base too (`gh run list --branch <base>`)? Not this PR's bug. Rerun up to 1 time with `gh run rerun <run> --failed`, file or comment on the flake issue, and label it. Never fix it in this PR.
 3. Red only here: fix it like a finding.
 4. Behind base: `gh pr update-branch <n>`. Never rebase a pushed branch, never force-push.
 
 ## Round budget
 
 - One round is one triage pass plus one push. Log it: `forge issue comment --input '{"id":"<slice>","body":"review round <k>: fixed ..., filed ..."}'`.
-- At most {{values.review.rounds}} rounds. After the last, a new blocker means split or re-plan with the orchestrator, not another round.
+- At most 2 rounds. After the last, a new blocker means split or re-plan with the orchestrator, not another round.
 - When checks are green and the list prints nothing, hand over to `land`.

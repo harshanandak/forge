@@ -35,12 +35,12 @@
     },
     "issue.claim": {
       "title": "Issue claim",
-      "summary": "Acquire an open issue lease for the current session.",
+      "summary": "Acquire an open issue lease for the current session. Omitted ttlSeconds uses the block's claimTtlSeconds config (3600 seconds by default); explicit ttlSeconds overrides it.",
       "examples": [{ "input": { "id": "demo-1", "ttlSeconds": 7200 } }]
     },
     "issue.renew": {
       "title": "Issue renew",
-      "summary": "Renew a live lease at its current generation; expired leases must be acquired again.",
+      "summary": "Renew a live lease at its current generation; expired leases must be acquired again. Omitted ttlSeconds uses the block's claimTtlSeconds config (3600 seconds by default); explicit ttlSeconds overrides it.",
       "examples": [{ "input": { "id": "demo-1", "ttlSeconds": 7200 } }]
     },
     "issue.release": {

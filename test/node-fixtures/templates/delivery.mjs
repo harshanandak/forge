@@ -65,7 +65,7 @@ function project(files) {
     cli(["template", "import", "delivery"], expected);
   if (Object.keys(files).length === 0)
     return { root, cli, refused: importDelivery(6) };
-  assert.equal(importDelivery().result.template, "harsha/delivery@0.1.0");
+  assert.equal(importDelivery().result.template, "harsha/delivery@0.1.1");
   // Built-in blocks run only once admitted by digest and granted their effects.
   cpSync(join(installed, "dist/src/blocks/check"), join(root, "check-bytes"), {
     recursive: true,

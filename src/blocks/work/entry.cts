@@ -32,6 +32,7 @@ type WorkListInput = ListItemsInput & { readonly labels?: readonly string[] };
 type WorkConfig = {
   readonly labelOrder?: readonly string[];
   readonly idPrefix?: string;
+  readonly claimTtlSeconds?: number;
 };
 type WorkOperations = TrackerOperations<"issue"> & {
   readonly "issue.ready": readonly [
@@ -483,7 +484,11 @@ const operations: Operations<WorkOperations> = {
     const id = ids.stored(input.id);
     if (stored(get(state, id, input.id)).status !== "open")
       fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
-    const acquired = state.acquire(key(id), (input.ttlSeconds ?? 3600) * 1000);
+    const ttl =
+      input.ttlSeconds ??
+      (config as WorkConfig | undefined)?.claimTtlSeconds ??
+      3600;
+    const acquired = state.acquire(key(id), ttl * 1000);
     // Another holder may close between the initial read and acquisition.
     if (stored(get(state, id, input.id)).status !== "open") {
       state.release(key(id));
@@ -499,12 +504,11 @@ const operations: Operations<WorkOperations> = {
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
     get(state, id, input.id);
-    return grant(
-      state,
-      id,
-      state.renew(key(id), (input.ttlSeconds ?? 3600) * 1000),
-      ids,
-    );
+    const ttl =
+      input.ttlSeconds ??
+      (config as WorkConfig | undefined)?.claimTtlSeconds ??
+      3600;
+    return grant(state, id, state.renew(key(id), ttl * 1000), ids);
   },
   "issue.release": ({ input, services, config }) => {
     const state = client(services);
