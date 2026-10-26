@@ -259,23 +259,31 @@ test("every generated CLI line for the shipped blocks delivers its --input JSON 
   });
 }, 30_000);
 
-test("sync replaces its own files whatever their size and never touches hand-written ones", async () => {
+test("sync preserves hand-edited recorded files of any size and never touches hand-written ones", async () => {
   await withProject(async (assembly, root) => {
     const dir = join(root, ".agents/skills");
     mkdirSync(join(dir, "issue"), { recursive: true });
     mkdirSync(join(dir, "memory"), { recursive: true });
-    // A stale generated file past the 16 KiB read cap the first version used.
-    const stale = `${GENERATED_MARKER}\n${"OLD LINE\n".repeat(3000)}`;
-    writeFileSync(join(dir, "issue/SKILL.md"), stale);
     const mine = "---\nname: memory\ndescription: mine\n---\n# mine\n";
     writeFileSync(join(dir, "memory/SKILL.md"), mine);
+    const initial = await forge(assembly, ["skills", "sync"]);
+    expect(initial.ok).toBe(true);
+    expect(record(initial.result)?.written).toContain(
+      ".agents/skills/issue/SKILL.md",
+    );
+    // Edit a recorded copy past the 16 KiB read cap the first version used.
+    const edited = `${GENERATED_MARKER}\n${"EDITED LINE\n".repeat(3000)}`;
+    writeFileSync(join(dir, "issue/SKILL.md"), edited);
     expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
       ok: true,
-      result: { skipped: [".agents/skills/memory/SKILL.md"] },
+      result: {
+        skipped: [
+          ".agents/skills/issue/SKILL.md",
+          ".agents/skills/memory/SKILL.md",
+        ],
+      },
     });
-    const issue = readFileSync(join(dir, "issue/SKILL.md"), "utf8");
-    expect(issue).not.toContain("OLD LINE");
-    expect(lintSkill(issue, assembly.catalog.list())).toEqual([]);
+    expect(readFileSync(join(dir, "issue/SKILL.md"), "utf8")).toBe(edited);
     expect(readFileSync(join(dir, "memory/SKILL.md"), "utf8")).toBe(mine);
   });
 }, 30_000);
@@ -311,59 +319,92 @@ test("the lint rejects unknown operations and oversized skills; core and human-o
   ]);
 }, 30_000);
 
-test("the lint refuses literal model names and routing settings with the offending span and line", () => {
-  const front = "---\nname: sample\ndescription: sample\n---\n\n";
-  for (const span of [
-    "gpt-6.1-sol",
-    "GPT-6.1 Sol",
-    "GPT 6.1 Sol",
-    "claude-opus-4-6",
-    "Opus",
-    "Sonnet",
-    "Haiku",
-    "gemini-3-pro",
-    "Gemini 3 Pro",
-    "deepseek-v4",
-    "o3",
-    "o4-mini",
-    "--model custom",
-    "--model=custom",
-    "-m custom",
-    "--effort high",
-    "--effort=high",
-    "effort: high",
-    '"effort": "high"',
+const routingCases: readonly [string, string][] = [
+  ["gpt-5", "gpt-custom"],
+  ["gpt-6.1-sol", "GPT 6.1 Sol"],
+  ["claude-opus-4-6", "claude-code"],
+  ["claude-sonnet-4", ".claude-plugin"],
+  ["claude-haiku-4", "Claude Code"],
+  ["claude-fable-1", "claude-helper"],
+  ["claude-3-7", "claude-model"],
+  ["gemini-3-pro", "Gemini 3 Pro"],
+  ["deepseek-v4", "deepseeker"],
+  ["o3", "o3-mini"],
+  ["Opus", "opuses"],
+  ["Sonnet", "sonnets"],
+  ["Haiku", "haikus"],
+  ["--model gpt-5", "--model ${MODEL}"],
+  ["--model=gpt-5", '--model "$MODEL"'],
+  ["-m gpt-5", "git commit -m message"],
+  ["-m gpt-5", 'git commit -m "..."'],
+  ["python -m gpt-5", "python -m pytest"],
+  ["grep -m o3", "grep -m 1"],
+  ["--model deepseek-v4", "--model custom"],
+  ["--model gpt-5", "Mental model"],
+  ["effort: minimal", "effort: minimalism"],
+  ["effort: low", "effort: lower"],
+  ["effort: medium", "effort: medium-sized"],
+  ["effort: high", "Effort: one line"],
+  ["effort: xhigh", "effort: xhigher"],
+  ["effort: max", "effort: maximum"],
+  ["effort=high", "effort=high-level"],
+  ["reasoning: high", "reasoning: high-level"],
+  ["reasoning=high", "reasoning=high-level"],
+  ["reasoning_effort: high", "reasoning_effort: default"],
+  ["reasoning_effort=high", "reasoning_effort=default"],
+  ["model_reasoning_effort: high", "model_reasoning_effort: default"],
+  ["model_reasoning_effort=high", "model_reasoning_effort=default"],
+  ["-c effort=high", "-c effort=default"],
+  ["-c reasoning=high", "-c reasoning=default"],
+  ["-c reasoning_effort=high", "-c reasoning_effort=default"],
+  ["-c model_reasoning_effort=high", "-c model_reasoning_effort=default"],
+  ["--effort high", "--effort high-level"],
+  ["--effort=high", "--effort=default"],
+  ["reasoning high", "reasoning high-level"],
+  ["reasoning minimal", "reasoning none"],
+  ["effort: high", "reasoningEffort: high"],
+  ['"effort": "high"', '"effort": "<effort>"'],
+  ['{"reasoning": "high"}', '{"reasoning": "<effort>"}'],
+  ['model_reasoning_effort="high"', 'model_reasoning_effort="{effort}"'],
+  ["gpt-5", "<gpt-5>"],
+  ["claude-opus-4-6", "{claude-opus-4-6}"],
+  ["gpt-5", "{{gpt-5}}"],
+  ["reasoning high", "<reasoning high>"],
+  ["effort: high", "effort: {high}"],
+  ["<!-- --model gpt-5 -->", "--model <model id>"],
+  ["--effort high", "--effort <effort>"],
+  ["-m o3", "-m {model}"],
+  [
     "reasoning high",
-    "model: custom",
-    '"model": "custom"',
-    "model = custom",
-    "model_reasoning_effort=high",
-    "reasoningEffort: high",
-  ]) {
-    const problems = lintSkill(`${front}${span}\n`, []);
-    expect(problems, span).toEqual([expect.stringContaining(span)]);
-    expect(problems[0], span).toContain("line 6");
-    expect(lintSkill(`${front}\`${span}\`\n`, []), span).toEqual([
-      expect.stringContaining(span),
-    ]);
-  }
-}, 30_000);
-
-test("the lint allows routing placeholders, harness names and ordinary prose", () => {
-  const front = "---\nname: sample\ndescription: sample\n---\n";
-  for (const body of [
-    "Claude Code, Codex and T3 Code select the model.",
-    "The harness picks the model. Model settings belong to the user.",
     "Implemented: <display name> (<model id>, reasoning <effort>) via <harness>",
-    "<gpt-6.1-sol> {claude-opus-4-6} {{gpt-6.1-sol}}",
-    "--model <model> -m {model} --effort <effort> effort: {effort}",
-    '"model": "<model>" model = {model} reasoning {effort}',
-    "model: <model id> effort: <reasoning level>",
-    "model_reasoning_effort={effort} reasoningEffort: <effort>",
-    "model-driven reasoning about high availability and medium size",
-  ])
-    expect(lintSkill(`${front}${body}\n`, []), body).toEqual([]);
-}, 30_000);
+  ],
+  ["gpt-5", "Codex and T3 Code select the model."],
+];
+
+test.each(routingCases)(
+  "the lint rejects literal routing in %s",
+  (body) => {
+    const front = "---\nname: sample\ndescription: sample\n---\n\n";
+    for (const content of [body, `\`${body}\``]) {
+      const problems = lintSkill(`${front}${content}\n`, []);
+      expect(problems.length).toBeGreaterThan(0);
+      expect(problems[0]).toContain("literal model or effort");
+      expect(problems[0]).toContain("line 6");
+      expect(problems[0]).toMatch(/in `.+` on line 6$/);
+    }
+  },
+  30_000,
+);
+
+test.each(routingCases)(
+  "the lint allows the paired alternative to %s: %s",
+  (_body, allowed) => {
+    const front = "---\nname: sample\ndescription: sample\n---\n\n";
+    for (const content of [allowed, `\`${allowed}\``])
+      expect(lintSkill(`${front}${content}\n`, [])).toEqual([]);
+  },
+  30_000,
+);
 
 test("input fields are shown for display only; non-object and $ref/anyOf inputs never become syntax", () => {
   const base = candidate("sample.echo");

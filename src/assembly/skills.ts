@@ -1,8 +1,8 @@
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
 import type { McpCandidate } from "../contract/mcp.ts";
-import { refuse } from "../core/trust/index.ts";
+import { digest, refuse } from "../core/trust/index.ts";
+import { record } from "../surface/dispatch.ts";
 import {
-  GENERATED_MARKER,
   lintSkill,
   renderSkills,
   renderTemplateSkill,
@@ -16,7 +16,7 @@ export interface SkillsSyncResult {
   readonly dir: string;
   readonly written: readonly string[];
   readonly unchanged: readonly string[];
-  /** Existing files without the generated marker: hand-written, so never overwritten. */
+  /** Unowned files and hand-edited recorded copies are never overwritten. */
   readonly skipped: readonly string[];
   /** Generated files this run no longer produces, e.g. from a removed template. */
   readonly removed: readonly string[];
@@ -46,14 +46,35 @@ function readFile(
   }
 }
 
-/** Line endings are normalized first: git autocrlf may have turned a generated file's LF into CRLF. */
-const generated = (bytes: Uint8Array | undefined): boolean =>
-  bytes !== undefined &&
-  new TextDecoder()
-    .decode(bytes)
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .includes(GENERATED_MARKER);
+const OWNERSHIP_FILE = ".forge-skills.json";
+const hash = (bytes: Uint8Array): string =>
+  digest(bytes.filter((byte, index) => byte !== 13 || bytes[index + 1] !== 10));
+
+function ownership(
+  files: ReturnType<typeof nodeConfigFiles>,
+  dir: string,
+): Record<string, string> {
+  const bytes = files.read(`${dir}/${OWNERSHIP_FILE}`);
+  if (bytes === undefined) return {};
+  const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+  const saved = record(record(parsed)?.files);
+  if (record(parsed)?.version !== 1 || saved === undefined)
+    refuse("INPUT_INVALID", `Invalid skills ownership record in ${dir}`);
+  const entries = Object.entries(saved);
+  for (const [path, value] of entries)
+    if (
+      !path.includes("/") ||
+      path.includes("\\") ||
+      path.split("/").some((part) => ["", ".", ".."].includes(part)) ||
+      typeof value !== "string" ||
+      !/^sha256:[a-f0-9]{64}$/.test(value)
+    )
+      refuse(
+        "INPUT_INVALID",
+        `Invalid skills ownership entry ${path} in ${dir}`,
+      );
+  return Object.fromEntries(entries) as Record<string, string>;
+}
 
 function readEntry(
   files: ReturnType<typeof nodeConfigFiles>,
@@ -115,8 +136,8 @@ function templateSkills(templates: TemplateSkills): Copy[] {
 
 /**
  * `skills.sync`: write each enabled block noun's skill and each imported template's skill under
- * the project root. A file it generated (it carries the marker line) is always replaced, whatever
- * its size. The marker owns its companion files too; nonempty unmarked skill folders stay untouched.
+ * the project root. The ownership record tracks only generated paths and their normalized hashes.
+ * Edited copies and unrecorded user files stay untouched.
  */
 export function syncSkills(
   root: string,
@@ -179,25 +200,16 @@ export function syncSkills(
   const removed: string[] = [];
   const differences: string[] = [];
   try {
-    // Preflight every destination before the first write, including symlinks below a skill.
-    for (const dir of dirs)
-      for (const skill of skills) files.read(`${dir}/${skill.path}`);
-    const obsolete = dirs.flatMap((dir) =>
-      files.list(dir).flatMap((name) =>
-        generated(readFile(files, `${dir}/${name}/SKILL.md`))
-          ? tree(files, `${dir}/${name}`)
-              .map((entry) => entry.path)
-              .filter((path) => !paths.includes(path.slice(dir.length + 1)))
-          : [],
-      ),
+    const expected = new Map(
+      skills.map((skill) => [
+        skill.path,
+        skill.bytes ?? new TextEncoder().encode(skill.text),
+      ]),
     );
-    for (const dir of dirs) {
+    const plans = dirs.map((dir) => {
+      const saved = ownership(files, dir);
       const managed = new Set(
-        skills
-          .filter((skill) =>
-            generated(readFile(files, `${dir}/${skill.noun}/SKILL.md`)),
-          )
-          .map((skill) => skill.noun),
+        Object.keys(saved).map((path) => path.split("/")[0]),
       );
       const protectedNames = new Set(
         skills
@@ -208,39 +220,76 @@ export function syncSkills(
           )
           .map((skill) => skill.noun),
       );
-      for (const skill of skills) {
-        const path = `${dir}/${skill.path}`;
-        const bytes = skill.bytes ?? new TextEncoder().encode(skill.text);
-        const current = files.read(path);
-        if (current !== undefined && Buffer.from(current).equals(bytes))
-          unchanged.push(path);
-        else if (check)
-          differences.push(
-            `${path}: ${current !== undefined && !generated(current) && skill.bytes === undefined ? "hand-edited" : "stale or hand-edited"} copy`,
-          );
-        else if (protectedNames.has(skill.noun)) skipped.push(path);
-        else {
-          files.write(path, bytes);
-          written.push(path);
+      const copies = [...new Set([...paths, ...Object.keys(saved)])].map(
+        (path) => {
+          const parts = path.split("/");
+          for (let index = 1; index < parts.length; index++)
+            readEntry(files, `${dir}/${parts.slice(0, index).join("/")}`);
+          return { path, current: files.read(`${dir}/${path}`) };
+        },
+      );
+      return { dir, saved, protectedNames, copies };
+    });
+    for (const { dir, saved, protectedNames, copies } of plans) {
+      for (const { path, current } of copies) {
+        const target = `${dir}/${path}`;
+        const bytes = expected.get(path);
+        const previous = saved[path];
+        if (
+          (previous === undefined && current !== undefined) ||
+          protectedNames.has(path.split("/")[0]!)
+        ) {
+          if (bytes !== undefined) skipped.push(target);
+          continue;
+        }
+        if (current !== undefined && hash(current) !== previous) {
+          if (check)
+            differences.push(
+              `${target}: hand-edited copy; restore its generated content or remove it before syncing`,
+            );
+          else skipped.push(target);
+        } else if (
+          bytes !== undefined &&
+          current !== undefined &&
+          hash(current) === hash(bytes)
+        ) {
+          unchanged.push(target);
+        } else if (bytes !== undefined) {
+          if (check)
+            differences.push(`${target}: stale copy; run forge skills sync`);
+          else {
+            files.write(target, bytes);
+            saved[path] = hash(bytes);
+            written.push(target);
+          }
+        } else {
+          if (check && current !== undefined)
+            differences.push(`${target}: stale copy; run forge skills sync`);
+          else if (!check) {
+            if (current !== undefined) {
+              files.remove(target);
+              removed.push(target);
+            }
+            delete saved[path];
+          }
         }
       }
-    }
-    for (const path of obsolete)
-      if (check) differences.push(`${path}: stale copy`);
-      else {
-        files.remove(path);
-        removed.push(path);
+      if (!check) {
+        const target = `${dir}/${OWNERSHIP_FILE}`;
+        const bytes = new TextEncoder().encode(
+          `${JSON.stringify({ version: 1, files: Object.fromEntries(Object.entries(saved).sort(([a], [b]) => a.localeCompare(b))) }, null, 2)}\n`,
+        );
+        const current = files.read(target);
+        if (current === undefined || hash(current) !== hash(bytes))
+          files.write(target, bytes);
       }
+    }
   } catch (error) {
     refuse(
       "INPUT_INVALID",
       error instanceof Error ? error.message : "Cannot write skills",
     );
   }
-  if (differences.length)
-    refuse(
-      "OUTPUT_INVALID",
-      `${differences.join("; ")}; run forge skills sync`,
-    );
+  if (differences.length) refuse("OUTPUT_INVALID", differences.join("; "));
   return { dir: dirs.join(", "), written, unchanged, skipped, removed };
 }

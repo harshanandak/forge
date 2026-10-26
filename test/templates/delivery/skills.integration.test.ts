@@ -122,9 +122,25 @@ test("built sync honors adapter dirs, companions, read-only checks and adapter r
         readFileSync(join(root, dir, "forge-loop/agents/openai.yaml"), "utf8"),
       ).toContain("allow_implicit_invocation: false");
       expect(existsSync(join(root, dir, "forge-loop/SKILL.md"))).toBe(true);
+      writeFileSync(join(root, dir, "forge-loop/NOTES.md"), "user notes\n");
     }
     expect(run("skills", "sync", "--check").status).toBe(0);
+    expect(run("skills", "sync").status).toBe(0);
+    for (const dir of dirs) {
+      expect(readFileSync(join(root, dir, "forge-loop/NOTES.md"), "utf8")).toBe(
+        "user notes\n",
+      );
+      expect(existsSync(join(root, dir, ".forge-skills.json"))).toBe(true);
+    }
     const target = join(root, dirs[0]!, "forge-loop/SKILL.md");
+    rmSync(target);
+    expect(run("skills", "sync").status).toBe(0);
+    expect(existsSync(target)).toBe(true);
+    for (const dir of dirs) {
+      const skill = join(root, dir, "forge-loop/SKILL.md");
+      writeFileSync(skill, readFileSync(skill, "utf8").replace(/\n/g, "\r\n"));
+    }
+    expect(run("skills", "sync", "--check").status).toBe(0);
     writeFileSync(target, `${readFileSync(target, "utf8")}edited\n`);
     const copies = () =>
       dirs.flatMap((dir) =>
@@ -142,8 +158,14 @@ test("built sync honors adapter dirs, companions, read-only checks and adapter r
     const checked = run("skills", "sync", "--check");
     expect(checked.status).toBe(1);
     expect(checked.stdout).toContain(".claude/skills/forge-loop/SKILL.md");
-    expect(checked.stdout).toContain("run forge skills sync");
+    expect(checked.stdout).toContain(
+      "hand-edited copy; restore its generated content or remove it before syncing",
+    );
     expect(copies()).toEqual(before);
+    expect(run("skills", "sync").status).toBe(0);
+    expect(copies()).toEqual(before);
+    rmSync(target);
+    expect(run("skills", "sync").status).toBe(0);
     const setAdapters = (adapters: object[]) => {
       const decoded = yamlConfigCodec.decode(config, DEFAULT_PARSE_LIMITS);
       if (!decoded.ok) throw new Error(decoded.error.message);
@@ -247,7 +269,7 @@ test("built sync honors adapter dirs, companions, read-only checks and adapter r
   }
 }, 180_000);
 
-test("built delivery import syncs linted router and intake and retires generated loop", () => {
+test("built delivery import syncs linted router and intake and preserves unrecorded legacy files", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-intake-"));
   const bin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
   const env: NodeJS.ProcessEnv = Object.fromEntries(
@@ -297,13 +319,13 @@ test("built delivery import syncs linted router and intake and retires generated
       `${GENERATED_MARKER}\nold loop`,
     );
     const synced = run(["skills", "sync"]);
-    expect(synced.result.removed).toContain(".agents/skills/loop/SKILL.md");
+    expect(synced.result.removed).not.toContain(".agents/skills/loop/SKILL.md");
     const names = readdirSync(skills).filter((name) =>
       existsSync(join(skills, name, "SKILL.md")),
     );
     expect(names).toContain("forge-loop");
     expect(names).toContain("forge-intake");
-    expect(names).not.toContain("loop");
+    expect(names).toContain("loop");
     const intake = readFileSync(join(skills, "forge-intake/SKILL.md"), "utf8");
     expect(intake).toContain("forge route get <role> --text");
     expect(intake).toContain("disable-model-invocation: false");

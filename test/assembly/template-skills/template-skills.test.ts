@@ -14,6 +14,7 @@ import { createAssembly, localCall } from "../../../src/assembly/index.ts";
 import { dispatch, record } from "../../../src/surface/dispatch.ts";
 import { GENERATED_MARKER } from "../../../src/surface/skills.ts";
 import { syncSkills } from "../../../src/assembly/skills.ts";
+import { createHash } from "node:crypto";
 
 const REVIEW = [
   "---",
@@ -29,6 +30,7 @@ const REVIEW = [
 
 const SOURCE = "tpl/skills/review/SKILL.md";
 const RENDERED = ".agents/skills/review/SKILL.md";
+const OWNERSHIP = ".agents/skills/.forge-skills.json";
 
 type Call = (op: string, input?: object) => Promise<Record<string, unknown>>;
 
@@ -156,7 +158,7 @@ test("sync copies nested binary companions and checks every copy without writing
     for (const path of [
       RENDERED,
       "review/agents/data.bin",
-      "run forge skills sync",
+      "restore its generated content or remove it before syncing",
     ])
       expect(JSON.stringify(checked)).toContain(path);
     expect([readFileSync(target), readFileSync(companion)]).toEqual(before);
@@ -167,6 +169,111 @@ test("sync copies nested binary companions and checks every copy without writing
     expect(stale.ok).toBe(false);
     expect(JSON.stringify(stale)).toContain(RENDERED);
     expect(readFileSync(target)).toEqual(synced);
+  });
+}, 30_000);
+
+test("R1-S1 records generated paths and never checks or removes user additions", async () => {
+  await withTemplate(async (root, call) => {
+    writeFileSync(join(root, "tpl/skills/review/companion.txt"), "companion\n");
+    await call("skills.sync");
+    const mine = join(root, ".agents/skills/review/NOTES.md");
+    writeFileSync(mine, "my notes\n");
+    const checked = await call("skills.sync", { check: true });
+    const synced = await call("skills.sync");
+    expect({
+      checkPassed: checked.ok,
+      removed: synced.removed,
+      notes: existsSync(mine) ? readFileSync(mine, "utf8") : undefined,
+    }).toEqual({ checkPassed: true, removed: [], notes: "my notes\n" });
+    const saved = JSON.parse(readFileSync(join(root, OWNERSHIP), "utf8")) as {
+      files: Record<string, string>;
+    };
+    expect(Object.keys(saved.files).sort()).toEqual([
+      "review/SKILL.md",
+      "review/companion.txt",
+    ]);
+    expect(saved.files["review/companion.txt"]).toBe(
+      `sha256:${createHash("sha256").update("companion\n").digest("hex")}`,
+    );
+    await call("template.remove", {
+      template: "acme/delivery",
+      expectRevision: "",
+    });
+    await call("skills.sync");
+    expect(readFileSync(mine, "utf8")).toBe("my notes\n");
+  });
+}, 30_000);
+
+test("R1-S2 restores a missing recorded SKILL.md while its companion remains", async () => {
+  await withTemplate(async (root, call) => {
+    writeFileSync(join(root, "tpl/skills/review/companion.txt"), "companion\n");
+    await call("skills.sync");
+    rmSync(join(root, RENDERED));
+    const checked = await call("skills.sync", { check: true });
+    expect(checked.ok).toBe(false);
+    expect(JSON.stringify(checked)).toContain(
+      "stale copy; run forge skills sync",
+    );
+    expect(await call("skills.sync")).toMatchObject({
+      ok: true,
+      written: [RENDERED],
+    });
+    expect(await call("skills.sync", { check: true })).toMatchObject({
+      ok: true,
+    });
+  });
+}, 30_000);
+
+for (const path of ["SKILL.md", "companion.txt"])
+  test(`R1-S2 preserves hand-edited recorded ${path} and gives a distinct repair`, async () => {
+    await withTemplate(async (root, call) => {
+      writeFileSync(
+        join(root, "tpl/skills/review/companion.txt"),
+        "companion\n",
+      );
+      await call("skills.sync");
+      const target = join(root, ".agents/skills/review", path);
+      writeFileSync(target, "hand edit\n");
+      const checked = await call("skills.sync", { check: true });
+      const synced = await call("skills.sync");
+      expect(checked.ok).toBe(false);
+      expect(JSON.stringify(checked)).toContain(
+        "hand-edited copy; restore its generated content or remove it before syncing",
+      );
+      expect(JSON.stringify(checked)).not.toContain("stale");
+      expect(synced.skipped).toContain(`.agents/skills/review/${path}`);
+      expect(readFileSync(target, "utf8")).toBe("hand edit\n");
+      expect(await call("skills.sync", { check: true })).toMatchObject({
+        ok: false,
+      });
+    });
+  }, 30_000);
+
+test("R1-S3 treats CRLF copies and source companions as unchanged without writing", async () => {
+  await withTemplate(async (root, call) => {
+    const source = join(root, "tpl/skills/review/companion.txt");
+    writeFileSync(source, "companion\n");
+    await call("skills.sync");
+    const paths = [
+      join(root, RENDERED),
+      join(root, ".agents/skills/review/companion.txt"),
+    ];
+    for (const path of paths)
+      writeFileSync(path, readFileSync(path, "utf8").replace(/\n/g, "\r\n"));
+    const before = paths.map((path) => readFileSync(path));
+    expect(await call("skills.sync", { check: true })).toMatchObject({
+      ok: true,
+    });
+    expect(await call("skills.sync")).toMatchObject({
+      ok: true,
+      written: [],
+      skipped: [],
+    });
+    expect(paths.map((path) => readFileSync(path))).toEqual(before);
+    writeFileSync(source, "companion\r\n");
+    expect(await call("skills.sync", { check: true })).toMatchObject({
+      ok: true,
+    });
   });
 }, 30_000);
 
@@ -236,7 +343,7 @@ test("sync never adopts an unmarked directory through a new companion", async ()
 }, 30_000);
 
 for (const link of ["review/link", "linked-skill"])
-  test(`retiring companions refuses internal directory symlink ${link}`, async () => {
+  test(`sync leaves unrecorded internal directory symlink ${link} alone`, async () => {
     await withTemplate(async (root, call) => {
       await call("skills.sync");
       mkdirSync(join(root, "personal"));
@@ -248,9 +355,12 @@ for (const link of ["review/link", "linked-skill"])
         join(root, ".agents/skills", link),
         process.platform === "win32" ? "junction" : "dir",
       );
-      const refused = await call("skills.sync");
-      expect(refused.ok).toBe(false);
-      expect(JSON.stringify(refused)).toContain("symlink");
+      const synced = await call("skills.sync");
+      expect(synced.ok).toBe(true);
+      expect(synced.removed).toEqual([]);
+      expect(await call("skills.sync", { check: true })).toMatchObject({
+        ok: true,
+      });
       expect(readFileSync(mine, "utf8")).toBe("mine");
     });
   }, 30_000);
@@ -363,8 +473,7 @@ test("a hand-written file at a template skill's target is reported and left unto
     mkdirSync(dirname(join(root, RENDERED)), { recursive: true });
     writeFileSync(join(root, RENDERED), mine);
     const checked = await call("skills.sync", { check: true });
-    expect(checked.ok).toBe(false);
-    expect(JSON.stringify(checked)).toContain(`${RENDERED}: hand-edited copy`);
+    expect(checked.ok).toBe(true);
     expect(readFileSync(join(root, RENDERED), "utf8")).toBe(mine);
     expect(await call("skills.sync")).toMatchObject({
       ok: true,
