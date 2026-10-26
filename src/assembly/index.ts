@@ -685,6 +685,8 @@ export async function createAssembly(
       if (
         !result.ok &&
         process.env.T3CODE_CLI_PATH &&
+        !process.env.FORGE_SESSION?.trim() &&
+        result.error.lease?.holder?.session.id.startsWith("t3:") &&
         (result.error.code === "LEASE_HELD" ||
           result.error.code === "LEASE_NOT_HELD")
       )
@@ -692,7 +694,7 @@ export async function createAssembly(
           ...result,
           error: {
             ...result.error,
-            message: `${result.error.message}\nIn T3 chats, call t3_thread_configuration once and run every forge command with FORGE_SESSION=t3:<threadId>.`,
+            message: `${result.error.message}\nSame T3 chat after a harness switch? Rerun with FORGE_SESSION=t3:<threadId> from t3_thread_configuration. Separate workers: keep your own session and stop.`,
           },
         };
       return result;
