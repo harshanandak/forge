@@ -17,17 +17,21 @@ export {
 
 let security: PrivateFileGuard | undefined;
 const defaultGuard: PrivateFileGuard = {
-  directory(path) {
-    security ??= privateFileGuard(windowsPrivateFiles());
-    security.directory(path);
+  directory(path, created) {
+    security ??= privateFileGuard(windowsPrivateFiles(), {
+      protectDirectories: false,
+    });
+    security.directory(path, created);
   },
   file(path) {
-    security ??= privateFileGuard(windowsPrivateFiles());
+    security ??= privateFileGuard(windowsPrivateFiles(), {
+      protectDirectories: false,
+    });
     security.file(path);
   },
 };
 
-/** Public hosts receive the same native file protection as the CLI assembly. */
+/** Public hosts protect files without changing borrowed directory permissions. */
 export function createSqliteStore(
   basePath: string,
   hooks: RestoreHooks = {},

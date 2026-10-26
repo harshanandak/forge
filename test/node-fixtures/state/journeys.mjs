@@ -43,6 +43,12 @@ const holder = {
 };
 const other = { actor: { kind: "agent", id: "beta" }, session: { id: "two" } };
 const code = (expected) => (error) => error?.error?.code === expected;
+async function privateStoreParent(path) {
+  if (process.platform !== "win32") return;
+  const { windowsPrivateFiles } = await load("adapters/process/windows-acl.js");
+  const native = windowsPrivateFiles();
+  native.protect(path, `D:P(A;OICI;FA;;;${native.sid})`);
+}
 async function store(path = ":memory:") {
   const result = await sqliteStore.open({ path, readOnly: false });
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -55,6 +61,7 @@ async function writeStoreImage(path, image) {
 }
 async function filePair() {
   const directory = mkdtempSync(join(tmpdir(), "forge-whole-file-"));
+  await privateStoreParent(directory);
   const handles = [
     await store(join(directory, "source.db")),
     await store(join(directory, "target.db")),
@@ -167,6 +174,7 @@ const cases = {
   },
   async openidentity() {
     const dir = mkdtempSync(join(tmpdir(), "forge-open-identity-"));
+    await privateStoreParent(dir);
     try {
       for (const boundary of process.platform === "win32"
         ? ["identity-checked", "opening"]
@@ -204,10 +212,12 @@ const cases = {
   },
   async relativepaths() {
     const work = mkdtempSync(join(tmpdir(), "forge-relative-store-"));
+    await privateStoreParent(work);
     const cwd = process.cwd();
     const prior = process.env.OneDrive;
     const cloud = join(work, "synced-fixture");
     mkdirSync(cloud);
+    await privateStoreParent(cloud);
     process.env.OneDrive = cloud;
     try {
       process.chdir(cloud);
@@ -429,6 +439,7 @@ const cases = {
   },
   async restorevalidation() {
     const dir = mkdtempSync(join(tmpdir(), "forge-image-validation-"));
+    await privateStoreParent(dir);
     const a = await store(),
       b = await store();
     try {
@@ -502,6 +513,7 @@ const cases = {
   },
   async requestreceipts() {
     const dir = mkdtempSync(join(tmpdir(), "forge-receipt-validation-"));
+    await privateStoreParent(dir);
     const [source, target] = await filePair();
     try {
       const left = new StateOwner(source.value, { now: () => 1000 });
@@ -623,6 +635,7 @@ const cases = {
     ];
     for (const step of steps) {
       const dir = mkdtempSync(join(tmpdir(), "forge-restore-fault-"));
+      await privateStoreParent(dir);
       const path = join(dir, "live.db");
       const a = await store();
       const opened = await createSqliteStore(dir, {
@@ -684,6 +697,7 @@ const cases = {
       "verified",
     ]) {
       const dir = mkdtempSync(join(tmpdir(), "forge-restore-crash-"));
+      await privateStoreParent(dir);
       try {
         const a = await store(),
           b = await store(join(dir, "live.db"));
@@ -851,6 +865,7 @@ const cases = {
       assert.equal(client.get("entry").revision, 2);
       assert.equal(client.events("entry").length, 2);
       const dir = mkdtempSync(join(tmpdir(), "forge-state-read-"));
+      await privateStoreParent(dir);
       try {
         const missing = join(dir, "absent.db");
         assert.equal(

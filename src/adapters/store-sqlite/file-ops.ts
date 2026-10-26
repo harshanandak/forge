@@ -219,7 +219,7 @@ export function makePrivateTempDirectory(
 ): string {
   const path = `${prefix}${randomUUID()}`;
   mkdirSync(path, { mode: 0o700 });
-  fs?.security?.directory(path);
+  fs?.security?.directory(path, true);
   syncParentDirectory(path, fs);
   return path;
 }

@@ -1,11 +1,19 @@
 // [integration] Public SQLite entry points on disposable Windows files.
 import { expect, test, setDefaultTimeout } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { windowsPrivateFiles } from "../../src/adapters/process/windows-acl.ts";
+import { createSqliteStore as rawSqliteStore } from "../../src/adapters/store-sqlite/index.ts";
 import { privateFileGuard } from "../../src/adapters/store-sqlite/private-files.ts";
 import { sddlTrustees } from "../../src/adapters/store-sqlite/private-acl.ts";
 import type { StateImageStore } from "../../src/core/state/index.ts";
@@ -61,20 +69,49 @@ for (const entry of ["singleton", "factory"] as const) {
     entry === "singleton" ? api.sqliteStore : api.createSqliteStore(root);
 
   test.skipIf(process.platform !== "win32")(
-    `public SQLite ${entry} creates a private database under a broad parent`,
+    `public SQLite ${entry} refuses a borrowed broad parent without changing it`,
     async () => {
       const root = mkdtempSync(join(tmpdir(), "forge-public-sqlite-"));
       const native = windowsPrivateFiles();
-      const guard = privateFileGuard(native);
       try {
         native.protect(root, `D:P(A;OICI;FA;;;${native.sid})(A;OICI;FR;;;WD)`);
+        const sentinel = join(root, "borrowed.txt");
+        writeFileSync(sentinel, "borrowed data");
+        const descriptor = native.read(root);
+        const sentinelDescriptor = native.read(sentinel);
+        const path = join(root, "state.sqlite");
+        const opened = await store(root).open({ path, readOnly: false });
+        if (opened.ok) await opened.handle.close();
+        expect(opened.ok).toBe(false);
+        if (!opened.ok)
+          expect(opened.unavailable.reason).toContain("Private ACL");
+        expect(native.read(root)).toBe(descriptor);
+        expect(native.read(sentinel)).toBe(sentinelDescriptor);
+        expect(readFileSync(sentinel, "utf8")).toBe("borrowed data");
+        expect(existsSync(path)).toBe(false);
+        expect(readdirSync(root)).toEqual(["borrowed.txt"]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform !== "win32")(
+    `public SQLite ${entry} creates a private database under a private parent`,
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "forge-public-sqlite-private-"));
+      const native = windowsPrivateFiles();
+      const guard = privateFileGuard(native);
+      try {
+        native.protect(root, `D:P(A;OICI;FA;;;${native.sid})`);
+        const descriptor = native.read(root);
         const path = join(root, "state.sqlite");
         const opened = await store(root).open({ path, readOnly: false });
         if (!opened.ok) throw new Error(opened.unavailable.reason);
         try {
           opened.handle.value.exec("CREATE TABLE sample(value INTEGER)");
           guard.file(path);
-          expect(native.read(root)).not.toContain(";;;WD)");
+          expect(native.read(root)).toBe(descriptor);
         } finally {
           await opened.handle.close();
         }
@@ -90,6 +127,7 @@ for (const entry of ["singleton", "factory"] as const) {
       const root = mkdtempSync(join(tmpdir(), "forge-public-sqlite-refuse-"));
       const native = windowsPrivateFiles();
       try {
+        native.protect(root, `D:P(A;OICI;FA;;;${native.sid})`);
         const path = join(root, "state.sqlite");
         writeFileSync(path, "");
         native.protect(path, `D:P(A;;FA;;;${native.sid})(A;;FR;;;WD)`);
@@ -101,6 +139,47 @@ for (const entry of ["singleton", "factory"] as const) {
             expect(opened.unavailable.reason).toContain("Private ACL");
         }
         expect(native.read(path)).toContain(";;;WD)");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform !== "win32")(
+    `public SQLite ${entry} narrows inherited legacy file access on a read-only open`,
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "forge-public-sqlite-legacy-"));
+      const native = windowsPrivateFiles();
+      try {
+        native.protect(root, `D:P(A;OICI;FA;;;${native.sid})(A;OICI;FR;;;WD)`);
+        const parentDescriptor = native.read(root);
+        const path = join(root, "state.sqlite");
+        const legacy = await rawSqliteStore(root).open({
+          path,
+          readOnly: false,
+        });
+        if (!legacy.ok) throw new Error(legacy.unavailable.reason);
+        legacy.handle.value.exec(
+          "CREATE TABLE sample(value INTEGER); INSERT INTO sample VALUES (42)",
+        );
+        await legacy.handle.close();
+        const inherited = native.read(path);
+        expect(inherited).toContain(";ID;");
+        expect(inherited).toContain(";;;WD)");
+        const bytes = readFileSync(path);
+        const opened = await store(root).open({ path, readOnly: true });
+        if (!opened.ok) throw new Error(opened.unavailable.reason);
+        try {
+          expect(opened.handle.value.all("SELECT value FROM sample")).toEqual([
+            { value: 42n },
+          ]);
+          privateFileGuard(native).file(path);
+          expect(native.read(path)).not.toContain(";;;WD)");
+          expect(native.read(root)).toBe(parentDescriptor);
+          expect(readFileSync(path)).toEqual(bytes);
+        } finally {
+          await opened.handle.close();
+        }
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -149,3 +228,38 @@ for (const entry of ["singleton", "factory"] as const) {
     },
   );
 }
+
+test.skipIf(process.platform !== "win32")(
+  "public SQLite singleton refuses a broad cwd for a relative database path",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-public-sqlite-cwd-"));
+    const native = windowsPrivateFiles();
+    try {
+      native.protect(root, `D:P(A;OICI;FA;;;${native.sid})(A;OICI;FR;;;WD)`);
+      const sentinel = join(root, "borrowed.txt");
+      writeFileSync(sentinel, "borrowed data");
+      const descriptor = native.read(root);
+      const sentinelDescriptor = native.read(sentinel);
+      const script = `
+        import assert from "node:assert/strict";
+        const api = await import(${JSON.stringify(new URL(target, import.meta.url).href)});
+        const opened = await api.sqliteStore.open({ path: "state.sqlite", readOnly: false });
+        if (opened.ok) await opened.handle.close();
+        assert.equal(opened.ok, false);
+        assert.match(opened.unavailable.reason, /Private ACL/);
+      `;
+      const result = spawnSync(process.execPath, ["--eval", script], {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 15000,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(native.read(root)).toBe(descriptor);
+      expect(native.read(sentinel)).toBe(sentinelDescriptor);
+      expect(readFileSync(sentinel, "utf8")).toBe("borrowed data");
+      expect(readdirSync(root)).toEqual(["borrowed.txt"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

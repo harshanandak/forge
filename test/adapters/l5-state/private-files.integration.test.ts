@@ -34,7 +34,7 @@ test.skipIf(process.platform !== "win32")(
       // Repairing the directory never silently blesses a file's explicit broad entry.
       guard.directory(dir);
       expect(() => guard.file(file)).toThrow(file);
-      const command = refusal.split("Repair in PowerShell: ")[1];
+      const command = refusal.split("Repair in PowerShell:\n")[1];
       expect(command).toBeDefined();
       const repair = spawnSync(
         "powershell.exe",

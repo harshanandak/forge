@@ -21,6 +21,7 @@ test("a broadened file ACL fails closed even when file metadata is unchanged", (
     let descriptor = `D:P(A;;FA;;;${sid})`;
     const guard = privateFileGuard({
       sid,
+      owner: () => sid,
       read: () => descriptor,
       protect: () => {
         throw new Error("A file ACL must be refused, never repaired");
@@ -49,6 +50,7 @@ async function storeWrites(parent: string): Promise<void> {
   const sid = "S-1-5-21-1-2-3-1001";
   const security = privateFileGuard({
     sid,
+    owner: () => sid,
     read(path) {
       if (path === dir)
         return protectedDirectory
@@ -90,6 +92,147 @@ test("N store writes inherit one private directory without N ACL subprocesses", 
     rmSync(dir, { recursive: true, force: true });
   }
 }, 5000);
+
+test("legacy inherited file access is narrowed only for its full-control owner", () => {
+  const dir = mkdtempSync(join(tmpdir(), "forge-acl-upgrade-"));
+  const sid = "S-1-5-21-1-2-3-1001";
+  const file = join(dir, "file");
+  writeFileSync(file, "private data");
+  try {
+    let descriptor = `D:AI(A;ID;FA;;;${sid})(A;ID;FR;;;WD)`;
+    const writes: string[] = [];
+    const guard = privateFileGuard({
+      sid,
+      owner: () => sid,
+      read: () => descriptor,
+      protect: (_path, next) => {
+        writes.push(next);
+        descriptor = next;
+      },
+    });
+    guard.file(file);
+    expect(writes).toEqual([`D:P(A;;FA;;;${sid})`]);
+    expect(descriptor).toBe(`D:P(A;;FA;;;${sid})`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 5000);
+
+test("an ownership handoff before narrowing refuses without an executable repair", () => {
+  const dir = mkdtempSync(join(tmpdir(), "forge-acl-owner-handoff-"));
+  const sid = "S-1-5-21-1-2-3-1001";
+  const foreign = "S-1-5-21-1-2-3-1002";
+  const file = join(dir, "file");
+  writeFileSync(file, "private data");
+  let owner = sid;
+  let writes = 0;
+  try {
+    const guard = privateFileGuard({
+      sid,
+      owner: () => owner,
+      read: () => {
+        owner = foreign;
+        return `D:AI(A;ID;FA;;;${sid})(A;ID;FR;;;WD)`;
+      },
+      protect: () => {
+        writes++;
+      },
+    });
+    let refusal = "";
+    try {
+      guard.file(file);
+    } catch (error) {
+      refusal = String(error);
+    }
+    expect(writes).toBe(0);
+    expect(refusal).toContain(foreign);
+    expect(refusal).not.toContain("Repair in PowerShell:");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 5000);
+
+test("a domain Administrator RID does not prove access through the local Administrator alias", () => {
+  const dir = mkdtempSync(join(tmpdir(), "forge-acl-alias-authority-"));
+  const sid = "S-1-5-21-111-222-333-500";
+  const file = join(dir, "file");
+  writeFileSync(file, "private data");
+  let descriptor = "D:AI(A;ID;FA;;;LA)(A;ID;FR;;;WD)";
+  let writes = 0;
+  try {
+    const guard = privateFileGuard({
+      sid,
+      owner: () => sid,
+      read: () => descriptor,
+      protect: (_path, next) => {
+        writes++;
+        descriptor = next;
+      },
+    });
+    let refusal = "";
+    try {
+      guard.file(file);
+    } catch (error) {
+      refusal = String(error);
+    }
+    expect(writes).toBe(0);
+    expect(refusal).toContain("Private ACL");
+    expect(refusal).not.toContain("Repair in PowerShell:");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 5000);
+
+for (const scenario of [
+  "explicit extra",
+  "foreign owner",
+  "restricted owner",
+  "deny",
+] as const) {
+  test(`unsafe file ACL is refused without broadening access: ${scenario}`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "forge-acl-authority-"));
+    const sid = "S-1-5-21-1-2-3-1001";
+    const owner = scenario === "foreign owner" ? "S-1-5-21-1-2-3-1002" : sid;
+    const descriptor =
+      scenario === "explicit extra"
+        ? `D:P(A;;FA;;;${sid})(A;;FR;;;WD)`
+        : scenario === "restricted owner"
+          ? `D:AI(A;ID;FR;;;${sid})(A;ID;FR;;;WD)`
+          : scenario === "deny"
+            ? `D:AI(D;ID;FW;;;WD)(A;ID;FA;;;${sid})`
+            : `D:AI(A;ID;FA;;;${sid})(A;ID;FR;;;WD)`;
+    const file = join(dir, "file");
+    writeFileSync(file, "private data");
+    const writes: string[] = [];
+    try {
+      const guard = privateFileGuard({
+        sid,
+        owner: () => owner,
+        read: () => descriptor,
+        protect: (_path, next) => {
+          writes.push(next);
+        },
+      });
+      let refusal = "";
+      try {
+        guard.file(file);
+      } catch (error) {
+        refusal = String(error);
+      }
+      expect(refusal).toContain("Private ACL");
+      expect(writes).toEqual([]);
+      if (scenario === "explicit extra")
+        expect(refusal).toContain("Repair in PowerShell:");
+      else expect(refusal).not.toContain("Repair in PowerShell:");
+      if (scenario === "foreign owner") {
+        expect(refusal).toContain(owner);
+        expect(refusal).toMatch(/owner.*administrator/i);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 5000);
+}
 
 test("store writes through a POSIX symlink parent verify its canonical directory", async () => {
   const root = mkdtempSync(join(tmpdir(), "forge-acl-alias-"));
