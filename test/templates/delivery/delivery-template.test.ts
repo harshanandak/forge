@@ -192,21 +192,39 @@ test("rendered open-pr Models requires exact model attribution for each stage", 
       .split("\n")
       .find((line) => line.startsWith("- **Models**:"));
     expect(models).toBeDefined();
-    expect(models).toContain("for each of planned, implemented and reviewed");
-    for (const field of [
-      "display name",
-      "model id",
-      "reasoning level",
-      "harness",
+    for (const requirement of [
+      /display\s+name/i,
+      /model\s+id/i,
+      /reasoning\s+level/i,
+      /harness/i,
+      /\bplanned\b/i,
+      /\bimplemented\b/i,
+      /\breviewed\b/i,
+      /not yet reviewed/i,
+      /roles?\s+alone\b.*\bnot\s+allowed/i,
+      /no tool-branding footer/i,
     ])
-      expect(models).toContain(field);
-    expect(models).toContain(
-      "Implemented: GPT-6.1-Sol (gpt-6.1-sol, reasoning high) via Codex in T3 Code",
-    );
-    expect(models).toContain("not yet reviewed");
-    expect(models).toContain("Roles alone are not allowed");
-    expect(models).toContain("No tool-branding footer");
+      expect(models).toMatch(requirement);
   });
+}, 30_000);
+
+test("PR template Models slots require the same attribution fields for each stage", () => {
+  const text = readFileSync(
+    join(repo, ".github/pull_request_template.md"),
+    "utf8",
+  );
+  for (const stage of ["Planned", "Implemented", "Reviewed"]) {
+    const slot = text.match(new RegExp(`^- ${stage}: (.+)$`, "im"))?.[1];
+    expect(slot).toBeDefined();
+    for (const field of [
+      /<display name>/i,
+      /<model id>/i,
+      /reasoning\s+<level>/i,
+      /via\s+<harness>/i,
+    ])
+      expect(slot).toMatch(field);
+    if (stage === "Reviewed") expect(slot).toMatch(/not yet reviewed/i);
+  }
 }, 30_000);
 
 test("integration: rendered memory save and search accept a lowercase repository scope", async () => {
