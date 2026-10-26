@@ -43,7 +43,7 @@
     },
     "skills.sync": {
       "title": "Sync skills",
-      "summary": "Generate agent skills from the enabled catalog and templates."
+      "summary": "Sync catalog and template skills, including companion files, into each enabled adapter's skills directory. Use --check to list stale or hand-edited copies without writing; run forge skills sync to fix them."
     },
     "config.show": {
       "title": "Show configuration",

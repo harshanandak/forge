@@ -1,8 +1,12 @@
 {
   "type": "object",
   "properties": {
+    "check": {
+      "description": "Check every synced copy without writing; list stale or hand-edited files and exit 1.",
+      "type": "boolean"
+    },
     "dir": {
-      "description": "Skills directory relative to the project root; defaults to .agents/skills.",
+      "description": "Override adapter skills directories with this project-relative directory; defaults to enabled adapters' skills dirs, or .agents/skills without adapters.",
       "type": "string",
       "minLength": 1
     }

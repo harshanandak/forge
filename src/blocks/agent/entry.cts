@@ -3,6 +3,7 @@ declare const fail: (code: string, message: string) => never;
 interface Adapter {
   readonly id: string;
   readonly detect: readonly string[];
+  readonly skills?: string;
 }
 
 interface RouteCall {

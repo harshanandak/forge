@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,6 +13,7 @@ import { dirname, join } from "node:path";
 import { createAssembly, localCall } from "../../../src/assembly/index.ts";
 import { dispatch, record } from "../../../src/surface/dispatch.ts";
 import { GENERATED_MARKER } from "../../../src/surface/skills.ts";
+import { syncSkills } from "../../../src/assembly/skills.ts";
 
 const REVIEW = [
   "---",
@@ -127,6 +129,165 @@ test("skills sync renders a template skill from the project's values, and re-ren
   });
 }, 30_000);
 
+test("sync copies nested binary companions and checks every copy without writing", async () => {
+  await withTemplate(async (root, call) => {
+    const missing = await call("skills.sync", { check: true });
+    expect(missing.ok).toBe(false);
+    expect(JSON.stringify(missing)).toContain(RENDERED);
+    expect(existsSync(join(root, ".agents"))).toBe(false);
+    const source = join(root, "tpl/skills/review/agents");
+    mkdirSync(source);
+    const bytes = Buffer.from([0, 255, 128, 10]);
+    writeFileSync(join(source, "data.bin"), bytes);
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const companion = join(root, ".agents/skills/review/agents/data.bin");
+    expect(readFileSync(companion)).toEqual(bytes);
+    expect(await call("skills.sync", { check: true })).toMatchObject({
+      ok: true,
+      written: [],
+      removed: [],
+    });
+    const target = join(root, RENDERED);
+    writeFileSync(target, `${readFileSync(target, "utf8")}hand edit\n`);
+    writeFileSync(companion, "edited companion");
+    const before = [readFileSync(target), readFileSync(companion)];
+    const checked = await call("skills.sync", { check: true });
+    expect(checked.ok).toBe(false);
+    for (const path of [
+      RENDERED,
+      "review/agents/data.bin",
+      "run forge skills sync",
+    ])
+      expect(JSON.stringify(checked)).toContain(path);
+    expect([readFileSync(target), readFileSync(companion)]).toEqual(before);
+    await call("skills.sync");
+    const synced = readFileSync(target);
+    writeFileSync(join(root, SOURCE), REVIEW.replace("Stop", "Halt"));
+    const stale = await call("skills.sync", { check: true });
+    expect(stale.ok).toBe(false);
+    expect(JSON.stringify(stale)).toContain(RENDERED);
+    expect(readFileSync(target)).toEqual(synced);
+  });
+}, 30_000);
+
+test("sync deduplicates normalized adapter directories", async () => {
+  await withTemplate(async (root) => {
+    const synced = syncSkills(
+      root,
+      [],
+      undefined,
+      [".claude/skills", ".claude/skills/", ".agents/skills"],
+      {
+        sources: [{ root, file: "tpl/forge.template.json" }],
+        values: { review: { rounds: 2, fix: [] } },
+      },
+    );
+    expect(synced.written).toEqual([
+      ".claude/skills/review/SKILL.md",
+      RENDERED,
+    ]);
+    expect(synced.unchanged).toEqual([]);
+  });
+}, 30_000);
+
+test("check reports obsolete companions and sync retires them with their managed skill", async () => {
+  await withTemplate(async (root, call) => {
+    const companion = "review/old.txt";
+    writeFileSync(join(root, "tpl/skills", companion), "old companion");
+    await call("skills.sync");
+    rmSync(join(root, "tpl/skills", companion));
+    const checked = await call("skills.sync", { check: true });
+    expect(checked.ok).toBe(false);
+    expect(JSON.stringify(checked)).toContain(companion);
+    expect(readFileSync(join(root, ".agents/skills", companion), "utf8")).toBe(
+      "old companion",
+    );
+    expect(await call("skills.sync")).toMatchObject({
+      removed: [`.agents/skills/${companion}`],
+    });
+    expect(existsSync(join(root, ".agents/skills", companion))).toBe(false);
+    writeFileSync(join(root, "tpl/skills", companion), "restored companion");
+    await call("skills.sync");
+    await call("template.remove", {
+      template: "acme/delivery",
+      expectRevision: "",
+    });
+    expect(await call("skills.sync")).toMatchObject({
+      removed: expect.arrayContaining([
+        RENDERED,
+        `.agents/skills/${companion}`,
+      ]),
+    });
+  });
+}, 30_000);
+
+test("sync never adopts an unmarked directory through a new companion", async () => {
+  await withTemplate(async (root, call) => {
+    writeFileSync(join(root, "tpl/skills/review/custom.txt"), "template");
+    mkdirSync(join(root, ".agents/skills/review"), { recursive: true });
+    const mine = join(root, ".agents/skills/review/custom.txt");
+    writeFileSync(mine, "mine");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await call("skills.sync")).toMatchObject({
+        ok: true,
+        skipped: expect.arrayContaining([RENDERED]),
+      });
+      expect(readFileSync(mine, "utf8")).toBe("mine");
+      expect(existsSync(join(root, RENDERED))).toBe(false);
+    }
+  });
+}, 30_000);
+
+for (const link of ["review/link", "linked-skill"])
+  test(`retiring companions refuses internal directory symlink ${link}`, async () => {
+    await withTemplate(async (root, call) => {
+      await call("skills.sync");
+      mkdirSync(join(root, "personal"));
+      const mine = join(root, "personal/mine.txt");
+      writeFileSync(mine, "mine");
+      writeFileSync(join(root, "personal/SKILL.md"), GENERATED_MARKER);
+      symlinkSync(
+        join(root, "personal"),
+        join(root, ".agents/skills", link),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      const refused = await call("skills.sync");
+      expect(refused.ok).toBe(false);
+      expect(JSON.stringify(refused)).toContain("symlink");
+      expect(readFileSync(mine, "utf8")).toBe("mine");
+    });
+  }, 30_000);
+
+for (const kind of ["parent", "absolute", "symlink"] as const)
+  test(`sync refuses ${kind} adapter directory before any copy is written`, async () => {
+    await withTemplate(async (root) => {
+      const outside = mkdtempSync(join(tmpdir(), "forge-skills-outside-"));
+      try {
+        if (kind === "symlink")
+          symlinkSync(
+            outside,
+            join(root, "escape"),
+            process.platform === "win32" ? "junction" : "dir",
+          );
+        const bad =
+          kind === "parent"
+            ? "../outside"
+            : kind === "absolute"
+              ? outside
+              : "escape/skills";
+        expect(() =>
+          syncSkills(root, [], undefined, ["safe/skills", bad], {
+            sources: [{ root, file: "tpl/forge.template.json" }],
+            values: { review: { rounds: 2, fix: [] } },
+          }),
+        ).toThrow(/refusing/);
+        expect(existsSync(join(root, "safe"))).toBe(false);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
+  }, 30_000);
+
 test("an unknown placeholder fails skills sync and names the placeholder", async () => {
   await withTemplate(async (root, call) => {
     writeFileSync(
@@ -204,6 +365,10 @@ test("a hand-written file at a template skill's target is reported and left unto
     const mine = "---\nname: review\ndescription: mine\n---\n";
     mkdirSync(dirname(join(root, RENDERED)), { recursive: true });
     writeFileSync(join(root, RENDERED), mine);
+    const checked = await call("skills.sync", { check: true });
+    expect(checked.ok).toBe(false);
+    expect(JSON.stringify(checked)).toContain(`${RENDERED}: hand-edited copy`);
+    expect(readFileSync(join(root, RENDERED), "utf8")).toBe(mine);
     expect(await call("skills.sync")).toMatchObject({
       ok: true,
       written: [],

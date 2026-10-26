@@ -192,10 +192,14 @@ export function renderTemplateSkill(
 const NAME = "[a-z][a-z0-9-]*";
 const CLI_FORM = new RegExp(`^forge (${NAME}) (${NAME})(?:\\s|$)`);
 const OP_FORM = new RegExp(`^(${NAME})[._](${NAME})$`);
+const MODEL_LITERAL =
+  "(?<![\\w-])(?:(?:gpt|claude|gemini|deepseek)-[a-z0-9][a-z0-9._-]*|(?:gpt|gemini|deepseek)[ \\t]+\\d[a-z0-9._-]*|opus|sonnet|haiku|o\\d[a-z0-9._-]*)(?:[ \\t]+(?:sol|luna|pro|flash))?(?![\\w-])";
+const ROUTING_LITERAL =
+  "(?:(?<![\\w-])--(?:model|effort)(?:[ \\t]*=[ \\t]*|[ \\t]+)|(?<![\\w-])-m[ \\t]+|(?<![\\w-])[\"']?(?:model|effort)[\"']?[ \\t]*[:=][ \\t]*)[\"'`]?[^\\s\"'`<>{}\\0,;)=]+[\"'`]?";
 
 /**
- * D9: a skill must fit the size ceiling, carry a name and description, and name only operations
- * the catalog has. Operation names are read from code spans: `noun.verb`, `noun_verb` and
+ * D9: a skill must fit the size ceiling, carry a name and description, avoid literal model/effort
+ * choices, and name only catalog operations. Operations are read from code spans: `noun.verb`, `noun_verb` and
  * `forge noun verb`; a dotted or underscored span counts only when its noun is a catalog noun.
  */
 export function lintSkill(
@@ -215,6 +219,18 @@ export function lintSkill(
     problems.push("frontmatter has no description");
   else if (description.length > SKILL_DESCRIPTION_MAX + 2)
     problems.push(`description exceeds ${SKILL_DESCRIPTION_MAX} characters`);
+  const concrete = text.replace(/<[^<>\n]*>|\{[^{}\n:"']*\}/g, (span) =>
+    "\0".repeat(span.length),
+  );
+  const routing = new RegExp(
+    `${MODEL_LITERAL}|${ROUTING_LITERAL}|\\breasoning[ \\t]+(?:none|minimal|low|medium|high|xhigh|max)\\b`,
+    "gi",
+  );
+  for (const match of concrete.matchAll(routing)) {
+    const line = text.slice(0, match.index).split("\n").length;
+    const span = text.slice(match.index, match.index + match[0].length);
+    problems.push(`literal model or effort in \`${span}\` on line ${line}`);
+  }
   const known = new Set(
     [...discoveryOperations, ...candidates].map((c) => c.op),
   );

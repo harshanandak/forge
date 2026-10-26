@@ -311,6 +311,57 @@ test("the lint rejects unknown operations and oversized skills; core and human-o
   ]);
 }, 30_000);
 
+test("the lint refuses literal model names and routing settings with the offending span and line", () => {
+  const front = "---\nname: sample\ndescription: sample\n---\n\n";
+  for (const span of [
+    "gpt-6.1-sol",
+    "GPT-6.1 Sol",
+    "GPT 6.1 Sol",
+    "claude-opus-4-6",
+    "Opus",
+    "Sonnet",
+    "Haiku",
+    "gemini-3-pro",
+    "Gemini 3 Pro",
+    "deepseek-v4",
+    "o3",
+    "o4-mini",
+    "--model custom",
+    "--model=custom",
+    "-m custom",
+    "--effort high",
+    "--effort=high",
+    "effort: high",
+    '"effort": "high"',
+    "reasoning high",
+    "model: custom",
+    '"model": "custom"',
+    "model = custom",
+  ]) {
+    const problems = lintSkill(`${front}${span}\n`, []);
+    expect(problems, span).toEqual([expect.stringContaining(span)]);
+    expect(problems[0], span).toContain("line 6");
+    expect(lintSkill(`${front}\`${span}\`\n`, []), span).toEqual([
+      expect.stringContaining(span),
+    ]);
+  }
+}, 30_000);
+
+test("the lint allows routing placeholders, harness names and ordinary prose", () => {
+  const front = "---\nname: sample\ndescription: sample\n---\n";
+  for (const body of [
+    "Claude Code, Codex and T3 Code select the model.",
+    "The harness picks the model. Model settings belong to the user.",
+    "Implemented: <display name> (<model id>, reasoning <effort>) via <harness>",
+    "<gpt-6.1-sol> {claude-opus-4-6} {{gpt-6.1-sol}}",
+    "--model <model> -m {model} --effort <effort> effort: {effort}",
+    '"model": "<model>" model = {model} reasoning {effort}',
+    "model: <model id> effort: <reasoning level>",
+    "model-driven reasoning about high availability and medium size",
+  ])
+    expect(lintSkill(`${front}${body}\n`, []), body).toEqual([]);
+}, 30_000);
+
 test("input fields are shown for display only; non-object and $ref/anyOf inputs never become syntax", () => {
   const base = candidate("sample.echo");
   const properties = {
