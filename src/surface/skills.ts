@@ -195,7 +195,7 @@ const OP_FORM = new RegExp(`^(${NAME})[._](${NAME})$`);
 const MODEL_LITERAL =
   "(?<![\\w-])(?:(?:gpt|claude|gemini|deepseek)-[a-z0-9][a-z0-9._-]*|(?:gpt|gemini|deepseek)[ \\t]+\\d[a-z0-9._-]*|opus|sonnet|haiku|o\\d[a-z0-9._-]*)(?:[ \\t]+(?:sol|luna|pro|flash))?(?![\\w-])";
 const ROUTING_LITERAL =
-  "(?:(?<![\\w-])--(?:model|effort)(?:[ \\t]*=[ \\t]*|[ \\t]+)|(?<![\\w-])-m[ \\t]+|(?<![\\w-])[\"']?(?:model|effort)[\"']?[ \\t]*[:=][ \\t]*)[\"'`]?[^\\s\"'`<>{}\\0,;)=]+[\"'`]?";
+  "(?:(?<![\\w-])--(?:model(?:[_-]?reasoning[_-]?effort)?|reasoning[_-]?effort|effort)(?:[ \\t]*=[ \\t]*|[ \\t]+)|(?<![\\w-])-m[ \\t]+|(?<![\\w-])[\"']?(?:model(?:[_-]?reasoning[_-]?effort)?|reasoning[_-]?effort|effort)[\"']?[ \\t]*[:=][ \\t]*)[\"'`]?[^\\s\"'`<>{}\\0,;)=]+[\"'`]?";
 
 /**
  * D9: a skill must fit the size ceiling, carry a name and description, avoid literal model/effort

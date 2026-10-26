@@ -337,6 +337,8 @@ test("the lint refuses literal model names and routing settings with the offendi
     "model: custom",
     '"model": "custom"',
     "model = custom",
+    "model_reasoning_effort=high",
+    "reasoningEffort: high",
   ]) {
     const problems = lintSkill(`${front}${span}\n`, []);
     expect(problems, span).toEqual([expect.stringContaining(span)]);
@@ -357,6 +359,7 @@ test("the lint allows routing placeholders, harness names and ordinary prose", (
     "--model <model> -m {model} --effort <effort> effort: {effort}",
     '"model": "<model>" model = {model} reasoning {effort}',
     "model: <model id> effort: <reasoning level>",
+    "model_reasoning_effort={effort} reasoningEffort: <effort>",
     "model-driven reasoning about high availability and medium size",
   ])
     expect(lintSkill(`${front}${body}\n`, []), body).toEqual([]);
