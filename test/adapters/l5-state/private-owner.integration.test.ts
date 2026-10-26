@@ -38,7 +38,11 @@ test.skipIf(process.platform !== "win32")(
       const file = join(dir, "inherited-file");
       writeFileSync(file, "private");
       const inherited = native.read(file);
-      expect(inherited).toContain(`(A;ID;FA;;;${native.sid})`);
+      expect(
+        [native.sid, ...(native.aliases ?? [])].some((trustee) =>
+          inherited.includes(`(A;ID;FA;;;${trustee})`),
+        ),
+      ).toBe(true);
       expect(inherited).toMatch(/\(A;[^;]*ID;FR;;;WD\)/);
       native.protect(file, `D:P(A;;FA;;;${native.sid})(A;;FR;;;WD)`);
       const explicit = native.read(file);
