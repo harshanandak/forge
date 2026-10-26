@@ -184,6 +184,31 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
   });
 }, 30_000);
 
+test("rendered open-pr Models requires exact model attribution for each stage", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const text = readFileSync(join(root, rendered("open-pr")), "utf8");
+    const models = text
+      .split("\n")
+      .find((line) => line.startsWith("- **Models**:"));
+    expect(models).toBeDefined();
+    expect(models).toContain("for each of planned, implemented and reviewed");
+    for (const field of [
+      "display name",
+      "model id",
+      "reasoning level",
+      "harness",
+    ])
+      expect(models).toContain(field);
+    expect(models).toContain(
+      "Implemented: GPT-6.1-Sol (gpt-6.1-sol, reasoning high) via Codex in T3 Code",
+    );
+    expect(models).toContain("not yet reviewed");
+    expect(models).toContain("Roles alone are not allowed");
+    expect(models).toContain("No tool-branding footer");
+  });
+}, 30_000);
+
 test("integration: rendered memory save and search accept a lowercase repository scope", async () => {
   await withDelivery(async (root, call) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
