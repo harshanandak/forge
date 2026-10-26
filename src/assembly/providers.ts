@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -29,6 +29,9 @@ import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
 import { verifyReceipt } from "../blocks/check/receipt.ts";
 import type { StateClient } from "../ports/state.ts";
+import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
+import { DEFAULT_PARSE_LIMITS } from "../contract/untrusted.ts";
+import { firstPartyTemplates } from "./first-party.ts";
 
 export type { CloneFilesService } from "../adapters/fs/clone-files.ts";
 export type {
@@ -286,6 +289,34 @@ export async function idPrefixObservation(
           },
         },
       ];
+}
+
+/** Shipped adapter data is derived, so importing delivery persists only block wiring. */
+export function agentAdapterObservation(
+  instance: string,
+): readonly DetectionObservation[] {
+  const directory = new URL("agents/", firstPartyTemplates.delivery);
+  const adapters = readdirSync(directory)
+    .filter((name) => name.endsWith(".yaml"))
+    .sort()
+    .map((name) => {
+      const decoded = yamlConfigCodec.decode(
+        readFileSync(new URL(name, directory), "utf8"),
+        DEFAULT_PARSE_LIMITS,
+      );
+      if (!decoded.ok) throw new ForgeFailure(decoded.error);
+      return decoded.value;
+    });
+  return [
+    {
+      key: `/blocks/${instance}/config/adapters`,
+      value: adapters,
+      origin: {
+        detector: "project.detect",
+        note: "shipped delivery agent adapters",
+      },
+    },
+  ];
 }
 
 export function createAssemblyProviders(

@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssembly, localCall } from "../../../src/assembly/index.ts";
+import { agentAdapterObservation } from "../../../src/assembly/providers.ts";
 
 setDefaultTimeout(30_000);
 
@@ -160,6 +161,59 @@ function withGreeting(greeting: string): Record<string, unknown> {
     },
   };
 }
+
+test("derived agent adapters target the configured instance name", () => {
+  expect(agentAdapterObservation("router")).toMatchObject([
+    {
+      key: "/blocks/router/config/adapters",
+      value: [
+        { id: "claude", detect: ["CLAUDECODE"] },
+        { id: "codex", detect: ["CODEX_THREAD_ID"] },
+      ],
+    },
+  ]);
+});
+
+test("an unrelated block named agent never receives derived adapters", async () => {
+  const root = project(files);
+  writeFileSync(
+    join(root, ".forge/config.yaml"),
+    JSON.stringify({
+      schemaVersion: "forge.config/1",
+      blocks: { agent: { source: { path: "./hello" } } },
+    }),
+  );
+  const assembly = await createAssembly({
+    root,
+    deviceRoot: join(root, "device"),
+  });
+  const { caller, context } = localCall(assembly);
+  try {
+    const shown = (await assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: "show",
+      op: "config.show",
+      input: {},
+      caller,
+      context: context ?? {},
+    })) as {
+      ok: boolean;
+      result: {
+        effective: { blocks: { agent: { config: unknown } } };
+        problems: string[];
+      };
+    };
+    expect(shown.ok).toBe(true);
+    expect(shown.result.problems).toEqual([]);
+    expect(shown.result.effective.blocks.agent.config).toEqual({
+      greeting: "hi",
+      style: { loud: true },
+    });
+  } finally {
+    await assembly.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 for (const reference of ["local", "cross-file", "true-target"]) {
   test(`a captured ${reference} property reference replaces detected commands`, async () => {

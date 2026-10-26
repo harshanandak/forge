@@ -78,6 +78,7 @@ import {
   createAssemblyProviders,
   createReceiptsService,
   idPrefixObservation,
+  agentAdapterObservation,
   projectStateRoot,
   type ProviderOptions,
 } from "./providers.ts";
@@ -675,13 +676,23 @@ export async function createAssembly(
       ...snapshot(callScope()).candidates,
     ],
     async invoke(request) {
-      let derived: readonly DetectionObservation[];
+      const derived: DetectionObservation[] = [];
+      const call = callScope(derived);
       try {
-        derived = await idPrefixObservation(root, stateRoot, options.providers);
+        derived.push(
+          ...(await idPrefixObservation(root, stateRoot, options.providers)),
+        );
+        for (const instance of call.config.show().instances)
+          if (
+            instance.enabled &&
+            "builtin" in instance.source &&
+            instance.source.builtin === "forge/agent"
+          )
+            derived.push(...agentAdapterObservation(instance.name));
       } catch (error) {
         return failure(request.op, error);
       }
-      const result = await direct.invoke(callScope(derived), request);
+      const result = await direct.invoke(call, request);
       if (
         !result.ok &&
         process.env.T3CODE_CLI_PATH &&

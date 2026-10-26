@@ -93,7 +93,7 @@ async function withDelivery(
           expectRevision: "",
         }),
       ).toMatchObject({ ok: true });
-      for (const name of ["work", "memory", "check"]) {
+      for (const name of ["work", "memory", "check", "agent"]) {
         const target = join(root, "blocks", name);
         cpSync(join(repo, "src/blocks", name), target, { recursive: true });
         const { entry } = JSON.parse(
@@ -421,7 +421,7 @@ test("the upgraded delivery template is listed as a new version and this repo ke
     const listed = await call("template.list");
     expect(listed.ok).toBe(true);
     expect(listed.templates).toContainEqual(
-      expect.objectContaining({ id: "harsha/delivery", version: "0.1.1" }),
+      expect.objectContaining({ id: "harsha/delivery", version: "0.1.2" }),
     );
     expect(readFileSync(join(repo, ".forge/config.yaml"), "utf8")).toContain(
       "      claimTtlSeconds: 7200",

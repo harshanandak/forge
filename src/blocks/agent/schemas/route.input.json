@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["role"],
+  "properties": {
+    "role": {
+      "enum": [
+        "intake",
+        "plan",
+        "cut",
+        "build",
+        "review",
+        "land",
+        "learn",
+        "rate",
+        "merge",
+        "judge",
+        "verify"
+      ]
+    },
+    "max": { "type": "boolean" }
+  }
+}

@@ -87,7 +87,7 @@ const imported = cli([
   "--input",
   JSON.stringify({ template: "delivery" }),
 ]).result;
-assert.equal(imported.template, "harsha/delivery@0.1.1");
+assert.equal(imported.template, "harsha/delivery@0.1.2");
 passed.push("template import");
 
 const synced = cli(["skills", "sync"]).result;
