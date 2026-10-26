@@ -48,6 +48,7 @@
     "examples/hello-block",
     "docs/writing-a-block.md",
     "LICENSE",
+    "CREDITS",
     "README.md"
   ],
   "engines": {

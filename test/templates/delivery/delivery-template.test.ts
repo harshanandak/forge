@@ -176,7 +176,12 @@ test("the delivery template renders all seven skills: linted, at most 4 KB, valu
     }
     expect(text["forge-loop"]).toContain("At most 3 workers at once");
     expect(text["forge-loop"]).toContain("publish, force-push, prod-write");
-    expect(text.slice).toContain("at most 5 questions");
+    expect(text.slice).toContain("Route open decisions to `forge-intake`");
+    expect(text.slice).toContain(
+      "unclear goal or done condition to forge-intake",
+    );
+    expect(text.slice).not.toContain("Silence means every default");
+    expect(text.slice).not.toContain("at most 5");
     expect(text.slice).toContain(
       "Target 800 changed lines and at most 15 files",
     );
@@ -194,8 +199,12 @@ test("the delivery template renders all seven skills: linted, at most 4 KB, valu
     expect(text["forge-loop"]).toContain(
       "Session: export FORGE_SESSION=<your task name> before any claim; never use the chat's t3: session.",
     );
+    expect(text.build).not.toContain("`forge-loop`");
+    expect(text.build).toContain("t3_thread_configuration");
+    expect(text.build).toContain("FORGE_SESSION=t3:<threadId>");
+    expect(text.build).toContain("forge memory rules");
     expect(text.build).toContain(
-      "T3 chats use the session step in `forge-loop`",
+      "`result.text.text` is a pointer, never note text",
     );
     expect(text.build).toContain("After 2 failed fixes on the same check");
     expect(text.review).toContain("At most 2 rounds");
@@ -396,7 +405,6 @@ const GUIDANCE = [
   ["lanes.max", "forge-loop", "At most 3 workers at once"],
   ["lanes.fullSuiteRuns", "forge-loop", "1 full-suite run at a time"],
   ["lanes.stallMinutes", "forge-loop", "silent for 10 minutes"],
-  ["questions.max", "slice", "Ask at most 5 lettered questions"],
   ["labels.priority", "slice", "Priority is one label of p0, p1, p2, p3, p4"],
   ["labels.deferred", "review", '"review-deferred"'],
   ["labels.gap", "build", "`contract-gap` issue"],

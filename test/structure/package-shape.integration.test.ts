@@ -44,6 +44,11 @@ test("package.json and tsconfig keep the agreed shape", () => {
   expect(format(found)).toEqual([]);
 }, 30_000);
 
+test("the package includes the borrowed skills' license notice", () => {
+  const pkg = readJson("package.json") as { files: string[] };
+  expect(pkg.files).toContain("CREDITS");
+}, 30_000);
+
 test("sources use only syntax Node can strip", () => {
   const paths = listRepoFiles().filter(
     (p) => CODE_FILE.test(p) && !p.startsWith("test/structure/"),

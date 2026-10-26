@@ -1,6 +1,6 @@
 ---
 name: slice
-description: "Use when work is requested, when anything is raised in passing (bug, idea, follow-up, risk), when a goal or done condition is unclear, or when the current slice is done. Files it at once, frames it with at most 5 questions, and writes one child issue per PR-sized slice with six required sections and its deps."
+description: "Use when work is requested, anything is raised in passing (bug, idea, follow-up, risk), or the current slice is done. Route an unclear goal or done condition to forge-intake. File work and write one child issue per PR-sized slice with six required sections and its deps."
 ---
 
 # slice
@@ -17,7 +17,7 @@ forge issue create --input '{"title":"...","kind":"task","labels":["p2"],"parent
 ## Frame, only when the done condition cannot be stated
 
 - Facts are your job: read the code, and `forge memory search --input '{"query":"...","scope":"<name>"}'` and `forge decision list --input '{}'` for prior choices. Use the lowercase repo name from `gh repo view --json name --jq '.name|ascii_downcase'` as `<name>`.
-- Choices are the owner's. Ask at most 5 lettered questions, each with a default. Silence means every default.
+- Route open decisions to `forge-intake` before framing or slicing.
 - Record each answer: `forge decision propose --input '{"title":"...","text":"..."}'`. On `format_missing`, follow the returned `repair`, then propose again. Only after `proposed`, hand it to a human for adoption.
 - Plan in depth only for the one or two hard choices.
 

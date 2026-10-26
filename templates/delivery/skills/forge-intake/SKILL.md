@@ -21,7 +21,7 @@ Before dispatching any subagent, run `forge route get <role> --text` for its rol
 ## Rounds
 
 1. Find every open decision whose prerequisites are settled. Ask all of them in this round; defer decisions that depend on an unanswered question or pending fact.
-2. Number each by its stable id, give a short title and recommendation with the reason, and word the question so "yes" accepts the recommended answer. For example: `D1 — Scope: Shall we deliver the command first? Recommended: yes, to prove the smallest useful path.`
+2. Number each by its stable id, give a short title and recommendation with the reason, and word the question so "yes" accepts the recommended answer. For example: `D1: Scope: Shall we deliver the command first? Recommended: yes, to prove the smallest useful path.`
 3. In an attended run, wait for answers. A bare "yes" accepts all recommendations in the current round; a reply naming ids applies only to those decisions. Keep unanswered decisions open. Silence is not an answer.
 4. Record answers under their existing ids, recompute prerequisites and repeat. If an answer changes, reopen only affected decisions and work; keep their ids.
 

@@ -1246,6 +1246,27 @@ export async function createAssembly(
         }).invoke(request);
         return checkResult(runtimeCatalog, request.op, result);
       } catch (error) {
+        if (
+          request.op === "skills.sync" &&
+          error instanceof ForgeFailure &&
+          error.error.code === "OUTPUT_INVALID"
+        ) {
+          const message = error.error.message.replace(
+            /unknown operation ([a-z][a-z0-9-]*\.[a-z][a-z0-9-]*)/g,
+            (problem: string, op: string) => {
+              for (const builtin of Object.keys(firstPartyBlocks)) {
+                try {
+                  if (op in call.captured({ builtin }).manifest.operations)
+                    return `${problem} (requires block ${builtin}; add it to .forge/config.yaml or remove and re-import the template)`;
+                } catch {
+                  continue;
+                }
+              }
+              return problem;
+            },
+          );
+          error = new ForgeFailure({ ...error.error, message });
+        }
         return failure(request.op, error);
       }
     },
