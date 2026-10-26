@@ -681,7 +681,21 @@ export async function createAssembly(
       } catch (error) {
         return failure(request.op, error);
       }
-      return direct.invoke(callScope(derived), request);
+      const result = await direct.invoke(callScope(derived), request);
+      if (
+        !result.ok &&
+        process.env.T3CODE_CLI_PATH &&
+        (result.error.code === "LEASE_HELD" ||
+          result.error.code === "LEASE_NOT_HELD")
+      )
+        return {
+          ...result,
+          error: {
+            ...result.error,
+            message: `${result.error.message}\nIn T3 chats, call t3_thread_configuration once and run every forge command with FORGE_SESSION=t3:<threadId>.`,
+          },
+        };
+      return result;
     },
   };
   const direct = {

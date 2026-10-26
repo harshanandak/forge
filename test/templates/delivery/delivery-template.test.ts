@@ -146,6 +146,10 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text.slice).toContain("Above 1500 lines, split");
     expect(text.slice).toContain("p0, p1, p2, p3, p4");
     expect(text.build).toContain('"ttlSeconds":7200');
+    expect(text.loop).toContain("t3_thread_configuration");
+    expect(text.loop).toContain("FORGE_SESSION=t3:<threadId>");
+    expect(text.loop).toContain("every forge command");
+    expect(text.build).toContain("T3 chats use the session step in `loop`");
     expect(text.build).toContain("After 2 failed fixes on the same check");
     expect(text.review).toContain("At most 2 rounds");
     expect(text.review).toContain("Fix only P0, P1 findings");

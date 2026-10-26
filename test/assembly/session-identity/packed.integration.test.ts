@@ -66,6 +66,7 @@ function fixture() {
     "CODEX_THREAD_ID",
     "CODEX_SESSION_ID",
     "CODEX_COMPANION_SESSION_ID",
+    "T3CODE_CLI_PATH",
   ])
     delete base[key];
   function cli(
@@ -231,6 +232,50 @@ function foreignWritesRefused(
   }
   return results;
 }
+
+test("T3 lease refusals name the chat session step without changing claim authority", () => {
+  const f = fixture();
+  try {
+    const id = f.create();
+    const claude = { CLAUDE_CODE_SESSION_ID: "claude-chat" };
+    const codex = { CODEX_SESSION_ID: "codex-chat" };
+    f.cli("claim", { id }, claude);
+    for (const [verb, code] of [
+      ["claim", "LEASE_HELD"],
+      ["renew", "LEASE_NOT_HELD"],
+    ] as const) {
+      const plain = f.cli(verb, { id }, codex, false);
+      const t3 = f.cli(
+        verb,
+        { id },
+        { ...codex, T3CODE_CLI_PATH: "disposable-t3-cli" },
+        false,
+      );
+      expect(t3.error?.code).toBe(code);
+      expect(plain.error?.code).toBe(code);
+      expect(plain.error?.message).not.toContain("t3_thread_configuration");
+      expect(t3.error?.message).toBe(
+        `${plain.error?.message}\nIn T3 chats, call t3_thread_configuration once and run every forge command with FORGE_SESSION=t3:<threadId>.`,
+      );
+    }
+    expect(f.cli("show", { id }).result?.lease?.holder.session.id).toBe(
+      "claude-code:claude-chat",
+    );
+    f.cli("release", { id }, claude);
+    const shared = {
+      FORGE_SESSION: "t3:chat",
+      T3CODE_CLI_PATH: "disposable-t3-cli",
+    };
+    f.cli("claim", { id }, { ...claude, ...shared });
+    f.cli("renew", { id }, { ...codex, ...shared });
+    expect(f.cli("show", { id }).result?.lease?.holder.session).toMatchObject({
+      id: "t3:chat",
+      harness: "codex",
+    });
+  } finally {
+    f.cleanup();
+  }
+}, 120_000);
 
 test("CLI persisted device identity fences all holder writes after same-path device replacement without leaking paths", () => {
   const f = fixture();
