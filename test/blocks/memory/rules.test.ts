@@ -56,6 +56,7 @@ async function rules(
       levels: {
         caller: "agent",
         inProject: project !== undefined,
+        ...(project === undefined ? {} : { projectName: "project" }),
         project: () =>
           Promise.resolve(
             project === undefined
@@ -423,23 +424,52 @@ test("rules default to the project folder scope before an identity exists withou
   expect(existsSync(projectStore)).toBe(false);
 }, 60_000);
 
-test("rules use existing project identity names when host metadata is unavailable", async () => {
-  const device = memoryState();
-  const project = memoryState();
-  note(device, 1, "Identity name matches", ["rule"], false, "project");
-  note(
-    device,
-    2,
-    "Different project " + "x".repeat(2000),
-    ["rule"],
-    false,
-    "other-project",
-  );
-  const result = await rules(device, project);
-  expect(result.text.text).toContain("Identity name matches");
-  expect(result.text.text).not.toContain("Different project");
-  expect(result.truncated).toBe(false);
-}, 30_000);
+for (const [folder, defaultScope, identityName] of [
+  ["MyProj", "myproj", "MyProj"],
+  ["__..MyProj", "myproj", "__..MyProj"],
+  ["!!!", undefined, "project"],
+] as const) {
+  test(`rules derive a valid default scope from ${folder} without changing identity names`, async () => {
+    harness = await openHarness(["memory"], {}, { project: folder });
+    const own = done(
+      await harness.call("memory.add", {
+        level: "project",
+        text: "Own project rule",
+        tags: ["rule"],
+        scope: "arbitrary",
+      }),
+    ) as { note: { origin: { project: { name: string } } } };
+    expect(own.note.origin.project.name).toBe(identityName);
+    for (const [text, scope] of [
+      ["General saved rule", "general"],
+      ["Unscoped saved rule", undefined],
+      ...(defaultScope === undefined
+        ? []
+        : [["Normalized folder rule", defaultScope]]),
+      ["Invented project fallback " + "x".repeat(2000), "project"],
+    ] as const) {
+      done(
+        await harness.call("memory.add", {
+          level: "device",
+          text,
+          tags: ["rule"],
+          ...(scope === undefined ? {} : { scope }),
+        }),
+      );
+    }
+    const result = done(await harness.call("memory.rules", {})) as Rules;
+    for (const text of [
+      "General saved rule",
+      "Unscoped saved rule",
+      "Own project rule",
+    ])
+      expect(result.text.text).toContain(text);
+    if (defaultScope !== undefined)
+      expect(result.text.text).toContain("Normalized folder rule");
+    expect(result.text.text).not.toContain("Invented project fallback");
+    expect(result.truncated).toBe(false);
+  }, 60_000);
+}
 
 test("rules outside a project include only general and unscoped device rules even with configured scope", async () => {
   const device = memoryState();

@@ -8,8 +8,10 @@ saved content with source-qualified note ids. Keep that provenance when presenti
 it to an agent.
 
 Set the existing block config value `blocks.memory.config.scope` when the notes
-use a different label from the project folder name; otherwise the folder name
-is used. This repository sets it to `forge`. Outside a Forge project only
+use a different label from the project folder name; otherwise the shared
+checkout's folder name is normalized to a lowercase scope with an alphanumeric
+first character. If no valid characters remain, no project scope is selected.
+This repository sets it to `forge`. Outside a Forge project only
 general and unscoped device rules are returned.
 
 The rendered block is capped at 1,200 characters, roughly 300 English tokens,

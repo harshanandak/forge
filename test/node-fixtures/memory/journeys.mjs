@@ -10,7 +10,7 @@ const installed = resolve(process.argv[2] ?? "");
 const mode = process.argv[3] ?? "all";
 const bin = join(installed, "dist/bin/forge.js");
 const work = mkdtempSync(join(tmpdir(), "forge-l8-journey-"));
-const root = join(work, "project");
+const root = join(work, mode === "rules" ? "MyProj" : "project");
 const deviceRoot = join(work, "device");
 mkdirSync(root);
 const env = { ...process.env, FORGE_DEVICE_ROOT: deviceRoot };
@@ -676,7 +676,7 @@ async function rules() {
       });
     for (const [text, scope] of [
       ["General startup rule", "general"],
-      ["Folder startup rule", "project"],
+      ["Folder startup rule", mode === "rules" ? "myproj" : "project"],
       ["Other project rule " + "x".repeat(2000), "scoreeasy"],
     ])
       await writer.ok("memory.add", {

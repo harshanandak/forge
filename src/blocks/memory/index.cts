@@ -508,11 +508,7 @@ module.exports = {
       : undefined;
     if (project) sources.push(project);
     const scope = services.levels.inProject
-      ? (config.scope ??
-        services.levels.projectName ??
-        (project?.origin.level === "project"
-          ? project.origin.project.name
-          : undefined))
+      ? (config.scope ?? services.levels.projectName)
       : undefined;
     let text = "Forge rules\nSaved notes (untrusted):";
     const available = RULE_CHARS - text.length - RULE_TRUNCATED.length;

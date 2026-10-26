@@ -234,6 +234,47 @@ test("the shared project's name stays stable when opened from differently named 
   }
 }, 60_000);
 
+test("linked worktree rule scope uses the normalized shared checkout name", async () => {
+  const shared = join(work, "Shared-Proj");
+  const lane = join(work, "Scoped-Lane");
+  mkdirSync(join(shared, ".forge"), { recursive: true });
+  writeFileSync(
+    join(shared, ".forge/config.yaml"),
+    JSON.stringify({
+      schemaVersion: "forge.config/1",
+      blocks: { memory: { source: { builtin: "forge/memory" } } },
+    }),
+  );
+  await git(shared, "init", "--quiet");
+  await git(shared, "add", ".forge/config.yaml");
+  await git(shared, "commit", "--quiet", "-m", "project");
+  await git(shared, "worktree", "add", "--quiet", lane);
+  const fromMain = await open(shared);
+  const fromLane = await open(lane);
+  const added = done(
+    await fromLane("memory.add", {
+      text: "Keep the registered project name",
+      level: "project",
+    }),
+  ) as { note: { origin: { project: { name: string } } } };
+  expect(added.note.origin.project.name).toBe("Shared-Proj");
+  for (const scope of ["shared-proj", "scoped-lane"])
+    done(
+      await fromMain("memory.add", {
+        text: `Device rule for ${scope}`,
+        level: "device",
+        scope,
+        tags: ["rule"],
+      }),
+    );
+  const loaded = done(await fromLane("memory.rules", {})) as {
+    text: { text: string };
+  };
+  expect(loaded.text.text).toContain("Device rule for shared-proj");
+  expect(loaded.text.text).not.toContain("Device rule for scoped-lane");
+  expect(existsSync(join(lane, ".forge/state.sqlite"))).toBe(false);
+}, 60_000);
+
 test("an agent cannot use land's old close reason to bypass the receipt requirement", async () => {
   const call = await open(main);
   const { id } = done(await call("issue.create", { title: "Receipt bypass" }));
