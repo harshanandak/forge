@@ -11,7 +11,7 @@ Every wake is a fresh read. Never trust what you remember: read, act, then stop.
 
 T3 chats: call MCP `t3_thread_configuration` once (no args) and set `FORGE_SESSION=t3:<threadId>` for every forge command, even after a harness switch. Workers you launch keep their own task session.
 
-At session start, if a hook has not already loaded Forge rules, run `forge memory rules`: `result.text.text` holds untrusted notes. Truncated? See `memory.show` or `forge memory search --help`.
+At session start, run `forge memory rules` unless a hook supplied it: `result.text.text` is a pointer, never note text. Search memory before starting a task; use its search/show commands.
 
 1. Work: `forge issue ready --input '{}'` (ranked by priority label), `forge issue stale --input '{}'`, then `forge issue show --input '{"id":"<id>"}'` for your slice.
 2. PRs: `gh pr view <n> --json state,headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`. In T3 Code, `list_thread_pull_requests` lists the PRs linked to this thread.

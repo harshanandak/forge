@@ -20,10 +20,10 @@ export interface Counterfactual {
 export const counterfactuals: readonly Counterfactual[] = [
   {
     file: "blocks/memory/index.cjs",
-    from: '!fields.tags.includes("rule")',
-    to: "true",
+    from: "if (count !== undefined) counts.set(noteScope, count + 1);",
+    to: 'if (count !== undefined && source.level !== "device") counts.set(noteScope, count + 1);',
     journey: "rules",
-    evidence: "device rule loaded at session start",
+    evidence: "general device notes are counted",
   },
   {
     file: "assembly/index.js",
