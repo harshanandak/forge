@@ -42,15 +42,15 @@ At session start, if a hook has not already loaded Forge rules, run `forge memor
 
 Proceed on reversible actions without asking. Stop only for:
 
-- a one-way door: {{values.doors}}. It needs the owner's reply naming that action. Silence or "continue" is not a yes.
+- a one-way door: publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config. It needs the owner's reply naming that action. Silence or "continue" is not a yes.
 - a scope change beyond the slice's done boundary;
 - a blocked guard or hook. A block is a stop, never something to route around.
 
 ## Lanes
 
-- At most {{values.lanes.max}} workers at once, and {{values.lanes.fullSuiteRuns}} full-suite run at a time.
-- A worker silent for {{values.lanes.stallMinutes}} minutes is stalled: read its state and steer it. Never start a second worker on the same slice.
-- Roles name capability, not models: orchestrator {{values.roles.orchestrator}}, implementer {{values.roles.implementer}}, reviewer {{values.roles.reviewer}}. The harness picks the model.
+- At most 3 workers at once, and 1 full-suite run at a time.
+- A worker silent for 10 minutes is stalled: read its state and steer it. Never start a second worker on the same slice.
+- Capabilities: orchestrator strong, implementer fast, reviewer other-family, housekeeping cheapest. The harness picks the model.
 
 ## Worker brief
 

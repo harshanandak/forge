@@ -5,7 +5,7 @@ description: "Use when a PR may be ready to merge, or after it merged. The orche
 
 # land
 
-Orchestrator only. A worker never merges. Merge by: {{values.merge.by}}.
+Orchestrator only. A worker never merges. Merge by: agent.
 
 ## Merge conditions: all of them, read fresh
 
@@ -13,12 +13,12 @@ Run `forge check gate --input '{"pr":<n>}'`. Require exit 0, `ok:true` and `resu
 
 The gate requires an open, clean PR, a verified PASS receipt for its current head covering the configured `receiptChecks`, successful required CI checks, no unresolved review threads across every page, and no changed file matching configured `doorPaths`. It reads the head again before returning. REFUSED exits 1 with reasons; fix them through `review` and rerun the gate.
 
-A matched door path always refuses: the owner merges that PR by hand. A merge that deploys, publishes or migrates is also a door ({{values.doors}}): it needs the owner's reply naming that action. Silence or "continue" is not a yes.
+A matched door path always refuses: the owner merges that PR by hand. A merge that deploys, publishes or migrates is also a door (publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config): it needs the owner's reply naming that action. Silence or "continue" is not a yes.
 
 ## Merge, pinned
 
 ```
-gh pr merge <n> --{{values.merge.method}} --match-head-commit <head>
+gh pr merge <n> --squash --match-head-commit <head>
 ```
 
 A refused merge because the head moved means run the gate again. Never merge without the pin.
@@ -27,7 +27,7 @@ A refused merge because the head moved means run the gate again. Never merge wit
 
 1. `gh pr view <n> --json state,mergeCommit` shows `MERGED`; keep the merge commit SHA.
 2. CI on base for that commit: `gh run list --branch <base> --commit <sha>`. Wait for it through the harness, not a sleep loop. Red there is a new bug: file it at p0 or p1 and fix forward.
-3. Close the issue. The worker released its claim, so take it again first: `forge issue claim --input '{"id":"<slice>","ttlSeconds":{{values.claims.ttlSeconds}}}'`, then `forge issue close --input '{"id":"<slice>","reason":"merged in <sha>","receipt":"<id>"}'` using the gate's receipt.
+3. Close the issue. The worker released its claim, so take it again first: `forge issue claim --input '{"id":"<slice>"}'`, then `forge issue close --input '{"id":"<slice>","reason":"merged in <sha>","receipt":"<id>"}'` using the gate's receipt.
 4. Worktree: list what is in it first (`git -C <path> status --short` and `git -C <path> log origin/<base>..HEAD --oneline`). Remove it only when both are empty; anything left is filed or pushed first. Removing a worktree with work in it is a one-way door.
 5. Stop watching: in T3 Code, `unwatch_pull_request`.
 

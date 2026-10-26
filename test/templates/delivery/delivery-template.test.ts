@@ -145,7 +145,9 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     );
     expect(text.slice).toContain("Above 1500 lines, split");
     expect(text.slice).toContain("p0, p1, p2, p3, p4");
-    expect(text.build).toContain('"ttlSeconds":7200');
+    expect(text.build).toContain(
+      `forge issue claim --input '{"id":"<slice>"}'`,
+    );
     expect(text.loop).toContain("t3_thread_configuration");
     expect(text.loop).toContain("FORGE_SESSION=t3:<threadId>");
     expect(text.loop).toContain("every forge command");
@@ -267,7 +269,7 @@ test("the rendered loop pages through adopted decision titles and proposals hand
   });
 }, 30_000);
 
-test("changing a value and syncing again changes the rendered skill text", async () => {
+test("stale guidance values do not change the rendered delivery instructions", async () => {
   await withDelivery(async (root, call) => {
     await call("skills.sync");
     for (const [path, value] of [
@@ -281,10 +283,84 @@ test("changing a value and syncing again changes the rendered skill text", async
       });
     expect(await call("skills.sync")).toMatchObject({ ok: true });
     const build = readFileSync(join(root, rendered("build")), "utf8");
-    expect(build).toContain("After 3 failed fixes on the same check");
-    expect(build).not.toContain("After 2 failed fixes");
+    expect(build).toContain("After 2 failed fixes on the same check");
+    expect(build).not.toContain("After 3 failed fixes");
     expect(readFileSync(join(root, rendered("slice")), "utf8")).toContain(
-      "Target 400 changed lines",
+      "Target 800 changed lines",
     );
+  });
+}, 30_000);
+
+const GUIDANCE = [
+  ["slice.targetLines", "slice", "Target 800 changed lines"],
+  ["slice.splitAbove", "slice", "Above 1500 lines, split"],
+  ["slice.maxFiles", "slice", "at most 15 files"],
+  ["review.rounds", "review", "At most 2 rounds"],
+  ["review.fix", "review", "Fix only P0, P1 findings"],
+  ["review.file", "review", "Everything else (P2, P3"],
+  ["review.reruns", "review", "Rerun up to 1 time"],
+  ["merge.by", "land", "Merge by: agent"],
+  ["merge.method", "land", "gh pr merge <n> --squash"],
+  [
+    "doors",
+    "loop",
+    "publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config",
+  ],
+  [
+    "fixes.maxFailedPerCheck",
+    "build",
+    "After 2 failed fixes on the same check",
+  ],
+  ["lanes.max", "loop", "At most 3 workers at once"],
+  ["lanes.fullSuiteRuns", "loop", "1 full-suite run at a time"],
+  ["lanes.stallMinutes", "loop", "silent for 10 minutes"],
+  ["questions.max", "slice", "Ask at most 5 lettered questions"],
+  ["labels.priority", "slice", "Priority is one label of p0, p1, p2, p3, p4"],
+  ["labels.deferred", "review", '"review-deferred"'],
+  ["labels.gap", "build", "`contract-gap` issue"],
+  ["roles.orchestrator", "loop", "orchestrator strong"],
+  ["roles.implementer", "loop", "implementer fast"],
+  ["roles.reviewer", "loop", "reviewer other-family"],
+  ["roles.housekeeping", "loop", "housekeeping cheapest"],
+  ["pr.models", "open-pr", "**Models**: who planned, implemented and reviewed"],
+  ["pr.notVerified", "open-pr", "**Not verified**: what you did not check"],
+  ["pr.trailers", "open-pr", "trailers: none"],
+  [
+    "pr.style",
+    "open-pr",
+    "Style: plain opening; bold takeaways; What review found; Verification",
+  ],
+] as const;
+
+test("every delivery guidance value is literal skill prose, absent from template configuration", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const template = JSON.parse(
+      readFileSync(
+        join(repo, "templates/delivery/forge.template.json"),
+        "utf8",
+      ),
+    ) as { config: { values?: unknown } };
+    expect(template.config.values).toBeUndefined();
+    expect(template.config).toMatchObject({
+      blocks: { work: { config: { claimTtlSeconds: 7200 } } },
+    });
+    for (const [path, skill, guidance] of GUIDANCE) {
+      const source = readFileSync(
+        join(repo, `templates/delivery/skills/${skill}/SKILL.md`),
+        "utf8",
+      );
+      expect(source).not.toContain(`{{values.${path}}}`);
+      expect(readFileSync(join(root, rendered(skill)), "utf8")).toContain(
+        guidance,
+      );
+    }
+    for (const name of SKILLS)
+      expect(
+        readFileSync(
+          join(repo, `templates/delivery/skills/${name}/SKILL.md`),
+          "utf8",
+        ),
+      ).not.toMatch(/\{\{\s*values\./);
   });
 }, 30_000);

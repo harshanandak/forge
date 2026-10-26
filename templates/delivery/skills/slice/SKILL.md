@@ -1,6 +1,6 @@
 ---
 name: slice
-description: "Use when work is requested, when anything is raised in passing (bug, idea, follow-up, risk), when a goal or done condition is unclear, or when the current slice is done. Files it at once, frames it with at most {{values.questions.max}} questions, and writes one child issue per PR-sized slice with six required sections and its deps."
+description: "Use when work is requested, when anything is raised in passing (bug, idea, follow-up, risk), when a goal or done condition is unclear, or when the current slice is done. Files it at once, frames it with at most 5 questions, and writes one child issue per PR-sized slice with six required sections and its deps."
 ---
 
 # slice
@@ -11,13 +11,13 @@ description: "Use when work is requested, when anything is raised in passing (bu
 forge issue create --input '{"title":"...","kind":"task","labels":["p2"],"parent":"<epic id>","body":"..."}'
 ```
 
-- Kind: `task`, `bug`, `feature` or `epic`. Priority is one label of {{values.labels.priority}}.
+- Kind: `task`, `bug`, `feature` or `epic`. Priority is one label of p0, p1, p2, p3, p4.
 - File it and move on. Do not fix it in the current slice.
 
 ## Frame, only when the done condition cannot be stated
 
 - Facts are your job: read the code, and `forge memory search --input '{"query":"...","scope":"<name>"}'` and `forge decision list --input '{}'` for prior choices. Use the lowercase repo name from `gh repo view --json name --jq '.name|ascii_downcase'` as `<name>`.
-- Choices are the owner's. Ask at most {{values.questions.max}} lettered questions, each with a default. Silence means every default.
+- Choices are the owner's. Ask at most 5 lettered questions, each with a default. Silence means every default.
 - Record each answer: `forge decision propose --input '{"title":"...","text":"..."}'`. On `format_missing`, follow the returned `repair`, then propose again. Only after `proposed`, hand it to a human for adoption.
 - Plan in depth only for the one or two hard choices.
 
@@ -27,8 +27,8 @@ forge issue create --input '{"title":"...","kind":"task","labels":["p2"],"parent
 2. **Failing check**: the named check that fails before the change and passes after.
 3. **Done boundary**: what is in. Anything beyond it is filed, not fixed.
 4. **Touches / Needs / Owns**: files and areas read, required from main, and written.
-5. **Door**: reversible, or one-way ({{values.doors}}).
-6. **Size**: estimate. Target {{values.slice.targetLines}} changed lines and at most {{values.slice.maxFiles}} files. Above {{values.slice.splitAbove}} lines, split before building.
+5. **Door**: reversible, or one-way (publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config).
+6. **Size**: estimate. Target 800 changed lines and at most 15 files. Above 1500 lines, split before building.
 
 ## Order
 

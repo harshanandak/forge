@@ -8,8 +8,8 @@ description: "Use when a slice's checks all pass on the final tree and it is rea
 ## Before you open
 
 1. Every check passed on the final tree: `forge check show --input '{"id":"<receipt>"}'` shows your head. No receipt for this head means run `build` Finish again.
-2. Size: at most {{values.slice.targetLines}} changed lines and {{values.slice.maxFiles}} files is the target. Above {{values.slice.splitAbove}} lines, split before opening.
-3. Commits carry no co-author or tool trailers (trailers: {{values.pr.trailers}}).
+2. Size: at most 800 changed lines and 15 files is the target. Above 1500 lines, split before opening.
+3. Commits carry no co-author or tool trailers (trailers: none).
 
 ## Push and open
 
@@ -18,7 +18,7 @@ description: "Use when a slice's checks all pass on the final tree and it is rea
 
 ## The body
 
-Fill the repo's PR template. Style: {{values.pr.style}}.
+Fill the repo's PR template. Style: plain opening; bold takeaways; What review found; Verification.
 
 - **Opening**: the problem as a user sees it, then what this adds. Short sentences, plain words, no internal codes.
 - **Before / after**: what a user observes when X happens, before and after. Numbers where real numbers exist, with how they were measured.

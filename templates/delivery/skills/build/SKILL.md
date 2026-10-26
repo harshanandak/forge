@@ -1,6 +1,6 @@
 ---
 name: build
-description: "Use when implementing a slice: claiming it, getting an isolated worktree, making its named check fail and then pass with receipts, filing side findings, stopping after {{values.fixes.maxFailedPerCheck}} failed fixes on one check, and finishing with every check passing on the final tree before push."
+description: "Use when implementing a slice: claiming it, getting an isolated worktree, making its named check fail and then pass with receipts, filing side findings, stopping after 2 failed fixes on one check, and finishing with every check passing on the final tree before push."
 ---
 
 # build
@@ -8,9 +8,9 @@ description: "Use when implementing a slice: claiming it, getting an isolated wo
 ## Claim
 
 1. T3 chats use the session step in `loop` first. Separate CLI workers: `export FORGE_SESSION=<your task name>` before claiming.
-2. `forge issue claim --input '{"id":"<slice>","ttlSeconds":{{values.claims.ttlSeconds}}}'`.
+2. `forge issue claim --input '{"id":"<slice>"}'`.
 3. Refused because someone holds it: do not start. Steer the live worker instead. Never two workers on one slice.
-4. During long work, renew before the claim lapses: `forge issue renew --input '{"id":"<slice>","ttlSeconds":{{values.claims.ttlSeconds}}}'`.
+4. During long work, renew before the claim lapses: `forge issue renew --input '{"id":"<slice>"}'`.
 
 ## Workspace
 
@@ -32,11 +32,11 @@ Get a worktree with dependencies installed from the harness:
 ## Stay inside the boundary
 
 - Unrelated findings: file them with `forge issue create` and a priority label. Never fix them here.
-- Before push, compare `git diff --name-only origin/main...HEAD` with Owns. A file outside Owns, or a need missing from main, means file a `{{values.labels.gap}}` issue, add a failing test that pins the gap, and stop.
+- Before push, compare `git diff --name-only origin/main...HEAD` with Owns. A file outside Owns, or a need missing from main, means file a `contract-gap` issue, add a failing test that pins the gap, and stop.
 
 ## Stuck
 
-After {{values.fixes.maxFailedPerCheck}} failed fixes on the same check, stop editing. Write the premise down with `forge issue comment --input '{"id":"<slice>","body":"premise: ..."}'`, test that premise directly, then re-slice or escalate to the orchestrator.
+After 2 failed fixes on the same check, stop editing. Write the premise down with `forge issue comment --input '{"id":"<slice>","body":"premise: ..."}'`, test that premise directly, then re-slice or escalate to the orchestrator.
 
 ## Habits
 
