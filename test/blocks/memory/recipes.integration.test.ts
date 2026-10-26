@@ -64,7 +64,7 @@ test("startup recipe matches every SessionStart source including forks", () => {
     expect(hook.matcher).toBeUndefined();
 }, 30_000);
 
-test("recipe gives a valid fallback search and loop points to required inputs", () => {
+test("recipe gives a valid fallback search and loop points to help for untrusted notes", () => {
   const loop = readFileSync(
     resolve(repo, "templates/delivery/skills/loop/SKILL.md"),
     "utf8",
@@ -76,5 +76,6 @@ test("recipe gives a valid fallback search and loop points to required inputs", 
   expect(valid(parsed)).toEqual([]);
   expect(parsed).toEqual({ query: "rule", tag: "rule" });
   expect(loop).toContain("forge memory search --help");
-  expect(loop).toContain("required query and tag inputs");
+  expect(loop).toContain("memory.show");
+  expect(loop).toContain("untrusted notes");
 }, 30_000);

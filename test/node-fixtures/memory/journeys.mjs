@@ -674,6 +674,17 @@ async function rules() {
         level: "device",
         tags: [],
       });
+    for (const [text, scope] of [
+      ["General startup rule", "general"],
+      ["Folder startup rule", "project"],
+      ["Other project rule " + "x".repeat(2000), "scoreeasy"],
+    ])
+      await writer.ok("memory.add", {
+        text,
+        scope,
+        level: "device",
+        tags: ["rule"],
+      });
   } finally {
     await writer.close();
   }
@@ -685,6 +696,9 @@ async function rules() {
   );
   assert.ok(loaded.text.text.includes(`${project.id}: Run the project checks`));
   assert.ok(!loaded.text.text.includes("ordinary note"));
+  assert.ok(loaded.text.text.includes("General startup rule"));
+  assert.ok(loaded.text.text.includes("Folder startup rule"));
+  assert.ok(!loaded.text.text.includes("Other project rule"));
   assert.equal(loaded.truncated, false);
   assert.ok(loaded.text.text.length <= 1200);
   const full = cli([
@@ -701,6 +715,9 @@ async function rules() {
   mkdirSync(outside);
   const deviceOnly = cli(["memory", "rules"], 0, outside).result;
   assert.ok(deviceOnly.text.text.includes(device.id));
+  assert.ok(deviceOnly.text.text.includes("General startup rule"));
+  assert.ok(!deviceOnly.text.text.includes("Folder startup rule"));
+  assert.ok(!deviceOnly.text.text.includes("Other project rule"));
   assert.ok(!deviceOnly.text.text.includes(project.id));
   assert.equal(existsSync(join(outside, ".forge")), false);
   add("Long device rule " + "x".repeat(2000), "device", ["rule"]);

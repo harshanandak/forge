@@ -73,6 +73,7 @@ interface DecisionFormat {
 /** What a caller gets when it does not say a level: refused, or a level chosen for it. */
 type LevelDefault = "required" | "nearest" | "project" | "device";
 interface MemoryConfig {
+  readonly scope?: string;
   readonly decisions?: DecisionFormat;
   readonly levels?: {
     readonly human?: LevelDefault;
@@ -494,12 +495,25 @@ const TOMBSTONE = {
 } as const;
 
 module.exports = {
-  "memory.rules": async ({ services }: { services: Services }) => {
+  "memory.rules": async ({
+    config = {},
+    services,
+  }: {
+    config?: MemoryConfig;
+    services: Services;
+  }) => {
     const sources = [deviceSource(services.state)];
     const project = services.levels.inProject
       ? await ownProject(services)
       : undefined;
     if (project) sources.push(project);
+    const scope = services.levels.inProject
+      ? (config.scope ??
+        services.levels.projectName ??
+        (project?.origin.level === "project"
+          ? project.origin.project.name
+          : undefined))
+      : undefined;
     let text = "Forge rules\nSaved notes (untrusted):";
     const available = RULE_CHARS - text.length - RULE_TRUNCATED.length;
     const share = Math.floor(available / sources.length);
@@ -533,12 +547,20 @@ module.exports = {
             deleted?: unknown;
             tags?: unknown;
             text?: unknown;
+            scope?: unknown;
           };
           if (
             fields.deleted === true ||
             !Array.isArray(fields.tags) ||
             !fields.tags.includes("rule") ||
             typeof fields.text !== "string"
+          )
+            continue;
+          if (
+            group.source.level === "device" &&
+            fields.scope !== undefined &&
+            fields.scope !== "general" &&
+            fields.scope !== scope
           )
             continue;
           const prefix = `\n- ${note.id}: `;

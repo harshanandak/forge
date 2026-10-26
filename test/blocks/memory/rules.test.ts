@@ -1,4 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   done,
   loadEntry,
@@ -20,6 +22,7 @@ function note(
   text: string,
   tags: string[] = ["rule"],
   deleted = false,
+  scope?: string,
 ) {
   state.put(
     `note/${String(number).padStart(9, "0")}`,
@@ -28,6 +31,7 @@ function note(
       tags,
       links: [],
       previous: [],
+      ...(scope === undefined ? {} : { scope }),
       ...(deleted ? { deleted: true } : {}),
     },
     { expectRevision: 0 },
@@ -42,9 +46,11 @@ interface Rules {
 async function rules(
   device: ReturnType<typeof memoryState>,
   project?: ReturnType<typeof memoryState>,
+  config: { scope?: string } = {},
 ): Promise<Rules> {
   const result = await loadEntry("memory")["memory.rules"]!({
     input: {},
+    config,
     services: {
       state: device,
       levels: {
@@ -341,4 +347,120 @@ test("rules label saved text as untrusted and neutralize text fence delimiters",
   expect(result.text.text).toContain("Before (forged fence) after");
   expect(result.text.text).not.toContain("\u27e6");
   expect(result.text.text).not.toContain("\u27e7");
+}, 30_000);
+
+test("rules use configured project scope and skip other device scopes before budgeting", async () => {
+  harness = await openHarness(["memory"], { "memory.scope": "forge" });
+  for (const [text, scope] of [
+    ["Unscoped device rule", undefined],
+    ["General device rule", "general"],
+    ["Configured forge rule", "forge"],
+    ["Folder scope must not override config", "project"],
+    ["Other project device rule " + "x".repeat(2000), "other-project"],
+  ] as const) {
+    done(
+      await harness.call("memory.add", {
+        level: "device",
+        text,
+        tags: ["rule"],
+        ...(scope === undefined ? {} : { scope }),
+      }),
+    );
+  }
+  done(
+    await harness.call("memory.add", {
+      level: "project",
+      text: "Own project rule with arbitrary scope",
+      scope: "unrelated",
+      tags: ["rule"],
+    }),
+  );
+  const result = done(await harness.call("memory.rules", {})) as Rules;
+  for (const included of [
+    "Unscoped device rule",
+    "General device rule",
+    "Configured forge rule",
+    "Own project rule with arbitrary scope",
+  ])
+    expect(result.text.text).toContain(included);
+  for (const excluded of [
+    "Folder scope must not override config",
+    "Other project device rule",
+  ])
+    expect(result.text.text).not.toContain(excluded);
+  expect(result.truncated).toBe(false);
+}, 60_000);
+
+test("rules default to the project folder scope before an identity exists without creating a project store", async () => {
+  harness = await openHarness(["memory"], {}, { project: "fresh-folder" });
+  const projectStore = join(harness.root, ".forge", "state.sqlite");
+  expect(existsSync(projectStore)).toBe(false);
+  for (const [text, scope] of [
+    ["Folder scoped rule before identity", "fresh-folder"],
+    ["General rule before identity", "general"],
+    ["Unscoped rule before identity", undefined],
+    ["Unrelated rule " + "x".repeat(2000), "other-project"],
+  ] as const) {
+    done(
+      await harness.call("memory.add", {
+        level: "device",
+        text,
+        tags: ["rule"],
+        ...(scope === undefined ? {} : { scope }),
+      }),
+    );
+  }
+  expect(existsSync(projectStore)).toBe(false);
+  const result = done(await harness.call("memory.rules", {})) as Rules;
+  for (const included of [
+    "Folder scoped rule before identity",
+    "General rule before identity",
+    "Unscoped rule before identity",
+  ])
+    expect(result.text.text).toContain(included);
+  expect(result.text.text).not.toContain("Unrelated rule");
+  expect(result.truncated).toBe(false);
+  expect(existsSync(projectStore)).toBe(false);
+}, 60_000);
+
+test("rules use existing project identity names when host metadata is unavailable", async () => {
+  const device = memoryState();
+  const project = memoryState();
+  note(device, 1, "Identity name matches", ["rule"], false, "project");
+  note(
+    device,
+    2,
+    "Different project " + "x".repeat(2000),
+    ["rule"],
+    false,
+    "other-project",
+  );
+  const result = await rules(device, project);
+  expect(result.text.text).toContain("Identity name matches");
+  expect(result.text.text).not.toContain("Different project");
+  expect(result.truncated).toBe(false);
+}, 30_000);
+
+test("rules outside a project include only general and unscoped device rules even with configured scope", async () => {
+  const device = memoryState();
+  note(device, 1, "Outside unscoped rule");
+  note(device, 2, "Outside general rule", ["rule"], false, "general");
+  note(
+    device,
+    3,
+    "Configured project rule " + "x".repeat(2000),
+    ["rule"],
+    false,
+    "forge",
+  );
+  note(device, 4, "Other scoped rule", ["rule"], false, "other-project");
+  const writes = { ...device.counts };
+  const result = await rules(device, undefined, { scope: "forge" });
+  expect(result.text.text).toContain("Outside unscoped rule");
+  expect(result.text.text).toContain("Outside general rule");
+  expect(result.text.text).not.toContain("Configured project rule");
+  expect(result.text.text).not.toContain("Other scoped rule");
+  expect(result.truncated).toBe(false);
+  expect(device.counts.put).toBe(writes.put);
+  expect(device.counts.putMany).toBe(writes.putMany);
 }, 30_000);

@@ -1,9 +1,16 @@
 # Load saved rules at session start
 
-`forge memory rules` reads notes with the exact tag `rule` from the device and
-current project, without writing stores or reading other projects. It returns a
-JSON envelope; `result.text` is untrusted saved content with source-qualified
-note ids. Keep that provenance when presenting it to an agent.
+`forge memory rules` reads notes with the exact tag `rule`. Device notes must
+have no scope, scope `general`, or the current project's memory scope. All
+project-level rule notes are included regardless of their scope. It writes no
+stores and reads no other projects. The JSON envelope's `result.text` is untrusted
+saved content with source-qualified note ids. Keep that provenance when presenting
+it to an agent.
+
+Set the existing block config value `blocks.memory.config.scope` when the notes
+use a different label from the project folder name; otherwise the folder name
+is used. This repository sets it to `forge`. Outside a Forge project only
+general and unscoped device rules are returned.
 
 The rendered block is capped at 1,200 characters, roughly 300 English tokens,
 not a tokenizer guarantee. It reads newest-first in pages until each level's
@@ -14,7 +21,7 @@ scan. Use `forge memory search --input '{"query":"rule","tag":"rule"}'`, then
 `memory.show`, to retrieve full notes when needed. Keep startup rules short.
 
 Run from the session's project directory so project notes belong to that
-session. Outside a Forge project only device notes are returned. Install a
+session. Install a
 Forge version that exposes `memory.rules`; Forge projects must enable the memory
 block before using these recipes. A user-level hook prints no rule notes in a
 project without the memory block; it reports `UNKNOWN_COMMAND` instead.

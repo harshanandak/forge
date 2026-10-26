@@ -2,6 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
+    "scope": {
+      "$ref": "defs.json#/$defs/Scope",
+      "description": "The device rule scope for this project. Defaults to the project folder name. Rules scoped general or left unscoped are also included."
+    },
     "decisions": {
       "type": "object",
       "properties": {

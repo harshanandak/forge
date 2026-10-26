@@ -13,6 +13,8 @@ blocks:
   memory:
     source:
       builtin: forge/memory
+    config:
+      scope: forge
   check:
     source:
       builtin: forge/check
