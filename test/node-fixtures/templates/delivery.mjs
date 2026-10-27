@@ -16,6 +16,18 @@ const installed = process.argv[2];
 const bin = join(installed, "dist/bin/forge.js");
 assert.equal(process.versions.bun, undefined);
 
+function hookPath(command) {
+  assert.ok(command.startsWith("node "));
+  const quoted = command.slice(5);
+  if (quoted.startsWith('"')) {
+    assert.match(quoted, /^"[^"]+"$/);
+    return quoted.slice(1, -1);
+  }
+  const path = quoted.slice(1, -1).replaceAll("'\\''", "'");
+  assert.equal(quoted, `'${path.replaceAll("'", "'\\''")}'`);
+  return path;
+}
+
 function project(files) {
   const root = realpathSync(mkdtempSync(join(process.cwd(), "delivery-")));
   for (const [name, text] of Object.entries(files))
@@ -169,10 +181,13 @@ for (const detect of [{}, { CLAUDECODE: "1" }, { CODEX_THREAD_ID: "test" }]) {
   );
 }
 const guard = npm.cli(["agent", "guard", "codex"]).result;
-const hook = /^node "(.+)"$/.exec(
-  guard.config.hooks.Stop[0].hooks[0].command,
-)[1];
-assert.ok(hook.startsWith(installed.replaceAll("\\", "/")));
+const hook = hookPath(guard.config.hooks.Stop[0].hooks[0].command);
+assert.equal(
+  realpathSync(hook),
+  realpathSync(
+    join(installed, "templates/delivery/skills/forge-build/done-claim.mjs"),
+  ),
+);
 const hookEnv = Object.fromEntries(
   Object.entries(process.env).filter(([name]) =>
     /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP|HOME|USERPROFILE)$/i.test(name),

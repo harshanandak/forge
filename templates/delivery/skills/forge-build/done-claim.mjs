@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The renderer uses this package copy, whose CLI stays alongside it across projects.
@@ -31,16 +31,20 @@ function check() {
     .replace(/[^.!?\n]*\?/g, " ")
     .replace(/(?:\b(?:not|yet|once|when|until)\b|n['’]t)[^.!?\n]*/gi, " ");
   if (
-    !/\b(done|fixed|ready|verified)\b/i.test(prose) ||
+    !/\b(done|fixed|verified|ready(?=\s*(?:for review\b|to (?:merge|land)\b|[.!?]|$)))\b/i.test(
+      prose,
+    ) ||
     /(?<![\w-])unverified(?![\w-])/i.test(prose)
   )
     return;
   const root = run("git", ["rev-parse", "--show-toplevel"], input.cwd);
-  if (
-    root.status !== 0 ||
-    !existsSync(join(root.stdout.trim(), ".forge/config.yaml"))
-  )
-    return;
+  if (root.status !== 0) return;
+  const top = realpathSync(root.stdout.trim());
+  let project = realpathSync(input.cwd);
+  while (!existsSync(join(project, ".forge/config.yaml"))) {
+    if (project === top || dirname(project) === project) return;
+    project = dirname(project);
+  }
   const head = run("git", ["rev-parse", "HEAD"], input.cwd);
   if (
     head.status === 0 &&
@@ -55,7 +59,7 @@ function check() {
       const shown = run(
         process.execPath,
         [bin, "check", "show", "--id", id],
-        root.stdout.trim(),
+        project,
       );
       try {
         const response = JSON.parse(shown.stdout);

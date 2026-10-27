@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -32,6 +33,17 @@ type GuardResult = {
 };
 function readResult<T>(stdout: string): T {
   return (JSON.parse(stdout) as { result: T }).result;
+}
+function hookPath(command: string): string {
+  expect(command.startsWith("node ")).toBe(true);
+  const quoted = command.slice(5);
+  if (quoted.startsWith('"')) {
+    expect(quoted).toMatch(/^"[^"]+"$/);
+    return quoted.slice(1, -1);
+  }
+  const path = quoted.slice(1, -1).replaceAll("'\\''", "'");
+  expect(quoted).toBe(`'${path.replaceAll("'", "'\\''")}'`);
+  return path;
 }
 function run(args: string[], extra: NodeJS.ProcessEnv = {}) {
   return spawnSync(node, [bin, ...args], {
@@ -244,11 +256,10 @@ test("shipped guards resolve an existing installed companion from an unrelated c
     expect(guard.file).toBe(file);
     const hook = guard.config.hooks.Stop[0]!.hooks[0]!;
     expect(hook.type).toBe("command");
-    const command = /^node "(.+)"$/.exec(hook.command);
-    expect(command).not.toBeNull();
-    expect(isAbsolute(command![1]!)).toBe(true);
-    expect(existsSync(command![1]!)).toBe(true);
-    expect(command![1]).toContain("done-claim.mjs");
+    const path = hookPath(hook.command);
+    expect(isAbsolute(path)).toBe(true);
+    expect(existsSync(path)).toBe(true);
+    expect(path).toContain("done-claim.mjs");
   }
   const detected = run(["agent", "guard"], { CODEX_THREAD_ID: "1" });
   expect(detected.status).toBe(0);
@@ -259,6 +270,49 @@ test("shipped guards resolve an existing installed companion from an unrelated c
   expect(unknown.status).toBe(6);
   for (const text of ["INPUT_INVALID", "claude", "codex"])
     expect(unknown.stdout).toContain(text);
+});
+
+test("R1b-1 a symlinked package prints its canonical hook path while logical prefix comparison fails", () => {
+  const logical = join(root, "logical-package");
+  const canonical = realpathSync(resolve(import.meta.dirname, "../../.."));
+  symlinkSync(
+    canonical,
+    logical,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const result = spawnSync(
+    node,
+    [
+      "--preserve-symlinks",
+      "--preserve-symlinks-main",
+      join(logical, "dist/bin/forge.js"),
+      "agent",
+      "guard",
+      "codex",
+    ],
+    { cwd: root, env, encoding: "utf8", windowsHide: true, timeout: 45_000 },
+  );
+  expect(result.status).toBe(0);
+  const guard = readResult<GuardResult>(result.stdout);
+  const printed = hookPath(guard.config.hooks.Stop[0]!.hooks[0]!.command);
+  const expected = join(
+    logical,
+    "templates/delivery/skills/forge-build/done-claim.mjs",
+  );
+  const oldPrefixComparison = printed.startsWith(logical.replaceAll("\\", "/"));
+  console.log(
+    JSON.stringify({
+      logical,
+      canonical,
+      printed,
+      oldPrefixComparison,
+      resolvedPrinted: realpathSync(printed),
+      resolvedExpected: realpathSync(expected),
+    }),
+  );
+  expect(oldPrefixComparison).toBe(false);
+  expect(printed).toBe(realpathSync(expected).replaceAll("\\", "/"));
+  expect(realpathSync(printed)).toBe(realpathSync(expected));
 });
 
 test("R1-5 an undetected agent refuses and lists known ids", () => {

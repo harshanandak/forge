@@ -439,7 +439,12 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-loop"]).toContain(
       "Only when resuming a session with existing PR work",
     );
-    expect(text["forge-loop"]?.match(/--sweep/g)).toHaveLength(1);
+    expect(text["forge-loop"]).toContain(
+      "Use `--fallback` only if a plain opening wait's link or watch step fails.",
+    );
+    expect(text["forge-loop"]).toContain(
+      "Report and skip a failed `--sweep` or `--done` step.",
+    );
     expect(text["forge-loop"]).toContain("act without re-arming the watch");
     expect(text["forge-loop"]).toContain("unmerged close or handback");
     for (const name of ["forge-land", "forge-loop"])

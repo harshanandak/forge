@@ -22,6 +22,7 @@ interface RouteCall {
     readonly environment: {
       select(names: readonly string[]): Readonly<Record<string, string>>;
       readonly packageRoot?: string;
+      readonly platform?: NodeJS.Platform;
     };
   };
 }
@@ -110,7 +111,11 @@ module.exports = {
     const root = call.services.environment.packageRoot;
     if (!root)
       fail("PROVIDER_MISSING", "Installed package root is unavailable");
-    const command = `node "${root.replaceAll("\\", "/").replace(/\/$/, "")}/templates/delivery/skills/forge-build/done-claim.mjs"`;
+    const windows = call.services.environment.platform === "win32";
+    const path = `${(windows ? root.replaceAll("\\", "/") : root).replace(/\/$/, "")}/templates/delivery/skills/forge-build/done-claim.mjs`;
+    if (windows && path.includes('"'))
+      fail("INPUT_INVALID", "Installed package path contains a double quote");
+    const command = `node ${windows ? `"${path}"` : `'${path.replaceAll("'", "'\\''")}'`}`;
     return {
       file: guard.file,
       instruction: `Merge this hooks entry into ${guard.file}, preserving existing settings and hooks.`,

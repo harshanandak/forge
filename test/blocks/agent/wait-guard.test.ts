@@ -1,4 +1,4 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -25,6 +25,7 @@ type Call = {
   services: {
     environment: {
       packageRoot: string;
+      platform: NodeJS.Platform;
       select(names: readonly string[]): Record<string, string>;
     };
   };
@@ -42,6 +43,18 @@ const operations = require("../../../src/blocks/agent/entry.cts") as Record<
   (call: Call) => Wait | Guard
 >;
 const root = resolve(import.meta.dirname, "../../../src/blocks/agent");
+const globals = globalThis as Record<string, unknown>;
+const hadFail = "fail" in globals;
+const previousFail = globals.fail;
+beforeAll(() => {
+  globals.fail = (code: string, message: string) => {
+    throw new Error(`${code}: ${message}`);
+  };
+});
+afterAll(() => {
+  if (hadFail) globals.fail = previousFail;
+  else delete globals.fail;
+});
 function call(
   input: Call["input"],
   adapters: Adapter[] = [],
@@ -53,6 +66,7 @@ function call(
     services: {
       environment: {
         packageRoot: "C:/Forge install",
+        platform: "win32",
         select: (names) =>
           Object.fromEntries(
             names
@@ -159,6 +173,30 @@ test("guard gives a clear warning when the named adapter has no done-claim guard
     expect(result.config).toBeUndefined();
     expect(result.instruction).toMatch(/no done-claim guard/i);
   }
+});
+
+test("R1b-2 POSIX guard quotes shell expansions, apostrophes and other metacharacters", () => {
+  for (const platform of ["linux", "darwin"] as const) {
+    const fixture = call({ id: "codex" }, [codex]);
+    fixture.services.environment.platform = platform;
+    fixture.services.environment.packageRoot =
+      '/tmp/Forge $(x) owner\'s `tick` $HOME "quoted"';
+    const result = operations["agent.guard"]!(fixture) as Guard;
+    expect(result.config!.hooks.Stop![0]!.hooks[0]!.command).toBe(
+      "node '/tmp/Forge $(x) owner'\\''s `tick` $HOME \"quoted\"/templates/delivery/skills/forge-build/done-claim.mjs'",
+    );
+  }
+});
+
+test("R1b-2 Windows guard quotes spaces and dollar-parentheses and refuses embedded quotes", () => {
+  const fixture = call({ id: "codex" }, [codex]);
+  fixture.services.environment.packageRoot = "C:\\Forge $(x) install";
+  const result = operations["agent.guard"]!(fixture) as Guard;
+  expect(result.config!.hooks.Stop![0]!.hooks[0]!.command).toBe(
+    'node "C:/Forge $(x) install/templates/delivery/skills/forge-build/done-claim.mjs"',
+  );
+  fixture.services.environment.packageRoot = 'C:/Forge "quoted" install';
+  expect(() => operations["agent.guard"]!(fixture)).toThrow("INPUT_INVALID");
 });
 test("adapter schema keeps optional capabilities closed and validates guard branches", () => {
   const schema = JSON.parse(

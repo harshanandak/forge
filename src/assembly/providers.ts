@@ -374,7 +374,9 @@ export function createAssemblyProviders(
       return {
         get packageRoot(): string {
           active(scope);
-          return fileURLToPath(new URL("../../", firstPartyTemplates.delivery));
+          return realpathSync(
+            fileURLToPath(new URL("../../", firstPartyTemplates.delivery)),
+          );
         },
         get platform(): NodeJS.Platform {
           active(scope);

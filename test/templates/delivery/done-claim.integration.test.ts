@@ -14,6 +14,8 @@ setDefaultTimeout(60_000);
 const repo = resolve(import.meta.dirname, "../../..");
 const root = mkdtempSync(join(tmpdir(), "forge-done-claim-"));
 const project = join(root, "project");
+const monorepo = join(root, "monorepo");
+const nestedProject = join(monorepo, "packages/app");
 const bin = join(repo, "dist/bin/forge.js");
 const script = join(
   repo,
@@ -49,6 +51,7 @@ function forge(...args: string[]) {
   ).result;
 }
 let receipt: string;
+let nestedReceipt: string;
 beforeAll(() => {
   mkdirSync(join(project, ".forge"), { recursive: true });
   mkdirSync(join(project, "nested"));
@@ -88,6 +91,34 @@ beforeAll(() => {
   );
   expect(pass.subject).toBe(git("rev-parse", "HEAD"));
   receipt = pass.id;
+  mkdirSync(join(nestedProject, ".forge"), { recursive: true });
+  mkdirSync(join(nestedProject, "src"));
+  writeFileSync(
+    join(nestedProject, ".forge/config.yaml"),
+    readFileSync(join(project, ".forge/config.yaml")),
+  );
+  for (const args of [
+    ["init"],
+    ["add", "."],
+    [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-m",
+      "nested fixture",
+    ],
+  ])
+    expect(run("git", args, monorepo).status).toBe(0);
+  const nestedPass = run(
+    node,
+    [bin, "check", "run", "--input", JSON.stringify({ checks: ["proof"] })],
+    nestedProject,
+  );
+  expect(nestedPass.status).toBe(0);
+  nestedReceipt = (JSON.parse(nestedPass.stdout) as { result: { id: string } })
+    .result.id;
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -172,6 +203,32 @@ for (const harness of ["claude", "codex"]) {
     expect(result.status).toBe(0);
     expect(result.stdout + result.stderr).toBe("");
   });
+  test(`${harness} R1b-4 distinguishes completion readiness and a negated exemption`, () => {
+    for (const message of [
+      "Done and verified; this is not unverified.",
+      "Ready for review",
+      "Ready to merge",
+      "Ready to land",
+      "Ready.",
+    ])
+      expect(hook(message).stdout, message).toContain('"block"');
+    expect(hook("Ready to start the implementation.").stdout).toBe("");
+  });
+  test(`${harness} R1b-5 guards a nested Forge project and its subfolder`, () => {
+    const proof = `Done. ${nestedReceipt}\nNot covered: live hooks`;
+    for (const cwd of [nestedProject, join(nestedProject, "src")]) {
+      expect(hook("Done.", false, cwd).stdout).toContain('"block"');
+      expect(hook(proof, false, cwd).stdout).toBe("");
+    }
+    mkdirSync(join(monorepo, ".forge"), { recursive: true });
+    const outer = join(monorepo, ".forge/config.yaml");
+    writeFileSync(outer, '{"schemaVersion":"forge.config/1","blocks":{}}');
+    try {
+      expect(hook(proof, false, join(nestedProject, "src")).stdout).toBe("");
+    } finally {
+      rmSync(outer);
+    }
+  });
   test(`${harness} Stop allows unverified, recursive invocation and non-project directories silently`, () => {
     for (const result of [
       hook("Done but unverified"),
@@ -239,7 +296,7 @@ test("Stop refuses an older commit receipt", () => {
     root,
     JSON.stringify({
       cwd: project,
-      last_assistant_message: `Ready ${receipt}\nNot covered: live hooks`,
+      last_assistant_message: `Ready for review. ${receipt}\nNot covered: live hooks`,
       stop_hook_active: false,
     }),
   );
