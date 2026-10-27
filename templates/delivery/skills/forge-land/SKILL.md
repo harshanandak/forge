@@ -1,9 +1,9 @@
 ---
-name: land
+name: forge-land
 description: "Use when a PR may be ready to merge, or after it merged. The orchestrator checks the merge conditions, merges with the head pinned, verifies the merge on base, closes the issue, cleans up, saves what a future session needs and picks the next slice."
 ---
 
-# land
+# forge-land
 
 Orchestrator only. A worker never merges. Merge by: agent.
 
@@ -11,11 +11,13 @@ Orchestrator only. A worker never merges. Merge by: agent.
 
 Run `forge check gate --input '{"pr":<n>}'`. Require exit 0, `ok:true` and `result.verdict` PASS. Keep its `head` as `<head>` and `receipt` as `<id>`.
 
-The gate requires an open, clean PR, a verified PASS receipt for its current head covering the configured `receiptChecks`, successful required CI checks, no unresolved review threads across every page, and no changed file matching configured `doorPaths`. It reads the head again before returning. REFUSED exits 1 with reasons; fix them through `review` and rerun the gate.
+The gate requires an open, clean PR, a verified PASS receipt for its current head covering the configured `receiptChecks`, successful required CI checks, no unresolved review threads across every page, and no changed file matching configured `doorPaths`. It reads the head again before returning. REFUSED exits 1 with reasons; fix them through `forge-review` and rerun the gate.
 
-A matched door path always refuses: the owner merges that PR by hand. A merge that deploys, publishes or migrates is also a door (publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config): it needs the owner's reply naming that action. Silence or "continue" is not a yes.
+A matched door path always refuses: the owner merges that PR by hand. A merge that deploys, publishes or migrates is also a door (publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config): it needs the owner's reply naming that action. Silence, "continue" or "fix all" never counts as approval.
 
-## Merge, pinned
+## Merge, pinned and serial
+
+Merge one PR at a time, after combined-code CI: minimise time to merge within floors of zero red checks, open threads and open doors.
 
 ```
 gh pr merge <n> --squash --match-head-commit <head>

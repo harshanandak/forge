@@ -21,15 +21,113 @@ import { openHarness } from "../../blocks/memory/lib.ts";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const SKILLS = [
-  "build",
+  "forge-build",
   "forge-intake",
   "forge-loop",
-  "land",
-  "open-pr",
-  "review",
+  "forge-land",
+  "forge-review",
   "forge-cut",
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
+
+test("S5 sync retires four stage skills, preserves notes and ships proof and thread companions", async () => {
+  await withDelivery(async (root, call, lint) => {
+    await call("config.set", {
+      path: "/blocks/agent/config/adapters",
+      value: [
+        { id: "agents", detect: [], skills: ".agents/skills" },
+        { id: "claude", detect: [], skills: ".claude/skills" },
+      ],
+      expectRevision: "",
+    });
+    for (const adapter of [".agents", ".claude"]) {
+      for (const old of ["build", "open-pr", "review", "land"]) {
+        const folder = join(root, adapter, "skills", old);
+        mkdirSync(folder, { recursive: true });
+        writeFileSync(
+          join(folder, "SKILL.md"),
+          `${GENERATED_MARKER}\nold stage\n`,
+        );
+      }
+      writeFileSync(
+        join(root, adapter, "skills/review/NOTES.md"),
+        "user notes\n",
+      );
+    }
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    for (const adapter of [".agents", ".claude"]) {
+      for (const old of ["build", "open-pr", "review", "land"])
+        expect(existsSync(join(root, adapter, "skills", old, "SKILL.md"))).toBe(
+          false,
+        );
+      expect(
+        readFileSync(join(root, adapter, "skills/review/NOTES.md"), "utf8"),
+      ).toBe("user notes\n");
+      for (const name of ["forge-build", "forge-review", "forge-land"]) {
+        const text = readFileSync(
+          join(root, adapter, "skills", name, "SKILL.md"),
+          "utf8",
+        );
+        expect(lint(text)).toEqual([]);
+        if (name === "forge-review") {
+          expect(text).toContain(
+            "<!-- forge companions: list-threads.mjs, reply-and-resolve.mjs -->",
+          );
+          for (const helper of ["list-threads.mjs", "reply-and-resolve.mjs"])
+            expect(
+              readFileSync(join(root, adapter, "skills", name, helper), "utf8"),
+            ).toBe(
+              readFileSync(
+                join(repo, "templates/delivery/skills", name, helper),
+                "utf8",
+              ),
+            );
+          for (const phrase of [
+            "forge route get review",
+            "single-family",
+            "conflicts, then threads, then CI",
+            "Fixed in <sha>",
+            "one push wave",
+            "harness wake",
+            "sleep loop",
+            "clean behind-base update",
+            "merge base locally",
+            "retry only `resolveReviewThread`",
+            "gh repo view --json owner,name",
+          ])
+            expect(text).toContain(phrase);
+        }
+        if (name === "forge-build")
+          for (const phrase of [
+            "light 0-1",
+            "standard 2-3",
+            "heavy 4-5",
+            "45 minutes",
+            "stop at push",
+            "named environment variables only",
+            "trunk and head",
+            "fresh-context review",
+            "new assertion",
+            "built artifact",
+            "independent",
+          ])
+            expect(text).toContain(phrase);
+        if (name === "forge-land")
+          for (const phrase of [
+            "serial",
+            "zero red checks, open threads and open doors",
+            '"fix all"',
+            "--match-head-commit",
+            "forge check gate",
+          ])
+            expect(text).toContain(phrase);
+      }
+    }
+    expect(await call("skills.sync", { check: true })).toMatchObject({
+      ok: true,
+    });
+  });
+}, 30_000);
 
 type Call = (op: string, input?: object) => Promise<Record<string, unknown>>;
 
@@ -261,7 +359,7 @@ test("intake prototypes answer a named question and report evidence on the inten
   });
 }, 30_000);
 
-test("the delivery template renders all seven skills: linted, at most 4 KB, values filled in", async () => {
+test("the delivery template renders all six skills: linted, at most 4 KB, values filled in", async () => {
   await withDelivery(async (root, call, lint) => {
     const synced = await call("skills.sync");
     expect(synced).toMatchObject({ ok: true });
@@ -279,6 +377,11 @@ test("the delivery template renders all seven skills: linted, at most 4 KB, valu
       expect(Buffer.byteLength(text[name]!)).toBeLessThanOrEqual(4096);
       expect(text[name]).not.toContain("{{");
     }
+    // Check the installed PR companion too: the folded stage keeps its caller contract.
+    text["forge-build"] += readFileSync(
+      join(root, ".agents/skills/forge-build/pull-request.md"),
+      "utf8",
+    );
     expect(text["forge-loop"]).toContain("At most 3 workers at once");
     expect(text["forge-loop"]).toContain("publish, force-push, prod-write");
     expect(text["forge-cut"]).toContain(
@@ -292,7 +395,7 @@ test("the delivery template renders all seven skills: linted, at most 4 KB, valu
     expect(text["forge-cut"]).toContain("Aim at 400 changed lines");
     expect(text["forge-cut"]).toContain("split above 800");
     expect(text["forge-cut"]).toContain("p0, p1, p2, p3, p4");
-    expect(text.build).toContain(
+    expect(text["forge-build"]).toContain(
       `forge issue claim --input '{"id":"<slice>"}'`,
     );
     expect(text["forge-loop"]).toContain("t3_thread_configuration");
@@ -304,47 +407,48 @@ test("the delivery template renders all seven skills: linted, at most 4 KB, valu
     expect(text["forge-loop"]).toContain(
       "Session: export FORGE_SESSION=<your task name> before any claim; never use the chat's t3: session.",
     );
-    expect(text.build).not.toContain("`forge-loop`");
-    expect(text.build).toContain("t3_thread_configuration");
-    expect(text.build).toContain("FORGE_SESSION=t3:<threadId>");
-    expect(text.build).toContain("forge memory rules");
-    expect(text.build).toContain(
+    expect(text["forge-build"]).not.toContain("`forge-loop`");
+    expect(text["forge-build"]).toContain("t3_thread_configuration");
+    expect(text["forge-build"]).toContain("FORGE_SESSION=t3:<threadId>");
+    expect(text["forge-build"]).toContain("forge memory rules");
+    expect(text["forge-build"]).toContain(
       "`result.text.text` is a pointer, never note text",
     );
-    expect(text.build).toContain("After 2 failed fixes on the same check");
-    expect(text.review).toContain("At most 2 rounds");
-    expect(text.review).toContain("Fix only P0, P1 findings");
-    expect(text.review).toContain("Rerun up to 1 time");
-    // review threads are read and resolved with gh alone: nothing in the skills points into this repo
-    expect(text.review).toContain("gh api graphql --paginate");
-    expect(text.review).toContain("after:$endCursor");
-    expect(text.review).toContain(
-      "repos/{owner}/{repo}/pulls/<n>/comments/<comment id>/replies",
+    expect(text["forge-build"]).toContain(
+      "After 2 failed fixes on the same check",
     );
-    expect(text.review).toContain("resolveReviewThread(input:{threadId:$id})");
-    for (const name of SKILLS)
-      expect(text[name]).not.toMatch(/templates\/|\.mjs/);
-    expect(text["open-pr"]).toContain('"relation":"delivers"');
-    expect(text["open-pr"]).toContain("`link_pull_request`");
+    expect(text["forge-review"]).toContain("At most 2 rounds");
+    expect(text["forge-review"]).toContain("Fix only P0, P1 findings");
+    expect(text["forge-review"]).toContain("Rerun up to 1 time");
+    // Companion scripts travel with the generated skill; commands use their installed paths.
+    expect(text["forge-review"]).toContain("list-threads.mjs");
+    expect(text["forge-review"]).toContain("reply-and-resolve.mjs");
+    expect(text["forge-review"]).not.toContain("gh api graphql");
+    for (const name of SKILLS) expect(text[name]).not.toContain("templates/");
+    expect(text["forge-build"]).toContain('"relation":"delivers"');
+    expect(text["forge-build"]).toContain("`link_pull_request`");
     // The executable gate owns the merge conditions and returns the pinned head and receipt.
-    expect(text.land).toContain("forge check gate");
-    expect(text.land).toContain("head moved means run the gate again");
-    expect(text.land).toContain('"receipt":"<id>"');
-    expect(text.build).toContain("receiptChecks");
+    expect(text["forge-land"]).toContain("forge check gate");
+    expect(text["forge-land"]).toContain("head moved means run the gate again");
+    expect(text["forge-land"]).toContain('"receipt":"<id>"');
+    expect(text["forge-build"]).toContain("receiptChecks");
     expect(text["forge-cut"]).toContain(
       '"withoutReceipt":"superseded by <id>"',
     );
-    expect(text.land).toContain(
+    expect(text["forge-land"]).toContain(
       "gh pr merge <n> --squash --match-head-commit <head>",
     );
-    expect(text.land).toContain("publish, force-push, prod-write");
+    expect(text["forge-land"]).toContain("publish, force-push, prod-write");
   });
 }, 30_000);
 
-test("rendered open-pr Models requires exact model attribution for each stage", async () => {
+test("rendered forge-build Models requires exact model attribution for each stage", async () => {
   await withDelivery(async (root, call) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
-    const text = readFileSync(join(root, rendered("open-pr")), "utf8");
+    const text = readFileSync(
+      join(root, ".agents/skills/forge-build/pull-request.md"),
+      "utf8",
+    );
     const models = text
       .split("\n")
       .find((line) => line.startsWith("- **Models**:"));
@@ -387,7 +491,7 @@ test("PR template Models slots require the same attribution fields for each stag
 test("integration: rendered memory save and search accept a lowercase repository scope", async () => {
   await withDelivery(async (root, call) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
-    const land = readFileSync(join(root, rendered("land")), "utf8");
+    const land = readFileSync(join(root, rendered("forge-land")), "utf8");
     const command = new RegExp("forge memory add --input '([^']+)'").exec(land);
     expect(command).not.toBeNull();
     const slice = readFileSync(
@@ -465,7 +569,9 @@ test("the rendered forge-loop pages through adopted decision titles and proposal
     expect(loop).toContain("titles only");
     expect(loop).toContain("no decision text");
     expect(loop).toContain("see below for pagination");
-    for (const name of ["land", "forge-cut"]) {
+    expect(loop).toContain("`forge-build`'s Worker brief");
+    expect(loop).not.toContain("End state:");
+    for (const name of ["forge-land", "forge-cut"]) {
       const text = readFileSync(
         join(
           root,
@@ -498,7 +604,7 @@ test("stale guidance values do not change the rendered delivery instructions", a
         ok: true,
       });
     expect(await call("skills.sync")).toMatchObject({ ok: true });
-    const build = readFileSync(join(root, rendered("build")), "utf8");
+    const build = readFileSync(join(root, rendered("forge-build")), "utf8");
     expect(build).toContain("After 2 failed fixes on the same check");
     expect(build).not.toContain("After 3 failed fixes");
     const cut = readFileSync(join(root, rendered("forge-cut")), "utf8");
@@ -511,12 +617,12 @@ const GUIDANCE = [
   ["slice.targetLines", "forge-cut", "Aim at 400 changed lines"],
   ["slice.splitAbove", "forge-cut", "split above 800"],
   ["slice.maxFiles", "forge-cut", "over 10 files +2"],
-  ["review.rounds", "review", "At most 2 rounds"],
-  ["review.fix", "review", "Fix only P0, P1 findings"],
-  ["review.file", "review", "Everything else (P2, P3"],
-  ["review.reruns", "review", "Rerun up to 1 time"],
-  ["merge.by", "land", "Merge by: agent"],
-  ["merge.method", "land", "gh pr merge <n> --squash"],
+  ["review.rounds", "forge-review", "At most 2 rounds"],
+  ["review.fix", "forge-review", "Fix only P0, P1 findings"],
+  ["review.file", "forge-review", "Everything else (P2, P3"],
+  ["review.reruns", "forge-review", "Rerun up to 1 time"],
+  ["merge.by", "forge-land", "Merge by: agent"],
+  ["merge.method", "forge-land", "gh pr merge <n> --squash"],
   [
     "doors",
     "forge-loop",
@@ -524,7 +630,7 @@ const GUIDANCE = [
   ],
   [
     "fixes.maxFailedPerCheck",
-    "build",
+    "forge-build",
     "After 2 failed fixes on the same check",
   ],
   ["lanes.max", "forge-loop", "At most 3 workers at once"],
@@ -535,22 +641,22 @@ const GUIDANCE = [
     "forge-cut",
     "Priority is one label of p0, p1, p2, p3, p4",
   ],
-  ["labels.deferred", "review", '"review-deferred"'],
-  ["labels.gap", "build", "`contract-gap` issue"],
+  ["labels.deferred", "forge-review", '"review-deferred"'],
+  ["labels.gap", "forge-build", "`contract-gap` issue"],
   ["roles.orchestrator", "forge-loop", "orchestrator strong"],
   ["roles.implementer", "forge-loop", "implementer fast"],
   ["roles.reviewer", "forge-loop", "reviewer other-family"],
   ["roles.housekeeping", "forge-loop", "housekeeping cheapest"],
   [
     "pr.models",
-    "open-pr",
+    "forge-build",
     "**Models**: for each of planned, implemented and reviewed",
   ],
-  ["pr.notVerified", "open-pr", "**Not verified**: what you did not check"],
-  ["pr.trailers", "open-pr", "trailers: none"],
+  ["pr.notVerified", "forge-build", "**Not verified**: what you did not check"],
+  ["pr.trailers", "forge-build", "trailers: none"],
   [
     "pr.style",
-    "open-pr",
+    "forge-build",
     "Style: plain opening; bold takeaways; What review found; Verification",
   ],
 ] as const;
@@ -624,9 +730,15 @@ test("every delivery guidance value is literal skill prose, absent from template
         "utf8",
       );
       expect(source).not.toContain(`{{values.${path}}}`);
-      expect(readFileSync(join(root, rendered(skill)), "utf8")).toContain(
-        guidance,
-      );
+      const guidanceText =
+        readFileSync(join(root, rendered(skill)), "utf8") +
+        (skill === "forge-build"
+          ? readFileSync(
+              join(root, ".agents/skills/forge-build/pull-request.md"),
+              "utf8",
+            )
+          : "");
+      expect(guidanceText).toContain(guidance);
     }
     for (const name of SKILLS)
       expect(
