@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -208,9 +208,8 @@ test("built sync rejects adapter escapes without mutating the outside directory"
 }, 120_000);
 
 const upgradeBin = process.env.FORGE_SKILLS_UPGRADE_BIN;
-test.skipIf(!upgradeBin)(
-  "built sync upgrades old generated copies without losing notes",
-  () => {
+describe.skipIf(!upgradeBin)("upgrade from main", () => {
+  test("built sync upgrades old generated copies without losing notes", () => {
     fixture((root, cli) => {
       expect(cli(["skills", "sync"], upgradeBin).status).toBe(0);
       const skill = join(root, ".agents/skills/open-pr/SKILL.md");
@@ -235,9 +234,8 @@ test.skipIf(!upgradeBin)(
       ).toBe("keep me\n");
       expect(cli(["skills", "sync", "--check"]).status).toBe(0);
     }, upgradeBin);
-  },
-  120_000,
-);
+  }, 120_000);
+});
 
 test("this repository's copied config syncs the current delivery skills", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-repo-skills-"));

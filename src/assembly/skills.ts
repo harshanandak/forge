@@ -86,6 +86,7 @@ function validate(
   } catch (error) {
     throw new Error(
       `Invalid companion path ${path}: ${error instanceof Error ? error.message : "cannot inspect path"}`,
+      { cause: error },
     );
   }
 }
