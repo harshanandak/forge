@@ -25,7 +25,9 @@ if (process.argv[2] === "--gh") {
   const fake = join(root, ".fake");
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([name]) =>
-      /^(PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP|HOME|USERPROFILE|COMSPEC)$/i.test(name),
+      /^(PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP|HOME|USERPROFILE|COMSPEC)$/i.test(
+        name,
+      ),
     ),
   );
   env.PATH = `${fake}${delimiter}${process.env.PATH ?? process.env.Path ?? ""}`;
