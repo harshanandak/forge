@@ -95,10 +95,9 @@ for (const name of [
   "forge-loop",
   "forge-intake",
   "forge-cut",
-  "build",
-  "open-pr",
-  "review",
-  "land",
+  "forge-build",
+  "forge-review",
+  "forge-land",
 ]) {
   const file = `.agents/skills/${name}/SKILL.md`;
   assert.ok(synced.written.includes(file), `skills sync wrote ${file}`);

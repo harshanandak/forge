@@ -2,7 +2,7 @@
   "schemaVersion": "forge.template/1",
   "id": "harsha/delivery",
   "version": "0.1.2",
-  "summary": "The owner's delivery loop over the work, memory and check blocks: forge-cut, build with receipts, review in bounded rounds, merge on a pinned head. Operations read block configuration; forge-loop routes work and forge-intake captures requests before delivery.",
+  "summary": "The owner's delivery loop over the work, memory and check blocks: forge-cut, forge-build with receipts and PR opening, forge-review in bounded rounds, forge-land on a pinned head. Operations read block configuration; forge-loop routes work and forge-intake captures requests before delivery.",
   "config": {
     "schemaVersion": "forge.config/1",
     "blocks": {

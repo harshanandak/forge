@@ -30,10 +30,9 @@ At session start, run `forge memory rules` unless a hook supplied it: `result.te
 | -------------------------------------------------- | -------------- |
 | 1 intake, vague intent or unresolved decisions     | `forge-intake` |
 | 2 frame, 3 slice after intake                      | `forge-cut`    |
-| 4 claim and workspace, 5 build, 6 check            | `build`        |
-| 7 open PR                                          | `open-pr`      |
-| 8 review triage, red PR on each wake               | `review`       |
-| 9 merge, 10 verify, 11 learn and re-plan; red base | `land`         |
+| 4 claim and workspace, 5 build, 6 check, 7 open PR | `forge-build`  |
+| 8 review triage, red PR on each wake               | `forge-review` |
+| 9 merge, 10 verify, 11 learn and re-plan; red base | `forge-land`   |
 
 ## Two links, never mixed
 
