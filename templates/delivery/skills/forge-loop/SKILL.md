@@ -19,14 +19,13 @@ Use `--fallback` only if a plain opening wait's link or watch step fails. Report
 At session start, run `forge memory rules` unless a hook supplied it: `result.text.text` is a pointer, never note text. Search memory before starting a task; use its search/show commands.
 
 1. Work: `forge issue ready --input '{}'` (ranked by priority label), `forge issue stale --input '{}'`, then `forge issue show --input '{"id":"<id>"}'` for your slice.
-2. PRs: `gh pr view <n> --json state,headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`.
+2. PRs: every harness wake runs `forge pr state <n>` and acts on `verdict`, never on wake text alone.
 3. Act only on what changed since your last push, then stop. Forge never watches: the harness wakes you.
 
 ## Roles
 
 - **Orchestrator**: intake, slicing, review triage, merge, verify, re-plan.
 - **Worker**: one build or one fix batch on one claimed slice. Stops at push. Never merges.
-- One agent may hold both on small work.
 
 ## Steps and their skill
 
@@ -43,6 +42,8 @@ At session start, run `forge memory rules` unless a hook supplied it: `result.te
 - **PR to issue** is Forge's: `forge issue link --input '{"id":"<slice>","relation":"delivers","url":"<pr url>"}'`. It needs the held claim, so the worker links before it releases.
 - **PR to agent thread**: follow `forge-build`'s opening handoff. Wakes act without re-arming event watches. After each push, run `forge agent wait <n>`; for `t3-tool`, skip its steps (already watching); otherwise do each step and follow `then`.
 
+Only exception: if T3 says it stopped watching after 15 minutes unreadable or 10 comment-only wakes, call `watch_pull_request` once more.
+
 ## Autonomy
 
 Proceed on reversible actions without asking. Stop only for:
@@ -55,7 +56,6 @@ Proceed on reversible actions without asking. Stop only for:
 
 - At most 3 workers at once, and 1 full-suite run at a time.
 - A worker silent for 10 minutes is stalled: read its state and steer it. Never start a second worker on the same slice.
-- Capabilities: orchestrator strong, implementer fast, reviewer other-family, housekeeping cheapest. The harness picks the model.
 
 ## Worker brief
 

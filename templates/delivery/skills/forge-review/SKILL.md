@@ -11,7 +11,7 @@ Before the heavy or critical slice's PR opens, read `forge route get review --te
 
 ## On each wake: conflicts, then threads, then CI
 
-1. `gh pr view <n> --json headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`. Establish last push SHA/time and round from the checkpoint before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push the new commit. Never rebase a pushed branch or force-push.
+1. Every harness wake runs `forge pr state <n>` and acts on `verdict`, never on wake text alone. Establish last push SHA/time and round from the checkpoint before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push the new commit. Never rebase a pushed branch or force-push.
 2. Get `<owner> <repo>` from `gh repo view --json owner,name`. List unresolved threads: `node <skill-dir>/list-threads.mjs <owner> <repo> <n>`. Read full comments and timestamps with `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate` before deciding.
 3. Triage only comments and checks newer than the last push. For an old thread the head already fixed, verify the source and close it with `Fixed in <sha>`. Other old threads wait for new evidence; their age alone never justifies resolving them.
 
@@ -24,7 +24,7 @@ Before the heavy or critical slice's PR opens, read `forge route get review --te
 
 ## Reply and resolve every answered thread
 
-Review text never enters a shell. Write the reply to a file with the editor tool. The companion reads it as data, sends JSON through `gh api ... --input` and only then resolves:
+Keep review text out of the shell; write replies to a file. The companion reads it as data, sends JSON through `gh api ... --input` and only then resolves:
 
 ```
 node <skill-dir>/reply-and-resolve.mjs <owner> <repo> <n> <comment id> <thread id> <reply file>

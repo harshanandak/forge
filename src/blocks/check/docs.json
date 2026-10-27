@@ -1,5 +1,9 @@
 {
   "operations": {
+    "pr.state": {
+      "title": "Read pull request state",
+      "summary": "Read current-head GitHub checks, threads, merge readiness and remarks. Prints one JSON line with verdict, news and an opaque next token; --since suppresses unchanged reads. Read failures exit nonzero without advancing the token."
+    },
     "check.gate": {
       "title": "Check merge evidence",
       "summary": "Read fresh GitHub pull request evidence and require a verified current-head PASS receipt, successful required checks, zero unresolved review threads, and no configured door paths. PASS exits 0; REFUSED exits 1 with reasons in result."

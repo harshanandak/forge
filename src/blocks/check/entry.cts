@@ -772,28 +772,15 @@ function doorMatches(path: string, glob: string): boolean {
 }
 
 const THREAD_QUERY =
-  "query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
+  "query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
 const CHECK_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$head:GitObjectID!,$endCursor:String){repository(owner:$owner,name:$repo){object(oid:$head){... on Commit{oid statusCheckRollup{contexts(first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{__typename ... on CheckRun{name status conclusion isRequired(pullRequestNumber:$n)} ... on StatusContext{context state isRequired(pullRequestNumber:$n)}}}}}}}}";
 
-async function gate(
-  services: Pick<
-    CheckServices,
-    "process" | "state" | "root" | "environment" | "clock"
-  > & { readonly crypto: CryptoService },
-  input: GateInput,
+function github(
+  services: Pick<CheckServices, "process" | "root" | "environment" | "clock">,
   config: CheckConfig,
   scope?: CheckInvocationScope,
-): Promise<GateResult> {
-  const reasons: { code: string; detail: string }[] = [];
-  const checks: { name: string; state: string }[] = [];
-  const doors: string[] = [];
-  let head = "",
-    receipt: string | undefined,
-    unresolvedThreads = 0;
-  const refuse = (code: string, detail: string) => {
-    reasons.push({ code, detail });
-  };
+) {
   const deadline = scope?.deadline ?? services.clock.now() + 60000;
   function active() {
     if (
@@ -801,15 +788,12 @@ async function gate(
       scope?.signal.aborted ||
       services.clock.now() >= deadline
     )
-      throw new Error("Gate invocation cancelled or expired");
+      throw new Error("GitHub invocation cancelled or expired");
   }
-  function invalid(): never {
-    throw new Error("Invalid GitHub evidence");
-  }
-  async function gh(
+  return async (
     args: readonly string[],
     allowedExits: readonly number[] = [0],
-  ): Promise<string> {
+  ): Promise<string> => {
     active();
     const executable = services.process.resolve("gh", services.environment);
     if (executable.kind !== "resolved")
@@ -837,6 +821,510 @@ async function gate(
     )
       throw new Error("GitHub command did not complete successfully");
     return result.stdout;
+  };
+}
+
+function githubConnection(
+  pages: unknown,
+  path: readonly string[],
+  head?: string,
+): Record<string, unknown>[] {
+  if (!Array.isArray(pages) || !pages.length)
+    throw new Error("Missing GitHub pages");
+  const nodes: Record<string, unknown>[] = [],
+    cursors = new Set<string>();
+  let total: number | undefined;
+  for (const [index, page] of pages.entries()) {
+    if (!isRecord(page) || "errors" in page)
+      throw new Error("Invalid GitHub page");
+    let value: unknown = page;
+    for (const key of path) value = isRecord(value) ? value[key] : undefined;
+    if (
+      head &&
+      (!isRecord(page.data) ||
+        !isRecord(page.data.repository) ||
+        !isRecord(page.data.repository.object) ||
+        page.data.repository.object.oid !== head)
+    )
+      throw new Error("Unbound head evidence");
+    if (
+      !isRecord(value) ||
+      !Array.isArray(value.nodes) ||
+      !isRecord(value.pageInfo)
+    )
+      throw new Error("Invalid GitHub connection");
+    const info = value.pageInfo;
+    if (
+      info.hasNextPage !== index < pages.length - 1 ||
+      !(info.endCursor === null || typeof info.endCursor === "string")
+    )
+      throw new Error("Incomplete GitHub pagination");
+    if (info.hasNextPage) {
+      if (
+        typeof info.endCursor !== "string" ||
+        !info.endCursor ||
+        cursors.has(info.endCursor)
+      )
+        throw new Error("Invalid GitHub cursor");
+      cursors.add(info.endCursor);
+    }
+    if (value.totalCount !== undefined || head) {
+      if (
+        !integer(value.totalCount) ||
+        value.totalCount < 0 ||
+        (total !== undefined && total !== value.totalCount)
+      )
+        throw new Error("Invalid GitHub count");
+      total = value.totalCount;
+    }
+    for (const node of value.nodes) {
+      if (!isRecord(node)) throw new Error("Invalid GitHub node");
+      nodes.push(node);
+    }
+  }
+  if (total !== undefined && total !== nodes.length)
+    throw new Error("Incomplete GitHub count");
+  return nodes;
+}
+
+async function prState(args: Call<{ pr: number; since?: string }>) {
+  const gh = github(
+    {
+      process: args.services.process,
+      root: args.services.files.root,
+      clock: { now: () => Date.now() },
+      environment: args.services.environment.select([
+        ...new Set([
+          ...args.config.environment,
+          "GH_TOKEN",
+          "GH_HOST",
+          "GH_ENTERPRISE_TOKEN",
+        ]),
+      ]),
+    },
+    args.config,
+    args,
+  );
+  function invalid(): never {
+    return failure(
+      "INPUT_CONFLICT",
+      "Pull request evidence could not be read completely; retry after repairing GitHub access or response",
+    );
+  }
+  const view = async () => {
+    const value: unknown = JSON.parse(
+      await gh([
+        "pr",
+        "view",
+        String(args.input.pr),
+        "--json",
+        "headRefOid,state,mergeable,mergeStateStatus,reviewDecision,isDraft,url",
+      ]),
+    );
+    if (
+      !isRecord(value) ||
+      typeof value.headRefOid !== "string" ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value.headRefOid) ||
+      !["OPEN", "CLOSED", "MERGED"].includes(String(value.state)) ||
+      !["MERGEABLE", "CONFLICTING", "UNKNOWN"].includes(
+        String(value.mergeable),
+      ) ||
+      ![
+        "CLEAN",
+        "HAS_HOOKS",
+        "BLOCKED",
+        "BEHIND",
+        "DIRTY",
+        "UNKNOWN",
+        "DRAFT",
+        "UNSTABLE",
+      ].includes(String(value.mergeStateStatus)) ||
+      !["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", ""].includes(
+        String(value.reviewDecision),
+      ) ||
+      typeof value.isDraft !== "boolean" ||
+      typeof value.url !== "string"
+    )
+      invalid();
+    return value;
+  };
+  const pr = await view(),
+    head = String(pr.headRefOid),
+    repository = /^https:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(
+      String(pr.url),
+    );
+  if (!repository || Number(repository[4]) !== args.input.pr) invalid();
+  type Cursor = {
+    scope: string;
+    head: string;
+    failed: string[];
+    passed: boolean;
+    time: string;
+    ids: string[];
+    conflicting: boolean;
+    threads: string[];
+    state: string;
+  };
+  let previous: Cursor | undefined;
+  if (args.input.since) {
+    try {
+      if (!/^(?:[0-9a-f]{4})+$/.test(args.input.since))
+        throw new Error("Invalid cursor encoding");
+      const value: unknown = JSON.parse(
+        args.input.since
+          .match(/.{4}/g)!
+          .map((unit) => String.fromCharCode(Number.parseInt(unit, 16)))
+          .join(""),
+      );
+      if (
+        !isRecord(value) ||
+        value.scope !== pr.url ||
+        !["head", "time", "state"].every(
+          (key) => typeof value[key] === "string",
+        ) ||
+        !["passed", "conflicting"].every(
+          (key) => typeof value[key] === "boolean",
+        ) ||
+        !["failed", "ids", "threads"].every(
+          (key) =>
+            Array.isArray(value[key]) &&
+            value[key].every((item: unknown) => typeof item === "string"),
+        )
+      )
+        throw new Error("Invalid cursor");
+      previous = value as Cursor;
+    } catch {
+      failure(
+        "INPUT_INVALID",
+        "Invalid --since token for this repository and pull request",
+      );
+    }
+  }
+  const api = async (query: string) =>
+    JSON.parse(
+      await gh([
+        "api",
+        "graphql",
+        "--paginate",
+        "--slurp",
+        "--hostname",
+        repository![1]!,
+        "-F",
+        `owner=${repository![2]}`,
+        "-F",
+        `repo=${repository![3]}`,
+        "-F",
+        `n=${args.input.pr}`,
+        "-F",
+        `head=${head}`,
+        "-f",
+        `query=${query}`,
+      ]),
+    ) as unknown;
+  const checkPages = await api(CHECK_QUERY);
+  if (Array.isArray(checkPages) && checkPages.length === 1) {
+    const page = checkPages[0];
+    if (
+      isRecord(page) &&
+      isRecord(page.data) &&
+      isRecord(page.data.repository) &&
+      isRecord(page.data.repository.object) &&
+      page.data.repository.object.statusCheckRollup === null
+    )
+      page.data.repository.object.statusCheckRollup = {
+        contexts: {
+          nodes: [],
+          totalCount: 0,
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      };
+  }
+  const contexts = githubConnection(
+    checkPages,
+    ["data", "repository", "object", "statusCheckRollup", "contexts"],
+    head,
+  );
+  const checks = contexts.map((value) => {
+    const run = value.__typename === "CheckRun",
+      name = run ? value.name : value.context;
+    const state = run
+      ? value.status === "COMPLETED"
+        ? value.conclusion
+        : value.status
+      : value.state;
+    if (
+      (!run && value.__typename !== "StatusContext") ||
+      (run &&
+        ![
+          "COMPLETED",
+          "QUEUED",
+          "IN_PROGRESS",
+          "WAITING",
+          "PENDING",
+          "REQUESTED",
+        ].includes(String(value.status))) ||
+      (!run &&
+        !["SUCCESS", "ERROR", "FAILURE", "PENDING", "EXPECTED"].includes(
+          String(state),
+        )) ||
+      typeof name !== "string" ||
+      !name ||
+      typeof value.isRequired !== "boolean" ||
+      typeof state !== "string" ||
+      ![
+        "SUCCESS",
+        "SKIPPED",
+        "NEUTRAL",
+        "FAILURE",
+        "ERROR",
+        "CANCELLED",
+        "TIMED_OUT",
+        "ACTION_REQUIRED",
+        "STARTUP_FAILURE",
+        "STALE",
+        "QUEUED",
+        "IN_PROGRESS",
+        "WAITING",
+        "PENDING",
+        "REQUESTED",
+        "EXPECTED",
+      ].includes(state)
+    )
+      invalid();
+    return {
+      name: String(name),
+      state: String(state),
+      required: value.isRequired,
+    };
+  });
+  const threadPages = await api(
+    THREAD_QUERY.replace("{repository(", "{viewer{login} repository(").replace(
+      "{reviewThreads(",
+      "{mergeQueueEntry{id} reviewThreads(",
+    ),
+  );
+  const threads = githubConnection(threadPages, [
+    "data",
+    "repository",
+    "pullRequest",
+    "reviewThreads",
+  ]).flatMap((node) => {
+    if (
+      typeof node.id !== "string" ||
+      !node.id ||
+      typeof node.isResolved !== "boolean"
+    )
+      invalid();
+    return node.isResolved ? [] : [String(node.id)];
+  });
+  const first = (threadPages as Record<string, unknown>[])[0]!,
+    data = first.data;
+  if (
+    !isRecord(data) ||
+    !isRecord(data.viewer) ||
+    typeof data.viewer.login !== "string" ||
+    !data.viewer.login ||
+    !isRecord(data.repository) ||
+    !isRecord(data.repository.pullRequest)
+  )
+    invalid();
+  const queued = data.repository.pullRequest.mergeQueueEntry;
+  if (queued !== null && (!isRecord(queued) || typeof queued.id !== "string"))
+    invalid();
+  const remarks: { id: string; time: string; author: string }[] = [];
+  for (const endpoint of [
+    `issues/${args.input.pr}/comments`,
+    `pulls/${args.input.pr}/reviews`,
+    `pulls/${args.input.pr}/comments`,
+  ]) {
+    const pages: unknown = JSON.parse(
+      await gh([
+        "api",
+        `repos/${repository![2]}/${repository![3]}/${endpoint}?per_page=100`,
+        "--paginate",
+        "--slurp",
+        "--hostname",
+        repository![1]!,
+      ]),
+    );
+    if (!Array.isArray(pages) || !pages.length || !pages.every(Array.isArray))
+      invalid();
+    for (const node of pages.flat() as unknown[]) {
+      if (!isRecord(node)) invalid();
+      if (endpoint.endsWith("/reviews") && node.state === "PENDING") continue;
+      const time = node.created_at ?? node.submitted_at;
+      if (
+        !(typeof node.id === "string" || integer(node.id)) ||
+        typeof time !== "string" ||
+        !Number.isFinite(Date.parse(time)) ||
+        (node.user !== null &&
+          (!isRecord(node.user) || typeof node.user.login !== "string"))
+      )
+        invalid();
+      const author = isRecord(node.user)
+        ? String(node.user.login)
+        : "[deleted]";
+      if (author !== data.viewer.login)
+        remarks.push({
+          id: `${endpoint}:${node.id}`,
+          time: new Date(time).toISOString(),
+          author,
+        });
+    }
+  }
+  const sameHead = previous?.head === head,
+    old = sameHead ? previous : undefined;
+  const failed = checks.filter((check) =>
+    [
+      "FAILURE",
+      "ERROR",
+      "CANCELLED",
+      "TIMED_OUT",
+      "ACTION_REQUIRED",
+      "STARTUP_FAILURE",
+      "STALE",
+    ].includes(check.state),
+  );
+  const pending = checks.some((check) =>
+    [
+      "QUEUED",
+      "IN_PROGRESS",
+      "WAITING",
+      "PENDING",
+      "REQUESTED",
+      "EXPECTED",
+    ].includes(check.state),
+  );
+  const required = checks.filter((check) => check.required),
+    passed =
+      (required.length ? required : checks).length > 0 &&
+      (required.length ? required : checks).every((check) =>
+        ["SUCCESS", "SKIPPED", "NEUTRAL"].includes(check.state),
+      );
+  const conflicting =
+    pr.mergeable === "CONFLICTING" ||
+    pr.mergeStateStatus === "DIRTY" ||
+    ((pr.mergeable === "UNKNOWN" || pr.mergeStateStatus === "UNKNOWN") &&
+      (previous?.conflicting ?? false));
+  const reasons = [
+    ...(conflicting ? ["conflicting"] : []),
+    ...(threads.length ? [`${threads.length} unresolved threads`] : []),
+    ...failed
+      .filter((check) => check.required)
+      .map((check) => `required check failed: ${check.name}`),
+    ...(pr.isDraft ? ["draft"] : []),
+    ...(pr.reviewDecision === "CHANGES_REQUESTED" ? ["changes requested"] : []),
+    ...(pr.mergeStateStatus === "BEHIND" ? ["branch behind"] : []),
+  ];
+  if (
+    pr.mergeStateStatus === "BLOCKED" &&
+    !pending &&
+    !failed.some((check) => check.required)
+  )
+    reasons.push("GitHub BLOCKED: missing required check or approval");
+  const verdict =
+    pr.state !== "OPEN"
+      ? "gone"
+      : reasons.length
+        ? "blocked"
+        : pending ||
+            queued !== null ||
+            pr.mergeStateStatus === "UNKNOWN" ||
+            pr.mergeable === "UNKNOWN" ||
+            !checks.length ||
+            !["CLEAN", "HAS_HOOKS"].includes(String(pr.mergeStateStatus))
+          ? "waiting"
+          : "ready";
+  const state = JSON.stringify([pr.state, verdict, reasons]),
+    news: string[] = [];
+  if (!previous || !sameHead) news.push("head moved");
+  news.push(
+    ...failed
+      .filter((check) => !old?.failed.includes(check.name))
+      .map((check) => `check failed: ${check.name}`),
+  );
+  if (passed && !old?.passed) news.push("required checks passed");
+  const fresh = remarks.filter(
+    (remark) =>
+      !previous ||
+      remark.time > previous.time ||
+      (remark.time === previous.time && !previous.ids.includes(remark.id)),
+  );
+  if (fresh.length)
+    news.push(
+      `${fresh.length} new remarks: ${[...new Set(fresh.map((remark) => remark.author))].sort().join(", ")}`,
+    );
+  if (conflicting && !previous?.conflicting) news.push("conflicting");
+  news.push(
+    ...threads
+      .filter((id) => !previous?.threads.includes(id))
+      .map((id) => `unresolved thread: ${id}`),
+  );
+  if (state !== previous?.state && !news.length) news.push("state changed");
+  const time = remarks.reduce(
+    (latest, remark) => (remark.time > latest ? remark.time : latest),
+    previous?.time ?? "",
+  );
+  const ids = [
+    ...new Set([
+      ...(previous?.time === time ? previous.ids : []),
+      ...remarks
+        .filter((remark) => remark.time === time)
+        .map((remark) => remark.id),
+    ]),
+  ].sort();
+  const next = JSON.stringify({
+    scope: pr.url,
+    head,
+    failed: checks.length
+      ? failed.map((check) => check.name).sort()
+      : (old?.failed ?? []),
+    passed: checks.length ? passed : (old?.passed ?? false),
+    time,
+    ids,
+    conflicting,
+    threads: threads.sort(),
+    state,
+  })
+    .split("")
+    .map((unit) => unit.charCodeAt(0).toString(16).padStart(4, "0"))
+    .join("");
+  const after = await view();
+  if (Object.keys(pr).some((key) => after[key] !== pr[key])) invalid();
+  return args.input.since && !news.length
+    ? null
+    : {
+        pr: args.input.pr,
+        head,
+        verdict,
+        reasons,
+        news,
+        end: verdict === "ready" || verdict === "gone",
+        next,
+      };
+}
+
+async function gate(
+  services: Pick<
+    CheckServices,
+    "process" | "state" | "root" | "environment" | "clock"
+  > & { readonly crypto: CryptoService },
+  input: GateInput,
+  config: CheckConfig,
+  scope?: CheckInvocationScope,
+): Promise<GateResult> {
+  const reasons: { code: string; detail: string }[] = [];
+  const checks: { name: string; state: string }[] = [];
+  const doors: string[] = [];
+  let head = "",
+    receipt: string | undefined,
+    unresolvedThreads = 0;
+  const refuse = (code: string, detail: string) => {
+    reasons.push({ code, detail });
+  };
+  const gh = github(services, config, scope);
+  function invalid(): never {
+    throw new Error("Invalid GitHub evidence");
   }
   async function view() {
     const value: unknown = JSON.parse(
@@ -956,80 +1444,40 @@ async function gate(
         `query=${CHECK_QUERY}`,
       ]),
     );
-    if (!Array.isArray(checkPages) || !checkPages.length) invalid();
-    let checkCount = 0;
-    let expectedChecks: number | undefined;
-    const checkCursors = new Set<string>();
-    for (const [index, page] of checkPages.entries()) {
+    for (const value of githubConnection(
+      checkPages,
+      ["data", "repository", "object", "statusCheckRollup", "contexts"],
+      head,
+    )) {
+      if (!isRecord(value) || typeof value.isRequired !== "boolean") invalid();
+      const run = value.__typename === "CheckRun";
+      if (!run && value.__typename !== "StatusContext") invalid();
+      const name = run ? value.name : value.context;
+      const state =
+        run && value.status === "COMPLETED"
+          ? value.conclusion
+          : (value.state ?? value.status);
       if (
-        !isRecord(page) ||
-        "errors" in page ||
-        !isRecord(page.data) ||
-        !isRecord(page.data.repository) ||
-        !isRecord(page.data.repository.object)
+        typeof name !== "string" ||
+        !name ||
+        typeof state !== "string" ||
+        !state
       )
         invalid();
-      const commit = page.data.repository.object;
-      if (commit.oid !== head || !isRecord(commit.statusCheckRollup)) invalid();
-      const contexts = commit.statusCheckRollup.contexts;
+
       if (
-        !isRecord(contexts) ||
-        !Array.isArray(contexts.nodes) ||
-        !integer(contexts.totalCount) ||
-        contexts.totalCount < 0 ||
-        !isRecord(contexts.pageInfo)
-      )
-        invalid();
-      expectedChecks ??= contexts.totalCount;
-      if (contexts.totalCount !== expectedChecks) invalid();
-      const info = contexts.pageInfo;
-      if (
-        info.hasNextPage !== index < checkPages.length - 1 ||
-        !(info.endCursor === null || typeof info.endCursor === "string")
-      )
-        invalid();
-      if (info.hasNextPage) {
-        if (
-          typeof info.endCursor !== "string" ||
-          !info.endCursor ||
-          checkCursors.has(info.endCursor)
-        )
-          invalid();
-        checkCursors.add(info.endCursor);
-      }
-      for (const value of contexts.nodes) {
-        if (!isRecord(value) || typeof value.isRequired !== "boolean")
-          invalid();
-        const run = value.__typename === "CheckRun";
-        if (!run && value.__typename !== "StatusContext") invalid();
-        const name = run ? value.name : value.context;
-        const state =
-          run && value.status === "COMPLETED"
-            ? value.conclusion
-            : (value.state ?? value.status);
-        if (
-          typeof name !== "string" ||
-          !name ||
-          typeof state !== "string" ||
-          !state
-        )
-          invalid();
-        checkCount++;
-        if (
-          required === "github-required"
-            ? value.isRequired
-            : required.includes(name)
-        ) {
-          checks.push({ name, state });
-          if (state !== "SUCCESS" || (run && value.status !== "COMPLETED"))
-            refuse(
-              "REQUIRED_CHECK_FAILED",
-              `Required check ${name} is not SUCCESS`,
-            );
-        }
+        required === "github-required"
+          ? value.isRequired
+          : required.includes(name)
+      ) {
+        checks.push({ name, state });
+        if (state !== "SUCCESS" || (run && value.status !== "COMPLETED"))
+          refuse(
+            "REQUIRED_CHECK_FAILED",
+            `Required check ${name} is not SUCCESS`,
+          );
       }
     }
-    if (checkCount !== expectedChecks) invalid();
     if (required !== "github-required")
       for (const name of required) {
         if (!checks.some((check) => check.name === name))
@@ -1058,49 +1506,19 @@ async function gate(
         `query=${THREAD_QUERY}`,
       ]),
     );
-    if (!Array.isArray(pages) || pages.length === 0) invalid();
-    const cursors = new Set<string>();
-    for (const [index, page] of pages.entries()) {
+    for (const node of githubConnection(pages, [
+      "data",
+      "repository",
+      "pullRequest",
+      "reviewThreads",
+    ])) {
       if (
-        !isRecord(page) ||
-        "errors" in page ||
-        !isRecord(page.data) ||
-        !isRecord(page.data.repository) ||
-        !isRecord(page.data.repository.pullRequest)
+        typeof node.id !== "string" ||
+        !node.id ||
+        typeof node.isResolved !== "boolean"
       )
         invalid();
-      const threads = page.data.repository.pullRequest.reviewThreads;
-      if (
-        !isRecord(threads) ||
-        !Array.isArray(threads.nodes) ||
-        !isRecord(threads.pageInfo)
-      )
-        invalid();
-      const info = threads.pageInfo;
-      if (
-        info.hasNextPage !== index < pages.length - 1 ||
-        !(info.endCursor === null || typeof info.endCursor === "string")
-      )
-        invalid();
-      if (info.hasNextPage) {
-        if (
-          typeof info.endCursor !== "string" ||
-          !info.endCursor ||
-          cursors.has(info.endCursor)
-        )
-          invalid();
-        cursors.add(info.endCursor);
-      }
-      for (const node of threads.nodes) {
-        if (
-          !isRecord(node) ||
-          typeof node.id !== "string" ||
-          !node.id ||
-          typeof node.isResolved !== "boolean"
-        )
-          invalid();
-        if (!node.isResolved) unresolvedThreads++;
-      }
+      if (!node.isResolved) unresolvedThreads++;
     }
     if (unresolvedThreads)
       refuse(
@@ -1218,6 +1636,7 @@ type Call<T> = import("../../contract/author.ts").HandlerCall<T> & {
   readonly services: CatalogServices;
 };
 const operations = {
+  "pr.state": prState,
   async "check.gate"(args: Call<GateInput>) {
     const services = args.services;
     return await gate(

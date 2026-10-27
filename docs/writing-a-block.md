@@ -50,6 +50,9 @@ into a digest before executing code.
 `operations` maps `noun.verb` names to declarations. For `hello.say`:
 
 - `input` and `output` name the JSON schemas for the handler's argument and return.
+  An output schema may set `"x-cli-output": "value"` to print the returned JSON
+  directly, with `null` producing no stdout. Failures still print the error envelope;
+  MCP and hooks keep their normal envelopes.
 - `context: stateless` requires no project state or lease.
 - `timeoutMs: 1000` declares a one-second handler budget, adjustable in config.
 - `effects: []` declares no external effects; admission alone grants no effects.

@@ -1,0 +1,15 @@
+{
+  "x-cli-output": "value",
+  "type": ["object", "null"],
+  "additionalProperties": false,
+  "required": ["pr", "head", "verdict", "reasons", "news", "end", "next"],
+  "properties": {
+    "pr": { "type": "integer", "minimum": 1 },
+    "head": { "type": "string" },
+    "verdict": { "enum": ["ready", "waiting", "blocked", "gone"] },
+    "reasons": { "type": "array", "items": { "type": "string" } },
+    "news": { "type": "array", "items": { "type": "string" } },
+    "end": { "type": "boolean" },
+    "next": { "type": "string" }
+  }
+}

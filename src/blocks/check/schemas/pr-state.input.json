@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pr"],
+  "properties": {
+    "pr": { "type": "integer", "minimum": 1 },
+    "since": { "type": "string", "minLength": 1, "maxLength": 262144 }
+  }
+}

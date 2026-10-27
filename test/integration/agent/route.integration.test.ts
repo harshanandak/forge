@@ -235,6 +235,7 @@ test("agent wait and cleanup render guidance without contacting GitHub", () => {
       then: value.then,
     });
     expect(value.then).toMatch(/fresh.*state.*act/i);
+    expect(value.then).toContain("forge pr state 42");
     expect(value.then).toContain(
       "Run forge agent wait 42 again after each push",
     );

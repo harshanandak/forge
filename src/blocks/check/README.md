@@ -1,5 +1,13 @@
 # Declared-command execution
 
+`forge pr state <n> [--since <token>]` reads GitHub through `gh`, pages pinned-head
+checks, review threads and all three remark feeds, then verifies the head again.
+It prints one JSON line with `ready`, `waiting`, `blocked` or `gone`, reasons, news,
+`end` and an opaque repository/PR-scoped `next` token. Unchanged reads with `--since`
+print nothing. Read failures exit nonzero. The caller carries the token; no state is stored.
+Readiness requires CLEAN or HAS_HOOKS and complete nonempty check evidence; BLOCKED
+cannot distinguish missing checks from missing approvals. The receipt-based gate still decides merge.
+
 `createCheck(services)` is the check engine. Its consumer supplies the project's effective
 `commands`, a positive `timeoutMs`, and `maxOutputBytes` (1–262144 per output stream).
 Command strings describe one executable invocation. For shell composition, declare a

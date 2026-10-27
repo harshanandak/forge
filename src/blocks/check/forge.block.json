@@ -7,6 +7,7 @@
   "entry": "entry.cjs",
   "configSchema": "schemas/config.json",
   "nouns": {
+    "pr": { "interface": "1.0.0" },
     "check": {
       "interface": "1.0.0"
     }
@@ -38,6 +39,22 @@
     }
   ],
   "operations": {
+    "pr.state": {
+      "input": "schemas/pr-state.input.json",
+      "output": "schemas/pr-state.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": [
+        "external:process",
+        "external:network",
+        "files:read",
+        "environment:read"
+      ],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental",
+      "args": ["pr"]
+    },
     "check.gate": {
       "input": "schemas/gate.input.json",
       "output": "schemas/gate.output.json",

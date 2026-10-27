@@ -30,4 +30,4 @@ No machine-local data: no drive paths, usernames or links to files only on your 
 
 1. **PR to issue (Forge)**, while holding the claim: `forge issue link --input '{"id":"<slice>","relation":"delivers","url":"<pr url>"}'`.
 2. Release: `forge issue release --input '{"id":"<slice>"}'`. Never merge. The orchestrator uses `forge-review`, then `forge-land`.
-3. Last action: run `forge agent wait <n>` once, do each step, then follow `then`, including any instruction to wait again after each push for the new head. Use `--fallback` only if a link or watch step fails. Forge stores neither link nor watch.
+3. Last action: the owning session runs `forge agent wait <n>` once, does each step, then follows `then`. A worker hands the PR to that session: T3 refuses watches from subagent threads. Use `--fallback` only if a link or watch step fails. Forge stores neither link nor watch.

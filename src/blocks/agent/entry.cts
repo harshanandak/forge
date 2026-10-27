@@ -88,8 +88,8 @@ module.exports = {
         : input.done || input.sweep
           ? "Finish cleanup after following these steps."
           : kind === "t3-tool"
-            ? "End the turn; T3 wakes this thread on PR events. On wake read fresh PR state and act."
-            : `Run the command in the foreground; then read fresh PR state and act. Run forge agent wait ${input.pr} again after each push; a new head needs a new wait.`;
+            ? `End the turn; T3 wakes this thread on PR events. On wake run forge pr state ${input.pr} for fresh state and act.`
+            : `Run the command in the foreground; then run forge pr state ${input.pr} for fresh state and act. Run forge agent wait ${input.pr} again after each push; a new head needs a new wait.`;
     return { kind, steps, then };
   },
   "agent.guard"(call: AgentCall) {
