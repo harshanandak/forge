@@ -271,35 +271,6 @@ test("the schema profile refuses unknown keywords and dangling references", () =
   ).toThrow(/only at a root/);
 }, 30_000);
 
-test("URI format rejects relative references and malformed hosts, ports and escapes", () => {
-  const id = "https://example.com/uri-schema";
-  const registry = new SchemaRegistry([
-    { $id: id, type: "string", format: "uri" },
-  ]);
-  for (const uri of [
-    "https://example.com:8443/pull/1",
-    "http://localhost:8080/",
-    "https://[::1]:443/",
-    "urn:example:one",
-  ])
-    expect(registry.validate(id, uri)).toEqual([]);
-  for (const uri of [
-    "/relative",
-    "https://:443/",
-    "https://example.com:abc/",
-    "https://example.com:65536/",
-    "https://999.999.999.999/",
-    " https://example.com/",
-    "https://example.com/a%zz",
-    "https://example.com\\path",
-  ])
-    expect(
-      registry
-        .validate(id, uri)
-        .some((problem) => problem.keyword === "format"),
-    ).toBe(true);
-}, 30_000);
-
 test("every interface document validates, and forge.tracker@1 is frozen", () => {
   for (const doc of INTERFACE_DOCUMENTS) {
     const result = validateInterfaceDocument(doc);

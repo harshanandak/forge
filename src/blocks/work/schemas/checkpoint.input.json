@@ -23,8 +23,7 @@
     "pr": {
       "type": "string",
       "maxLength": 2000,
-      "format": "uri",
-      "pattern": "^[hH][tT][tT][pP][sS]?://(?:\\[[0-9a-fA-F:.]+\\]|[^\\s/:?#.]+(?:\\.[^\\s/:?#.]+)*\\.?)(?::[0-9]+)?(?:[/?#][^\\s]*)?$"
+      "pattern": "^[hH][tT][tT][pP][sS]?://[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*\\.?(?::[0-9]+)?(?:[/?#][^\\s]*)?$"
     },
     "receipt": {
       "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemId"

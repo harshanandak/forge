@@ -29,8 +29,8 @@ Standing rules: <adopted rules; layer 1 passes the memory packet>
 
 ## Red, then green
 
-1. Read `forge issue resume <slice>` and Touches before editing; later comments override the body. Read `forge issue comments <slice>` once before acting if a checkpoint exists (earlier direction) or `more` is true. forge-cut risk: light 0-1, standard 2-3, heavy 4-5.
-2. Every slice goes red then green. Name a check whose expected value is independent of the implementation. Run the new assertion on trunk first; require that failure, not setup or unrelated errors.
+1. Read `forge issue resume <slice>` and every Touches file before editing; later comments override the body. Read `forge issue comments <slice>` once before acting if a checkpoint exists or `more` is true. forge-cut risk: light 0-1, standard 2-3, heavy 4-5.
+2. Every slice goes red then green. Name a check whose expected value is independent of the implementation. Run the new assertion on trunk first; it must fail on that assertion, not setup or unrelated errors.
 3. `forge check run --input '{"checks":["<name>"]}'`. Expect exit 1 and `ok:false` for FAIL (exit 2 for INCOMPLETE or NOT_EXECUTED); keep the full `result` receipt and its id even on nonzero exit. PASS alone exits 0. Do not chain red checks with `&&` or discard their output on failure.
 4. Make the smallest fix, rerun to green and keep its receipt id. Use small conventional commits.
 

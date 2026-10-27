@@ -5,11 +5,11 @@ description: "Triage a PR on each harness wake: conflicts, threads, CI; fix in-b
 
 # forge-review
 
-## Fresh-context proof for heavy slices
+## Heavy proof
 
-Before a heavy or critical PR, read `forge route get review --text`. Count the review with `forge issue call --input '{"id":"<slice>","role":"review"}'`; LIMIT_REACHED stops the intent. Retry REVISION_CONFLICT. Use the route for a fresh-context review of the diff, saved trunk/head scenario output and every acceptance item. Save findings and evidence on the slice, with `single-family` if returned; never claim another family.
+Before heavy or critical PRs, read `forge route get review --text`. Count it with `forge issue call --input '{"id":"<slice>","role":"review"}'`; LIMIT_REACHED stops the intent. Retry REVISION_CONFLICT. Use the route to review the diff, saved trunk/head scenario output and every acceptance item in fresh context. Save findings/evidence on the slice, with `single-family` if returned; never claim another family.
 
-Each push: checkpoint `review` SHA/time, round in `next`, before replies.
+Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA/time, round in `next`, before replies.
 
 ## On each wake: conflicts, then threads, then CI
 
@@ -19,10 +19,10 @@ Each push: checkpoint `review` SHA/time, round in `next`, before replies.
 
 ## Each finding
 
-1. Check it against the source. A bot can be wrong; cite the line that shows it.
+1. Check the source; bots can be wrong. Cite the line that shows it.
 2. Fix only P0, P1 findings on lines this PR changed, inside the slice's done boundary.
 3. Everything else (P2, P3, or outside the boundary) is filed, not fixed. Search open issues for the symptom, then comment on a match or `forge issue create --input '{"title":"...","kind":"task","labels":["review-deferred","p2"],"parent":"<epic>","body":"from <pr url> thread <id>"}'`.
-4. Batch thread and CI fixes and commit. Run `forge-build`'s Final-head proof section on that commit, then send one push wave.
+4. Batch and commit thread/CI fixes. Run `forge-build`'s Final-head proof section on that commit, then send one push wave.
 
 ## Reply and resolve every answered thread
 

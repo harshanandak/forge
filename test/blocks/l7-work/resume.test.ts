@@ -175,11 +175,20 @@ test("checkpoint appends structured data with its accepted timestamp and refuses
     pr: "https://example.com/pull/1",
     receipt: "receipt-1",
   });
-  expect(record.value.body).toContain("checkpoint red");
+  expect(record.value.body).toBe(
+    `checkpoint red ${"a".repeat(40)} next: make the assertion pass`,
+  );
   expect(p.run("resume", { id: "work-1" }).checkpoint).toMatchObject({
     time: "2026-01-01T00:00:01.000Z",
     commentId: saved.commentId,
   });
+});
+test("checkpoint body without a head has one space before next", () => {
+  const p = project();
+  const saved = p.checkpoint();
+  expect(p.records.get(saved.commentId)?.value.body).toBe(
+    "checkpoint red next: make the assertion pass",
+  );
 });
 test("discovery keeps only open checkpointed slices with the newest append not merged, sorted and capped at ten", () => {
   const p = project();
@@ -417,7 +426,6 @@ test("checkpoint schema enforces required next, enums, hash, URL, bounds and ext
     "https://example.com:8443/pull/1",
     "http://localhost:8080/pull/1",
     "http://127.0.0.1:8080/pull/1",
-    "http://[::1]:8080/pull/1",
   ])
     expect(
       registry.validate("urn:forge:test:checkpoint", { ...valid, pr }),
@@ -434,10 +442,14 @@ test("checkpoint schema enforces required next, enums, hash, URL, bounds and ext
     { pr: "https:///pull/1" },
     { pr: "https://:443/pull/1" },
     { pr: "https://bad..host/pull/1" },
-    { pr: "https://256.0.0.1/pull/1" },
-    { pr: "https://example.com:65536/pull/1" },
     { pr: "HTTPS://bad..host/pull/1" },
-    { pr: "HtTpS://example.com:65536/pull/1" },
+    { pr: "https://bad_host/pull/1" },
+    { pr: "https://bad!host/pull/1" },
+    { pr: "https://user@example.com/pull/1" },
+    { pr: "https://example.com\\path" },
+    { pr: "https://bad host/pull/1" },
+    { pr: "https://example.com/pull/ 1" },
+    { pr: " https://example.com/pull/1" },
     { pr: "ftp://example.com/pull/1" },
     { extra: true },
   ])

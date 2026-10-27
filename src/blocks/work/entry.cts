@@ -725,7 +725,7 @@ const operations: Operations<WorkOperations> = {
       commentId,
       {
         id,
-        body: `checkpoint ${input.step} ${input.head ?? ""} next: ${input.next}`,
+        body: `checkpoint ${input.step}${input.head ? ` ${input.head}` : ""} next: ${input.next}`,
         checkpoint,
       },
       0,

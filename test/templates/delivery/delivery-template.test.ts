@@ -38,13 +38,17 @@ test("restart guidance reads older direction and every review push checkpoints w
   for (const text of [build, resume]) {
     expect(text).toContain("forge issue comments <slice>");
     expect(text).toContain("`more` is true");
-    expect(text).toContain("earlier direction");
     expect(text).toContain("once before acting if a checkpoint exists");
     expect(text.toLowerCase()).toContain("later comments override the body");
   }
+  expect(build).toContain("and every Touches file before editing");
+  expect(build).toContain(
+    "it must fail on that assertion, not setup or unrelated errors",
+  );
+  expect(resume).toContain("earlier direction");
   const review = skill("forge-review");
   expect(review).toContain(
-    "Each push: checkpoint `review` SHA/time, round in `next`, before replies.",
+    "Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA/time, round in `next`, before replies.",
   );
   expect(review.indexOf("Each push:")).toBeLessThan(
     review.indexOf("For conflicts,"),
