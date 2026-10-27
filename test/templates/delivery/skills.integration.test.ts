@@ -213,29 +213,50 @@ test("built sync rejects adapter escapes without mutating the outside directory"
 
 const upgradeBin = process.env.FORGE_SKILLS_UPGRADE_BIN;
 describe.skipIf(!upgradeBin)("upgrade from main", () => {
-  test("built sync upgrades old generated copies without losing notes", () => {
+  test("built sync retires main's slice skill and keeps user notes", () => {
     fixture((root, cli) => {
       expect(cli(["skills", "sync"], upgradeBin).status).toBe(0);
-      const skill = join(root, ".agents/skills/open-pr/SKILL.md");
-      const old = readFileSync(skill, "utf8");
-      expect(old).toContain("GPT-6.1-Sol");
-      writeFileSync(
-        join(root, ".agents/skills/forge-loop/NOTES.md"),
-        "keep me\n",
-      );
+      for (const dir of adapterDirs) {
+        expect(
+          readFileSync(join(root, dir, "slice/SKILL.md"), "utf8"),
+        ).toContain(GENERATED_MARKER);
+        writeFileSync(join(root, dir, "slice/NOTES.md"), "keep me\n");
+      }
       expect(cli(["skills", "sync", "--check"]).status).toBe(1);
       expect(cli(["skills", "sync"]).status).toBe(0);
-      const updated = readFileSync(skill, "utf8");
-      expect(updated).not.toBe(old);
-      expect(updated).toContain(
-        "Implemented: <display name> (<model id>, reasoning <effort>) via <harness>",
-      );
-      expect(
-        existsSync(join(root, ".agents/skills/forge-loop/agents/openai.yaml")),
-      ).toBe(true);
-      expect(
-        readFileSync(join(root, ".agents/skills/forge-loop/NOTES.md"), "utf8"),
-      ).toBe("keep me\n");
+      for (const dir of adapterDirs) {
+        expect(existsSync(join(root, dir, "slice/SKILL.md"))).toBe(false);
+        expect(readFileSync(join(root, dir, "slice/NOTES.md"), "utf8")).toBe(
+          "keep me\n",
+        );
+        const cut = readFileSync(join(root, dir, "forge-cut/SKILL.md"), "utf8");
+        for (const rule of [
+          "400 changed lines",
+          "above 800",
+          "deletions exceed twice the additions",
+          "churn over 518 lines +2",
+          "over 10 files +2",
+          "`core` or `blocks` +1",
+          "light 0-1",
+          "standard 2-3",
+          "heavy 4-5",
+          "forge companions: framing.md",
+        ])
+          expect(cut).toContain(rule);
+        expect(existsSync(join(root, dir, "forge-cut/framing.md"))).toBe(true);
+        const intake = readFileSync(
+          join(root, dir, "forge-intake/SKILL.md"),
+          "utf8",
+        );
+        for (const rule of [
+          "one session",
+          "300 lines",
+          "prototype/<name>",
+          "verdict",
+          "comment on the intent issue",
+        ])
+          expect(intake).toContain(rule);
+      }
       expect(cli(["skills", "sync", "--check"]).status).toBe(0);
     }, upgradeBin);
   }, 120_000);

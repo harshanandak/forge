@@ -122,14 +122,14 @@ const npm = project({
   "package-lock.json": '{"lockfileVersion":3}',
 });
 const synced = npm.cli(["skills", "sync"]).result;
-for (const name of ["build", "forge-loop", "forge-intake", "slice"])
+for (const name of ["build", "forge-loop", "forge-intake", "forge-cut"])
   assert.ok(
     synced.written.includes(`.agents/skills/${name}/SKILL.md`),
     `skills sync renders ${name} from the installed package`,
   );
 assert.match(
-  readFileSync(join(npm.root, ".agents/skills/slice/SKILL.md"), "utf8"),
-  /Target 800 changed lines/,
+  readFileSync(join(npm.root, ".agents/skills/forge-cut/SKILL.md"), "utf8"),
+  /Aim at 400 changed lines/,
 );
 assert.deepEqual(npm.cli(["check", "list"]).result.commands, ["test"]);
 const receipt = npm.cli(["check", "run"]).result;

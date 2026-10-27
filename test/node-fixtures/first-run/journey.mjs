@@ -94,7 +94,7 @@ const synced = cli(["skills", "sync"]).result;
 for (const name of [
   "forge-loop",
   "forge-intake",
-  "slice",
+  "forge-cut",
   "build",
   "open-pr",
   "review",
