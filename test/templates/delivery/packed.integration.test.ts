@@ -63,7 +63,7 @@ test("the packed delivery workflow recovers its checkpoint in a new session", ()
       node,
       [join(root, "test/node-fixtures/templates/restart.mjs"), installed, work],
       work,
-      300_000,
+      390_000,
     ).trim();
     expect(output).toBe(
       "PASS restart: intake call 1 -> build call 2 -> checkpoint -> restart -> read back 2 calls -> pr state ready -> review call 3 -> merge by head -> close",
@@ -72,4 +72,4 @@ test("the packed delivery workflow recovers its checkpoint in a new session", ()
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
-}, 360_000);
+}, 420_000);

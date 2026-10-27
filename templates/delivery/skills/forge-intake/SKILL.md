@@ -18,7 +18,7 @@ Facts are the agent's job: look them up in code, tools or primary sources, or di
 
 Before dispatching any subagent, run `forge route get <role> --text` for its role and use the line it prints to select the dispatch. These are intake's dispatch rules.
 
-Before each dispatch, run `forge issue call --input '{"id":"<intent>","role":"<role>"}'` with that role; on LIMIT_REACHED stop and report.
+Before each dispatch, run `forge issue call --input '{"id":"<intent>","role":"<role>"}'` with that role; on LIMIT_REACHED stop and report. Retry REVISION_CONFLICT.
 
 ## Prototype when execution is the missing fact
 

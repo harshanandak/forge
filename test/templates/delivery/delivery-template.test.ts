@@ -39,6 +39,7 @@ test("intake counts its routed call before dispatch", () => {
   expect(text).toContain("LIMIT_REACHED");
   expect(text).toContain("intake's dispatch rules");
   expect(text).toContain("Before each dispatch, run `forge issue call");
+  expect(text).toContain("Retry REVISION_CONFLICT");
 }, 30_000);
 
 test("every harness wake reads the shared verdict and the owning session holds watches", async () => {
@@ -127,6 +128,7 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
             "retry only `resolveReviewThread`",
             "gh repo view --json owner,name",
             "Other old threads wait for new evidence",
+            "Retry REVISION_CONFLICT",
           ])
             expect(text).toContain(phrase);
         }
