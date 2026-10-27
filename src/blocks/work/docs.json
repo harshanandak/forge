@@ -65,6 +65,11 @@
       "title": "Issue stale",
       "summary": "Open issues with an expired, unreleased lease."
     },
+    "issue.call": {
+      "title": "Issue call",
+      "summary": "Count a call on the root intent; refuse after 60 calls or 30 hours and return its bounded timebox.",
+      "examples": [{ "input": { "id": "demo-1", "role": "build" } }]
+    },
     "issue.comments": {
       "title": "Issue comments",
       "summary": "Read issue comments.",

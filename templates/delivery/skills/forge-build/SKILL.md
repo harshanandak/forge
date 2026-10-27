@@ -11,7 +11,9 @@ Every wake runs `forge pr state <n>` and acts on `verdict`.
 
 ## Worker brief
 
-Before delegating, fill every field; an empty field blocks the call:
+Before each call run `forge issue call --input '{"id":"<slice>","role":"<role>"}'`; LIMIT_REACHED ends the intent: report, start nothing. Retry REVISION_CONFLICT.
+
+Fill every field before delegating:
 
 ```
 Goal: <slice id and end state; read forge issue show for the spec>
@@ -19,7 +21,7 @@ Scope: <Owns and done boundary>
 Context: <Touches / Needs, adopted decision titles and checkpoint>
 Acceptance: <observable pass predicates>
 Verify: <named red/green check, risk band, scenario and final-head checks>
-Timebox: at most 45 minutes per call; report the checkpoint at expiry.
+Timebox: use `forge issue call`'s timeboxMinutes (at most 45 minutes); report the checkpoint at stopBy.
 Forbidden: pass named environment variables only, never the whole environment or secret values; stop at push; never merge or merge base unless asked.
 Report: <head, receipts, saved output and not checked>
 Standing rules: <adopted rules; layer 1 passes the memory packet>
@@ -49,4 +51,4 @@ Three proof levels, scaled to risk:
 
 ## Final-head proof
 
-Read `forge check list --input '{}'`. Run configured `receiptChecks` on the final tree: `forge check run --input '{"checks":["<name>"]}'`, supplying every name. If empty, select at least one relevant declared check. Run the slice's named regression too; CI carries remaining project checks. Require exit 0, `ok:true` and receipt status PASS. Read it back with `forge check show --input '{"id":"<receipt>"}'`; its subject must equal your head. A successful show reads evidence; it does not mean stored checks passed.
+Read `forge check list --input '{}'`. Run every configured `receiptChecks` name on the final tree: `forge check run --input '{"checks":["<name>"]}'`; if empty, pick a relevant declared check. Run the slice regression. Require exit 0, `ok:true` and receipt status PASS. Read back with `forge check show --input '{"id":"<receipt>"}'`; its subject must equal your head. Successful show alone is not a PASS.

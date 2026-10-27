@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "role"],
+  "properties": {
+    "id": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemId"
+    },
+    "role": {
+      "enum": [
+        "intake",
+        "plan",
+        "cut",
+        "build",
+        "review",
+        "land",
+        "learn",
+        "rate",
+        "merge",
+        "judge",
+        "verify"
+      ]
+    },
+    "route": { "type": "string", "maxLength": 200 }
+  }
+}

@@ -18,6 +18,8 @@ Facts are the agent's job: look them up in code, tools or primary sources, or di
 
 Before dispatching any subagent, run `forge route get <role> --text` for its role and use the line it prints to select the dispatch. This is intake's one dispatch rule.
 
+Run `forge issue call --input '{"id":"<intent>","role":"<role>"}'` with that role; on LIMIT_REACHED stop and report.
+
 ## Prototype when execution is the missing fact
 
 A question only running code can answer gets a prototype. Name the question first. Spend at most one session and 300 lines on a `prototype/<name>` branch or in a scratch folder, with no tests or polish. It ends with the verdict, evidence (output, timing or screenshot) and branch pointer as a comment on the intent issue; for a scratch folder, name its source branch and folder. A validated snippet may be inlined in the slice issue. A prototype never merges; port its decision into a slice.

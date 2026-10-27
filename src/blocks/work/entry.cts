@@ -35,6 +35,16 @@ type WorkConfig = {
   readonly claimTtlSeconds?: number;
 };
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "issue.call": readonly [
+    ItemRef & { readonly role: string; readonly route?: string },
+    ItemRef & {
+      readonly commentId: string;
+      readonly call: number;
+      readonly left: number;
+      readonly timeboxMinutes: number;
+      readonly stopBy: string;
+    },
+  ];
   readonly "issue.ready": readonly [
     WorkListInput,
     { items: readonly TrackerItem[] },
@@ -573,6 +583,55 @@ const operations: Operations<WorkOperations> = {
     const commentId = `${prefix}${state.list(prefix).length + 1}`;
     persist(state, commentId, { id, body: input.body }, 0);
     return { id: ids.shown(id), commentId };
+  },
+  "issue.call": ({ input, services, config }) => {
+    const state = client(services);
+    const ids = idsFor(state, config);
+    let id = ids.stored(input.id);
+    const visited = new Set<string>();
+    for (;;) {
+      if (visited.has(id)) fail("INPUT_CONFLICT", "Issue parent cycle");
+      visited.add(id);
+      const parent = stored(get(state, id)).parent;
+      if (parent === undefined) break;
+      id = parent;
+    }
+    const prefix = `comment:${id}:`;
+    const comments = appended(state, prefix);
+    const calls = comments.filter(
+      (record) => typeof (record.value as { call?: unknown }).call === "number",
+    );
+    const first = calls[0];
+    const window = 30 * 3600_000;
+    const stop = (first ? Date.parse(first.updatedAt) : state.now()) + window;
+    const minutes = Math.floor((stop - state.now()) / 60_000);
+    if (calls.length >= 60 || minutes < 1)
+      fail(
+        "LIMIT_REACHED",
+        `Intent ${ids.shown(id)} is limited to 60 calls and 30 hours`,
+      );
+    const call = calls.length + 1;
+    const commentId = `${prefix}${comments.length + 1}`;
+    const written = persist(
+      state,
+      commentId,
+      {
+        id,
+        body: `call ${call} ${input.role}${input.route === undefined ? "" : ` ${input.route}`}`,
+        call,
+      },
+      0,
+    );
+    return {
+      id: ids.shown(id),
+      commentId,
+      call,
+      left: 60 - call,
+      timeboxMinutes: Math.min(45, minutes),
+      stopBy: new Date(
+        first ? stop : Date.parse(written.updatedAt) + window,
+      ).toISOString(),
+    };
   },
   "issue.comments": ({ input, services, config }) => {
     const state = client(services);

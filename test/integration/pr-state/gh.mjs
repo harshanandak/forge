@@ -98,7 +98,7 @@ if (args[0] === "pr" && args[1] === "view" && fields === "headRefOid,state") {
             more: !!state.incomplete,
           },
         ];
-  } else if (args[1]?.includes("/pulls/7/comments")) {
+  } else if (/\/pulls\/\d+\/comments\?/.test(args[1] ?? "")) {
     requireProjection(
       "[.[]|{id:(.id|tostring),author:(.user.login//(.user|tostring)),time:.created_at}]|@json",
     );
