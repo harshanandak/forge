@@ -186,7 +186,9 @@ test("forge-cut replaces marked slice copies while keeping user notes in both ad
       );
       const cut = readFileSync(join(folder, "forge-cut/SKILL.md"), "utf8");
       expect(lint(cut)).toEqual([]);
-      const create = new RegExp("forge issue create --input '([^']+)'").exec(cut);
+      const create = new RegExp("forge issue create --input '([^']+)'").exec(
+        cut,
+      );
       expect(create).not.toBeNull();
       expect(JSON.parse(create![1]!)).toMatchObject({
         parent: "<intent id>",
