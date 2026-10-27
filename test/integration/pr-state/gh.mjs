@@ -3,6 +3,23 @@ import { readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const state = JSON.parse(readFileSync("fixture.json", "utf8"));
 if (state.failRead) process.exit(1);
+const pr = Number(state.pr ?? process.env.FAKE_GH_PR ?? 7);
+const head = () => {
+  const value = state.head ?? process.env.FAKE_GH_HEAD ?? "a";
+  return value.length === 1 ? value.repeat(40) : value;
+};
+const requested =
+  args[0] === "pr" && ["view", "checks"].includes(args[1])
+    ? args[2]
+    : args[0] === "api" && args[1] === "graphql"
+      ? args.find((arg) => /^n=/.test(arg))?.slice(2)
+      : /\/pulls\/(\d+)(?:\/|\?|$)/.exec(args[1] ?? "")?.[1];
+if ((args[0] === "pr" || args[0] === "api") && Number(requested) !== pr) {
+  console.error(
+    `fake gh: expected pull request ${pr}, got ${requested ?? "none"}`,
+  );
+  process.exit(1);
+}
 let result;
 let paged = false;
 const fields = args[args.indexOf("--json") + 1];
@@ -15,7 +32,7 @@ if (args[0] === "pr" && args[1] === "view" && fields === "headRefOid,state") {
   delete state.afterState;
   writeFileSync("fixture.json", JSON.stringify(state));
   result = {
-    headRefOid: (state.head ?? "a").repeat(40),
+    headRefOid: head(),
     state: state.state ?? "OPEN",
   };
 } else if (args[0] === "pr" && args[1] === "checks") {
@@ -59,13 +76,13 @@ if (args[0] === "pr" && args[1] === "view" && fields === "headRefOid,state") {
     );
     const comments = (state.issuePages ?? [state.comments ?? []]).flat();
     result = {
-      head: (state.head ?? "a").repeat(40),
+      head: head(),
       state: state.state ?? "OPEN",
       mergeable: state.mergeable ?? "MERGEABLE",
       merge: state.merge ?? "CLEAN",
       review: state.review ?? "APPROVED",
       draft: state.draft ?? false,
-      url: "https://github.com/org/repo/pull/7",
+      url: state.url ?? `https://github.com/org/repo/pull/${pr}`,
       remarks: [
         ...comments.map((item) => metadata(item, "issue", "created_at")),
         ...(state.reviews ?? [])
@@ -98,7 +115,7 @@ if (args[0] === "pr" && args[1] === "view" && fields === "headRefOid,state") {
             more: !!state.incomplete,
           },
         ];
-  } else if (args[1]?.includes("/pulls/7/comments")) {
+  } else if (/\/pulls\/\d+\/comments\?/.test(args[1] ?? "")) {
     requireProjection(
       "[.[]|{id:(.id|tostring),author:(.user.login//(.user|tostring)),time:.created_at}]|@json",
     );

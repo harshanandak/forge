@@ -68,10 +68,10 @@ else {
   chmodSync(join(fake, "gh"), 0o755);
 }
 afterAll(() => rmSync(root, { recursive: true, force: true }));
-function run(since?: string) {
+function run(since?: string, pr = 7) {
   return spawnSync(
     node,
-    [bin, "pr", "state", "7", ...(since ? ["--since", since] : [])],
+    [bin, "pr", "state", String(pr), ...(since ? ["--since", since] : [])],
     { cwd: root, env, encoding: "utf8", windowsHide: true, timeout: 45000 },
   );
 }
@@ -101,6 +101,53 @@ function quiet(since: string) {
   expect(result.status).toBe(0);
   expect(result.stdout).toBe("");
 }
+
+test("the fake rejects another PR in every read route", () => {
+  for (const pr of [7, 23]) {
+    scenario({ pr });
+    const wrong = pr + 1;
+    for (const args of [
+      ["pr", "view", String(wrong), "--json", "headRefOid,state"],
+      ["pr", "checks", String(wrong), "--json", "name,bucket"],
+      [
+        "api",
+        `repos/org/repo/pulls/${wrong}/comments?per_page=100`,
+        "--jq",
+        "{}",
+      ],
+      ["api", "graphql", "-F", `n=${wrong}`, "--jq", "{}"],
+    ]) {
+      const result = spawnSync(node, [join(fake, "gh.mjs"), ...args], {
+        cwd: root,
+        env,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10_000,
+      });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(
+        `expected pull request ${pr}, got ${wrong}`,
+      );
+    }
+  }
+});
+
+test("built CLI reads the configured PR with its full commit head", () => {
+  const head = "0123456789abcdef".repeat(2) + "01234567";
+  scenario({ pr: 23, head });
+  const result = run(undefined, 23);
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({
+    pr: 23,
+    head,
+    verdict: "ready",
+    end: true,
+  });
+  const wrong = run(undefined, 7);
+  expect(wrong.status).not.toBe(0);
+  expect(wrong.stdout).not.toContain('"next"');
+});
 test("built CLI emits one raw state line, suppresses duplicates, and reports changed failures", () => {
   scenario({});
   const first = run();

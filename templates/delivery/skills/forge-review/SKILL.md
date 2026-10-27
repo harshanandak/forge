@@ -7,13 +7,13 @@ description: "Triage a PR on each harness wake: conflicts, threads, CI; fix in-b
 
 ## Fresh-context proof for heavy slices
 
-Before the heavy or critical slice's PR opens, read `forge route get review --text`. Use its returned route for a fresh-context review of the diff, saved trunk/head scenario output and every acceptance item. Copy `single-family` into the review evidence when that is what `forge route get review` returns; do not claim another family. Record findings and evidence on the slice.
+Before a heavy or critical PR, read `forge route get review --text`. Count the review with `forge issue call --input '{"id":"<slice>","role":"review"}'`; LIMIT_REACHED stops the intent. Retry REVISION_CONFLICT. Use the route for a fresh-context review of the diff, saved trunk/head scenario output and every acceptance item. Save findings and evidence on the slice, with `single-family` if returned; never claim another family.
 
 ## On each wake: conflicts, then threads, then CI
 
 1. Every wake runs `forge pr state <n>` and acts on `verdict`. Establish last push SHA/time and round from the checkpoint before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push the new commit. Never rebase a pushed branch or force-push.
 2. Get `<owner> <repo>` from `gh repo view --json owner,name`. List unresolved threads: `node <skill-dir>/list-threads.mjs <owner> <repo> <n>`. Read full comments and timestamps with `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate` before deciding.
-3. Triage only comments and checks newer than the last push. For an old thread the head already fixed, verify the source and close it with `Fixed in <sha>`. Other old threads wait for new evidence; their age alone never justifies resolving them.
+3. Triage only comments and checks newer than the last push. Verify an old thread is fixed at head before closing with `Fixed in <sha>`. Other old threads wait for new evidence; age never justifies resolution.
 
 ## Each finding
 

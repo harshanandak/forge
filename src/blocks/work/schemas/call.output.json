@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "commentId", "call", "left", "timeboxMinutes", "stopBy"],
+  "properties": {
+    "id": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemId"
+    },
+    "commentId": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "call": { "type": "integer", "minimum": 1, "maximum": 60 },
+    "left": { "type": "integer", "minimum": 0, "maximum": 59 },
+    "timeboxMinutes": { "type": "integer", "minimum": 1, "maximum": 45 },
+    "stopBy": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/common.json#/$defs/Timestamp"
+    }
+  }
+}

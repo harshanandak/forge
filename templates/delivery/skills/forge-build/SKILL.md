@@ -11,7 +11,9 @@ Every wake runs `forge pr state <n>` and acts on `verdict`.
 
 ## Worker brief
 
-Before delegating, fill every field; an empty field blocks the call:
+Before each call run `forge issue call --input '{"id":"<slice>","role":"<role>"}'`; LIMIT_REACHED ends the intent: report, start nothing. Retry REVISION_CONFLICT.
+
+Fill every field before delegating; an empty field blocks the call:
 
 ```
 Goal: <slice id and end state; read forge issue show for the spec>
@@ -19,7 +21,7 @@ Scope: <Owns and done boundary>
 Context: <Touches / Needs, adopted decision titles and checkpoint>
 Acceptance: <observable pass predicates>
 Verify: <named red/green check, risk band, scenario and final-head checks>
-Timebox: at most 45 minutes per call; report the checkpoint at expiry.
+Timebox: `forge issue call`'s timeboxMinutes (at most 45 minutes); stop and report the checkpoint when timeboxMinutes expire, never later than stopBy.
 Forbidden: pass named environment variables only, never the whole environment or secret values; stop at push; never merge or merge base unless asked.
 Report: <head, receipts, saved output and not checked>
 Standing rules: <adopted rules; layer 1 passes the memory packet>
@@ -27,7 +29,7 @@ Standing rules: <adopted rules; layer 1 passes the memory packet>
 
 ## Red, then green
 
-1. Explore before editing: `forge issue show --input '{"id":"<slice>"}'`, then every file under Touches. Use forge-cut's risk bands: light 0-1, standard 2-3, heavy 4-5; carry the band into the proof.
+1. Before editing, read `forge issue show --input '{"id":"<slice>"}'` and every file under Touches. Carry forge-cut's risk band into proof: light 0-1, standard 2-3, heavy 4-5.
 2. Every slice goes red then green. Name a check that can fail for the right reason: its expected value is independent of the implementation. Add the new assertion first, run against trunk, and verify it fails on that assertion, not setup or an unrelated failure.
 3. `forge check run --input '{"checks":["<name>"]}'`. Expect exit 1 and `ok:false` for FAIL (exit 2 for INCOMPLETE or NOT_EXECUTED); keep the full `result` receipt and its id even on nonzero exit. PASS alone exits 0. Do not chain red checks with `&&` or discard their output on failure.
 4. Make the smallest change that turns it green. Run it again; keep that receipt id too. Commit in small conventional commits.
@@ -49,4 +51,4 @@ Three proof levels, scaled to risk:
 
 ## Final-head proof
 
-Read `forge check list --input '{}'`. Run configured `receiptChecks` on the final tree: `forge check run --input '{"checks":["<name>"]}'`, supplying every name. If empty, select at least one relevant declared check. Run the slice's named regression too; CI carries remaining project checks. Require exit 0, `ok:true` and receipt status PASS. Read it back with `forge check show --input '{"id":"<receipt>"}'`; its subject must equal your head. A successful show reads evidence; it does not mean stored checks passed.
+Read `forge check list --input '{}'`. Run all configured `receiptChecks` on the final tree: `forge check run --input '{"checks":["<name>"]}'`; if empty, pick a relevant declared check. Run the slice regression; CI carries remaining project checks. Require exit 0, `ok:true` and receipt status PASS. Read `forge check show --input '{"id":"<receipt>"}'`; its subject must equal your head. Show alone is not PASS.

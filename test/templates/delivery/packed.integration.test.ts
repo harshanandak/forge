@@ -52,3 +52,24 @@ test("the delivery template ships in the npm package and runs the project's own 
     rmSync(work, { recursive: true, force: true });
   }
 }, 300_000);
+
+test("the packed delivery workflow recovers its checkpoint in a new session", () => {
+  const work = mkdtempSync(join(tmpdir(), "forge-packed-restart-"));
+  try {
+    const node = Bun.which("node");
+    if (!node) throw new Error("Node runtime required");
+    const installed = join(packedConsumer(), "node_modules/forge-workflow");
+    const output = run(
+      node,
+      [join(root, "test/node-fixtures/templates/restart.mjs"), installed, work],
+      work,
+      390_000,
+    ).trim();
+    expect(output).toBe(
+      "PASS restart: intake call 1 -> build call 2 -> checkpoint -> restart -> read back 2 calls -> pr state ready -> review call 3 -> merge by head -> close",
+    );
+    console.log(output);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}, 420_000);

@@ -30,6 +30,21 @@ const SKILLS = [
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
+test("intake counts its routed call before dispatch", () => {
+  const text = readFileSync(
+    join(repo, "templates/delivery/skills/forge-intake/SKILL.md"),
+    "utf8",
+  );
+  expect(text).toContain("forge issue call");
+  expect(text).toContain("LIMIT_REACHED");
+  expect(text).toContain("intake's dispatch rules");
+  expect(text).toContain("Before each dispatch, run `forge issue call");
+  expect(text).toContain("Retry REVISION_CONFLICT");
+  expect(text.indexOf("intake's dispatch rules")).toBeGreaterThan(
+    text.indexOf("Retry REVISION_CONFLICT"),
+  );
+}, 30_000);
+
 test("every harness wake reads the shared verdict and the owning session holds watches", async () => {
   await withDelivery(async (root, call, lint) => {
     await call("skills.sync");
@@ -104,6 +119,7 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
             );
           for (const phrase of [
             "forge route get review",
+            "forge issue call",
             "single-family",
             "conflicts, then threads, then CI",
             "Fixed in <sha>",
@@ -114,6 +130,8 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
             "merge base locally",
             "retry only `resolveReviewThread`",
             "gh repo view --json owner,name",
+            "Other old threads wait for new evidence",
+            "Retry REVISION_CONFLICT",
           ])
             expect(text).toContain(phrase);
         }
@@ -123,6 +141,8 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
             "standard 2-3",
             "heavy 4-5",
             "45 minutes",
+            "forge issue call",
+            "stopBy",
             "stop at push",
             "named environment variables only",
             "trunk and head",
@@ -130,6 +150,10 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
             "new assertion",
             "built artifact",
             "independent",
+            "an empty field blocks the call",
+            "stop and report the checkpoint when timeboxMinutes expire",
+            "never later than stopBy",
+            "CI carries remaining project checks",
           ])
             expect(text).toContain(phrase);
         if (name === "forge-land")

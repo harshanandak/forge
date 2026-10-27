@@ -161,6 +161,17 @@
       "callers": ["agent", "human"],
       "stability": "experimental"
     },
+    "issue.call": {
+      "input": "schemas/call.input.json",
+      "output": "schemas/call.output.json",
+      "context": "project",
+      "timeoutMs": 15000,
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
     "issue.comments": {
       "input": "schemas/ItemRef.json",
       "output": "schemas/records.json",
