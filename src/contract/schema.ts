@@ -407,7 +407,7 @@ export class SchemaRegistry {
         this.#pattern(value as string);
         return;
       case "format":
-        if (value !== "date-time") {
+        if (value !== "date-time" && value !== "uri") {
           fail(
             `format ${JSON.stringify(value)} is outside the supported profile`,
           );
@@ -594,6 +594,12 @@ export class SchemaRegistry {
       }
       if (schema.format === "date-time" && !isRfc3339DateTime(value)) {
         add("format", "must be an RFC 3339 date-time with real field values");
+      }
+      if (
+        schema.format === "uri" &&
+        (!URL.canParse(value) || /[\s\\]|%(?![\da-f]{2})/iu.test(value))
+      ) {
+        add("format", "must be an absolute URI");
       }
     }
 

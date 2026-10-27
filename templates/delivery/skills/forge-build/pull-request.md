@@ -4,13 +4,13 @@ Print the optional Stop guard with `forge agent guard`; completion words outside
 
 ## Claim and workspace
 
-1. Threaded chats: call MCP `t3_thread_configuration` once (no args) and set `FORGE_SESSION=t3:<threadId>` for every forge command, even after a harness switch. Workers you launch keep their own task session. At session start, run `forge memory rules` unless a hook supplied it: `result.text.text` is a pointer, never note text. Search memory before starting a task; use its search/show commands. Separate CLI workers: `export FORGE_SESSION=<slice>-worker` before claiming; re-dispatches reuse it.
+1. Threaded chats: call MCP `t3_thread_configuration` once (no args) and set `FORGE_SESSION=t3:<threadId>` for every forge command, even after a harness switch. Workers you launch keep their own task session. At session start, run `forge memory rules` unless a hook supplied it: `result.text.text` is a pointer, never note text. Search memory before starting a task; use its search/show commands. Separate CLI workers: PowerShell `$env:FORGE_SESSION="<slice>-worker"` before claiming; re-dispatches reuse it.
 2. `forge issue claim --input '{"id":"<slice>"}'`. Refused because someone holds it: steer the live worker, never start a second on that slice. Renew during long work: `forge issue renew --input '{"id":"<slice>"}'`.
 3. Use the supplied isolated worktree, or ask the harness for one with dependencies installed; otherwise `git worktree add <path> -b <branch> origin/main`, then the project's install.
 
 ## Checkpoints
 
-Run `forge issue checkpoint --input '{"id":"<slice>","step":"<step>","branch":"<branch>","worktree":"<path>","next":"<next action>"}'` after the claim (`claimed`), red (`red`), green (`green`) and push (`pushed`), and when a timebox expires (`stopped`). Include `head`, `pr` and `receipt` when available. `next` is required, 1-300 characters. Write the checkpoint before stopping; report it with receipts and remaining work.
+Run `forge issue checkpoint <slice> --step <step> --branch "<branch>" --worktree "<path>" --next "<next action>"` after the claim (`claimed`), red (`red`), green (`green`) and push (`pushed`), and when a timebox expires (`stopped`). Include `--head`, `--pr` and `--receipt` when available. `next` is required, 1-300 characters. Write the checkpoint before stopping; report it with receipts and remaining work.
 
 ## Push and open
 

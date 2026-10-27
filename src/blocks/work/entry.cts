@@ -796,7 +796,7 @@ const operations: Operations<WorkOperations> = {
         left: Math.max(0, 60 - budget.used),
         stopBy: new Date(budget.stop).toISOString(),
       },
-      comments: comments.slice(0, 20),
+      comments: comments.slice(-20),
       more: comments.length > 20,
     };
   },

@@ -249,7 +249,7 @@ test("discovery shows live and stale holder sessions, omits released claims, and
   expect(p.run("resume", { id: "work-2" }).claim).toBeUndefined();
   expect(p.run("resume", { id: "work-3" }).claim).toBeUndefined();
 });
-test("detail returns scope, delivers and the first twenty later comments with more, without writing", () => {
+test("detail returns scope, delivers and the newest twenty later comments in append order with more, without writing", () => {
   const p = project();
   p.run("comment", { id: "work-1", body: "before" });
   const saved = p.checkpoint();
@@ -287,7 +287,7 @@ test("detail returns scope, delivers and the first twenty later comments with mo
   expect(result.delivers).toEqual([p.records.get("link:work-1:1")!]);
   expect(result.comments).toHaveLength(20);
   expect(result.comments.map((row) => row.value.body)).toEqual(
-    Array.from({ length: 20 }, (_, n) => `direction ${n + 1}`),
+    Array.from({ length: 20 }, (_, n) => `direction ${n + 2}`),
   );
   expect([...p.records.values()]).toEqual(before);
 });
@@ -299,6 +299,19 @@ test("without a checkpoint all comments are returned, and exactly twenty does no
   expect(result.checkpoint).toBeUndefined();
   expect(result.comments).toHaveLength(20);
   expect(result.more).toBe(false);
+});
+test("without a checkpoint overflow preserves the latest owner direction in append order", () => {
+  const p = project();
+  for (let n = 1; n <= 21; n++)
+    p.run("comment", { id: "work-1", body: `owner direction ${n}` });
+  const before = structuredClone([...p.records.values()]);
+  const result = p.run("resume", { id: "work-1" });
+  expect(result.checkpoint).toBeUndefined();
+  expect(result.comments.map((row) => row.value.body)).toEqual(
+    Array.from({ length: 20 }, (_, n) => `owner direction ${n + 2}`),
+  );
+  expect(result.more).toBe(true);
+  expect([...p.records.values()]).toEqual(before);
 });
 test("detail shares root-intent calls and original accepted deadline, including expired and unused budgets", () => {
   const p = project(1000);
@@ -365,12 +378,30 @@ test("checkpoint schema enforces required next, enums, hash, URL, bounds and ext
     next: "continue",
   };
   expect(registry.validate("urn:forge:test:checkpoint", valid)).toEqual([]);
+  for (const pr of [
+    "https://example.com:8443/pull/1",
+    "http://localhost:8080/pull/1",
+    "http://127.0.0.1:8080/pull/1",
+    "http://[::1]:8080/pull/1",
+  ])
+    expect(
+      registry.validate("urn:forge:test:checkpoint", { ...valid, pr }),
+    ).toEqual([]);
   for (const change of [
+    { branch: "" },
+    { worktree: "" },
     { next: "" },
     { next: "x".repeat(301) },
     { step: "unknown" },
     { head: "x".repeat(40) },
     { pr: "not-a-url" },
+    { pr: "https://example.com:abc/pull/1" },
+    { pr: "https:///pull/1" },
+    { pr: "https://:443/pull/1" },
+    { pr: "https://bad..host/pull/1" },
+    { pr: "https://256.0.0.1/pull/1" },
+    { pr: "https://example.com:65536/pull/1" },
+    { pr: "ftp://example.com/pull/1" },
     { extra: true },
   ])
     expect(

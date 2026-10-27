@@ -9,9 +9,11 @@ description: "Triage a PR on each harness wake: conflicts, threads, CI; fix in-b
 
 Before a heavy or critical PR, read `forge route get review --text`. Count the review with `forge issue call --input '{"id":"<slice>","role":"review"}'`; LIMIT_REACHED stops the intent. Retry REVISION_CONFLICT. Use the route for a fresh-context review of the diff, saved trunk/head scenario output and every acceptance item. Save findings and evidence on the slice, with `single-family` if returned; never claim another family.
 
+Each push: checkpoint `review` SHA/time, round in `next`, before replies.
+
 ## On each wake: conflicts, then threads, then CI
 
-1. Every wake runs `forge pr state <n>` and acts on `verdict`. Establish last push SHA/time and round from the checkpoint before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push the new commit. Never rebase a pushed branch or force-push.
+1. Every wake runs `forge pr state <n>` and acts on `verdict`. Read checkpoint's last push SHA/time and round before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push. Never rebase a pushed branch or force-push.
 2. Get `<owner> <repo>` from `gh repo view --json owner,name`. List unresolved threads: `node <skill-dir>/list-threads.mjs <owner> <repo> <n>`. Read full comments and timestamps with `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate` before deciding.
 3. Triage only comments and checks newer than the last push. Verify an old thread is fixed at head before closing with `Fixed in <sha>`. Other old threads wait for new evidence; age never justifies resolution.
 
@@ -20,7 +22,7 @@ Before a heavy or critical PR, read `forge route get review --text`. Count the r
 1. Check it against the source. A bot can be wrong; cite the line that shows it.
 2. Fix only P0, P1 findings on lines this PR changed, inside the slice's done boundary.
 3. Everything else (P2, P3, or outside the boundary) is filed, not fixed. Search open issues for the symptom, then comment on a match or `forge issue create --input '{"title":"...","kind":"task","labels":["review-deferred","p2"],"parent":"<epic>","body":"from <pr url> thread <id>"}'`.
-4. Batch thread and CI fixes and commit. Run `forge-build`'s Final-head proof section on that commit, then send one push wave. Checkpoint `review` SHA/time/round, then reply.
+4. Batch thread and CI fixes and commit. Run `forge-build`'s Final-head proof section on that commit, then send one push wave.
 
 ## Reply and resolve every answered thread
 
