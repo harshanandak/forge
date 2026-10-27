@@ -7,7 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  statSync,
+  lstatSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -73,17 +73,14 @@ function fixture(
 
 const adapterDirs = [".claude/skills", ".agents/skills"];
 function hashes(root: string) {
-  return adapterDirs.flatMap((dir) =>
-    readdirSync(join(root, dir), { recursive: true })
-      .filter((file) => statSync(join(root, dir, String(file))).isFile())
-      .map((file) => [
-        dir,
-        file,
-        createHash("sha256")
-          .update(readFileSync(join(root, dir, String(file))))
-          .digest("hex"),
-      ]),
-  );
+  return readdirSync(root, { recursive: true })
+    .filter((file) => lstatSync(join(root, String(file))).isFile())
+    .map((file) => [
+      file,
+      createHash("sha256")
+        .update(readFileSync(join(root, String(file))))
+        .digest("hex"),
+    ]);
 }
 
 test("built sync manages marked skills and companions in both adapter directories", () => {
