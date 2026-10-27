@@ -5,7 +5,7 @@ description: "Claim and build one slice with red/green receipts, risk-scaled pro
 
 # forge-build
 
-Read [pull-request.md](pull-request.md) first for session, claim and workspace setup, then after final-head proof to push, open, link and release.
+Read [pull-request.md](pull-request.md) for setup and PR handoff.
 
 ## Worker brief
 

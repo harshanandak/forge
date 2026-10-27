@@ -1,5 +1,19 @@
 {
   "operations": {
+    "agent.wait": {
+      "title": "Render PR wait or cleanup steps",
+      "summary": "Run `forge agent wait <n>` after the PR opens and after each push; do each step, then follow `then`. `--sweep` on session resume; `--done` at land, abandon or handback.",
+      "examples": [
+        { "command": "forge agent wait 42 --text" },
+        { "command": "forge agent wait 42 --done" },
+        { "command": "forge agent wait --sweep" }
+      ]
+    },
+    "agent.guard": {
+      "title": "Render a done-claim guard configuration",
+      "summary": "Print a mergeable Stop hook using the installed package companion. Name an adapter or detect exactly one harness. Install the printed entry yourself, preserving existing settings.",
+      "examples": [{ "command": "forge agent guard codex --text" }]
+    },
     "route.get": {
       "title": "Get a role's agent route",
       "summary": "Use the current model at high effort and standard speed. Detect the harness when exactly one adapter matches its environment names, or use current when none or multiple match. Max requires ~/.forge/routing.yaml.",

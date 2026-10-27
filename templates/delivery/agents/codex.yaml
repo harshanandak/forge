@@ -1,3 +1,6 @@
 id: codex
 skills: .agents/skills
 detect: [CODEX_THREAD_ID]
+prWatch: gh-checks
+guard:
+  { kind: hook, file: ~/.codex/hooks.json, stop: Stop, command: PreToolUse }

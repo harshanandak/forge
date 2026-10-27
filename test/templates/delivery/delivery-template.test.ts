@@ -426,7 +426,39 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-review"]).not.toContain("gh api graphql");
     for (const name of SKILLS) expect(text[name]).not.toContain("templates/");
     expect(text["forge-build"]).toContain('"relation":"delivers"');
-    expect(text["forge-build"]).toContain("`link_pull_request`");
+    expect(text["forge-build"]?.match(/`forge agent wait <n>`/g)).toHaveLength(
+      1,
+    );
+    expect(text["forge-build"]).toMatch(
+      /forge issue release[\s\S]*Last action: run `forge agent wait <n>`/,
+    );
+    expect(text["forge-build"]).toContain(
+      "git worktree add <path> -b <branch> origin/main",
+    );
+    expect(text["forge-build"]).toContain("then the project's install");
+    expect(text["forge-review"]).toContain("read fresh PR state and act");
+    for (const name of ["forge-review", "forge-loop"]) {
+      expect(text[name]).toContain(
+        "After each push, run `forge agent wait <n>`",
+      );
+      expect(text[name]).toContain("`t3-tool`, skip its steps");
+    }
+    expect(text["forge-loop"]).toContain(
+      "Only when resuming a session with existing PR work",
+    );
+    expect(text["forge-loop"]).toContain(
+      "Use `--fallback` only if a plain opening wait's link or watch step fails.",
+    );
+    expect(text["forge-loop"]).toContain(
+      "Report and skip a failed `--sweep` or `--done` step.",
+    );
+    expect(text["forge-loop"]).toContain("act without re-arming event watches");
+    expect(text["forge-loop"]).toContain("unmerged close or handback");
+    for (const name of ["forge-land", "forge-loop"])
+      expect(text[name]).toContain("forge agent wait <n> --done");
+    expect(
+      existsSync(join(root, ".agents/skills/forge-build/done-claim.mjs")),
+    ).toBe(true);
     // The executable gate owns the merge conditions and returns the pinned head and receipt.
     expect(text["forge-land"]).toContain("forge check gate");
     expect(text["forge-land"]).toContain("head moved means run the gate again");

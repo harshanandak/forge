@@ -38,9 +38,9 @@ Require `true`. On `reply <id> posted; resolve failed`, retry only `resolveRevie
 2. Red on base too (`gh run list --branch <base>`)? File or comment on the issue and label it. For a confirmed flake on base or head, Rerun up to 1 time: one fresh build with `gh run rerun <run> --failed`; another failure blocks handoff. Never fix an unrelated base bug in this PR.
 3. Red only here: fix it like a finding, in the same push wave.
 
-## Round budget and wait
+## Round budget and handoff
 
 - One round is one triage pass plus one push. Log it: `forge issue comment --input '{"id":"<slice>","body":"review round <k>: fixed ..., filed ...; push <sha> at <time>"}'`.
 - At most 2 rounds. After round 2, a new blocker means split or re-plan with the orchestrator instead of a round 3.
-- Inside T3 Code use `watch_pull_request`; elsewhere `gh pr checks <n> --watch` is run by the harness wake. Review never runs its own sleep loop.
+- On wake, read fresh PR state and act; no sleep loop. After each push, run `forge agent wait <n>`; for `t3-tool`, skip its steps (already watching); otherwise do each step and follow `then`.
 - When checks are green and the thread list prints nothing, hand over to `forge-land`.

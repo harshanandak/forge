@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "pr": { "type": "integer", "minimum": 1 },
+    "done": { "type": "boolean" },
+    "sweep": { "type": "boolean" },
+    "fallback": { "type": "boolean" }
+  },
+  "anyOf": [
+    { "required": ["pr"] },
+    { "required": ["sweep"], "properties": { "sweep": { "const": true } } }
+  ],
+  "not": {
+    "anyOf": [
+      { "required": ["done", "sweep"] },
+      { "required": ["done", "fallback"] },
+      { "required": ["sweep", "fallback"] }
+    ]
+  }
+}

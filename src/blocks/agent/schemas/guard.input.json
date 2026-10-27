@@ -1,0 +1,5 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": { "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" } }
+}

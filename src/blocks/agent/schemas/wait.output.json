@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "steps", "then"],
+  "properties": {
+    "kind": { "enum": ["t3-tool", "gh-checks"] },
+    "steps": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "then": { "type": "string", "minLength": 1 }
+  }
+}
