@@ -121,10 +121,10 @@ test("built sync manages marked skills and companions in both adapter directorie
     );
     expect(hashes(root)).toEqual(before);
     expect(sync().status).toBe(0);
-    expect(readFileSync(target, "utf8")).toBe(original.get(target));
+    expect(readFileSync(target, "utf8")).toBe(original.get(target)!);
     rmSync(target);
     expect(sync().status).toBe(0);
-    expect(readFileSync(target, "utf8")).toBe(original.get(target));
+    expect(readFileSync(target, "utf8")).toBe(original.get(target)!);
     for (const dir of adapterDirs) {
       expect(readFileSync(join(root, dir, "forge-loop/NOTES.md"), "utf8")).toBe(
         "user notes\n",
