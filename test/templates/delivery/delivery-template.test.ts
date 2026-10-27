@@ -426,7 +426,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-review"]).not.toContain("gh api graphql");
     for (const name of SKILLS) expect(text[name]).not.toContain("templates/");
     expect(text["forge-build"]).toContain('"relation":"delivers"');
-    expect(text["forge-build"].match(/`forge agent wait <n>`/g)).toHaveLength(
+    expect(text["forge-build"]?.match(/`forge agent wait <n>`/g)).toHaveLength(
       1,
     );
     expect(text["forge-build"]).toContain("Immediately after the PR opens");
@@ -439,7 +439,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-loop"]).toContain(
       "Only when resuming a session with existing PR work",
     );
-    expect(text["forge-loop"].match(/--sweep/g)).toHaveLength(1);
+    expect(text["forge-loop"]?.match(/--sweep/g)).toHaveLength(1);
     expect(text["forge-loop"]).toContain("act without re-arming the watch");
     expect(text["forge-loop"]).toContain("unmerged close or handback");
     for (const name of ["forge-land", "forge-loop"])
