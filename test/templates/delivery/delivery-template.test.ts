@@ -30,7 +30,7 @@ const SKILLS = [
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
-test("every harness wake reads the shared verdict and the owning session holds T3 watches", async () => {
+test("every harness wake reads the shared verdict and the owning session holds watches", async () => {
   await withDelivery(async (root, call, lint) => {
     await call("skills.sync");
     const texts = ["forge-build", "forge-review", "forge-loop"].map((name) => {
@@ -45,11 +45,8 @@ test("every harness wake reads the shared verdict and the owning session holds T
       "utf8",
     );
     expect(handoff).toMatch(/owning session.*forge agent wait/i);
-    expect(handoff).toContain("subagent");
     const all = [...texts, handoff].join("\n");
-    expect(all.match(/15 minutes unreadable/g)).toHaveLength(1);
-    expect(all).toContain("10 comment-only wakes");
-    expect(all).toMatch(/watch_pull_request.*once more/);
+    expect(all).not.toMatch(/watch_pull_request|Claude Code|Codex|\bT3\b/);
   });
 }, 30_000);
 
@@ -459,7 +456,9 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       "git worktree add <path> -b <branch> origin/main",
     );
     expect(text["forge-build"]).toContain("then the project's install");
-    expect(text["forge-review"]).toContain("read fresh PR state and act");
+    expect(text["forge-review"]).toContain(
+      "run `forge pr state <n>` and act on `verdict`",
+    );
     for (const name of ["forge-review", "forge-loop"]) {
       expect(text[name]).toContain(
         "After each push, run `forge agent wait <n>`",

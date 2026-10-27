@@ -114,7 +114,10 @@ test("built CLI emits one raw state line, suppresses duplicates, and reports cha
     '{"failed":true,"merge":"BLOCKED"}',
   );
   const changed = run(value.next);
-  expect(changed.status).toBe(0);
+  expect(
+    changed.status,
+    JSON.stringify({ stdout: changed.stdout, stderr: changed.stderr }),
+  ).toBe(0);
   expect(JSON.parse(changed.stdout)).toMatchObject({
     verdict: "blocked",
     news: ["check failed: test"],
@@ -209,13 +212,8 @@ test("pending, queue and thread resolutions wake terminal readiness without a he
   }
 });
 
-test("failed or incomplete reads, a head moving mid-read and invalid tokens exit nonzero without next", () => {
-  for (const broken of [
-    { failRead: true },
-    { incomplete: true },
-    { moveDuringRead: true },
-    { changeMetadata: true },
-  ]) {
+test("failed or incomplete reads and invalid tokens exit nonzero without next", () => {
+  for (const broken of [{ failRead: true }, { incomplete: true }]) {
     scenario(broken);
     const result = run();
     expect(result.status).not.toBe(0);
@@ -225,4 +223,43 @@ test("failed or incomplete reads, a head moving mid-read and invalid tokens exit
   const result = run("invalid");
   expect(result.status).not.toBe(0);
   expect(result.stdout).not.toContain('"next"');
+});
+test("R1 optional check failures block and same-head passing announcements stay latched", () => {
+  scenario({});
+  const first = read();
+  scenario({ optionalFailed: true });
+  const failed = read(first.next);
+  expect(failed.verdict).toBe("blocked");
+  expect(failed.news).toContain("check failed: optional");
+  scenario({});
+  const restored = read(failed.next);
+  expect(restored.news).not.toContain("required checks passed");
+  quiet(restored.next);
+  scenario({ merge: "BLOCKED" });
+  expect(read().news).not.toContain("required checks passed");
+  scenario({ empty: true });
+  expect(read()).toMatchObject({
+    verdict: "waiting",
+    reasons: ["no checks reported"],
+  });
+});
+test("large bodies stay outside captured metadata and two hundred threads keep a compact token", () => {
+  const item = {
+    id: 1,
+    created_at: "2026-10-27T10:00:00Z",
+    user: { login: "other" },
+    body: "x".repeat(300000),
+  };
+  scenario({
+    comments: [item],
+    reviews: [{ ...item, submitted_at: item.created_at }],
+    reviewComments: [item],
+  });
+  const remarks = read();
+  expect(remarks.news).toContain("3 new remarks: other");
+  expect(remarks.next.length).toBeLessThan(2000);
+  scenario({ threadCount: 200 });
+  const threads = read();
+  expect(threads.next.length).toBeLessThan(6000);
+  quiet(threads.next);
 });

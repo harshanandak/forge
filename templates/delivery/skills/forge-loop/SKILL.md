@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # forge-loop
 
-Read the routed skill before acting.
+Every wake: read, route, stop. Read the chosen skill before acting.
 
 ## Wake
 
@@ -19,13 +19,14 @@ Use `--fallback` only if a plain opening wait's link or watch step fails. Report
 At session start, run `forge memory rules` unless a hook supplied it: `result.text.text` is a pointer, never note text. Search memory before starting a task; use its search/show commands.
 
 1. Work: `forge issue ready --input '{}'` (ranked by priority label), `forge issue stale --input '{}'`, then `forge issue show --input '{"id":"<id>"}'` for your slice.
-2. PRs: every harness wake runs `forge pr state <n>` and acts on `verdict`, never on wake text alone.
+2. PRs: every wake runs `forge pr state <n>` and acts on `verdict`.
 3. Act only on what changed since your last push, then stop. Forge never watches: the harness wakes you.
 
 ## Roles
 
-- **Orchestrator**: plan, review, merge and verify.
-- **Worker**: one claimed slice; stops at push, never merges.
+- **Orchestrator**: intake, slicing, review triage, merge, verify, re-plan.
+- **Worker**: one build or one fix batch on one claimed slice. Stops at push. Never merges.
+- One agent may hold both on small work.
 
 ## Steps and their skill
 
@@ -42,11 +43,9 @@ At session start, run `forge memory rules` unless a hook supplied it: `result.te
 - **PR to issue** is Forge's: `forge issue link --input '{"id":"<slice>","relation":"delivers","url":"<pr url>"}'`. It needs the held claim, so the worker links before it releases.
 - **PR to agent thread**: follow `forge-build`'s opening handoff. Wakes act without re-arming event watches. After each push, run `forge agent wait <n>`; for `t3-tool`, skip its steps (already watching); otherwise do each step and follow `then`.
 
-Only exception: if T3 says it stopped watching after 15 minutes unreadable or 10 comment-only wakes, call `watch_pull_request` once more.
-
 ## Autonomy
 
-Proceed on reversible work. Stop for:
+Proceed on reversible actions without asking. Stop only for:
 
 - a one-way door: publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config. It needs the owner's reply naming that action. Silence or "continue" is not a yes.
 - a scope change beyond the slice's done boundary;
@@ -60,7 +59,7 @@ Proceed on reversible work. Stop for:
 
 ## Worker brief
 
-Fill `forge-build`'s Worker brief before dispatch.
+Use `forge-build`'s Worker brief; fill every required field before dispatch.
 
 Session: export FORGE_SESSION=<your task name> before any claim; never use the chat's t3: session.
 Adopted decision titles: see below for pagination.

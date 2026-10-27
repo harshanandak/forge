@@ -7,7 +7,7 @@ description: "Claim and build one slice with red/green receipts, risk-scaled pro
 
 Read [pull-request.md](pull-request.md) for setup and PR handoff.
 
-Every harness wake runs `forge pr state <n>` and acts on `verdict`, never on wake text alone.
+Every wake runs `forge pr state <n>` and acts on `verdict`.
 
 ## Worker brief
 

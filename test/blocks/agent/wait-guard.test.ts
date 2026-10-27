@@ -132,6 +132,9 @@ test("T3 wait links the real URL before watching, and cleanup names native tools
   const result = wait({ pr: 42 }, [codex], env);
   expect(result.then).toContain("forge pr state 42");
   expect(result.steps[0]).toBe("gh pr view 42 --json url");
+  expect(result.then).toContain(
+    "Only if the harness reports it stopped watching the PR, run forge agent wait 42 once more.",
+  );
   expect(result.steps[1]).toMatch(/link_pull_request.*URL.*stdout/);
   expect(result.steps[2]).toMatch(/watch_pull_request.*42/);
   expect(wait({ pr: 42, done: true }, [codex], env).steps.join(" ")).toMatch(
