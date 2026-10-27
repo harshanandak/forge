@@ -1273,20 +1273,18 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
   }
   type Remark = { id: string; author: string; time: string };
   type Pr = Record<string, string> & { draft: boolean; remarks: Remark[] };
+  const viewArgs = ["pr", "view", String(input.pr), "--json"];
   const pr = await gh<Pr>([
-    "pr",
-    "view",
-    String(input.pr),
-    "--json",
+    ...viewArgs,
     "headRefOid,state,mergeable,mergeStateStatus,reviewDecision,isDraft,url,comments,reviews",
     "--jq",
     "{head:.headRefOid,state,mergeable,merge:.mergeStateStatus,review:.reviewDecision,draft:.isDraft,url,remarks:([.comments[]|{id,author:.author.login,time:.createdAt}]+[.reviews[]|select(.submittedAt)|{id,author:.author.login,time:.submittedAt}])}",
   ]);
   const [, , host, owner, repo] = pr.url!.split("/");
   const hash = (v: unknown) => services.crypto.sha256(JSON.stringify(v));
-  type Cursor = Record<"r" | "h" | "t" | "v", string> &
+  type Cursor = Record<"r" | "h" | "t" | "v" | "u", string> &
     Record<"p" | "c", boolean> &
-    Record<"f" | "i" | "u", string[]>;
+    Record<"f" | "i", string[]> & { n: number };
   const previous = input.since
     ? (JSON.parse(watchToken(input.since, true)) as Cursor)
     : undefined;
@@ -1320,11 +1318,18 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
   )
     throw new Error("Incomplete threads");
   const threads = pages.flatMap((page) => page.ids).sort();
-  const threadHash = (id: string) => hash(id).slice(0, 12);
+  const threadHash = hash(threads);
   const inline = await api<Remark[]>(
     `repos/${owner}/${repo}/pulls/${input.pr}/comments?per_page=100`,
     "[.[]|{id:(.id|tostring),author:(.user.login // (.user|tostring)),time:.created_at}] | @json",
   );
+  const current = await gh<Record<string, string>>([
+    ...viewArgs,
+    "headRefOid,state",
+  ]);
+  const moved = current.headRefOid !== pr.head,
+    raced = moved || current.state !== pr.state;
+  const remembered = moved ? undefined : old;
   const remarks = [...pr.remarks, ...inline].filter(
     (item) => item.author !== pages[0]!.viewer,
   );
@@ -1344,7 +1349,7 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
   const conflicting =
     pr.mergeable === "CONFLICTING" ||
     pr.merge === "DIRTY" ||
-    (pr.mergeable === "UNKNOWN" && !!previous?.c);
+    (pr.mergeable === "UNKNOWN" && !!old?.c);
   const reasons = failed.map((check) => `check failed: ${check.name}`);
   if (threads.length) reasons.unshift(`${threads.length} unresolved threads`);
   if (conflicting) reasons.unshift("conflicting");
@@ -1375,12 +1380,16 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
       `${fresh.length} new remarks: ${[...new Set(fresh.map((item) => item.author))].sort().join(", ")}`,
     );
   if (conflicting && !previous?.c) news.push("conflicting");
-  for (const id of threads)
-    if (!previous?.u.includes(threadHash(id)))
-      news.push(`unresolved thread: ${id}`);
+  const added = threads.length - (previous?.n ?? 0);
+  if (threadHash !== previous?.u && (threads.length || previous?.n))
+    news.push(
+      added > 0
+        ? `${added} new unresolved threads`
+        : "unresolved threads changed",
+    );
   if (state !== previous?.v && !news.length) news.push("state changed");
   let time = previous?.t ?? "",
-    ids = previous?.i ?? [];
+    ids = [...(previous?.i ?? [])];
   for (const item of remarks) {
     if (item.time > time) {
       time = item.time;
@@ -1391,24 +1400,29 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
   const next = watchToken(
     JSON.stringify({
       r: hash(pr.url),
-      h: pr.head,
-      f: checks.length ? failed.map((check) => check.name) : (old?.f ?? []),
-      p: !!old?.p || passed,
-      t: time,
-      i: ids,
-      c: conflicting,
-      u: threads.map(threadHash),
-      v: state,
+      h: current.headRefOid,
+      f: raced
+        ? (remembered?.f ?? [])
+        : checks.length
+          ? failed.map((check) => check.name)
+          : (old?.f ?? []),
+      p: !!remembered?.p || (!raced && passed),
+      t: raced ? (previous?.t ?? "") : time,
+      i: raced ? (previous?.i ?? []) : ids,
+      c: raced ? !!remembered?.c : conflicting,
+      u: raced ? (previous?.u ?? "") : threadHash,
+      n: raced ? (previous?.n ?? 0) : threads.length,
+      v: raced ? "" : state,
     }),
   );
-  if (input.since && !news.length) return null;
+  if (input.since && !raced && !news.length) return null;
   return {
     pr: input.pr,
-    head: pr.head,
-    verdict,
-    reasons,
-    news,
-    end: verdict === "ready" || verdict === "gone",
+    head: current.headRefOid,
+    verdict: raced ? "waiting" : verdict,
+    reasons: raced ? [] : reasons,
+    news: raced ? [moved ? "head moved" : "state changed"] : news,
+    end: !raced && (verdict === "ready" || verdict === "gone"),
     next,
   };
 }

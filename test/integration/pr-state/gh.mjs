@@ -1,10 +1,24 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const state = JSON.parse(readFileSync("fixture.json", "utf8"));
 if (state.failRead) process.exit(1);
 let result;
-if (args[0] === "pr" && args[1] === "checks") {
+let paged = false;
+const fields = args[args.indexOf("--json") + 1];
+if (args[0] === "pr" && args[1] === "view" && fields === "headRefOid,state") {
+  if (args.includes("--jq"))
+    throw new Error("Final identity read must capture the raw small object");
+  if (state.afterHead !== undefined) state.head = state.afterHead;
+  if (state.afterState !== undefined) state.state = state.afterState;
+  delete state.afterHead;
+  delete state.afterState;
+  writeFileSync("fixture.json", JSON.stringify(state));
+  result = {
+    headRefOid: (state.head ?? "a").repeat(40),
+    state: state.state ?? "OPEN",
+  };
+} else if (args[0] === "pr" && args[1] === "checks") {
   result = state.empty
     ? []
     : [
@@ -27,12 +41,22 @@ if (args[0] === "pr" && args[1] === "checks") {
     throw new Error("GitHub CLI rejects --slurp with --jq");
   if (!args.includes("--jq"))
     throw new Error("Metadata must be projected before capture");
+  const projection = args[args.indexOf("--jq") + 1].replace(/\s+/g, "");
+  if (/\bbody(?:Text|HTML)?\b/i.test(projection))
+    throw new Error("Projection must not capture comment or review bodies");
+  const requireProjection = (expected) => {
+    if (projection !== expected)
+      throw new Error(`Unexpected metadata projection: ${projection}`);
+  };
   const metadata = (item, prefix, time) => ({
     id: `${prefix}${item.id}`,
     author: item.user?.login ?? "[deleted]",
     time: item[time],
   });
   if (args[0] === "pr" && args[1] === "view") {
+    requireProjection(
+      "{head:.headRefOid,state,mergeable,merge:.mergeStateStatus,review:.reviewDecision,draft:.isDraft,url,remarks:([.comments[]|{id,author:.author.login,time:.createdAt}]+[.reviews[]|select(.submittedAt)|{id,author:.author.login,time:.submittedAt}])}",
+    );
     const comments = (state.issuePages ?? [state.comments ?? []]).flat();
     result = {
       head: (state.head ?? "a").repeat(40),
@@ -50,10 +74,11 @@ if (args[0] === "pr" && args[1] === "checks") {
       ],
     };
   } else if (args[1] === "graphql") {
+    paged = true;
     const ids = state.threadCount
       ? Array.from(
           { length: state.threadCount },
-          (_, index) => `${index}-${"long-thread-id".repeat(20)}`,
+          (_, index) => `${index}-${"long-thread-id".repeat(4)}`,
         )
       : state.threads
         ? ["thread"]
@@ -74,11 +99,21 @@ if (args[0] === "pr" && args[1] === "checks") {
           },
         ];
   } else if (args[1]?.includes("/pulls/7/comments")) {
-    result = (state.reviewComments ?? []).map((item) =>
-      metadata(item, "inline", "created_at"),
+    requireProjection(
+      "[.[]|{id:(.id|tostring),author:(.user.login//(.user|tostring)),time:.created_at}]|@json",
+    );
+    if (!args.includes("--paginate") || !args[1].endsWith("?per_page=100"))
+      throw new Error("Inline comments must request every page of 100");
+    paged = true;
+    const comments = state.reviewComments ?? [];
+    result = Array.from(
+      { length: Math.max(1, Math.ceil(comments.length / 100)) },
+      (_, page) =>
+        comments
+          .slice(page * 100, (page + 1) * 100)
+          .map((item) => metadata(item, "inline", "created_at")),
     );
   } else throw new Error("Unexpected fake GitHub request");
 }
-if (args[1] === "graphql")
-  for (const page of result) console.log(JSON.stringify(page));
+if (paged) for (const page of result) console.log(JSON.stringify(page));
 else console.log(JSON.stringify(result));

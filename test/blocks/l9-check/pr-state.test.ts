@@ -43,6 +43,7 @@ function fixture() {
   let corrupt = false,
     partial = false,
     reads = 0;
+  let finalChange: Partial<typeof pr> = {};
   const process: ProcessPort = {
     capability: "forge.process/v1",
     resolve: (path) => ({ kind: "resolved", path }),
@@ -58,21 +59,26 @@ function fixture() {
       let value: unknown;
       if (args[0] === "pr" && args[1] === "view") {
         reads++;
-        value = {
-          head: pr.headRefOid,
-          state: pr.state,
-          mergeable: pr.mergeable,
-          merge: pr.mergeStateStatus,
-          review: pr.reviewDecision,
-          draft: pr.isDraft,
-          url: pr.url,
-          remarks: remarks.map((remark) => ({
-            id: remark.id,
-            author: remark.author.login,
-            time: remark.createdAt,
-          })),
-        };
-        expect(args).toContain("--jq");
+        if (args.includes("headRefOid,state")) {
+          Object.assign(pr, finalChange);
+          value = { headRefOid: pr.headRefOid, state: pr.state };
+        } else {
+          value = {
+            head: pr.headRefOid,
+            state: pr.state,
+            mergeable: pr.mergeable,
+            merge: pr.mergeStateStatus,
+            review: pr.reviewDecision,
+            draft: pr.isDraft,
+            url: pr.url,
+            remarks: remarks.map((remark) => ({
+              id: remark.id,
+              author: remark.author.login,
+              time: remark.createdAt,
+            })),
+          };
+          expect(args).toContain("--jq");
+        }
       } else if (args[1] === "checks") {
         value = checks
           .filter((check) => !args.includes("--required") || check.isRequired)
@@ -157,6 +163,9 @@ function fixture() {
       corrupt = true;
     },
     views: () => reads,
+    changeDuringRead: (change: Partial<typeof pr>) => {
+      finalChange = change;
+    },
     partial: () => {
       partial = true;
     },
@@ -192,6 +201,15 @@ test("R1 passing announcement stays latched on a head through a failed rerun", a
   expect((await f.read(restored.next))!.news).toContain(
     "required checks passed",
   );
+});
+test("UNKNOWN mergeability forgets a previous head's conflict", async () => {
+  const f = fixture();
+  f.pr.mergeable = "CONFLICTING";
+  f.pr.mergeStateStatus = "DIRTY";
+  const first = (await f.read())!;
+  f.pr.headRefOid = "b".repeat(40);
+  f.pr.mergeable = f.pr.mergeStateStatus = "UNKNOWN";
+  expect((await f.read(first.next))!.reasons).not.toContain("conflicting");
 });
 test("R1 missing expected checks do not announce passing; empty CI explains waiting", async () => {
   const f = fixture();
@@ -256,7 +274,7 @@ test("required failures and threads block while other checks are pending; resolu
   expect(await f.read(blocked.next)).toMatchObject({
     verdict: "ready",
     end: true,
-    news: ["state changed"],
+    news: ["unresolved threads changed"],
   });
 });
 test("conflict UNKNOWN retains memory; threads, head and state changes wake", async () => {
@@ -269,9 +287,13 @@ test("conflict UNKNOWN retains memory; threads, head and state changes wake", as
   f.pr.mergeStateStatus = "UNKNOWN";
   expect(await f.read(first.next)).toBeNull();
   f.threads.push({ id: "new", isResolved: false });
-  expect((await f.read(first.next))!.news).toContain("unresolved thread: new");
+  expect((await f.read(first.next))!.news).toContain(
+    "1 new unresolved threads",
+  );
   f.pr.headRefOid = "b".repeat(40);
-  expect((await f.read(first.next))!.news).toContain("head moved");
+  const moved = (await f.read(first.next))!;
+  expect(moved.news).toContain("head moved");
+  expect(moved.reasons).not.toContain("conflicting");
   f.pr.state = "MERGED";
   expect(await f.read()).toMatchObject({ verdict: "gone", end: true });
 });
@@ -285,10 +307,10 @@ test("remarks ignore viewer and preserve ids sharing one timestamp", async () =>
   f.remarks.push({ id: "3", author: { login: "other" }, createdAt: time });
   expect((await f.read(first.next))!.news).toContain("1 new remarks: other");
 });
-test("read once and reject incomplete reads without advancing a cursor", async () => {
+test("recheck head and state and reject incomplete reads without advancing a cursor", async () => {
   const first = fixture();
   await first.read();
-  expect(first.views()).toBe(1);
+  expect(first.views()).toBe(2);
   const f = fixture();
   f.corrupt();
   await expect(f.read()).rejects.toThrow();
@@ -310,21 +332,46 @@ test("cursor is safe through Windows command shims and preserves Unicode", async
   ).toEqual(["日本語😀"]);
   expect(await f.read(first.next)).toBeNull();
 });
-test("two hundred long thread IDs use a short cursor and only new identities repeat", async () => {
+test("one thousand threads use one short set hash and count", async () => {
   const f = fixture();
-  for (let index = 0; index < 200; index++)
+  for (let index = 0; index < 1000; index++)
     f.threads.push({
       id: `${index}-${"long-thread-id".repeat(20)}`,
       isResolved: false,
     });
   const first = (await f.read())!;
-  expect(first.next.length).toBeLessThan(6000);
+  expect(first.next.length).toBeLessThan(1000);
   expect(await f.read(first.next)).toBeNull();
   f.threads.push({ id: "new-thread", isResolved: false });
   expect((await f.read(first.next))!.news).toEqual([
-    "unresolved thread: new-thread",
+    "1 new unresolved threads",
+  ]);
+  f.threads[0]!.id = "replacement";
+  expect((await f.read(first.next))!.news).toEqual([
+    "1 new unresolved threads",
+  ]);
+  const increased = (await f.read(first.next))!;
+  f.threads[1]!.id = "another-replacement";
+  expect((await f.read(increased.next))!.news).toEqual([
+    "unresolved threads changed",
   ]);
 });
+
+for (const change of [{ headRefOid: "b".repeat(40) }, { state: "CLOSED" }])
+  test(`racing ${Object.keys(change)[0]} never ends or latches stale evidence`, async () => {
+    const f = fixture();
+    f.changeDuringRead(change);
+    const raced = (await f.read())!;
+    expect(raced).toMatchObject({
+      verdict: "waiting",
+      end: false,
+      news: [change.state ? "state changed" : "head moved"],
+    });
+    const stable = (await f.read(raced.next))!;
+    expect(stable.news).toContain("required checks passed");
+    expect(stable.verdict).toBe(change.state ? "gone" : "ready");
+    expect(await f.read(stable.next)).toBeNull();
+  });
 test("no required checks reported falls back to the all-check green set", async () => {
   const f = fixture();
   f.checks[0]!.isRequired = false;
@@ -337,4 +384,19 @@ test("incomplete process evidence is never accepted as a complete read", async (
   const f = fixture();
   f.partial();
   await expect(f.read()).rejects.toThrow();
+});
+
+test("racing reads preserve verified news but never advance same-time remark IDs", async () => {
+  const f = fixture();
+  const time = "2026-10-27T10:00:00Z";
+  f.remarks.push({ id: "1", author: { login: "other" }, createdAt: time });
+  const first = (await f.read())!;
+  f.remarks.push({ id: "2", author: { login: "other" }, createdAt: time });
+  f.changeDuringRead({ state: "CLOSED" });
+  const raced = (await f.read(first.next))!;
+  expect(raced.news).toEqual(["state changed"]);
+  const stable = (await f.read(raced.next))!;
+  expect(stable.news).toEqual(["1 new remarks: other"]);
+  expect(stable.verdict).toBe("gone");
+  expect(await f.read(stable.next)).toBeNull();
 });

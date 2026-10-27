@@ -1,7 +1,7 @@
 # Declared-command execution
 
-`forge pr state <n> [--since <token>]` reads GitHub through `gh`: one PR read,
-all and required checks, paged review threads, and projected metadata from all three remark feeds.
+`forge pr state <n> [--since <token>]` reads GitHub through `gh`: PR metadata,
+all and required checks, paged threads, projected remarks, then a final head/state check.
 It prints one JSON line with `ready`, `waiting`, `blocked` or `gone`, reasons, news,
 `end` and an opaque repository/PR-scoped `next` token. Unchanged reads with `--since`
 print nothing. Read failures exit nonzero. The caller carries the token; no state is stored.

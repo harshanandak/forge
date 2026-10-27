@@ -6,17 +6,26 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 setDefaultTimeout(60000);
 const root = mkdtempSync(join(tmpdir(), "forge-pr-state-"));
 const bin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 const node = Bun.which("node")!;
+const git = Bun.which("git")!;
 const fake = join(root, "fake");
 mkdirSync(fake);
+if (process.platform === "win32") {
+  copyFileSync(node, join(fake, "node.exe"));
+  writeFileSync(join(fake, "git.cmd"), `@"${git}" %*\r\n`);
+} else {
+  symlinkSync(node, join(fake, "node"));
+  symlinkSync(git, join(fake, "git"));
+}
 mkdirSync(join(root, ".forge"));
 const env: NodeJS.ProcessEnv = Object.fromEntries(
   Object.entries(process.env).filter(([name]) =>
@@ -25,11 +34,9 @@ const env: NodeJS.ProcessEnv = Object.fromEntries(
     ),
   ),
 );
-env.PATH = [fake, dirname(node), dirname(Bun.which("git")!)].join(
-  process.platform === "win32" ? ";" : ":",
-);
+env.PATH = fake;
 env.FORGE_DEVICE_ROOT = join(root, "device");
-const initialized = spawnSync(Bun.which("git")!, ["init", "--quiet", root], {
+const initialized = spawnSync(git, ["init", "--quiet", root], {
   env,
   encoding: "utf8",
   windowsHide: true,
@@ -212,6 +219,29 @@ test("pending, queue and thread resolutions wake terminal readiness without a he
   }
 });
 
+for (const [name, value, head] of [
+  ["head", { afterHead: "b" }, "b"],
+  ["state", { state: "CLOSED", afterState: "OPEN" }, "a"],
+] as const)
+  test(`R2-1 final ${name} race waits and does not latch stale passing checks`, () => {
+    scenario(value);
+    const changed = read();
+    expect(changed).toMatchObject({
+      head: head.repeat(40),
+      verdict: "waiting",
+      end: false,
+    });
+    expect(changed.news).not.toContain("required checks passed");
+    const stable = read(changed.next);
+    expect(stable).toMatchObject({
+      head: head.repeat(40),
+      verdict: "ready",
+      end: true,
+    });
+    expect(stable.news).toContain("required checks passed");
+    quiet(stable.next);
+  });
+
 test("failed or incomplete reads and invalid tokens exit nonzero without next", () => {
   for (const broken of [{ failRead: true }, { incomplete: true }]) {
     scenario(broken);
@@ -224,7 +254,23 @@ test("failed or incomplete reads and invalid tokens exit nonzero without next", 
   expect(result.status).not.toBe(0);
   expect(result.stdout).not.toContain('"next"');
 });
-test("R1 optional check failures block and same-head passing announcements stay latched", () => {
+test("R2-5 required green, failed and green checks announce passing once per head", () => {
+  scenario({});
+  const first = read();
+  expect(first.news).toContain("required checks passed");
+  scenario({ failed: true, merge: "BLOCKED" });
+  const failed = read(first.next);
+  expect(failed.verdict).toBe("blocked");
+  expect(failed.news).toEqual(["check failed: test"]);
+  quiet(failed.next);
+  scenario({});
+  const restored = read(failed.next);
+  expect(restored).toMatchObject({ verdict: "ready", end: true });
+  expect(restored.news).not.toContain("required checks passed");
+  quiet(restored.next);
+});
+
+test("optional failures block while missing checks and GitHub BLOCKED do not announce passing", () => {
   scenario({});
   const first = read();
   scenario({ optionalFailed: true });
@@ -243,7 +289,23 @@ test("R1 optional check failures block and same-head passing announcements stay 
     reasons: ["no checks reported"],
   });
 });
-test("large bodies stay outside captured metadata and two hundred threads keep a compact token", () => {
+test("R2-5 inline page two emits a new same-time remark exactly once", () => {
+  const comments = Array.from({ length: 100 }, (_, index) => ({
+    id: index + 1,
+    created_at: "2026-10-27T10:00:00Z",
+    user: { login: "other" },
+  }));
+  scenario({ reviewComments: comments });
+  const first = read();
+  expect(first.news).toContain("100 new remarks: other");
+  quiet(first.next);
+  scenario({ reviewComments: [...comments, { ...comments[0], id: 101 }] });
+  const second = read(first.next);
+  expect(second.news).toEqual(["1 new remarks: other"]);
+  quiet(second.next);
+});
+
+test("large bodies stay outside captured metadata and one thousand threads keep a compact token", () => {
   const item = {
     id: 1,
     created_at: "2026-10-27T10:00:00Z",
@@ -258,8 +320,9 @@ test("large bodies stay outside captured metadata and two hundred threads keep a
   const remarks = read();
   expect(remarks.news).toContain("3 new remarks: other");
   expect(remarks.next.length).toBeLessThan(2000);
-  scenario({ threadCount: 200 });
+  scenario({ threadCount: 1000 });
   const threads = read();
-  expect(threads.next.length).toBeLessThan(6000);
+  expect(threads.news).toContain("1000 new unresolved threads");
+  expect(threads.next.length).toBeLessThan(1000);
   quiet(threads.next);
 });
