@@ -37,6 +37,8 @@ test("intake counts its routed call before dispatch", () => {
   );
   expect(text).toContain("forge issue call");
   expect(text).toContain("LIMIT_REACHED");
+  expect(text).toContain("intake's dispatch rules");
+  expect(text).toContain("Before each dispatch, run `forge issue call");
 }, 30_000);
 
 test("every harness wake reads the shared verdict and the owning session holds watches", async () => {
@@ -124,6 +126,7 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
             "merge base locally",
             "retry only `resolveReviewThread`",
             "gh repo view --json owner,name",
+            "Other old threads wait for new evidence",
           ])
             expect(text).toContain(phrase);
         }
@@ -142,6 +145,10 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
             "new assertion",
             "built artifact",
             "independent",
+            "an empty field blocks the call",
+            "stop and report the checkpoint when timeboxMinutes expire",
+            "never later than stopBy",
+            "CI carries remaining project checks",
           ])
             expect(text).toContain(phrase);
         if (name === "forge-land")

@@ -1,7 +1,14 @@
 // The installed delivery workflow survives a new Node process and a new session.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,7 +37,20 @@ if (process.argv[2] === "--gh") {
       ),
     ),
   );
-  env.PATH = `${fake}${delimiter}${process.env.PATH ?? process.env.Path ?? ""}`;
+  const directories = (process.env.PATH ?? process.env.Path ?? "")
+    .split(delimiter)
+    .map((directory) => directory.trim().replace(/^"(.*)"$/, "$1"))
+    .filter(Boolean);
+  const ghNames =
+    process.platform === "win32"
+      ? ["gh.exe", "gh.com", "gh.cmd", "gh.bat"]
+      : ["gh"];
+  env.PATH = [
+    fake,
+    ...directories.filter(
+      (directory) => !ghNames.some((name) => existsSync(join(directory, name))),
+    ),
+  ].join(delimiter);
   env.FORGE_DEVICE_ROOT = join(root, ".device");
   if (phase) env.FORGE_SESSION = phase;
 
@@ -76,6 +96,19 @@ if (process.argv[2] === "--gh") {
 
   if (!phase) {
     mkdirSync(fake);
+    // Keep required tools when a system directory also contains the real gh.
+    if (process.platform === "win32") {
+      copyFileSync(process.execPath, join(fake, "node.exe"));
+    } else {
+      symlinkSync(process.execPath, join(fake, "node"));
+      for (const tool of ["git", "npm"]) {
+        const directory = directories.find((path) =>
+          existsSync(join(path, tool)),
+        );
+        assert.ok(directory, `${tool} is required for the packed journey`);
+        symlinkSync(join(directory, tool), join(fake, tool));
+      }
+    }
     if (process.platform === "win32") {
       writeFileSync(
         join(fake, "gh.cmd"),
@@ -154,6 +187,12 @@ if (process.argv[2] === "--gh") {
     assert.equal(green.status, "PASS");
     assert.equal(green.subject, head);
     const url = gh("pr", "create", "--title", "Fix add after restart");
+    const number = Number(/\/pull\/(\d+)$/.exec(url)?.[1]);
+    assert.ok(Number.isInteger(number) && number > 0);
+    writeFileSync(
+      join(root, "fixture.json"),
+      JSON.stringify({ pr: number, head, url }),
+    );
     input("issue", "link", { id: slice.id, relation: "delivers", url });
     input("issue", "comment", {
       id: slice.id,
@@ -204,6 +243,8 @@ if (process.argv[2] === "--gh") {
     ]);
     assert.equal(stateLine.trim().split("\n").length, 1);
     const state = JSON.parse(stateLine);
+    assert.equal(state.pr, Number(number));
+    assert.equal(state.head, head);
     assert.equal(state.verdict, "ready");
     assert.equal(state.end, true);
     const review = input("issue", "call", { id: slice.id, role: "review" });

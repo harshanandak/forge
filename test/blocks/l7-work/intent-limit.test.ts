@@ -70,21 +70,26 @@ function project(stampDelay = 0) {
     lease: () => undefined,
     acquire: () => undefined,
   };
+  const call = (id = "work-1", route?: string, view = state) =>
+    operations["issue.call"]!({
+      input: { id, role: "build", ...(route === undefined ? {} : { route }) },
+      services: { state: view },
+    });
   return {
     records,
-    collide: () => {
-      state.put = () => {
-        throw new Error("REVISION_CONFLICT");
-      };
+    snapshotCall: () => {
+      const snapshot = [...records.values()];
+      return () =>
+        call("work-1", undefined, {
+          ...state,
+          list: (prefix: string) =>
+            snapshot.filter((r) => r.key.startsWith(prefix)),
+        });
     },
     at: (hours: number) => {
       now = Date.parse("2026-01-01T00:00:00.000Z") + hours * 3600_000;
     },
-    call: (id = "work-1", route?: string) =>
-      operations["issue.call"]!({
-        input: { id, role: "build", ...(route === undefined ? {} : { route }) },
-        services: { state },
-      }),
+    call,
     comment: (body: string) =>
       operations["issue.comment"]!({
         input: { id: "work-1", body },
@@ -131,12 +136,22 @@ test("the first stopBy uses the accepted store timestamp, even if the write take
   p.at(29.5);
   expect(p.call().timeboxMinutes).toBe(30);
 });
-test("a competing append fails instead of returning an unrecorded call", () => {
+test("two callers reading the same snapshot cannot both record call n+1", () => {
   const p = project();
   p.call();
-  p.collide();
-  expect(() => p.call()).toThrow("REVISION_CONFLICT");
-  expect(p.records.size).toBe(2);
+  const first = p.snapshotCall();
+  const second = p.snapshotCall();
+  expect(first()).toMatchObject({ call: 2 });
+  expect(second).toThrow("REVISION_CONFLICT");
+  expect(
+    [...p.records.values()].filter((r) => r.value.call === 2),
+  ).toHaveLength(1);
+  expect(p.records.size).toBe(3);
+});
+test("missing issue names the id as typed", () => {
+  expect(() => project().call("WORK-99")).toThrow(
+    "Issue WORK-99 was not found",
+  );
 });
 for (const hours of [30, 31, 29.99])
   test(`hour ${hours} refuses without writing`, () => {

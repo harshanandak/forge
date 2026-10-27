@@ -16,9 +16,9 @@ Create an intent issue with `forge issue create` if none exists, then read it an
 
 Facts are the agent's job: look them up in code, tools or primary sources, or dispatch a subagent. Never ask the user for a fact you can investigate. A pending investigation blocks only its dependent decisions; continue with the others.
 
-Before dispatching any subagent, run `forge route get <role> --text` for its role and use the line it prints to select the dispatch. This is intake's one dispatch rule.
+Before dispatching any subagent, run `forge route get <role> --text` for its role and use the line it prints to select the dispatch. These are intake's dispatch rules.
 
-Run `forge issue call --input '{"id":"<intent>","role":"<role>"}'` with that role; on LIMIT_REACHED stop and report.
+Before each dispatch, run `forge issue call --input '{"id":"<intent>","role":"<role>"}'` with that role; on LIMIT_REACHED stop and report.
 
 ## Prototype when execution is the missing fact
 
