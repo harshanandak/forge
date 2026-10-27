@@ -889,7 +889,7 @@ export async function createAssembly(
                 code: "CLAIM_TTL_CONFIG_MOVE",
                 message: `Move /values/claims/ttlSeconds to /blocks/work/config/claimTtlSeconds with value ${JSON.stringify(legacyClaimTtl.value)} to preserve the claim lease duration.`,
               });
-            return {
+            const synced = {
               ...success(
                 request.op,
                 syncSkills(
@@ -919,6 +919,13 @@ export async function createAssembly(
               ),
               warnings,
             };
+            const skipped = record(synced.result)?.skipped;
+            if (Array.isArray(skipped) && skipped.length)
+              warnings.push({
+                code: "SKILLS_SKIPPED",
+                message: `left alone because Forge did not write them: ${skipped.join(", ")}; delete them to let sync write Forge's copies`,
+              });
+            return synced;
           }
           if (request.op === "block.check" || request.op === "block.add") {
             await trustState.open(false);

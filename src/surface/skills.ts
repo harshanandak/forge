@@ -193,7 +193,7 @@ const NAME = "[a-z][a-z0-9-]*";
 const CLI_FORM = new RegExp(`^forge (${NAME}) (${NAME})(?:\\s|$)`);
 const OP_FORM = new RegExp(`^(${NAME})[._](${NAME})$`);
 const MODEL_LITERAL =
-  "(?<![\\w-])(?:gpt-\\d[a-z0-9._-]*|claude-(?:opus|sonnet|haiku|fable|\\d)[a-z0-9._-]*|gemini-\\d[a-z0-9._-]*|deepseek-[a-z0-9][a-z0-9._-]*|o\\d|opus|sonnet|haiku)(?![\\w-])";
+  "(?<![\\w-])(?:gpt-\\d[a-z0-9._-]*|claude-(?:opus|sonnet|haiku|fable|\\d)[a-z0-9._-]*|gemini-\\d[a-z0-9._-]*|deepseek-[a-z0-9][a-z0-9._-]*|o\\d(?:-[a-z0-9][a-z0-9._-]*)?|opus|sonnet|haiku)(?![\\w-])";
 const EFFORT_LEVEL = "(?:minimal|low|medium|high|xhigh|max)(?![\\w-])";
 const ROUTING_LITERAL =
   `(?<![\\w-])(?:--model(?:[ \\t]*=[ \\t]*|[ \\t]+)|-m[ \\t]+)["'\x60]?${MODEL_LITERAL}["'\x60]?` +

@@ -43,7 +43,7 @@
     },
     "skills.sync": {
       "title": "Sync skills",
-      "summary": "Sync catalog and template skills, including companion files, into each enabled adapter's skills directory. Use --check to report generated-file drift without writing. To repair, run forge skills sync; it overwrites edits to generated files."
+      "summary": "Sync skills and companions into each enabled adapter's skills directory. --check writes nothing and exits 1 only for files sync would write or delete. User entries are skipped with a warning. To repair generated-file drift, run forge skills sync; it overwrites edits to generated files."
     },
     "config.show": {
       "title": "Show configuration",

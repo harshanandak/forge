@@ -96,6 +96,21 @@ function resolveIn(root: string, path: string, finalLink: FinalLink): string {
   return current;
 }
 
+/** Classify an entry without following its final link or opening its contents. */
+export function entryKind(
+  root: string,
+  path: string,
+): "file" | "directory" | "link" | "missing" | "other" {
+  try {
+    const info = lstatSync(resolveIn(root, path, "keep"));
+    if (info.isSymbolicLink()) return "link";
+    if (info.isDirectory()) return "directory";
+    return info.isFile() ? "file" : "other";
+  } catch (error) {
+    return errorCode(error) === "ENOENT" ? "missing" : "other";
+  }
+}
+
 /** Prune only empty parents of a deleted file, through the named containing folder. */
 export function removeEmptyParents(
   root: string,

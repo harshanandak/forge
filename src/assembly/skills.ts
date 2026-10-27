@@ -1,4 +1,8 @@
-import { nodeConfigFiles, removeEmptyParents } from "../adapters/fs/index.ts";
+import {
+  entryKind,
+  nodeConfigFiles,
+  removeEmptyParents,
+} from "../adapters/fs/index.ts";
 import type { McpCandidate } from "../contract/mcp.ts";
 import { refuse } from "../core/trust/index.ts";
 import {
@@ -67,31 +71,37 @@ const equal = (a: Uint8Array, b: Uint8Array): boolean => {
   return Buffer.from(normalize(a)).equals(normalize(b));
 };
 
-function validate(
-  files: ReturnType<typeof nodeConfigFiles>,
-  path: string,
-): void {
+function validate(root: string, path: string, origin: string): boolean {
   if (
     /[\\:,\r\n]/.test(path) ||
     path !== path.trim() ||
     path.split("/").some((part) => ["", ".", ".."].includes(part)) ||
     key(path) === key("SKILL.md")
   )
-    throw new Error(`Invalid companion path ${path}`);
+    throw new Error(`Invalid companion path ${path} in ${origin}`);
   // Probe every component as a final component, so even an internal link is refused.
   const parts = path.split("/");
   try {
-    for (let i = 1; i <= parts.length; i++)
-      readFile(files, parts.slice(0, i).join("/"));
+    let clear = true;
+    for (let i = 1; i <= parts.length; i++) {
+      const kind = entryKind(root, parts.slice(0, i).join("/"));
+      if (kind === "link") throw new Error("symlinked path is not followed");
+      if (i < parts.length && kind !== "missing" && kind !== "directory")
+        clear = false;
+    }
+    return clear;
   } catch (error) {
     throw new Error(
-      `Invalid companion path ${path}: ${error instanceof Error ? error.message : "cannot inspect path"}`,
+      `Invalid companion path ${path} in ${origin}: ${error instanceof Error ? error.message : "cannot inspect path"}`,
       { cause: error },
     );
   }
 }
 
-function companions(bytes: Uint8Array | undefined): string[] | undefined {
+function companions(
+  bytes: Uint8Array | undefined,
+  origin: string,
+): string[] | undefined {
   if (bytes === undefined) return undefined;
   const text = lines(bytes);
   const index = text.indexOf(GENERATED_MARKER);
@@ -99,7 +109,7 @@ function companions(bytes: Uint8Array | undefined): string[] | undefined {
   const next = text[index + 1] ?? "";
   if (!next.startsWith("<!-- forge companions:")) return [];
   const match = /^<!-- forge companions: (.+) -->$/.exec(next);
-  if (!match) throw new Error(`Invalid companion list ${next}`);
+  if (!match) throw new Error(`Invalid companion list ${next} in ${origin}`);
   return match[1]!.split(",").map((path) => path.trim());
 }
 
@@ -216,6 +226,7 @@ export function syncSkills(
   const differences: string[] = [];
   try {
     const writes: { path: string; bytes: Uint8Array }[] = [];
+    const ownershipWrites: typeof writes = [];
     const deletes: { path: string; folder: string }[] = [];
     // Plan every directory first. Invalid metadata must not leave a partial sync.
     for (const dir of dirs) {
@@ -227,20 +238,28 @@ export function syncSkills(
       );
       for (const name of names.values()) {
         const folder = `${dir}/${name}`;
-        readFile(files, folder);
-        const local = nodeConfigFiles(`${root}/${folder}`);
-        const path = `${folder}/SKILL.md`;
-        const current = readFile(local, "SKILL.md");
-        const listed = companions(current);
         const copies = skills.filter((s) => key(s.noun) === key(name));
-        if (current !== undefined && listed === undefined) {
-          if (copies.length) {
-            skipped.push(path);
-            differences.push(path);
-          }
+        const kind = entryKind(root, folder);
+        if (kind !== "directory" && kind !== "missing") {
+          if (copies.length) skipped.push(folder);
           continue;
         }
-        for (const entry of listed ?? []) validate(local, entry);
+        const localRoot = `${root}/${folder}`;
+        const local = nodeConfigFiles(localRoot);
+        const path = `${folder}/SKILL.md`;
+        const skillKind = entryKind(localRoot, "SKILL.md");
+        let current: Uint8Array | undefined;
+        try {
+          current = skillKind === "file" ? local.read("SKILL.md") : undefined;
+        } catch {
+          current = undefined;
+        }
+        const listed = companions(current, path);
+        if (listed === undefined && skillKind !== "missing") {
+          if (copies.length) skipped.push(path);
+          continue;
+        }
+        for (const entry of listed ?? []) validate(localRoot, entry, path);
         const wanted = new Map(
           copies.map((s) => [key(s.path.slice(s.noun.length + 1)), s]),
         );
@@ -248,16 +267,29 @@ export function syncSkills(
         for (const [relative, copy] of wanted) {
           if (relative === key("SKILL.md")) continue;
           const destination = copy.path.slice(copy.noun.length + 1);
-          validate(local, destination);
+          const clear = validate(localRoot, destination, path);
           const bytes = copy.bytes!;
-          const existing = readFile(local, destination);
+          const displaced = (listed ?? []).some(
+            (p) =>
+              !wanted.has(key(p)) &&
+              key(destination).startsWith(`${key(p)}/`) &&
+              entryKind(localRoot, p) === "file",
+          );
+          if (
+            !displaced &&
+            (!clear ||
+              !["missing", "file"].includes(entryKind(localRoot, destination)))
+          ) {
+            skipped.push(`${folder}/${destination}`);
+            continue;
+          }
+          const existing = displaced ? undefined : readFile(local, destination);
           if (
             existing !== undefined &&
             !(listed ?? []).some((p) => key(p) === relative) &&
             !equal(existing, bytes)
           ) {
             skipped.push(`${folder}/${destination}`);
-            differences.push(`${folder}/${destination}`);
             continue;
           }
           adopted.push(destination);
@@ -282,12 +314,8 @@ export function syncSkills(
           if (copy.bytes !== undefined && !adopted.includes(relative)) continue;
           let bytes = copy.bytes;
           if (bytes === undefined) {
-            const text = copy.text.replace(
-              /\n<!-- forge companions: .*? -->/,
-              "",
-            );
             bytes = new TextEncoder().encode(
-              text.replace(
+              copy.text.replace(
                 GENERATED_MARKER,
                 `${GENERATED_MARKER}${adopted.length ? `\n${companionLine(adopted)}` : ""}`,
               ),
@@ -298,21 +326,24 @@ export function syncSkills(
           if (existing !== undefined && equal(existing, bytes))
             unchanged.push(target);
           else {
-            writes.push({ path: target, bytes });
+            (copy.bytes === undefined ? ownershipWrites : writes).push({
+              path: target,
+              bytes,
+            });
             differences.push(target);
           }
         }
       }
     }
     if (!check) {
-      for (const entry of writes) {
-        files.write(entry.path, entry.bytes);
-        written.push(entry.path);
-      }
       for (const entry of deletes) {
         files.remove(entry.path);
         removed.push(entry.path);
         removeEmptyParents(root, entry.path, entry.folder);
+      }
+      for (const entry of [...writes, ...ownershipWrites]) {
+        files.write(entry.path, entry.bytes);
+        written.push(entry.path);
       }
     }
   } catch (error) {

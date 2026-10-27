@@ -2,7 +2,7 @@
   "type": "object",
   "properties": {
     "check": {
-      "description": "Check every synced copy without writing; report generated-file drift and exit 1. To repair, run forge skills sync; it overwrites edits to generated files.",
+      "description": "Write nothing; exit 1 only for files sync would write or delete. Left-alone user entries are listed in skipped with a warning. To repair generated-file drift, run forge skills sync; it overwrites edits to generated files.",
       "type": "boolean"
     },
     "dir": {

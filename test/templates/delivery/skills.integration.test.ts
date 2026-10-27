@@ -138,7 +138,11 @@ test("built sync manages marked skills and companions in both adapter directorie
     expect(readFileSync(join(unmarked, "agents/openai.yaml"), "utf8")).toBe(
       "mine: true\n",
     );
-    expect(check().status).toBe(1);
+    const skipped = check();
+    expect(skipped.status).toBe(0);
+    expect(skipped.stdout).toContain(
+      "left alone because Forge did not write them:",
+    );
   });
 }, 180_000);
 

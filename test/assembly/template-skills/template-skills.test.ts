@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as fsAdapter from "../../../src/adapters/fs/index.ts";
 import {
   existsSync,
   mkdirSync,
@@ -133,6 +134,8 @@ test("marker ownership adopts main copies, preserves user files, restores missin
   await withTemplate(async (root, call) => {
     const folder = dirname(join(root, RENDERED));
     const companion = join(folder, "agents/openai.yaml");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(root, RENDERED), `${GENERATED_MARKER}\nold main body\n`);
     mkdirSync(dirname(join(root, SOURCE, "../agents/openai.yaml")), {
       recursive: true,
     });
@@ -221,16 +224,183 @@ test("unmarked SKILL.md protects its entire folder, including companions", async
       join(root, "tpl/skills/review/agents/openai.yaml"),
       "generated",
     );
-    expect(await call("skills.sync", { check: true })).toMatchObject({
-      ok: false,
-    });
     expect(await call("skills.sync")).toMatchObject({
       skipped: [RENDERED],
       written: [],
     });
+    const checked = await call("skills.sync", { check: true });
+    expect(checked).toMatchObject({ ok: true, skipped: [RENDERED] });
+    expect(JSON.stringify(checked.warnings)).toContain(
+      `left alone because Forge did not write them: ${RENDERED}; delete them to let sync write Forge's copies`,
+    );
     expect(existsSync(join(root, ".agents/skills/review/agents"))).toBe(false);
   });
 }, 30_000);
+
+test.each([
+  "inside link",
+  "outside link",
+  "template link",
+  "large file",
+  "large skill",
+])(
+  "R1 leaves unrelated user entry %s alone",
+  async (kind) => {
+    await withTemplate(async (root, call) => {
+      await call("skills.sync");
+      const outside = mkdtempSync(join(tmpdir(), "forge-user-skill-"));
+      const name = kind === "template link" ? "review" : "mine";
+      const folder = join(root, ".agents/skills", name);
+      try {
+        if (kind.endsWith("link")) {
+          const target =
+            kind === "outside link" ? outside : join(root, "shared");
+          mkdirSync(target, { recursive: true });
+          writeFileSync(
+            join(target, "SKILL.md"),
+            `${GENERATED_MARKER}\nuser target\n`,
+          );
+          if (name === "review") rmSync(folder, { recursive: true });
+          symlinkSync(
+            target,
+            folder,
+            process.platform === "win32" ? "junction" : "dir",
+          );
+        } else if (kind === "large file")
+          writeFileSync(folder, "x".repeat(2 * 1024 * 1024));
+        else {
+          mkdirSync(folder);
+          writeFileSync(join(folder, "SKILL.md"), "x".repeat(2 * 1024 * 1024));
+        }
+        for (const check of [false, true]) {
+          const result = await call("skills.sync", { check });
+          expect(result).toMatchObject({
+            ok: true,
+            skipped: name === "review" ? [".agents/skills/review"] : [],
+          });
+        }
+        if (kind.endsWith("link"))
+          expect(readFileSync(join(folder, "SKILL.md"), "utf8")).toBe(
+            `${GENERATED_MARKER}\nuser target\n`,
+          );
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
+  },
+  30_000,
+);
+
+test.each(["directory", "parent file", "file"])(
+  "R1 companion collision %s is skipped without a check repair loop",
+  async (kind) => {
+    await withTemplate(async (root, call) => {
+      const source = join(root, "tpl/skills/review/agents/openai.yaml");
+      mkdirSync(dirname(source));
+      writeFileSync(source, "generated");
+      const folder = join(root, ".agents/skills/review");
+      mkdirSync(folder, { recursive: true });
+      const target = join(folder, "agents/openai.yaml");
+      if (kind === "parent file")
+        writeFileSync(join(folder, "agents"), "user parent");
+      else {
+        mkdirSync(dirname(target));
+        if (kind === "directory") mkdirSync(target);
+        else writeFileSync(target, "user file");
+      }
+      expect(await call("skills.sync")).toMatchObject({
+        ok: true,
+        skipped: [".agents/skills/review/agents/openai.yaml"],
+      });
+      expect(readFileSync(join(root, RENDERED), "utf8")).not.toContain(
+        "forge companions:",
+      );
+      const result = await call("skills.sync", { check: true });
+      expect(result).toMatchObject({
+        ok: true,
+        skipped: [".agents/skills/review/agents/openai.yaml"],
+      });
+      expect(JSON.stringify(result.warnings)).toContain(
+        "left alone because Forge did not write them:",
+      );
+      expect(JSON.stringify(result.warnings)).not.toContain(
+        "run forge skills sync",
+      );
+    });
+  },
+  30_000,
+);
+
+test("R1 refuses an alias junction inside a marked skill and names its SKILL.md", async () => {
+  await withTemplate(async (root, call) => {
+    const folder = join(root, ".agents/skills/review");
+    await call("skills.sync");
+    mkdirSync(join(folder, "agents"));
+    writeFileSync(join(folder, "agents/openai.yaml"), "mine");
+    symlinkSync(
+      join(folder, "agents"),
+      join(folder, "alias"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const edited = readFileSync(join(root, RENDERED), "utf8").replace(
+      GENERATED_MARKER,
+      `${GENERATED_MARKER}\n<!-- forge companions: alias/openai.yaml -->`,
+    );
+    writeFileSync(join(root, RENDERED), edited);
+    const result = await call("skills.sync");
+    expect(result).toMatchObject({ ok: false });
+    expect(JSON.stringify(result)).toContain(RENDERED);
+    expect(readFileSync(join(root, RENDERED), "utf8")).toBe(edited);
+  });
+}, 30_000);
+
+test.each([false, true])(
+  "R1 writes ownership last during file-to-directory companion transition (fail=%s)",
+  async (fail) => {
+    await withTemplate(async (root, call) => {
+      const source = join(root, "tpl/skills/review/data");
+      writeFileSync(source, "old");
+      await call("skills.sync");
+      const original = readFileSync(join(root, RENDERED));
+      rmSync(source);
+      mkdirSync(source);
+      writeFileSync(join(source, "info.txt"), "new");
+      const real = fsAdapter.nodeConfigFiles;
+      const spy = spyOn(fsAdapter, "nodeConfigFiles").mockImplementation(
+        (root) => {
+          const files = real(root);
+          return {
+            ...files,
+            write(path, bytes) {
+              if (fail && path.endsWith("data/info.txt"))
+                throw new Error("injected companion failure");
+              files.write(path, bytes);
+            },
+          };
+        },
+      );
+      try {
+        const result = await call("skills.sync");
+        expect(result).toMatchObject({ ok: !fail });
+        if (fail) expect(readFileSync(join(root, RENDERED))).toEqual(original);
+        else {
+          expect(
+            readFileSync(
+              join(root, ".agents/skills/review/data/info.txt"),
+              "utf8",
+            ),
+          ).toBe("new");
+          expect(readFileSync(join(root, RENDERED), "utf8")).toContain(
+            "forge companions: data/info.txt",
+          );
+        }
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  },
+  30_000,
+);
 
 test("invalid companion lists refuse the whole sync before writes, including internal junctions", async () => {
   await withTemplate(async (root, call) => {
@@ -320,6 +490,26 @@ test("distinct adapter dirs sync once and retiring a whole generated tree leaves
     });
     await call("skills.sync");
     expect(existsSync(retired)).toBe(false);
+  });
+}, 30_000);
+
+test("R1 a former companion replaced by a user directory never grants ownership of its children", async () => {
+  await withTemplate(async (root, call) => {
+    const source = join(root, "tpl/skills/review/data");
+    writeFileSync(source, "generated old file");
+    await call("skills.sync");
+    rmSync(source);
+    mkdirSync(source);
+    writeFileSync(join(source, "info.txt"), "generated new file");
+    const target = join(root, ".agents/skills/review/data");
+    rmSync(target);
+    mkdirSync(target);
+    writeFileSync(join(target, "info.txt"), "user file");
+    expect(await call("skills.sync")).toMatchObject({
+      ok: true,
+      skipped: [".agents/skills/review/data/info.txt"],
+    });
+    expect(readFileSync(join(target, "info.txt"), "utf8")).toBe("user file");
   });
 }, 30_000);
 
