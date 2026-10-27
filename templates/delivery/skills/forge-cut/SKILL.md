@@ -26,7 +26,7 @@ Kind: `task`, `bug`, `feature` or `epic`. Priority is one label of p0, p1, p2, p
 
 ## Order
 
-- Write a graph of demoable, one-context slices as Forge issues. Put prefactors and contract slices first; a need missing from main gets a contract slice.
+- Write a graph of demoable, one-context slices as issues in Forge. Put prefactors and contract slices first; a need missing from main gets a contract slice.
 - Join blocking edges with `forge issue dep --input '{"id":"<slice>","target":"<dep>","action":"add","expectRevision":<n>}'`; hold the claim and read the revision from `forge issue show` first.
 - Each slice ships green alone. Wide refactors run expand, migrate in batches, then contract; each step is a slice and contract depends on every migration batch.
 - Uncertain work goes last. For rename or removal, search the whole repo first and list every hit under Touches.
