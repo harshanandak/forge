@@ -166,8 +166,16 @@ for (const harness of ["claude", "codex"]) {
       "```text\nDone.\n```",
       "~~~text\nDone.\n~~~",
       "Example: `done`",
+      "````text\n```\nDone.\n```\n`````",
+      "~~~~text\n~~~\nDone.\n~~~\n~~~~~",
     ]) {
       expect(hook(message).stdout).toBe("");
+    }
+  });
+  test(`${harness} blocks prose between four-character fences`, () => {
+    for (const fence of ["````", "~~~~"]) {
+      const message = `${fence}text\nfirst\n${fence}\nDone.\n${fence}text\nsecond\n${fence}`;
+      expect(hook(message).stdout, message).toContain('"block"');
     }
   });
   test.each([

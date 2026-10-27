@@ -26,7 +26,13 @@ function check() {
   if (input.stop_hook_active === true || typeof input.cwd !== "string") return;
   const message = input.last_assistant_message;
   if (typeof message !== "string") return;
-  const prose = message.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`]*`/g, " ");
+  // Capture the full opening marker; only the same character at least as long closes it.
+  const prose = message
+    .replace(
+      /^ {0,3}((`|~)\2{2,})[^\n]*(?:\n|$)[\s\S]*?(?:^ {0,3}\1\2*[ \t]*\r?$|(?![\s\S]))/gm,
+      " ",
+    )
+    .replace(/`[^`]*`/g, " ");
   if (
     !/\b(done|fixed|ready|verified)\b/i.test(prose) ||
     /^\s*(?:[-*+]\s+)?\*{0,2}unverified\*{0,2}:\*{0,2}/im.test(prose)
