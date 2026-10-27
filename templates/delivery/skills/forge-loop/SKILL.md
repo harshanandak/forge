@@ -41,7 +41,7 @@ At session start, run `forge memory rules` unless a hook supplied it: `result.te
 ## Two links, never mixed
 
 - **PR to issue** is Forge's: `forge issue link --input '{"id":"<slice>","relation":"delivers","url":"<pr url>"}'`. It needs the held claim, so the worker links before it releases.
-- **PR to agent thread** is the harness's: follow `forge-build`'s opening handoff once. Later wakes read fresh state and act without re-arming event watches. Follow the handoff's `then` after each push for the new head. Forge never stores this link.
+- **PR to agent thread**: follow `forge-build`'s opening handoff. Wakes act without re-arming event watches. After each push, run `forge agent wait <n>`; for `t3-tool`, skip its steps (already watching); otherwise do each step and follow `then`.
 
 ## Autonomy
 

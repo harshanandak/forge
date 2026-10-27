@@ -142,8 +142,8 @@ for (const harness of ["claude", "codex"]) {
     const result = hook("Done. private-canary-must-not-echo");
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ decision: "block" });
-    expect(result.stdout).toContain("not covered");
-    expect(result.stdout).toContain("unverified");
+    expect(result.stdout).toContain("Not covered");
+    expect(result.stdout).toContain("Unverified:");
     expect(result.stdout + result.stderr).not.toContain("private-canary");
   });
   test(`${harness} Stop allows current PASS proof and requires not covered`, () => {
@@ -161,40 +161,66 @@ for (const harness of ["claude", "codex"]) {
     expect(result.status).toBe(0);
     expect(result.stdout + result.stderr).toBe("");
   });
-  test(`${harness} R1-3 ignores questions, negated or conditional claims and code`, () => {
+  test(`${harness} ignores fenced and inline code`, () => {
     for (const message of [
-      "Not done yet",
-      "Is this ready for review?",
-      "once CI is done",
-      "when checks are ready",
-      "until it is fixed",
-      "It isn't done.",
-      "It is not verified.",
       "```text\nDone.\n```",
       "~~~text\nDone.\n~~~",
       "Example: `done`",
-      "Done but unverified",
     ]) {
-      const result = hook(message);
-      expect(result.status).toBe(0);
-      expect(result.stdout + result.stderr, message).toBe("");
+      expect(hook(message).stdout).toBe("");
     }
   });
-  test(`${harness} R1-3 requires proof for affirmative claims despite unrelated unverified words`, () => {
-    for (const message of [
-      "Done.",
-      "Fixed it.",
-      "All checks are ready.",
-      "Fixed the unverified-input bug. Done.",
-      "`unverified` Done.",
-      "```\nunverified\n```\nDone.",
-      "It is not unverified. Done.",
-      "Is it unverified? Done.",
+  test.each([
+    "Done.",
+    "Fixed it.",
+    "All checks are ready.",
+    "Ready to start implementation.",
+    "Tests not run; implementation is done.",
+    "Done, any questions?",
+    "Done but unverified",
+  ])(`${harness} R2-1 blocks completion words: %s`, (message) => {
+    expect(hook(message).stdout, message).toContain('"block"');
+  });
+  test(`${harness} R2-1 requires code-free proof and accepts decorated labels`, () => {
+    expect(
+      hook(`Done. ${receipt}\n~~~\nNot covered: live hooks\n~~~`).stdout,
+    ).toContain('"block"');
+    expect(
+      hook("Done. `" + receipt + "`\nNot covered: live hooks").stdout,
+    ).toContain('"block"');
+    for (const label of [
+      "**Not covered:**",
+      "*Not covered*:",
+      "- **Not covered:**",
+      "* Not covered -",
     ]) {
-      const result = hook(message);
-      expect(result.status).toBe(0);
-      expect(result.stdout, message).toContain('"block"');
+      expect(hook(`Done. ${receipt}\n${label} live hooks`).stdout, label).toBe(
+        "",
+      );
     }
+    for (const label of [
+      "Unverified:",
+      "**Unverified:**",
+      "*Unverified*:",
+      "- **Unverified:**",
+      "* Unverified:",
+    ]) {
+      expect(hook(`Done.\n${label} tests not run`).stdout, label).toBe("");
+    }
+    expect(hook("Done.\n`Unverified:` tests not run").stdout).toContain(
+      '"block"',
+    );
+  });
+  test(`${harness} R2-1 considers only the first three code-free receipt ids`, () => {
+    const ids = [1, 2, 3].map((n) => `00000000-0000-0000-0000-00000000000${n}`);
+    expect(
+      hook(`Done. ${ids.join(" ")} ${receipt}\nNot covered: live hooks`).stdout,
+    ).toContain('"block"');
+    expect(
+      hook(
+        `Done. ${ids.slice(0, 2).join(" ")} ${receipt} ${ids[2]}\nNot covered: live hooks`,
+      ).stdout,
+    ).toBe("");
   });
   test(`${harness} R1-3 accepts uppercase receipt ids and a Not covered dash`, () => {
     const result = hook(
@@ -202,17 +228,6 @@ for (const harness of ["claude", "codex"]) {
     );
     expect(result.status).toBe(0);
     expect(result.stdout + result.stderr).toBe("");
-  });
-  test(`${harness} R1b-4 distinguishes completion readiness and a negated exemption`, () => {
-    for (const message of [
-      "Done and verified; this is not unverified.",
-      "Ready for review",
-      "Ready to merge",
-      "Ready to land",
-      "Ready.",
-    ])
-      expect(hook(message).stdout, message).toContain('"block"');
-    expect(hook("Ready to start the implementation.").stdout).toBe("");
   });
   test(`${harness} R1b-5 guards a nested Forge project and its subfolder`, () => {
     const proof = `Done. ${nestedReceipt}\nNot covered: live hooks`;
@@ -229,9 +244,21 @@ for (const harness of ["claude", "codex"]) {
       rmSync(outer);
     }
   });
+  test(`${harness} R2-2 stops at a native-canonical git boundary below a Forge folder`, () => {
+    const outside = join(project, `non-forge-${harness}`);
+    mkdirSync(outside);
+    expect(run("git", ["init"], outside).status).toBe(0);
+    const alias =
+      process.platform === "win32"
+        ? outside.replace(/^[A-Z]:/, (drive) => drive.toLowerCase())
+        : outside;
+    const result = hook("Done.", false, alias);
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toBe("");
+  });
   test(`${harness} Stop allows unverified, recursive invocation and non-project directories silently`, () => {
     for (const result of [
-      hook("Done but unverified"),
+      hook("Done.\nUnverified: tests not run"),
       hook("Done", true),
       hook("Done", false, root),
       hook("Working"),
@@ -314,7 +341,10 @@ test("delivery skills leave watches armed across wakes", () => {
       join(repo, `templates/delivery/skills/${name}/SKILL.md`),
       "utf8",
     );
-    if (name === "forge-review") expect(text).not.toContain("forge agent wait");
+    if (name === "forge-review" || name === "forge-loop") {
+      expect(text).toContain("After each push, run `forge agent wait <n>`");
+      expect(text).toContain("`t3-tool`, skip its steps");
+    }
     if (name === "forge-build")
       expect(text).not.toContain("forge agent wait <n>");
     if (name === "forge-loop")

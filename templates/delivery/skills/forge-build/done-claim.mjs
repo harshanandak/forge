@@ -26,21 +26,16 @@ function check() {
   if (input.stop_hook_active === true || typeof input.cwd !== "string") return;
   const message = input.last_assistant_message;
   if (typeof message !== "string") return;
-  const prose = message
-    .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`]*`/g, " ")
-    .replace(/[^.!?\n]*\?/g, " ")
-    .replace(/(?:\b(?:not|yet|once|when|until)\b|n['’]t)[^.!?\n]*/gi, " ");
+  const prose = message.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`]*`/g, " ");
   if (
-    !/\b(done|fixed|verified|ready(?=\s*(?:for review\b|to (?:merge|land)\b|[.!?]|$)))\b/i.test(
-      prose,
-    ) ||
-    /(?<![\w-])unverified(?![\w-])/i.test(prose)
+    !/\b(done|fixed|ready|verified)\b/i.test(prose) ||
+    /^\s*(?:[-*+]\s+)?\*{0,2}unverified\*{0,2}:\*{0,2}/im.test(prose)
   )
     return;
   const root = run("git", ["rev-parse", "--show-toplevel"], input.cwd);
   if (root.status !== 0) return;
-  const top = realpathSync(root.stdout.trim());
-  let project = realpathSync(input.cwd);
+  const top = realpathSync.native(root.stdout.trim());
+  let project = realpathSync.native(input.cwd);
   while (!existsSync(join(project, ".forge/config.yaml"))) {
     if (project === top || dirname(project) === project) return;
     project = dirname(project);
@@ -48,14 +43,15 @@ function check() {
   const head = run("git", ["rev-parse", "HEAD"], input.cwd);
   if (
     head.status === 0 &&
-    /^\s*(?:[-*]\s*)?not covered\s*[:–—-]\s*\S.*$/im.test(message)
+    /^\s*(?:[-*+]\s+)?\*{0,2}not covered\*{0,2}\s*[:\u2013\u2014-]\*{0,2}\s*\S.*$/im.test(
+      prose,
+    )
   ) {
-    const ids = new Set(
-      message
-        .match(/\b[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\b/gi)
-        ?.map((id) => id.toLowerCase()) ?? [],
-    );
-    for (const id of ids) {
+    const ids = (
+      prose.match(/\b[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\b/gi) ?? []
+    ).slice(0, 3);
+    for (const candidate of ids) {
+      const id = candidate.toLowerCase();
       const shown = run(
         process.execPath,
         [bin, "check", "show", "--id", id],
@@ -81,7 +77,7 @@ function check() {
     JSON.stringify({
       decision: "block",
       reason:
-        'Add a PASS check receipt id for current HEAD and a "not covered: ..." line, or say "unverified".',
+        'Add an "Unverified:" line, or a PASS check receipt id for current HEAD and a "Not covered: ..." line.',
     }),
   );
 }

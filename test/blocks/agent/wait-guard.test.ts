@@ -178,29 +178,39 @@ test("guard gives a clear warning when the named adapter has no done-claim guard
   }
 });
 
-test("R1b-2 POSIX guard quotes shell expansions, apostrophes and other metacharacters", () => {
-  for (const platform of ["linux", "darwin"] as const) {
+for (const platform of ["win32", "linux", "darwin"] as const) {
+  test(`R2-3 ${platform} guard double-quotes installed paths containing spaces`, () => {
     const fixture = call({ id: "codex" }, [codex]);
     fixture.services.environment.platform = platform;
     fixture.services.environment.packageRoot =
-      '/tmp/Forge $(x) owner\'s `tick` $HOME "quoted"';
+      platform === "win32" ? "C:\\Forge install" : "/tmp/Forge install";
     const result = operations["agent.guard"]!(fixture) as Guard;
     expect(result.config!.hooks.Stop![0]!.hooks[0]!.command).toBe(
-      "node '/tmp/Forge $(x) owner'\\''s `tick` $HOME \"quoted\"/templates/delivery/skills/forge-build/done-claim.mjs'",
+      `node "${platform === "win32" ? "C:" : "/tmp"}/Forge install/templates/delivery/skills/forge-build/done-claim.mjs"`,
     );
+  });
+  for (const character of ["$", "`", '"', "'", "%", "!"]) {
+    test(`R2-3 ${platform} guard refuses installed paths containing ${character}`, () => {
+      const fixture = call({ id: "codex" }, [codex]);
+      fixture.services.environment.platform = platform;
+      fixture.services.environment.packageRoot = `/tmp/Forge ${character} install`;
+      expect(() => operations["agent.guard"]!(fixture)).toThrow(
+        `INPUT_INVALID: Unsupported path character ${character}`,
+      );
+    });
   }
-});
-
-test("R1b-2 Windows guard quotes spaces and dollar-parentheses and refuses embedded quotes", () => {
-  const fixture = call({ id: "codex" }, [codex]);
-  fixture.services.environment.packageRoot = "C:\\Forge $(x) install";
-  const result = operations["agent.guard"]!(fixture) as Guard;
-  expect(result.config!.hooks.Stop![0]!.hooks[0]!.command).toBe(
-    'node "C:/Forge $(x) install/templates/delivery/skills/forge-build/done-claim.mjs"',
-  );
-  fixture.services.environment.packageRoot = 'C:/Forge "quoted" install';
-  expect(() => operations["agent.guard"]!(fixture)).toThrow("INPUT_INVALID");
-});
+  test(`R2-3 ${platform} guard refuses dollar-parentheses in installed paths containing spaces`, () => {
+    const fixture = call({ id: "codex" }, [codex]);
+    fixture.services.environment.platform = platform;
+    fixture.services.environment.packageRoot =
+      platform === "win32"
+        ? "C:\\Forge $(x) install"
+        : "/tmp/Forge $(x) install";
+    expect(() => operations["agent.guard"]!(fixture)).toThrow(
+      "INPUT_INVALID: Unsupported path character $",
+    );
+  });
+}
 test("adapter schema keeps optional capabilities closed and validates guard branches", () => {
   const schema = JSON.parse(
     readFileSync(resolve(root, "schemas/adapter.json"), "utf8"),

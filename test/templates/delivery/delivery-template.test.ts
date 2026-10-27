@@ -437,9 +437,12 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     );
     expect(text["forge-build"]).toContain("then the project's install");
     expect(text["forge-review"]).toContain("read fresh PR state and act");
-    expect(text["forge-review"]).not.toContain("forge agent wait");
-    for (const name of ["forge-build", "forge-review", "forge-loop"])
-      expect(text[name]).toContain("after each push for the new head");
+    for (const name of ["forge-review", "forge-loop"]) {
+      expect(text[name]).toContain(
+        "After each push, run `forge agent wait <n>`",
+      );
+      expect(text[name]).toContain("`t3-tool`, skip its steps");
+    }
     expect(text["forge-loop"]).toContain(
       "Only when resuming a session with existing PR work",
     );

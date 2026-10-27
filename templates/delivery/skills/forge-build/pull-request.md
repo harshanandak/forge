@@ -1,6 +1,6 @@
 # Claim, workspace and PR handoff
 
-Print the optional Stop guard with `forge agent guard`; it requires a current-head PASS receipt and a `not covered:` line for done claims, or an explicit "unverified".
+Print the optional Stop guard with `forge agent guard`; completion words outside code require a current-head PASS receipt and a `Not covered:` line, or an `Unverified:` line.
 
 ## Claim and workspace
 
@@ -30,4 +30,4 @@ No machine-local data: no drive paths, usernames or links to files only on your 
 
 1. **PR to issue (Forge)**, while holding the claim: `forge issue link --input '{"id":"<slice>","relation":"delivers","url":"<pr url>"}'`.
 2. Release: `forge issue release --input '{"id":"<slice>"}'`. Never merge. The orchestrator uses `forge-review`, then `forge-land`.
-3. Last action: run `forge agent wait <n>` once, do each step, then follow `then`, including any instruction to wait again after each push for the new head. On a failed step use `--fallback`. Forge stores neither link nor watch.
+3. Last action: run `forge agent wait <n>` once, do each step, then follow `then`, including any instruction to wait again after each push for the new head. Use `--fallback` only if a link or watch step fails. Forge stores neither link nor watch.

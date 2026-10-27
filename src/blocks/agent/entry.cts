@@ -113,9 +113,10 @@ module.exports = {
       fail("PROVIDER_MISSING", "Installed package root is unavailable");
     const windows = call.services.environment.platform === "win32";
     const path = `${(windows ? root.replaceAll("\\", "/") : root).replace(/\/$/, "")}/templates/delivery/skills/forge-build/done-claim.mjs`;
-    if (windows && path.includes('"'))
-      fail("INPUT_INVALID", "Installed package path contains a double quote");
-    const command = `node ${windows ? `"${path}"` : `'${path.replaceAll("'", "'\\''")}'`}`;
+    const unsupported = path.match(/[$`"'%!]/)?.[0];
+    if (unsupported)
+      fail("INPUT_INVALID", `Unsupported path character ${unsupported}`);
+    const command = `node "${path}"`;
     return {
       file: guard.file,
       instruction: `Merge this hooks entry into ${guard.file}, preserving existing settings and hooks.`,
