@@ -878,7 +878,7 @@ async function gate(
     if (!Number.isSafeInteger(input.pr) || input.pr < 1) invalid();
     const pr = await view();
     head = pr.headRefOid;
-    if (pr.headRefName.startsWith("prototype/"))
+    if (pr.headRefName.toLowerCase().startsWith("prototype/"))
       refuse(
         "PROTOTYPE_BRANCH",
         `${pr.headRefName}: prototype branches never merge; port the decision into a slice`,

@@ -286,17 +286,29 @@ test("gate passes only with a verified current-head receipt and complete GitHub 
   expect(f.calls.find((args) => args[0] === "api")).toContain("--slurp");
 }, 1000);
 
-test("gate refuses prototype branches with a direction to port the decision into a slice", async () => {
-  const f = fixture("prototype/x");
-  await f.receipt();
-  const result = await f.gate();
-  expect(result.verdict).toBe("REFUSED");
-  expect(result.reasons).toContainEqual({
-    code: "PROTOTYPE_BRANCH",
-    detail:
-      "prototype/x: prototype branches never merge; port the decision into a slice",
-  });
-}, 1000);
+for (const branch of ["prototype/x", "Prototype/x", "PROTOTYPE/x"])
+  test(`gate refuses ${branch} with a direction to port the decision into a slice`, async () => {
+    const f = fixture(branch);
+    await f.receipt();
+    const result = await f.gate();
+    expect(result.verdict).toBe("REFUSED");
+    expect(result.reasons).toContainEqual({
+      code: "PROTOTYPE_BRANCH",
+      detail: `${branch}: prototype branches never merge; port the decision into a slice`,
+    });
+  }, 1000);
+
+for (const branch of [
+  "prototypes/x",
+  "prototype",
+  "feat/prototype/x",
+  "feat/x",
+])
+  test(`gate allows ${branch} with complete evidence`, async () => {
+    const f = fixture(branch);
+    await f.receipt();
+    expect((await f.gate()).verdict).toBe("PASS");
+  }, 1000);
 
 test("gate preserves normal branch evidence collection without another gh call", async () => {
   const f = fixture("feat/x");

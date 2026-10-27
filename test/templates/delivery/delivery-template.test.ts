@@ -186,6 +186,15 @@ test("forge-cut replaces marked slice copies while keeping user notes in both ad
       );
       const cut = readFileSync(join(folder, "forge-cut/SKILL.md"), "utf8");
       expect(lint(cut)).toEqual([]);
+      const create = /forge issue create --input '([^']+)'/.exec(cut);
+      expect(create).not.toBeNull();
+      expect(JSON.parse(create![1]!)).toMatchObject({
+        parent: "<intent id>",
+        dependsOn: ["<dep id>"],
+      });
+      expect(cut).toContain("otherwise the epic");
+      expect(cut).toContain("For later edits");
+      expect(cut).toContain("forge issue release");
       expect(cut).toContain("forge companions: framing.md");
       expect(cut).toContain("[framing.md](framing.md)");
       expect(
@@ -479,7 +488,7 @@ test("stale guidance values do not change the rendered delivery instructions", a
     await call("skills.sync");
     for (const [path, value] of [
       ["/values/fixes/maxFailedPerCheck", 3],
-      ["/values/slice/targetLines", 400],
+      ["/values/slice/targetLines", 999],
     ] as const)
       expect(
         await call("config.set", { path, value, expectRevision: "" }),
@@ -490,9 +499,9 @@ test("stale guidance values do not change the rendered delivery instructions", a
     const build = readFileSync(join(root, rendered("build")), "utf8");
     expect(build).toContain("After 2 failed fixes on the same check");
     expect(build).not.toContain("After 3 failed fixes");
-    expect(readFileSync(join(root, rendered("forge-cut")), "utf8")).toContain(
-      "Aim at 400 changed lines",
-    );
+    const cut = readFileSync(join(root, rendered("forge-cut")), "utf8");
+    expect(cut).toContain("Aim at 400 changed lines");
+    expect(cut).not.toContain("999");
   });
 }, 30_000);
 

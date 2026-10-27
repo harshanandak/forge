@@ -221,11 +221,27 @@ describe.skipIf(!upgradeBin)("upgrade from main", () => {
           readFileSync(join(root, dir, "slice/SKILL.md"), "utf8"),
         ).toContain(GENERATED_MARKER);
         writeFileSync(join(root, dir, "slice/NOTES.md"), "keep me\n");
+        expect(
+          readFileSync(join(root, dir, "forge-loop/SKILL.md"), "utf8"),
+        ).toContain("`slice`");
+        writeFileSync(join(root, dir, "forge-loop/NOTES.md"), "loop notes\n");
       }
       expect(cli(["skills", "sync", "--check"]).status).toBe(1);
       expect(cli(["skills", "sync"]).status).toBe(0);
       for (const dir of adapterDirs) {
         expect(existsSync(join(root, dir, "slice/SKILL.md"))).toBe(false);
+        expect(
+          readFileSync(join(root, dir, "forge-loop/SKILL.md"), "utf8"),
+        ).toContain("`forge-cut`");
+        expect(
+          readFileSync(join(root, dir, "forge-loop/NOTES.md"), "utf8"),
+        ).toBe("loop notes\n");
+        expect(
+          readFileSync(
+            join(root, dir, "forge-loop/agents/openai.yaml"),
+            "utf8",
+          ),
+        ).toBe("policy:\n  allow_implicit_invocation: false\n");
         expect(readFileSync(join(root, dir, "slice/NOTES.md"), "utf8")).toBe(
           "keep me\n",
         );

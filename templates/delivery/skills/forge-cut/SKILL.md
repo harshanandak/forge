@@ -10,10 +10,12 @@ description: "Use when work is requested, raised in passing, or a slice is done.
 Before filing, route an unclear goal or done condition to forge-intake. Route open decisions to `forge-intake`; read [framing.md](framing.md) for facts and decision records before slicing.
 
 ```
-forge issue create --input '{"title":"...","kind":"task","labels":["p2"],"parent":"<epic id>","body":"..."}'
+forge issue create --input '{"title":"...","kind":"task","labels":["p2"],"parent":"<intent id>","dependsOn":["<dep id>"],"body":"..."}'
 ```
 
 Kind: `task`, `bug`, `feature` or `epic`. Priority is one label of p0, p1, p2, p3, p4. File settled work and move on; fixes outside the current slice stay filed.
+
+Use intake's intent issue as parent when it created one, otherwise the epic. Set `dependsOn` at creation; omit it for unblocked slices.
 
 ## Slice body: all six sections
 
@@ -27,7 +29,7 @@ Kind: `task`, `bug`, `feature` or `epic`. Priority is one label of p0, p1, p2, p
 ## Order
 
 - Write a graph of demoable, one-context slices as issues in Forge. Put prefactors and contract slices first; a need missing from main gets a contract slice.
-- Join blocking edges with `forge issue dep --input '{"id":"<slice>","target":"<dep>","action":"add","expectRevision":<n>}'`; hold the claim and read the revision from `forge issue show` first.
+- For later edits, use `forge issue dep --input '{"id":"<slice>","target":"<dep>","action":"add","expectRevision":<n>}'`; hold the claim and read the revision from `forge issue show` first, then release with `forge issue release <slice>`.
 - Each slice ships green alone. Wide refactors run expand, migrate in batches, then contract; each step is a slice and contract depends on every migration batch.
 - Uncertain work goes last. For rename or removal, search the whole repo first and list every hit under Touches.
 
