@@ -476,9 +476,8 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-cut"]).toContain("Aim at 400 changed lines");
     expect(text["forge-cut"]).toContain("split above 800");
     expect(text["forge-cut"]).toContain("p0, p1, p2, p3, p4");
-    expect(text["forge-build"]).toContain(
-      `forge issue claim --input '{"id":"<slice>"}'`,
-    );
+    expect(text["forge-build"]).toContain("forge issue claim <slice>");
+    expect(text["forge-build"]).toContain("forge issue renew <slice>");
     expect(text["forge-loop"]).toContain("t3_thread_configuration");
     expect(text["forge-loop"]).toContain("FORGE_SESSION=t3:<threadId>");
     expect(text["forge-loop"]).toContain("every forge command");
