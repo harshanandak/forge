@@ -29,5 +29,6 @@ test("a declared value output prints JSON, suppresses null, and preserves failur
     ["sample", "echo", "hello"],
   );
   expect(response.exitCode).toBe(1);
-  expect(JSON.parse(response.stdout).error.message).toBe("read failed");
+  const body: unknown = JSON.parse(response.stdout);
+  expect(body).toMatchObject({ error: { message: "read failed" } });
 }, 30_000);

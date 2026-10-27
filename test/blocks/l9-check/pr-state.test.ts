@@ -50,7 +50,7 @@ function fixture() {
   const process: ProcessPort = {
     capability: "forge.process/v1",
     resolve: (path) => ({ kind: "resolved", path }),
-    async run(_executable, args, options) {
+    run(_executable, args, options) {
       expect(options.env).toEqual({ PATH: "fixture" });
       let value: unknown;
       if (args[0] === "pr") {
@@ -101,7 +101,7 @@ function fixture() {
         ];
       if (corrupt && Array.isArray(value))
         value = [{ errors: [{ message: "denied" }] }];
-      return {
+      return Promise.resolve({
         stdout: JSON.stringify(value),
         stderr: "",
         exitCode: 0,
@@ -109,7 +109,7 @@ function fixture() {
         timedOut: false,
         truncated: false,
         durationMs: 1,
-      };
+      });
     },
   };
   const read = (since?: string) =>

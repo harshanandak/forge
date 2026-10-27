@@ -1008,11 +1008,11 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
         "--paginate",
         "--slurp",
         "--hostname",
-        repository![1]!,
+        repository[1]!,
         "-F",
-        `owner=${repository![2]}`,
+        `owner=${repository[2]}`,
         "-F",
-        `repo=${repository![3]}`,
+        `repo=${repository[3]}`,
         "-F",
         `n=${args.input.pr}`,
         "-F",
@@ -1023,7 +1023,7 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
     ) as unknown;
   const checkPages = await api(CHECK_QUERY);
   if (Array.isArray(checkPages) && checkPages.length === 1) {
-    const page = checkPages[0];
+    const page: unknown = checkPages[0];
     if (
       isRecord(page) &&
       isRecord(page.data) &&
@@ -1140,11 +1140,11 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
     const pages: unknown = JSON.parse(
       await gh([
         "api",
-        `repos/${repository![2]}/${repository![3]}/${endpoint}?per_page=100`,
+        `repos/${repository[2]}/${repository[3]}/${endpoint}?per_page=100`,
         "--paginate",
         "--slurp",
         "--hostname",
-        repository![1]!,
+        repository[1]!,
       ]),
     );
     if (!Array.isArray(pages) || !pages.length || !pages.every(Array.isArray))
