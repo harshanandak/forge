@@ -166,6 +166,9 @@ for (const harness of ["claude", "codex"]) {
       "```text\nDone.\n```",
       "~~~text\nDone.\n~~~",
       "Example: `done`",
+      "Example: ``Done.``",
+      "> ~~~\n> Done.\n> ~~~",
+      "    ~~~\n    Done.\n    ~~~",
       "````text\n```\nDone.\n```\n`````",
       "~~~~text\n~~~\nDone.\n~~~\n~~~~~",
     ]) {
@@ -176,6 +179,27 @@ for (const harness of ["claude", "codex"]) {
     for (const fence of ["````", "~~~~"]) {
       const message = `${fence}text\nfirst\n${fence}\nDone.\n${fence}text\nsecond\n${fence}`;
       expect(hook(message).stdout, message).toContain('"block"');
+    }
+  });
+  test.each([
+    "Done.\n- ~~~\n  Unverified: tests not run\n  ~~~",
+    "```language`oops\nDone.",
+    "~~~\rcontent\r~~~\rDone.",
+    "Done.\n``Unverified: tests not run``",
+    "~~~text\nDone.",
+    "````text\n```\nDone.",
+    "````text\nDone.\n```",
+    "~~~~text\nDone.\n~~~",
+  ])(`${harness} preserves claims outside matched code: %s`, (message) => {
+    const result = hook(message);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('"block"');
+  });
+  test(`${harness} silently ignores null and non-object payloads`, () => {
+    for (const input of ["null", "false", "0", '"text"', "[]"]) {
+      const result = run(node, [script], root, input);
+      expect(result.status).toBe(0);
+      expect(result.stdout + result.stderr).toBe("");
     }
   });
   test.each([

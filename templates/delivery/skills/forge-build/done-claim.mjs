@@ -23,16 +23,17 @@ function check() {
   } catch {
     return;
   }
+  if (input === null || typeof input !== "object") return;
   if (input.stop_hook_active === true || typeof input.cwd !== "string") return;
   const message = input.last_assistant_message;
   if (typeof message !== "string") return;
-  // Capture the full opening marker; only the same character at least as long closes it.
+  // Fences close at an equal or longer run; unmatched openers remain prose.
   const prose = message
     .replace(
-      /^ {0,3}((`|~)\2{2,})[^\n]*(?:\n|$)[\s\S]*?(?:^ {0,3}\1\2*[ \t]*\r?$|(?![\s\S]))/gm,
+      /(?<!`)(`{3,})(?!`)[\s\S]*?\1`*|(?<!~)(~{3,})(?!~)[\s\S]*?\2~*/g,
       " ",
     )
-    .replace(/`[^`]*`/g, " ");
+    .replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, " ");
   if (
     !/\b(done|fixed|ready|verified)\b/i.test(prose) ||
     /^\s*(?:[-*+]\s+)?\*{0,2}unverified\*{0,2}:\*{0,2}/im.test(prose)
