@@ -12,6 +12,8 @@ Print the optional Stop guard with `forge agent guard`; completion words outside
 
 Run `forge issue checkpoint <slice> --step <step> --branch "<branch>" --worktree "<path>" --next "<next action>"` after the claim (`claimed`), red (`red`), green (`green`) and push (`pushed`), and when a timebox expires (`stopped`). Include `--head`, `--pr` and `--receipt` when available. `next` is required, 1-300 characters. Write the checkpoint before stopping; report it with receipts and remaining work.
 
+If checkpoint returns REVISION_CONFLICT (another comment took the id), run `forge issue resume <slice>` and read `forge issue comments <slice>`, then write the checkpoint again. Do not retry silently.
+
 ## Push and open
 
 1. Require SKILL.md's Final-head proof. Target at most 800 changed lines and 15 files; above 1500 lines, split before opening. Commits carry no co-author or tool trailers (trailers: none).
