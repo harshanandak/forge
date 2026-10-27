@@ -123,7 +123,9 @@ test("T3 wait links the real URL before watching, and cleanup names native tools
   );
   const sweep = wait({ pr: 42, sweep: true }, [codex], env);
   expect(sweep.steps).toEqual(["list_thread_pull_requests"]);
-  expect(sweep.then).toMatch(/merged.*closed.*forge agent wait.*--done/i);
+  expect(sweep.then).toMatch(
+    /session resumed.*forge agent wait.*--done.*merged.*closed/i,
+  );
 });
 test("guard renders a quoted installed companion path for a named or detected hook", () => {
   for (const input of [{ id: "codex" }, {}]) {
@@ -149,8 +151,8 @@ test("guard renders a quoted installed companion path for a named or detected ho
     expect(result.instruction).toMatch(/merge/i);
   }
 });
-test("guard gives a clear warning when no done-claim guard exists", () => {
-  for (const input of [{ id: "unknown" }, {}]) {
+test("guard gives a clear warning when the named adapter has no done-claim guard", () => {
+  for (const input of [{ id: "plain" }]) {
     const result = operations["agent.guard"]!(
       call(input, [{ id: "plain", detect: [], guard: { kind: "none" } }]),
     ) as Guard;

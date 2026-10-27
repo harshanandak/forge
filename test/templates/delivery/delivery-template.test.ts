@@ -426,13 +426,24 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-review"]).not.toContain("gh api graphql");
     for (const name of SKILLS) expect(text[name]).not.toContain("templates/");
     expect(text["forge-build"]).toContain('"relation":"delivers"');
-    for (const name of [
-      "forge-build",
-      "forge-review",
-      "forge-land",
-      "forge-loop",
-    ])
-      expect(text[name]).toContain("forge agent wait <n>");
+    expect(text["forge-build"].match(/`forge agent wait <n>`/g)).toHaveLength(
+      1,
+    );
+    expect(text["forge-build"]).toContain("Immediately after the PR opens");
+    expect(text["forge-build"]).toContain(
+      "git worktree add <path> -b <branch> origin/main",
+    );
+    expect(text["forge-build"]).toContain("then the project's install");
+    expect(text["forge-review"]).toContain("read fresh PR state and act");
+    expect(text["forge-review"]).not.toContain("forge agent wait");
+    expect(text["forge-loop"]).toContain(
+      "Only when resuming a session with existing PR work",
+    );
+    expect(text["forge-loop"].match(/--sweep/g)).toHaveLength(1);
+    expect(text["forge-loop"]).toContain("act without re-arming the watch");
+    expect(text["forge-loop"]).toContain("unmerged close or handback");
+    for (const name of ["forge-land", "forge-loop"])
+      expect(text[name]).toContain("forge agent wait <n> --done");
     expect(
       existsSync(join(root, ".agents/skills/forge-build/done-claim.mjs")),
     ).toBe(true);

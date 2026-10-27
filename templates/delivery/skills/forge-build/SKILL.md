@@ -5,7 +5,7 @@ description: "Claim and build one slice with red/green receipts, risk-scaled pro
 
 # forge-build
 
-Read [pull-request.md](pull-request.md) for setup and PR handoff. After the PR opens: Run `forge agent wait <n>`, do each step, then follow `then`. On a failed step use `--fallback`.
+Read [pull-request.md](pull-request.md) for setup and PR handoff.
 
 ## Worker brief
 

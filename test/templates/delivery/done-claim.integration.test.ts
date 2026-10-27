@@ -51,6 +51,7 @@ function forge(...args: string[]) {
 let receipt: string;
 beforeAll(() => {
   mkdirSync(join(project, ".forge"), { recursive: true });
+  mkdirSync(join(project, "nested"));
   writeFileSync(
     join(project, ".forge/config.yaml"),
     JSON.stringify({
@@ -119,6 +120,57 @@ for (const harness of ["claude", "codex"]) {
       "",
     );
     expect(hook(`Fixed: ${receipt}`).stdout).toContain('"block"');
+  });
+  test(`${harness} R1-2 reads a current receipt from the project root when stopped below it`, () => {
+    const result = hook(
+      `Done. ${receipt}\nNot covered: live hooks`,
+      false,
+      join(project, "nested"),
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toBe("");
+  });
+  test(`${harness} R1-3 ignores questions, negated or conditional claims and code`, () => {
+    for (const message of [
+      "Not done yet",
+      "Is this ready for review?",
+      "once CI is done",
+      "when checks are ready",
+      "until it is fixed",
+      "It isn't done.",
+      "It is not verified.",
+      "```text\nDone.\n```",
+      "~~~text\nDone.\n~~~",
+      "Example: `done`",
+      "Done but unverified",
+    ]) {
+      const result = hook(message);
+      expect(result.status).toBe(0);
+      expect(result.stdout + result.stderr, message).toBe("");
+    }
+  });
+  test(`${harness} R1-3 requires proof for affirmative claims despite unrelated unverified words`, () => {
+    for (const message of [
+      "Done.",
+      "Fixed it.",
+      "All checks are ready.",
+      "Fixed the unverified-input bug. Done.",
+      "`unverified` Done.",
+      "```\nunverified\n```\nDone.",
+      "It is not unverified. Done.",
+      "Is it unverified? Done.",
+    ]) {
+      const result = hook(message);
+      expect(result.status).toBe(0);
+      expect(result.stdout, message).toContain('"block"');
+    }
+  });
+  test(`${harness} R1-3 accepts uppercase receipt ids and a Not covered dash`, () => {
+    const result = hook(
+      `Verified. ${receipt.toUpperCase()}\nNot covered - live hooks`,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toBe("");
   });
   test(`${harness} Stop allows unverified, recursive invocation and non-project directories silently`, () => {
     for (const result of [
@@ -194,7 +246,7 @@ test("Stop refuses an older commit receipt", () => {
   expect(result.status).toBe(0);
   expect(result.stdout).toContain('"block"');
 });
-test("delivery skills delegate every watch lifecycle to agent.wait", () => {
+test("delivery skills leave watches armed across wakes", () => {
   for (const name of [
     "forge-build",
     "forge-review",
@@ -205,9 +257,12 @@ test("delivery skills delegate every watch lifecycle to agent.wait", () => {
       join(repo, `templates/delivery/skills/${name}/SKILL.md`),
       "utf8",
     );
-    expect(text).toContain(
-      "Run `forge agent wait <n>`, do each step, then follow `then`",
-    );
+    if (name === "forge-review") expect(text).not.toContain("forge agent wait");
+    if (name === "forge-build")
+      expect(text).not.toContain("forge agent wait <n>");
+    if (name === "forge-loop")
+      expect(text).toContain("Only when resuming a session");
+    if (name === "forge-land") expect(text).toContain("--done");
     expect(text).not.toMatch(
       /watch_pull_request|gh pr checks .*--watch|Claude Code|Codex|T3 Code/,
     );

@@ -12,7 +12,7 @@ Every wake: read, route, stop. Read the chosen skill before acting.
 
 Threaded chats: call MCP `t3_thread_configuration` once (no args) and set `FORGE_SESSION=t3:<threadId>` for every forge command, even after a harness switch. Workers you launch keep their own task session.
 
-Run `forge agent wait <n>`, do each step, then follow `then`, adding `--sweep` before reading state on every wake. On abandon or an unmerged close, use `--done` for each PR; on a failed step use `--fallback`.
+Only when resuming a session with existing PR work, run `forge agent wait --sweep`, do each step, then follow `then`. On abandon, an unmerged close or handback, run `forge agent wait <n> --done` and follow its steps and `then`; on a failed step use `--fallback`.
 
 At session start, run `forge memory rules` unless a hook supplied it: `result.text.text` is a pointer, never note text. Search memory before starting a task; use its search/show commands.
 
@@ -39,7 +39,7 @@ At session start, run `forge memory rules` unless a hook supplied it: `result.te
 ## Two links, never mixed
 
 - **PR to issue** is Forge's: `forge issue link --input '{"id":"<slice>","relation":"delivers","url":"<pr url>"}'`. It needs the held claim, so the worker links before it releases.
-- **PR to agent thread** is the harness's: follow `forge agent wait <n>` after opening. Forge never stores this link.
+- **PR to agent thread** is the harness's: follow `forge-build`'s opening handoff once. Later wakes read fresh state and act without re-arming the watch. Forge never stores this link.
 
 ## Autonomy
 

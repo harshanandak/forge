@@ -256,10 +256,21 @@ test("shipped guards resolve an existing installed companion from an unrelated c
     "~/.codex/hooks.json",
   );
   const unknown = run(["agent", "guard", "unknown"]);
-  expect(unknown.status).toBe(0);
-  expect(readResult<GuardResult>(unknown.stdout).instruction).toMatch(
-    /no done-claim guard/i,
-  );
+  expect(unknown.status).toBe(6);
+  for (const text of ["INPUT_INVALID", "claude", "codex"])
+    expect(unknown.stdout).toContain(text);
+});
+
+test("R1-5 an undetected agent refuses and lists known ids", () => {
+  const result = run(["agent", "guard"]);
+  expect(result.status).toBe(6);
+  for (const text of [
+    "INPUT_INVALID",
+    "no agent detected; name one:",
+    "claude",
+    "codex",
+  ])
+    expect(result.stdout).toContain(text);
 });
 
 test("configured T3 capability renders native watch and cleanup steps", () => {

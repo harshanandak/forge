@@ -83,7 +83,7 @@ module.exports = {
               ];
     const then =
       input.sweep && kind === "t3-tool"
-        ? "For each merged or closed PR, run forge agent wait <n> --done."
+        ? "Session resumed: run forge agent wait <n> --done for each merged or closed PR; then read fresh state without re-arming watches."
         : input.done || input.sweep
           ? "Finish cleanup after following these steps."
           : kind === "t3-tool"
@@ -95,10 +95,17 @@ module.exports = {
     const adapter = call.input.id
       ? call.config.adapters.find(({ id }) => id === call.input.id)
       : detected(call);
-    const guard = adapter?.guard;
+    if (!adapter)
+      fail(
+        "INPUT_INVALID",
+        call.input.id
+          ? `Unknown agent ${call.input.id}; name one: ${call.config.adapters.map(({ id }) => id).join(", ")}`
+          : `no agent detected; name one: ${call.config.adapters.map(({ id }) => id).join(", ")}`,
+      );
+    const guard = adapter.guard;
     if (guard?.kind !== "hook")
       return {
-        instruction: `Warning: no done-claim guard for ${call.input.id ?? adapter?.id ?? "current"}.`,
+        instruction: `Warning: no done-claim guard for ${adapter.id}.`,
       };
     const root = call.services.environment.packageRoot;
     if (!root)

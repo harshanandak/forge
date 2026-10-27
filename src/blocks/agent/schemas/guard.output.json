@@ -5,37 +5,6 @@
   "properties": {
     "file": { "type": "string", "minLength": 1 },
     "instruction": { "type": "string", "minLength": 1 },
-    "config": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["hooks"],
-      "properties": {
-        "hooks": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["hooks"],
-              "properties": {
-                "hooks": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["type", "command"],
-                    "properties": {
-                      "type": { "const": "command" },
-                      "command": { "type": "string", "minLength": 1 }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+    "config": { "type": "object" }
   }
 }

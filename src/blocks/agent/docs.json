@@ -2,7 +2,7 @@
   "operations": {
     "agent.wait": {
       "title": "Render PR wait or cleanup steps",
-      "summary": "Render harness guidance without network access. Run gh checks in the foreground; T3 links the real PR URL and arms its native watch. Done or sweep cleans up native watches. Fallback forces gh checks when native watching is unavailable.",
+      "summary": "Render wait steps once after PR opens: foreground gh checks or T3 link/watch. Wakes read fresh state without re-arming. Sweep only on session resume; done on land, abandon or handback. Fallback uses gh checks. No network access.",
       "examples": [
         { "command": "forge agent wait 42 --text" },
         { "command": "forge agent wait 42 --done" },
