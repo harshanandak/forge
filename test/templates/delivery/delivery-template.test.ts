@@ -429,7 +429,9 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-build"]?.match(/`forge agent wait <n>`/g)).toHaveLength(
       1,
     );
-    expect(text["forge-build"]).toContain("Immediately after the PR opens");
+    expect(text["forge-build"]).toMatch(
+      /forge issue release[\s\S]*Last action: run `forge agent wait <n>`/,
+    );
     expect(text["forge-build"]).toContain(
       "git worktree add <path> -b <branch> origin/main",
     );
