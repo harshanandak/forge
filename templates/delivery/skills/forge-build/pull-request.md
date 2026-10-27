@@ -8,7 +8,7 @@
 
 ## Push and open
 
-1. Require the final-head proof above. Target at most 800 changed lines and 15 files; above 1500 lines, split before opening. Commits carry no co-author or tool trailers (trailers: none).
+1. Require SKILL.md's Final-head proof. Target at most 800 changed lines and 15 files; above 1500 lines, split before opening. Commits carry no co-author or tool trailers (trailers: none).
 2. `git push -u origin <branch>`. Never force-push; that is a one-way door.
 3. Write the body to a file with the editor tool, then `gh pr create --base <base> --title "<plain conventional commit>" --body-file <file>`.
 

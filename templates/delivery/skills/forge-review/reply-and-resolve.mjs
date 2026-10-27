@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
+let replyId;
 try {
   const [owner, repo, pr, comment, thread, file, ...extra] =
     process.argv.slice(2);
@@ -25,7 +26,9 @@ try {
       timeout: 30_000,
     });
     if (result.error || result.status !== 0)
-      throw new Error("gh review-thread mutation failed");
+      throw new Error(
+        result.stderr?.trim() || "gh review-thread mutation failed",
+      );
     const response = JSON.parse(result.stdout);
     if (response.errors?.length)
       throw new Error("GitHub rejected review-thread mutation");
@@ -43,6 +46,7 @@ try {
   );
   if (!Number.isInteger(reply.id))
     throw new Error("GitHub did not confirm the reply");
+  replyId = reply.id;
   const resolved = api(["graphql"], {
     query:
       "mutation($thread:ID!){resolveReviewThread(input:{threadId:$thread}){thread{isResolved}}}",
@@ -52,6 +56,12 @@ try {
     throw new Error("GitHub did not confirm resolution");
   console.log("true");
 } catch (error) {
-  console.error(error.message);
+  let detail = error.message;
+  for (const name of ["GH_TOKEN", "GITHUB_TOKEN"])
+    if (process.env[name])
+      detail = detail.replaceAll(process.env[name], "[redacted]");
+  console.error(
+    replyId ? `reply ${replyId} posted; resolve failed: ${detail}` : detail,
+  );
   process.exitCode = 1;
 }

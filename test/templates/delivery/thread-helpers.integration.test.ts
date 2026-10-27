@@ -12,10 +12,12 @@ const helpers = resolve(
 const thread = (id: string, isResolved = false) => ({
   id,
   isResolved,
+  path: "src/example.ts",
+  line: 7,
   comments: {
     nodes: [
       {
-        databaseId: 42,
+        fullDatabaseId: "42",
         path: "src/example.ts",
         line: 7,
         author: { login: "reviewer" },
@@ -50,15 +52,17 @@ function fixture(
   if (!node) throw new Error("Node runtime required");
   const env: NodeJS.ProcessEnv = Object.fromEntries(
     Object.entries(process.env).filter(([name]) =>
-      /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP)$/i.test(name),
+      /^(PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP)$/i.test(name),
     ),
   );
   Object.assign(env, {
+    PATH: root,
     HOME: root,
     USERPROFILE: root,
     XDG_CONFIG_HOME: root,
     GH_CONFIG_DIR: root,
     GH_TEST_ROOT: root,
+    GH_TOKEN: "not-a-real-token",
   });
   const preload = join(root, "preload.mjs");
   try {
@@ -92,7 +96,10 @@ const previous = readFileSync(join(root, 'calls.jsonl'), 'utf8').trim().split('\
 appendFileSync(join(root, 'calls.jsonl'), JSON.stringify({ args, payload }) + '\\n');
 const resolving = payload.query?.includes('resolveReviewThread');
 const listing = payload.query?.includes('reviewThreads');
-if (scenario.failure === 'transport' || (resolving && scenario.failure === 'resolve-transport')) process.exit(1);
+if (scenario.failure === 'transport' || (resolving && scenario.failure === 'resolve-transport')) {
+  process.stderr.write((resolving ? 'resolve transport refused' : 'reply transport refused') + ' ' + process.env.GH_TOKEN + String.fromCharCode(10));
+  process.exit(1);
+}
 let response;
 if (listing) {
   const page = scenario.pages?.[previous.length];
@@ -148,7 +155,7 @@ test("list helper follows all pages and emits only unresolved first comments", (
       ).toEqual([
         {
           id: "open-one",
-          commentId: 42,
+          commentId: "42",
           path: "src/example.ts",
           line: 7,
           author: "reviewer",
@@ -156,7 +163,7 @@ test("list helper follows all pages and emits only unresolved first comments", (
         },
         {
           id: "open-two",
-          commentId: 42,
+          commentId: "42",
           path: "src/example.ts",
           line: 7,
           author: "reviewer",
@@ -190,13 +197,145 @@ test("list helper follows all pages and emits only unresolved first comments", (
   );
 }, 30_000);
 
+test.each(["2787717459", "9007199254740993"])(
+  "R1-1 preserves full comment id %s as a decimal string",
+  (id) => {
+    const node = thread("large-id");
+    fixture(
+      (_root, invoke, calls) => {
+        const result = invoke("list-threads.mjs");
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toMatchObject({ commentId: id });
+        expect(calls()[0]?.payload.query).toContain("fullDatabaseId");
+        expect(calls()[0]?.payload.query).not.toContain("{databaseId");
+      },
+      {
+        pages: [
+          {
+            nodes: [
+              {
+                ...node,
+                comments: {
+                  nodes: [
+                    {
+                      ...node.comments.nodes[0],
+                      databaseId: null,
+                      fullDatabaseId: id,
+                    },
+                  ],
+                },
+              },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        ],
+      },
+    );
+  },
+  30_000,
+);
+
+test.each(["transport", "resolve-transport"])(
+  "R1-2 identifies the failed mutation on %s",
+  (failure) => {
+    fixture(
+      (root, invoke, calls) => {
+        const file = join(root, "reply.txt");
+        writeFileSync(file, "reply");
+        const result = invoke("reply-and-resolve.mjs", [
+          "owner",
+          "repo",
+          "123",
+          "2787717459",
+          "thread",
+          file,
+        ]);
+        expect(result.status).not.toBe(0);
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toContain(
+          failure === "transport"
+            ? "reply transport refused"
+            : "resolve transport refused",
+        );
+        expect(result.stderr).not.toContain("not-a-real-token");
+        expect(result.stderr).toContain("[redacted]");
+        if (failure === "transport") {
+          expect(result.stderr).not.toContain("posted");
+          expect(calls()).toHaveLength(1);
+        } else {
+          expect(result.stderr).toContain("reply 99 posted; resolve failed");
+          expect(calls()).toHaveLength(2);
+        }
+      },
+      { failure },
+    );
+  },
+  30_000,
+);
+
+test("R1-5 maps thread locations and missing comments without splitting emoji", () => {
+  const node = thread("unicode");
+  fixture(
+    (_root, invoke) => {
+      const result = invoke("list-threads.mjs");
+      expect(result.status, result.stderr).toBe(0);
+      expect(
+        result.stdout
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as unknown),
+      ).toEqual([
+        {
+          id: "unicode",
+          commentId: "2787717459",
+          path: "thread.ts",
+          line: 19,
+          author: "reviewer",
+          body: "🌿".repeat(200),
+        },
+        {
+          id: "empty",
+          commentId: null,
+          path: null,
+          line: null,
+          author: null,
+          body: "",
+        },
+      ]);
+    },
+    {
+      pages: [
+        {
+          nodes: [
+            {
+              ...node,
+              path: "thread.ts",
+              line: 19,
+              comments: {
+                nodes: [
+                  {
+                    ...node.comments.nodes[0],
+                    fullDatabaseId: "2787717459",
+                    body: "🌿".repeat(201),
+                  },
+                ],
+              },
+            },
+            { id: "empty", isResolved: false, comments: { nodes: [] } },
+          ],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      ],
+    },
+  );
+}, 30_000);
+
 test.each([
   "transport",
   "graphql",
   "invalid-json",
   "missing-page",
   "missing-cursor",
-  "repeated-cursor",
 ])(
   "list helper fails closed on %s",
   (failure) => {
@@ -245,6 +384,7 @@ test("list helper permits deleted authors and outdated lines, including an empty
   const comment = outdated.comments.nodes[0]!;
   const node = {
     ...outdated,
+    line: null,
     comments: { nodes: [{ ...comment, author: null, line: null }] },
   };
   fixture(

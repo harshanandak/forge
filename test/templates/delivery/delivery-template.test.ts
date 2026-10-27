@@ -90,6 +90,10 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
             "one push wave",
             "harness wake",
             "sleep loop",
+            "clean behind-base update",
+            "merge base locally",
+            "retry only `resolveReviewThread`",
+            "gh repo view --json owner,name",
           ])
             expect(text).toContain(phrase);
         }
@@ -565,6 +569,8 @@ test("the rendered forge-loop pages through adopted decision titles and proposal
     expect(loop).toContain("titles only");
     expect(loop).toContain("no decision text");
     expect(loop).toContain("see below for pagination");
+    expect(loop).toContain("`forge-build`'s Worker brief");
+    expect(loop).not.toContain("End state:");
     for (const name of ["forge-land", "forge-cut"]) {
       const text = readFileSync(
         join(

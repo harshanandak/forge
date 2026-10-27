@@ -122,11 +122,36 @@ const npm = project({
   "package-lock.json": '{"lockfileVersion":3}',
 });
 const synced = npm.cli(["skills", "sync"]).result;
-for (const name of ["build", "forge-loop", "forge-intake", "forge-cut"])
+for (const name of [
+  "forge-build",
+  "forge-review",
+  "forge-land",
+  "forge-loop",
+  "forge-intake",
+  "forge-cut",
+])
   assert.ok(
     synced.written.includes(`.agents/skills/${name}/SKILL.md`),
     `skills sync renders ${name} from the installed package`,
   );
+const review = ".agents/skills/forge-review/";
+for (const file of ["list-threads.mjs", "reply-and-resolve.mjs"]) {
+  assert.ok(
+    synced.written.includes(review + file),
+    `skills sync copies ${file} from the installed package`,
+  );
+  assert.equal(
+    readFileSync(join(npm.root, review, file), "utf8"),
+    readFileSync(
+      join(installed, "templates/delivery/skills/forge-review", file),
+      "utf8",
+    ),
+  );
+}
+assert.match(
+  readFileSync(join(npm.root, review, "SKILL.md"), "utf8"),
+  /forge companions: list-threads.mjs, reply-and-resolve.mjs/,
+);
 assert.match(
   readFileSync(join(npm.root, ".agents/skills/forge-cut/SKILL.md"), "utf8"),
   /Aim at 400 changed lines/,

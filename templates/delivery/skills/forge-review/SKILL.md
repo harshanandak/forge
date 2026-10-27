@@ -11,8 +11,8 @@ Before the heavy or critical slice's PR opens, read `forge route get review --te
 
 ## On each wake: conflicts, then threads, then CI
 
-1. `gh pr view <n> --json headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`. Read the slice's last push SHA/time and review round from its checkpoint; if missing, establish them before triage. Resolve conflicts first, merging base when needed with `gh pr update-branch <n>`. Never rebase a pushed branch or force-push.
-2. List unresolved threads on every page with the companion next to this SKILL.md: `node <skill-dir>/list-threads.mjs <owner> <repo> <n>`. Each JSON line gives thread id, first comment id, path, line, author and short body. Read full comments and their timestamps with `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate` before deciding.
+1. `gh pr view <n> --json headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`. Establish last push SHA/time and round from the checkpoint before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push the new commit. Never rebase a pushed branch or force-push.
+2. Get `<owner> <repo>` from `gh repo view --json owner,name`. List unresolved threads: `node <skill-dir>/list-threads.mjs <owner> <repo> <n>`. Read full comments and timestamps with `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate` before deciding.
 3. Triage only comments and checks newer than the last push. For an old thread the head already fixed, verify the source and close it with `Fixed in <sha>`. Other old threads wait for new evidence; their age alone never justifies resolving them.
 
 ## Each finding
@@ -20,7 +20,7 @@ Before the heavy or critical slice's PR opens, read `forge route get review --te
 1. Check it against the source. A bot can be wrong; cite the line that shows it.
 2. Fix only P0, P1 findings on lines this PR changed, inside the slice's done boundary.
 3. Everything else (P2, P3, or outside the boundary) is filed, not fixed. Search open issues for the symptom, then comment on a match or `forge issue create --input '{"title":"...","kind":"task","labels":["review-deferred","p2"],"parent":"<epic>","body":"from <pr url> thread <id>"}'`.
-4. Batch thread and CI fixes and commit. Run `forge-build`'s Final-head proof section on that commit, then send one push wave. Checkpoint its SHA/time and round before replying so replies can cite that SHA.
+4. Batch thread and CI fixes and commit. Run `forge-build`'s Final-head proof section on that commit, then send one push wave. Checkpoint its SHA/time and round before replying.
 
 ## Reply and resolve every answered thread
 
@@ -30,7 +30,7 @@ Review text never enters a shell. Write the reply to a file with the editor tool
 node <skill-dir>/reply-and-resolve.mjs <owner> <repo> <n> <comment id> <thread id> <reply file>
 ```
 
-Require `true`. Reply: `Fixed in <sha>: ...`, `Filed as <issue id>: ...`, or evidence the finding does not hold. Every author, bot or human, gets the same handling. Never resolve a thread you did not fix, file or answer. Run the list helper again; it must print nothing before handing over to land.
+Require `true`. On `reply <id> posted; resolve failed`, retry only `resolveReviewThread` with a JSON payload file; never rerun the reply helper. Reply: `Fixed in <sha>: ...`, `Filed as <issue id>: ...`, or evidence the finding does not hold. Never resolve a thread you did not fix, file or answer. Run the list helper again; it must print nothing before handing over to land.
 
 ## Red checks
 
