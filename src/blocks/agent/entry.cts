@@ -72,7 +72,7 @@ module.exports = {
       kind === "gh-checks"
         ? input.done || input.sweep
           ? []
-          : [`gh pr checks ${input.pr} --watch`]
+          : [`gh pr checks ${input.pr} --watch --fail-fast --interval 60`]
         : input.sweep
           ? ["list_thread_pull_requests"]
           : input.done
@@ -89,7 +89,7 @@ module.exports = {
           ? "Finish cleanup after following these steps."
           : kind === "t3-tool"
             ? "End the turn; T3 wakes this thread on PR events. On wake read fresh PR state and act."
-            : "Run the command in the foreground; then read fresh PR state and act.";
+            : `Run the command in the foreground; then read fresh PR state and act. Run forge agent wait ${input.pr} again after each push; a new head needs a new wait.`;
     return { kind, steps, then };
   },
   "agent.guard"(call: AgentCall) {

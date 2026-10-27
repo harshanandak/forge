@@ -436,6 +436,8 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-build"]).toContain("then the project's install");
     expect(text["forge-review"]).toContain("read fresh PR state and act");
     expect(text["forge-review"]).not.toContain("forge agent wait");
+    for (const name of ["forge-build", "forge-review", "forge-loop"])
+      expect(text[name]).toContain("after each push for the new head");
     expect(text["forge-loop"]).toContain(
       "Only when resuming a session with existing PR work",
     );
@@ -445,7 +447,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-loop"]).toContain(
       "Report and skip a failed `--sweep` or `--done` step.",
     );
-    expect(text["forge-loop"]).toContain("act without re-arming the watch");
+    expect(text["forge-loop"]).toContain("act without re-arming event watches");
     expect(text["forge-loop"]).toContain("unmerged close or handback");
     for (const name of ["forge-land", "forge-loop"])
       expect(text[name]).toContain("forge agent wait <n> --done");

@@ -2,7 +2,7 @@
   "operations": {
     "agent.wait": {
       "title": "Render PR wait or cleanup steps",
-      "summary": "Render wait steps once after PR opens: foreground gh checks or T3 link/watch. Wakes read fresh state without re-arming. Sweep only on session resume; done on land, abandon or handback. Fallback uses gh checks. No network access.",
+      "summary": "After PR opens: gh pr checks <n> --watch --fail-fast --interval 60 or T3 link/watch once. Read fresh PR state and act; rerun gh-checks wait after each push. T3 wakes never re-arm. Sweep on session resume; done on land, abandon or handback. Fallback uses gh checks. No network.",
       "examples": [
         { "command": "forge agent wait 42 --text" },
         { "command": "forge agent wait 42 --done" },

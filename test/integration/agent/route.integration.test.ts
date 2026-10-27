@@ -231,10 +231,13 @@ test("agent wait and cleanup render guidance without contacting GitHub", () => {
     const value = readResult<WaitResult>(result.stdout);
     expect(value).toEqual({
       kind: "gh-checks",
-      steps: ["gh pr checks 42 --watch"],
+      steps: ["gh pr checks 42 --watch --fail-fast --interval 60"],
       then: value.then,
     });
     expect(value.then).toMatch(/fresh.*state.*act/i);
+    expect(value.then).toContain(
+      "Run forge agent wait 42 again after each push",
+    );
   }
   for (const args of [["42", "--done"], ["--sweep"], ["42", "--sweep"]]) {
     const result = run(["agent", "wait", ...args]);
@@ -373,7 +376,7 @@ test("configured T3 capability renders native watch and cleanup steps", () => {
     });
     expect(fallback.status).toBe(0);
     expect(readResult<WaitResult>(fallback.stdout).steps).toEqual([
-      "gh pr checks 42 --watch",
+      "gh pr checks 42 --watch --fail-fast --interval 60",
     ]);
   } finally {
     writeFileSync(config, original);

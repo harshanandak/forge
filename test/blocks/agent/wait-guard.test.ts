@@ -99,10 +99,13 @@ test("wait renders the foreground command without running or backgrounding it", 
   const result = wait({ pr: 42 });
   expect(result).toEqual({
     kind: "gh-checks",
-    steps: ["gh pr checks 42 --watch"],
+    steps: ["gh pr checks 42 --watch --fail-fast --interval 60"],
     then: result.then,
   });
   expect(result.then).toMatch(/fresh.*state.*act/i);
+  expect(result.then).toContain(
+    "Run forge agent wait 42 again after each push",
+  );
   expect(wait({ pr: 42, done: true }).steps).toEqual([]);
   expect(wait({ sweep: true }).steps).toEqual([]);
 });

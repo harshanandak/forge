@@ -42,5 +42,5 @@ Require `true`. On `reply <id> posted; resolve failed`, retry only `resolveRevie
 
 - One round is one triage pass plus one push. Log it: `forge issue comment --input '{"id":"<slice>","body":"review round <k>: fixed ..., filed ...; push <sha> at <time>"}'`.
 - At most 2 rounds. After round 2, a new blocker means split or re-plan with the orchestrator instead of a round 3.
-- On a harness wake, read fresh PR state and act on changes. The opening handoff already armed the watch; review never re-arms it or runs its own sleep loop.
+- On wake, read fresh PR state and act. Follow the handoff's `then` after each push for the new head. Event watches stay armed; never run a sleep loop.
 - When checks are green and the thread list prints nothing, hand over to `forge-land`.

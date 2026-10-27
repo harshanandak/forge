@@ -173,7 +173,7 @@ const receipt = npm.cli(["check", "run"]).result;
 assert.equal(receipt.status, "PASS", JSON.stringify(receipt));
 for (const detect of [{}, { CLAUDECODE: "1" }, { CODEX_THREAD_ID: "test" }]) {
   assert.deepEqual(npm.cli(["agent", "wait", "7"], 0, detect).result.steps, [
-    "gh pr checks 7 --watch",
+    "gh pr checks 7 --watch --fail-fast --interval 60",
   ]);
   assert.deepEqual(
     npm.cli(["agent", "wait", "7", "--done"], 0, detect).result.steps,
