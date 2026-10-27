@@ -172,8 +172,8 @@ test("list helper follows all pages and emits only unresolved first comments", (
         cursor: null,
       });
       expect(requests[1]?.payload.variables?.cursor).toBe("page-two");
-      expect(requests[0]?.payload.query).toMatch(/reviewThreads\(first:\s*100/);
-      expect(requests[0]?.payload.query).toMatch(/comments\(first:\s*1/);
+      expect(requests[0]?.payload.query).toContain("reviewThreads(first:100");
+      expect(requests[0]?.payload.query).toContain("comments(first:1");
     },
     {
       pages: [
