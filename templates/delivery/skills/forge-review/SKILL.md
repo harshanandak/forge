@@ -20,7 +20,7 @@ Before a heavy or critical PR, read `forge route get review --text`. Count the r
 1. Check it against the source. A bot can be wrong; cite the line that shows it.
 2. Fix only P0, P1 findings on lines this PR changed, inside the slice's done boundary.
 3. Everything else (P2, P3, or outside the boundary) is filed, not fixed. Search open issues for the symptom, then comment on a match or `forge issue create --input '{"title":"...","kind":"task","labels":["review-deferred","p2"],"parent":"<epic>","body":"from <pr url> thread <id>"}'`.
-4. Batch thread and CI fixes and commit. Run `forge-build`'s Final-head proof section on that commit, then send one push wave. Checkpoint its SHA/time and round before replying.
+4. Batch thread and CI fixes and commit. Run `forge-build`'s Final-head proof section on that commit, then send one push wave. Checkpoint `review` SHA/time/round, then reply.
 
 ## Reply and resolve every answered thread
 

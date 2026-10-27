@@ -460,7 +460,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       "Workers you launch keep their own task session",
     );
     expect(text["forge-loop"]).toContain(
-      "Session: export FORGE_SESSION=<your task name> before any claim; never use the chat's t3: session.",
+      "Session: export FORGE_SESSION=<slice>-worker before any claim; never use the chat's t3: session.",
     );
     expect(text["forge-build"]).not.toContain("`forge-loop`");
     expect(text["forge-build"]).toContain("t3_thread_configuration");

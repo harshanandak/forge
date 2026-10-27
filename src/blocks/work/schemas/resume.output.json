@@ -1,0 +1,106 @@
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "$ref": "#/$defs/row" }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "delivers", "calls", "comments", "more"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "title": {
+          "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/TrackerItem/properties/title"
+        },
+        "body": {
+          "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/TrackerItem/properties/body"
+        },
+        "checkpoint": { "$ref": "#/$defs/checkpoint" },
+        "claim": {
+          "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/state.json#/$defs/LeaseRecord"
+        },
+        "delivers": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+        "calls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "used", "left", "stopBy"],
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "used": { "type": "integer", "minimum": 0 },
+            "left": { "type": "integer", "minimum": 0, "maximum": 60 },
+            "stopBy": { "$ref": "#/$defs/time" }
+          }
+        },
+        "comments": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/record" }
+        },
+        "more": { "type": "boolean" }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemId"
+    },
+    "time": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/common.json#/$defs/Timestamp"
+    },
+    "record": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/state.json#/$defs/StateRecord"
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "step", "time"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "title": {
+          "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/TrackerItem/properties/title"
+        },
+        "step": { "$ref": "checkpoint.input.json#/properties/step" },
+        "time": { "$ref": "#/$defs/time" },
+        "claim": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "holder", "expiresAt"],
+          "properties": {
+            "status": { "enum": ["live", "stale"] },
+            "holder": {
+              "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/context.json#/$defs/Session"
+            },
+            "expiresAt": { "$ref": "#/$defs/time" }
+          }
+        }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "branch", "worktree", "next", "time", "commentId"],
+      "properties": {
+        "step": { "$ref": "checkpoint.input.json#/properties/step" },
+        "branch": { "$ref": "checkpoint.input.json#/properties/branch" },
+        "worktree": { "$ref": "checkpoint.input.json#/properties/worktree" },
+        "head": { "$ref": "checkpoint.input.json#/properties/head" },
+        "pr": { "$ref": "checkpoint.input.json#/properties/pr" },
+        "receipt": { "$ref": "checkpoint.input.json#/properties/receipt" },
+        "next": { "$ref": "checkpoint.input.json#/properties/next" },
+        "time": { "$ref": "#/$defs/time" },
+        "commentId": {
+          "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/CommentOutput/properties/commentId"
+        }
+      }
+    }
+  }
+}

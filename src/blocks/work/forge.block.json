@@ -172,6 +172,28 @@
       "stability": "experimental",
       "args": ["id"]
     },
+    "issue.checkpoint": {
+      "input": "schemas/checkpoint.input.json",
+      "output": "schemas/checkpoint.output.json",
+      "context": "project",
+      "timeoutMs": 15000,
+      "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "issue.resume": {
+      "input": "schemas/resume.input.json",
+      "output": "schemas/resume.output.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
     "issue.comments": {
       "input": "schemas/ItemRef.json",
       "output": "schemas/records.json",

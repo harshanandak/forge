@@ -29,7 +29,7 @@ Standing rules: <adopted rules; layer 1 passes the memory packet>
 
 ## Red, then green
 
-1. Before editing, read `forge issue show --input '{"id":"<slice>"}'` and every file under Touches. Carry forge-cut's risk band into proof: light 0-1, standard 2-3, heavy 4-5.
+1. Before editing, read `forge issue resume <slice>` and all Touches files; later comments override the body. Use forge-cut's risk band: light 0-1, standard 2-3, heavy 4-5.
 2. Every slice goes red then green. Name a check that can fail for the right reason: its expected value is independent of the implementation. Add the new assertion first, run against trunk, and verify it fails on that assertion, not setup or an unrelated failure.
 3. `forge check run --input '{"checks":["<name>"]}'`. Expect exit 1 and `ok:false` for FAIL (exit 2 for INCOMPLETE or NOT_EXECUTED); keep the full `result` receipt and its id even on nonzero exit. PASS alone exits 0. Do not chain red checks with `&&` or discard their output on failure.
 4. Make the smallest change that turns it green. Run it again; keep that receipt id too. Commit in small conventional commits.

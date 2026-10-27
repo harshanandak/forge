@@ -94,7 +94,7 @@ test("built sync manages marked skills and companions in both adapter directorie
       const skill = join(root, dir, "forge-loop/SKILL.md");
       const text = readFileSync(skill, "utf8");
       expect(text).toContain(
-        `${GENERATED_MARKER}\n<!-- forge companions: agents/openai.yaml -->`,
+        `${GENERATED_MARKER}\n<!-- forge companions: agents/openai.yaml, resume.md -->`,
       );
       expect(
         readFileSync(join(root, dir, "forge-loop/agents/openai.yaml"), "utf8"),
@@ -161,9 +161,10 @@ test("built sync rejects adapter escapes without mutating the outside directory"
     );
     for (const path of ["../x", "SKILL.md", "agents\\openai.yaml", "link/x"]) {
       const edited = original.replace(
-        "<!-- forge companions: agents/openai.yaml -->",
+        /^<!-- forge companions: .* -->$/m,
         `<!-- forge companions: ${path} -->`,
       );
+      expect(edited).not.toBe(original);
       writeFileSync(skill, edited);
       const before = hashes(root);
       const refused = cli(["skills", "sync"]);

@@ -34,7 +34,56 @@ type WorkConfig = {
   readonly idPrefix?: string;
   readonly claimTtlSeconds?: number;
 };
+type Checkpoint = {
+  readonly step:
+    "claimed" | "red" | "green" | "pushed" | "review" | "stopped" | "merged";
+  readonly branch: string;
+  readonly worktree: string;
+  readonly head?: string;
+  readonly pr?: string;
+  readonly receipt?: string;
+  readonly next: string;
+};
+type RecoveryPoint = Checkpoint & {
+  readonly time: string;
+  readonly commentId: string;
+};
+type ResumeRow = ItemRef & {
+  readonly title: string;
+  readonly step: Checkpoint["step"];
+  readonly time: string;
+  readonly claim?: {
+    readonly status: "live" | "stale";
+    readonly holder: LeaseHolder["session"];
+    readonly expiresAt: string;
+  };
+};
+type CallBudget = ItemRef & {
+  readonly used: number;
+  readonly left: number;
+  readonly stopBy: string;
+};
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "issue.checkpoint": readonly [
+    ItemRef & Checkpoint,
+    ItemRef & { readonly commentId: string },
+  ];
+  readonly "issue.resume": readonly [
+    { readonly id?: string },
+    (
+      | { readonly items: readonly ResumeRow[] }
+      | (ItemRef & {
+          readonly title: string;
+          readonly body?: string;
+          readonly checkpoint?: RecoveryPoint;
+          readonly claim?: ReturnType<LeaseStateClient["lease"]>;
+          readonly delivers: readonly StateRecord[];
+          readonly calls: CallBudget;
+          readonly comments: readonly StateRecord[];
+          readonly more: boolean;
+        })
+    ),
+  ];
   readonly "issue.call": readonly [
     ItemRef & { readonly role: string; readonly route?: string },
     ItemRef & {
@@ -398,6 +447,45 @@ function appended(
         Number(a.key.slice(prefix.length)) - Number(b.key.slice(prefix.length)),
     );
 }
+const CALL_WINDOW = 30 * 3600_000;
+function callBudget(state: LeaseStateClient, ids: Ids, given: string) {
+  let id = ids.stored(given);
+  const visited = new Set<string>();
+  for (;;) {
+    if (visited.has(id)) fail("INPUT_CONFLICT", "Issue parent cycle");
+    visited.add(id);
+    const parent = stored(
+      get(state, id, visited.size === 1 ? given : ids.shown(id)),
+    ).parent;
+    if (parent === undefined) break;
+    id = parent;
+  }
+  const comments = appended(state, `comment:${id}:`);
+  const calls = comments.filter(
+    (record) => typeof (record.value as { call?: unknown }).call === "number",
+  );
+  const stop =
+    (calls[0] ? Date.parse(calls[0].updatedAt) : state.now()) + CALL_WINDOW;
+  return {
+    id,
+    comments,
+    used: calls.length,
+    stop,
+    minutes: Math.floor((stop - state.now()) / 60_000),
+  };
+}
+function recovery(comments: readonly StateRecord[]): RecoveryPoint | undefined {
+  const record = comments.findLast(
+    (record) =>
+      (record.value as { checkpoint?: Checkpoint }).checkpoint !== undefined,
+  );
+  if (!record) return undefined;
+  return {
+    ...(record.value as { checkpoint: Checkpoint }).checkpoint,
+    time: record.updatedAt,
+    commentId: record.key,
+  };
+}
 function grant(
   state: LeaseStateClient,
   id: string,
@@ -587,32 +675,18 @@ const operations: Operations<WorkOperations> = {
   "issue.call": ({ input, services, config }) => {
     const state = client(services);
     const ids = idsFor(state, config);
-    let id = ids.stored(input.id);
-    const visited = new Set<string>();
-    for (;;) {
-      if (visited.has(id)) fail("INPUT_CONFLICT", "Issue parent cycle");
-      visited.add(id);
-      const parent = stored(
-        get(state, id, visited.size === 1 ? input.id : ids.shown(id)),
-      ).parent;
-      if (parent === undefined) break;
-      id = parent;
-    }
-    const prefix = `comment:${id}:`;
-    const comments = appended(state, prefix);
-    const calls = comments.filter(
-      (record) => typeof (record.value as { call?: unknown }).call === "number",
+    const { id, comments, used, stop, minutes } = callBudget(
+      state,
+      ids,
+      input.id,
     );
-    const first = calls[0];
-    const window = 30 * 3600_000;
-    const stop = (first ? Date.parse(first.updatedAt) : state.now()) + window;
-    const minutes = Math.floor((stop - state.now()) / 60_000);
-    if (calls.length >= 60 || minutes < 1)
+    const prefix = `comment:${id}:`;
+    if (used >= 60 || minutes < 1)
       fail(
         "LIMIT_REACHED",
         `Intent ${ids.shown(id)} is limited to 60 calls and 30 hours`,
       );
-    const call = calls.length + 1;
+    const call = used + 1;
     const commentId = `${prefix}${comments.length + 1}`;
     const written = persist(
       state,
@@ -631,8 +705,99 @@ const operations: Operations<WorkOperations> = {
       left: 60 - call,
       timeboxMinutes: Math.min(45, minutes),
       stopBy: new Date(
-        first ? stop : Date.parse(written.updatedAt) + window,
+        used ? stop : Date.parse(written.updatedAt) + CALL_WINDOW,
       ).toISOString(),
+    };
+  },
+  "issue.checkpoint": ({ input, services, config }) => {
+    const state = client(services);
+    const ids = idsFor(state, config);
+    const id = ids.stored(input.id);
+    get(state, id, input.id);
+    const length = [...input.next].length;
+    if (!length || length > 300)
+      fail("INPUT_INVALID", "Checkpoint next must contain 1-300 characters");
+    const { id: _given, ...checkpoint } = input;
+    const prefix = `comment:${id}:`;
+    const commentId = `${prefix}${state.list(prefix).length + 1}`;
+    persist(
+      state,
+      commentId,
+      {
+        id,
+        body: `checkpoint ${input.step} ${input.head ?? ""} next: ${input.next}`,
+        checkpoint,
+      },
+      0,
+    );
+    return { id: ids.shown(id), commentId };
+  },
+  "issue.resume": ({ input, services, config }) => {
+    const state = client(services);
+    const ids = idsFor(state, config);
+    if (input.id === undefined) {
+      const items: ResumeRow[] = [];
+      for (const record of state.list("issue:")) {
+        const value = stored(record);
+        if (value.status !== "open") continue;
+        const checkpoint = recovery(appended(state, `comment:${value.id}:`));
+        if (!checkpoint || checkpoint.step === "merged") continue;
+        const lease = state.lease(key(value.id));
+        items.push({
+          id: ids.shown(value.id),
+          title: value.title,
+          step: checkpoint.step,
+          time: checkpoint.time,
+          ...(lease && lease.releasedAt === undefined
+            ? {
+                claim: {
+                  status: live(state, value.id) ? "live" : "stale",
+                  holder: lease.holder.session,
+                  expiresAt: lease.expiresAt,
+                },
+              }
+            : {}),
+        });
+      }
+      return {
+        items: items
+          .toSorted(
+            (a, b) =>
+              Date.parse(b.time) - Date.parse(a.time) ||
+              a.id.localeCompare(b.id),
+          )
+          .slice(0, 10),
+      };
+    }
+    const id = ids.stored(input.id);
+    const value = stored(get(state, id, input.id));
+    const all = appended(state, `comment:${id}:`);
+    const checkpoint = recovery(all);
+    const comments = checkpoint
+      ? all.slice(
+          all.findIndex((record) => record.key === checkpoint.commentId) + 1,
+        )
+      : all;
+    const claim = live(state, id);
+    const budget = callBudget(state, ids, input.id);
+    return {
+      id: ids.shown(id),
+      title: value.title,
+      ...(value.body === undefined ? {} : { body: value.body }),
+      ...(checkpoint ? { checkpoint } : {}),
+      ...(claim ? { claim } : {}),
+      delivers: appended(state, `link:${id}:`).filter(
+        (record) =>
+          (record.value as { relation?: string }).relation === "delivers",
+      ),
+      calls: {
+        id: ids.shown(budget.id),
+        used: budget.used,
+        left: Math.max(0, 60 - budget.used),
+        stopBy: new Date(budget.stop).toISOString(),
+      },
+      comments: comments.slice(0, 20),
+      more: comments.length > 20,
     };
   },
   "issue.comments": ({ input, services, config }) => {
