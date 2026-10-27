@@ -60,6 +60,17 @@ test("every harness wake reads the shared verdict and the owning session holds w
       "utf8",
     );
     expect(handoff).toMatch(/owning session.*forge agent wait/i);
+    // R2-5: fallback is reserved for a failed opening link or watch step.
+    expect(handoff).toContain(
+      "Use `--fallback` only if a link or watch step fails.",
+    );
+    // R2-6: the agent block advertises the same opening and post-push handoff.
+    const docs = JSON.parse(
+      readFileSync(join(repo, "src/blocks/agent/docs.json"), "utf8"),
+    ) as { operations: { "agent.wait": { summary: string } } };
+    expect(docs.operations["agent.wait"].summary).toContain(
+      "Run `forge agent wait <n>` after the PR opens and after each push",
+    );
     const all = [...texts, handoff].join("\n");
     expect(all).not.toMatch(/watch_pull_request|Claude Code|Codex|\bT3\b/);
   });
