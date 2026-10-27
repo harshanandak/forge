@@ -889,7 +889,7 @@ export async function createAssembly(
                 code: "CLAIM_TTL_CONFIG_MOVE",
                 message: `Move /values/claims/ttlSeconds to /blocks/work/config/claimTtlSeconds with value ${JSON.stringify(legacyClaimTtl.value)} to preserve the claim lease duration.`,
               });
-            const { differences, readErrors, ...synced } = syncSkills(
+            const { differences, ...synced } = syncSkills(
               root,
               catalog.list(),
               composition(show).mcp?.toolPrefix,
@@ -912,14 +912,29 @@ export async function createAssembly(
               },
               input.check === true,
             );
+            const bounded = (message: string, limit: number): string =>
+              message.length <= limit
+                ? message
+                : `${message.slice(0, limit - 3)}...`;
             if (synced.skipped.length)
               warnings.push({
                 code: "SKILLS_SKIPPED",
-                message: `left alone because Forge did not write them: ${synced.skipped.join(", ")}; delete them to let sync write Forge's copies`,
+                message: bounded(
+                  `left alone because Forge did not write them: ${synced.skipped.join(", ")}; delete them to let sync write Forge's copies`,
+                  2000,
+                ),
               });
-            for (const message of readErrors)
-              warnings.push({ code: "SKILLS_READ_FAILED", message });
-            const problems = [...readErrors];
+            if (synced.readErrors.length)
+              warnings.push({
+                code: "SKILLS_READ_FAILED",
+                message: bounded(
+                  `Cannot read skills: ${synced.readErrors.map((error) => error.path).join(", ")}; see result.readErrors for details`,
+                  2000,
+                ),
+              });
+            const problems = synced.readErrors.map(
+              (error) => `${error.path}: ${error.message}`,
+            );
             if (differences.length)
               problems.push(
                 `${differences.join("; ")}; run forge skills sync; it overwrites edits to generated files`,
@@ -930,7 +945,7 @@ export async function createAssembly(
                   request.op,
                   new ForgeFailure({
                     code: "OUTPUT_INVALID",
-                    message: problems.join("; "),
+                    message: bounded(problems.join("; "), 4000),
                     retry: "never",
                   }),
                 ),

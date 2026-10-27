@@ -107,7 +107,34 @@ export function entryKind(
     if (info.isDirectory()) return "directory";
     return info.isFile() ? "file" : "other";
   } catch (error) {
-    return errorCode(error) === "ENOENT" ? "missing" : "other";
+    if (errorCode(error) === "ENOENT") return "missing";
+    throw error;
+  }
+}
+
+/** Scan for an exact LF/CRLF line without loading an oversized file into memory. */
+export function fileHasLine(root: string, path: string, line: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(resolveIn(root, path, "refuse"), "r");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return false;
+    throw error;
+  }
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  const wanted = `\n${line}`;
+  let tail = "\n";
+  try {
+    let count: number;
+    while ((count = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      const text = tail + buffer.subarray(0, count).toString("utf8");
+      if (text.includes(`${wanted}\n`) || text.includes(`${wanted}\r\n`))
+        return true;
+      tail = text.slice(-(wanted.length + 1));
+    }
+    return tail.endsWith(wanted);
+  } finally {
+    closeSync(fd);
   }
 }
 

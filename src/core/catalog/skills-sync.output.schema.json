@@ -1,12 +1,32 @@
 {
   "type": "object",
-  "required": ["dir", "written", "unchanged", "skipped", "removed"],
+  "required": [
+    "dir",
+    "written",
+    "unchanged",
+    "skipped",
+    "removed",
+    "readErrors"
+  ],
   "properties": {
     "dir": { "type": "string" },
     "written": { "type": "array", "items": { "type": "string" } },
     "unchanged": { "type": "array", "items": { "type": "string" } },
     "skipped": { "type": "array", "items": { "type": "string" } },
-    "removed": { "type": "array", "items": { "type": "string" } }
+    "removed": { "type": "array", "items": { "type": "string" } },
+    "readErrors": {
+      "description": "Per-skill access failures; the failed skill's remaining actions are not applied. Complete details are retained here when warning and error messages are shortened.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "message"],
+        "properties": {
+          "path": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
   },
   "additionalProperties": false
 }

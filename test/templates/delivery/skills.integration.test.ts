@@ -72,6 +72,33 @@ function fixture(
 }
 
 const adapterDirs = [".claude/skills", ".agents/skills"];
+test.each(["lstat", "stat"])(
+  "built sync isolates %s access errors",
+  (operation) => {
+    fixture((root) => {
+      const result = spawnSync(
+        Bun.which("node")!,
+        [
+          resolve(import.meta.dirname, "../../node-fixtures/skills/access.mjs"),
+          root,
+          operation,
+        ],
+        {
+          cwd: root,
+          env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 90_000,
+        },
+      );
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      for (const code of ["EACCES", "EBUSY", "EPERM"])
+        expect(result.stdout).toContain(`${operation} ${code}: reported`);
+    });
+  },
+  120_000,
+);
+
 function hashes(root: string) {
   return readdirSync(root, { recursive: true })
     .filter((file) => lstatSync(join(root, String(file))).isFile())

@@ -1,5 +1,6 @@
 import {
   entryKind,
+  fileHasLine,
   nodeConfigFiles,
   removeEmptyParents,
 } from "../adapters/fs/index.ts";
@@ -26,7 +27,10 @@ export interface SkillsSyncResult {
   /** Generated files this run no longer produces, e.g. from a removed template. */
   readonly removed: readonly string[];
   readonly differences: readonly string[];
-  readonly readErrors: readonly string[];
+  readonly readErrors: readonly {
+    readonly path: string;
+    readonly message: string;
+  }[];
 }
 
 /** A template file to read skills from: a project file, or one shipped in the installed package. */
@@ -73,6 +77,16 @@ const equal = (a: Uint8Array, b: Uint8Array): boolean => {
       : bytes.filter((byte, i) => byte !== 13 || bytes[i + 1] !== 10);
   return Buffer.from(normalize(a)).equals(normalize(b));
 };
+
+function accessFailure(error: unknown): boolean {
+  if (error instanceof ForgeFailure)
+    return error.error.code === "LIMIT_EXCEEDED";
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    ("code" in error || ("cause" in error && accessFailure(error.cause)))
+  );
+}
 
 function validate(root: string, path: string, origin: string): boolean {
   if (
@@ -167,8 +181,8 @@ function templateSkills(templates: TemplateSkills): Copy[] {
 
 /**
  * `skills.sync`: write each enabled block noun's skill and each imported template's skill under
- * the project root. A file it generated (it carries the marker line) is always replaced, whatever
- * its size, and deleted once no longer produced; a hand-written one is left alone.
+ * the project root. Readable marked files are replaced, or deleted once no longer produced.
+ * Oversized files are left untouched; marked ones are reported, unmarked user files stay silent.
  */
 export function syncSkills(
   root: string,
@@ -227,9 +241,15 @@ export function syncSkills(
   const skipped: string[] = [];
   const removed: string[] = [];
   const differences: string[] = [];
-  const readErrors: string[] = [];
+  const readErrors: { path: string; message: string }[] = [];
+  const report = (folder: string, error: unknown): void => {
+    readErrors.push({
+      path: `${folder}/SKILL.md`,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  };
   try {
-    const writes: { path: string; bytes: Uint8Array }[] = [];
+    const writes: { path: string; bytes: Uint8Array; folder: string }[] = [];
     const ownershipWrites: typeof writes = [];
     const deletes: { path: string; folder: string }[] = [];
     // Plan every directory first. Invalid metadata must not leave a partial sync.
@@ -240,13 +260,13 @@ export function syncSkills(
           name,
         ]),
       );
-      for (const name of names.values()) {
+      const plan = (name: string): void => {
         const folder = `${dir}/${name}`;
         const copies = skills.filter((s) => key(s.noun) === key(name));
         const kind = entryKind(root, folder);
         if (kind !== "directory" && kind !== "missing") {
           if (copies.length) skipped.push(folder);
-          continue;
+          return;
         }
         const localRoot = `${root}/${folder}`;
         const local = nodeConfigFiles(localRoot);
@@ -256,20 +276,18 @@ export function syncSkills(
         try {
           current = skillKind === "file" ? local.read("SKILL.md") : undefined;
         } catch (error) {
-          // A size cap does not establish ownership; leave the whole folder alone.
-          if (!(
+          if (
             error instanceof ForgeFailure &&
-            error.error.code === "LIMIT_EXCEEDED"
-          ))
-            readErrors.push(
-              `${path}: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          continue;
+            error.error.code === "LIMIT_EXCEEDED" &&
+            !fileHasLine(localRoot, "SKILL.md", GENERATED_MARKER)
+          )
+            return;
+          throw error;
         }
         const listed = companions(current, path);
         if (listed === undefined && skillKind !== "missing") {
           if (copies.length) skipped.push(path);
-          continue;
+          return;
         }
         for (const entry of listed ?? []) validate(localRoot, entry, path);
         const wanted = new Map(
@@ -319,7 +337,7 @@ export function syncSkills(
             deletes.push({ path, folder });
             differences.push(path);
           }
-          continue;
+          return;
         }
         for (const copy of copies) {
           const relative = copy.path.slice(copy.noun.length + 1);
@@ -341,21 +359,58 @@ export function syncSkills(
             (copy.bytes === undefined ? ownershipWrites : writes).push({
               path: target,
               bytes,
+              folder,
             });
             differences.push(target);
           }
         }
+      };
+      for (const name of names.values()) {
+        const lists = [
+          writes,
+          ownershipWrites,
+          deletes,
+          unchanged,
+          skipped,
+          differences,
+        ];
+        const lengths = lists.map((list) => list.length);
+        try {
+          plan(name);
+        } catch (error) {
+          if (!accessFailure(error)) throw error;
+          lists.forEach((list, i) => {
+            list.length = lengths[i]!;
+          });
+          report(`${dir}/${name}`, error);
+        }
       }
     }
     if (!check) {
-      for (const entry of deletes) {
-        files.remove(entry.path);
-        removed.push(entry.path);
-        removeEmptyParents(root, entry.path, entry.folder);
-      }
-      for (const entry of [...writes, ...ownershipWrites]) {
-        files.write(entry.path, entry.bytes);
-        written.push(entry.path);
+      const folders = new Set(
+        [...deletes, ...writes, ...ownershipWrites].map(
+          (entry) => entry.folder,
+        ),
+      );
+      for (const folder of folders) {
+        try {
+          for (const entry of deletes.filter(
+            (entry) => entry.folder === folder,
+          )) {
+            files.remove(entry.path);
+            removed.push(entry.path);
+            removeEmptyParents(root, entry.path, entry.folder);
+          }
+          for (const entry of [...writes, ...ownershipWrites].filter(
+            (entry) => entry.folder === folder,
+          )) {
+            files.write(entry.path, entry.bytes);
+            written.push(entry.path);
+          }
+        } catch (error) {
+          if (!accessFailure(error)) throw error;
+          report(folder, error);
+        }
       }
     }
   } catch (error) {
