@@ -10,13 +10,15 @@ Every wake: read, route, stop. Read the chosen skill before acting.
 
 ## Wake
 
-T3 chats: call MCP `t3_thread_configuration` once (no args) and set `FORGE_SESSION=t3:<threadId>` for every forge command, even after a harness switch. Workers you launch keep their own task session.
+Threaded chats: call MCP `t3_thread_configuration` once (no args) and set `FORGE_SESSION=t3:<threadId>` for every forge command, even after a harness switch. Workers you launch keep their own task session.
+
+Run `forge agent wait <n>`, do each step, then follow `then`, adding `--sweep` before reading state on every wake. On abandon or an unmerged close, use `--done` for each PR; on a failed step use `--fallback`.
 
 At session start, run `forge memory rules` unless a hook supplied it: `result.text.text` is a pointer, never note text. Search memory before starting a task; use its search/show commands.
 
 1. Work: `forge issue ready --input '{}'` (ranked by priority label), `forge issue stale --input '{}'`, then `forge issue show --input '{"id":"<id>"}'` for your slice.
-2. PRs: `gh pr view <n> --json state,headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`. In T3 Code, `list_thread_pull_requests` lists the PRs linked to this thread.
-3. Act only on what changed since your last push, then stop. Forge never watches: the harness wakes you (T3 `watch_pull_request`, Claude Code Monitor or `/loop`).
+2. PRs: `gh pr view <n> --json state,headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`.
+3. Act only on what changed since your last push, then stop. Forge never watches: the harness wakes you.
 
 ## Roles
 
@@ -37,7 +39,7 @@ At session start, run `forge memory rules` unless a hook supplied it: `result.te
 ## Two links, never mixed
 
 - **PR to issue** is Forge's: `forge issue link --input '{"id":"<slice>","relation":"delivers","url":"<pr url>"}'`. It needs the held claim, so the worker links before it releases.
-- **PR to agent thread** is the harness's: T3 `link_pull_request`, then `watch_pull_request`. Plain CLIs have no thread. Forge never stores this link.
+- **PR to agent thread** is the harness's: follow `forge agent wait <n>` after opening. Forge never stores this link.
 
 ## Autonomy
 

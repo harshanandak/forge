@@ -42,5 +42,5 @@ Require `true`. On `reply <id> posted; resolve failed`, retry only `resolveRevie
 
 - One round is one triage pass plus one push. Log it: `forge issue comment --input '{"id":"<slice>","body":"review round <k>: fixed ..., filed ...; push <sha> at <time>"}'`.
 - At most 2 rounds. After round 2, a new blocker means split or re-plan with the orchestrator instead of a round 3.
-- Inside T3 Code use `watch_pull_request`; elsewhere `gh pr checks <n> --watch` is run by the harness wake. Review never runs its own sleep loop.
+- On a harness wake: Run `forge agent wait <n>`, do each step, then follow `then`. On a failed step use `--fallback`. Review never runs its own sleep loop.
 - When checks are green and the thread list prints nothing, hand over to `forge-land`.

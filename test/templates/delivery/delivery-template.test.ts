@@ -426,7 +426,16 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-review"]).not.toContain("gh api graphql");
     for (const name of SKILLS) expect(text[name]).not.toContain("templates/");
     expect(text["forge-build"]).toContain('"relation":"delivers"');
-    expect(text["forge-build"]).toContain("`link_pull_request`");
+    for (const name of [
+      "forge-build",
+      "forge-review",
+      "forge-land",
+      "forge-loop",
+    ])
+      expect(text[name]).toContain("forge agent wait <n>");
+    expect(
+      existsSync(join(root, ".agents/skills/forge-build/done-claim.mjs")),
+    ).toBe(true);
     // The executable gate owns the merge conditions and returns the pinned head and receipt.
     expect(text["forge-land"]).toContain("forge check gate");
     expect(text["forge-land"]).toContain("head moved means run the gate again");

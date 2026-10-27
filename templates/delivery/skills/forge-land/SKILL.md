@@ -31,7 +31,7 @@ A refused merge because the head moved means run the gate again. Never merge wit
 2. CI on base for that commit: `gh run list --branch <base> --commit <sha>`. Wait for it through the harness, not a sleep loop. Red there is a new bug: file it at p0 or p1 and fix forward.
 3. Close the issue. The worker released its claim, so take it again first: `forge issue claim --input '{"id":"<slice>"}'`, then `forge issue close --input '{"id":"<slice>","reason":"merged in <sha>","receipt":"<id>"}'` using the gate's receipt.
 4. Worktree: list what is in it first (`git -C <path> status --short` and `git -C <path> log origin/<base>..HEAD --oneline`). Remove it only when both are empty; anything left is filed or pushed first. Removing a worktree with work in it is a one-way door.
-5. Stop watching: in T3 Code, `unwatch_pull_request`.
+5. Stop watching after verify: Run `forge agent wait <n>`, do each step, then follow `then`, adding `--done`.
 
 ## Learn
 

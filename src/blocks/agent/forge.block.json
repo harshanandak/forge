@@ -7,10 +7,33 @@
   "entry": "entry.cjs",
   "configSchema": "schemas/config.json",
   "nouns": {
-    "route": { "interface": "1.0.0" }
+    "route": { "interface": "1.0.0" },
+    "agent": { "interface": "1.0.0" }
   },
   "requires": [{ "slot": "environment", "interface": "forge.environment@1" }],
   "operations": {
+    "agent.wait": {
+      "input": "schemas/wait.input.json",
+      "output": "schemas/wait.output.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": ["environment:read"],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental",
+      "args": ["pr"]
+    },
+    "agent.guard": {
+      "input": "schemas/guard.input.json",
+      "output": "schemas/guard.output.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": ["environment:read"],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
     "route.get": {
       "input": "schemas/route.input.json",
       "output": "schemas/route.output.json",

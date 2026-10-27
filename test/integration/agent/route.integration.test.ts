@@ -1,14 +1,17 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 setDefaultTimeout(60_000);
 const root = mkdtempSync(join(tmpdir(), "forge-route-"));
@@ -21,6 +24,15 @@ const env: NodeJS.ProcessEnv = Object.fromEntries(
   ),
 );
 env.FORGE_DEVICE_ROOT = join(root, "device");
+type WaitResult = { kind: string; steps: string[]; then: string };
+type GuardResult = {
+  file: string;
+  instruction: string;
+  config: { hooks: { Stop: { hooks: { type: string; command: string }[] }[] } };
+};
+function readResult<T>(stdout: string): T {
+  return (JSON.parse(stdout) as { result: T }).result;
+}
 function run(args: string[], extra: NodeJS.ProcessEnv = {}) {
   return spawnSync(node, [bin, ...args], {
     cwd: root,
@@ -198,4 +210,154 @@ test("max names the routing file with INPUT_INVALID", () => {
   expect(result.stdout).toContain("~/.forge/routing.yaml");
   expect(result.stdout).toContain("INPUT_INVALID");
   expect(result.status).toBe(6);
+});
+
+test("agent wait and cleanup render guidance without contacting GitHub", () => {
+  for (const harness of [{}, { CLAUDECODE: "1" }, { CODEX_THREAD_ID: "1" }]) {
+    const result = run(["agent", "wait", "42"], harness);
+    expect(result.status).toBe(0);
+    const value = readResult<WaitResult>(result.stdout);
+    expect(value).toEqual({
+      kind: "gh-checks",
+      steps: ["gh pr checks 42 --watch"],
+      then: value.then,
+    });
+    expect(value.then).toMatch(/fresh.*state.*act/i);
+  }
+  for (const args of [["42", "--done"], ["--sweep"], ["42", "--sweep"]]) {
+    const result = run(["agent", "wait", ...args]);
+    expect(result.status).toBe(0);
+    expect(readResult<WaitResult>(result.stdout).steps).toEqual([]);
+  }
+  expect(run(["agent", "wait", "0"]).status).toBe(6);
+  expect(run(["agent", "wait", "42", "--done", "--sweep"]).status).toBe(6);
+});
+
+test("shipped guards resolve an existing installed companion from an unrelated cwd", () => {
+  for (const [id, file] of [
+    ["claude", "~/.claude/settings.json"],
+    ["codex", "~/.codex/hooks.json"],
+  ]) {
+    const result = run(["agent", "guard", id!]);
+    expect(result.status).toBe(0);
+    const guard = readResult<GuardResult>(result.stdout);
+    expect(guard.file).toBe(file);
+    const hook = guard.config.hooks.Stop[0]!.hooks[0]!;
+    expect(hook.type).toBe("command");
+    const command = /^node "(.+)"$/.exec(hook.command);
+    expect(command).not.toBeNull();
+    expect(isAbsolute(command![1]!)).toBe(true);
+    expect(existsSync(command![1]!)).toBe(true);
+    expect(command![1]).toContain("done-claim.mjs");
+  }
+  const detected = run(["agent", "guard"], { CODEX_THREAD_ID: "1" });
+  expect(detected.status).toBe(0);
+  expect(readResult<GuardResult>(detected.stdout).file).toBe(
+    "~/.codex/hooks.json",
+  );
+  const unknown = run(["agent", "guard", "unknown"]);
+  expect(unknown.status).toBe(0);
+  expect(readResult<GuardResult>(unknown.stdout).instruction).toMatch(
+    /no done-claim guard/i,
+  );
+});
+
+test("configured T3 capability renders native watch and cleanup steps", () => {
+  const config = join(root, ".forge/config.yaml");
+  const original = readFileSync(config, "utf8");
+  try {
+    const show = JSON.parse(run(["config", "show"]).stdout) as {
+      result: { revision: string };
+    };
+    const set = run([
+      "config",
+      "set",
+      "--input",
+      JSON.stringify({
+        path: "agent.adapters",
+        value: [
+          {
+            id: "t3",
+            detect: ["T3_FIXTURE"],
+            prWatch: "t3-tool",
+            guard: { kind: "none" },
+          },
+        ],
+        expectRevision: show.result.revision,
+      }),
+    ]);
+    expect(set.status).toBe(0);
+    for (const [args, step] of [
+      [["42"], "watch_pull_request"],
+      [["42", "--done"], "unwatch_pull_request"],
+      [["--sweep"], "list_thread_pull_requests"],
+    ] as const) {
+      const result = run(["agent", "wait", ...args], { T3_FIXTURE: "1" });
+      expect(result.status).toBe(0);
+      const value = readResult<WaitResult>(result.stdout);
+      expect(value.kind).toBe("t3-tool");
+      expect(value.steps.join(" ")).toContain(step);
+    }
+    const guard = run(["agent", "guard"], { T3_FIXTURE: "1" });
+    expect(guard.status).toBe(0);
+    expect(readResult<GuardResult>(guard.stdout).instruction).toContain(
+      "no done-claim guard for t3",
+    );
+    const fallback = run(["agent", "wait", "42", "--fallback"], {
+      T3_FIXTURE: "1",
+    });
+    expect(fallback.status).toBe(0);
+    expect(readResult<WaitResult>(fallback.stdout).steps).toEqual([
+      "gh pr checks 42 --watch",
+    ]);
+  } finally {
+    writeFileSync(config, original);
+  }
+});
+
+test("an invalid shipped adapter names its YAML file, field and allowed values", () => {
+  const packageRoot = resolve(import.meta.dirname, "../../..");
+  const fixture = join(root, "invalid-adapter-package");
+  mkdirSync(fixture);
+  cpSync(join(packageRoot, "dist"), join(fixture, "dist"), { recursive: true });
+  cpSync(join(packageRoot, "templates"), join(fixture, "templates"), {
+    recursive: true,
+  });
+  cpSync(join(packageRoot, "package.json"), join(fixture, "package.json"));
+  symlinkSync(
+    join(packageRoot, "node_modules"),
+    join(fixture, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const file = join(fixture, "templates/delivery/agents/codex.yaml");
+  const original = readFileSync(file, "utf8");
+  for (const [field, value, allowed] of [
+    ["prWatch", "bogus", ["t3-tool", "watch-block", "gh-checks"]],
+    ["guard", "{ kind: unknown }", ["hook", "none"]],
+  ] as const) {
+    writeFileSync(
+      file,
+      original.replace(
+        new RegExp(`^${field}:.*(?:\\r?\\n[ \\t]+[^\\r\\n]*)*`, "m"),
+        `${field}: ${value}`,
+      ),
+    );
+    const result = spawnSync(
+      node,
+      [join(fixture, "dist/bin/forge.js"), "agent", "wait", "42"],
+      { cwd: root, env, encoding: "utf8", windowsHide: true, timeout: 45_000 },
+    );
+    expect(result.status).not.toBe(0);
+    for (const text of ["codex.yaml", field, ...allowed])
+      expect(result.stdout + result.stderr).toContain(text);
+  }
+  writeFileSync(file, `${original}\nunknownCapability: true\n`);
+  const unknown = spawnSync(
+    node,
+    [join(fixture, "dist/bin/forge.js"), "agent", "wait", "42"],
+    { cwd: root, env, encoding: "utf8", windowsHide: true, timeout: 45_000 },
+  );
+  expect(unknown.status).not.toBe(0);
+  for (const text of ["codex.yaml", "unknownCapability", "Unknown field"])
+    expect(unknown.stdout + unknown.stderr).toContain(text);
 });

@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import {
   createProcessPort,
@@ -26,12 +27,14 @@ import type {
 import type { OwnedHandle } from "../ports/lifetime.ts";
 import type { ServiceScope } from "../core/runtime/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { inputError } from "../contract/input-error.ts";
+import { type JsonSchema, validateWithSchema } from "../contract/schema.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
 import { verifyReceipt } from "../blocks/check/receipt.ts";
 import type { StateClient } from "../ports/state.ts";
 import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
 import { DEFAULT_PARSE_LIMITS } from "../contract/untrusted.ts";
-import { firstPartyTemplates } from "./first-party.ts";
+import { firstPartyBlocks, firstPartyTemplates } from "./first-party.ts";
 
 export type { CloneFilesService } from "../adapters/fs/clone-files.ts";
 export type {
@@ -52,6 +55,7 @@ export interface FilesService extends CloneFilesService {
 }
 export interface EnvironmentService {
   readonly platform: NodeJS.Platform;
+  readonly packageRoot: string;
   select(names: readonly string[]): Readonly<Record<string, string>>;
 }
 export interface CryptoService {
@@ -296,15 +300,34 @@ export function agentAdapterObservation(
   instance: string,
 ): readonly DetectionObservation[] {
   const directory = new URL("agents/", firstPartyTemplates.delivery);
+  const schema = JSON.parse(
+    readFileSync(
+      new URL("schemas/adapter.json", firstPartyBlocks["forge/agent"]),
+      "utf8",
+    ),
+  ) as JsonSchema;
   const adapters = readdirSync(directory)
     .filter((name) => name.endsWith(".yaml"))
     .sort()
     .map((name) => {
+      const file = new URL(name, directory);
       const decoded = yamlConfigCodec.decode(
-        readFileSync(new URL(name, directory), "utf8"),
+        readFileSync(file, "utf8"),
         DEFAULT_PARSE_LIMITS,
       );
       if (!decoded.ok) throw new ForgeFailure(decoded.error);
+      const problems = validateWithSchema(schema, decoded.value);
+      if (problems.length > 0)
+        throw new ForgeFailure(
+          inputError(
+            "agent adapter",
+            problems,
+            undefined,
+            {},
+            [],
+            fileURLToPath(file),
+          ),
+        );
       return decoded.value;
     });
   return [
@@ -349,6 +372,10 @@ export function createAssemblyProviders(
     },
     environment(scope: ServiceScope): EnvironmentService {
       return {
+        get packageRoot(): string {
+          active(scope);
+          return fileURLToPath(new URL("../../", firstPartyTemplates.delivery));
+        },
         get platform(): NodeJS.Platform {
           active(scope);
           return process.platform;

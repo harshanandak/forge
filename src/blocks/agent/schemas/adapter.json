@@ -3,6 +3,29 @@
   "additionalProperties": false,
   "required": ["id", "detect"],
   "properties": {
+    "prWatch": { "enum": ["t3-tool", "watch-block", "gh-checks"] },
+    "guard": {
+      "properties": { "kind": { "enum": ["hook", "none"] } },
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "none" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "file", "stop", "command"],
+          "properties": {
+            "kind": { "const": "hook" },
+            "file": { "type": "string", "minLength": 1 },
+            "stop": { "type": "string", "minLength": 1 },
+            "command": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
     "skills": { "type": "string", "minLength": 1 },
     "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
     "detect": {

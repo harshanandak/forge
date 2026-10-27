@@ -159,6 +159,46 @@ assert.match(
 assert.deepEqual(npm.cli(["check", "list"]).result.commands, ["test"]);
 const receipt = npm.cli(["check", "run"]).result;
 assert.equal(receipt.status, "PASS", JSON.stringify(receipt));
+for (const detect of [{}, { CLAUDECODE: "1" }, { CODEX_THREAD_ID: "test" }]) {
+  assert.deepEqual(npm.cli(["agent", "wait", "7"], 0, detect).result.steps, [
+    "gh pr checks 7 --watch",
+  ]);
+  assert.deepEqual(
+    npm.cli(["agent", "wait", "7", "--done"], 0, detect).result.steps,
+    [],
+  );
+}
+const guard = npm.cli(["agent", "guard", "codex"]).result;
+const hook = /^node "(.+)"$/.exec(
+  guard.config.hooks.Stop[0].hooks[0].command,
+)[1];
+assert.ok(hook.startsWith(installed.replaceAll("\\", "/")));
+const hookEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([name]) =>
+    /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP|HOME|USERPROFILE)$/i.test(name),
+  ),
+);
+hookEnv.FORGE_DEVICE_ROOT = join(npm.root, "device");
+for (const [message, blocked] of [
+  ["Done", true],
+  [`Verified ${receipt.id}\nNot covered: live hooks`, false],
+]) {
+  const result = spawnSync(process.execPath, [hook], {
+    cwd: process.cwd(),
+    env: hookEnv,
+    input: JSON.stringify({
+      cwd: npm.root,
+      last_assistant_message: message,
+      stop_hook_active: false,
+    }),
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 30_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  if (blocked) assert.equal(JSON.parse(result.stdout).decision, "block");
+  else assert.equal(result.stdout, "");
+}
 assert.equal(
   readFileSync(join(npm.root, "ran.txt"), "utf8"),
   "npm test",
