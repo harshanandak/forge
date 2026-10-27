@@ -17,18 +17,18 @@
         "merged"
       ]
     },
-    "branch": { "type": "string", "minLength": 1, "maxLength": 500 },
-    "worktree": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "branch": { "type": "string", "maxLength": 500, "pattern": "\\S" },
+    "worktree": { "type": "string", "maxLength": 4096, "pattern": "\\S" },
     "head": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$" },
     "pr": {
       "type": "string",
       "maxLength": 2000,
       "format": "uri",
-      "pattern": "^https?://(?:\\[[0-9a-fA-F:.]+\\]|[^\\s/:?#.]+(?:\\.[^\\s/:?#.]+)*\\.?)(?::[0-9]+)?(?:[/?#][^\\s]*)?$"
+      "pattern": "^[hH][tT][tT][pP][sS]?://(?:\\[[0-9a-fA-F:.]+\\]|[^\\s/:?#.]+(?:\\.[^\\s/:?#.]+)*\\.?)(?::[0-9]+)?(?:[/?#][^\\s]*)?$"
     },
     "receipt": {
       "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemId"
     },
-    "next": { "type": "string", "minLength": 1, "maxLength": 300 }
+    "next": { "type": "string", "maxLength": 300, "pattern": "\\S" }
   }
 }

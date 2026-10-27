@@ -351,7 +351,14 @@ test("checkpoint and resume resolve historical prefixes and display the configur
     calls: { id: "new-1" },
   });
 });
-test("checkpoint schema enforces required next, enums, hash, URL, bounds and extra properties", () => {
+const validCheckpoint = {
+  id: "work-1",
+  step: "red",
+  branch: "b",
+  worktree: ".",
+  next: "continue",
+};
+function checkpointRegistry() {
   const read = (path: string) =>
     JSON.parse(readFileSync(path, "utf8")) as SchemaObject;
   const contracts = resolve(import.meta.dirname, "../../../schemas");
@@ -364,20 +371,48 @@ test("checkpoint schema enforces required next, enums, hash, URL, bounds and ext
     ),
     $id: "urn:forge:test:checkpoint",
   };
-  const registry = new SchemaRegistry([
+  return new SchemaRegistry([
     ...readdirSync(contracts)
       .filter((name) => name.endsWith(".json"))
       .map((name) => read(resolve(contracts, name))),
     schema,
   ]);
-  const valid = {
-    id: "work-1",
-    step: "red",
-    branch: "b",
-    worktree: ".",
-    next: "continue",
-  };
+}
+test.each(["branch", "worktree", "next"])(
+  "checkpoint schema refuses whitespace-only %s",
+  (field) => {
+    const registry = checkpointRegistry();
+    for (const value of [" ", "\t\n", "\u00a0"])
+      expect(
+        registry.validate("urn:forge:test:checkpoint", {
+          ...validCheckpoint,
+          [field]: value,
+        }),
+      ).not.toEqual([]);
+  },
+);
+test.each([
+  "HTTPS://example.com/pull/1",
+  "HtTpS://example.com:8443/pull/1",
+  "HTTP://localhost:8080/pull/1",
+])("checkpoint schema accepts HTTP scheme casing in %s", (pr) => {
+  expect(
+    checkpointRegistry().validate("urn:forge:test:checkpoint", {
+      ...validCheckpoint,
+      pr,
+    }),
+  ).toEqual([]);
+});
+test("checkpoint schema enforces required next, enums, hash, URL, bounds and extra properties", () => {
+  const registry = checkpointRegistry();
+  const valid = validCheckpoint;
   expect(registry.validate("urn:forge:test:checkpoint", valid)).toEqual([]);
+  expect(
+    registry.validate("urn:forge:test:checkpoint", {
+      ...valid,
+      branch: "not a git branch",
+    }),
+  ).toEqual([]);
   for (const pr of [
     "https://example.com:8443/pull/1",
     "http://localhost:8080/pull/1",
@@ -401,6 +436,8 @@ test("checkpoint schema enforces required next, enums, hash, URL, bounds and ext
     { pr: "https://bad..host/pull/1" },
     { pr: "https://256.0.0.1/pull/1" },
     { pr: "https://example.com:65536/pull/1" },
+    { pr: "HTTPS://bad..host/pull/1" },
+    { pr: "HtTpS://example.com:65536/pull/1" },
     { pr: "ftp://example.com/pull/1" },
     { extra: true },
   ])

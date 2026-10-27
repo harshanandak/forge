@@ -4,8 +4,8 @@ Print the optional Stop guard with `forge agent guard`; completion words outside
 
 ## Claim and workspace
 
-1. Threaded chats: call MCP `t3_thread_configuration` once (no args) and set `FORGE_SESSION=t3:<threadId>` for every forge command, even after a harness switch. Workers you launch keep their own task session. At session start, run `forge memory rules` unless a hook supplied it: `result.text.text` is a pointer, never note text. Search memory before starting a task; use its search/show commands. Separate CLI workers: PowerShell `$env:FORGE_SESSION="<slice>-worker"` before claiming; re-dispatches reuse it.
-2. `forge issue claim --input '{"id":"<slice>"}'`. Refused because someone holds it: steer the live worker, never start a second on that slice. Renew during long work: `forge issue renew --input '{"id":"<slice>"}'`.
+1. Threaded chats: call MCP `t3_thread_configuration` once (no args) and set `FORGE_SESSION=t3:<threadId>` for every forge command, even after a harness switch. Workers you launch keep their own task session. At session start, run `forge memory rules` unless a hook supplied it: `result.text.text` is a pointer, never note text. Search memory before starting a task; use its search/show commands. Separate CLI workers: POSIX `export FORGE_SESSION="<slice>-worker"`; PowerShell `$env:FORGE_SESSION="<slice>-worker"` before claiming; re-dispatches reuse it.
+2. `forge issue claim <slice>`. Refused because someone holds it: steer the live worker, never start a second on that slice. Renew during long work: `forge issue renew <slice>`.
 3. Use the supplied isolated worktree, or ask the harness for one with dependencies installed; otherwise `git worktree add <path> -b <branch> origin/main`, then the project's install.
 
 ## Checkpoints

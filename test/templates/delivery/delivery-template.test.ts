@@ -39,6 +39,7 @@ test("restart guidance reads older direction and every review push checkpoints w
     expect(text).toContain("forge issue comments <slice>");
     expect(text).toContain("`more` is true");
     expect(text).toContain("earlier direction");
+    expect(text).toContain("once before acting if a checkpoint exists");
     expect(text.toLowerCase()).toContain("later comments override the body");
   }
   const review = skill("forge-review");
@@ -485,7 +486,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       "Workers you launch keep their own task session",
     );
     expect(text["forge-loop"]).toContain(
-      'Session: PowerShell `$env:FORGE_SESSION="<slice>-worker"` before any claim; never use the chat\'s t3: session.',
+      'Session: POSIX `export FORGE_SESSION="<slice>-worker"`; PowerShell `$env:FORGE_SESSION="<slice>-worker"` before any claim; never use the chat\'s t3: session.',
     );
     expect(text["forge-build"]).not.toContain("`forge-loop`");
     expect(text["forge-build"]).toContain("t3_thread_configuration");
