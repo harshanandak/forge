@@ -16,7 +16,7 @@ import {
   localCall,
 } from "../../../src/assembly/index.ts";
 import { dispatch, record } from "../../../src/surface/dispatch.ts";
-import { lintSkill } from "../../../src/surface/skills.ts";
+import { GENERATED_MARKER, lintSkill } from "../../../src/surface/skills.ts";
 import { openHarness } from "../../blocks/memory/lib.ts";
 
 const repo = resolve(import.meta.dirname, "../../..");
@@ -27,7 +27,7 @@ const SKILLS = [
   "land",
   "open-pr",
   "review",
-  "slice",
+  "forge-cut",
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
@@ -156,6 +156,111 @@ test("delivery sync replaces loop with forge-loop and forge-intake", async () =>
   });
 }, 30_000);
 
+test("forge-cut replaces marked slice copies while keeping user notes in both adapters", async () => {
+  await withDelivery(async (root, call, lint) => {
+    expect(
+      await call("config.set", {
+        path: "/blocks/agent/config/adapters",
+        value: [
+          { id: "agents", detect: [], skills: ".agents/skills" },
+          { id: "claude", detect: [], skills: ".claude/skills" },
+        ],
+        expectRevision: "",
+      }),
+    ).toMatchObject({ ok: true });
+    for (const adapter of [".agents", ".claude"]) {
+      const folder = join(root, adapter, "skills/slice");
+      mkdirSync(folder, { recursive: true });
+      writeFileSync(
+        join(folder, "SKILL.md"),
+        `${GENERATED_MARKER}\nold slice\n`,
+      );
+      writeFileSync(join(folder, "NOTES.md"), "user notes\n");
+    }
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    for (const adapter of [".agents", ".claude"]) {
+      const folder = join(root, adapter, "skills");
+      expect(existsSync(join(folder, "slice/SKILL.md"))).toBe(false);
+      expect(readFileSync(join(folder, "slice/NOTES.md"), "utf8")).toBe(
+        "user notes\n",
+      );
+      const cut = readFileSync(join(folder, "forge-cut/SKILL.md"), "utf8");
+      expect(lint(cut)).toEqual([]);
+      const create = new RegExp("forge issue create --input '([^']+)'").exec(
+        cut,
+      );
+      expect(create).not.toBeNull();
+      expect(JSON.parse(create![1]!)).toMatchObject({
+        parent: "<intent id>",
+        dependsOn: ["<dep id>"],
+      });
+      expect(cut).toContain("otherwise the epic");
+      expect(cut).toContain("For later edits");
+      expect(cut).toContain("forge issue release");
+      expect(cut).toContain("forge companions: framing.md");
+      expect(cut).toContain("[framing.md](framing.md)");
+      expect(
+        Buffer.byteLength(
+          readFileSync(
+            join(repo, "templates/delivery/skills/forge-cut/SKILL.md"),
+            "utf8",
+          ).replace(/\r\n/g, "\n"),
+        ),
+      ).toBeLessThanOrEqual(2815);
+      for (const rule of [
+        "400 changed lines",
+        "above 800",
+        "deletions exceed twice the additions",
+        "churn over 518 lines +2",
+        "over 10 files +2",
+        "`core` or `blocks` +1",
+        "light 0-1",
+        "standard 2-3",
+        "heavy 4-5",
+        "demoable",
+        "one-context",
+        "prefactors",
+        "expand, migrate in batches, then contract",
+        "forge issue dep",
+      ])
+        expect(cut).toContain(rule);
+      expect(cut.indexOf("Before filing")).toBeLessThan(
+        cut.indexOf("forge issue create"),
+      );
+    }
+    expect(await call("skills.sync", { check: true })).toMatchObject({
+      ok: true,
+    });
+  });
+}, 30_000);
+
+test("intake prototypes answer a named question and report evidence on the intent issue", async () => {
+  await withDelivery(async (root, call) => {
+    await call("skills.sync");
+    const intake = readFileSync(join(root, rendered("forge-intake")), "utf8");
+    for (const rule of [
+      "only running code can answer",
+      "Name the question first",
+      "one session",
+      "300 lines",
+      "prototype/<name>",
+      "scratch folder",
+      "no tests or polish",
+      "verdict",
+      "output, timing or screenshot",
+      "branch pointer",
+      "comment on the intent issue",
+      "validated snippet",
+      "never merges",
+      "`forge-cut`",
+    ])
+      expect(intake).toContain(rule);
+    const credits = readFileSync(join(repo, "CREDITS"), "utf8");
+    for (const source of ["to-tickets", "prototype"])
+      expect(credits).toContain(`skills/engineering/${source}`);
+  });
+}, 30_000);
+
 test("the delivery template renders all seven skills: linted, at most 4 KB, values filled in", async () => {
   await withDelivery(async (root, call, lint) => {
     const synced = await call("skills.sync");
@@ -176,17 +281,17 @@ test("the delivery template renders all seven skills: linted, at most 4 KB, valu
     }
     expect(text["forge-loop"]).toContain("At most 3 workers at once");
     expect(text["forge-loop"]).toContain("publish, force-push, prod-write");
-    expect(text.slice).toContain("Route open decisions to `forge-intake`");
-    expect(text.slice).toContain(
+    expect(text["forge-cut"]).toContain(
+      "Route open decisions to `forge-intake`",
+    );
+    expect(text["forge-cut"]).toContain(
       "unclear goal or done condition to forge-intake",
     );
-    expect(text.slice).not.toContain("Silence means every default");
-    expect(text.slice).not.toContain("at most 5");
-    expect(text.slice).toContain(
-      "Target 800 changed lines and at most 15 files",
-    );
-    expect(text.slice).toContain("Above 1500 lines, split");
-    expect(text.slice).toContain("p0, p1, p2, p3, p4");
+    expect(text["forge-cut"]).not.toContain("Silence means every default");
+    expect(text["forge-cut"]).not.toContain("at most 5");
+    expect(text["forge-cut"]).toContain("Aim at 400 changed lines");
+    expect(text["forge-cut"]).toContain("split above 800");
+    expect(text["forge-cut"]).toContain("p0, p1, p2, p3, p4");
     expect(text.build).toContain(
       `forge issue claim --input '{"id":"<slice>"}'`,
     );
@@ -226,7 +331,9 @@ test("the delivery template renders all seven skills: linted, at most 4 KB, valu
     expect(text.land).toContain("head moved means run the gate again");
     expect(text.land).toContain('"receipt":"<id>"');
     expect(text.build).toContain("receiptChecks");
-    expect(text.slice).toContain('"withoutReceipt":"superseded by <id>"');
+    expect(text["forge-cut"]).toContain(
+      '"withoutReceipt":"superseded by <id>"',
+    );
     expect(text.land).toContain(
       "gh pr merge <n> --squash --match-head-commit <head>",
     );
@@ -283,7 +390,10 @@ test("integration: rendered memory save and search accept a lowercase repository
     const land = readFileSync(join(root, rendered("land")), "utf8");
     const command = new RegExp("forge memory add --input '([^']+)'").exec(land);
     expect(command).not.toBeNull();
-    const slice = readFileSync(join(root, rendered("slice")), "utf8");
+    const slice = readFileSync(
+      join(root, ".agents/skills/forge-cut/framing.md"),
+      "utf8",
+    );
     // gh's built-in jq ascii_downcase was also checked against Product-Suite with gh repo view.
     for (const text of [land, slice])
       expect(text).toContain(
@@ -324,7 +434,14 @@ test("rendered delivery skills do not give rule tags standing authority", async 
   await withDelivery(async (root, call) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
     for (const name of SKILLS) {
-      const text = readFileSync(join(root, rendered(name)), "utf8");
+      const text =
+        readFileSync(join(root, rendered(name)), "utf8") +
+        (name === "forge-cut"
+          ? readFileSync(
+              join(root, ".agents/skills/forge-cut/framing.md"),
+              "utf8",
+            )
+          : "");
       expect(text).not.toContain('"tag":"rule"');
       expect(text).not.toMatch(/"tags"\s*:\s*\[[^\]]*"rule"/);
       expect(text).not.toContain('tag "rule"');
@@ -348,8 +465,16 @@ test("the rendered forge-loop pages through adopted decision titles and proposal
     expect(loop).toContain("titles only");
     expect(loop).toContain("no decision text");
     expect(loop).toContain("see below for pagination");
-    for (const name of ["land", "slice"]) {
-      const text = readFileSync(join(root, rendered(name)), "utf8");
+    for (const name of ["land", "forge-cut"]) {
+      const text = readFileSync(
+        join(
+          root,
+          name === "forge-cut"
+            ? ".agents/skills/forge-cut/framing.md"
+            : rendered(name),
+        ),
+        "utf8",
+      );
       expect(text).toContain("forge decision propose --input");
       expect(text).toContain("`format_missing`");
       expect(text).toContain("returned `repair`");
@@ -365,7 +490,7 @@ test("stale guidance values do not change the rendered delivery instructions", a
     await call("skills.sync");
     for (const [path, value] of [
       ["/values/fixes/maxFailedPerCheck", 3],
-      ["/values/slice/targetLines", 400],
+      ["/values/slice/targetLines", 999],
     ] as const)
       expect(
         await call("config.set", { path, value, expectRevision: "" }),
@@ -376,16 +501,16 @@ test("stale guidance values do not change the rendered delivery instructions", a
     const build = readFileSync(join(root, rendered("build")), "utf8");
     expect(build).toContain("After 2 failed fixes on the same check");
     expect(build).not.toContain("After 3 failed fixes");
-    expect(readFileSync(join(root, rendered("slice")), "utf8")).toContain(
-      "Target 800 changed lines",
-    );
+    const cut = readFileSync(join(root, rendered("forge-cut")), "utf8");
+    expect(cut).toContain("Aim at 400 changed lines");
+    expect(cut).not.toContain("999");
   });
 }, 30_000);
 
 const GUIDANCE = [
-  ["slice.targetLines", "slice", "Target 800 changed lines"],
-  ["slice.splitAbove", "slice", "Above 1500 lines, split"],
-  ["slice.maxFiles", "slice", "at most 15 files"],
+  ["slice.targetLines", "forge-cut", "Aim at 400 changed lines"],
+  ["slice.splitAbove", "forge-cut", "split above 800"],
+  ["slice.maxFiles", "forge-cut", "over 10 files +2"],
   ["review.rounds", "review", "At most 2 rounds"],
   ["review.fix", "review", "Fix only P0, P1 findings"],
   ["review.file", "review", "Everything else (P2, P3"],
@@ -405,7 +530,11 @@ const GUIDANCE = [
   ["lanes.max", "forge-loop", "At most 3 workers at once"],
   ["lanes.fullSuiteRuns", "forge-loop", "1 full-suite run at a time"],
   ["lanes.stallMinutes", "forge-loop", "silent for 10 minutes"],
-  ["labels.priority", "slice", "Priority is one label of p0, p1, p2, p3, p4"],
+  [
+    "labels.priority",
+    "forge-cut",
+    "Priority is one label of p0, p1, p2, p3, p4",
+  ],
   ["labels.deferred", "review", '"review-deferred"'],
   ["labels.gap", "build", "`contract-gap` issue"],
   ["roles.orchestrator", "forge-loop", "orchestrator strong"],

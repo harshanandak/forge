@@ -63,7 +63,7 @@ const config: CheckConfig = {
   maxInputBytes: 1048576,
   environment: [],
 };
-function fixture() {
+function fixture(headRefName: unknown = "feat/x") {
   const records = new Map<string, StateRecord>();
   let receiptHead = head;
   let receiptExit = 0;
@@ -154,6 +154,7 @@ function fixture() {
           headHistory.push(views === 0 ? head : laterHead);
           stdout = JSON.stringify({
             headRefOid: ++views === 1 ? head : laterHead,
+            headRefName,
             baseRefOid: views === 1 ? base : laterBase,
             state,
             mergeStateStatus,
@@ -283,6 +284,53 @@ test("gate passes only with a verified current-head receipt and complete GitHub 
   expect(f.calls.some((args) => args[1] === "checks")).toBe(false);
   expect(f.calls.find((args) => args[0] === "api")).toContain("--paginate");
   expect(f.calls.find((args) => args[0] === "api")).toContain("--slurp");
+}, 1000);
+
+for (const branch of ["prototype/x", "Prototype/x", "PROTOTYPE/x"])
+  test(`gate refuses ${branch} with a direction to port the decision into a slice`, async () => {
+    const f = fixture(branch);
+    await f.receipt();
+    const result = await f.gate();
+    expect(result.verdict).toBe("REFUSED");
+    expect(result.reasons).toContainEqual({
+      code: "PROTOTYPE_BRANCH",
+      detail: `${branch}: prototype branches never merge; port the decision into a slice`,
+    });
+  }, 1000);
+
+for (const branch of [
+  "prototypes/x",
+  "prototype",
+  "feat/prototype/x",
+  "feat/x",
+])
+  test(`gate allows ${branch} with complete evidence`, async () => {
+    const f = fixture(branch);
+    await f.receipt();
+    expect((await f.gate()).verdict).toBe("PASS");
+  }, 1000);
+
+test("gate preserves normal branch evidence collection without another gh call", async () => {
+  const f = fixture("feat/x");
+  await f.receipt();
+  expect((await f.gate()).verdict).toBe("PASS");
+  const views = f.calls.filter(
+    (args) => args[0] === "pr" && args[1] === "view",
+  );
+  expect(views).toHaveLength(2);
+  for (const args of views)
+    expect(args[args.indexOf("--json") + 1]?.split(",")).toContain(
+      "headRefName",
+    );
+  expect(f.calls).toHaveLength(5);
+}, 1000);
+
+test("gate refuses empty or malformed head branch evidence", async () => {
+  for (const headRefName of ["", " ", null, 7]) {
+    const f = fixture(headRefName);
+    await f.receipt();
+    await refuses(f, "GITHUB_EVIDENCE_INVALID");
+  }
 }, 1000);
 
 for (const [name, options, code] of [

@@ -845,13 +845,15 @@ async function gate(
         "view",
         String(input.pr),
         "--json",
-        "headRefOid,baseRefOid,state,mergeStateStatus,url,changedFiles",
+        "headRefOid,headRefName,baseRefOid,state,mergeStateStatus,url,changedFiles",
       ]),
     );
     if (
       !isRecord(value) ||
       typeof value.headRefOid !== "string" ||
       !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value.headRefOid) ||
+      typeof value.headRefName !== "string" ||
+      value.headRefName.trim().length === 0 ||
       typeof value.baseRefOid !== "string" ||
       !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value.baseRefOid) ||
       typeof value.state !== "string" ||
@@ -864,6 +866,7 @@ async function gate(
       invalid();
     return value as {
       headRefOid: string;
+      headRefName: string;
       baseRefOid: string;
       state: string;
       mergeStateStatus: string;
@@ -875,6 +878,11 @@ async function gate(
     if (!Number.isSafeInteger(input.pr) || input.pr < 1) invalid();
     const pr = await view();
     head = pr.headRefOid;
+    if (pr.headRefName.toLowerCase().startsWith("prototype/"))
+      refuse(
+        "PROTOTYPE_BRANCH",
+        `${pr.headRefName}: prototype branches never merge; port the decision into a slice`,
+      );
     if (pr.state !== "OPEN" || pr.mergeStateStatus !== "CLEAN")
       refuse(
         "PR_NOT_MERGEABLE",
