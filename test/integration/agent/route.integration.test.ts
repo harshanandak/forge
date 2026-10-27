@@ -237,8 +237,8 @@ test("shipped guards resolve an existing installed companion from an unrelated c
   for (const [id, file] of [
     ["claude", "~/.claude/settings.json"],
     ["codex", "~/.codex/hooks.json"],
-  ]) {
-    const result = run(["agent", "guard", id!]);
+  ] as const) {
+    const result = run(["agent", "guard", id]);
     expect(result.status).toBe(0);
     const guard = readResult<GuardResult>(result.stdout);
     expect(guard.file).toBe(file);
