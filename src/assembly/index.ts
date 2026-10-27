@@ -51,6 +51,7 @@ import type {
   ResultEnvelope,
 } from "../generated/types.ts";
 import type { SurfaceCatalog } from "../surface/catalog.ts";
+import { record } from "../surface/dispatch.ts";
 import { discoveryOperations } from "../generated/core-discovery.ts";
 import { createStateClient } from "./state-client.ts";
 import { version } from "../version.ts";
@@ -848,6 +849,30 @@ export async function createAssembly(
           if (request.op === "skills.sync") {
             await trustState.open(false);
             const show = call.config.show();
+            const current = snapshot(call);
+            const invalid = current.unavailable.find(
+              (block) =>
+                "builtin" in block.source &&
+                block.source.builtin === "forge/agent",
+            );
+            if (invalid) refuse("INPUT_INVALID", invalid.reason);
+            const document = composition(show);
+            const directories = Object.entries(document.blocks).flatMap(
+              ([name, block]) => {
+                if (
+                  block.enabled === false ||
+                  current.blocks.get(name)?.manifest.id !== "forge/agent"
+                )
+                  return [];
+                const adapters = record(block.config)?.adapters;
+                return Array.isArray(adapters)
+                  ? adapters.flatMap((adapter: unknown) => {
+                      const path = record(adapter)?.skills;
+                      return typeof path === "string" ? [path] : [];
+                    })
+                  : [];
+              },
+            );
             const legacyClaimTtl = show.values.find(
               (value) =>
                 value.active && value.pointer === "/values/claims/ttlSeconds",
@@ -864,14 +889,18 @@ export async function createAssembly(
                 code: "CLAIM_TTL_CONFIG_MOVE",
                 message: `Move /values/claims/ttlSeconds to /blocks/work/config/claimTtlSeconds with value ${JSON.stringify(legacyClaimTtl.value)} to preserve the claim lease duration.`,
               });
-            return {
+            const synced = {
               ...success(
                 request.op,
                 syncSkills(
                   root,
                   catalog.list(),
                   composition(show).mcp?.toolPrefix,
-                  typeof input.dir === "string" ? input.dir : undefined,
+                  typeof input.dir === "string"
+                    ? input.dir
+                    : directories.length
+                      ? directories
+                      : undefined,
                   {
                     sources: show.templates.flatMap((t): TemplateFile[] => {
                       if (t.source !== undefined)
@@ -885,10 +914,18 @@ export async function createAssembly(
                     }),
                     values: show.effective.values,
                   },
+                  input.check === true,
                 ),
               ),
               warnings,
             };
+            const skipped = record(synced.result)?.skipped;
+            if (Array.isArray(skipped) && skipped.length)
+              warnings.push({
+                code: "SKILLS_SKIPPED",
+                message: `left alone because Forge did not write them: ${skipped.join(", ")}; delete them to let sync write Forge's copies`,
+              });
+            return synced;
           }
           if (request.op === "block.check" || request.op === "block.add") {
             await trustState.open(false);

@@ -3,6 +3,7 @@
   "additionalProperties": false,
   "required": ["id", "detect"],
   "properties": {
+    "skills": { "type": "string", "minLength": 1 },
     "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
     "detect": {
       "type": "array",

@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # forge-loop
 
-Every wake is a fresh read: read, route, then stop. Read the chosen skill before acting.
+Every wake: read, route, stop. Read the chosen skill before acting.
 
 ## Wake
 
