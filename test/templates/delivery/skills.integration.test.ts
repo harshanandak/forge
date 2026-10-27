@@ -72,7 +72,7 @@ function fixture(
 }
 
 const adapterDirs = [".claude/skills", ".agents/skills"];
-test.each(["lstat", "stat"])(
+test.each(["lstat", "stat", "cleanup"])(
   "built sync isolates %s access errors",
   (operation) => {
     fixture((root) => {

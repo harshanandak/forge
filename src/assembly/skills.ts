@@ -1,6 +1,5 @@
 import {
   entryKind,
-  fileHasLine,
   nodeConfigFiles,
   removeEmptyParents,
 } from "../adapters/fs/index.ts";
@@ -27,12 +26,11 @@ export interface SkillsSyncResult {
   /** Generated files this run no longer produces, e.g. from a removed template. */
   readonly removed: readonly string[];
   readonly differences: readonly string[];
-  readonly readErrors: readonly {
+  readonly errors: readonly {
+    readonly op: "read" | "write" | "remove";
     readonly path: string;
     readonly message: string;
   }[];
-  readonly writeErrors: SkillsSyncResult["readErrors"];
-  readonly removeErrors: SkillsSyncResult["readErrors"];
 }
 
 /** A template file to read skills from: a project file, or one shipped in the installed package. */
@@ -90,7 +88,11 @@ function accessFailure(error: unknown): boolean {
   );
 }
 
-function validate(root: string, path: string, origin: string): boolean {
+function validate(
+  inspect: (path: string) => ReturnType<typeof entryKind>,
+  path: string,
+  origin: string,
+): boolean {
   if (
     /[\\:,\r\n]/.test(path) ||
     path !== path.trim() ||
@@ -102,7 +104,7 @@ function validate(root: string, path: string, origin: string): boolean {
   const parts = path.split("/");
   try {
     for (let i = 1; i <= parts.length; i++) {
-      const kind = entryKind(root, parts.slice(0, i).join("/"));
+      const kind = inspect(parts.slice(0, i).join("/"));
       if (kind === "link") throw new Error("symlinked path is not followed");
       if (i < parts.length && kind !== "missing" && kind !== "directory")
         return false;
@@ -183,7 +185,7 @@ function templateSkills(templates: TemplateSkills): Copy[] {
 /**
  * `skills.sync`: write each enabled block noun's skill and each imported template's skill under
  * the project root. Readable marked files are replaced, or deleted once no longer produced.
- * Oversized files are left untouched; marked ones are reported, unmarked user files stay silent.
+ * Oversized files follow the same left-alone path as unmarked user files.
  */
 export function syncSkills(
   root: string,
@@ -242,15 +244,18 @@ export function syncSkills(
   const skipped: string[] = [];
   const removed: string[] = [];
   const differences: string[] = [];
-  const readErrors: { path: string; message: string }[] = [];
-  const writeErrors: typeof readErrors = [];
-  const removeErrors: typeof readErrors = [];
+  const errors: {
+    op: "read" | "write" | "remove";
+    path: string;
+    message: string;
+  }[] = [];
   const report = (
-    errors: typeof readErrors,
+    op: "read" | "write" | "remove",
     path: string,
     error: unknown,
   ): void => {
     errors.push({
+      op,
       path,
       message: error instanceof Error ? error.message : String(error),
     });
@@ -267,8 +272,10 @@ export function syncSkills(
           name,
         ]),
       );
+      let accessed = dir;
       const plan = (name: string): void => {
         const folder = `${dir}/${name}`;
+        accessed = folder;
         const copies = skills.filter((s) => key(s.noun) === key(name));
         const kind = entryKind(root, folder);
         if (kind !== "directory" && kind !== "missing") {
@@ -276,27 +283,28 @@ export function syncSkills(
           return;
         }
         const localRoot = `${root}/${folder}`;
-        const local = nodeConfigFiles(localRoot);
+        const base = nodeConfigFiles(localRoot);
+        const local = {
+          ...base,
+          read(relative: string, maxBytes?: number) {
+            accessed = `${folder}/${relative}`;
+            return base.read(relative, maxBytes);
+          },
+        };
+        const inspect = (relative: string): ReturnType<typeof entryKind> => {
+          accessed = `${folder}/${relative}`;
+          return entryKind(localRoot, relative);
+        };
         const path = `${folder}/SKILL.md`;
-        const skillKind = entryKind(localRoot, "SKILL.md");
-        let current: Uint8Array | undefined;
-        try {
-          current = skillKind === "file" ? local.read("SKILL.md") : undefined;
-        } catch (error) {
-          if (
-            error instanceof ForgeFailure &&
-            error.error.code === "LIMIT_EXCEEDED" &&
-            !fileHasLine(localRoot, "SKILL.md", GENERATED_MARKER)
-          )
-            return;
-          throw error;
-        }
+        const skillKind = inspect("SKILL.md");
+        const current =
+          skillKind === "file" ? local.read("SKILL.md") : undefined;
         const listed = companions(current, path);
         if (listed === undefined && skillKind !== "missing") {
           if (copies.length) skipped.push(path);
           return;
         }
-        for (const entry of listed ?? []) validate(localRoot, entry, path);
+        for (const entry of listed ?? []) validate(inspect, entry, path);
         const wanted = new Map(
           copies.map((s) => [key(s.path.slice(s.noun.length + 1)), s]),
         );
@@ -304,18 +312,17 @@ export function syncSkills(
         for (const [relative, copy] of wanted) {
           if (relative === key("SKILL.md")) continue;
           const destination = copy.path.slice(copy.noun.length + 1);
-          const clear = validate(localRoot, destination, path);
+          const clear = validate(inspect, destination, path);
           const bytes = copy.bytes!;
           const displaced = (listed ?? []).some(
             (p) =>
               !wanted.has(key(p)) &&
               key(destination).startsWith(`${key(p)}/`) &&
-              entryKind(localRoot, p) === "file",
+              inspect(p) === "file",
           );
           if (
             !displaced &&
-            (!clear ||
-              !["missing", "file"].includes(entryKind(localRoot, destination)))
+            (!clear || !["missing", "file"].includes(inspect(destination)))
           ) {
             skipped.push(`${folder}/${destination}`);
             continue;
@@ -389,7 +396,14 @@ export function syncSkills(
           lists.forEach((list, i) => {
             list.length = lengths[i]!;
           });
-          report(readErrors, `${dir}/${name}/SKILL.md`, error);
+          if (
+            error instanceof ForgeFailure &&
+            error.error.code === "LIMIT_EXCEEDED" &&
+            accessed === `${dir}/${name}/SKILL.md`
+          ) {
+            if (skills.some((skill) => key(skill.noun) === key(name)))
+              skipped.push(accessed);
+          } else report("read", accessed, error);
         }
       }
     }
@@ -409,6 +423,7 @@ export function syncSkills(
             path = entry.path;
             files.remove(entry.path);
             removed.push(entry.path);
+            path = entry.path.split("/").slice(0, -1).join("/");
             removeEmptyParents(root, entry.path, entry.folder);
           }
           operation = "write";
@@ -421,8 +436,13 @@ export function syncSkills(
           }
         } catch (error) {
           report(
-            operation === "write" ? writeErrors : removeErrors,
-            path,
+            operation,
+            typeof error === "object" &&
+              error !== null &&
+              "relativePath" in error &&
+              typeof error.relativePath === "string"
+              ? error.relativePath
+              : path,
             error,
           );
         }
@@ -441,8 +461,6 @@ export function syncSkills(
     skipped,
     removed,
     differences,
-    readErrors,
-    writeErrors,
-    removeErrors,
+    errors,
   };
 }

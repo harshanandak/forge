@@ -319,7 +319,7 @@ test.each(["EACCES", "EBUSY"])(
           warnings: [
             {
               code: "SKILLS_READ_FAILED",
-              message: `Cannot read skills: ${RENDERED}; see result.readErrors for details`,
+              message: `Cannot read skills: ${RENDERED}; see result.errors for details`,
             },
           ],
         });
@@ -334,7 +334,7 @@ test.each(["EACCES", "EBUSY"])(
           warnings: [
             {
               code: "SKILLS_READ_FAILED",
-              message: `Cannot read skills: ${RENDERED}; see result.readErrors for details`,
+              message: `Cannot read skills: ${RENDERED}; see result.errors for details`,
             },
           ],
         });
@@ -486,7 +486,7 @@ test("a known parent-file collision does not probe its impossible descendants", 
       expect(await call("skills.sync")).toMatchObject({
         ok: true,
         skipped: [".agents/skills/review/agents/openai.yaml"],
-        readErrors: [],
+        errors: [],
       });
     } finally {
       spy.mockRestore();
@@ -749,6 +749,7 @@ test("a generated skill converted to CRLF is still recognized: updated when valu
 }, 30_000);
 
 test.each([
+  "folder metadata",
   "metadata",
   "companion metadata",
   "second read",
@@ -784,6 +785,8 @@ test.each([
       };
       const kindSpy = spyOn(fsAdapter, "entryKind").mockImplementation(
         (base, path) => {
+          if (operation === "folder metadata" && join(base, path) === folder)
+            fail();
           if (
             operation === "metadata" &&
             join(base, path) === join(root, RENDERED)
@@ -868,9 +871,12 @@ test.each([
             ok: false,
             error: { code },
             result: {
-              readErrors: [],
-              [operation === "write" ? "writeErrors" : "removeErrors"]: [
-                { path: failed, message: `injected ${operation}` },
+              errors: [
+                {
+                  op: operation,
+                  path: failed,
+                  message: `injected ${operation}`,
+                },
               ],
             },
           });
@@ -885,7 +891,6 @@ test.each([
           expect(after.stdout).toContain(failed);
           expect(validateResultEnvelope(synced.envelope).ok).toBe(true);
         }
-        expect(JSON.stringify(synced.envelope)).toContain(RENDERED);
         expect(readFileSync(join(root, RENDERED))).toEqual(original);
         expect(readFileSync(join(folder, "z.txt"), "utf8")).toBe("old");
         if (operation !== "write")
@@ -894,6 +899,16 @@ test.each([
           true,
         );
         if (!["write", "remove"].includes(operation)) {
+          const expected =
+            operation === "folder metadata"
+              ? ".agents/skills/review"
+              : operation.includes("companion")
+                ? ".agents/skills/review/z.txt"
+                : RENDERED;
+          const failures = record(synced.envelope.result)?.errors;
+          expect(
+            record(Array.isArray(failures) ? failures[0] : undefined)?.path,
+          ).toBe(expected);
           expect(
             checked.envelope.warnings.map((warning) => warning.code),
           ).toEqual(["SKILLS_READ_FAILED"]);
@@ -928,17 +943,122 @@ test.each(["marked", "unmarked", "marker beyond limit"])(
           ["skills", "sync", ...(check ? ["--check"] : [])],
           localCall(assembly),
         );
-        expect(response.exitCode).toBe(check && kind !== "unmarked" ? 1 : 0);
+        expect(response.exitCode).toBe(0);
         expect(
           response.envelope.warnings.map((warning) => warning.code),
-        ).toEqual(kind === "unmarked" ? [] : ["SKILLS_READ_FAILED"]);
-        expect(response.stdout.includes(RENDERED)).toBe(kind !== "unmarked");
+        ).toEqual(["SKILLS_SKIPPED"]);
+        expect(record(response.envelope.result)?.skipped).toEqual([RENDERED]);
         expect(readFileSync(join(root, RENDERED), "utf8")).toBe(text);
       }
     });
   },
   30_000,
 );
+
+test.each(["write", "remove"])(
+  "plain %s failure precedes many planned paths without repair advice",
+  async (operation) => {
+    await withTemplate(async (root, call, assembly) => {
+      const source = join(root, "tpl/skills/review");
+      writeFileSync(join(source, "old.txt"), "retired");
+      await call("skills.sync");
+      rmSync(join(source, "old.txt"));
+      const names = Array.from(
+        { length: 150 },
+        (_, i) => `item-${String(i).padStart(3, "0")}-${"x".repeat(24)}.txt`,
+      );
+      for (const name of names) writeFileSync(join(source, name), "new");
+      const failed = `.agents/skills/review/${operation === "write" ? names.at(-1)! : "old.txt"}`;
+      const real = fsAdapter.nodeConfigFiles;
+      const spy = spyOn(fsAdapter, "nodeConfigFiles").mockImplementation(
+        (base) => {
+          const files = real(base);
+          const fail = (path: string): void => {
+            if (join(base, path) === join(root, failed))
+              throw Object.assign(new Error("injected failure"), {
+                code: "EPERM",
+              });
+          };
+          return {
+            ...files,
+            write(path, bytes) {
+              if (operation === "write") fail(path);
+              files.write(path, bytes);
+            },
+            remove(path) {
+              if (operation === "remove") fail(path);
+              files.remove(path);
+            },
+          };
+        },
+      );
+      try {
+        const checked = await runCli(
+          assembly.catalog,
+          ["skills", "sync", "--check"],
+          localCall(assembly),
+        );
+        expect(checked.exitCode).toBe(1);
+        expect(checked.stdout).toContain("run forge skills sync");
+        expect(record(checked.envelope.result)?.differences).toContain(failed);
+        const synced = await runCli(
+          assembly.catalog,
+          ["skills", "sync"],
+          localCall(assembly),
+        );
+        expect(synced.exitCode).toBe(1);
+        expect(synced.envelope.ok).toBe(false);
+        if (!synced.envelope.ok) {
+          expect(synced.envelope.error.message).toContain(failed);
+          expect(synced.envelope.error.message).not.toContain(
+            "run forge skills sync",
+          );
+        }
+        expect(validateResultEnvelope(synced.envelope).ok).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  },
+  30_000,
+);
+
+test("successful removal and failed parent cleanup report different paths once", async () => {
+  await withTemplate(async (root, call, assembly) => {
+    const source = join(root, "tpl/skills/review/data/old.txt");
+    mkdirSync(dirname(source));
+    writeFileSync(source, "retired");
+    await call("skills.sync");
+    rmSync(source);
+    const parent = ".agents/skills/review/data";
+    const removed = `${parent}/old.txt`;
+    const spy = spyOn(fsAdapter, "removeEmptyParents").mockImplementation(
+      () => {
+        throw Object.assign(new Error("injected cleanup failure"), {
+          code: "EACCES",
+          relativePath: parent,
+        });
+      },
+    );
+    try {
+      const result = await runCli(
+        assembly.catalog,
+        ["skills", "sync"],
+        localCall(assembly),
+      );
+      expect(result.exitCode).toBe(1);
+      expect(record(result.envelope.result)?.removed).toEqual([removed]);
+      const failures = record(result.envelope.result)?.errors;
+      expect(
+        record(Array.isArray(failures) ? failures[0] : undefined)?.path,
+      ).toBe(parent);
+      expect(JSON.stringify(failures)).not.toContain(removed);
+      expect(existsSync(join(root, removed))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+}, 30_000);
 
 test("many read failures share one bounded warning and keep full diagnostics", async () => {
   await withTemplate(async (root, call, assembly) => {
@@ -983,9 +1103,9 @@ test("many read failures share one bounded warning and keep full diagnostics", a
         expect(
           response.envelope.warnings.map((warning) => warning.code),
         ).toEqual(["SKILLS_READ_FAILED"]);
-        expect(record(response.envelope.result)?.readErrors).toHaveLength(100);
+        expect(record(response.envelope.result)?.errors).toHaveLength(100);
         expect(
-          JSON.stringify(record(response.envelope.result)?.readErrors),
+          JSON.stringify(record(response.envelope.result)?.errors),
         ).toContain("locked-099/SKILL.md");
         if (!response.envelope.ok) {
           expect(response.envelope.error.message).toContain(RENDERED);
@@ -1013,7 +1133,7 @@ test("skills check help and input description include read failures", async () =
     );
     expect(help.exitCode).toBe(0);
     expect(help.stdout).toContain("read failures");
-    expect(help.stdout).toContain("Oversized unmarked");
+    expect(help.stdout).toContain("oversized SKILL.md");
     const described = await runCli(
       assembly.catalog,
       ["skills", "sync", "--help", "--json"],
@@ -1024,7 +1144,7 @@ test("skills check help and input description include read failures", async () =
       Array.isArray(entries) ? entries[0] : undefined,
     )?.inputSchema;
     expect(JSON.stringify(input)).toContain("read failures");
-    expect(JSON.stringify(input)).toContain("Oversized unmarked");
+    expect(JSON.stringify(input)).toContain("oversized SKILL.md");
   });
 }, 30_000);
 

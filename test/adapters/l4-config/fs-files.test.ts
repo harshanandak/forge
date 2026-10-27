@@ -12,10 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  fileHasLine,
-  nodeConfigFiles,
-} from "../../../src/adapters/fs/index.ts";
+import { nodeConfigFiles } from "../../../src/adapters/fs/index.ts";
 
 setDefaultTimeout(30_000);
 
@@ -33,35 +30,6 @@ function root(): string {
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 const text = (data: Uint8Array | undefined): string | undefined =>
   data === undefined ? undefined : new TextDecoder().decode(data);
-
-test.each([
-  ["marker", true],
-  ["marker\n", true],
-  ["marker\r\n", true],
-  ["prefix marker\n", false],
-  ["marker suffix\n", false],
-  ["marker\r", false],
-  [`${"x".repeat(65_532)}\nmarker\r\nend`, true],
-  [`${"x".repeat(2 * 1024 * 1024)}\nmarker`, true],
-  ["x".repeat(2 * 1024 * 1024), false],
-])(
-  "bounded line scan matches exact lines across chunks (case %#)",
-  (content, expected) => {
-    const dir = root();
-    writeFileSync(join(dir, "SKILL.md"), String(content));
-    expect(fileHasLine(dir, "SKILL.md", "marker")).toBe(expected);
-  },
-);
-
-test("bounded line scan keeps the config reader's path and link boundary", () => {
-  const dir = root();
-  const outside = root();
-  writeFileSync(join(outside, "SKILL.md"), "marker");
-  symlinkSync(outside, join(dir, "link"), "junction");
-  expect(fileHasLine(dir, "missing", "marker")).toBe(false);
-  expect(() => fileHasLine(dir, "../SKILL.md", "marker")).toThrow("refusing");
-  expect(() => fileHasLine(dir, "link/SKILL.md", "marker")).toThrow("refusing");
-});
 
 describe("the fs adapter implements ConfigFiles", () => {
   test("reads, atomically replaces, lists and removes project-relative files", () => {

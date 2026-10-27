@@ -43,7 +43,7 @@
     },
     "skills.sync": {
       "title": "Sync skills",
-      "summary": "Sync skills and companions into each enabled adapter's skills directory. --check writes nothing and exits 1 for files sync would write or delete, or for read failures. Plain sync exits 1 for write or remove failures while continuing other skills. User entries are skipped with a warning. Oversized unmarked user files stay silent and untouched; oversized generated files are reported and left untouched. To repair generated-file drift, run forge skills sync; it overwrites edits to generated files."
+      "summary": "Sync skills and companions into each enabled adapter's skills directory. --check writes nothing and exits 1 for files sync would write or delete, or for read failures. Plain sync exits 1 for write or remove failures while continuing other skills. User entries, including oversized SKILL.md files at Forge's skill paths, are skipped with a warning and kept untouched. To repair generated-file drift, run forge skills sync; it overwrites edits to generated files."
     },
     "config.show": {
       "title": "Show configuration",

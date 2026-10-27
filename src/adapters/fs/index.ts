@@ -112,32 +112,6 @@ export function entryKind(
   }
 }
 
-/** Scan for an exact LF/CRLF line without loading an oversized file into memory. */
-export function fileHasLine(root: string, path: string, line: string): boolean {
-  let fd: number;
-  try {
-    fd = openSync(resolveIn(root, path, "refuse"), "r");
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return false;
-    throw error;
-  }
-  const buffer = Buffer.allocUnsafe(64 * 1024);
-  const wanted = `\n${line}`;
-  let tail = "\n";
-  try {
-    let count: number;
-    while ((count = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
-      const text = tail + buffer.subarray(0, count).toString("utf8");
-      if (text.includes(`${wanted}\n`) || text.includes(`${wanted}\r\n`))
-        return true;
-      tail = text.slice(-(wanted.length + 1));
-    }
-    return tail.endsWith(wanted);
-  } finally {
-    closeSync(fd);
-  }
-}
-
 /** Prune only empty parents of a deleted file, through the named containing folder. */
 export function removeEmptyParents(
   root: string,
@@ -151,7 +125,13 @@ export function removeEmptyParents(
     } catch (error) {
       if (errorCode(error) === "ENOTEMPTY" || errorCode(error) === "EEXIST")
         return;
-      if (errorCode(error) !== "ENOENT") throw error;
+      if (errorCode(error) !== "ENOENT")
+        throw Object.assign(
+          new Error(error instanceof Error ? error.message : String(error), {
+            cause: error,
+          }),
+          { relativePath: parent },
+        );
     }
     parent = parent.split("/").slice(0, -1).join("/");
   }

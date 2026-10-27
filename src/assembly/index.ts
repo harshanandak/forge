@@ -924,35 +924,36 @@ export async function createAssembly(
                   2000,
                 ),
               });
-            for (const [operation, errors] of [
-              ["read", synced.readErrors],
-              ["write", synced.writeErrors],
-              ["remove", synced.removeErrors],
-            ] as const)
+            for (const operation of ["read", "write", "remove"] as const) {
+              const errors = synced.errors.filter(
+                (error) => error.op === operation,
+              );
               if (errors.length)
                 warnings.push({
                   code: `SKILLS_${operation.toUpperCase()}_FAILED`,
                   message: bounded(
-                    `Cannot ${operation} skills: ${errors.map((error) => error.path).join(", ")}; see result.${operation}Errors for details`,
+                    `Cannot ${operation} skills: ${errors.map((error) => error.path).join(", ")}; see result.errors for details`,
                     2000,
                   ),
                 });
-            const problems = synced.differences.length
-              ? [
-                  `run forge skills sync; it overwrites edits to generated files; ${synced.differences.join("; ")}`,
-                ]
-              : [];
-            for (const error of [
-              ...synced.writeErrors,
-              ...synced.removeErrors,
-              ...synced.readErrors,
-            ])
+            }
+            const applyErrors = synced.errors.filter(
+              (error) => error.op !== "read",
+            );
+            const problems = applyErrors.map(
+              (error) => `${error.path}: ${error.message}`,
+            );
+            if (input.check === true && synced.differences.length)
+              problems.push(
+                `run forge skills sync; it overwrites edits to generated files; ${synced.differences.join("; ")}`,
+              );
+            for (const error of synced.errors.filter(
+              (error) => error.op === "read",
+            ))
               problems.push(`${error.path}: ${error.message}`);
-            const applyError = synced.writeErrors.length
-              ? "SKILLS_WRITE_FAILED"
-              : synced.removeErrors.length
-                ? "SKILLS_REMOVE_FAILED"
-                : undefined;
+            const applyError = applyErrors[0]
+              ? `SKILLS_${applyErrors[0].op.toUpperCase()}_FAILED`
+              : undefined;
             if (applyError || (input.check === true && problems.length))
               return {
                 ...failure(

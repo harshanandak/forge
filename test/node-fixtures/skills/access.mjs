@@ -5,9 +5,37 @@ import { join, resolve } from "node:path";
 import { createAssembly, localCall } from "../../../dist/src/assembly/index.js";
 import { runCli } from "../../../dist/src/surface/cli.js";
 import { validateResultEnvelope } from "../../../dist/src/generated/validators.js";
+import { removeEmptyParents } from "../../../dist/src/adapters/fs/index.js";
 
 const root = fs.realpathSync.native(process.argv[2]);
 const operation = process.argv[3];
+if (operation === "cleanup") {
+  for (const code of ["EACCES", "EBUSY", "EPERM"]) {
+    fs.mkdirSync(join(root, "cleanup/deep"), { recursive: true });
+    const real = fs.rmdirSync;
+    fs.rmdirSync = function (path, ...args) {
+      if (String(path) === join(root, "cleanup"))
+        throw Object.assign(new Error(`injected ${code}`), { code });
+      return real.call(fs, path, ...args);
+    };
+    syncBuiltinESMExports();
+    try {
+      assert.throws(
+        () => removeEmptyParents(root, "cleanup/deep/old.txt", "cleanup"),
+        (error) =>
+          error instanceof Error &&
+          "relativePath" in error &&
+          error.relativePath === "cleanup",
+      );
+      assert.equal(fs.existsSync(join(root, "cleanup/deep")), false);
+      console.log(`cleanup ${code}: reported actual ancestor`);
+    } finally {
+      fs.rmdirSync = real;
+      syncBuiltinESMExports();
+    }
+  }
+  process.exit(0);
+}
 const assembly = await createAssembly({
   root,
   deviceRoot: join(root, "device"),

@@ -2,7 +2,7 @@
   "type": "object",
   "properties": {
     "check": {
-      "description": "Write nothing; exit 1 for files sync would write or delete, or for read failures. Left-alone user entries are listed in skipped with a warning. Oversized unmarked user files stay silent and untouched; oversized generated files are reported and left untouched. To repair generated-file drift, run forge skills sync; it overwrites edits to generated files.",
+      "description": "Write nothing; exit 1 for files sync would write or delete, or for read failures. Left-alone user entries, including oversized SKILL.md files at Forge's skill paths, are listed in skipped with a warning and kept untouched. To repair generated-file drift, run forge skills sync; it overwrites edits to generated files.",
       "type": "boolean"
     },
     "dir": {
