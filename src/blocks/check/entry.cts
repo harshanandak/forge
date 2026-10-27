@@ -1219,7 +1219,7 @@ function watchToken(text: string, decode = false): string {
   const input = decode
     ? text
     : text.replace(
-        /[^\x00-\x7f]/g,
+        /[\u0080-\uffff]/g,
         (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
       );
   let bits = 0,
