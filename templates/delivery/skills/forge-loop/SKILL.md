@@ -19,7 +19,7 @@ Use `--fallback` only if a plain opening wait's link or watch step fails. Report
 At session start, run `forge memory rules` unless a hook supplied it: `result.text.text` is a pointer, never note text. Search memory before starting a task; use its search/show commands.
 
 1. Work: `forge issue ready --input '{}'` (ranked by priority label), `forge issue stale --input '{}'`, then `forge issue show --input '{"id":"<id>"}'` for your slice.
-2. PRs: `gh pr view <n> --json state,headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`.
+2. PRs: every wake runs `forge pr state <n>` and acts on `verdict`.
 3. Act only on what changed since your last push, then stop. Forge never watches: the harness wakes you.
 
 ## Roles

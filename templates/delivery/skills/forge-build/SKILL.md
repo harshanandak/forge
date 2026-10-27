@@ -7,6 +7,8 @@ description: "Claim and build one slice with red/green receipts, risk-scaled pro
 
 Read [pull-request.md](pull-request.md) for setup and PR handoff.
 
+Every wake runs `forge pr state <n>` and acts on `verdict`.
+
 ## Worker brief
 
 Before delegating, fill every field; an empty field blocks the call:

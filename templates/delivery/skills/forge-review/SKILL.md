@@ -11,7 +11,7 @@ Before the heavy or critical slice's PR opens, read `forge route get review --te
 
 ## On each wake: conflicts, then threads, then CI
 
-1. `gh pr view <n> --json headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision`. Establish last push SHA/time and round from the checkpoint before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push the new commit. Never rebase a pushed branch or force-push.
+1. Every wake runs `forge pr state <n>` and acts on `verdict`. Establish last push SHA/time and round from the checkpoint before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push the new commit. Never rebase a pushed branch or force-push.
 2. Get `<owner> <repo>` from `gh repo view --json owner,name`. List unresolved threads: `node <skill-dir>/list-threads.mjs <owner> <repo> <n>`. Read full comments and timestamps with `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate` before deciding.
 3. Triage only comments and checks newer than the last push. For an old thread the head already fixed, verify the source and close it with `Fixed in <sha>`. Other old threads wait for new evidence; their age alone never justifies resolving them.
 
@@ -42,5 +42,5 @@ Require `true`. On `reply <id> posted; resolve failed`, retry only `resolveRevie
 
 - One round is one triage pass plus one push. Log it: `forge issue comment --input '{"id":"<slice>","body":"review round <k>: fixed ..., filed ...; push <sha> at <time>"}'`.
 - At most 2 rounds. After round 2, a new blocker means split or re-plan with the orchestrator instead of a round 3.
-- On wake, read fresh PR state and act; no sleep loop. After each push, run `forge agent wait <n>`; for `t3-tool`, skip its steps (already watching); otherwise do each step and follow `then`.
+- On wake, run `forge pr state <n>` and act on `verdict`; no sleep loop. After each push, run `forge agent wait <n>`; for `t3-tool`, skip its steps (already watching); otherwise do each step and follow `then`.
 - When checks are green and the thread list prints nothing, hand over to `forge-land`.

@@ -249,13 +249,20 @@ export async function runCli(
     } else {
       input = mapArguments(tokens, entry);
     }
-    return respond(
-      await dispatch(catalog, op, input, {
-        ...options,
-        ...(dryRun === undefined ? {} : { dryRun }),
-      }),
-      text,
-    );
+    const envelope = await dispatch(catalog, op, input, {
+      ...options,
+      ...(dryRun === undefined ? {} : { dryRun }),
+    });
+    const response = respond(envelope, text);
+    return envelope.ok && entry?.outputSchema?.["x-cli-output"] === "value"
+      ? {
+          ...response,
+          stdout:
+            envelope.result === null
+              ? ""
+              : `${JSON.stringify(envelope.result)}\n`,
+        }
+      : response;
   } catch (error) {
     if (error instanceof ForgeFailure)
       return respond(

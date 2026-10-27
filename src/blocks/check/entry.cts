@@ -1213,11 +1213,226 @@ async function gate(
   };
 }
 
+function watchToken(text: string, decode = false): string {
+  const base =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const input = decode
+    ? text
+    : text.replace(
+        /[\u0080-\uffff]/g,
+        (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+      );
+  let bits = 0,
+    size = 0,
+    output = "";
+  const width = decode ? 6 : 8,
+    unit = 14 - width;
+  for (const char of input) {
+    bits = (bits << width) | (decode ? base.indexOf(char) : char.charCodeAt(0));
+    for (size += width; size >= unit; size -= unit) {
+      const value = (bits >> (size - unit)) & ((1 << unit) - 1);
+      output += decode ? String.fromCharCode(value) : base[value];
+    }
+  }
+  if (!decode && size) output += base[(bits << (6 - size)) & 63];
+  return output;
+}
+async function prState(args: Call<{ pr: number; since?: string }>) {
+  const { services, input } = args;
+  const env = services.environment.select([
+    ...args.config.environment,
+    ...["GH_TOKEN", "GH_HOST", "GH_ENTERPRISE_TOKEN"],
+  ]);
+  async function gh<T>(argv: string[], checks = false): Promise<T> {
+    const executable = services.process.resolve("gh", env);
+    if (executable.kind !== "resolved") throw new Error("gh unavailable");
+    const result = await services.process.run(executable, argv, {
+      cwd: services.files.root,
+      env,
+      signal: args.signal,
+      timeoutMs: Math.max(1, args.deadline - Date.now()),
+      maxOutputBytes: 262144,
+    });
+    const cut = Object.values(result.outputEvidence ?? {}).some(
+      (e) => !e.complete,
+    );
+    if (result.timedOut || result.truncated || result.signal || cut)
+      throw new Error("Incomplete GitHub read");
+    const empty =
+      /^no (?:required )?checks reported on the '[^\r\n]*' branch\r?\n?$/;
+    const absent = checks && !result.stdout && empty.test(result.stderr);
+    if (absent && result.exitCode === 1) return [] as T;
+    if (!(checks ? [0, 1, 8] : [0]).includes(result.exitCode ?? -1))
+      throw new Error("GitHub read failed");
+    if (argv.includes("--paginate"))
+      return result.stdout
+        .split("\n")
+        .filter(Boolean)
+        .flatMap((line) => JSON.parse(line) as unknown) as T;
+    return JSON.parse(result.stdout) as T;
+  }
+  type Remark = { id: string; author: string; time: string };
+  type Pr = Record<string, string> & { draft: boolean; remarks: Remark[] };
+  const viewArgs = ["pr", "view", String(input.pr), "--json"];
+  const pr = await gh<Pr>([
+    ...viewArgs,
+    "headRefOid,state,mergeable,mergeStateStatus,reviewDecision,isDraft,url,comments,reviews",
+    "--jq",
+    "{head:.headRefOid,state,mergeable,merge:.mergeStateStatus,review:.reviewDecision,draft:.isDraft,url,remarks:([.comments[]|{id,author:.author.login,time:.createdAt}]+[.reviews[]|select(.submittedAt)|{id,author:.author.login,time:.submittedAt}])}",
+  ]);
+  const [, , host, owner, repo] = pr.url!.split("/");
+  const hash = (v: unknown) => services.crypto.sha256(JSON.stringify(v));
+  type Cursor = Record<"r" | "h" | "t" | "v" | "u", string> &
+    Record<"p" | "c", boolean> &
+    Record<"f" | "i", string[]> & { n: number };
+  const previous = input.since
+    ? (JSON.parse(watchToken(input.since, true)) as Cursor)
+    : undefined;
+  if (previous && previous.r !== hash(pr.url))
+    throw new Error("Wrong pull request");
+  const old = previous?.h === pr.head ? previous : undefined;
+  type Check = { name: string; bucket: string };
+  const checkArgs = ["pr", "checks", String(input.pr), "--json", "name,bucket"];
+  const checks = await gh<Check[]>(checkArgs, true),
+    required = await gh<Check[]>([...checkArgs, "--required"], true);
+  const paging = ["--hostname", host!, "--paginate", "--jq"];
+  const api = <T,>(path: string, jq: string, fields: string[] = []) =>
+    gh<T>(["api", path, ...paging, jq, ...fields]);
+  type Page = Record<"queued" | "more", boolean> & {
+    viewer: string;
+    ids: string[];
+  };
+  const query =
+    "query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){viewer{login} repository(owner:$owner,name:$repo){pullRequest(number:$n){mergeQueueEntry{id} reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
+  const fields = [`owner=${owner}`, `repo=${repo}`, `n=${input.pr}`].flatMap(
+    (value) => ["-F", value],
+  );
+  const pages = await api<Page[]>(
+    "graphql",
+    "(if .errors then error(.errors) else .data | {viewer:.viewer.login,queued:(.repository.pullRequest.mergeQueueEntry!=null),ids:[.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved|not)|.id],more:.repository.pullRequest.reviewThreads.pageInfo.hasNextPage} end) | @json",
+    ["-f", `query=${query}`, ...fields],
+  );
+  if (
+    !pages.length ||
+    pages.some((page, index) => page.more !== index < pages.length - 1)
+  )
+    throw new Error("Incomplete threads");
+  const threads = pages.flatMap((page) => page.ids).sort();
+  const threadHash = hash(threads);
+  const inline = await api<Remark[]>(
+    `repos/${owner}/${repo}/pulls/${input.pr}/comments?per_page=100`,
+    "[.[]|{id:(.id|tostring),author:(.user.login // (.user|tostring)),time:.created_at}] | @json",
+  );
+  const current = await gh<Record<string, string>>([
+    ...viewArgs,
+    "headRefOid,state",
+  ]);
+  const moved = current.headRefOid !== pr.head,
+    raced = moved || current.state !== pr.state;
+  const remembered = moved ? undefined : old;
+  const remarks = [...pr.remarks, ...inline].filter(
+    (item) => item.author !== pages[0]!.viewer,
+  );
+  for (const item of remarks) item.time = new Date(item.time).toISOString();
+  const failed = checks.filter(
+      (check) => check.bucket === "fail" || check.bucket === "cancel",
+    ),
+    pending = checks.some((check) => check.bucket === "pending");
+  const green = (required.length ? required : checks).every(
+    (check) => check.bucket === "pass" || check.bucket === "skipping",
+  );
+  const passed = checks.length > 0 && green && pr.merge !== "BLOCKED";
+  const mergeReady =
+    !pages[0]!.queued &&
+    pr.mergeable !== "UNKNOWN" &&
+    ["CLEAN", "HAS_HOOKS"].includes(pr.merge!);
+  const conflicting =
+    pr.mergeable === "CONFLICTING" ||
+    pr.merge === "DIRTY" ||
+    (pr.mergeable === "UNKNOWN" && !!old?.c);
+  const reasons = failed.map((check) => `check failed: ${check.name}`);
+  if (threads.length) reasons.unshift(`${threads.length} unresolved threads`);
+  if (conflicting) reasons.unshift("conflicting");
+  if (pr.draft) reasons.push("draft");
+  if (pr.review === "CHANGES_REQUESTED") reasons.push("changes requested");
+  if (pr.merge === "BEHIND") reasons.push("branch behind");
+  if (pr.merge === "BLOCKED" && !pending && !failed.length)
+    reasons.push("GitHub BLOCKED: missing required check or approval");
+  let verdict = "waiting";
+  if (checks.length && green && !pending && mergeReady) verdict = "ready";
+  if (reasons.length) verdict = "blocked";
+  if (!checks.length) reasons.push("no checks reported");
+  if (pr.state !== "OPEN") verdict = "gone";
+  const state = hash([pr.state, verdict, reasons]),
+    news: string[] = [];
+  if (!old) news.push("head moved");
+  for (const check of failed)
+    if (!old?.f.includes(check.name)) news.push(`check failed: ${check.name}`);
+  if (passed && !old?.p) news.push("required checks passed");
+  const fresh = remarks.filter(
+    (item) =>
+      !previous ||
+      item.time > previous.t ||
+      (item.time === previous.t && !previous.i.includes(item.id)),
+  );
+  if (fresh.length)
+    news.push(
+      `${fresh.length} new remarks: ${[...new Set(fresh.map((item) => item.author))].sort().join(", ")}`,
+    );
+  if (conflicting && !previous?.c) news.push("conflicting");
+  const added = threads.length - (previous?.n ?? 0);
+  if (threadHash !== previous?.u && (threads.length || previous?.n))
+    news.push(
+      added > 0
+        ? `${added} new unresolved threads`
+        : "unresolved threads changed",
+    );
+  if (state !== previous?.v && !news.length) news.push("state changed");
+  let time = previous?.t ?? "",
+    ids = [...(previous?.i ?? [])];
+  for (const item of remarks) {
+    if (item.time > time) {
+      time = item.time;
+      ids = [];
+    }
+    if (item.time === time && !ids.includes(item.id)) ids.push(item.id);
+  }
+  const next = watchToken(
+    JSON.stringify({
+      r: hash(pr.url),
+      h: current.headRefOid,
+      f: raced
+        ? (remembered?.f ?? [])
+        : checks.length
+          ? failed.map((check) => check.name)
+          : (old?.f ?? []),
+      p: !!remembered?.p || (!raced && passed),
+      t: raced ? (previous?.t ?? "") : time,
+      i: raced ? (previous?.i ?? []) : ids,
+      c: raced ? !!remembered?.c : conflicting,
+      u: raced ? (previous?.u ?? "") : threadHash,
+      n: raced ? (previous?.n ?? 0) : threads.length,
+      v: raced ? "" : state,
+    }),
+  );
+  if (input.since && !raced && !news.length) return null;
+  return {
+    pr: input.pr,
+    head: current.headRefOid,
+    verdict: raced ? "waiting" : verdict,
+    reasons: raced ? [] : reasons,
+    news: raced ? [moved ? "head moved" : "state changed"] : news,
+    end: !raced && (verdict === "ready" || verdict === "gone"),
+    next,
+  };
+}
+
 type Call<T> = import("../../contract/author.ts").HandlerCall<T> & {
   readonly config: CheckConfig;
   readonly services: CatalogServices;
 };
 const operations = {
+  "pr.state": prState,
   async "check.gate"(args: Call<GateInput>) {
     const services = args.services;
     return await gate(

@@ -103,6 +103,7 @@ test("wait renders the foreground command without running or backgrounding it", 
     then: result.then,
   });
   expect(result.then).toMatch(/fresh.*state.*act/i);
+  expect(result.then).toContain("forge pr state 42");
   expect(result.then).toContain(
     "Run forge agent wait 42 again after each push",
   );
@@ -129,7 +130,11 @@ test("wait uses exactly-one detection, with fallback for old, ambiguous and watc
 test("T3 wait links the real URL before watching, and cleanup names native tools", () => {
   const env = { CODEX_THREAD_ID: "1" };
   const result = wait({ pr: 42 }, [codex], env);
+  expect(result.then).toContain("forge pr state 42");
   expect(result.steps[0]).toBe("gh pr view 42 --json url");
+  expect(result.then).toContain(
+    "Only if the harness reports it stopped watching the PR, run forge agent wait 42 once more and do its steps.",
+  );
   expect(result.steps[1]).toMatch(/link_pull_request.*URL.*stdout/);
   expect(result.steps[2]).toMatch(/watch_pull_request.*42/);
   expect(wait({ pr: 42, done: true }, [codex], env).steps.join(" ")).toMatch(

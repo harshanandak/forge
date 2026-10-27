@@ -30,6 +30,26 @@ const SKILLS = [
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
+test("every harness wake reads the shared verdict and the owning session holds watches", async () => {
+  await withDelivery(async (root, call, lint) => {
+    await call("skills.sync");
+    const texts = ["forge-build", "forge-review", "forge-loop"].map((name) => {
+      const text = readFileSync(join(root, rendered(name)), "utf8");
+      expect(lint(text)).toEqual([]);
+      expect(text).toContain("forge pr state <n>");
+      expect(text).toContain("verdict");
+      return text;
+    });
+    const handoff = readFileSync(
+      join(root, ".agents/skills/forge-build/pull-request.md"),
+      "utf8",
+    );
+    expect(handoff).toMatch(/owning session.*forge agent wait/i);
+    const all = [...texts, handoff].join("\n");
+    expect(all).not.toMatch(/watch_pull_request|Claude Code|Codex|\bT3\b/);
+  });
+}, 30_000);
+
 test("S5 sync retires four stage skills, preserves notes and ships proof and thread companions", async () => {
   await withDelivery(async (root, call, lint) => {
     await call("config.set", {
@@ -430,13 +450,15 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       1,
     );
     expect(text["forge-build"]).toMatch(
-      /forge issue release[\s\S]*Last action: run `forge agent wait <n>`/,
+      /forge issue release[\s\S]*Last action: the owning session runs `forge agent wait <n>`/,
     );
     expect(text["forge-build"]).toContain(
       "git worktree add <path> -b <branch> origin/main",
     );
     expect(text["forge-build"]).toContain("then the project's install");
-    expect(text["forge-review"]).toContain("read fresh PR state and act");
+    expect(text["forge-review"]).toContain(
+      "run `forge pr state <n>` and act on `verdict`",
+    );
     for (const name of ["forge-review", "forge-loop"]) {
       expect(text[name]).toContain(
         "After each push, run `forge agent wait <n>`",
