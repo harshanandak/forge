@@ -193,7 +193,7 @@ test("a cyclic or missing parent refuses without a call record", () => {
     const p = project();
     p.records.get("issue:work-1")!.value.parent = parent;
     expect(() => p.call()).toThrow(
-      parent === "work-1" ? /cycle/i : /NOT_FOUND/,
+      parent === "work-1" ? /cycle/i : /Issue work-2 was not found/,
     );
     expect(p.records.size).toBe(1);
   }

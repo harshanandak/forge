@@ -592,7 +592,9 @@ const operations: Operations<WorkOperations> = {
     for (;;) {
       if (visited.has(id)) fail("INPUT_CONFLICT", "Issue parent cycle");
       visited.add(id);
-      const parent = stored(get(state, id, input.id)).parent;
+      const parent = stored(
+        get(state, id, visited.size === 1 ? input.id : ids.shown(id)),
+      ).parent;
       if (parent === undefined) break;
       id = parent;
     }

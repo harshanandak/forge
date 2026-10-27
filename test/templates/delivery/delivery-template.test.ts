@@ -40,6 +40,9 @@ test("intake counts its routed call before dispatch", () => {
   expect(text).toContain("intake's dispatch rules");
   expect(text).toContain("Before each dispatch, run `forge issue call");
   expect(text).toContain("Retry REVISION_CONFLICT");
+  expect(text.indexOf("intake's dispatch rules")).toBeGreaterThan(
+    text.indexOf("Retry REVISION_CONFLICT"),
+  );
 }, 30_000);
 
 test("every harness wake reads the shared verdict and the owning session holds watches", async () => {

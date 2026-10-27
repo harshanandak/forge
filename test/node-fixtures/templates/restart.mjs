@@ -2,11 +2,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
-  copyFileSync,
-  existsSync,
   mkdirSync,
-  symlinkSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
@@ -19,6 +18,7 @@ const self = fileURLToPath(import.meta.url);
 // entry point with Node also works on Windows, where spawn cannot execute .cmd.
 if (process.argv[2] === "--gh") {
   const args = process.argv.slice(3);
+  appendFileSync(join(".fake", "gh-calls.jsonl"), `${JSON.stringify(args)}\n`);
   process.argv = [process.execPath, self, ...args];
   await import(
     args[0] === "pr" && ["create", "merge"].includes(args[1])
@@ -37,20 +37,7 @@ if (process.argv[2] === "--gh") {
       ),
     ),
   );
-  const directories = (process.env.PATH ?? process.env.Path ?? "")
-    .split(delimiter)
-    .map((directory) => directory.trim().replace(/^"(.*)"$/, "$1"))
-    .filter(Boolean);
-  const ghNames =
-    process.platform === "win32"
-      ? ["gh.exe", "gh.com", "gh.cmd", "gh.bat"]
-      : ["gh"];
-  env.PATH = [
-    fake,
-    ...directories.filter(
-      (directory) => !ghNames.some((name) => existsSync(join(directory, name))),
-    ),
-  ].join(delimiter);
+  env.PATH = [fake, process.env.PATH ?? process.env.Path ?? ""].join(delimiter);
   env.FORGE_DEVICE_ROOT = join(root, ".device");
   if (phase) env.FORGE_SESSION = phase;
 
@@ -96,19 +83,6 @@ if (process.argv[2] === "--gh") {
 
   if (!phase) {
     mkdirSync(fake);
-    // Keep required tools when a system directory also contains the real gh.
-    if (process.platform === "win32") {
-      copyFileSync(process.execPath, join(fake, "node.exe"));
-    } else {
-      symlinkSync(process.execPath, join(fake, "node"));
-      for (const tool of ["git", "npm"]) {
-        const directory = directories.find((path) =>
-          existsSync(join(path, tool)),
-        );
-        assert.ok(directory, `${tool} is required for the packed journey`);
-        symlinkSync(join(directory, tool), join(fake, tool));
-      }
-    }
     if (process.platform === "win32") {
       writeFileSync(
         join(fake, "gh.cmd"),
@@ -255,6 +229,20 @@ if (process.argv[2] === "--gh") {
     cli(["issue", "claim", slice.id]);
     input("issue", "close", { id: slice.id, receipt });
     assert.equal(cli(["issue", "show", slice.id]).result.status, "closed");
+    const ghCalls = readFileSync(join(fake, "gh-calls.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).slice(0, 2));
+    assert.deepEqual(ghCalls, [
+      ["pr", "create"],
+      ["pr", "view"],
+      ["pr", "checks"],
+      ["pr", "checks"],
+      ["api", "graphql"],
+      ["api", `repos/fixture/first-run/pulls/${number}/comments?per_page=100`],
+      ["pr", "view"],
+      ["pr", "merge"],
+    ]);
     console.log(
       "PASS restart: intake call 1 -> build call 2 -> checkpoint -> restart -> read back 2 calls -> pr state ready -> review call 3 -> merge by head -> close",
     );
