@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # forge-loop
 
-Every wake: read, route, stop. Read the chosen skill before acting.
+Read the routed skill before acting.
 
 ## Wake
 
@@ -24,8 +24,8 @@ At session start, run `forge memory rules` unless a hook supplied it: `result.te
 
 ## Roles
 
-- **Orchestrator**: intake, slicing, review triage, merge, verify, re-plan.
-- **Worker**: one build or one fix batch on one claimed slice. Stops at push. Never merges.
+- **Orchestrator**: plan, review, merge and verify.
+- **Worker**: one claimed slice; stops at push, never merges.
 
 ## Steps and their skill
 
@@ -46,7 +46,7 @@ Only exception: if T3 says it stopped watching after 15 minutes unreadable or 10
 
 ## Autonomy
 
-Proceed on reversible actions without asking. Stop only for:
+Proceed on reversible work. Stop for:
 
 - a one-way door: publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config. It needs the owner's reply naming that action. Silence or "continue" is not a yes.
 - a scope change beyond the slice's done boundary;
@@ -56,10 +56,11 @@ Proceed on reversible actions without asking. Stop only for:
 
 - At most 3 workers at once, and 1 full-suite run at a time.
 - A worker silent for 10 minutes is stalled: read its state and steer it. Never start a second worker on the same slice.
+- Capabilities: orchestrator strong, implementer fast, reviewer other-family, housekeeping cheapest. The harness picks the model.
 
 ## Worker brief
 
-Use `forge-build`'s Worker brief; fill every required field before dispatch.
+Fill `forge-build`'s Worker brief before dispatch.
 
 Session: export FORGE_SESSION=<your task name> before any claim; never use the chat's t3: session.
 Adopted decision titles: see below for pagination.
