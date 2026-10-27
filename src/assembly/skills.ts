@@ -4,6 +4,7 @@ import {
   removeEmptyParents,
 } from "../adapters/fs/index.ts";
 import type { McpCandidate } from "../contract/mcp.ts";
+import { ForgeFailure } from "../contract/failure.ts";
 import { refuse } from "../core/trust/index.ts";
 import {
   GENERATED_MARKER,
@@ -24,6 +25,8 @@ export interface SkillsSyncResult {
   readonly skipped: readonly string[];
   /** Generated files this run no longer produces, e.g. from a removed template. */
   readonly removed: readonly string[];
+  readonly differences: readonly string[];
+  readonly readErrors: readonly string[];
 }
 
 /** A template file to read skills from: a project file, or one shipped in the installed package. */
@@ -224,6 +227,7 @@ export function syncSkills(
   const skipped: string[] = [];
   const removed: string[] = [];
   const differences: string[] = [];
+  const readErrors: string[] = [];
   try {
     const writes: { path: string; bytes: Uint8Array }[] = [];
     const ownershipWrites: typeof writes = [];
@@ -251,8 +255,16 @@ export function syncSkills(
         let current: Uint8Array | undefined;
         try {
           current = skillKind === "file" ? local.read("SKILL.md") : undefined;
-        } catch {
-          current = undefined;
+        } catch (error) {
+          // A size cap does not establish ownership; leave the whole folder alone.
+          if (!(
+            error instanceof ForgeFailure &&
+            error.error.code === "LIMIT_EXCEEDED"
+          ))
+            readErrors.push(
+              `${path}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          continue;
         }
         const listed = companions(current, path);
         if (listed === undefined && skillKind !== "missing") {
@@ -352,10 +364,13 @@ export function syncSkills(
       error instanceof Error ? error.message : "Cannot write skills",
     );
   }
-  if (check && differences.length)
-    refuse(
-      "OUTPUT_INVALID",
-      `${differences.join("; ")}; run forge skills sync; it overwrites edits to generated files`,
-    );
-  return { dir: dirs.join(", "), written, unchanged, skipped, removed };
+  return {
+    dir: dirs.join(", "),
+    written,
+    unchanged,
+    skipped,
+    removed,
+    differences,
+    readErrors,
+  };
 }

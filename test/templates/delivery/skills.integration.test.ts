@@ -143,6 +143,15 @@ test("built sync manages marked skills and companions in both adapter directorie
     expect(skipped.stdout).toContain(
       "left alone because Forge did not write them:",
     );
+    const edited = join(root, ".agents/skills/forge-intake/SKILL.md");
+    writeFileSync(edited, `${readFileSync(edited, "utf8")}\nedit`);
+    const mixed = check();
+    expect(mixed.status).toBe(1);
+    expect(mixed.stdout).toContain(".agents/skills/forge-intake/SKILL.md");
+    expect(JSON.parse(mixed.stdout)).toMatchObject({
+      result: { skipped: [".claude/skills/forge-loop/SKILL.md"] },
+      warnings: [{ code: "SKILLS_SKIPPED" }],
+    });
   });
 }, 180_000);
 

@@ -11,10 +11,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createAssembly, localCall } from "../../../src/assembly/index.ts";
+import {
+  createAssembly,
+  localCall,
+  type Assembly,
+} from "../../../src/assembly/index.ts";
 import { dispatch, record } from "../../../src/surface/dispatch.ts";
 import { GENERATED_MARKER } from "../../../src/surface/skills.ts";
 import { syncSkills } from "../../../src/assembly/skills.ts";
+import { runCli } from "../../../src/surface/cli.ts";
 
 const REVIEW = [
   "---",
@@ -35,7 +40,7 @@ type Call = (op: string, input?: object) => Promise<Record<string, unknown>>;
 
 /** A project with no blocks that imported tpl/forge.template.json, which carries values and one skill. */
 async function withTemplate(
-  run: (root: string, call: Call) => Promise<void>,
+  run: (root: string, call: Call, assembly: Assembly) => Promise<void>,
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "forge-template-skills-"));
   const put = (path: string, text: string): void => {
@@ -92,7 +97,7 @@ async function withTemplate(
         expectRevision: "",
       }),
     ).toMatchObject({ ok: true });
-    await run(root, call);
+    await run(root, call, assembly);
   } finally {
     await assembly.close();
     rmSync(root, { recursive: true, force: true });
@@ -236,6 +241,129 @@ test("unmarked SKILL.md protects its entire folder, including companions", async
     expect(existsSync(join(root, ".agents/skills/review/agents"))).toBe(false);
   });
 }, 30_000);
+
+test("check reports both generated drift and a left-alone template skill", async () => {
+  await withTemplate(async (root, call, assembly) => {
+    const other = "tpl/skills/other/SKILL.md";
+    mkdirSync(dirname(join(root, other)));
+    writeFileSync(
+      join(root, other),
+      REVIEW.replace("name: review", "name: other"),
+    );
+    await call("skills.sync");
+    const edited = `${readFileSync(join(root, RENDERED), "utf8")}\nedit`;
+    writeFileSync(join(root, RENDERED), edited);
+    const skipped = ".agents/skills/other/SKILL.md";
+    writeFileSync(join(root, skipped), "user skill");
+    const checked = await runCli(
+      assembly.catalog,
+      ["skills", "sync", "--check"],
+      localCall(assembly),
+    );
+    expect(checked.exitCode).toBe(1);
+    expect(checked.stdout).toContain(RENDERED);
+    expect(checked.stdout).toContain("run forge skills sync");
+    expect(checked.envelope).toMatchObject({
+      result: { skipped: [skipped] },
+      warnings: [
+        {
+          code: "SKILLS_SKIPPED",
+          message: `left alone because Forge did not write them: ${skipped}; delete them to let sync write Forge's copies`,
+        },
+      ],
+    });
+    expect(readFileSync(join(root, RENDERED), "utf8")).toBe(edited);
+    expect(readFileSync(join(root, skipped), "utf8")).toBe("user skill");
+  });
+}, 30_000);
+
+test.each(["EACCES", "EBUSY"])(
+  "check reports %s reading a skill while sync still repairs other skills",
+  async (code) => {
+    await withTemplate(async (root, call, assembly) => {
+      const companion = "tpl/skills/review/data.txt";
+      writeFileSync(join(root, companion), "generated companion");
+      await call("skills.sync");
+      const original = readFileSync(join(root, RENDERED));
+      rmSync(join(root, companion));
+      const other = "tpl/skills/other/SKILL.md";
+      mkdirSync(dirname(join(root, other)));
+      writeFileSync(
+        join(root, other),
+        REVIEW.replace("name: review", "name: other"),
+      );
+      const mine = join(root, ".agents/skills/mine/SKILL.md");
+      mkdirSync(dirname(mine));
+      const oversized = "x".repeat(2 * 1024 * 1024);
+      writeFileSync(mine, oversized);
+      const real = fsAdapter.nodeConfigFiles;
+      const spy = spyOn(fsAdapter, "nodeConfigFiles").mockImplementation(
+        (folder) => {
+          const files = real(folder);
+          return {
+            ...files,
+            read(path, maxBytes) {
+              if (join(folder, path) === join(root, RENDERED))
+                throw Object.assign(new Error(`injected ${code}`), { code });
+              return files.read(path, maxBytes);
+            },
+          };
+        },
+      );
+      try {
+        expect(await call("skills.sync")).toMatchObject({
+          ok: true,
+          written: [".agents/skills/other/SKILL.md"],
+          skipped: [],
+          warnings: [
+            {
+              code: "SKILLS_READ_FAILED",
+              message: `${RENDERED}: injected ${code}`,
+            },
+          ],
+        });
+        const checked = await runCli(
+          assembly.catalog,
+          ["skills", "sync", "--check"],
+          localCall(assembly),
+        );
+        expect(checked.exitCode).toBe(1);
+        expect(checked.envelope).toMatchObject({
+          result: { skipped: [] },
+          warnings: [
+            {
+              code: "SKILLS_READ_FAILED",
+              message: `${RENDERED}: injected ${code}`,
+            },
+          ],
+        });
+        expect(checked.stdout).toContain(code);
+        expect(checked.stdout).not.toContain("left alone");
+        expect(checked.stdout).not.toContain("mine/SKILL.md");
+        expect(readFileSync(join(root, RENDERED))).toEqual(original);
+        expect(
+          readFileSync(join(root, ".agents/skills/review/data.txt"), "utf8"),
+        ).toBe("generated companion");
+        expect(
+          readFileSync(join(root, ".agents/skills/other/SKILL.md"), "utf8"),
+        ).toContain(GENERATED_MARKER);
+        expect(readFileSync(mine, "utf8")).toBe(oversized);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await call("skills.sync")).toMatchObject({
+        ok: true,
+        removed: [".agents/skills/review/data.txt"],
+      });
+      expect(await call("skills.sync", { check: true })).toMatchObject({
+        ok: true,
+        skipped: [],
+        warnings: [],
+      });
+    });
+  },
+  30_000,
+);
 
 test.each([
   "inside link",

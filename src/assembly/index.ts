@@ -889,43 +889,55 @@ export async function createAssembly(
                 code: "CLAIM_TTL_CONFIG_MOVE",
                 message: `Move /values/claims/ttlSeconds to /blocks/work/config/claimTtlSeconds with value ${JSON.stringify(legacyClaimTtl.value)} to preserve the claim lease duration.`,
               });
-            const synced = {
-              ...success(
-                request.op,
-                syncSkills(
-                  root,
-                  catalog.list(),
-                  composition(show).mcp?.toolPrefix,
-                  typeof input.dir === "string"
-                    ? input.dir
-                    : directories.length
-                      ? directories
-                      : undefined,
-                  {
-                    sources: show.templates.flatMap((t): TemplateFile[] => {
-                      if (t.source !== undefined)
-                        return [{ root, file: t.source }];
-                      const dir = call.shipped.dirOf(
-                        t.template.slice(0, t.template.lastIndexOf("@")),
-                      );
-                      return dir === undefined
-                        ? []
-                        : [{ root: dir, file: TEMPLATE_FILE }];
-                    }),
-                    values: show.effective.values,
-                  },
-                  input.check === true,
-                ),
-              ),
-              warnings,
-            };
-            const skipped = record(synced.result)?.skipped;
-            if (Array.isArray(skipped) && skipped.length)
+            const { differences, readErrors, ...synced } = syncSkills(
+              root,
+              catalog.list(),
+              composition(show).mcp?.toolPrefix,
+              typeof input.dir === "string"
+                ? input.dir
+                : directories.length
+                  ? directories
+                  : undefined,
+              {
+                sources: show.templates.flatMap((t): TemplateFile[] => {
+                  if (t.source !== undefined) return [{ root, file: t.source }];
+                  const dir = call.shipped.dirOf(
+                    t.template.slice(0, t.template.lastIndexOf("@")),
+                  );
+                  return dir === undefined
+                    ? []
+                    : [{ root: dir, file: TEMPLATE_FILE }];
+                }),
+                values: show.effective.values,
+              },
+              input.check === true,
+            );
+            if (synced.skipped.length)
               warnings.push({
                 code: "SKILLS_SKIPPED",
-                message: `left alone because Forge did not write them: ${skipped.join(", ")}; delete them to let sync write Forge's copies`,
+                message: `left alone because Forge did not write them: ${synced.skipped.join(", ")}; delete them to let sync write Forge's copies`,
               });
-            return synced;
+            for (const message of readErrors)
+              warnings.push({ code: "SKILLS_READ_FAILED", message });
+            const problems = [...readErrors];
+            if (differences.length)
+              problems.push(
+                `${differences.join("; ")}; run forge skills sync; it overwrites edits to generated files`,
+              );
+            if (input.check === true && problems.length)
+              return {
+                ...failure(
+                  request.op,
+                  new ForgeFailure({
+                    code: "OUTPUT_INVALID",
+                    message: problems.join("; "),
+                    retry: "never",
+                  }),
+                ),
+                result: synced,
+                warnings,
+              };
+            return { ...success(request.op, synced), warnings };
           }
           if (request.op === "block.check" || request.op === "block.add") {
             await trustState.open(false);
