@@ -99,14 +99,13 @@ function validate(root: string, path: string, origin: string): boolean {
   // Probe every component as a final component, so even an internal link is refused.
   const parts = path.split("/");
   try {
-    let clear = true;
     for (let i = 1; i <= parts.length; i++) {
       const kind = entryKind(root, parts.slice(0, i).join("/"));
       if (kind === "link") throw new Error("symlinked path is not followed");
       if (i < parts.length && kind !== "missing" && kind !== "directory")
-        clear = false;
+        return false;
     }
-    return clear;
+    return true;
   } catch (error) {
     throw new Error(
       `Invalid companion path ${path} in ${origin}: ${error instanceof Error ? error.message : "cannot inspect path"}`,

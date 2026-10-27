@@ -460,6 +460,40 @@ test.each(["directory", "parent file", "file"])(
   30_000,
 );
 
+test("a known parent-file collision does not probe its impossible descendants", async () => {
+  await withTemplate(async (root, call) => {
+    mkdirSync(join(root, "tpl/skills/review/agents"));
+    writeFileSync(
+      join(root, "tpl/skills/review/agents/openai.yaml"),
+      "generated",
+    );
+    mkdirSync(join(root, ".agents/skills/review"), { recursive: true });
+    writeFileSync(join(root, ".agents/skills/review/agents"), "user parent");
+    const real = fsAdapter.entryKind;
+    const spy = spyOn(fsAdapter, "entryKind").mockImplementation(
+      (base, path) => {
+        if (
+          join(base, path) ===
+          join(root, ".agents/skills/review/agents/openai.yaml")
+        )
+          throw Object.assign(new Error("not a directory"), {
+            code: "ENOTDIR",
+          });
+        return real(base, path);
+      },
+    );
+    try {
+      expect(await call("skills.sync")).toMatchObject({
+        ok: true,
+        skipped: [".agents/skills/review/agents/openai.yaml"],
+        readErrors: [],
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+}, 30_000);
+
 test("R1 refuses an alias junction inside a marked skill and names its SKILL.md", async () => {
   await withTemplate(async (root, call) => {
     const folder = join(root, ".agents/skills/review");
