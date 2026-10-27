@@ -6,7 +6,10 @@
     "unchanged",
     "skipped",
     "removed",
-    "readErrors"
+    "readErrors",
+    "writeErrors",
+    "removeErrors",
+    "differences"
   ],
   "properties": {
     "dir": { "type": "string" },
@@ -14,8 +17,39 @@
     "unchanged": { "type": "array", "items": { "type": "string" } },
     "skipped": { "type": "array", "items": { "type": "string" } },
     "removed": { "type": "array", "items": { "type": "string" } },
+    "differences": {
+      "description": "Full list of paths planned for writing or deletion; --check retains this drift list even when messages are shortened.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "readErrors": {
-      "description": "Per-skill access failures; the failed skill's remaining actions are not applied. Complete details are retained here when warning and error messages are shortened.",
+      "description": "Per-skill read and inspection failures; that skill's planned actions are discarded. Complete details remain here when messages are shortened.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "message"],
+        "properties": {
+          "path": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "writeErrors": {
+      "description": "Failed writes. Other skills still sync; already applied actions are not rolled back.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "message"],
+        "properties": {
+          "path": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "removeErrors": {
+      "description": "Failed removals. Other skills still sync; already applied actions are not rolled back.",
       "type": "array",
       "items": {
         "type": "object",

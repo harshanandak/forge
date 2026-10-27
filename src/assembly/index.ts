@@ -889,7 +889,7 @@ export async function createAssembly(
                 code: "CLAIM_TTL_CONFIG_MOVE",
                 message: `Move /values/claims/ttlSeconds to /blocks/work/config/claimTtlSeconds with value ${JSON.stringify(legacyClaimTtl.value)} to preserve the claim lease duration.`,
               });
-            const { differences, ...synced } = syncSkills(
+            const synced = syncSkills(
               root,
               catalog.list(),
               composition(show).mcp?.toolPrefix,
@@ -924,27 +924,41 @@ export async function createAssembly(
                   2000,
                 ),
               });
-            if (synced.readErrors.length)
-              warnings.push({
-                code: "SKILLS_READ_FAILED",
-                message: bounded(
-                  `Cannot read skills: ${synced.readErrors.map((error) => error.path).join(", ")}; see result.readErrors for details`,
-                  2000,
-                ),
-              });
-            const problems = synced.readErrors.map(
-              (error) => `${error.path}: ${error.message}`,
-            );
-            if (differences.length)
-              problems.push(
-                `${differences.join("; ")}; run forge skills sync; it overwrites edits to generated files`,
-              );
-            if (input.check === true && problems.length)
+            for (const [operation, errors] of [
+              ["read", synced.readErrors],
+              ["write", synced.writeErrors],
+              ["remove", synced.removeErrors],
+            ] as const)
+              if (errors.length)
+                warnings.push({
+                  code: `SKILLS_${operation.toUpperCase()}_FAILED`,
+                  message: bounded(
+                    `Cannot ${operation} skills: ${errors.map((error) => error.path).join(", ")}; see result.${operation}Errors for details`,
+                    2000,
+                  ),
+                });
+            const problems = synced.differences.length
+              ? [
+                  `run forge skills sync; it overwrites edits to generated files; ${synced.differences.join("; ")}`,
+                ]
+              : [];
+            for (const error of [
+              ...synced.writeErrors,
+              ...synced.removeErrors,
+              ...synced.readErrors,
+            ])
+              problems.push(`${error.path}: ${error.message}`);
+            const applyError = synced.writeErrors.length
+              ? "SKILLS_WRITE_FAILED"
+              : synced.removeErrors.length
+                ? "SKILLS_REMOVE_FAILED"
+                : undefined;
+            if (applyError || (input.check === true && problems.length))
               return {
                 ...failure(
                   request.op,
                   new ForgeFailure({
-                    code: "OUTPUT_INVALID",
+                    code: applyError ?? "OUTPUT_INVALID",
                     message: bounded(problems.join("; "), 4000),
                     retry: "never",
                   }),

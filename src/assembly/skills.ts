@@ -31,6 +31,8 @@ export interface SkillsSyncResult {
     readonly path: string;
     readonly message: string;
   }[];
+  readonly writeErrors: SkillsSyncResult["readErrors"];
+  readonly removeErrors: SkillsSyncResult["readErrors"];
 }
 
 /** A template file to read skills from: a project file, or one shipped in the installed package. */
@@ -241,9 +243,15 @@ export function syncSkills(
   const removed: string[] = [];
   const differences: string[] = [];
   const readErrors: { path: string; message: string }[] = [];
-  const report = (folder: string, error: unknown): void => {
-    readErrors.push({
-      path: `${folder}/SKILL.md`,
+  const writeErrors: typeof readErrors = [];
+  const removeErrors: typeof readErrors = [];
+  const report = (
+    errors: typeof readErrors,
+    path: string,
+    error: unknown,
+  ): void => {
+    errors.push({
+      path,
       message: error instanceof Error ? error.message : String(error),
     });
   };
@@ -381,7 +389,7 @@ export function syncSkills(
           lists.forEach((list, i) => {
             list.length = lengths[i]!;
           });
-          report(`${dir}/${name}`, error);
+          report(readErrors, `${dir}/${name}/SKILL.md`, error);
         }
       }
     }
@@ -392,23 +400,31 @@ export function syncSkills(
         ),
       );
       for (const folder of folders) {
+        let operation: "write" | "remove" = "remove";
+        let path = `${folder}/SKILL.md`;
         try {
           for (const entry of deletes.filter(
             (entry) => entry.folder === folder,
           )) {
+            path = entry.path;
             files.remove(entry.path);
             removed.push(entry.path);
             removeEmptyParents(root, entry.path, entry.folder);
           }
+          operation = "write";
           for (const entry of [...writes, ...ownershipWrites].filter(
             (entry) => entry.folder === folder,
           )) {
+            path = entry.path;
             files.write(entry.path, entry.bytes);
             written.push(entry.path);
           }
         } catch (error) {
-          if (!accessFailure(error)) throw error;
-          report(folder, error);
+          report(
+            operation === "write" ? writeErrors : removeErrors,
+            path,
+            error,
+          );
         }
       }
     }
@@ -426,5 +442,7 @@ export function syncSkills(
     removed,
     differences,
     readErrors,
+    writeErrors,
+    removeErrors,
   };
 }

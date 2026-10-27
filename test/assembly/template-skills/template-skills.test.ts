@@ -851,10 +851,40 @@ test.each([
           ["skills", "sync"],
           localCall(assembly),
         );
-        expect(synced.exitCode).toBe(0);
+        const applying = ["write", "remove"].includes(operation);
+        const code =
+          operation === "write"
+            ? "SKILLS_WRITE_FAILED"
+            : operation === "remove"
+              ? "SKILLS_REMOVE_FAILED"
+              : "SKILLS_READ_FAILED";
+        expect(synced.exitCode).toBe(applying ? 1 : 0);
         expect(synced.envelope.warnings.map((warning) => warning.code)).toEqual(
-          ["SKILLS_READ_FAILED"],
+          [code],
         );
+        if (applying) {
+          const failed = `.agents/skills/review/${operation === "write" ? "z.txt" : "a.txt"}`;
+          expect(synced.envelope).toMatchObject({
+            ok: false,
+            error: { code },
+            result: {
+              readErrors: [],
+              [operation === "write" ? "writeErrors" : "removeErrors"]: [
+                { path: failed, message: `injected ${operation}` },
+              ],
+            },
+          });
+          expect(synced.stdout).toContain(failed);
+          expect(checked.stdout).toContain(failed);
+          const after = await runCli(
+            assembly.catalog,
+            ["skills", "sync", "--check"],
+            localCall(assembly),
+          );
+          expect(after.exitCode).toBe(1);
+          expect(after.stdout).toContain(failed);
+          expect(validateResultEnvelope(synced.envelope).ok).toBe(true);
+        }
         expect(JSON.stringify(synced.envelope)).toContain(RENDERED);
         expect(readFileSync(join(root, RENDERED))).toEqual(original);
         expect(readFileSync(join(folder, "z.txt"), "utf8")).toBe("old");
@@ -938,6 +968,11 @@ test("many read failures share one bounded warning and keep full diagnostics", a
     );
     try {
       for (const check of [false, true]) {
+        if (check)
+          writeFileSync(
+            join(root, RENDERED),
+            `${readFileSync(join(root, RENDERED), "utf8")}\ndrift`,
+          );
         const response = await runCli(
           assembly.catalog,
           ["skills", "sync", ...(check ? ["--check"] : [])],
@@ -952,6 +987,15 @@ test("many read failures share one bounded warning and keep full diagnostics", a
         expect(
           JSON.stringify(record(response.envelope.result)?.readErrors),
         ).toContain("locked-099/SKILL.md");
+        if (!response.envelope.ok) {
+          expect(response.envelope.error.message).toContain(RENDERED);
+          expect(response.envelope.error.message).toContain(
+            "run forge skills sync",
+          );
+          expect(record(response.envelope.result)?.differences).toEqual([
+            RENDERED,
+          ]);
+        }
       }
       expect(existsSync(join(root, RENDERED))).toBe(true);
     } finally {
