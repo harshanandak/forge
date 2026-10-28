@@ -112,6 +112,65 @@ test("receipt finalization rejects a write/readback exceeding its own allowance"
   expect(records.size).toBe(1);
 }, 1000);
 
+for (const [phase, writeMs, readbackMs] of [
+  ["write", 3500, 19],
+  ["readback", 19, 3500],
+] as const) {
+  for (const scoped of [false, true]) {
+    test(`${scoped ? "scoped" : "unscoped"} ${phase} timeout reports separate finalization phase durations`, async () => {
+      const { services, records } = fixture();
+      let now = services.clock.now();
+      const deadline = now + finalizationTimeoutMs(config.maxReceiptBytes);
+      let snapshots = 0;
+      let writes = 0;
+      const engine = createCheck({
+        ...services,
+        clock: { now: () => now },
+        snapshot() {
+          now += ++snapshots === 1 ? 101 : 7;
+          return services.snapshot();
+        },
+        state: {
+          ...services.state,
+          put(...args) {
+            writes++;
+            now += writeMs;
+            return services.state.put(...args);
+          },
+          get(key) {
+            now += readbackMs;
+            return services.state.get(key);
+          },
+        },
+      });
+      const failure = await engine
+        .run(
+          {},
+          config,
+          scoped
+            ? { signal: new AbortController().signal, deadline }
+            : undefined,
+        )
+        .catch((error: unknown) => error);
+      const prefix = scoped
+        ? "Check invocation deadline exceeded"
+        : "Check receipt finalization deadline exceeded";
+      expect(failure).toMatchObject({
+        code: "INVOCATION_TIMEOUT",
+        message: `INVOCATION_TIMEOUT: ${prefix} (snapshotMs=7, writeMs=${writeMs}, readbackMs=${readbackMs})`,
+      });
+      expect(snapshots).toBe(2);
+      expect(writes).toBe(1);
+      expect(records.size).toBe(1);
+      const stored = [...records.values()][0]!;
+      expect(stored.value).toMatchObject({ status: "PASS" });
+      expect<unknown>(engine.show(stored.key.slice("runs/".length))).toEqual(
+        stored.value,
+      );
+    }, 1000);
+  }
+}
+
 test("native private writes need five seconds of finalization at the 512 KiB cap", () => {
   expect(finalizationTimeoutMs(524288)).toBe(5000);
 }, 1000);

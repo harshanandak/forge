@@ -479,11 +479,20 @@ function createCheck(
       config: CheckConfig,
       scope?: CheckInvocationScope,
     ): Promise<CheckReceipt> {
+      let snapshotMs = 0;
+      let writeMs = 0;
+      let readbackMs = 0;
+      function phaseTimes(): string {
+        return `(snapshotMs=${snapshotMs}, writeMs=${writeMs}, readbackMs=${readbackMs})`;
+      }
       function active(): void {
         if (scope?.signal.aborted)
           failure("INVOCATION_CANCELLED", "Check invocation was cancelled");
         if (scope && services.clock.now() >= scope.deadline)
-          failure("INVOCATION_TIMEOUT", "Check invocation deadline exceeded");
+          failure(
+            "INVOCATION_TIMEOUT",
+            `Check invocation deadline exceeded ${phaseTimes()}`,
+          );
       }
       if (scope && !Number.isSafeInteger(scope.deadline))
         invalid("Invocation deadline must be an integer timestamp");
@@ -669,7 +678,9 @@ function createCheck(
         }
       }
       active();
+      const snapshotStartedAt = services.clock.now();
       const after = await services.snapshot();
+      snapshotMs = services.clock.now() - snapshotStartedAt;
       active();
       // The invocation already reserves finalization time, including storage contention.
       const finalizationDeadline =
@@ -699,15 +710,19 @@ function createCheck(
           "LIMIT_EXCEEDED",
           "Process evidence exceeded its validated receipt budget",
         );
+      const writeStartedAt = services.clock.now();
       services.state.put(`runs/${receipt.id}`, receipt, { expectRevision: 0 });
+      writeMs = services.clock.now() - writeStartedAt;
+      const readbackStartedAt = services.clock.now();
       const stored = show(receipt.id);
+      readbackMs = services.clock.now() - readbackStartedAt;
       if (!stored || stored.digest !== receipt.digest)
         throw new Error("Check receipt readback failed");
       active();
       if (services.clock.now() >= finalizationDeadline)
         failure(
           "INVOCATION_TIMEOUT",
-          "Check receipt finalization deadline exceeded",
+          `Check receipt finalization deadline exceeded ${phaseTimes()}`,
         );
       return stored;
     },
