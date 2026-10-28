@@ -8,6 +8,16 @@
   "files": ["schemas/defs.json"],
   "configSchema": "schemas/config.json",
   "operations": {
+    "memory.scope": {
+      "input": "schemas/rules.input.json",
+      "output": "schemas/scope.output.json",
+      "context": "device",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "stable",
+      "timeoutMs": 5000
+    },
     "memory.rules": {
       "input": "schemas/rules.input.json",
       "output": "schemas/rules.output.json",

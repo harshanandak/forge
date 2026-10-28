@@ -77,11 +77,16 @@ async function add(
   h: Harness,
   text: string,
   level?: "device" | "project",
+  scope?: string,
 ): Promise<{ id: string; note: Note }> {
   return done(
     await h.call(
       "memory.add",
-      level === undefined ? { text } : { text, level },
+      {
+        text,
+        ...(level === undefined ? {} : { level }),
+        ...(scope === undefined ? {} : { scope }),
+      },
       agent,
     ),
   ) as { id: string; note: Note };
@@ -95,8 +100,13 @@ async function search(h: Harness, input: Record<string, unknown>) {
 }
 const projectOf = (id: string) => id.split("/")[1]!;
 
-test("integration: a device note is seen from every project; a project note only inside its own", async () => {
-  const device = await add(alpha, "the shared heron checklist", "device");
+test("integration: a general device note is seen from every project; a project note only inside its own", async () => {
+  const device = await add(
+    alpha,
+    "the shared heron checklist",
+    "device",
+    "general",
+  );
   const own = await add(alpha, "alpha heron uses the blue pipeline", "project");
   // Levels are part of the id, so the same number at two levels is two notes.
   expect(device.id).toMatch(/^device\/note-[0-9]+$/);

@@ -491,7 +491,24 @@ const TOMBSTONE = {
   deleted: true,
 } as const;
 
+function resolvedScope(config: MemoryConfig, services: Services): string {
+  return (
+    (services.levels.inProject
+      ? (config.scope ?? services.levels.defaultScope)
+      : undefined) ?? "general"
+  );
+}
+
 module.exports = {
+  "memory.scope": ({
+    config = {},
+    services,
+  }: {
+    config?: MemoryConfig;
+    services: Services;
+  }) => ({
+    scope: resolvedScope(config, services),
+  }),
   "memory.rules": async ({
     config = {},
     services,
@@ -504,11 +521,9 @@ module.exports = {
       ? await ownProject(services)
       : undefined;
     if (project) sources.push(project);
-    const scope = services.levels.inProject
-      ? (config.scope ?? services.levels.defaultScope)
-      : undefined;
+    const scope = resolvedScope(config, services);
     const counts = new Map<string, number>([["general", 0]]);
-    if (scope !== undefined) counts.set(scope, 0);
+    counts.set(scope, 0);
     for (const source of sources) {
       let after = 0;
       for (;;) {
@@ -541,9 +556,9 @@ module.exports = {
       "Forge memory notes: " +
         [...counts].map(([name, count]) => name + " " + count).join(", ") +
         ".",
-      "Before a task, search memory for its topic; use only hits scoped " +
-        [...counts.keys()].join(" or ") +
-        " or unscoped.",
+      "Before a task, search memory for its topic; prefer hits scoped " +
+        (scope === "general" ? "general" : scope + " or general") +
+        ".",
       'forge memory search "<topic>"',
       "forge memory show <id>",
     ].join("\n");
@@ -552,11 +567,11 @@ module.exports = {
 
   "memory.add": async ({
     input,
-    config,
+    config = {},
     services,
   }: {
     input: NoteFields & { id?: string; level?: Level; expectRevision?: number };
-    config: MemoryConfig;
+    config?: MemoryConfig;
     services: Services;
   }) => {
     // An edit is a partial update: a field left out keeps its stored value, and clearing is said
@@ -564,9 +579,14 @@ module.exports = {
     const fields = (
       previous: readonly Version[],
       kept?: NoteValue,
+      newScope?: string,
     ): NoteValue => {
       const scope =
-        input.scope === undefined ? kept?.scope : (input.scope ?? undefined);
+        input.scope === undefined
+          ? kept === undefined
+            ? newScope
+            : kept.scope
+          : (input.scope ?? undefined);
       return {
         text: input.text,
         ...(scope === undefined ? {} : { scope }),
@@ -626,7 +646,19 @@ module.exports = {
           value: { last: number },
           expectRevision: counter.revision,
         },
-        { key: noteKey(number), value: fields([]), expectRevision: 0 },
+        {
+          key: noteKey(number),
+          value: fields(
+            [],
+            undefined,
+            target.level === "device" &&
+              services.levels.inProject &&
+              input.scope === undefined
+              ? resolvedScope(config, services)
+              : undefined,
+          ),
+          expectRevision: 0,
+        },
       ]);
       if (!record) throw new Error("note was not written");
       const id = idIn(target, number);
