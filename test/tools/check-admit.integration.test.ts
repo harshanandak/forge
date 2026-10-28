@@ -1,16 +1,17 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 setDefaultTimeout(120000);
@@ -68,13 +69,21 @@ function fixture(mode = "pass") {
         check: {
           config: {
             commands: { guard: { argv: ["node", "check.cjs"] } },
-            report: "exit-code",
+            report: mode === "zero" ? "auto" : "exit-code",
             timeoutMs: mode === "timeout" ? 1500 : 10000,
           },
         },
       },
     }),
   );
+  if (mode === "zero") {
+    writeFileSync(join(root, "test-directory.txt"), "tests\n");
+    mkdirSync(join(root, "tests"));
+    writeFileSync(
+      join(root, "tests/product.test.cjs"),
+      "module.exports = true;\n",
+    );
+  }
   writeFileSync(
     join(root, "check.cjs"),
     `
@@ -100,11 +109,19 @@ if (mode === 'cache') {
   if (value === 'previous' && !fs.existsSync('cache/seen')) process.exitCode = 1;
 }
 if (mode === 'slow' && value === 'tip') setTimeout(() => {}, 3000);
+if (mode === 'zero') {
+  const directory = fs.readFileSync('test-directory.txt', 'utf8').trim();
+  const count = fs.existsSync(directory) ? fs.readdirSync(directory).length : 0;
+  if (!count) {console.error('No tests found');console.log('Tests: 0 passed, 0 total');process.exit(1);}
+  console.log(failed ? 'Tests: 1 failed, 1 total' : 'Tests: 1 passed, 1 total');
+}
 `,
   );
   for (const content of ["old", "previous", "tip"]) {
     writeFileSync(join(root, "source.txt"), content + "\n");
     git("add", ".forge/config.yaml", ".gitignore", "check.cjs", "source.txt");
+    if (mode === "zero")
+      git("add", "test-directory.txt", "tests/product.test.cjs");
     git("commit", "-m", content);
   }
   const tip = git("rev-parse", "HEAD"),
@@ -113,7 +130,10 @@ if (mode === 'slow' && value === 'tip') setTimeout(() => {}, 3000);
   const patch = join(root, "break.patch");
   writeFileSync(
     patch,
-    "diff --git a/source.txt b/source.txt\n--- a/source.txt\n+++ b/source.txt\n@@ -1 +1 @@\n-tip\n+BROKEN\n",
+    "diff --git a/source.txt b/source.txt\n--- a/source.txt\n+++ b/source.txt\n@@ -1 +1 @@\n-tip\n+BROKEN\n" +
+      (mode === "zero"
+        ? "diff --git a/test-directory.txt b/test-directory.txt\n--- a/test-directory.txt\n+++ b/test-directory.txt\n@@ -1 +1 @@\n-tests\n+missing-tests\n"
+        : ""),
   );
   return {
     root,
@@ -135,8 +155,6 @@ if (mode === 'slow' && value === 'tip') setTimeout(() => {}, 3000);
       ).toHaveLength(1);
       expect(git("rev-parse", "HEAD")).toBe(head);
       expect(readFileSync(join(root, "source.txt"), "utf8")).toBe("tip\n");
-      if (existsSync(join(root, ".worktrees")))
-        expect(readdirSync(join(root, ".worktrees"))).toEqual([]);
       expect(git("worktree", "prune", "--dry-run", "--verbose")).toBe("");
     },
     contents: () =>
@@ -163,6 +181,307 @@ function rows(result: Result) {
     ),
   ).toBe(true);
 }
+function removeFixtureWorktree(f: ReturnType<typeof fixture>, path: string) {
+  try {
+    f.git("worktree", "remove", "--force", "--force", path);
+  } catch {
+    /* already removed by admission */
+  }
+  rmSync(path, {
+    recursive: true,
+    force: true,
+    maxRetries: 20,
+    retryDelay: 50,
+  });
+}
+function privateEnvironment(root: string) {
+  return {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([name, value]) =>
+          value !== undefined &&
+          /^(?:PATH|PATHEXT|SystemRoot|windir|ComSpec|TEMP|TMP|TMPDIR|HOME|USERPROFILE|APPDATA|LOCALAPPDATA)$/i.test(
+            name,
+          ),
+      ),
+    ),
+    FORGE_DEVICE_ROOT: join(root, "device"),
+    GIT_TERMINAL_PROMPT: "0",
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+  };
+}
+function invoke(
+  input: Parameters<Admit>[0],
+  env: NodeJS.ProcessEnv,
+  setupOverride?: readonly string[],
+) {
+  const tool = new URL("../../tools/check-admit.ts", import.meta.url).href;
+  const program = `import {admit} from ${JSON.stringify(tool)};
+try { const result = await admit(${JSON.stringify(input)}, ${JSON.stringify({ platform: "win32", ...(setupOverride ? { setup: setupOverride } : {}) })}); console.log(JSON.stringify(result));process.exitCode=result.exitCode; }
+catch(error) { console.log(JSON.stringify({rows:[],verdict:'refuse',firstFailingRow:'input',nextStep:String(error),exitCode:2}));process.exitCode=2; }`;
+  const result = spawnSync(process.execPath, ["-e", program], {
+    env,
+    encoding: "utf8",
+    timeout: 120000,
+    windowsHide: true,
+    maxBuffer: 1048576,
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.signal).toBeNull();
+  const reported = JSON.parse(result.stdout) as Result & { nextStep?: string };
+  expect(result.status).toBe(reported.exitCode);
+  return reported;
+}
+function dependencyFixture() {
+  const base = mkdtempSync(join(tmpdir(), "forge-admit-deps-")),
+    root = join(base, "repo");
+  try {
+    mkdirSync(root);
+    const env = privateEnvironment(base),
+      moduleName = `forge-admit-vendor-${randomUUID()}`;
+    const git = (...args: string[]) =>
+      execFileSync("git", args, {
+        cwd: root,
+        env,
+        encoding: "utf8",
+        stdio: "pipe",
+      }).trim();
+    const install = (...args: string[]) =>
+      execFileSync(process.execPath, ["install", ...args], {
+        cwd: root,
+        env,
+        stdio: "pipe",
+        timeout: 30000,
+      });
+    git("init", "--initial-branch=main");
+    git("config", "user.name", "Dependency fixture");
+    git("config", "user.email", "fixture@example.invalid");
+    const packageSource = join(base, "package-src", "package"),
+      trace = join(base, "trace.jsonl");
+    mkdirSync(packageSource, { recursive: true });
+    writeFileSync(
+      join(packageSource, "package.json"),
+      JSON.stringify({ name: moduleName, version: "1.0.0", main: "index.cjs" }),
+    );
+    writeFileSync(
+      join(packageSource, "index.cjs"),
+      "module.exports = 'available';\n",
+    );
+    execFileSync(
+      "tar",
+      ["-czf", "vendor.tgz", "-C", "../package-src", "package"],
+      { cwd: root, env, stdio: "pipe" },
+    );
+    mkdirSync(join(root, ".forge"));
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      JSON.stringify({
+        blocks: {
+          check: {
+            config: {
+              commands: { guard: { argv: ["node", "check.cjs"] } },
+              timeoutMs: 10000,
+            },
+          },
+        },
+      }),
+    );
+    writeFileSync(join(root, ".gitignore"), "node_modules/\n");
+    writeFileSync(
+      join(root, "check.cjs"),
+      `
+const fs = require('node:fs');
+const value = fs.readFileSync('source.txt','utf8').trim();
+let located = null;try {located = require.resolve(${JSON.stringify(moduleName)});} catch(error) {if(error.code !== 'MODULE_NOT_FOUND') throw error;}
+fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify({value,cwd:process.cwd(),located}) + '\\n');
+const failed = value === 'BROKEN' || located === null;
+console.log(failed ? 'Tests: 1 failed, 1 total' : 'Tests: 1 passed, 1 total');
+process.exitCode = failed ? 1 : 0;
+`,
+    );
+    writeFileSync(join(root, "source.txt"), "old\n");
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({
+        name: "admission-dependency-fixture",
+        private: true,
+        version: "1.0.0",
+      }),
+    );
+    install("--frozen-lockfile");
+    git("add", ".");
+    git("commit", "-m", "older snapshot without the module");
+    const old = git("rev-parse", "HEAD");
+    writeFileSync(
+      join(packageSource, "package.json"),
+      JSON.stringify({ name: moduleName, version: "2.0.0", main: "index.cjs" }),
+    );
+    execFileSync(
+      "tar",
+      ["-czf", "vendor.tgz", "-C", "../package-src", "package"],
+      { cwd: root, env, stdio: "pipe" },
+    );
+    writeFileSync(join(root, "source.txt"), "tip\n");
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({
+        name: "admission-dependency-fixture",
+        private: true,
+        version: "2.0.0",
+        dependencies: { [moduleName]: "file:./vendor.tgz" },
+      }),
+    );
+    install();
+    git("add", ".");
+    git("commit", "-m", "newer snapshot with local module");
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    const patch = join(base, "break.patch");
+    writeFileSync(
+      patch,
+      "diff --git a/source.txt b/source.txt\n--- a/source.txt\n+++ b/source.txt\n@@ -1 +1 @@\n-tip\n+BROKEN\n",
+    );
+    return {
+      base,
+      root,
+      old,
+      env,
+      trace,
+      git,
+      input: {
+        root,
+        name: "guard",
+        patch,
+        guard: ["check.cjs"],
+        replay: 1,
+        maxSeconds: 120,
+      },
+      entries: () =>
+        readFileSync(trace, "utf8")
+          .trim()
+          .split("\n")
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                value: string;
+                cwd: string;
+                located: string | null;
+              },
+          ),
+      remove: () =>
+        rmSync(base, {
+          recursive: true,
+          force: true,
+          maxRetries: 20,
+          retryDelay: 50,
+        }),
+    };
+  } catch (error) {
+    rmSync(base, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 50,
+    });
+    throw error;
+  }
+}
+test("last-fix: zero-test break is inconclusive and names the snapshot commit", () => {
+  const f = fixture("zero");
+  try {
+    const result = invoke(
+      { ...f.input, replay: 1 },
+      privateEnvironment(f.root),
+      setup,
+    );
+    expect(result).toMatchObject({
+      verdict: "refuse",
+      firstFailingRow: "break",
+      exitCode: 2,
+    });
+    expect(result.rows[1]?.result).toBe("inconclusive");
+    expect(result.rows[1]?.nextStep).toContain(
+      "make the break patch fail an assertion, not skip the tests",
+    );
+    expect(result.rows[1]?.nextStep).toContain(
+      f.git("rev-parse", "origin/main"),
+    );
+    f.clean();
+  } finally {
+    f.remove();
+  }
+});
+test("last-fix: replay reinstalls the old snapshot without newer local-tar dependencies", () => {
+  const f = dependencyFixture();
+  try {
+    const result = invoke(f.input, f.env);
+    expect(result).toMatchObject({
+      verdict: "refuse",
+      firstFailingRow: "replay",
+      exitCode: 1,
+    });
+    expect(result.rows[3]?.nextStep).toContain(f.old);
+    expect(
+      f.entries().find((entry) => entry.value === "old")?.located,
+    ).toBeNull();
+    expect(
+      f.git("worktree", "list", "--porcelain").match(/^worktree /gm),
+    ).toHaveLength(1);
+  } finally {
+    f.remove();
+  }
+});
+test("last-fix: snapshots avoid checkout ancestor modules and reject a contaminated temp parent", () => {
+  const f = dependencyFixture();
+  try {
+    const freshSetup = [
+      process.execPath,
+      "-e",
+      "require('node:fs').rmSync('node_modules',{recursive:true,force:true});const p=require('node:child_process').spawnSync(process.execPath,['install','--frozen-lockfile'],{stdio:'inherit'});process.exit(p.status ?? 1)",
+    ];
+    const result = invoke(f.input, f.env, freshSetup);
+    const entries = f.entries();
+    const contaminated = join(f.base, "contaminated"),
+      isolatedTemp = join(contaminated, "tmp");
+    mkdirSync(join(contaminated, "node_modules"), { recursive: true });
+    mkdirSync(isolatedTemp);
+    const refused = invoke(
+      f.input,
+      { ...f.env, TEMP: isolatedTemp, TMP: isolatedTemp, TMPDIR: isolatedTemp },
+      freshSetup,
+    );
+    expect({
+      isolated: result.verdict,
+      isolatedRow: result.firstFailingRow,
+      isolatedExit: result.exitCode,
+      contaminated: refused.verdict,
+      contaminatedExit: refused.exitCode,
+    }).toEqual({
+      isolated: "refuse",
+      isolatedRow: "replay",
+      isolatedExit: 1,
+      contaminated: "refuse",
+      contaminatedExit: 2,
+    });
+    expect(entries.find((entry) => entry.value === "old")?.located).toBeNull();
+    for (const entry of entries) {
+      const path = relative(realpathSync(f.root), entry.cwd);
+      expect(path.startsWith("..") || isAbsolute(path)).toBe(true);
+    }
+    expect(refused.verdict).toBe("refuse");
+    expect(refused.exitCode).toBe(2);
+    expect(JSON.stringify(refused)).toMatch(
+      /ancestor|node_modules|isolat|contaminat/i,
+    );
+    expect(
+      [refused.nextStep, ...refused.rows.map((row) => row.nextStep)].join("\n"),
+    ).toContain(realpathSync(join(contaminated, "node_modules")));
+    expect(
+      f.git("worktree", "list", "--porcelain").match(/^worktree /gm),
+    ).toHaveLength(1);
+  } finally {
+    f.remove();
+  }
+});
 function launch(
   input: Parameters<Admit>[0],
   observed?: string,
@@ -429,9 +748,11 @@ test("an invalid patch cannot prove the break was caught and leaves no worktree"
 test("a stale admission worktree is removed along with the new disposable checkout", async () => {
   const admit = await load(),
     f = fixture();
+  const stale = join(
+    realpathSync(tmpdir()),
+    `.admit-2147483647-${randomUUID()}`,
+  );
   try {
-    const stale = join(f.root, ".worktrees", ".admit-2147483647-fixture");
-    mkdirSync(join(f.root, ".worktrees"));
     execFileSync("git", ["worktree", "add", "--detach", stale, "origin/main"], {
       cwd: f.root,
       stdio: "pipe",
@@ -441,6 +762,7 @@ test("a stale admission worktree is removed along with the new disposable checko
     expect(existsSync(stale)).toBe(false);
     f.clean();
   } finally {
+    removeFixtureWorktree(f, stale);
     f.remove();
   }
 });
@@ -552,9 +874,6 @@ test("regression: cleanup preserves an unrelated prunable worktree registration"
       "origin/main",
     );
     rmSync(unrelated, { recursive: true });
-    mkdirSync(join(f.root, ".worktrees", ".admit-2147483647-orphan"), {
-      recursive: true,
-    });
     expect(f.git("worktree", "list", "--porcelain")).toContain("prunable");
     const result = await admit(f.input, { platform: "win32", setup });
     expect(result).toMatchObject({ verdict: "admit", exitCode: 0 });
@@ -595,8 +914,11 @@ test("invalid input refuses with an actionable reason and leaves the original ch
 test("dead-pid cleanup recognizes a missing worktree through Windows path casing", async () => {
   const admit = await load(),
     f = fixture();
+  const stale = join(
+    realpathSync(tmpdir()),
+    `.admit-2147483647-${randomUUID()}`,
+  );
   try {
-    const stale = join(f.root, ".worktrees", ".admit-2147483647-missing");
     f.git("worktree", "add", "--detach", stale, "origin/main");
     rmSync(stale, { recursive: true });
     const root = process.platform === "win32" ? f.root.toUpperCase() : f.root;
@@ -607,6 +929,7 @@ test("dead-pid cleanup recognizes a missing worktree through Windows path casing
     expect(result).toMatchObject({ verdict: "admit", exitCode: 0 });
     f.clean();
   } finally {
+    removeFixtureWorktree(f, stale);
     f.remove();
   }
 });

@@ -1,12 +1,5 @@
-import {
-  readFile,
-  readdir,
-  mkdir,
-  rm,
-  cp,
-  lstat,
-  realpath,
-} from "node:fs/promises";
+import { readFile, rm, cp, lstat, stat, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import {
   resolve,
@@ -119,7 +112,7 @@ export async function admit(
     interrupted = true;
     controller.abort();
   };
-  const worktrees = join(root, ".worktrees"),
+  const worktrees = await realpath(tmpdir()),
     worktree = join(worktrees, `.admit-${process.pid}-${randomUUID()}`);
   const reportFormat =
     typeof command === "object"
@@ -157,12 +150,20 @@ export async function admit(
       result.exitCode === null
     )
       throw new Error("Command timeout, cancellation or incomplete output");
-    if (check && [126, 127].includes(result.exitCode))
-      throw new Error("Missing tool or non-executable command (exit 126/127)");
     const report = recognizer.report();
     if (check && report.kind === "malformed")
       throw new Error("Malformed check report");
-    const failed = check && (report.testCount === 0 || !!report.failed);
+    if (check && report.testCount === 0) {
+      const commit = await git(["-C", cwd, "rev-parse", "HEAD"]);
+      const remedy =
+        current.name === "break"
+          ? "make the break patch fail an assertion, not skip the tests"
+          : `make the ${current.name} row run tests`;
+      throw new Error(`The check ran zero tests at ${commit}; ${remedy}`);
+    }
+    if (check && [126, 127].includes(result.exitCode))
+      throw new Error("Missing tool or non-executable command (exit 126/127)");
+    const failed = check && !!report.failed;
     return { ...result, passed: result.exitCode === 0 && !failed };
   }
   async function git(args: string[]) {
@@ -205,12 +206,19 @@ export async function admit(
   process.on("SIGINT", cancel);
   process.on("SIGTERM", cancel);
   try {
-    await mkdir(worktrees, { recursive: true });
-    const candidates = new Set([
-      ...registered(),
-      ...(await readdir(worktrees)).map((name) => join(worktrees, name)),
-    ]);
-    for (const path of candidates) {
+    for (let parent = worktrees; ; parent = dirname(parent)) {
+      const modules = join(parent, "node_modules");
+      const folder = await stat(modules).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+          return undefined;
+        },
+      );
+      if (folder?.isDirectory())
+        throw new Error(`Ancestor node_modules folder: ${modules}`);
+      if (parent === dirname(parent)) break;
+    }
+    for (const path of registered()) {
       const owner = /^\.admit-(\d+)-/.exec(basename(path));
       if (dirname(path) !== worktrees || !owner) continue;
       try {
@@ -236,7 +244,7 @@ export async function admit(
       row.nextStep = "Continue to the next row";
       for (const commit of commits) {
         await wt("checkout", "--detach", "--force", commit);
-        await wt("clean", "-ffdx", "-e", "node_modules");
+        await wt("clean", "-ffdx");
         for (const path of guards) {
           const target = join(worktree, path);
           await rm(target, { recursive: true, force: true });
@@ -272,7 +280,7 @@ export async function admit(
     }
   } catch (error) {
     current.result = "inconclusive";
-    current.nextStep = String(error);
+    current.nextStep = error instanceof Error ? error.message : String(error);
   } finally {
     await remove(worktree).finally(() => {
       process.off("SIGINT", cancel);
