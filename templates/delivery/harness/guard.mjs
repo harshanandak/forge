@@ -17,18 +17,34 @@ function segments(text) {
   const result = [];
   let words = [],
     word = "",
+    expanded = "",
     started = false,
     quote = "";
+  // Quote boundaries and escapes split expansion names without changing word text.
   const frames = [];
   const flushWord = () => {
-    if (started) words.push(word);
-    word = "";
+    if (started) words.push({ text: word, expanded });
+    word = expanded = "";
     started = false;
   };
   const flush = () => {
     flushWord();
     if (words.length) result.push(words);
     words = [];
+  };
+  const enter = (close) => {
+    frames.push({ close, quote, words, word, expanded, started });
+    words = [];
+    word = expanded = quote = "";
+    started = false;
+  };
+  const leave = () => {
+    flush();
+    ({ quote, words, word, expanded, started } = frames.pop());
+    // Keep unknown substitution output opaque while the outer command resumes.
+    word += "$()";
+    expanded += " ";
+    started = true;
   };
   for (let i = 0; i < text.length; i++) {
     const c = text[i],
@@ -38,49 +54,50 @@ function segments(text) {
       quote !== "'" &&
       (!quote || /["\\$`\n]/.test(next ?? ""))
     ) {
+      if (next === "\n") {
+        i++;
+        continue;
+      }
       started = true;
       word += next ?? "\\";
+      expanded += " ";
       i++;
       continue;
     }
     if (quote === "'") {
-      if (c === quote) quote = "";
-      else word += c;
+      if (c === quote) {
+        quote = "";
+        expanded += " ";
+      } else word += c;
       continue;
     }
     if (c === "$" && next === "(") {
-      flush();
-      frames.push({ quote, close: ")" });
-      quote = "";
+      enter(")");
       i++;
       continue;
     }
     if (c === "`") {
-      flush();
-      if (frames.at(-1)?.close === "`") quote = frames.pop().quote;
-      else {
-        frames.push({ quote, close: "`" });
-        quote = "";
-      }
+      if (frames.at(-1)?.close === "`") leave();
+      else enter("`");
       continue;
     }
     if (!quote && c === "(") {
-      flush();
-      frames.push({ quote: "", close: ")" });
+      enter(")");
       continue;
     }
     if (!quote && c === ")") {
-      flush();
-      // Only the matching substitution restores its surrounding quote.
-      if (frames.at(-1)?.close === ")") quote = frames.pop().quote;
+      if (frames.at(-1)?.close === ")") leave();
+      else flush();
       continue;
     }
     if (c === quote) {
       quote = "";
+      expanded += " ";
       continue;
     }
     if (!quote && (c === "'" || c === '"')) {
       quote = c;
+      expanded += " ";
       started = true;
       continue;
     }
@@ -99,7 +116,7 @@ function segments(text) {
         started = false;
       }
       flushWord();
-      words.push(c);
+      words.push({ text: c, expanded: "" });
       if (next === c) i++;
       continue;
     }
@@ -109,16 +126,18 @@ function segments(text) {
     }
     started = true;
     word += c;
+    expanded += c;
   }
   flush();
   return result;
 }
-const name = (word) => (word ?? "").split(/[\\/]/).pop().toLowerCase();
+const basename = (word) => (word ?? "").split(/[\\/]/).pop().toLowerCase();
+const name = (word) => basename(word).replace(/\.exe$/, "");
 const assignment = (word) => /^[A-Za-z_][\w]*=/.test(word ?? "");
 const secret = (word) => /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CRED/i.test(word);
 function secretPath(word) {
   const path = word.replaceAll("\\", "/"),
-    base = name(path);
+    base = basename(path);
   return (
     (/^\.env(?:\.|$)/i.test(base) &&
       !/\.(example|sample|template|dist)$/i.test(base)) ||
@@ -147,15 +166,48 @@ function rootOrHome(path) {
     )
   );
 }
-function check(words, depth) {
-  const inputs = words.flatMap((word, index) =>
-    word === "<" && words[index + 1] !== undefined ? [words[index + 1]] : [],
+function readerFiles(cmd, args) {
+  const files = [];
+  let pattern =
+    !/^(grep|egrep|fgrep|rg|awk|sed|jq)$/.test(cmd) ||
+    (cmd === "rg" && args.includes("--files")) ||
+    (cmd !== "jq" &&
+      args.some((arg) =>
+        /^(?:-[ef]|--(?:regexp|expression|file)(?:=|$))/.test(arg),
+      ));
+  let options = true;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (options && arg === "--") {
+      options = false;
+      continue;
+    }
+    if (options && arg.startsWith("-")) {
+      if (/^(?:-f|--file(?:=|$))/.test(arg))
+        files.push(
+          arg === "-f" || arg === "--file"
+            ? args[++i]
+            : arg.replace(/^(?:-f|--file=)/, ""),
+        );
+      else if (/^(?:-e|--regexp|--expression)$/.test(arg)) i++;
+      continue;
+    }
+    if (pattern) files.push(arg);
+    else pattern = true;
+  }
+  return files.filter((file) => file !== undefined);
+}
+function check(tokens, depth) {
+  const raw = tokens.map((token) => token.text);
+  const inputs = raw.flatMap((word, index) =>
+    word === "<" && raw[index + 1] !== undefined ? [raw[index + 1]] : [],
   );
   // Redirection targets are not command operands; input targets still need the reader check.
-  words = words.filter(
-    (word, index) =>
-      !["<", ">"].includes(word) && !["<", ">"].includes(words[index - 1]),
+  tokens = tokens.filter(
+    (token, index) =>
+      !["<", ">"].includes(token.text) && !["<", ">"].includes(raw[index - 1]),
   );
+  const words = tokens.map((token) => token.text);
   let i = 0;
   const flags = (takesValue = []) => {
     while (words[i]?.startsWith("-")) {
@@ -216,18 +268,20 @@ function check(words, depth) {
       (cmd === "declare" && args.some((arg) => /^-[^-]*p/.test(arg)))) &&
       operands.some(secret)) ||
     (/^(echo|printf)$/.test(cmd) &&
-      args.some((arg) =>
-        [...arg.matchAll(/\$\{?([A-Za-z_]\w*)/g)].some((match) =>
-          secret(match[1]),
-        ),
-      ))
+      tokens
+        .slice(i)
+        .some((token) =>
+          [...token.expanded.matchAll(/\$\{?([A-Za-z_]\w*)/g)].some((match) =>
+            secret(match[1]),
+          ),
+        ))
   )
     return "secret-variable";
   if (
     /^(cat|bat|tac|nl|less|more|head|tail|strings|xxd|od|hexdump|base64|grep|egrep|fgrep|rg|awk|sed|cut|sort|jq)$/.test(
       cmd,
     ) &&
-    [...args, ...inputs].some((arg) => !arg.startsWith("-") && secretPath(arg))
+    [...readerFiles(cmd, args), ...inputs].some(secretPath)
   )
     return "secret-file";
   const provider = operands.join(" ");

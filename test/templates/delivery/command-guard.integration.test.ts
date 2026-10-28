@@ -1,6 +1,13 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -16,6 +23,9 @@ const env = Object.fromEntries(
   ),
 );
 Object.assign(env, { HOME: home, USERPROFILE: home });
+const payloadDir = mkdtempSync(join(tmpdir(), "forge-526-payloads-"));
+let payloadNumber = 0;
+afterAll(() => rmSync(payloadDir, { recursive: true, force: true }));
 const refused: [string, string[]][] = [
   [
     "env-dump",
@@ -193,15 +203,120 @@ function payload(harness: string, command: unknown) {
   });
 }
 function run(input: string, executable = node, args = [script]) {
-  return spawnSync(executable, args, {
-    cwd: tmpdir(),
-    env,
-    input,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 10_000,
-  });
+  const file = join(payloadDir, `${payloadNumber++}.json`);
+  writeFileSync(file, input);
+  const fd = openSync(file, "r");
+  try {
+    return spawnSync(executable, args, {
+      cwd: tmpdir(),
+      env,
+      stdio: [fd, "pipe", "pipe"],
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+  } finally {
+    closeSync(fd);
+    rmSync(file);
+  }
 }
+
+const localRoundOne: [string, [string, number, string?][]][] = [
+  [
+    "reader operands",
+    [
+      ["grep credentials src/", 0],
+      ['rg -n "id_rsa" docs', 0],
+      ["egrep credentials src/", 0],
+      ["fgrep credentials src/", 0],
+      ["awk credentials src/", 0],
+      ["sed credentials src/", 0],
+      ["jq credentials src/", 0],
+      ["grep -e credentials src/", 0],
+      ["rg -f patterns.txt src/", 0],
+      ["awk -f program.awk src/", 0],
+      ["sed -e credentials src/", 0],
+      ["grep x .env", 2, "secret-file"],
+      ["cat credentials", 2, "secret-file"],
+      ["grep -e x .env", 2, "secret-file"],
+      ["rg -f patterns.txt .env", 2, "secret-file"],
+      ["awk -f program.awk .env", 2, "secret-file"],
+      ["sed -e x .env", 2, "secret-file"],
+      ["jq . .env", 2, "secret-file"],
+      ["grep credentials < .env", 2, "secret-file"],
+      ["grep -f .env src/", 2, "secret-file"],
+      ["sed -f .env src/", 2, "secret-file"],
+      ["grep --file=.env src/", 2, "secret-file"],
+      ["grep -- credentials src/", 0],
+      ["grep -- x .env", 2, "secret-file"],
+    ],
+  ],
+  [
+    "expandable references",
+    [
+      ["echo '$PLACEHOLDER_SECRET'", 0],
+      ["echo \\$PLACEHOLDER_SECRET", 0],
+      ["printf '%s' '$PLACEHOLDER_TOKEN'", 0],
+      ['echo "\\$API_TOKEN"', 0],
+      ['echo "${API_TOKEN}"', 2, "secret-variable"],
+      ["echo $API_TOKEN", 2, "secret-variable"],
+      ["echo '$API_'TOKEN", 0],
+      ['echo "$API_"TOKEN', 0],
+      ["echo '$PATH' $API_TOKEN", 2, "secret-variable"],
+    ],
+  ],
+  [
+    "outer substitution words",
+    [
+      ['echo "$(date) $API_TOKEN"', 2, "secret-variable"],
+      ["echo $(true) $API_TOKEN", 2, "secret-variable"],
+      ['echo "$(printf ordinary)" "$PLACEHOLDER_SECRET"', 2, "secret-variable"],
+      ['echo "`date` $API_TOKEN"', 2, "secret-variable"],
+      ["echo `true` $API_TOKEN", 2, "secret-variable"],
+      ["printf %s $(true) $API_TOKEN", 2, "secret-variable"],
+      ['echo "$(date) \\$API_TOKEN"', 0],
+      ["echo $(true) '$API_TOKEN'", 0],
+      ['echo "$( (true); printf ordinary )"', 0],
+    ],
+  ],
+  [
+    "line continuations",
+    [
+      ["en\\\nv", 2, "env-dump"],
+      ['"en\\\nv"', 2, "env-dump"],
+      ["echo $API_\\\nTOKEN", 2, "secret-variable"],
+      ["git sta\\\ntus", 0],
+      ["echo 'en\\\nv'", 0],
+    ],
+  ],
+  [
+    "executable suffixes",
+    [
+      ["env.exe", 2, "env-dump"],
+      ["/usr/bin/PRINTENV.EXE", 2, "env-dump"],
+      ["sudo env.exe", 2, "env-dump"],
+      ["cat.exe .env", 2, "secret-file"],
+      ["printenv.exe HOME", 0],
+      ["env.exe FOO=1 bun test", 0],
+      ["cat credentials.exe", 0],
+    ],
+  ],
+];
+for (const harness of ["claude", "codex"])
+  for (const [decision, rows] of localRoundOne) {
+    test(`${harness} local round one: ${decision}`, () => {
+      for (const [command, status, rule] of rows) {
+        const result = run(payload(harness, command));
+        expect({ command, status: result.status }).toEqual({ command, status });
+        expect(result.stdout).toBe("");
+        if (rule)
+          expect(result.stderr).toMatch(
+            new RegExp(`^Forge guard refused \\(${rule}\\): [^\\r\\n]+\\n$`),
+          );
+        else expect(result.stderr).toBe("");
+      }
+    });
+  }
 for (const harness of ["claude", "codex"]) {
   for (const [rule, commands] of refused)
     for (const command of commands) {
