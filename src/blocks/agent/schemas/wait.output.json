@@ -3,7 +3,7 @@
   "additionalProperties": false,
   "required": ["kind", "steps", "then"],
   "properties": {
-    "kind": { "enum": ["t3-tool", "gh-checks"] },
+    "kind": { "enum": ["t3-tool", "monitor", "gh-checks"] },
     "steps": { "type": "array", "items": { "type": "string", "minLength": 1 } },
     "then": { "type": "string", "minLength": 1 }
   }
