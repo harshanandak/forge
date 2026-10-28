@@ -1,5 +1,21 @@
-import { readFile, readdir, mkdir, rm } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import {
+  readFile,
+  readdir,
+  mkdir,
+  rm,
+  cp,
+  lstat,
+  realpath,
+} from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import {
+  resolve,
+  join,
+  relative,
+  isAbsolute,
+  dirname,
+  basename,
+} from "node:path";
 import { parseArgs } from "node:util";
 import { randomUUID } from "node:crypto";
 import { parse } from "yaml";
@@ -9,6 +25,8 @@ import { createRunnerOutput } from "../src/adapters/runner-output/index.ts";
 import defaults from "../src/blocks/check/schemas/config.json" with { type: "json" };
 import { schemaDefaults } from "../src/core/config/short.ts";
 import type { CheckConfig } from "../src/blocks/check/types.ts";
+const usage =
+  "Usage: bun tools/check-admit.ts <check-name> <break.patch> --guard <path> [--guard <path> ...] [--replay N] [--max-seconds S]. Missing tools reported with ordinary failure codes cannot be distinguished from intended failures.";
 function argumentsFor(text: string): string[] {
   const token = /\s*((?:[^\s"'|&;<>`$]+|"[^"]*"|'[^']*')+)\s*/gy;
   const args: string[] = [];
@@ -26,6 +44,7 @@ export async function admit(
     root: string;
     name: string;
     patch: string;
+    guard: readonly string[];
     replay?: number;
     maxSeconds?: number;
   },
@@ -38,7 +57,7 @@ export async function admit(
     seconds: 0,
     nextStep: "Run after the preceding row passes",
   }));
-  const root = resolve(input.root),
+  const root = await realpath(input.root),
     replay = input.replay ?? 20,
     maxSeconds = input.maxSeconds ?? 120;
   if (
@@ -46,6 +65,21 @@ export async function admit(
     !(replay > 0 && maxSeconds > 0 && maxSeconds < Infinity)
   )
     throw new Error("replay and max-seconds must be positive");
+  if (!input.guard?.length) throw new Error(usage);
+  const guards = input.guard.map((path) => {
+    const name = relative(root, resolve(root, path));
+    if (
+      isAbsolute(path) ||
+      !name ||
+      isAbsolute(name) ||
+      name.split(/[\\/]/).includes("..") ||
+      /(^|[\\/])(\.git|\.worktrees)([\\/]|$)/.test(name)
+    )
+      throw new Error(
+        "Guard paths must stay inside the repository, outside .git and .worktrees",
+      );
+    return name;
+  });
   const document = parse(
     await readFile(join(root, ".forge/config.yaml"), "utf8"),
   ) as { blocks?: { check?: { config?: Partial<CheckConfig> } } };
@@ -80,11 +114,13 @@ export async function admit(
       },
     }),
     controller = new AbortController();
-  const cancel = () => controller.abort();
-  process.on("SIGINT", cancel);
-  process.on("SIGTERM", cancel);
+  let interrupted = false;
+  const cancel = () => {
+    interrupted = true;
+    controller.abort();
+  };
   const worktrees = join(root, ".worktrees"),
-    worktree = join(worktrees, `.admit-${randomUUID()}`);
+    worktree = join(worktrees, `.admit-${process.pid}-${randomUUID()}`);
   const reportFormat =
     typeof command === "object"
       ? (command.report ?? config.report)
@@ -95,12 +131,7 @@ export async function admit(
   };
   const setupCommand = ["bun", "install", "--frozen-lockfile"];
   let current = rows[0]!;
-  async function run(
-    args: readonly string[],
-    cwd: string,
-    check = false,
-    cleanup = false,
-  ) {
+  async function run(args: readonly string[], cwd: string, check = false) {
     const selected = check ? env : hostEnv,
       executable = processes.resolve(args[0]!, selected);
     if (executable.kind !== "resolved")
@@ -113,7 +144,7 @@ export async function admit(
       maxOutputBytes: config.maxOutputBytes,
       capture,
       ...(check ? { observer: recognizer } : {}),
-      ...(cleanup ? {} : { signal: controller.signal }),
+      signal: controller.signal,
     });
     if (check) current.seconds += result.durationMs / 1000;
     const complete =
@@ -126,14 +157,16 @@ export async function admit(
       result.exitCode === null
     )
       throw new Error("Command timeout, cancellation or incomplete output");
+    if (check && [126, 127].includes(result.exitCode))
+      throw new Error("Missing tool or non-executable command (exit 126/127)");
     const report = recognizer.report();
     if (check && report.kind === "malformed")
       throw new Error("Malformed check report");
     const failed = check && (report.testCount === 0 || !!report.failed);
     return { ...result, passed: result.exitCode === 0 && !failed };
   }
-  async function git(args: string[], cleanup = false) {
-    const result = await run(["git", ...args], root, false, cleanup);
+  async function git(args: string[]) {
+    const result = await run(["git", ...args], root, false);
     if (!result.passed || result.truncated)
       throw new Error(`git ${args[0]} failed: ${result.stderr}`);
     return result.stdout.trim();
@@ -143,36 +176,56 @@ export async function admit(
     if (!(await run(dependencies.setup ?? setupCommand, worktree)).passed)
       throw new Error("Setup failed");
   }
+  // Cleanup must survive the supervised child being interrupted by the same console signal.
+  const gitExecutable = processes.resolve("git", hostEnv);
+  if (gitExecutable.kind !== "resolved") throw new Error("git is unavailable");
+  const nativeGit = (args: string[]) =>
+    execFileSync(gitExecutable.path, args, {
+      cwd: root,
+      env: hostEnv,
+      encoding: "utf8",
+      timeout: 15000,
+      maxBuffer: 1048576,
+      windowsHide: true,
+      stdio: "pipe",
+    }).trim();
+  const registered = () =>
+    nativeGit(["worktree", "list", "--porcelain"])
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => resolve(line.slice(9)));
   async function remove(path: string) {
     await rm(path, { recursive: true, force: true, maxRetries: 3 });
-    await git(["worktree", "prune"], true);
+    try {
+      nativeGit(["worktree", "remove", "--force", "--force", path]);
+    } catch (error) {
+      if (registered().includes(path)) throw error;
+    }
   }
+  process.on("SIGINT", cancel);
+  process.on("SIGTERM", cancel);
   try {
     await mkdir(worktrees, { recursive: true });
-    for (const name of await readdir(worktrees))
-      if (name.startsWith(".admit-")) await remove(join(worktrees, name));
+    const candidates = new Set([
+      ...registered(),
+      ...(await readdir(worktrees)).map((name) => join(worktrees, name)),
+    ]);
+    for (const path of candidates) {
+      const owner = /^\.admit-(\d+)-/.exec(basename(path));
+      if (dirname(path) !== worktrees || !owner) continue;
+      try {
+        process.kill(Number(owner[1]), 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH")
+          await remove(path);
+      }
+    }
     const base = await git(["rev-parse", "origin/main"]);
     await git(["worktree", "add", "--detach", worktree, base]);
     for (const [index, row] of rows.entries()) {
       current = row;
-      if (row.name === "Windows time") {
-        await setup();
-        row.seconds = Math.max(rows[0]!.seconds, rows[2]!.seconds);
-        const windows = (dependencies.platform ?? process.platform) === "win32";
-        row.result = row.seconds < maxSeconds ? "pass" : "fail";
-        row.nextStep = `Limit: ${maxSeconds} seconds; reduce runtime if exceeded`;
-        if (!windows) {
-          row.result = "inconclusive";
-          row.nextStep = "not measured on Windows";
-        }
-        break;
-      }
-      if (index === 1 || index === 2)
-        await wt(
-          "apply",
-          ...(index === 2 ? ["--reverse"] : []),
-          resolve(root, input.patch),
-        );
+      if (index === 2)
+        await wt("apply", "--reverse", resolve(root, input.patch));
       const count = `--max-count=${replay}`;
       const history = ["rev-list", "--first-parent", count, `${base}^`];
       const commits =
@@ -182,11 +235,32 @@ export async function admit(
       row.result = "pass";
       row.nextStep = "Continue to the next row";
       for (const commit of commits) {
-        if (row.name === "replay") {
-          await wt("checkout", "--detach", "--force", commit);
-          await wt("clean", "-ffd");
+        await wt("checkout", "--detach", "--force", commit);
+        await wt("clean", "-ffdx", "-e", "node_modules");
+        for (const path of guards) {
+          const target = join(worktree, path);
+          await rm(target, { recursive: true, force: true });
+          await cp(join(root, path), target, {
+            recursive: true,
+            filter: async (source) => {
+              if ((await lstat(source)).isSymbolicLink())
+                throw new Error("Guard symlinks are unsupported");
+              return true;
+            },
+          });
         }
+        if (index === 1) await wt("apply", resolve(root, input.patch));
         await setup();
+        if (index === 4) {
+          row.seconds = Math.max(rows[0]!.seconds, rows[2]!.seconds);
+          row.result = row.seconds < maxSeconds ? "pass" : "fail";
+          row.nextStep = `Limit: ${maxSeconds} seconds; reduce runtime if exceeded`;
+          if ((dependencies.platform ?? process.platform) !== "win32") {
+            row.result = "inconclusive";
+            row.nextStep = "not measured on Windows";
+          }
+          break;
+        }
         const result = await run(argv, worktree, true);
         if (result.passed === (row.name === "break")) {
           row.result = "fail";
@@ -210,7 +284,7 @@ export async function admit(
     rows,
     verdict: first ? ("refuse" as const) : ("admit" as const),
     ...(first ? { firstFailingRow: first.name } : {}),
-    exitCode: first ? (first.result === "fail" ? 1 : 2) : 0,
+    exitCode: interrupted ? 130 : first ? (first.result === "fail" ? 1 : 2) : 0,
   };
 }
 if (import.meta.main) {
@@ -219,15 +293,22 @@ if (import.meta.main) {
       args: process.argv.slice(2),
       allowPositionals: true,
       options: {
+        guard: { type: "string", multiple: true },
+        help: { type: "boolean" },
         replay: { type: "string" },
         "max-seconds": { type: "string" },
       },
     });
+    if (args.values.help) {
+      console.log(usage);
+      process.exit(0);
+    }
     const [name, patch] = args.positionals;
     if (!name || !patch || args.positionals.length !== 2)
-      throw new Error("Expected check name and break.patch");
+      throw new Error(usage);
     const result = await admit({
       root: process.cwd(),
+      guard: args.values.guard ?? [],
       name,
       patch,
       replay: Number(args.values.replay ?? 20),

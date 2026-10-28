@@ -1,5 +1,5 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -24,13 +24,14 @@ interface Result {
   rows: Row[];
   verdict: "admit" | "refuse";
   firstFailingRow?: string;
-  exitCode: 0 | 1 | 2;
+  exitCode: 0 | 1 | 2 | 130;
 }
 type Admit = (
   input: {
     root: string;
     name: string;
     patch: string;
+    guard: readonly string[];
     replay?: number;
     maxSeconds?: number;
   },
@@ -59,6 +60,7 @@ function fixture(mode = "pass") {
   git("config", "user.name", "Admission fixture");
   git("config", "user.email", "fixture@example.invalid");
   mkdirSync(join(root, ".forge"));
+  writeFileSync(join(root, ".gitignore"), "cache/\nnode_modules/\n");
   writeFileSync(
     join(root, ".forge/config.yaml"),
     JSON.stringify({
@@ -89,11 +91,20 @@ if (value === 'BROKEN') fs.writeFileSync(marker, 'yes');
 if (mode === 'timeout' && value === 'BROKEN') setInterval(() => {}, 1000);
 console.log('checked ' + value);
 process.exitCode = failed ? 1 : 0;
+if (mode.startsWith('missing') && value === 'BROKEN') {
+  console.error('spawn ENOENT: required child tool is unavailable');
+  process.exitCode = Number(mode.slice(7));
+}
+if (mode === 'cache') {
+  if (value === 'tip') { fs.mkdirSync('cache', {recursive:true}); fs.writeFileSync('cache/seen', 'yes'); }
+  if (value === 'previous' && !fs.existsSync('cache/seen')) process.exitCode = 1;
+}
+if (mode === 'slow' && value === 'tip') setTimeout(() => {}, 3000);
 `,
   );
   for (const content of ["old", "previous", "tip"]) {
     writeFileSync(join(root, "source.txt"), content + "\n");
-    git("add", ".forge/config.yaml", "check.cjs", "source.txt");
+    git("add", ".forge/config.yaml", ".gitignore", "check.cjs", "source.txt");
     git("commit", "-m", content);
   }
   const tip = git("rev-parse", "HEAD"),
@@ -108,12 +119,21 @@ process.exitCode = failed ? 1 : 0;
     root,
     patch,
     previous,
-    input: { root, name: "guard", patch, replay: 2, maxSeconds: 120 },
-    clean() {
+    observed,
+    git,
+    input: {
+      root,
+      name: "guard",
+      patch,
+      guard: ["check.cjs"],
+      replay: 2,
+      maxSeconds: 120,
+    },
+    clean(head = tip) {
       expect(
         git("worktree", "list", "--porcelain").match(/^worktree /gm),
       ).toHaveLength(1);
-      expect(git("rev-parse", "HEAD")).toBe(tip);
+      expect(git("rev-parse", "HEAD")).toBe(head);
       expect(readFileSync(join(root, "source.txt"), "utf8")).toBe("tip\n");
       if (existsSync(join(root, ".worktrees")))
         expect(readdirSync(join(root, ".worktrees"))).toEqual([]);
@@ -123,7 +143,13 @@ process.exitCode = failed ? 1 : 0;
       existsSync(observed)
         ? readFileSync(observed, "utf8").trim().split("\n")
         : [],
-    remove: () => rmSync(root, { recursive: true, force: true }),
+    remove: () =>
+      rmSync(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 20,
+        retryDelay: 50,
+      }),
   };
 }
 function rows(result: Result) {
@@ -137,6 +163,99 @@ function rows(result: Result) {
     ),
   ).toBe(true);
 }
+function launch(
+  input: Parameters<Admit>[0],
+  observed?: string,
+  signal = "SIGINT",
+) {
+  const tool = new URL("../../tools/check-admit.ts", import.meta.url).href;
+  const script = `
+import {admit} from ${JSON.stringify(tool)};
+import {existsSync} from 'node:fs';
+let timer;
+try {
+  const pending = admit(${JSON.stringify(input)}, {platform:'win32',setup:[process.execPath,'-e','']});
+  ${observed ? `timer = setInterval(() => { if(existsSync(${JSON.stringify(observed)})) {clearInterval(timer);process.emit(${JSON.stringify(signal)});} }, 25);` : ""}
+  const result = await pending;
+  console.log(JSON.stringify(result));process.exitCode=result.exitCode;
+} catch(error) {console.log(JSON.stringify({error:String(error)}));process.exitCode=2;}
+finally {clearInterval(timer);}
+`;
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([name, value]) =>
+        value !== undefined &&
+        /^(?:PATH|PATHEXT|SystemRoot|windir|ComSpec|TEMP|TMP|TMPDIR|HOME|USERPROFILE|APPDATA|LOCALAPPDATA)$/i.test(
+          name,
+        ),
+    ),
+  );
+  const child = spawn(process.execPath, ["-e", script], {
+    env,
+    windowsHide: true,
+  });
+  let stdout = "",
+    stderr = "";
+  child.stdout.on("data", (data: Buffer) => {
+    stdout += data.toString();
+  });
+  child.stderr.on("data", (data: Buffer) => {
+    stderr += data.toString();
+  });
+  const done = new Promise<{
+    code: number | null;
+    stdout: string;
+    stderr: string;
+  }>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+  return { child, done };
+}
+test("regression: concurrent admission children preserve each other's live worktree", async () => {
+  await load();
+  const f = fixture("slow"),
+    children: ReturnType<typeof launch>[] = [];
+  try {
+    children.push(launch(f.input));
+    const deadline = Date.now() + 30000;
+    while (!existsSync(f.observed) && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(existsSync(f.observed)).toBe(true);
+    children.push(launch(f.input));
+    const results = await Promise.all(children.map((child) => child.done));
+    expect(results.map((result) => result.code)).toEqual([0, 0]);
+    for (const result of results)
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        verdict: "admit",
+        exitCode: 0,
+      });
+    f.clean();
+  } finally {
+    for (const { child } of children) if (child.exitCode === null) child.kill();
+    await Promise.allSettled(children.map((child) => child.done));
+    f.remove();
+  }
+});
+for (const signal of ["SIGINT", "SIGTERM"])
+  test(`regression: interruption ${signal} cleans its own worktree and returns 130`, async () => {
+    await load();
+    const f = fixture("slow");
+    const child = launch(f.input, f.observed, signal);
+    try {
+      const result = await child.done;
+      expect(result).toMatchObject({ code: 130 });
+      const reported = JSON.parse(result.stdout) as Result;
+      expect(reported).toMatchObject({ verdict: "refuse", exitCode: 130 });
+      rows(reported);
+      expect(reported.rows[0]?.result).toBe("inconclusive");
+      f.clean();
+    } finally {
+      if (child.child.exitCode === null) child.child.kill();
+      await child.done;
+      f.remove();
+    }
+  });
 test("admit proves all five rows using changed prior files and removes all worktree state", async () => {
   const admit = await load(),
     f = fixture();
@@ -311,7 +430,7 @@ test("a stale admission worktree is removed along with the new disposable checko
   const admit = await load(),
     f = fixture();
   try {
-    const stale = join(f.root, ".worktrees", ".admit-stale-fixture");
+    const stale = join(f.root, ".worktrees", ".admit-2147483647-fixture");
     mkdirSync(join(f.root, ".worktrees"));
     execFileSync("git", ["worktree", "add", "--detach", stale, "origin/main"], {
       cwd: f.root,
@@ -321,6 +440,130 @@ test("a stale admission worktree is removed along with the new disposable checko
     expect(result).toMatchObject({ verdict: "admit", exitCode: 0 });
     expect(existsSync(stale)).toBe(false);
     f.clean();
+  } finally {
+    f.remove();
+  }
+});
+test("regression: proposed guard is copied to prior snapshots without unrelated dirty files", async () => {
+  const admit = await load(),
+    f = fixture();
+  try {
+    const guard = join(f.root, "check.cjs");
+    writeFileSync(
+      guard,
+      readFileSync(guard, "utf8") +
+        "\nif (value === 'previous' || fs.existsSync('unrelated.txt')) process.exitCode = 1;\n",
+    );
+    f.git("add", "check.cjs");
+    f.git("commit", "-m", "candidate guard");
+    const head = f.git("rev-parse", "HEAD");
+    writeFileSync(join(f.root, "unrelated.txt"), "must not enter snapshots");
+    const result = await admit(f.input, { platform: "win32", setup });
+    expect(result).toMatchObject({
+      verdict: "refuse",
+      firstFailingRow: "replay",
+      exitCode: 1,
+    });
+    expect(result.rows.slice(0, 3).map((row) => row.result)).toEqual([
+      "pass",
+      "pass",
+      "pass",
+    ]);
+    expect(JSON.stringify(result.rows[3])).toContain(f.previous);
+    f.clean(head);
+  } finally {
+    f.remove();
+  }
+});
+test("regression: a branch-only declared guard works without copying unrelated branch files", async () => {
+  const admit = await load(),
+    f = fixture();
+  try {
+    writeFileSync(
+      join(f.root, "new-guard.cjs"),
+      readFileSync(join(f.root, "check.cjs"), "utf8") +
+        "\nif(fs.existsSync('unrelated.txt')) process.exitCode = 1;\n",
+    );
+    writeFileSync(join(f.root, "unrelated.txt"), "must not enter snapshots");
+    const config = JSON.parse(
+      readFileSync(join(f.root, ".forge/config.yaml"), "utf8"),
+    ) as {
+      blocks: {
+        check: { config: { commands: { guard: { argv: string[] } } } };
+      };
+    };
+    config.blocks.check.config.commands.guard.argv = ["node", "new-guard.cjs"];
+    writeFileSync(join(f.root, ".forge/config.yaml"), JSON.stringify(config));
+    const result = await admit(
+      { ...f.input, guard: ["new-guard.cjs"] },
+      { platform: "win32", setup },
+    );
+    expect(result).toMatchObject({ verdict: "admit", exitCode: 0 });
+    expect(f.contents()).toEqual(["tip", "BROKEN", "tip", "previous", "old"]);
+    f.clean();
+  } finally {
+    f.remove();
+  }
+});
+for (const code of [126, 127])
+  test(`regression: child-tool exit ${code} is inconclusive rather than a caught break`, async () => {
+    const admit = await load(),
+      f = fixture(`missing${code}`);
+    try {
+      const result = await admit(f.input, { platform: "win32", setup });
+      expect(result).toMatchObject({
+        verdict: "refuse",
+        firstFailingRow: "break",
+        exitCode: 2,
+      });
+      expect(result.rows[1]?.result).toBe("inconclusive");
+      f.clean();
+    } finally {
+      f.remove();
+    }
+  });
+test("regression: ignored caches cannot make an old snapshot falsely pass", async () => {
+  const admit = await load(),
+    f = fixture("cache");
+  try {
+    const result = await admit(f.input, { platform: "win32", setup });
+    expect(result).toMatchObject({
+      verdict: "refuse",
+      firstFailingRow: "replay",
+      exitCode: 1,
+    });
+    expect(JSON.stringify(result.rows[3])).toContain(f.previous);
+    f.clean();
+  } finally {
+    f.remove();
+  }
+});
+test("regression: cleanup preserves an unrelated prunable worktree registration", async () => {
+  const admit = await load(),
+    f = fixture();
+  try {
+    const unrelated = join(f.root, "unrelated-worktree");
+    f.git(
+      "worktree",
+      "add",
+      "--detach",
+      "--no-checkout",
+      unrelated,
+      "origin/main",
+    );
+    rmSync(unrelated, { recursive: true });
+    mkdirSync(join(f.root, ".worktrees", ".admit-2147483647-orphan"), {
+      recursive: true,
+    });
+    expect(f.git("worktree", "list", "--porcelain")).toContain("prunable");
+    const result = await admit(f.input, { platform: "win32", setup });
+    expect(result).toMatchObject({ verdict: "admit", exitCode: 0 });
+    expect(f.git("worktree", "list", "--porcelain")).toContain(
+      "unrelated-worktree",
+    );
+    expect(
+      f.git("worktree", "list", "--porcelain").match(/^worktree /gm),
+    ).toHaveLength(2);
   } finally {
     f.remove();
   }
@@ -345,6 +588,24 @@ test("invalid input refuses with an actionable reason and leaves the original ch
       }
       f.clean();
     }
+  } finally {
+    f.remove();
+  }
+});
+test("dead-pid cleanup recognizes a missing worktree through Windows path casing", async () => {
+  const admit = await load(),
+    f = fixture();
+  try {
+    const stale = join(f.root, ".worktrees", ".admit-2147483647-missing");
+    f.git("worktree", "add", "--detach", stale, "origin/main");
+    rmSync(stale, { recursive: true });
+    const root = process.platform === "win32" ? f.root.toUpperCase() : f.root;
+    const result = await admit(
+      { ...f.input, root },
+      { platform: "win32", setup },
+    );
+    expect(result).toMatchObject({ verdict: "admit", exitCode: 0 });
+    f.clean();
   } finally {
     f.remove();
   }
