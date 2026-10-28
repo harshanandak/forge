@@ -3,6 +3,7 @@ declare const fail: (code: string, message: string) => never;
 interface Adapter {
   readonly id: string;
   readonly detect: readonly string[];
+  readonly over?: readonly string[];
   readonly skills?: string;
   readonly prWatch?: "t3-tool" | "watch-block" | "gh-checks";
   readonly guard?:
@@ -36,7 +37,15 @@ function detected({
       (value) => value.length > 0,
     ),
   );
-  return matches.length === 1 ? matches[0] : undefined;
+  const remaining = matches.filter(
+    (adapter) => !matches.some((other) => other.over?.includes(adapter.id)),
+  );
+  if (remaining.length !== 1) return undefined;
+  const winner = remaining[0]!;
+  const fallback = winner.over
+    ?.map((id) => matches.find((adapter) => adapter.id === id))
+    .find((adapter) => adapter !== undefined);
+  return { ...fallback, ...winner };
 }
 type AgentCall = Omit<RouteCall, "input"> & {
   readonly input: {

@@ -34,7 +34,11 @@ function project(files) {
     writeFileSync(join(root, name), text);
   const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") };
   for (const name of Object.keys(env))
-    if (["CLAUDECODE", "CODEX_THREAD_ID"].includes(name.toUpperCase()))
+    if (
+      ["CLAUDECODE", "CODEX_THREAD_ID", "T3CODE_CLI_PATH"].includes(
+        name.toUpperCase(),
+      )
+    )
       delete env[name];
   // check runs against a clean clone of the committed tree
   for (const args of [
@@ -84,6 +88,13 @@ function project(files) {
   for (const [detect, harness] of [
     [{ CLAUDECODE: "1" }, "claude"],
     [{ CODEX_THREAD_ID: "test" }, "codex"],
+    [{ CLAUDECODE: "1", CODEX_THREAD_ID: "test" }, "codex"],
+    [{ CLAUDECODE: "1", T3CODE_CLI_PATH: "fixture" }, "t3"],
+    [{ CODEX_THREAD_ID: "test", T3CODE_CLI_PATH: "fixture" }, "t3"],
+    [
+      { CLAUDECODE: "1", CODEX_THREAD_ID: "test", T3CODE_CLI_PATH: "fixture" },
+      "t3",
+    ],
     [{}, "current"],
   ])
     assert.equal(
@@ -178,6 +189,22 @@ for (const detect of [{}, { CLAUDECODE: "1" }, { CODEX_THREAD_ID: "test" }]) {
   assert.deepEqual(
     npm.cli(["agent", "wait", "7", "--done"], 0, detect).result.steps,
     [],
+  );
+}
+for (const [provider, file] of [
+  [{ CLAUDECODE: "1" }, "~/.claude/settings.json"],
+  [{ CODEX_THREAD_ID: "test" }, "~/.codex/hooks.json"],
+  [{ CLAUDECODE: "1", CODEX_THREAD_ID: "test" }, "~/.codex/hooks.json"],
+]) {
+  const detect = { ...provider, T3CODE_CLI_PATH: "fixture" };
+  assert.equal(
+    npm.cli(["agent", "wait", "7"], 0, detect).result.kind,
+    "t3-tool",
+  );
+  assert.equal(npm.cli(["agent", "guard"], 0, detect).result.file, file);
+  assert.equal(
+    npm.cli(["agent", "wait", "7", "--fallback"], 0, detect).result.kind,
+    "gh-checks",
   );
 }
 const guard = npm.cli(["agent", "guard", "codex"]).result;

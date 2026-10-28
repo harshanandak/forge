@@ -1,0 +1,9 @@
+# T3CODE_CLI_PATH was observed in a T3-launched Claude Code session.
+# T3 source 37de6cb forwards provider environments, but does not declare this variable:
+# apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts:906
+# apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts:1394-1403
+# Child workers inherit it too; agent wait --fallback selects gh-checks.
+id: t3
+detect: [T3CODE_CLI_PATH]
+over: [codex, claude]
+prWatch: t3-tool

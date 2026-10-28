@@ -110,7 +110,7 @@ test("exactly one matching adapter detects Claude or Codex", () => {
   }
 });
 
-test("companion variables alone do not detect a harness", () => {
+test("variables not declared by configured adapters do not detect a harness", () => {
   expect(
     route(
       [

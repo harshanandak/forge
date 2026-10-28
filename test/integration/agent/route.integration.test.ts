@@ -97,15 +97,78 @@ test("no detect variable uses current", () => {
   );
   expect(result.status).toBe(0);
 });
-test("nested harness variables use current instead of guessing the innermost harness", () => {
+test("Codex wins over inherited CLAUDECODE", () => {
   const result = run(["route", "get", "build", "--text"], {
     CLAUDECODE: "1",
     CODEX_THREAD_ID: "test",
   });
   expect(result.stdout).toContain(
-    "line: current high standard current single-family",
+    "line: current high standard codex single-family",
   );
   expect(result.status).toBe(0);
+});
+
+for (const [name, extra, harness, guard, kind] of [
+  [
+    "T3 Claude",
+    { CLAUDECODE: "1", T3CODE_CLI_PATH: "fixture" },
+    "t3",
+    "~/.claude/settings.json",
+    "t3-tool",
+  ],
+  [
+    "T3 Codex",
+    { CODEX_THREAD_ID: "1", T3CODE_CLI_PATH: "fixture" },
+    "t3",
+    "~/.codex/hooks.json",
+    "t3-tool",
+  ],
+  [
+    "T3 Codex with inherited Claude",
+    { CLAUDECODE: "1", CODEX_THREAD_ID: "1", T3CODE_CLI_PATH: "fixture" },
+    "t3",
+    "~/.codex/hooks.json",
+    "t3-tool",
+  ],
+  [
+    "Claude alone",
+    { CLAUDECODE: "1" },
+    "claude",
+    "~/.claude/settings.json",
+    "gh-checks",
+  ],
+  [
+    "Codex alone",
+    { CODEX_THREAD_ID: "1" },
+    "codex",
+    "~/.codex/hooks.json",
+    "gh-checks",
+  ],
+  ["no harness", {}, "current", undefined, "gh-checks"],
+] as const) {
+  test(`${name} selects the shipped watch and guard`, () => {
+    const route = run(["route", "get", "build"], extra);
+    expect(route.status).toBe(0);
+    expect(readResult<{ harness: string }>(route.stdout).harness).toBe(harness);
+    const wait = run(["agent", "wait", "7"], extra);
+    expect(wait.status).toBe(0);
+    expect(readResult<WaitResult>(wait.stdout).kind).toBe(kind);
+    if (guard) {
+      const result = run(["agent", "guard"], extra);
+      expect(result.status).toBe(0);
+      expect(readResult<GuardResult>(result.stdout).file).toBe(guard);
+    }
+  });
+}
+
+test("inherited T3 detection supports the explicit worker wait fallback", () => {
+  const result = run(["agent", "wait", "7", "--fallback"], {
+    T3CODE_CLI_PATH: "fixture",
+    CODEX_THREAD_ID: "1",
+    CLAUDECODE: "1",
+  });
+  expect(result.status).toBe(0);
+  expect(readResult<WaitResult>(result.stdout).kind).toBe("gh-checks");
 });
 test("the shipped Codex adapter detects only its exact variable", () => {
   const result = run(["route", "get", "build", "--text"], {
