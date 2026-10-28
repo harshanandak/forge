@@ -31,6 +31,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import { laneRun } from "./lane-run.ts";
 
 type Lane = { issue: string; worktree: string; branch: string; brief: string };
 type Options = { issue: string; branch: string; brief: string; max: number };
@@ -116,7 +117,8 @@ function briefProblems(text: string): string[] {
     )
     .map((name) => `brief requires non-empty section: ${name}`);
 }
-function options(argv: string[]): Options | "list" {
+function options(argv: string[]): Options | "list" | "run" {
+  if (argv[0] === "run") return "run";
   if (argv.length === 1 && argv[0] === "list") return "list";
   const [verb, issue, ...flags] = argv;
   if (
@@ -222,8 +224,8 @@ function reclaim(lock: string): void {
     if (!object(error) || error.code !== "ENOENT") throw error;
   }
 }
-function main(): number {
-  let parsed: Options | "list";
+async function main(): Promise<number> {
+  let parsed: Options | "list" | "run";
   let target: string | null = null;
   const reply = (
     reason: string | string[],
@@ -261,6 +263,14 @@ function main(): number {
         .slice(9),
     );
     const registry = join(common, "forge-lanes.json");
+    if (parsed === "run")
+      return await laneRun(process.argv.slice(3), {
+        common,
+        configRoot: resolve(run("git", ["rev-parse", "--show-toplevel"])),
+        lanes: active(registry, root),
+        issue: (id) =>
+          run("forge", ["issue", "show", "--input", JSON.stringify({ id })]),
+      });
     if (parsed === "list") {
       console.log(JSON.stringify({ lanes: active(registry, root) }));
       return 0;
@@ -369,4 +379,4 @@ function main(): number {
     else if (staged) release(staged, owner);
   }
 }
-process.exitCode = main();
+process.exitCode = await main();
