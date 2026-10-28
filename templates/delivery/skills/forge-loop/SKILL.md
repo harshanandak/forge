@@ -61,7 +61,7 @@ Proceed on reversible actions without asking. Stop only for:
 
 Use `forge-build`'s Worker brief; fill every required field before dispatch.
 
-Session: export FORGE_SESSION=<your task name> before any claim; never use the chat's t3: session.
+Session: POSIX `export FORGE_SESSION="<slice>-worker"`; PowerShell `$env:FORGE_SESSION="<slice>-worker"` before any claim; never use the chat's t3: session.
 Adopted decision titles: see below for pagination.
 
-Standing rules are adopted decisions. List titles only (no decision text): `forge decision list --input '{"status":"adopted"}'`. While `truncated` is true, repeat with `after` set to the returned `next`: `forge decision list --input '{"status":"adopted","after":<next>}'`, even if a page is empty. Request the adopted text from the owner when needed. Restart from a checkpoint (`forge issue comment` on the slice).
+Standing rules are adopted decisions. List titles only (no decision text): `forge decision list --input '{"status":"adopted"}'`. While `truncated` is true, repeat with `after` set to the returned `next`: `forge decision list --input '{"status":"adopted","after":<next>}'`, even if a page is empty. Request the adopted text from the owner when needed. On restart, read [resume.md](resume.md).

@@ -1,4 +1,4 @@
-// The installed delivery workflow survives a new Node process and a new session.
+// The installed delivery workflow survives a new Node process with uncommitted work.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
@@ -149,6 +149,7 @@ if (process.argv[2] === "--gh") {
       kind: "bug",
       parent: intent.id,
     });
+    env.FORGE_SESSION = `${slice.id}-worker`;
     cli(["issue", "claim", slice.id]);
     const build = input("issue", "call", { id: slice.id, role: "build" });
     assert.equal(build.id, intent.id);
@@ -156,6 +157,45 @@ if (process.argv[2] === "--gh") {
     const red = cli(["check", "run"], 1).result;
     assert.equal(red.status, "FAIL");
     writeFileSync(join(root, "add.js"), "exports.add = (a, b) => a + b;\n");
+    input("issue", "checkpoint", {
+      id: slice.id,
+      step: "red",
+      branch: git("branch", "--show-current"),
+      worktree: root,
+      receipt: red.id,
+      next: "verify the uncommitted fix, then commit and open the PR",
+    });
+    input("issue", "comment", {
+      id: slice.id,
+      body: "Owner direction after checkpoint: keep the uncommitted fix.",
+    });
+  } else if (phase === "b") {
+    const found = input("issue", "resume", {});
+    assert.equal(found.items.length, 1);
+    const slice = found.items[0];
+    assert.equal(slice.title, "Fix add after restart");
+    assert.equal(slice.step, "red");
+    assert.equal(slice.claim.status, "live");
+    assert.equal(slice.claim.holder.id, `${slice.id}-worker`);
+    const resumed = cli(["issue", "resume", slice.id]).result;
+    assert.equal(resumed.checkpoint.step, "red");
+    assert.equal(resumed.checkpoint.worktree, root);
+    assert.equal(resumed.checkpoint.branch, git("branch", "--show-current"));
+    assert.match(resumed.checkpoint.next, /uncommitted fix/);
+    assert.match(git("status", "--porcelain"), /add\.js/);
+    assert.equal(resumed.calls.used, 2);
+    assert.equal(resumed.calls.left, 58);
+    assert.deepEqual(
+      resumed.comments.map((r) => r.value.body),
+      ["Owner direction after checkpoint: keep the uncommitted fix."],
+    );
+    assert.equal(resumed.more, false);
+    env.FORGE_SESSION = "other";
+    const refused = cli(["issue", "claim", slice.id], 4);
+    assert.equal(refused.error.code, "LEASE_HELD");
+    env.FORGE_SESSION = `${slice.id}-worker`;
+    cli(["issue", "renew", slice.id]);
+    assert.equal(cli(["check", "run"]).result.status, "PASS");
     const head = commit("fix: add adds");
     const green = cli(["check", "run"]).result;
     assert.equal(green.status, "PASS");
@@ -168,19 +208,17 @@ if (process.argv[2] === "--gh") {
       JSON.stringify({ pr: number, head, url }),
     );
     input("issue", "link", { id: slice.id, relation: "delivers", url });
-    input("issue", "comment", {
+    input("issue", "checkpoint", {
       id: slice.id,
-      body: `checkpoint: pr ${url} head ${head} receipt ${green.id}`,
+      step: "pushed",
+      branch: git("branch", "--show-current"),
+      worktree: root,
+      pr: url,
+      head,
+      receipt: green.id,
+      next: "review the PR",
     });
-    cli(["issue", "release", slice.id]);
-  } else if (phase === "b") {
-    const items = cli(["issue", "list"]).result.items;
-    assert.equal(items.length, 2);
-    const intent = items.find((item) => item.title === "Restart intent");
-    const slice = items.find((item) => item.title === "Fix add after restart");
-    assert.ok(intent);
-    assert.ok(slice);
-    assert.equal(cli(["issue", "show", slice.id]).result.parent, intent.id);
+    const intent = { id: resumed.calls.id };
     const calls = cli(["issue", "comments", intent.id]).result.records.filter(
       (record) => typeof record.value.call === "number",
     );
@@ -192,16 +230,10 @@ if (process.argv[2] === "--gh") {
       calls.map((record) => record.value.call),
       [1, 2],
     );
-    const comments = cli(["issue", "comments", slice.id]).result.records;
-    const checkpoint =
-      /^checkpoint: pr (https:\/\/\S+\/pull\/(\d+)) head ([a-f0-9]{40}) receipt (\S+)$/.exec(
-        comments.at(-1)?.value.body,
-      );
-    assert.ok(
-      checkpoint,
-      "the slice checkpoint contains the PR, head and receipt",
-    );
-    const [, url, number, head, receipt] = checkpoint;
+    const checkpoint = cli(["issue", "resume", slice.id]).result.checkpoint;
+    assert.equal(checkpoint.pr, url);
+    assert.equal(checkpoint.head, head);
+    assert.equal(checkpoint.receipt, green.id);
     const links = cli(["issue", "links", slice.id]).result.records;
     assert.ok(
       links.some(
@@ -213,7 +245,7 @@ if (process.argv[2] === "--gh") {
       join(installed, "dist/bin/forge.js"),
       "pr",
       "state",
-      number,
+      String(number),
     ]);
     assert.equal(stateLine.trim().split("\n").length, 1);
     const state = JSON.parse(stateLine);
@@ -225,9 +257,8 @@ if (process.argv[2] === "--gh") {
     assert.equal(review.id, intent.id);
     assert.equal(review.call, 3);
     assert.equal(review.timeboxMinutes, 45);
-    gh("pr", "merge", number, "--squash", "--match-head-commit", head);
-    cli(["issue", "claim", slice.id]);
-    input("issue", "close", { id: slice.id, receipt });
+    gh("pr", "merge", String(number), "--squash", "--match-head-commit", head);
+    input("issue", "close", { id: slice.id, receipt: green.id });
     assert.equal(cli(["issue", "show", slice.id]).result.status, "closed");
     const ghCalls = readFileSync(join(fake, "gh-calls.jsonl"), "utf8")
       .trim()

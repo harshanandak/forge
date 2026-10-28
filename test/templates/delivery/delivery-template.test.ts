@@ -30,6 +30,36 @@ const SKILLS = [
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
+test("restart guidance reads older direction and every review push checkpoints without growing review", () => {
+  const skill = (name: string, file = "SKILL.md") =>
+    readFileSync(join(repo, "templates/delivery/skills", name, file), "utf8");
+  const build = skill("forge-build");
+  const resume = skill("forge-loop", "resume.md");
+  for (const text of [build, resume]) {
+    expect(text).toContain("forge issue comments <slice>");
+    expect(text).toContain("`more` is true");
+    expect(text).toContain("once before acting if a checkpoint exists");
+    expect(text.toLowerCase()).toContain("later comments override the body");
+  }
+  expect(build).toContain("and every Touches file before editing");
+  expect(build).toContain(
+    "it must fail on that assertion, not setup or unrelated errors",
+  );
+  expect(resume).toContain("earlier direction");
+  const review = skill("forge-review");
+  expect(review).toContain(
+    "Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA/time, round in `next`, before replies.",
+  );
+  expect(review.indexOf("Each push:")).toBeLessThan(
+    review.indexOf("For conflicts,"),
+  );
+  expect(Buffer.byteLength(review)).toBeLessThanOrEqual(3944);
+  expect(skill("forge-build", "pull-request.md")).toContain(
+    'forge issue checkpoint <slice> --step <step> --branch "<branch>" --worktree "<path>" --next "<next action>"',
+  );
+  expect(resume).not.toContain("--input");
+}, 30_000);
+
 test("intake counts its routed call before dispatch", () => {
   const text = readFileSync(
     join(repo, "templates/delivery/skills/forge-intake/SKILL.md"),
@@ -450,9 +480,8 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-cut"]).toContain("Aim at 400 changed lines");
     expect(text["forge-cut"]).toContain("split above 800");
     expect(text["forge-cut"]).toContain("p0, p1, p2, p3, p4");
-    expect(text["forge-build"]).toContain(
-      `forge issue claim --input '{"id":"<slice>"}'`,
-    );
+    expect(text["forge-build"]).toContain("forge issue claim <slice>");
+    expect(text["forge-build"]).toContain("forge issue renew <slice>");
     expect(text["forge-loop"]).toContain("t3_thread_configuration");
     expect(text["forge-loop"]).toContain("FORGE_SESSION=t3:<threadId>");
     expect(text["forge-loop"]).toContain("every forge command");
@@ -460,7 +489,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       "Workers you launch keep their own task session",
     );
     expect(text["forge-loop"]).toContain(
-      "Session: export FORGE_SESSION=<your task name> before any claim; never use the chat's t3: session.",
+      'Session: POSIX `export FORGE_SESSION="<slice>-worker"`; PowerShell `$env:FORGE_SESSION="<slice>-worker"` before any claim; never use the chat\'s t3: session.',
     );
     expect(text["forge-build"]).not.toContain("`forge-loop`");
     expect(text["forge-build"]).toContain("t3_thread_configuration");
