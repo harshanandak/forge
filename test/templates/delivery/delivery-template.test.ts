@@ -33,6 +33,8 @@ const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 test.each([
   "On any reply-step failure, check the thread for an existing reply before rerunning",
   "If `commentId` is null, file the thread; do not pass null to the reply helper.",
+  "After filing, resolve without replying using the thread's `id`:",
+  "node <skill-dir>/reply-and-resolve.mjs <thread id>",
 ])(
   "rendered review guidance states: %s",
   async (rule) => {

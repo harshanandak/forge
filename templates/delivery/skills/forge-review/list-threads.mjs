@@ -33,6 +33,10 @@ try {
     )
       throw new Error("Incomplete review-thread response");
     for (const thread of page.nodes) {
+      if (thread == null)
+        throw new Error(
+          "Incomplete review-thread response: null thread; rerun the list helper",
+        );
       if (thread?.isResolved) continue;
       const comment = thread?.comments?.nodes?.[0];
       rows.push(
