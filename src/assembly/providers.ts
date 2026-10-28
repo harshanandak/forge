@@ -8,6 +8,7 @@ import {
 } from "../adapters/process/index.ts";
 import { createRunnerOutput } from "../adapters/runner-output/index.ts";
 import {
+  checkoutScopeRoot as gitCheckoutScopeRoot,
   mainCheckoutPath,
   originRepositoryName,
 } from "../adapters/vcs-git/index.ts";
@@ -261,6 +262,14 @@ export function projectStateRoot(
   options: ProviderOptions = {},
 ): Promise<string> {
   return mainCheckoutPath(root, gitOptions(options));
+}
+
+/** The nearest checkout's shared root for device scope fallback; undefined outside git. */
+export function checkoutScopeRoot(
+  root: string,
+  options: ProviderOptions = {},
+): Promise<string | undefined> {
+  return gitCheckoutScopeRoot(root, gitOptions(options));
 }
 
 /** A name as an issue id prefix: lowercase letters, digits and single hyphens; undefined when none remain. */

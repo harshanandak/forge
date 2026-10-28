@@ -13,8 +13,13 @@ then the device alias in `memory-scopes.json` under `FORGE_DEVICE_ROOT`, then th
 shared checkout's normalized folder name. Alias keys are normalized folder names.
 Normalization uses lowercase with an alphanumeric first character; if no valid
 characters remain, the scope is `general`. Run `forge memory scope` to see it.
-This repository sets the repo override to `forge`. Outside a Forge project only
-general and unscoped device notes are counted.
+This repository sets the repo override to `forge`. Git checkouts without a Forge
+project use the same alias and shared checkout name, including in nested folders
+and linked worktrees. Outside git and a Forge project, only general and unscoped
+device notes are counted. New device notes default to the resolved scope.
+If project config cannot load, device-level scope, rules, search, show and add
+remain available with a warning; the repo override and project-level memory are
+unavailable until the config is repaired.
 
 Search memory before starting a task:
 `forge memory search "<topic>"` (replace `<topic>` with the task's subject).

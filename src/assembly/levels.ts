@@ -158,6 +158,8 @@ export function openLevels(options: {
   readonly root: string;
   /** The folder holding the project store; registered so every git worktree records one place. */
   readonly stateRoot: string;
+  /** The shared checkout label for device memory when no project is served. */
+  readonly scopeRoot?: string;
   readonly deviceRoot?: string;
   readonly projectState: LocalState;
   readonly deviceState: LocalState;
@@ -311,7 +313,10 @@ export function openLevels(options: {
     };
   }
 
-  const defaultScope = basename(options.stateRoot)
+  const scopeRoot = options.servesProject
+    ? options.stateRoot
+    : options.scopeRoot;
+  const defaultScope = basename(scopeRoot ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^[^a-z0-9]+/, "")
@@ -320,7 +325,7 @@ export function openLevels(options: {
     caller: options.caller,
     inProject: options.servesProject,
     get defaultScope() {
-      if (!options.servesProject) return undefined;
+      if (scopeRoot === undefined) return undefined;
       const bytes =
         options.deviceRoot === undefined
           ? undefined

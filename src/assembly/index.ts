@@ -83,6 +83,7 @@ import {
   idPrefixObservation,
   agentAdapterObservation,
   projectStateRoot,
+  checkoutScopeRoot,
   type ProviderOptions,
 } from "./providers.ts";
 
@@ -91,6 +92,22 @@ const DEVICE_MEMORY: BlockInstance = {
   source: { builtin: "forge/memory" },
   config: { levels: { human: "nearest", agent: "required" } },
 };
+const DEVICE_MEMORY_OPS = new Set([
+  "memory.scope",
+  "memory.rules",
+  "memory.search",
+  "memory.show",
+  "memory.add",
+]);
+function deviceMemoryRequest(op: string, input: unknown): boolean {
+  if (!DEVICE_MEMORY_OPS.has(op)) return false;
+  const fields = record(input);
+  return (
+    fields?.level !== "project" &&
+    !(typeof fields?.id === "string" && fields.id.startsWith("project/")) &&
+    !(Array.isArray(fields?.projects) && fields.projects.length > 0)
+  );
+}
 const grantCandidate: McpCandidate = {
   op: "config.grant",
   admitted: true,
@@ -201,6 +218,7 @@ export async function createAssembly(
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   // Every git worktree of one repository shares one store; config and files stay at `root`.
   const stateRoot = await projectStateRoot(root, options.providers);
+  const scopeRoot = await checkoutScopeRoot(root, options.providers);
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
@@ -231,7 +249,7 @@ export async function createAssembly(
   // time, so a long-lived server follows a changed origin; listings leave it to its default.
   type CallScope = {
     inProject: boolean;
-    warnings: ResultEnvelope["warnings"];
+    warnings: Array<ResultEnvelope["warnings"][number]>;
     captured(source: BlockSource): CapturedBlock;
     shipped: ReturnType<typeof shippedTemplates>;
     config: ReturnType<typeof createConfig>;
@@ -453,7 +471,11 @@ export async function createAssembly(
       remedy: `Repair the source or configuration for ${name}, or remove /blocks/${name} with config.apply at the current config revision.`,
     };
   }
-  function snapshot(call: CallScope): {
+  function snapshot(
+    call: CallScope,
+    deviceMemory = false,
+    invalidMemoryConfig = false,
+  ): {
     show: ShowResult;
     document: ConfigDocument;
     catalog: Catalog;
@@ -462,7 +484,45 @@ export async function createAssembly(
     unavailable: readonly UnavailableBlock[];
     problems: readonly string[];
   } {
-    const configured = call.config.show();
+    let configured: ShowResult;
+    let fallback = false;
+    try {
+      if (invalidMemoryConfig) refuse("INPUT_INVALID", "Invalid memory config");
+      configured = call.config.show();
+      if (deviceMemory && !configured.valid)
+        refuse("INPUT_INVALID", "Invalid project config");
+    } catch (error) {
+      if (!deviceMemory) throw error;
+      fallback = true;
+      call.inProject = false;
+      const kind =
+        error instanceof ForgeFailure &&
+        ["INPUT_INVALID", "LIMIT_EXCEEDED"].includes(error.error.code)
+          ? error.error.code
+          : "UNAVAILABLE";
+      if (
+        !call.warnings.some(
+          (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
+        )
+      )
+        call.warnings.push({
+          code: "PROJECT_CONFIG_UNAVAILABLE",
+          message: `.forge/config.yaml could not be loaded or validated (${kind}). Device memory is available; the repo override and project-level memory are unavailable until .forge/config.yaml is repaired.`,
+        });
+      configured = {
+        valid: true,
+        file: ".forge/config.yaml",
+        revision: "",
+        configured: false,
+        instances: [],
+        templates: [],
+        values: [],
+        ignored: [],
+        problems: [],
+        excluded: [],
+        effective: {},
+      };
+    }
     // A device-only host needs no project file to select the shipped memory block.
     const show: ShowResult =
       !call.inProject && !configured.configured
@@ -506,6 +566,16 @@ export async function createAssembly(
             );
         }
         const block = call.captured(instance.source);
+        if (
+          deviceMemory &&
+          !fallback &&
+          "builtin" in instance.source &&
+          instance.source.builtin === "forge/memory" &&
+          block.manifest.configSchema !== undefined &&
+          block.problems(block.manifest.configSchema, instance.config ?? {})
+            .length > 0
+        )
+          return snapshot(call, true, true);
         const docs = ready(block, instance, name);
         const proposed = new Map(blocks);
         proposed.set(name, block);
@@ -574,7 +644,11 @@ export async function createAssembly(
       document,
       catalog: active,
       blocks,
-      candidates: candidates.filter((entry) => executable.has(entry.op)),
+      candidates: candidates.filter(
+        (entry) =>
+          executable.has(entry.op) &&
+          (!fallback || DEVICE_MEMORY_OPS.has(entry.op)),
+      ),
       unavailable,
       problems: [
         ...show.problems,
@@ -674,19 +748,38 @@ export async function createAssembly(
         reconcileWith: "config.show",
       };
     },
-    list: () => [
-      ...configCandidates,
-      grantCandidate,
-      ...snapshot(callScope()).candidates,
-    ],
+    list() {
+      const call = callScope();
+      const candidates = [...snapshot(call, true).candidates];
+      if (
+        call.warnings.some(
+          (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
+        )
+      ) {
+        try {
+          candidates.unshift(
+            ...snapshot(callScope()).candidates.filter(
+              (entry) => !DEVICE_MEMORY_OPS.has(entry.op),
+            ),
+          );
+        } catch {
+          // An unreadable config has no healthy project candidates to retain.
+        }
+      }
+      return [...configCandidates, grantCandidate, ...candidates];
+    },
     async invoke(request) {
       const derived: DetectionObservation[] = [];
+      const deviceMemory = deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived);
       try {
         derived.push(
           ...(await idPrefixObservation(root, stateRoot, options.providers)),
         );
-        for (const instance of call.config.show().instances)
+        for (const instance of (deviceMemory
+          ? snapshot(call, true).show
+          : call.config.show()
+        ).instances)
           if (
             instance.enabled &&
             "builtin" in instance.source &&
@@ -712,7 +805,15 @@ export async function createAssembly(
             message: `${result.error.message}\nSame T3 chat after a harness switch? Rerun with FORGE_SESSION=t3:<threadId> from t3_thread_configuration. Separate workers: keep your own session and stop.`,
           },
         };
-      return result;
+      return {
+        ...result,
+        warnings: [
+          ...call.warnings.filter(
+            (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
+          ),
+          ...result.warnings,
+        ],
+      };
     },
   };
   const direct = {
@@ -1086,7 +1187,8 @@ export async function createAssembly(
           }
           refuse("UNKNOWN_COMMAND", "Operation is not assembled");
         }
-        let current = snapshot(call);
+        const deviceMemory = deviceMemoryRequest(request.op, request.input);
+        let current = snapshot(call, deviceMemory);
         const target = current.candidates.find(
           (candidate) => candidate.op === request.op,
         );
@@ -1101,7 +1203,7 @@ export async function createAssembly(
           );
         if (target && !target.admitted) {
           await trustState.open(false);
-          current = snapshot(call);
+          current = snapshot(call, deviceMemory);
         }
         if (
           !current.catalog.list().includes(request.op) &&
@@ -1268,6 +1370,7 @@ export async function createAssembly(
                   const opened = openLevels({
                     root,
                     stateRoot,
+                    ...(scopeRoot === undefined ? {} : { scopeRoot }),
                     deviceRoot,
                     projectState,
                     deviceState,

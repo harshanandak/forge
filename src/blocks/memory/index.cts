@@ -501,9 +501,9 @@ const TOMBSTONE = {
 
 function resolvedScope(config: MemoryConfig, services: Services): string {
   return (
-    (services.levels.inProject
-      ? (config.scope ?? services.levels.defaultScope)
-      : undefined) ?? "general"
+    (services.levels.inProject ? config.scope : undefined) ??
+    services.levels.defaultScope ??
+    "general"
   );
 }
 
@@ -662,9 +662,7 @@ module.exports = {
           value: fields(
             [],
             undefined,
-            target.level === "device" &&
-              services.levels.inProject &&
-              input.scope === undefined
+            target.level === "device" && input.scope === undefined
               ? resolvedScope(config, services)
               : undefined,
           ),
