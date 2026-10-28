@@ -273,6 +273,41 @@ test.each(["transport", "resolve-transport"])(
   30_000,
 );
 
+test("list helper maps a null thread node without losing adjacent threads", () => {
+  fixture(
+    (_root, invoke) => {
+      const result = invoke("list-threads.mjs");
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(
+        result.stdout
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as unknown),
+      ).toEqual([
+        expect.objectContaining({ id: "before", commentId: "42" }),
+        {
+          id: null,
+          commentId: null,
+          path: null,
+          line: null,
+          author: null,
+          body: "",
+        },
+        expect.objectContaining({ id: "after", commentId: "42" }),
+      ]);
+    },
+    {
+      pages: [
+        {
+          nodes: [thread("before"), null, thread("after")],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      ],
+    },
+  );
+}, 30_000);
+
 test("R1-5 maps thread locations and missing comments without splitting emoji", () => {
   const node = thread("unicode");
   fixture(
