@@ -232,6 +232,27 @@ catch(error) { console.log(JSON.stringify({rows:[],verdict:'refuse',firstFailing
   expect(result.status).toBe(reported.exitCode);
   return reported;
 }
+test("configured shell syntax is refused like the check block", async () => {
+  const { commandArguments } =
+    await import("../../src/blocks/check/command.ts");
+  const command = "node check.cjs && node check.cjs";
+  expect(() => commandArguments(command)).toThrow();
+  const f = fixture();
+  try {
+    writeFileSync(
+      join(f.root, ".forge/config.yaml"),
+      JSON.stringify({
+        blocks: { check: { config: { commands: { guard: command } } } },
+      }),
+    );
+    const result = invoke(f.input, privateEnvironment(f.root), setup);
+    expect(result).toMatchObject({ verdict: "refuse", exitCode: 2 });
+    expect(result.nextStep?.trim().length ?? 0).toBeGreaterThan(0);
+    f.clean();
+  } finally {
+    f.remove();
+  }
+});
 function dependencyFixture() {
   const base = mkdtempSync(join(tmpdir(), "forge-admit-deps-")),
     root = join(base, "repo");

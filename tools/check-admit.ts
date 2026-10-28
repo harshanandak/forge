@@ -17,21 +17,10 @@ import { createProcessPort } from "../src/adapters/process/index.ts";
 import { createRunnerOutput } from "../src/adapters/runner-output/index.ts";
 import defaults from "../src/blocks/check/schemas/config.json" with { type: "json" };
 import { schemaDefaults } from "../src/core/config/short.ts";
+import { commandArguments } from "../src/blocks/check/command.ts";
 import type { CheckConfig } from "../src/blocks/check/types.ts";
 const usage =
   "Usage: bun tools/check-admit.ts <check-name> <break.patch> --guard <path> [--guard <path> ...] [--replay N] [--max-seconds S]. Missing tools reported with ordinary failure codes cannot be distinguished from intended failures.";
-function argumentsFor(text: string): string[] {
-  const token = /\s*((?:[^\s"'|&;<>`$]+|"[^"]*"|'[^']*')+)\s*/gy;
-  const args: string[] = [];
-  while (token.lastIndex < text.length) {
-    const match = token.exec(text);
-    if (!match) throw new Error("Invalid command; use argv");
-    args.push(
-      match[1]!.replace(/"[^"]*"|'[^']*'/g, (value) => value.slice(1, -1)),
-    );
-  }
-  return args;
-}
 export async function admit(
   input: {
     root: string;
@@ -85,7 +74,7 @@ export async function admit(
   } as CheckConfig;
   const command = config.commands?.[input.name];
   const argv =
-    typeof command === "string" ? argumentsFor(command) : command?.argv;
+    typeof command === "string" ? commandArguments(command) : command?.argv;
   if (!Array.isArray(argv) || !argv[0])
     throw new Error("Name a configured check");
   const inherited = process.env as Record<string, string>;
