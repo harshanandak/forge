@@ -613,7 +613,8 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-land"]).toContain('"receipt":"<id>"');
     for (const rule of [
       "forge issue links <slice>",
-      '"relation":"delivers"',
+      "if the newest `delivers` link is not the PR being landed",
+      'forge issue link <slice> --relation delivers --url "<pr url>"',
       "gate's receipt or a `check run` receipt at the merge commit",
       "On `RECEIPT_HEAD_MISMATCH` or `PR_NOT_MERGED`, stop; never switch to `withoutReceipt`",
       "On `UNAVAILABLE`, retry",
