@@ -22,6 +22,7 @@ const JOURNEYS = [
   "fence",
   "levels",
   "rules",
+  "scopeDefault",
 ] as const;
 
 function timing(label: string, started: number): void {

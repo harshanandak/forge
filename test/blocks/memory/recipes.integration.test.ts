@@ -70,7 +70,7 @@ test("recipe gives a valid on-demand search and forge-loop requires it", () => {
   );
   expect(recipe).toContain('forge memory search "<topic>"');
   expect(recipe).toContain("forge memory show <id>");
-  expect(recipe).toContain("only hits in the named scopes or unscoped");
+  expect(recipe).toContain("Prefer hits in the resolved scope or general");
   expect(loop).toContain("Search memory before starting a task");
   expect(loop).toContain("search/show commands");
   expect(loop).toContain("never note text");

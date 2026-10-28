@@ -557,9 +557,11 @@ module.exports = {
       "Forge memory notes: " +
         [...counts].map(([name, count]) => name + " " + count).join(", ") +
         ".",
-      "Before a task, search memory for its topic; use only hits scoped " +
-        [...counts.keys()].join(" or ") +
-        " or unscoped.",
+      "Before a task, search memory for its topic; prefer hits scoped " +
+        (scope === undefined || scope === "general"
+          ? "general"
+          : scope + " or general") +
+        ".",
       'forge memory search "<topic>"',
       "forge memory show <id>",
     ].join("\n");
@@ -693,7 +695,9 @@ module.exports = {
     services: Services;
   }) => {
     const scope =
-      input.scope === undefined ? resolvedScope(config, services) : undefined;
+      input.scope === undefined
+        ? (resolvedScope(config, services) ?? "general")
+        : undefined;
     // Inside a project a search covers that project and the device. Another project is searched
     // only when the caller names it, and its notes come back read-only.
     const sources: Source[] = [];
@@ -754,12 +758,7 @@ module.exports = {
         .filter(
           (note) =>
             note.value.deleted !== true &&
-            (input.scope !== undefined
-              ? note.value.scope === input.scope
-              : page.source.readOnly ||
-                note.value.scope === undefined ||
-                note.value.scope === "general" ||
-                note.value.scope === scope) &&
+            (input.scope === undefined || note.value.scope === input.scope) &&
             (input.tag === undefined || note.value.tags.includes(input.tag)),
         )
         .map((note) => {
@@ -793,8 +792,8 @@ module.exports = {
     const average =
       documents.reduce((sum, document) => sum + document.length, 0) /
       Math.max(1, total);
-    // Any query term may match (an agent's natural-language prompt never has every word in one
-    // note); notes that match more, rarer terms rank first, newest first on a tie.
+    // Scope preference changes order, never visibility. Within each group, any query term may
+    // match; more, rarer terms rank first, newest first on a tie.
     const scored = documents
       .map((document) => {
         let score = 0;
@@ -807,11 +806,20 @@ module.exports = {
             1.2 * (0.25 + (0.75 * document.length) / Math.max(1, average));
           score += (rarity * frequency * 2.2) / (frequency + norm);
         }
-        return { document, score };
+        return {
+          document,
+          score,
+          preferred: Number(
+            input.scope === undefined &&
+              (document.note.value.scope === scope ||
+                document.note.value.scope === "general"),
+          ),
+        };
       })
       .filter((entry) => entry.score > 0)
       .sort(
         (a, b) =>
+          b.preferred - a.preferred ||
           b.score - a.score ||
           b.document.note.number - a.document.note.number ||
           a.document.order - b.document.order,

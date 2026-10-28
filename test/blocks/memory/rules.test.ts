@@ -22,6 +22,80 @@ interface Pointer {
 }
 const marker = "deploy PRIVATE_MEMORY_MARKER\v\f\u0085\u2028\u2029";
 
+test("default search keeps legacy device and project scopes while preferring resolved and general hits", async () => {
+  harness = await openHarness(["memory"], {}, { project: "legacy" });
+  const ids: string[] = [];
+  for (const [level, scope] of [
+    ["device", "prior-label"],
+    ["project", "prior-label"],
+    ["device", null],
+    ["device", "general"],
+    ["device", "legacy"],
+  ] as const) {
+    const added = done(
+      await harness.call("memory.add", {
+        level,
+        scope,
+        text:
+          scope === "prior-label"
+            ? "silverheronunique silverheronunique"
+            : "silverheronunique",
+      }),
+    ) as { id: string };
+    ids.push(added.id);
+  }
+  const search = async (extra: Record<string, unknown> = {}) =>
+    done(
+      await harness!.call("memory.search", {
+        query: "silverheronunique",
+        ...extra,
+      }),
+    ) as { hits: { id: string; scope?: string }[]; next?: string };
+  const found = await search();
+  expect(found.hits.map((hit) => hit.id).sort()).toEqual([...ids].sort());
+  expect(
+    found.hits
+      .slice(0, 2)
+      .map((hit) => hit.scope)
+      .sort(),
+  ).toEqual(["general", "legacy"]);
+  expect(
+    (await search({ scope: "prior-label" })).hits.map((hit) => hit.id).sort(),
+  ).toEqual(ids.slice(0, 2).sort());
+  const pages: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await search({
+      limit: 1,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    pages.push(...page.hits.map((hit) => hit.id));
+    cursor = page.next;
+  } while (cursor !== undefined);
+  expect(pages).toEqual(found.hits.map((hit) => hit.id));
+  const rules = done(await harness.call("memory.rules", {})) as Pointer;
+  expect(rules.text.text).toContain("prefer hits scoped legacy or general");
+}, 60_000);
+
+test("outside a project default search keeps existing scoped device notes and prefers general", async () => {
+  const entry = loadEntry("memory");
+  const state = memoryState();
+  const services = { state, levels: state };
+  for (const scope of ["general", "prior-label", null]) {
+    await entry["memory.add"]!({
+      input: { level: "device", text: "silverheronunique", scope },
+      services,
+    });
+  }
+  const found = (await entry["memory.search"]!({
+    input: { query: "silverheronunique" },
+    services,
+  })) as { hits: { scope?: string }[] };
+  expect(found.hits).toHaveLength(3);
+  expect(found.hits[0]!.scope).toBe("general");
+  expect(found.hits.some((hit) => hit.scope === "prior-label")).toBe(true);
+}, 30_000);
+
 for (const [first, second, scope] of [
   ["forge-new", "forge", "forge"],
   ["litemed-workspace", "curapod", "curapod"],
@@ -70,8 +144,14 @@ for (const [first, second, scope] of [
           hits: { id: string; scope?: string }[];
         };
         expect(found.hits.map((hit) => hit.scope).sort()).toEqual(
-          ["general", scope].sort(),
+          ["general", scope, "unrelated"].sort(),
         );
+        expect(
+          found.hits
+            .slice(0, 2)
+            .map((hit) => hit.scope)
+            .sort(),
+        ).toEqual(["general", scope].sort());
         expect(found.hits.some((hit) => hit.id === added.id)).toBe(true);
         expect(done(await current.call("memory.scope", {}))).toEqual({ scope });
         const rules = done(await current.call("memory.rules", {})) as Pointer;
@@ -112,7 +192,7 @@ test("repo scope overrides aliases for rules, new notes and default search; expl
     await harness.call("memory.search", { query: "kestrel" }),
   ) as { hits: { scope?: string }[] };
   expect(found.hits.map((hit) => hit.scope).sort()).toEqual(
-    ["general", "repo:override", undefined].sort(),
+    ["alias", "general", "repo:override", undefined].sort(),
   );
   const explicit = done(
     await harness.call("memory.search", { query: "kestrel", scope: "alias" }),
@@ -278,15 +358,13 @@ test("startup counts applicable scopes without text or ids in JSON or --text; co
   );
 }, 60_000);
 
-test("pointer restricts hit selection to named scopes or unscoped notes", async () => {
+test("pointer prefers the resolved scope and general without excluding other notes", async () => {
   harness = await openHarness(["memory"], { "memory.scope": "forge" });
   const result = done(await harness.call("memory.rules", {})) as Pointer;
   expect(result.text.text).toContain(
     "Before a task, search memory for its topic",
   );
-  expect(result.text.text).toContain(
-    "use only hits scoped general or forge or unscoped",
-  );
+  expect(result.text.text).toContain("prefer hits scoped forge or general");
   expect(result.text.text).not.toContain("1 notes");
 }, 60_000);
 

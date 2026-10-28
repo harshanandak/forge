@@ -198,7 +198,7 @@ test("search narrows by scope and tag and honours the limit", async () => {
     "device/note-1",
     "device/note-3",
   ]);
-  expect(await ids({ tag: "y" })).toEqual(["device/note-3"]);
+  expect(await ids({ tag: "y" })).toEqual(["device/note-2", "device/note-3"]);
   expect(await ids({ scope: "repo:b", tag: "y" })).toEqual(["device/note-2"]);
   expect(await ids({ scope: "repo:a", tag: "y" })).toEqual(["device/note-3"]);
   expect(await ids({ limit: 1 })).toHaveLength(1);
