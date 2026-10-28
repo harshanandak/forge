@@ -35,6 +35,18 @@ test("device-only discovery exposes memory without creating a project or device 
     expect(assembly.catalog.list().map((entry) => entry.op)).toContain(
       "memory.search",
     );
+    const scope = await assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: "scope-before-init",
+      op: "memory.scope",
+      input: {},
+      caller: "agent",
+      context: {
+        actor: { kind: "agent", id: "test" },
+        device: { id: assembly.deviceRoot },
+      },
+    });
+    expect(scope.ok && scope.result).toEqual({ scope: "general" });
     expect(existsSync(join(root, ".forge"))).toBe(false);
     expect(existsSync(deviceRoot)).toBe(false);
   } finally {

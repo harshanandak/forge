@@ -4,7 +4,7 @@
   "properties": {
     "scope": {
       "$ref": "defs.json#/$defs/Scope",
-      "description": "The memory scope for this project in the startup pointer. Defaults to the normalized project folder name. General notes are counted too."
+      "description": "Repo override for the memory scope used by rules, search and new notes. Otherwise uses the device memory-scopes.json alias for the normalized shared checkout folder name, then that folder name."
     },
     "decisions": {
       "type": "object",

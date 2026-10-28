@@ -48,7 +48,10 @@ async function writtenByMain() {
 test("a store written by main's memory block shows, exports, edits and searches with valid, qualified output", async () => {
   const { state } = await writtenByMain();
   const entry = loadEntry("memory");
-  const services = { state, levels: state };
+  const services = {
+    state,
+    levels: { ...state, inProject: true, defaultScope: "repo:forge" },
+  };
   const shown = await entry["memory.show"]!({
     input: { id: "device/note-2" },
     services,

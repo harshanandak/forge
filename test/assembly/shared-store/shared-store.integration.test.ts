@@ -288,6 +288,28 @@ test("linked worktree memory pointer scope uses the normalized shared checkout n
   expect(loaded.text.text).not.toContain("scoped-lane");
   expect(loaded.text.text).not.toContain("Device rule for");
   expect(existsSync(join(lane, ".forge/state.sqlite"))).toBe(false);
+  const aliases = join(work, "device", "memory-scopes.json");
+  writeFileSync(
+    aliases,
+    JSON.stringify({
+      "shared-proj": "shared-alias",
+      "scoped-lane": "wrong-alias",
+    }),
+  );
+  try {
+    for (const call of [fromMain, fromLane]) {
+      expect(done(await call("memory.scope", {}))).toEqual({
+        scope: "shared-alias",
+      });
+      const rules = done(await call("memory.rules", {})) as {
+        text: { text: string };
+      };
+      expect(rules.text.text).toContain("shared-alias 1");
+      expect(rules.text.text).not.toContain("wrong-alias");
+    }
+  } finally {
+    rmSync(aliases);
+  }
 }, 60_000);
 
 test("an agent cannot use land's old close reason to bypass the receipt requirement", async () => {

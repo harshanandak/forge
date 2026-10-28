@@ -21,7 +21,8 @@
       "description": "Also search these other projects, read-only. Nothing outside this project is searched unless named here."
     },
     "scope": {
-      "$ref": "defs.json#/$defs/Scope"
+      "$ref": "defs.json#/$defs/Scope",
+      "description": "Search exactly this scope. Left out, search the resolved project scope plus general and unscoped notes. Explicitly named peer projects are searched across scopes."
     },
     "tag": {
       "$ref": "defs.json#/$defs/Tag"

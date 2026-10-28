@@ -164,7 +164,7 @@ test("a natural-language prompt finds notes that match any of its words, best fi
 }, 30_000);
 
 test("search narrows by scope and tag and honours the limit", async () => {
-  const { h, agent } = await open();
+  const { h, agent } = await open({ "memory.scope": "repo:a" });
   done(
     await h.call(
       "memory.add",
@@ -198,7 +198,8 @@ test("search narrows by scope and tag and honours the limit", async () => {
     "device/note-1",
     "device/note-3",
   ]);
-  expect(await ids({ tag: "y" })).toEqual(["device/note-2", "device/note-3"]);
+  expect(await ids({ tag: "y" })).toEqual(["device/note-3"]);
+  expect(await ids({ scope: "repo:b", tag: "y" })).toEqual(["device/note-2"]);
   expect(await ids({ scope: "repo:a", tag: "y" })).toEqual(["device/note-3"]);
   expect(await ids({ limit: 1 })).toHaveLength(1);
 }, 30_000);

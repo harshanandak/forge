@@ -491,7 +491,25 @@ const TOMBSTONE = {
   deleted: true,
 } as const;
 
+function resolvedScope(
+  config: MemoryConfig,
+  services: Services,
+): string | undefined {
+  return services.levels.inProject
+    ? (config.scope ?? services.levels.defaultScope)
+    : undefined;
+}
+
 module.exports = {
+  "memory.scope": ({
+    config = {},
+    services,
+  }: {
+    config?: MemoryConfig;
+    services: Services;
+  }) => ({
+    scope: resolvedScope(config, services) ?? "general",
+  }),
   "memory.rules": async ({
     config = {},
     services,
@@ -504,9 +522,7 @@ module.exports = {
       ? await ownProject(services)
       : undefined;
     if (project) sources.push(project);
-    const scope = services.levels.inProject
-      ? (config.scope ?? services.levels.defaultScope)
-      : undefined;
+    const scope = resolvedScope(config, services);
     const counts = new Map<string, number>([["general", 0]]);
     if (scope !== undefined) counts.set(scope, 0);
     for (const source of sources) {
@@ -552,11 +568,11 @@ module.exports = {
 
   "memory.add": async ({
     input,
-    config,
+    config = {},
     services,
   }: {
     input: NoteFields & { id?: string; level?: Level; expectRevision?: number };
-    config: MemoryConfig;
+    config?: MemoryConfig;
     services: Services;
   }) => {
     // An edit is a partial update: a field left out keeps its stored value, and clearing is said
@@ -564,9 +580,14 @@ module.exports = {
     const fields = (
       previous: readonly Version[],
       kept?: NoteValue,
+      newScope?: string,
     ): NoteValue => {
       const scope =
-        input.scope === undefined ? kept?.scope : (input.scope ?? undefined);
+        input.scope === undefined
+          ? kept === undefined
+            ? newScope
+            : kept.scope
+          : (input.scope ?? undefined);
       return {
         text: input.text,
         ...(scope === undefined ? {} : { scope }),
@@ -626,7 +647,17 @@ module.exports = {
           value: { last: number },
           expectRevision: counter.revision,
         },
-        { key: noteKey(number), value: fields([]), expectRevision: 0 },
+        {
+          key: noteKey(number),
+          value: fields(
+            [],
+            undefined,
+            target.level === "device" && input.scope === undefined
+              ? resolvedScope(config, services)
+              : undefined,
+          ),
+          expectRevision: 0,
+        },
       ]);
       if (!record) throw new Error("note was not written");
       const id = idIn(target, number);
@@ -646,6 +677,7 @@ module.exports = {
 
   "memory.search": async ({
     input,
+    config = {},
     services,
   }: {
     input: {
@@ -657,8 +689,11 @@ module.exports = {
       limit?: number;
       cursor?: string;
     };
+    config?: MemoryConfig;
     services: Services;
   }) => {
+    const scope =
+      input.scope === undefined ? resolvedScope(config, services) : undefined;
     // Inside a project a search covers that project and the device. Another project is searched
     // only when the caller names it, and its notes come back read-only.
     const sources: Source[] = [];
@@ -719,7 +754,12 @@ module.exports = {
         .filter(
           (note) =>
             note.value.deleted !== true &&
-            (input.scope === undefined || note.value.scope === input.scope) &&
+            (input.scope !== undefined
+              ? note.value.scope === input.scope
+              : page.source.readOnly ||
+                note.value.scope === undefined ||
+                note.value.scope === "general" ||
+                note.value.scope === scope) &&
             (input.tag === undefined || note.value.tags.includes(input.tag)),
         )
         .map((note) => {
