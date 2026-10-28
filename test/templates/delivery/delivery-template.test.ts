@@ -31,6 +31,61 @@ const SKILLS = [
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
 test.each([
+  "On any reply-step failure, check the thread for an existing reply before rerunning",
+  "If `commentId` is null, file the thread; do not pass null to the reply helper.",
+  "After filing, resolve without replying using the thread's `id`:",
+  "node <skill-dir>/reply-and-resolve.mjs <thread id>",
+])(
+  "rendered review guidance states: %s",
+  async (rule) => {
+    await withDelivery(async (root, call, lint) => {
+      expect(await call("skills.sync")).toMatchObject({ ok: true });
+      const review = readFileSync(join(root, rendered("forge-review")), "utf8");
+      expect(lint(review)).toEqual([]);
+      const path = join(root, ".agents/skills/forge-review/thread-helpers.md");
+      const instructions = existsSync(path)
+        ? readFileSync(path, "utf8")
+        : review;
+      expect(instructions).toContain(rule);
+      expect(review).toContain("[thread-helpers.md](thread-helpers.md)");
+    });
+  },
+  30_000,
+);
+
+test("rendered resume waits for another chat's orphaned t3 claim to go stale", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const resume = readFileSync(
+      join(root, ".agents/skills/forge-loop/resume.md"),
+      "utf8",
+    );
+    const step = resume.split("\n").find((line) => line.startsWith("4."));
+    expect(step).toContain(
+      "Another chat waits until it goes stale, then claims with `<slice>-worker`.",
+    );
+  });
+}, 30_000);
+
+test("rendered loop keeps adopted decision titles with the pagination rules", async () => {
+  await withDelivery(async (root, call, lint) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const loop = readFileSync(join(root, rendered("forge-loop")), "utf8");
+    expect(lint(loop)).toEqual([]);
+    expect(loop).not.toContain(
+      "Adopted decision titles: see below for pagination.",
+    );
+    const paragraph = loop
+      .split("\n\n")
+      .find((text) => text.startsWith("Standing rules"));
+    expect(paragraph).toContain("adopted decision titles");
+    expect(paragraph).toContain("`truncated` is true");
+    expect(paragraph).toContain('"after":<next>');
+    expect(paragraph).toContain("even if a page is empty");
+  });
+}, 30_000);
+
+test.each([
   ["forge-build", "<slice>", "<role>"],
   ["forge-intake", "<intent>", "<role>"],
   ["forge-review", "<slice>", "review"],
@@ -209,9 +264,13 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
         expect(lint(text)).toEqual([]);
         if (name === "forge-review") {
           expect(text).toContain(
-            "<!-- forge companions: list-threads.mjs, reply-and-resolve.mjs -->",
+            "<!-- forge companions: list-threads.mjs, reply-and-resolve.mjs, thread-helpers.md -->",
           );
-          for (const helper of ["list-threads.mjs", "reply-and-resolve.mjs"])
+          for (const helper of [
+            "list-threads.mjs",
+            "reply-and-resolve.mjs",
+            "thread-helpers.md",
+          ])
             expect(
               readFileSync(join(root, adapter, "skills", name, helper), "utf8"),
             ).toBe(
@@ -236,7 +295,13 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
             "Other old threads wait for new evidence",
             "Retry REVISION_CONFLICT",
           ])
-            expect(text).toContain(phrase);
+            expect(
+              text +
+                readFileSync(
+                  join(root, adapter, "skills", name, "thread-helpers.md"),
+                  "utf8",
+                ),
+            ).toContain(phrase);
         }
         if (name === "forge-build")
           for (const phrase of [
@@ -758,7 +823,6 @@ test("the rendered forge-loop pages through adopted decision titles and proposal
     expect(loop).toContain("even if a page is empty");
     expect(loop).toContain("titles only");
     expect(loop).toContain("no decision text");
-    expect(loop).toContain("see below for pagination");
     expect(loop).toContain("`forge-build`'s Worker brief");
     expect(loop).not.toContain("End state:");
     for (const name of ["forge-land", "forge-cut"]) {
