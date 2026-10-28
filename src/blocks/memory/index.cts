@@ -185,6 +185,16 @@ function committed<T>(attempt: () => T): T {
   throw last;
 }
 
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (typeof value === "object" && value !== null)
+    return `{${Object.entries(value)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`)
+      .join(",")}}`;
+  return JSON.stringify(value) ?? "undefined";
+}
+
 function numberKey(prefix: string, number: number): string {
   return `${prefix}${String(number).padStart(9, "0")}`;
 }
@@ -631,6 +641,11 @@ module.exports = {
         ),
         { expectRevision: input.expectRevision ?? existing.revision },
       );
+      if (canonical(source.state.get(key)) !== canonical(record))
+        fail(
+          "INTERNAL",
+          "memory.add write did not match its readback; reconcile with memory.show before retrying",
+        );
       return {
         status: "updated" as const,
         id: editing,
@@ -669,7 +684,14 @@ module.exports = {
           expectRevision: 0,
         },
       ]);
-      if (!record) throw new Error("note was not written");
+      if (
+        !record ||
+        canonical(target.state.get(noteKey(number))) !== canonical(record)
+      )
+        fail(
+          "INTERNAL",
+          "memory.add write did not match its readback; reconcile with memory.show before retrying",
+        );
       const id = idIn(target, number);
       return {
         status: "added" as const,
