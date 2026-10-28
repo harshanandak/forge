@@ -11,7 +11,7 @@ Every wake runs `forge pr state <n>` and acts on `verdict`.
 
 ## Worker brief
 
-Before each call run `forge issue call --input '{"id":"<slice>","role":"<role>"}'`; LIMIT_REACHED ends the intent: report, start nothing. Retry REVISION_CONFLICT.
+Before each call run `forge issue call <slice> --role <role>`; LIMIT_REACHED ends the intent: report, start nothing. Retry REVISION_CONFLICT.
 
 Fill every field before delegating; an empty field blocks the call:
 

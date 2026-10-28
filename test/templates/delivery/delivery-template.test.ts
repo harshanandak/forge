@@ -30,6 +30,68 @@ const SKILLS = [
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
+test.each([
+  ["forge-build", "<slice>", "<role>"],
+  ["forge-intake", "<intent>", "<role>"],
+  ["forge-review", "<slice>", "review"],
+])(
+  "%s counts dispatch calls without shell-sensitive JSON",
+  async (name, id, role) => {
+    await withDelivery(async (root, call, lint) => {
+      expect(await call("skills.sync")).toMatchObject({ ok: true });
+      const text = readFileSync(join(root, rendered(name)), "utf8");
+      expect(lint(text)).toEqual([]);
+      const dispatch = text
+        .split("\n\n")
+        .find((paragraph) => paragraph.includes("forge issue call"));
+      expect(dispatch).toContain(`\`forge issue call ${id} --role ${role}\``);
+      expect(dispatch).not.toContain("--input");
+      expect(dispatch).toContain("LIMIT_REACHED");
+      expect(dispatch).toContain("Retry REVISION_CONFLICT.");
+    });
+  },
+  30_000,
+);
+
+test.each(["forge-intake", "forge-review"])(
+  "%s passes the returned call timebox and deadline to its subagent",
+  async (name) => {
+    await withDelivery(async (root, call, lint) => {
+      expect(await call("skills.sync")).toMatchObject({ ok: true });
+      const text = readFileSync(join(root, rendered(name)), "utf8");
+      expect(lint(text)).toEqual([]);
+      const dispatch = text
+        .split("\n\n")
+        .find((paragraph) => paragraph.includes("forge issue call"));
+      expect(dispatch).toContain(
+        "Tell the subagent to stop and report the checkpoint when timeboxMinutes expire, never later than stopBy.",
+      );
+      expect(dispatch).toContain("Pass returned timeboxMinutes and stopBy.");
+    });
+  },
+  30_000,
+);
+
+test("resume replaces the worker brief Session with the reported holder", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const resume = readFileSync(
+      join(root, ".agents/skills/forge-loop/resume.md"),
+      "utf8",
+    );
+    const step = resume.split("\n").find((line) => line.startsWith("4."));
+    expect(step).toContain("claim.holder.session.id");
+    expect(step).toContain(
+      "If the reported holder is a `t3:` session, that chat continues the work itself, or releases the claim so a worker can claim with `<slice>-worker`.",
+    );
+    expect(step).toContain("Workers never use a `t3:` session.");
+    expect(step).toContain("For a live non-`t3:` claim");
+    expect(step).toContain(
+      "Put that reported holder session in the brief's Session line in place of `<slice>-worker`.",
+    );
+  });
+}, 30_000);
+
 test("restart guidance reads older direction and every review push checkpoints without growing review", () => {
   const skill = (name: string, file = "SKILL.md") =>
     readFileSync(join(repo, "templates/delivery/skills", name, file), "utf8");
