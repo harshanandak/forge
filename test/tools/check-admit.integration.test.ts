@@ -495,7 +495,7 @@ test("last-fix: snapshots avoid checkout ancestor modules and reject a contamina
     );
     expect(
       [refused.nextStep, ...refused.rows.map((row) => row.nextStep)].join("\n"),
-    ).toContain(realpathSync(join(contaminated, "node_modules")));
+    ).toContain(join(realpathSync.native(contaminated), "node_modules"));
     expect(
       f.git("worktree", "list", "--porcelain").match(/^worktree /gm),
     ).toHaveLength(1);
