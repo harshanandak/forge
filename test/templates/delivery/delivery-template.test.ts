@@ -610,7 +610,17 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     // The executable gate owns the merge conditions and returns the pinned head and receipt.
     expect(text["forge-land"]).toContain("forge check gate");
     expect(text["forge-land"]).toContain("head moved means run the gate again");
-    expect(text["forge-land"]).toContain('"receipt":"<id>"');
+    for (const rule of [
+      "forge issue claim <slice>",
+      'forge issue close <slice> --reason "merged in <sha>" --receipt <id>',
+      "forge issue links <slice>",
+      "if the newest `delivers` link is not the PR being landed",
+      'forge issue link <slice> --relation delivers --url "<pr url>"',
+      "gate's receipt or a `check run` receipt at the merge commit",
+      "On `RECEIPT_HEAD_MISMATCH` or `PR_NOT_MERGED`, stop; never switch to `withoutReceipt`",
+      "On `UNAVAILABLE`, retry",
+    ])
+      expect(text["forge-land"]).toContain(rule);
     expect(text["forge-build"]).toContain("receiptChecks");
     expect(text["forge-cut"]).toContain(
       '"withoutReceipt":"superseded by <id>"',

@@ -70,7 +70,15 @@ beforeEach(async () => {
     "config",
     "grant",
     "--input",
-    JSON.stringify({ digest, effects: ["issue:write"] }),
+    JSON.stringify({
+      digest,
+      effects: [
+        "issue:write",
+        "external:process",
+        "external:network",
+        "environment:read",
+      ],
+    }),
   ]);
   expect(granted.ok).toBe(true);
 }, 30_000);

@@ -9,6 +9,7 @@ import {
 } from "bun:test";
 import {
   cpSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -19,7 +20,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import { createProcessPort } from "../../../src/adapters/process/index.ts";
@@ -62,10 +63,11 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
 let work: string;
 let seq = 0;
 const opened: Assembly[] = [];
-async function open(root: string) {
+async function open(root: string, childEnv?: Readonly<Record<string, string>>) {
   const assembly = await createAssembly({
     root,
     deviceRoot: join(work, "device"),
+    ...(childEnv ? { providers: { env: childEnv } } : {}),
   });
   opened.push(assembly);
   return async (
@@ -134,7 +136,19 @@ async function enableWork(root: string): Promise<void> {
   );
   done(await call("block.admit", { digest }, "human"));
   done(
-    await call("config.grant", { digest, effects: ["issue:write"] }, "human"),
+    await call(
+      "config.grant",
+      {
+        digest,
+        effects: [
+          "issue:write",
+          "external:process",
+          "external:network",
+          "environment:read",
+        ],
+      },
+      "human",
+    ),
   );
 }
 
@@ -432,6 +446,26 @@ test("a project outside git keeps its store in its own folder", async () => {
 }, 60_000);
 
 test("assembled close verifies stored receipts and exposes no write capability", async () => {
+  const fake = join(work, "close-gh");
+  mkdirSync(fake);
+  const node = processPort.resolve("node", env);
+  if (node.kind !== "resolved") throw new Error("node is not installed");
+  const response = join(fake, "response.json");
+  const script = join(fake, "gh.mjs");
+  writeFileSync(
+    script,
+    `import { readFileSync } from "node:fs";\nconsole.log(readFileSync(${JSON.stringify(response)}, "utf8"));\n`,
+  );
+  if (process.platform === "win32")
+    writeFileSync(join(fake, "gh.cmd"), `@"${node.path}" "${script}" %*\r\n`);
+  else {
+    const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
+    writeFileSync(
+      join(fake, "gh"),
+      `#!/bin/sh\nexec ${quote(node.path)} ${quote(script)} "$@"\n`,
+    );
+    chmodSync(join(fake, "gh"), 0o755);
+  }
   const target = join(main, "quality");
   const checkSource = resolve(source, "../check");
   cpSync(checkSource, target, {
@@ -472,7 +506,11 @@ test("assembled close verifies stored receipts and exposes no write capability",
     ) +
       "\nObject.assign(module.exports,{'proof.store':({input,services})=>services.state.put('runs/'+input.id,input,{expectRevision:0}),'proof.inspect':({services})=>Object.keys(services.receipts)});",
   );
-  const call = await open(main);
+  const childEnv = Object.fromEntries(
+    Object.entries(env).filter(([name]) => name.toLowerCase() !== "path"),
+  );
+  childEnv.PATH = [fake, env.PATH ?? env.Path ?? ""].join(delimiter);
+  const call = await open(main, childEnv);
   const { revision } = done(await call("config.show", {}, "human"));
   done(
     await call(
@@ -528,6 +566,14 @@ test("assembled close verifies stored receipts and exposes no write capability",
     result: ["get"],
   });
   const pass = done(await call("check.run", { checks: ["pass"] }));
+  writeFileSync(
+    response,
+    JSON.stringify({
+      state: "MERGED",
+      headRefOid: pass.subject,
+      mergeCommit: { oid: "b".repeat(40) },
+    }),
+  );
   const failed = await call("check.run", { checks: ["fail"] });
   expect(failed).toMatchObject({ ok: false, status: "FAIL" });
   const failedReceipt = failed.result as { id: string };
@@ -557,6 +603,18 @@ test("assembled close verifies stored receipts and exposes no write capability",
   }
   const { id } = done(await call("issue.create", { title: "Delivered" }));
   const { generation } = done(await call("issue.claim", { id }));
+  done(
+    await call(
+      "issue.link",
+      {
+        id,
+        relation: "delivers",
+        url: "https://github.com/example/repo/pull/1",
+      },
+      "agent",
+      generation as number,
+    ),
+  );
   expect(
     done(
       await call(

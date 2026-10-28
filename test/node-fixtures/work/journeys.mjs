@@ -114,11 +114,20 @@ function call(
     signal: new AbortController().signal,
     settled: () => undefined,
   });
-  return JSON.parse(encoded);
+  return typeof encoded === "string"
+    ? JSON.parse(encoded)
+    : encoded.then((value) => JSON.parse(value));
 }
 function error(code, fn) {
   assert.throws(
     fn,
+    (failure) => failure instanceof ForgeFailure && failure.error.code === code,
+    `expected ${code}`,
+  );
+}
+async function rejection(code, fn) {
+  await assert.rejects(
+    async () => await fn(),
     (failure) => failure instanceof ForgeFailure && failure.error.code === code,
     `expected ${code}`,
   );
@@ -166,7 +175,7 @@ try {
       call("links", { id: item.id }).records[0].value.url,
       "https://example.com/task",
     );
-    error("RECEIPT_REQUIRED", () =>
+    await rejection("RECEIPT_REQUIRED", () =>
       call(
         "close",
         { id: item.id, reason: "merged in abc" },
@@ -174,7 +183,7 @@ try {
       ),
     );
     assert.equal(call("show", { id: item.id }).status, "open");
-    const closed = call(
+    const closed = await call(
       "close",
       { id: item.id, reason: "accepted", withoutReceipt: "Record fixture" },
       context("alice", grant.generation),
@@ -344,7 +353,7 @@ try {
       true,
     );
     for (const op of ["update", "close"])
-      error("LEASE_EXPIRED", () =>
+      await rejection("LEASE_EXPIRED", () =>
         call(
           op,
           {
@@ -369,7 +378,7 @@ try {
     assert.equal(event.data.previous.generation, 1);
     assert.equal(event.data.previous.holder.actor.id, "alice");
     for (const op of ["renew", "update", "close"])
-      error("LEASE_STALE", () =>
+      await rejection("LEASE_STALE", () =>
         call(
           op,
           {
@@ -391,7 +400,7 @@ try {
     now = Date.parse(third.expiresAt);
     const same = call("claim", ref, context("alice", "acquire"));
     assert.equal(same.generation, 4);
-    error("LEASE_STALE", () =>
+    await rejection("LEASE_STALE", () =>
       call(
         "close",
         { id: item.id, withoutReceipt: "Lease fixture" },
@@ -425,7 +434,7 @@ try {
         context("alice", 1),
       ),
     );
-    call(
+    await call(
       "close",
       { id: parent.id, withoutReceipt: "Dependency fixture" },
       context("alice", 1),

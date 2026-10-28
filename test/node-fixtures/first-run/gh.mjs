@@ -38,6 +38,20 @@ if (args[0] === "pr" && args[1] === "create") {
   pr.state = "MERGED";
   writeFileSync(state, JSON.stringify(prs));
   console.log(`Merged pull request #${pr.number}`);
+} else if (
+  args[0] === "pr" &&
+  args[1] === "view" &&
+  flag("--json") === "state,headRefOid,mergeCommit"
+) {
+  const pr = prs.find((entry) => entry.url === args[2]);
+  if (!pr) throw new Error(`Unknown pull request ${args[2]}`);
+  console.log(
+    JSON.stringify({
+      state: pr.state,
+      headRefOid: pr.head,
+      mergeCommit: pr.state === "MERGED" ? { oid: pr.head } : null,
+    }),
+  );
 } else {
   console.error(`fake gh: unsupported ${args.join(" ")}`);
   process.exit(2);

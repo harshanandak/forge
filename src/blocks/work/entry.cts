@@ -1,6 +1,10 @@
 import type { Operations, TrackerOperations } from "../../contract/author.ts";
 import type { LeaseStateClient } from "../../assembly/state-client.ts";
-import type { ReceiptsService } from "../../assembly/providers.ts";
+import type {
+  ReceiptsService,
+  ProcessService,
+  EnvironmentService,
+} from "../../assembly/providers.ts";
 import type {
   StateRecord,
   TrackerItem,
@@ -618,7 +622,7 @@ const operations: Operations<WorkOperations> = {
       fail("INTERNAL", "Released lease did not match its readback");
     return { id: ids.shown(id) };
   },
-  "issue.close": ({ input, services, config }) => {
+  "issue.close": async ({ input, services, config, signal }) => {
     const state = client(services);
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
@@ -635,6 +639,104 @@ const operations: Operations<WorkOperations> = {
         fail(
           "RECEIPT_INVALID",
           "Closing requires an existing verified PASS receipt",
+        );
+      const link = appended(state, `link:${id}:`).findLast(
+        (record) => (record.value as LinkInput).relation === "delivers",
+      )?.value as LinkInput | undefined;
+      if (
+        !link ||
+        !/^https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*\/?$/.test(
+          link.url,
+        )
+      )
+        fail("PR_UNLINKED", "Link the delivered pull request before closing");
+      const bound = services as {
+        process?: ProcessService;
+        environment?: EnvironmentService;
+      };
+      if (!bound.process || !bound.environment)
+        fail(
+          "UNAVAILABLE",
+          "Verifying the delivered PR requires process and environment services",
+        );
+      let output: string;
+      try {
+        const env = bound.environment.select([
+          "PATH",
+          "PATHEXT",
+          "SystemRoot",
+          "windir",
+          "ComSpec",
+          "TEMP",
+          "TMP",
+          "TMPDIR",
+          "HOME",
+          "USERPROFILE",
+          "APPDATA",
+          "LOCALAPPDATA",
+          "GH_TOKEN",
+          "GH_HOST",
+          "GH_ENTERPRISE_TOKEN",
+        ]);
+        const gh = bound.process.resolve("gh", env);
+        if (gh.kind !== "resolved")
+          fail("UNAVAILABLE", "Install gh to verify the delivered PR");
+        const result = await bound.process.run(
+          gh,
+          ["pr", "view", link.url, "--json", "state,headRefOid,mergeCommit"],
+          {
+            cwd: bound.process.cwd,
+            env,
+            timeoutMs: 20000,
+            maxOutputBytes: 16384,
+            signal,
+          },
+        );
+        if (result.exitCode !== 0 || result.timedOut || result.truncated)
+          fail("UNAVAILABLE", "Could not read the delivered PR; retry");
+        output = result.stdout;
+      } catch {
+        fail("UNAVAILABLE", "Could not read the delivered PR; retry");
+      }
+      let pr: unknown;
+      try {
+        pr = JSON.parse(output);
+      } catch {
+        fail("UNAVAILABLE", "gh returned invalid PR data");
+      }
+      const commit = (value: unknown): value is string =>
+        typeof value === "string" &&
+        /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value);
+      if (
+        typeof pr !== "object" ||
+        pr === null ||
+        !("state" in pr) ||
+        typeof pr.state !== "string" ||
+        !["OPEN", "CLOSED", "MERGED"].includes(pr.state) ||
+        !("headRefOid" in pr) ||
+        !commit(pr.headRefOid) ||
+        !("mergeCommit" in pr) ||
+        !(
+          pr.mergeCommit === null ||
+          (typeof pr.mergeCommit === "object" &&
+            "oid" in pr.mergeCommit &&
+            commit(pr.mergeCommit.oid))
+        ) ||
+        (pr.state === "MERGED" && pr.mergeCommit === null)
+      )
+        fail("UNAVAILABLE", "gh returned invalid PR data");
+      if (pr.state !== "MERGED")
+        fail(
+          "PR_NOT_MERGED",
+          "The newest delivered PR must be merged before closing",
+        );
+      if (
+        receipt.subject !== pr.headRefOid &&
+        receipt.subject !== (pr.mergeCommit as { oid: string }).oid
+      )
+        fail(
+          "RECEIPT_HEAD_MISMATCH",
+          "Receipt must cover the delivered PR's final head or merge commit",
         );
     } else if (!input.withoutReceipt?.trim()) {
       fail(

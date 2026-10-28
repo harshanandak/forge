@@ -50,12 +50,12 @@
     },
     "issue.close": {
       "title": "Issue close",
-      "summary": "Close while holding the lease, with a verified PASS receipt or a written withoutReceipt reason.",
+      "summary": "Close holding the lease: verified PASS receipt bound to delivered PR or written withoutReceipt reason.",
       "examples": [{ "input": { "id": "demo-1", "receipt": "<id>" } }]
     },
     "issue.ready": {
       "title": "Issue ready",
-      "summary": "Open issues with closed dependencies and no live lease; expired or released leases never hide ready work. Pass labels to keep only items that carry all of them. When /blocks/work/config/labelOrder is set, results sort by the first listed label an item carries, then by stored order."
+      "summary": "Open issues with closed dependencies and no live lease (expired or released allowed). Match all supplied labels. With /blocks/work/config/labelOrder, sort by first listed label carried, then stored order."
     },
     "issue.blocked": {
       "title": "Issue blocked",

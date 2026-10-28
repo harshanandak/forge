@@ -63,7 +63,11 @@ export interface CryptoService {
   randomUUID(): string;
 }
 export interface ReceiptsService {
-  get(id: string): { readonly id: string; readonly status: string } | undefined;
+  get(
+    id: string,
+  ):
+    | { readonly id: string; readonly status: string; readonly subject: string }
+    | undefined;
 }
 /** Exposes verified evidence, never the backing namespace or its write methods. */
 export function createReceiptsService(
@@ -84,7 +88,11 @@ export function createReceiptsService(
         value.id !== id
       )
         refuse("RECEIPT_INVALID", "Receipt integrity failed");
-      return Object.freeze({ id: value.id, status: value.status });
+      return Object.freeze({
+        id: value.id,
+        status: value.status,
+        subject: value.subject,
+      });
     },
   });
 }

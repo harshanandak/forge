@@ -4,13 +4,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 
 const installed = process.argv[2];
 const bin = join(installed, "dist/bin/forge.js");
@@ -22,6 +24,21 @@ const env = {
   FORGE_DEVICE_ROOT: join(root, ".device"),
   FORGE_SESSION: "first-run",
 };
+const fake = join(root, ".fake");
+mkdirSync(fake);
+if (process.platform === "win32") {
+  writeFileSync(join(fake, "gh.cmd"), `@"${process.execPath}" "${gh}" %*\r\n`);
+} else {
+  const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
+  writeFileSync(
+    join(fake, "gh"),
+    `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(gh)} "$@"\n`,
+  );
+  chmodSync(join(fake, "gh"), 0o755);
+}
+const pathKey =
+  Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+env[pathKey] = [fake, env[pathKey] ?? ""].join(delimiter);
 const passed = [];
 
 function run(executable, args) {
@@ -72,7 +89,7 @@ writeFileSync(
   }),
 );
 writeFileSync(join(root, "package-lock.json"), '{"lockfileVersion":3}');
-writeFileSync(join(root, ".gitignore"), ".device/\n");
+writeFileSync(join(root, ".gitignore"), ".device/\n.fake/\n");
 writeFileSync(
   join(root, "test.js"),
   'const { add } = require("./add.js");\nif (add(2, 2) !== 4) { console.error("add(2, 2) is wrong"); process.exit(1); }\n',
