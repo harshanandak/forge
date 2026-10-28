@@ -2,8 +2,8 @@
   "schemaVersion": "forge.block/1",
   "id": "forge/work",
   "version": "0.1.0",
-  "authorAbi": "forge.author/v1",
-  "profile": "trusted-action-sync/v1",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
   "entry": "entry.cjs",
   "configSchema": "schemas/config.json",
   "nouns": {
@@ -25,6 +25,12 @@
     {
       "slot": "receipts",
       "interface": "forge.receipts@1",
+      "optional": true
+    },
+    { "slot": "process", "interface": "forge.process@1", "optional": true },
+    {
+      "slot": "environment",
+      "interface": "forge.environment@1",
       "optional": true
     }
   ],
@@ -123,9 +129,14 @@
       "input": "schemas/CloseInput.json",
       "output": "schemas/TrackerItem.json",
       "context": "leased",
-      "timeoutMs": 15000,
+      "timeoutMs": 30000,
       "leaseMode": "held",
-      "effects": ["issue:write"],
+      "effects": [
+        "issue:write",
+        "external:process",
+        "external:network",
+        "environment:read"
+      ],
       "idempotent": false,
       "callers": ["agent", "human"],
       "stability": "experimental",

@@ -611,6 +611,14 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-land"]).toContain("forge check gate");
     expect(text["forge-land"]).toContain("head moved means run the gate again");
     expect(text["forge-land"]).toContain('"receipt":"<id>"');
+    for (const rule of [
+      "forge issue links <slice>",
+      '"relation":"delivers"',
+      "gate's receipt or a `check run` receipt at the merge commit",
+      "On `RECEIPT_HEAD_MISMATCH` or `PR_NOT_MERGED`, stop; never switch to `withoutReceipt`",
+      "On `UNAVAILABLE`, retry",
+    ])
+      expect(text["forge-land"]).toContain(rule);
     expect(text["forge-build"]).toContain("receiptChecks");
     expect(text["forge-cut"]).toContain(
       '"withoutReceipt":"superseded by <id>"',

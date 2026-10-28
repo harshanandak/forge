@@ -74,8 +74,16 @@ function project() {
     events: () => [],
   };
   return Object.assign(
-    (op: string, input: Record<string, unknown>, config?: unknown) =>
-      operations[op]!({ input, config, services: { state } }) as Item,
+    <Op extends string>(
+      op: Op,
+      input: Record<string, unknown>,
+      config?: unknown,
+    ) =>
+      operations[op]!({
+        input,
+        config,
+        services: { state },
+      }) as Op extends "issue.close" ? Promise<Item> : Item,
     { records },
   );
 }
@@ -199,7 +207,7 @@ test("an item from before prefixes were recorded counts as minted with work, and
     expect(call("issue.show", { id: alias }, acme).id).toBe("acme-2");
 });
 
-test("every operation that takes an id accepts an alias and answers with the current prefix", () => {
+test("every operation that takes an id accepts an alias and answers with the current prefix", async () => {
   const call = project();
   const acme = { idPrefix: "acme" };
   call("issue.create", { title: "base" });
@@ -238,10 +246,12 @@ test("every operation that takes an id accepts an alias and answers with the cur
   };
   expect(listed.items.map((item) => item.id)).toEqual(["acme-1", "acme-2"]);
   expect(
-    call(
-      "issue.close",
-      { id: "work-1", withoutReceipt: "Prefix fixture" },
-      acme,
+    (
+      await call(
+        "issue.close",
+        { id: "work-1", withoutReceipt: "Prefix fixture" },
+        acme,
+      )
     ).id,
   ).toBe("acme-1");
 });

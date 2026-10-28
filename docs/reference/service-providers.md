@@ -132,6 +132,10 @@ files, excludes nothing implicitly, and rejects duplicate paths. It checks exact
 before and after capture and refuses drift or missing HEAD. The digest covers the
 selected bytes, not an atomic repository-wide snapshot; callers recheck before acting.
 
+## Verified receipts
+
+`forge.receipts@1` exposes only `get(id)`, returning verified `{ id, status, subject }` evidence or `undefined` when absent. Damaged receipts are refused; the backing namespace and writes are never exposed.
+
 ## Environment and platform primitives
 
 `forge.environment@1` exposes `platform` and `select(names)`. Selection requires

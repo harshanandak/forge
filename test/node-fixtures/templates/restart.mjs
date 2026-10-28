@@ -21,7 +21,9 @@ if (process.argv[2] === "--gh") {
   appendFileSync(join(".fake", "gh-calls.jsonl"), `${JSON.stringify(args)}\n`);
   process.argv = [process.execPath, self, ...args];
   await import(
-    args[0] === "pr" && ["create", "merge"].includes(args[1])
+    args[0] === "pr" &&
+    (["create", "merge"].includes(args[1]) ||
+      (args[1] === "view" && args.includes("state,headRefOid,mergeCommit")))
       ? "../first-run/gh.mjs"
       : "../../integration/pr-state/gh.mjs"
   );
@@ -273,6 +275,7 @@ if (process.argv[2] === "--gh") {
       ["api", `repos/fixture/first-run/pulls/${number}/comments?per_page=100`],
       ["pr", "view"],
       ["pr", "merge"],
+      ["pr", "view"],
     ]);
     console.log(
       "PASS restart: intake call 1 -> build call 2 -> checkpoint -> restart -> read back 2 calls -> pr state ready -> review call 3 -> merge by head -> close",
