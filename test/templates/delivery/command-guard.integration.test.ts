@@ -302,9 +302,65 @@ const localRoundOne: [string, [string, number, string?][]][] = [
     ],
   ],
 ];
+const localRoundTwo: typeof localRoundOne = [
+  [
+    "value-taking reader options",
+    [
+      ...["grep", "egrep", "fgrep"].flatMap((reader) =>
+        [
+          "-m",
+          "-A",
+          "-B",
+          "-C",
+          "--max-count",
+          "--after-context",
+          "--before-context",
+          "--context",
+        ].map((option): [string, number] => [
+          `${reader} ${option} 1 credentials src/`,
+          0,
+        ]),
+      ),
+      ["grep --max-count=1 credentials src/", 0],
+      ["grep -m1 credentials src/", 0],
+      ["rg -m 1 credentials src/", 0],
+      ["rg -g '*.txt' credentials src/", 0],
+      ["rg --glob '*.txt' credentials src/", 0],
+      ["rg -t txt credentials src/", 0],
+      ["rg --type txt credentials src/", 0],
+      ["jq --arg x credentials . input.json", 0],
+      ["jq --argjson x 1 credentials input.json", 0],
+      ["awk -v x=1 credentials src/", 0],
+      ["awk -F : credentials src/", 0],
+      ["grep -m 1 x .env", 2, "secret-file"],
+      ["rg -g '*.txt' x credentials", 2, "secret-file"],
+      ["jq --arg x ordinary . credentials", 2, "secret-file"],
+      ["awk -v x=1 '{print}' credentials", 2, "secret-file"],
+      ["grep x .env", 2, "secret-file"],
+      ["cat credentials", 2, "secret-file"],
+    ],
+  ],
+  [
+    "here-document bodies are text",
+    [
+      ["git commit -F - <<EOF\nenv\ncat credentials\nEOF", 0],
+      ["git commit -F - <<'EOF'\nenv\ncat credentials\nEOF", 0],
+      ['git commit -F - <<"EOF"\nenv\nEOF', 0],
+      ["git commit -F - <<-EOF\n\tenv\n\tEOF", 0],
+      ["git commit -F - << EOF\nenv\nEOF", 0],
+      ["cat <<'EOF'\nenv\nEOF", 0],
+      ["cat <<A <<'B'\nenv\nA\ncat credentials\nB", 0],
+      ["echo '<<EOF'; env", 2, "env-dump"],
+      ["env <<EOF\nordinary text\nEOF", 2, "env-dump"],
+      ["cat credentials <<EOF\nordinary text\nEOF", 2, "secret-file"],
+      ["cat <<EOF\nordinary text\nEOF\nenv", 2, "env-dump"],
+      ["cat <<EOF; env\nordinary text\nEOF", 2, "env-dump"],
+    ],
+  ],
+];
 for (const harness of ["claude", "codex"])
-  for (const [decision, rows] of localRoundOne) {
-    test(`${harness} local round one: ${decision}`, () => {
+  for (const [decision, rows] of [...localRoundOne, ...localRoundTwo]) {
+    test(`${harness} local regression: ${decision}`, () => {
       for (const [command, status, rule] of rows) {
         const result = run(payload(harness, command));
         expect({ command, status: result.status }).toEqual({ command, status });

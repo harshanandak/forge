@@ -22,6 +22,7 @@ function segments(text) {
     quote = "";
   // Quote boundaries and escapes split expansion names without changing word text.
   const frames = [];
+  const heredocs = [];
   const flushWord = () => {
     if (started) words.push({ text: word, expanded });
     word = expanded = "";
@@ -103,12 +104,42 @@ function segments(text) {
     }
     if (!quote && c === "#" && !started) {
       while (i < text.length && text[i] !== "\n") i++;
-      flush();
+      i--;
       continue;
     }
     if (!quote && /[;&|\n]/.test(c)) {
       flush();
+      if (c === "\n") {
+        for (const [delimiter, tabs] of heredocs) {
+          let line;
+          do {
+            const end = text.indexOf("\n", i + 1);
+            line = text
+              .slice(i + 1, end < 0 ? text.length : end)
+              .replace(/\r$/, "");
+            i = end < 0 ? text.length : end;
+          } while (
+            (tabs ? line.replace(/^\t+/, "") : line) !== delimiter &&
+            i < text.length
+          );
+        }
+        heredocs.length = 0;
+      }
       continue;
+    }
+    if (!quote && c === "<" && next === "<") {
+      const doc = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|([^\s;&|<>()]+))/.exec(
+        text.slice(i),
+      );
+      if (doc) {
+        flushWord();
+        heredocs.push([
+          doc[2] ?? doc[3] ?? doc[4].replace(/\\(.)/g, "$1"),
+          doc[1] === "-",
+        ]);
+        i += doc[0].length - 1;
+        continue;
+      }
     }
     if (!quote && /[<>]/.test(c)) {
       if (/^\d+$/.test(word)) {
@@ -168,6 +199,12 @@ function rootOrHome(path) {
 }
 function readerFiles(cmd, args) {
   const files = [];
+  const values = {
+    grep: /^(?:-[mABC]|--(?:max-count|after-context|before-context|context|include|exclude|exclude-dir|label|binary-files|devices|directories))$/,
+    rg: /^(?:-[gtTmABCMjEr]|--(?:glob|iglob|type|type-not|type-add|type-clear|max-count|after-context|before-context|context|max-columns|threads|encoding|max-depth|ignore-file|replace|sort|sortr|color|colors|engine|pre|pre-glob))$/,
+    jq: /^(?:-L|--(?:arg|argjson|rawfile|slurpfile|indent))$/,
+    awk: /^(?:-[vF]|--(?:assign|field-separator))$/,
+  }[/^(egrep|fgrep)$/.test(cmd) ? "grep" : cmd];
   let pattern =
     !/^(grep|egrep|fgrep|rg|awk|sed|jq)$/.test(cmd) ||
     (cmd === "rg" && args.includes("--files")) ||
@@ -190,6 +227,11 @@ function readerFiles(cmd, args) {
             : arg.replace(/^(?:-f|--file=)/, ""),
         );
       else if (/^(?:-e|--regexp|--expression)$/.test(arg)) i++;
+      else if (values?.test(arg))
+        i +=
+          cmd === "jq" && /^--(?:arg|argjson|rawfile|slurpfile)$/.test(arg)
+            ? 2
+            : 1;
       continue;
     }
     if (pattern) files.push(arg);
