@@ -369,7 +369,7 @@ for (const shortened of [false, true])
       const f = fixture();
       await f.receipt();
       f.alter({ scoped: true });
-      const run = f.clients.process.run;
+      const run = f.clients.process.run.bind(f.clients.process);
       f.clients.process.run = async (executable, args, options) => {
         if (
           args[0] === "pr" &&
