@@ -88,6 +88,9 @@ module.exports = {
                 timeout_ms: 1800000,
                 description: `PR #${input.pr}: checks, threads, conflicts`,
                 command: `n=${input.pr}; since=\${FORGE_MONITOR_SINCE:-}; fails=\${FORGE_MONITOR_FAILS:-0}
+case "$fails" in ''|*[!0-9]*|?????*) fails=0;; esac
+while [ "\${fails#0}" != "$fails" ]; do fails=\${fails#0}; done
+fails=\${fails:-0}
 interval=\${FORGE_MONITOR_INTERVAL:-60}; duration=\${FORGE_MONITOR_DURATION:-1740}
 limit=\${FORGE_MONITOR_FAILURE_LIMIT:-15}
 stop=$(( $(date +%s) + duration ))
@@ -103,7 +106,7 @@ while [ "$(date +%s)" -lt "$stop" ]; do
     fi
   else
     fails=$((fails + 1))
-    if [ "$fails" -eq "$limit" ]; then
+    if [ "$fails" -ge "$limit" ]; then
       printf '{"pr":%s,"kind":"unreadable","fails":%s,"next":"%s"}\\n' "$n" "$fails" "$since"
       exit 0
     fi
@@ -138,7 +141,7 @@ printf '{"pr":%s,"kind":"rearm","next":"%s","fails":%s}\\n' "$n" "$since" "$fail
           : kind === "t3-tool"
             ? `End the turn; T3 wakes this thread on PR events. On wake run forge pr state ${input.pr} for fresh state and act. Only if the harness reports it stopped watching the PR, run forge agent wait ${input.pr} once more and do its steps.`
             : kind === "monitor"
-              ? `Reuse the running Monitor for this PR during fixes and after pushes; do not start a duplicate. On news run forge pr state ${input.pr} for fresh state and act. On rearm or Monitor timeout, start the same command with FORGE_MONITOR_SINCE set to the last next token received (empty if none) and FORGE_MONITOR_FAILS set to the last fails value (0 if none). After 15 unreadable polls, check access before re-arming. FORGE_MONITOR_INTERVAL and FORGE_MONITOR_DURATION override seconds for tests; defaults are 60 and 1740. FORGE_MONITOR_FAILURE_LIMIT overrides 15 for tests.`
+              ? `Reuse the running Monitor for this PR during fixes and after pushes; do not start a duplicate. On news run forge pr state ${input.pr} for fresh state and act. On rearm or Monitor timeout, start the same command with FORGE_MONITOR_SINCE set to the last next token received (empty if none). Carry the last fails value in FORGE_MONITOR_FAILS only from a rearm line of the same PR's continuous watch. After unreadable (15 failed polls), check access before re-arming with FORGE_MONITOR_FAILS=0. After a Monitor timeout, or for any fresh watch, use FORGE_MONITOR_FAILS=0. FORGE_MONITOR_INTERVAL and FORGE_MONITOR_DURATION override seconds for tests; defaults are 60 and 1740. FORGE_MONITOR_FAILURE_LIMIT overrides 15 for tests.`
               : `Run the command in the foreground; then run forge pr state ${input.pr} for fresh state and act. Run forge agent wait ${input.pr} again after each push; a new head needs a new wait.`;
     return { kind, steps, then };
   },

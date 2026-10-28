@@ -192,6 +192,14 @@ test("shipped Claude adapter renders a bounded Monitor with fresh-state guidance
   expect(wait().then).toMatch(/(?:last|next).*token|token.*(?:last|next)/i);
   expect(wait().then).toContain("FORGE_MONITOR_FAILS");
   expect(wait().then).toMatch(/last fails value/);
+  expect(wait().then).toContain(
+    "only from a rearm line of the same PR's continuous watch",
+  );
+  expect(wait().then).toMatch(
+    /After unreadable.*check access.*FORGE_MONITOR_FAILS=0/,
+  );
+  expect(wait().then).toMatch(/After a Monitor timeout.*FORGE_MONITOR_FAILS=0/);
+  expect(wait().then).toMatch(/fresh watch.*FORGE_MONITOR_FAILS=0/);
 });
 test("Codex with inherited Claude detection keeps gh-checks for agent wait", () => {
   expect(wait({ pr: 42 }, { CLAUDECODE: "1", CODEX_THREAD_ID: "1" }).kind).toBe(
@@ -310,6 +318,50 @@ test("successful empty and news polls each reset the consecutive failure counter
   expect(result.stdout).not.toContain("unreadable");
   expect(events(result.stdout).at(-1)!.end).toBe(true);
   expect(result.sleeps).toEqual([60, 60, 60, 60, 60]);
+});
+test("Monitor stops on the next failure for seeds at or above the limit", () => {
+  for (const seed of [15, 20, 9999]) {
+    const result = run(monitor().command, "fail", {
+      FORGE_MONITOR_FAILS: String(seed),
+    });
+    expect(result.calls).toHaveLength(1);
+    expect(events(result.stdout)).toEqual([
+      { pr: 42, kind: "unreadable", fails: seed + 1, next: "" },
+    ]);
+  }
+});
+test("invalid failure seeds become zero and rearm with valid JSON", () => {
+  for (const seed of [
+    "",
+    "-1",
+    "not-a-number",
+    "1+1",
+    "1/0",
+    "12345678901234567890",
+    "12345",
+    " 1",
+  ]) {
+    const result = run(monitor().command, "fail", {
+      FORGE_MONITOR_FAILS: seed,
+      FORGE_MONITOR_DURATION: "1",
+    });
+    expect(result.calls).toHaveLength(1);
+    expect(events(result.stdout)).toEqual([
+      { pr: 42, kind: "rearm", fails: 1, next: "" },
+    ]);
+  }
+});
+test("plain digit failure seeds keep decimal values with leading zeros", () => {
+  for (const seed of ["0000", "0008", "0014"]) {
+    const result = run(monitor().command, "fail", {
+      FORGE_MONITOR_FAILS: seed,
+      FORGE_MONITOR_FAILURE_LIMIT: "1",
+    });
+    expect(result.calls).toHaveLength(1);
+    expect(events(result.stdout)).toEqual([
+      { pr: 42, kind: "unreadable", fails: Number(seed) + 1, next: "" },
+    ]);
+  }
 });
 test("Monitor honors a test-only failure limit", () => {
   const result = run(monitor().command, "fail", {
