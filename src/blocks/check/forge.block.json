@@ -43,7 +43,7 @@
       "input": "schemas/pr-merge.input.json",
       "output": "schemas/pr-merge.output.json",
       "context": "project",
-      "timeoutMs": 100000,
+      "timeoutMs": 121500,
       "effects": [
         "external:process",
         "external:network",

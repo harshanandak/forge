@@ -291,7 +291,10 @@ function fixture() {
       scoped = options.scoped ?? scoped;
       hook = options.hook ?? hook;
     },
-    async run(gateConfig = config, deadline = Date.now() + 100000) {
+    async run(
+      gateConfig = config,
+      deadline = Date.now() + manifest.operations["pr.merge"].timeoutMs,
+    ) {
       const handler = (
         entry as unknown as Record<
           string,
@@ -326,7 +329,7 @@ test("pr.merge declares its destructive non-idempotent contract", () => {
   const op = (manifest.operations as Record<string, unknown>)["pr.merge"];
   expect(op).toMatchObject({
     args: ["pr"],
-    timeoutMs: 100000,
+    timeoutMs: 121500,
     idempotent: false,
     destructive: true,
     callers: ["human", "agent"],
@@ -340,6 +343,85 @@ test("pr.merge declares its destructive non-idempotent contract", () => {
     ],
   });
 });
+
+test("unverified recovery requires the printed gate head", () => {
+  const response = envelope({
+    outcome: "MERGE_UNVERIFIED",
+    pr: 7,
+    head,
+    gate: { reasons: [] },
+  });
+  expect(response.ok).toBe(false);
+  if (response.ok) throw new Error("Expected unverified outcome");
+  expect(response.error.message).toContain("state,mergeCommit,headRefOid");
+  expect(response.error.message).toContain("MERGED");
+  expect(response.error.message).toContain("headRefOid equals result.head");
+  expect(response.error.message).toContain(
+    "otherwise the merge is not verified: stop",
+  );
+});
+
+for (const shortened of [false, true])
+  test(`46.5-second standalone gate ${shortened ? "names a shortened deadline" : "also passes inside merge"}`, async () => {
+    let now = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const f = fixture();
+      await f.receipt();
+      f.alter({ scoped: true });
+      const run = f.clients.process.run;
+      f.clients.process.run = async (executable, args, options) => {
+        if (
+          args[0] === "pr" &&
+          args[1] === "view" &&
+          !args.includes("state,headRefOid,mergeCommit")
+        ) {
+          const elapsed = Math.min(23250, options.timeoutMs);
+          now += elapsed;
+          if (elapsed < 23250)
+            return { ...complete, timedOut: true, exitCode: null };
+        }
+        return run(executable, args, options);
+      };
+      const gateConfig = { ...config, timeoutMs: 60000 };
+      const handler = (
+        entry as unknown as Record<
+          string,
+          (args: unknown) => Promise<{ verdict: string }>
+        >
+      )["check.gate"]!;
+      expect(
+        await handler({
+          input: { pr: 7 },
+          config: gateConfig,
+          signal: f.controller.signal,
+          deadline: now + manifest.operations["check.gate"].timeoutMs,
+          services: f.clients,
+        }),
+      ).toMatchObject({ verdict: "PASS" });
+      const response = envelope(
+        await f.run(
+          gateConfig,
+          now + (shortened ? 96500 : manifest.operations["pr.merge"].timeoutMs),
+        ),
+      );
+      if (shortened) {
+        expect(response).toMatchObject({
+          ok: false,
+          result: { gate: { reasons: [{ code: "INVOCATION_TIMEOUT" }] } },
+        });
+        expect(f.calls.filter((args) => args[1] === "merge")).toHaveLength(0);
+      } else {
+        expect(response).toMatchObject({
+          ok: true,
+          result: { outcome: "MERGED", head },
+        });
+        expect(f.calls.filter((args) => args[1] === "merge")).toHaveLength(1);
+      }
+    } finally {
+      clock.mockRestore();
+    }
+  });
 for (const reason of ["receipt", "door", "thread", "missing"])
   test(`gate ${reason} refusal preserves evidence and never merges`, async () => {
     const f = fixture();
@@ -598,7 +680,7 @@ async function interruptedRuntime(
     10250,
   );
   let now = Date.now();
-  const deadline = now + 100000;
+  const deadline = now + manifest.operations["pr.merge"].timeoutMs;
   const time = spyOn(Date, "now").mockImplementation(() => now);
   f.alter({
     scoped: true,

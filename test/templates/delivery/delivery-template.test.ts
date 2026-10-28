@@ -678,12 +678,12 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-land"]).toContain("Never run raw `gh pr merge`");
     expect(text["forge-land"]).toContain("result.gate.reasons");
     expect(text["forge-land"]).toContain("MERGE_UNVERIFIED");
-    const recoveryRead = "gh pr view <n> --json state,mergeCommit";
+    const recoveryRead = "gh pr view <n> --json state,mergeCommit,headRefOid";
     expect(text["forge-land"]).toContain(
       `On \`MERGE_UNVERIFIED\`, read \`${recoveryRead}\` before anything else`,
     );
     expect(text["forge-land"]).toContain(
-      `1. \`${recoveryRead}\` must show \`MERGED\`; keep its merge commit SHA`,
+      `1. \`${recoveryRead}\` must show \`MERGED\` and \`headRefOid\` equal to \`<head>\`; otherwise the merge is not verified: stop. Keep its merge commit SHA`,
     );
     expect(text["forge-land"]).toContain("head moved means run the gate again");
     for (const rule of [

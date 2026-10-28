@@ -796,6 +796,7 @@ async function gate(
     reasons.push({ code, detail });
   };
   const deadline = scope?.deadline ?? services.clock.now() + 60000;
+  let timedOut = false;
   function active() {
     if (
       !Number.isSafeInteger(deadline) ||
@@ -825,6 +826,7 @@ async function gate(
       maxOutputBytes: 262144,
       ...(scope ? { signal: scope.signal } : {}),
     });
+    timedOut = result.timedOut;
     active();
     if (
       result.exitCode === null ||
@@ -1198,10 +1200,18 @@ async function gate(
     if (after.state !== "OPEN" || after.mergeStateStatus !== "CLEAN")
       refuse("PR_NOT_MERGEABLE", "Pull request is no longer OPEN and CLEAN");
   } catch {
-    refuse(
-      "GITHUB_EVIDENCE_INVALID",
-      "Gate evidence could not be read completely and verified; retry after repairing the CLI, access or response",
-    );
+    if (timedOut || services.clock.now() >= deadline)
+      refuse(
+        "INVOCATION_TIMEOUT",
+        "Gate invocation timed out; increase its deadline or GitHub command timeout",
+      );
+    else if (scope?.signal.aborted)
+      refuse("INVOCATION_CANCELLED", "Gate invocation cancelled");
+    else
+      refuse(
+        "GITHUB_EVIDENCE_INVALID",
+        "Gate evidence could not be read completely and verified; retry after repairing the CLI, access or response",
+      );
   }
   return {
     verdict: reasons.length ? "REFUSED" : "PASS",
