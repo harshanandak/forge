@@ -1,5 +1,7 @@
 # Claim, workspace and PR handoff
 
+If a worker brief says stop after push or after the PR opens, stop there, overriding later steps; leave PR linking and CI watching to the orchestrator.
+
 Print the optional Stop guard with `forge agent guard`; completion words outside code require a current-head PASS receipt and a `Not covered:` line, or an `Unverified:` line.
 
 ## Claim and workspace

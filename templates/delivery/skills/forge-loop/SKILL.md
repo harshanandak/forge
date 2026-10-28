@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 # forge-loop
 
+If a worker brief says stop after push or after the PR opens, stop there, overriding later steps; leave PR linking and CI watching to the orchestrator.
+
 Every wake: read, route, stop. Read the chosen skill before acting.
 
 ## Wake
@@ -30,13 +32,11 @@ At session start, run `forge memory rules` unless a hook supplied it: `result.te
 
 ## Steps and their skill
 
-| Step                                               | Skill          |
-| -------------------------------------------------- | -------------- |
-| 1 intake, vague intent or unresolved decisions     | `forge-intake` |
-| 2 frame, 3 slice after intake                      | `forge-cut`    |
-| 4 claim and workspace, 5 build, 6 check, 7 open PR | `forge-build`  |
-| 8 review triage, red PR on each wake               | `forge-review` |
-| 9 merge, 10 verify, 11 learn and re-plan; red base | `forge-land`   |
+- 1 intake, vague intent or unresolved decisions: `forge-intake`
+- 2 frame, 3 slice after intake: `forge-cut`
+- 4 claim and workspace, 5 build, 6 check, 7 open PR: `forge-build`
+- 8 review triage, red PR on each wake: `forge-review`
+- 9 merge, 10 verify, 11 learn and re-plan; red base: `forge-land`
 
 ## Two links, never mixed
 

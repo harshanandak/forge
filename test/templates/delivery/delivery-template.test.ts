@@ -31,6 +31,34 @@ const SKILLS = [
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
 test.each([
+  "forge-loop/SKILL.md",
+  "forge-build/pull-request.md",
+  "forge-review/SKILL.md",
+])(
+  "rendered %s honors the worker brief's stop point before PR handoff",
+  async (file) => {
+    await withDelivery(async (root, call) => {
+      expect(await call("skills.sync")).toMatchObject({ ok: true });
+      const text = readFileSync(join(root, ".agents/skills", file), "utf8");
+      const rule =
+        text
+          .split("\n")
+          .find((line) => line.startsWith("If a worker brief says")) ?? "";
+      expect(rule).toContain("stop after push or after the PR opens");
+      expect(rule).toContain("stop there, overriding later steps");
+      expect(rule).toContain(
+        "leave PR linking and CI watching to the orchestrator",
+      );
+      expect(text.indexOf(rule)).toBeLessThan(
+        text.search(/forge (?:issue link|agent wait)/),
+      );
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
+    });
+  },
+  30_000,
+);
+
+test.each([
   "On any reply-step failure, check the thread for an existing reply before rerunning",
   "If `commentId` is null, file the thread; do not pass null to the reply helper.",
   "After filing, resolve without replying using the thread's `id`:",
