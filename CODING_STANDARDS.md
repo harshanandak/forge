@@ -45,6 +45,8 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 - Unit tests use an injected clock and fake process ports. Real git and subprocesses run only in a labelled integration lane. A flaky test is quarantined with an issue, never retried.
 - Every guard ships with a test that it fails on its motivating bad input. A concurrency or authority fix has a fault-injection test and a check that the journey fails with the fix removed.
 - Acceptance is an end-to-end outcome on the real artifact (the packed package, the installed host), never test counts. `bun run test:pack` is the minimum: pack once, install with npm on Node without Bun, run `forge --version` and every packed journey against that one install.
+- Before adding a check command, run `bun tools/check-admit.ts <check-name> <break.patch>` (defaults: replay 20, Windows limit 120 seconds).
+  Admit only after all five rows pass; keep the break patch and JSON verdict as evidence.
 - Gates judge outcomes and return `PASS`, `FAIL`, `INCOMPLETE` or `NOT_EXECUTED`. Nothing checked is never `PASS`.
 
 ## Platform
