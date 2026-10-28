@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ForgeFailure } from "../contract/failure.ts";
-import { isAgentCallable } from "../contract/mcp.ts";
+import { isAgentCallable, type McpCandidate } from "../contract/mcp.ts";
 import { closestNames } from "../contract/schema.ts";
 import type {
   AmbientContext,
@@ -30,8 +30,15 @@ export interface CallOptions {
   ) => AmbientContext;
 }
 
-export function requiresOwnerConfirmation(op: string): boolean {
-  return ["memory.forget", "memory.restore", "decision.adopt"].includes(op);
+export function requiresOwnerConfirmation(
+  candidate: McpCandidate | undefined,
+): boolean {
+  return (
+    candidate?.blockId === "forge/memory" &&
+    ["memory.forget", "memory.restore", "decision.adopt"].includes(
+      candidate.declaredOp ?? "",
+    )
+  );
 }
 
 export function success(op: string, result: unknown): ResultEnvelope {
@@ -121,12 +128,13 @@ export async function dispatch(
         : { dryRun: options.dryRun === true || request.dryRun === true }),
     });
   }
-  const declaration = [...discoveryOperations, ...catalog.list()].find(
+  const entry = [...discoveryOperations, ...catalog.list()].find(
     (entry) => entry.op === op,
-  )?.declaration;
+  );
+  const declaration = entry?.declaration;
   if (options.readOnly && declaration && declaration.effects.length > 0)
     return failure("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
-  if (requiresOwnerConfirmation(op)) {
+  if (requiresOwnerConfirmation(entry)) {
     let confirmed = false;
     if (options.caller === "human") {
       try {
@@ -146,8 +154,8 @@ export async function dispatch(
           message: `${op} requires an owner's interactive confirmation.`,
           retry: "never",
           repair:
-            op === "memory.forget"
-              ? "Use forge memory propose-forget <id> to mark a proposal; ask the owner to run forge memory forget <id> in a terminal."
+            entry?.declaredOp === "memory.forget"
+              ? `Use forge ${op.replace(".forget", " propose-forget")} <id> to mark a proposal; ask the owner to run forge ${op.replace(".", " ")} <id> in a terminal.`
               : `Ask the owner to run forge ${op.replace(".", " ")} in a terminal and confirm.`,
         },
       };

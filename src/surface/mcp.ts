@@ -85,7 +85,7 @@ export function createMcpHandlers(
   );
   const exposed = candidates.filter(
     (candidate) =>
-      reachable.has(candidate.op) || requiresOwnerConfirmation(candidate.op),
+      reachable.has(candidate.op) || requiresOwnerConfirmation(candidate),
   );
   const restricted: SurfaceCatalog = {
     list: () => exposed,
@@ -119,7 +119,7 @@ export function createMcpHandlers(
         byName.get(name) ??
         [...discoveryOperations, ...candidates].find(
           (entry) =>
-            requiresOwnerConfirmation(entry.op) &&
+            requiresOwnerConfirmation(entry) &&
             mcpToolName(entry.op, exposure.toolPrefix) === name,
         );
       if (

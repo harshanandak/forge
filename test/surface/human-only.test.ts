@@ -81,7 +81,11 @@ test("noninteractive local calls refuse every human-only verb and preserve notes
 
 test("failed host approval refuses before invoking or resolving any context", async () => {
   const catalog = fakeCatalog([
-    candidate("memory.forget", { callers: ["human"] }),
+    {
+      ...candidate("memory.forget", { callers: ["human"] }),
+      blockId: "forge/memory",
+      declaredOp: "memory.forget",
+    },
   ]);
   const result = await dispatch(
     catalog,

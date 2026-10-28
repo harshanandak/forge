@@ -534,6 +534,7 @@ export async function createAssembly(
             const { block: captured, operation } = checked.resolve(op);
             return {
               ...described,
+              declaredOp: operation.declaredOp,
               admitted,
               docs: docs.operations[operation.declaredOp]!,
               inputSchema: described.inputSchema as McpCandidate["inputSchema"],
