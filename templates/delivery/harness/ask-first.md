@@ -52,4 +52,4 @@ T3 Code runs Claude Code or Codex under the thread's permission mode, so the rul
 
 ## What these rules do not do
 
-They ask; they do not judge. The skills still require the owner's reply naming the action, and "continue" or silence is not that reply. A command written another way (a script, an alias, `sh -c`) can slip past a prefix rule; the harness sandbox is the only hard stop.
+They ask; they do not judge. The skills still require the owner's reply naming the action, and "continue" or silence is not that reply. A command written another way (a script, an alias, `sh -c`) can slip past a prefix rule; the harness sandbox is the only hard stop. The [command guard](command-guard.md) refuses a few command shapes outright, but it is also text only.

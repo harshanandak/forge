@@ -37,7 +37,10 @@ type Guard = {
   file?: string;
   instruction: string;
   config?: {
-    hooks: Record<string, { hooks: { type: string; command: string }[] }[]>;
+    hooks: Record<
+      string,
+      { matcher?: string; hooks: { type: string; command: string }[] }[]
+    >;
   };
 };
 const operations = require("../../../src/blocks/agent/entry.cts") as Record<
@@ -170,6 +173,18 @@ test("guard renders a quoted installed companion path for a named or detected ho
             ],
           },
         ],
+        PreToolUse: [
+          {
+            matcher: "Bash",
+            hooks: [
+              {
+                type: "command",
+                command:
+                  'node "C:/Forge install/templates/delivery/harness/guard.mjs"',
+              },
+            ],
+          },
+        ],
       },
     });
     expect(result.instruction).toMatch(/merge/i);
@@ -182,6 +197,7 @@ test("guard gives a clear warning when the named adapter has no done-claim guard
     ) as Guard;
     expect(result.config).toBeUndefined();
     expect(result.instruction).toMatch(/no done-claim guard/i);
+    expect(result.instruction).toContain("no command guard");
   }
 });
 
@@ -194,6 +210,9 @@ for (const platform of ["win32", "linux", "darwin"] as const) {
     const result = operations["agent.guard"]!(fixture) as Guard;
     expect(result.config!.hooks.Stop![0]!.hooks[0]!.command).toBe(
       `node "${platform === "win32" ? "C:" : "/tmp"}/Forge install/templates/delivery/skills/forge-build/done-claim.mjs"`,
+    );
+    expect(result.config!.hooks.PreToolUse![0]!.hooks[0]!.command).toBe(
+      `node "${platform === "win32" ? "C:" : "/tmp"}/Forge install/templates/delivery/harness/guard.mjs"`,
     );
   });
   for (const character of ["$", "`", '"', "'", "%", "!"]) {
@@ -218,6 +237,16 @@ for (const platform of ["win32", "linux", "darwin"] as const) {
     );
   });
 }
+test("guard refuses colliding hook events", () => {
+  expect(() =>
+    operations["agent.guard"]!(
+      call({ id: "codex" }, [
+        { ...codex, guard: { ...codex.guard!, command: "Stop" } },
+      ]),
+    ),
+  ).toThrow("INPUT_INVALID");
+});
+
 test("adapter schema keeps optional capabilities closed and validates guard branches", () => {
   const schema = JSON.parse(
     readFileSync(resolve(root, "schemas/adapter.json"), "utf8"),
