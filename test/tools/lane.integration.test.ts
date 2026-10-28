@@ -194,6 +194,37 @@ test("lanes started from main, caller, and a lane are siblings and survive paren
   ).toEqual(["child", "third"]);
 });
 
+for (const body of ["---", "***", "- "])
+  test(`punctuation-only acceptance refuses (${JSON.stringify(body)})`, () => {
+    const f = fixture();
+    writeFileSync(
+      f.brief,
+      f
+        .text("", "Acceptance test")
+        .replace("## Acceptance test\n", `## Acceptance test\n${body}`),
+    );
+    const result = f.run(f.args("one"));
+    expect(result.code).toBe(1);
+    expect(result.output.reasons).toContain(
+      "brief requires non-empty section: Acceptance test",
+    );
+    expect(existsSync(f.registry)).toBe(false);
+  });
+
+for (const body of ["Pass", "確認", "٧"])
+  test(`acceptance content starts (${body})`, () => {
+    const f = fixture();
+    writeFileSync(
+      f.brief,
+      f
+        .text("", "Acceptance test")
+        .replace("## Acceptance test\n", `## Acceptance test\n${body}`),
+    );
+    const result = f.run(f.args("one"));
+    expect(result.code).toBe(0);
+    expect(result.output.verdict).toBe("started");
+  });
+
 for (const comment of [
   "<!-- TODO: acceptance -->",
   "<!--\nTODO: acceptance\n-->",

@@ -111,7 +111,9 @@ function briefProblems(text: string): string[] {
     } else if (current) bodies.get(current)?.push(line);
   }
   return required
-    .filter((name) => !bodies.get(name)?.join("\n").trim())
+    .filter(
+      (name) => !bodies.get(name)?.some((line) => /[\p{L}\p{N}]/u.test(line)),
+    )
     .map((name) => `brief requires non-empty section: ${name}`);
 }
 function options(argv: string[]): Options | "list" {
