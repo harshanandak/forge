@@ -82,6 +82,11 @@ test("resume replaces the worker brief Session with the reported holder", async 
     const step = resume.split("\n").find((line) => line.startsWith("4."));
     expect(step).toContain("claim.holder.session.id");
     expect(step).toContain(
+      "If the reported holder is a `t3:` session, that chat continues the work itself, or releases the claim so a worker can claim with `<slice>-worker`.",
+    );
+    expect(step).toContain("Workers never use a `t3:` session.");
+    expect(step).toContain("For a live non-`t3:` claim");
+    expect(step).toContain(
       "Put that reported holder session in the brief's Session line in place of `<slice>-worker`.",
     );
   });
