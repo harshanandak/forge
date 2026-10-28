@@ -9,7 +9,7 @@ Orchestrator only. A worker never merges. Merge by: agent.
 
 ## Merge conditions: all of them, read fresh
 
-Preview: `forge check gate --input '{"pr":<n>}'`. The merge below must return exit 0, `ok:true` and `result.outcome` MERGED. Keep `result.head` as `<head>` and `result.receipt` as `<id>`.
+Preview: `forge check gate --pr <n>`. The merge below must return exit 0, `ok:true` and `result.outcome` MERGED. Keep `result.head` as `<head>` and `result.receipt` as `<id>`.
 
 The gate requires an open, clean PR, a verified current-head PASS receipt covering `receiptChecks`, successful required CI checks, no unresolved threads across every page, and no changed file matching `doorPaths`. It re-reads the head before returning. REFUSED exits 1 with reasons; fix through `forge-review` and rerun the gate.
 
@@ -23,13 +23,13 @@ Merge one PR at a time, after combined-code CI: minimise time to merge within fl
 forge pr merge <n>
 ```
 
-It runs the gate and uses `gh pr merge <n> --squash --match-head-commit <head>` pinned to its head, never `--admin`, `--auto` or `--delete-branch`. Never run raw `gh pr merge`. On `CHECK_GATE_REFUSED`, fix `result.gate.reasons` through `forge-review`. On `MERGE_UNVERIFIED`, read `forge pr state <n>` before anything else.
+It runs the gate and uses `gh pr merge <n> --squash --match-head-commit <head>` pinned to its head, never `--admin`, `--auto` or `--delete-branch`. Never run raw `gh pr merge`. On `CHECK_GATE_REFUSED`, fix `result.gate.reasons` through `forge-review`. On `MERGE_UNVERIFIED`, read `gh pr view <n> --json state,mergeCommit` before anything else.
 
 A refused merge because the head moved means run the gate again. Never merge without the pin.
 
 ## Verify
 
-1. Readback shows `MERGED`; keep `result.mergeCommit` as the merge commit SHA.
+1. `gh pr view <n> --json state,mergeCommit` must show `MERGED`; keep its merge commit SHA.
 2. Base CI: `gh run list --branch <base> --commit <sha>`. Wait through the harness, not a sleep loop. Red is a new bug: file at p0 or p1 and fix forward.
 3. Close the issue. The worker released its claim, so take it again first: `forge issue claim <slice>`. Run `forge issue links <slice>`; if the newest `delivers` link is not the PR being landed (or none exists), add the current PR URL first with `forge issue link <slice> --relation delivers --url "<pr url>"` while holding the claim. Then run `forge issue close <slice> --reason "merged in <sha>" --receipt <id>` using the gate's receipt or a `check run` receipt at the merge commit. On `RECEIPT_HEAD_MISMATCH` or `PR_NOT_MERGED`, stop; never switch to `withoutReceipt`. On `UNAVAILABLE`, retry.
 4. Inspect the worktree (`git -C <path> status --short` and `git -C <path> log origin/<base>..HEAD --oneline`). Remove only when both are empty; file or push anything left first. Removing work is a one-way door.

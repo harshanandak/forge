@@ -1244,12 +1244,16 @@ async function prMerge(args: Call<GateInput>): Promise<MergeResult> {
   }
   active();
   const services = gateServices(args);
+  const cleanupMs = args.services.process.cleanupBudgetMs ?? 10250;
+  const finalizationMs = 1000;
+  const readbackBudgetMs = 10000 + cleanupMs + finalizationMs;
   const evidence = await gate(services, args.input, args.config, {
     signal: args.signal,
-    deadline: args.deadline - 35000,
+    deadline: args.deadline - 25000 - cleanupMs - readbackBudgetMs,
   });
   active();
-  const result = {
+  let result: MergeResult = {
+    outcome: "MERGE_UNVERIFIED",
     pr: args.input.pr,
     head: evidence.head,
     gate: evidence,
@@ -1275,11 +1279,15 @@ async function prMerge(args: Call<GateInput>): Promise<MergeResult> {
     });
   }
   active();
-  const mergeTimeout = Math.min(25000, args.deadline - Date.now() - 10000);
+  const mergeTimeout = Math.min(
+    25000,
+    args.deadline - Date.now() - cleanupMs - readbackBudgetMs,
+  );
   if (mergeTimeout <= 0)
     failure("INVOCATION_TIMEOUT", "Insufficient time for merge and readback");
   let merge: Awaited<ReturnType<typeof gh>> | undefined;
   try {
+    args.services.process.retainMergeOutcome?.(result);
     merge = await gh(
       [...MERGE_COMMAND, String(args.input.pr), ...MERGE_FLAGS, evidence.head],
       mergeTimeout,
@@ -1288,7 +1296,7 @@ async function prMerge(args: Call<GateInput>): Promise<MergeResult> {
     // The write may have reached GitHub; only readback can establish its outcome.
   }
   try {
-    const remaining = args.deadline - Date.now();
+    const remaining = args.deadline - Date.now() - cleanupMs - finalizationMs;
     if (remaining <= 0) throw new Error("Readback deadline exceeded");
     const read = await gh(
       [
@@ -1300,6 +1308,21 @@ async function prMerge(args: Call<GateInput>): Promise<MergeResult> {
       ],
       Math.min(10000, remaining),
     );
+    result = {
+      ...result,
+      readbackProcess: {
+        exitCode: read.exitCode,
+        signal: read.signal,
+        timedOut: read.timedOut,
+        truncated:
+          read.truncated ||
+          read.stdout.length > 2048 ||
+          read.stderr.length > 2048,
+        stdout: read.stdout.slice(0, 2048),
+        stderr: read.stderr.slice(0, 2048),
+      },
+    };
+    args.services.process.retainMergeOutcome?.(result);
     if (
       read.exitCode !== 0 ||
       read.signal !== null ||
@@ -1332,12 +1355,17 @@ async function prMerge(args: Call<GateInput>): Promise<MergeResult> {
           outcome: "MERGED",
           mergeCommit: value.mergeCommit.oid as string,
         };
-    } else if (value.headRefOid !== evidence.head)
-      return { ...result, outcome: "HEAD_MOVED" };
-    else if (merge && merge.exitCode !== null && merge.exitCode !== 0)
+    } else if (
+      merge &&
+      merge.exitCode !== null &&
+      merge.exitCode !== 0 &&
+      !merge.timedOut &&
+      merge.signal === null
+    )
       return {
         ...result,
-        outcome: "MERGE_REFUSED",
+        outcome:
+          value.headRefOid !== evidence.head ? "HEAD_MOVED" : "MERGE_REFUSED",
         detail: merge.stderr.slice(0, 300),
       };
   } catch {

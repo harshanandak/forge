@@ -11,27 +11,39 @@ export function checkResult(
   catalog: Catalog,
   op: string,
   envelope: ResultEnvelope,
+  interruptedMerge?: MergeResult,
 ): ResultEnvelope {
   const { block, operation } = catalog.resolve(op);
   if (
     block.manifest.id === "forge/check" &&
-    operation.declaredOp === "pr.merge" &&
-    envelope.ok
+    operation.declaredOp === "pr.merge"
   ) {
-    const merge = envelope.result as MergeResult;
+    const interrupted =
+      !envelope.ok &&
+      ["INVOCATION_TIMEOUT", "INVOCATION_CANCELLED"].includes(
+        envelope.error.code,
+      );
+    const merge = envelope.ok
+      ? (envelope.result as MergeResult)
+      : interrupted
+        ? interruptedMerge
+        : undefined;
+    if (!merge) return envelope;
     if (merge.outcome === "MERGED") return envelope;
     return {
       ...envelope,
       ok: false,
+      result: merge,
       status: merge.outcome === "MERGE_UNVERIFIED" ? "INCOMPLETE" : "FAIL",
       error: {
+        ...(!envelope.ok ? envelope.error : {}),
         code:
           merge.outcome === "REFUSED" ? "CHECK_GATE_REFUSED" : merge.outcome,
         message:
           merge.outcome === "REFUSED"
             ? "Merge gate refused; inspect result.gate.reasons and repair the evidence."
             : merge.outcome === "MERGE_UNVERIFIED"
-              ? "Merge could not be verified; read pr.state before taking further action."
+              ? "Merge could not be verified; run gh pr view <n> --json state,mergeCommit before taking further action."
               : merge.outcome === "HEAD_MOVED"
                 ? "Pull request head moved; rerun the merge gate."
                 : "GitHub refused the merge; inspect result.detail.",

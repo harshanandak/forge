@@ -1,16 +1,28 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import entry from "../../../src/blocks/check/entry.cts";
 import {
   createCheck,
   type CheckConfig,
   type CheckServices,
+  type MergeResult as RetainedMergeResult,
 } from "../../../src/blocks/check/index.ts";
 import { checkCrypto } from "../../../src/blocks/check/support.ts";
 import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts";
 import { captured } from "./fakes.ts";
-import type { ProcessResult } from "../../../src/ports/process.ts";
-import type { StateRecord } from "../../../src/generated/types.ts";
-import type { Catalog } from "../../../src/core/catalog/index.ts";
+import type {
+  ProcessResult,
+  SpawnOptions,
+} from "../../../src/ports/process.ts";
+import type {
+  ResultEnvelope,
+  StateRecord,
+} from "../../../src/generated/types.ts";
+import { Catalog, captureBlock } from "../../../src/core/catalog/index.ts";
+import { Runtime } from "../../../src/core/runtime/index.ts";
+import { TrustStore } from "../../../src/core/trust/index.ts";
+import { createMergeOutcome } from "../../../src/assembly/merge-outcome.ts";
+import { ASSEMBLY_PROVIDES } from "../../../src/assembly/providers.ts";
 import { checkResult } from "../../../src/assembly/check-result.ts";
 import { exitCode } from "../../../src/surface/result.ts";
 import manifest from "../../../src/blocks/check/forge.block.json" with { type: "json" };
@@ -96,6 +108,9 @@ function fixture() {
   let throwMerge = false,
     throwRead = false,
     afterGate = false;
+  let scoped = false;
+  let hook:
+    ((phase: "merge" | "readback", options: SpawnOptions) => void) | undefined;
   const services: CheckServices = {
     root: "/fixture",
     environment: { PATH: "fixture" },
@@ -133,7 +148,7 @@ function fixture() {
             return captured({ ...complete, stdout: "checked" }, options);
           calls.push([...args]);
           expect(options.env).toEqual({ PATH: "fixture" });
-          expect(options.signal).toBe(signal);
+          if (!scoped) expect(options.signal).toBe(signal);
           let value: unknown;
           if (args[0] === "pr" && args[1] === "merge") {
             expect(args).toEqual([
@@ -146,12 +161,14 @@ function fixture() {
             ]);
             expect(options.timeoutMs).toBeGreaterThan(0);
             expect(options.timeoutMs).toBeLessThanOrEqual(25000);
+            hook?.("merge", options);
             if (throwMerge) throw new Error("merge transport failed");
             return { ...complete, ...mergeResult };
           }
           if (args[0] === "pr" && args[1] === "view") {
             if (args.includes("state,headRefOid,mergeCommit")) {
               expect(options.timeoutMs).toBeLessThanOrEqual(10000);
+              hook?.("readback", options);
               if (throwRead) throw new Error("read transport failed");
               return {
                 ...complete,
@@ -226,10 +243,28 @@ function fixture() {
       },
     },
   };
+  const clients = {
+    process: services.process,
+    state: services.state,
+    crypto: checkCrypto,
+    files: { root: services.root },
+    environment: {
+      select(names: string[]) {
+        expect(names).toEqual([
+          "PATH",
+          "GH_TOKEN",
+          "GH_HOST",
+          "GH_ENTERPRISE_TOKEN",
+        ]);
+        return services.environment;
+      },
+    },
+  };
   return {
     calls,
     controller,
     records,
+    clients,
     receipt: () => createCheck(services).run({}, config),
     alter(options: {
       missing?: boolean;
@@ -241,6 +276,8 @@ function fixture() {
       throwRead?: boolean;
       afterGate?: boolean;
       cancelAfterGate?: boolean;
+      scoped?: boolean;
+      hook?: typeof hook;
     }) {
       missing = options.missing ?? missing;
       unresolved = options.unresolved ?? unresolved;
@@ -251,6 +288,8 @@ function fixture() {
       throwRead = options.throwRead ?? throwRead;
       afterGate = options.afterGate ?? afterGate;
       cancelAfterGate = options.cancelAfterGate ?? cancelAfterGate;
+      scoped = options.scoped ?? scoped;
+      hook = options.hook ?? hook;
     },
     async run(gateConfig = config, deadline = Date.now() + 100000) {
       const handler = (
@@ -266,23 +305,7 @@ function fixture() {
           config: gateConfig,
           signal,
           deadline,
-          services: {
-            process: services.process,
-            state: services.state,
-            crypto: checkCrypto,
-            files: { root: services.root },
-            environment: {
-              select(names: string[]) {
-                expect(names).toEqual([
-                  "PATH",
-                  "GH_TOKEN",
-                  "GH_HOST",
-                  "GH_ENTERPRISE_TOKEN",
-                ]);
-                return services.environment;
-              },
-            },
-          },
+          services: clients,
         });
       } finally {
         for (const args of calls.filter((args) => args[1] === "merge"))
@@ -401,6 +424,27 @@ for (const state of ["OPEN", "CLOSED"])
     expect(exitCode(envelope(result))).toBe(1);
     expect(f.calls.filter((a) => a[1] === "merge")).toHaveLength(1);
   });
+for (const state of ["OPEN", "CLOSED"])
+  for (const changedHead of [false, true])
+    test(`successful merge exit with ${state} at ${changedHead ? "another" : "the pinned"} head remains unverified`, async () => {
+      const f = fixture();
+      const receipt = await f.receipt();
+      f.alter({
+        readback: {
+          state,
+          headRefOid: changedHead ? "b".repeat(40) : head,
+          mergeCommit: null,
+        },
+      });
+      const result = await f.run();
+      expect(result).toMatchObject({
+        outcome: "MERGE_UNVERIFIED",
+        head,
+        receipt: receipt.id,
+      });
+      expect(exitCode(envelope(result))).toBe(2);
+      expect(f.calls.filter((a) => a[1] === "merge")).toHaveLength(1);
+    });
 for (const scenario of [
   "other head",
   "read failure",
@@ -509,3 +553,272 @@ for (const cancellation of ["before", "during gate", "after gate", "expired"])
     });
     expect(f.calls.filter((a) => a[1] === "merge")).toHaveLength(0);
   });
+
+async function interruptedRuntime(
+  phase: "merge" | "readback",
+  interruption: "deadline" | "cancel",
+  recover = true,
+) {
+  const f = fixture();
+  const receipt = await f.receipt();
+  const source = new URL("../../../src/blocks/check/", import.meta.url);
+  const block = captureBlock(
+    "check",
+    {
+      open: () => ({
+        ownership: "borrowed",
+        value: {
+          read: (name) =>
+            name === "block.json"
+              ? new TextEncoder().encode(JSON.stringify(manifest))
+              : name === "entry.cjs"
+                ? new TextEncoder().encode("module.exports={};")
+                : readFileSync(new URL(name, source)),
+        },
+      }),
+    },
+    undefined,
+    true,
+  );
+  const runtimeCatalog = new Catalog(
+    {
+      schemaVersion: "forge.config/1",
+      blocks: {
+        check: { source: { builtin: "forge/check" }, config: { ...config } },
+      },
+    },
+    new Map([["check", block]]),
+    undefined,
+    ASSEMBLY_PROVIDES,
+  );
+  const outcome = createMergeOutcome(
+    runtimeCatalog,
+    "pr.merge",
+    { pr: 7 },
+    10250,
+  );
+  let now = Date.now();
+  const deadline = now + 100000;
+  const time = spyOn(Date, "now").mockImplementation(() => now);
+  f.alter({
+    scoped: true,
+    readResult: { stdout: "partial readback".repeat(300), timedOut: true },
+    hook(current, options) {
+      if (current === "merge")
+        expect(
+          options.timeoutMs + 2 * 10250 + 10000 + 1000,
+        ).toBeLessThanOrEqual(deadline - now);
+      if (current !== phase) return;
+      // A host pause during process cleanup can consume the reserved margin too.
+      if (interruption === "deadline") now = deadline + 1;
+      else f.controller.abort();
+    },
+  });
+  try {
+    const runtime = new Runtime(runtimeCatalog, new TrustStore(), {
+      clock: { now: () => now },
+      services: () =>
+        Promise.resolve({
+          ownership: "borrowed",
+          value: { ...f.clients, process: outcome.process(f.clients.process) },
+        }),
+      isolation: {
+        open: () =>
+          Promise.resolve({
+            ok: true,
+            handle: {
+              ownership: "owned",
+              close: () => Promise.resolve(),
+              value: {
+                async run(options) {
+                  const handler = (
+                    entry as unknown as Record<
+                      string,
+                      (args: unknown) => Promise<MergeResult>
+                    >
+                  )["pr.merge"]!;
+                  return options.encode(await handler(options.args));
+                },
+              },
+            },
+          }),
+      },
+    });
+    const envelope = await runtime.invoke(
+      {
+        schemaVersion: "forge.invocation/1",
+        requestId: "interrupted-merge",
+        op: "pr.merge",
+        caller: "agent",
+        input: { pr: 7 },
+        context: {
+          project: { id: "/fixture" },
+          actor: { kind: "agent", id: "test" },
+        },
+      },
+      { signal: f.controller.signal },
+    );
+    return {
+      response: checkResult(
+        runtimeCatalog,
+        "pr.merge",
+        envelope,
+        recover ? outcome.result() : undefined,
+      ),
+      receipt,
+      calls: f.calls,
+      outcome,
+      catalog: runtimeCatalog,
+    };
+  } finally {
+    time.mockRestore();
+  }
+}
+
+for (const phase of ["merge", "readback"] as const)
+  for (const interruption of ["deadline", "cancel"] as const)
+    test(`${interruption} during ${phase} cleanup retains evidence after the runtime discards handler output`, async () => {
+      const { response, receipt, calls } = await interruptedRuntime(
+        phase,
+        interruption,
+      );
+      expect(response).toMatchObject({
+        ok: false,
+        status: "INCOMPLETE",
+        error: { code: "MERGE_UNVERIFIED" },
+        result: {
+          outcome: "MERGE_UNVERIFIED",
+          head,
+          receipt: receipt.id,
+          gate: { verdict: "PASS" },
+        },
+      });
+      expect(exitCode(response)).toBe(2);
+      expect(calls.filter((args) => args[1] === "merge")).toHaveLength(1);
+      if (phase === "readback") {
+        expect(response.result).toMatchObject({
+          readbackProcess: {
+            exitCode: 0,
+            timedOut: true,
+            truncated: true,
+            stdout: "partial readback".repeat(300).slice(0, 2048),
+          },
+        });
+      }
+    });
+
+test("removing assembly recovery reproduces the lost post-write deadline result", async () => {
+  const { response } = await interruptedRuntime("readback", "deadline", false);
+  expect(response).toMatchObject({
+    ok: false,
+    status: "FAIL",
+    error: { code: "INVOCATION_TIMEOUT" },
+  });
+  expect(response.result).toBeUndefined();
+});
+
+test("post-write recovery preserves cleanup and authority failures", async () => {
+  const { outcome, catalog } = await interruptedRuntime("merge", "deadline");
+  for (const code of [
+    "PROCESS_CLEANUP_FAILED",
+    "GRANT_REQUIRED",
+    "ADMISSION_REQUIRED",
+    "SERVICE_EXPIRED",
+    "OUTPUT_INVALID",
+  ]) {
+    const failure: ResultEnvelope = {
+      ok: false,
+      op: "pr.merge",
+      status: "INCOMPLETE",
+      error: { code, message: "failure", retry: "reconcile_first" },
+      warnings: [],
+    };
+    expect(checkResult(catalog, "pr.merge", failure, outcome.result())).toBe(
+      failure,
+    );
+  }
+});
+
+test("recovery rejects invalid checkpoints and requires the exact merge invocation", async () => {
+  const { response, catalog, outcome } = await interruptedRuntime(
+    "readback",
+    "deadline",
+  );
+  const retained = response.result as RetainedMergeResult;
+  const failure: ResultEnvelope = {
+    ok: false,
+    op: "pr.merge",
+    status: "FAIL",
+    error: {
+      code: "INVOCATION_CANCELLED",
+      message: "cancelled",
+      retry: "reconcile_first",
+    },
+    warnings: [],
+  };
+  const argv = ["pr", "merge", "7", "--squash", "--match-head-commit", head];
+  const port = {
+    capability: "forge.process/v1" as const,
+    resolve: (path: string) => ({ kind: "resolved" as const, path }),
+    run: () => Promise.resolve(complete),
+  };
+  const options = {
+    cwd: "/fixture",
+    env: {},
+    timeoutMs: 1,
+    maxOutputBytes: 8192,
+  };
+  for (const invalid of [
+    { ...retained, pr: 8 },
+    { ...retained, unexpected: true },
+    { ...retained, head: "b".repeat(40) },
+    { ...retained, gate: { ...retained.gate, verdict: "REFUSED" } },
+    { ...retained, receipt: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" },
+    {
+      ...retained,
+      readbackProcess: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        truncated: false,
+        stdout: "x".repeat(2049),
+        stderr: "",
+      },
+    },
+    {
+      ...retained,
+      gate: {
+        ...retained.gate,
+        checks: [{ name: "x".repeat(1048577), state: "SUCCESS" }],
+      },
+    },
+  ]) {
+    const recovery = createMergeOutcome(catalog, "pr.merge", { pr: 7 }, 10250);
+    const process = recovery.process(port);
+    process.retainMergeOutcome!(invalid as RetainedMergeResult);
+    await process.run({ kind: "resolved", path: "gh" }, argv, options);
+    expect(checkResult(catalog, "pr.merge", failure, recovery.result())).toBe(
+      failure,
+    );
+  }
+  for (const actual of [
+    undefined,
+    ["pr", "merge", "7", "--merge", "--match-head-commit", head],
+  ]) {
+    const recovery = createMergeOutcome(catalog, "pr.merge", { pr: 7 }, 10250);
+    const process = recovery.process(port);
+    process.retainMergeOutcome!(retained);
+    if (actual)
+      await process.run({ kind: "resolved", path: "gh" }, actual, options);
+    expect(checkResult(catalog, "pr.merge", failure, recovery.result())).toBe(
+      failure,
+    );
+  }
+  const { readbackProcess: _raw, ...initialDraft } = retained;
+  outcome.process(port).retainMergeOutcome!(initialDraft);
+  expect(
+    checkResult(catalog, "pr.merge", failure, outcome.result()).result,
+  ).toMatchObject({
+    readbackProcess: retained.readbackProcess,
+  });
+});

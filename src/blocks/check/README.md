@@ -2,11 +2,14 @@
 
 `forge pr merge <n>` runs the same private merge gate, then calls `gh` with
 `pr merge <n> --squash --match-head-commit <head>` pinned to the gate's head.
-It reserves 35 seconds for the merge and readback. Only readback showing MERGED
+It reserves time for the merge, readback, process cleanup and finalization. Only readback showing MERGED
 at that head with a valid merge commit proves success, even if the write timed out.
 The result keeps `gate`, `head`, `receipt` and, on success, `mergeCommit`.
-Gate refusal, `HEAD_MOVED` and `MERGE_REFUSED` exit 1; `MERGE_UNVERIFIED`
-exits 2 and requires `forge pr state <n>` before further action. No automatic retry,
+Gate refusal exits 1. A nonzero merge exit with a complete OPEN/CLOSED readback
+returns `HEAD_MOVED` at another head or `MERGE_REFUSED` at the pinned head (exit 1).
+A zero exit without a verified MERGED readback at the pin, or an interrupted write,
+returns `MERGE_UNVERIFIED` (exit 2). Read `gh pr view <n> --json state,mergeCommit`
+to reconcile before further action. No automatic retry,
 admin override, merge queue or branch deletion is requested. This destructive,
 non-idempotent operation declares external process, network and write effects;
 a path or package copy needs a human grant for those bytes and effects.

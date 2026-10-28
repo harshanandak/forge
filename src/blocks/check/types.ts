@@ -57,6 +57,14 @@ export interface MergeResult {
   readonly receipt?: string;
   readonly mergeCommit?: string;
   readonly detail?: string;
+  readonly readbackProcess?: {
+    readonly exitCode: number | null;
+    readonly signal: string | null;
+    readonly timedOut: boolean;
+    readonly truncated: boolean;
+    readonly stdout: string;
+    readonly stderr: string;
+  };
   readonly gate: GateResult;
 }
 export interface RunInput {

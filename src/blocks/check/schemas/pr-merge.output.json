@@ -20,6 +20,26 @@
       "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
     },
     "detail": { "type": "string", "maxLength": 300 },
+    "readbackProcess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exitCode",
+        "signal",
+        "timedOut",
+        "truncated",
+        "stdout",
+        "stderr"
+      ],
+      "properties": {
+        "exitCode": { "type": ["integer", "null"] },
+        "signal": { "type": ["string", "null"] },
+        "timedOut": { "type": "boolean" },
+        "truncated": { "type": "boolean" },
+        "stdout": { "type": "string", "maxLength": 2048 },
+        "stderr": { "type": "string", "maxLength": 2048 }
+      }
+    },
     "gate": { "$ref": "gate.output.json" }
   },
   "allOf": [

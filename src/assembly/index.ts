@@ -57,6 +57,7 @@ import { createStateClient } from "./state-client.ts";
 import { version } from "../version.ts";
 import { withCheckRunBudget } from "./check-budget.ts";
 import { checkResult } from "./check-result.ts";
+import { createMergeOutcome } from "./merge-outcome.ts";
 import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
 import { firstPartyBlocks } from "./first-party.ts";
 import {
@@ -78,6 +79,7 @@ import {
   assemblyProvides,
   createAssemblyProviders,
   createReceiptsService,
+  processCleanupBudgetMs,
   idPrefixObservation,
   agentAdapterObservation,
   projectStateRoot,
@@ -1114,6 +1116,12 @@ export async function createAssembly(
           request,
           options.providers,
         );
+        const mergeOutcome = createMergeOutcome(
+          runtimeCatalog,
+          request.op,
+          request.input,
+          processCleanupBudgetMs(options.providers?.supervision),
+        );
         const result = await new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
@@ -1150,7 +1158,9 @@ export async function createAssembly(
                 if (
                   interfaceSatisfies("forge.process@1.0.0", binding.interface)
                 ) {
-                  clients[binding.slot] = providers.process(scope);
+                  clients[binding.slot] = mergeOutcome.process(
+                    providers.process(scope),
+                  );
                   continue;
                 }
                 if (
@@ -1323,7 +1333,12 @@ export async function createAssembly(
             }
           },
         }).invoke(request);
-        return checkResult(runtimeCatalog, request.op, result);
+        return checkResult(
+          runtimeCatalog,
+          request.op,
+          result,
+          mergeOutcome.result(),
+        );
       } catch (error) {
         if (
           request.op === "skills.sync" &&
