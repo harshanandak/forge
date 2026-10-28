@@ -1,5 +1,9 @@
 {
   "operations": {
+    "pr.merge": {
+      "title": "Gate and merge the pinned head",
+      "summary": "Run the merge gate, squash merge exactly its verified head, then read back GitHub state. MERGED exits 0; gate refusal, HEAD_MOVED or MERGE_REFUSED exit 1; MERGE_UNVERIFIED exits 2 and requires pr.state before further action. Keeps gate evidence, head and receipt in result."
+    },
     "pr.state": {
       "title": "Read pull request state",
       "summary": "Read current-head GitHub checks, threads, merge readiness and remarks. Prints one JSON line with verdict, news and an opaque next token; --since suppresses unchanged reads. Read failures exit nonzero without advancing the token."

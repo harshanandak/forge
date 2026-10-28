@@ -1,5 +1,16 @@
 # Declared-command execution
 
+`forge pr merge <n>` runs the same private merge gate, then calls `gh` with
+`pr merge <n> --squash --match-head-commit <head>` pinned to the gate's head.
+It reserves 35 seconds for the merge and readback. Only readback showing MERGED
+at that head with a valid merge commit proves success, even if the write timed out.
+The result keeps `gate`, `head`, `receipt` and, on success, `mergeCommit`.
+Gate refusal, `HEAD_MOVED` and `MERGE_REFUSED` exit 1; `MERGE_UNVERIFIED`
+exits 2 and requires `forge pr state <n>` before further action. No automatic retry,
+admin override, merge queue or branch deletion is requested. This destructive,
+non-idempotent operation declares external process, network and write effects;
+a path or package copy needs a human grant for those bytes and effects.
+
 `forge pr state <n> [--since <token>]` reads GitHub through `gh`: PR metadata,
 all and required checks, paged threads, projected remarks, then a final head/state check.
 It prints one JSON line with `ready`, `waiting`, `blocked` or `gone`, reasons, news,
@@ -81,7 +92,7 @@ cleanup. The runner-output adapter recognizes report formats and imports no runn
 
 ## Catalog services and configuration
 
-The first-party registration makes `check.run`, `check.list`, `check.show`, and `check.gate` discoverable
+The first-party registration makes `pr.merge`, `check.run`, `check.list`, `check.show`, and `check.gate` discoverable
 through the generated CLI and MCP. The captured `entry.cjs` contains the engine, command
 parser and receipt checks. It imports no runtime code. The host supplies the declared
 `process`, `files`, `environment`, `crypto`, `output` and `state` slots. The same pure

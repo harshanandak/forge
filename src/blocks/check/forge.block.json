@@ -39,6 +39,24 @@
     }
   ],
   "operations": {
+    "pr.merge": {
+      "input": "schemas/pr-merge.input.json",
+      "output": "schemas/pr-merge.output.json",
+      "context": "project",
+      "timeoutMs": 100000,
+      "effects": [
+        "external:process",
+        "external:network",
+        "external:write",
+        "files:read",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "destructive": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental",
+      "args": ["pr"]
+    },
     "pr.state": {
       "input": "schemas/pr-state.input.json",
       "output": "schemas/pr-state.output.json",

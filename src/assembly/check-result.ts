@@ -1,6 +1,10 @@
 import type { Catalog } from "../core/catalog/index.ts";
 import type { ResultEnvelope } from "../generated/types.ts";
-import type { CheckReceipt, GateResult } from "../blocks/check/types.ts";
+import type {
+  CheckReceipt,
+  GateResult,
+  MergeResult,
+} from "../blocks/check/types.ts";
 
 /** Runtime has validated the receipt; every surface consumes this same outcome. */
 export function checkResult(
@@ -9,6 +13,32 @@ export function checkResult(
   envelope: ResultEnvelope,
 ): ResultEnvelope {
   const { block, operation } = catalog.resolve(op);
+  if (
+    block.manifest.id === "forge/check" &&
+    operation.declaredOp === "pr.merge" &&
+    envelope.ok
+  ) {
+    const merge = envelope.result as MergeResult;
+    if (merge.outcome === "MERGED") return envelope;
+    return {
+      ...envelope,
+      ok: false,
+      status: merge.outcome === "MERGE_UNVERIFIED" ? "INCOMPLETE" : "FAIL",
+      error: {
+        code:
+          merge.outcome === "REFUSED" ? "CHECK_GATE_REFUSED" : merge.outcome,
+        message:
+          merge.outcome === "REFUSED"
+            ? "Merge gate refused; inspect result.gate.reasons and repair the evidence."
+            : merge.outcome === "MERGE_UNVERIFIED"
+              ? "Merge could not be verified; read pr.state before taking further action."
+              : merge.outcome === "HEAD_MOVED"
+                ? "Pull request head moved; rerun the merge gate."
+                : "GitHub refused the merge; inspect result.detail.",
+        retry: "reconcile_first",
+      },
+    };
+  }
   if (
     block.manifest.id === "forge/check" &&
     operation.declaredOp === "check.gate" &&
