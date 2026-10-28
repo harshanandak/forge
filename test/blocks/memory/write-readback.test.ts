@@ -3,7 +3,7 @@ import { ForgeFailure } from "../../../src/contract/author.ts";
 import type { StateRecord } from "../../../src/generated/types.ts";
 import { loadEntry, memoryState } from "./lib.ts";
 
-type Fault = "missing" | "mismatched" | "reordered";
+type Fault = "missing" | "mismatched" | "reordered" | "text" | "tags" | "scope";
 const PROJECT_ID = "0123456789abcdef";
 const NOTE_KEY = "note/000000001";
 
@@ -27,6 +27,17 @@ function stores(level: "device" | "project") {
   let injected = 0;
   function persisted(value: unknown): unknown {
     if (fault === "reordered") return reordered(value);
+    if (fault === "text" || fault === "tags" || fault === "scope") {
+      // Mutate the supplied object as well as returning it: a reference is not a snapshot.
+      return Object.assign(value as object, {
+        [fault]:
+          fault === "text"
+            ? "altered text"
+            : fault === "tags"
+              ? ["altered"]
+              : "altered",
+      });
+    }
     return { ...(value as object), text: "different persisted text" };
   }
   function acknowledged(
@@ -54,7 +65,11 @@ function stores(level: "device" | "project") {
         return backing.put(...args);
       injected += 1;
       if (fault === "missing") missing = true;
-      else backing.put(key, persisted(value), options);
+      else {
+        const record = backing.put(key, persisted(value), options);
+        if (fault === "text" || fault === "tags" || fault === "scope")
+          return record;
+      }
       return acknowledged(key, value, options.expectRevision + 1);
     },
     putMany(...args: Parameters<typeof backing.putMany>) {
@@ -73,7 +88,9 @@ function stores(level: "device" | "project") {
         }
         return [{ ...entry, value: persisted(entry.value) }];
       });
-      backing.putMany(persistedEntries, options);
+      const records = backing.putMany(persistedEntries, options);
+      if (fault === "text" || fault === "tags" || fault === "scope")
+        return records;
       return entries.map((entry) =>
         acknowledged(entry.key, entry.value, entry.expectRevision + 1),
       );
@@ -192,4 +209,98 @@ for (const level of ["device", "project"] as const) {
       expect(h.injected()).toBe(order === "reordered" ? 2 : 0);
     }, 30_000);
   }
+}
+
+for (const level of ["device", "project"] as const) {
+  for (const operation of ["add", "edit"] as const) {
+    for (const field of ["text", "tags", "scope"] as const) {
+      test(`memory.add refuses matching altered ${field} storage and acknowledgment for ${level} ${operation}`, async () => {
+        const entry = loadEntry("memory");
+        const h = stores(level);
+        const id =
+          level === "device" ? "device/note-1" : `project/${PROJECT_ID}/note-1`;
+        if (operation === "edit")
+          await entry["memory.add"]!({
+            input: { level, text: "original", tags: ["old"], scope: "old" },
+            services: h.services,
+          });
+        h.setFault(field);
+        let refused: unknown;
+        try {
+          await entry["memory.add"]!({
+            input: {
+              level,
+              text: "requested",
+              tags: ["requested"],
+              scope: "requested",
+              ...(operation === "edit" ? { id, expectRevision: 1 } : {}),
+            },
+            services: h.services,
+          });
+        } catch (error) {
+          refused = error;
+        }
+        expect(h.injected()).toBe(1);
+        expect(refused).toBeInstanceOf(ForgeFailure);
+        const failure = refused as ForgeFailure;
+        expect(failure.error.code).toBe("INTERNAL");
+        expect(failure.error.message).toContain("memory.add");
+        expect(failure.error.message).toMatch(/reconcil/i);
+        expect(failure.error.message).toMatch(/memory[ .]show/);
+        expect(h.target.get(NOTE_KEY)?.value).toMatchObject({
+          [field]:
+            field === "text"
+              ? "altered text"
+              : field === "tags"
+                ? ["altered"]
+                : "altered",
+        });
+      }, 30_000);
+    }
+  }
+
+  test(`memory.add ${level} edits preserve omitted fields and normalize null scope`, async () => {
+    const entry = loadEntry("memory");
+    const h = stores(level);
+    const added = (await entry["memory.add"]!({
+      input: {
+        level,
+        text: "original",
+        tags: ["kept"],
+        links: ["device/note-7"],
+        scope: "kept",
+      },
+      services: h.services,
+    })) as { id: string };
+    expect(
+      await entry["memory.add"]!({
+        input: { id: added.id, expectRevision: 1, text: "edited" },
+        services: h.services,
+      }),
+    ).toMatchObject({
+      status: "updated",
+      note: { tags: ["kept"], links: ["device/note-7"], scope: "kept" },
+    });
+    expect(
+      await entry["memory.add"]!({
+        input: {
+          id: added.id,
+          expectRevision: 2,
+          text: "cleared",
+          scope: null,
+        },
+        services: h.services,
+      }),
+    ).toMatchObject({
+      status: "updated",
+      note: { tags: ["kept"], links: ["device/note-7"] },
+    });
+    const value = h.target.get(NOTE_KEY)?.value as Record<string, unknown>;
+    expect(Object.hasOwn(value, "scope")).toBe(false);
+    expect(value).toMatchObject({
+      text: "cleared",
+      tags: ["kept"],
+      links: ["device/note-7"],
+    });
+  }, 30_000);
 }

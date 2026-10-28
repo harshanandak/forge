@@ -630,18 +630,22 @@ module.exports = {
       const old = existing && (existing.value as NoteValue);
       if (!existing || !old || old.deleted === true)
         return { status: "not_found" as const, id: editing };
-      const record = source.state.put(
-        key,
-        fields(
-          [
-            ...old.previous,
-            { revision: old.textRevision ?? existing.revision, text: old.text },
-          ].slice(-MAX_VERSIONS),
-          old,
-        ),
-        { expectRevision: input.expectRevision ?? existing.revision },
+      const value = fields(
+        [
+          ...old.previous,
+          { revision: old.textRevision ?? existing.revision, text: old.text },
+        ].slice(-MAX_VERSIONS),
+        old,
       );
-      if (canonical(source.state.get(key)) !== canonical(record))
+      const expected = canonical(value);
+      const record = source.state.put(key, value, {
+        expectRevision: input.expectRevision ?? existing.revision,
+      });
+      const read = source.state.get(key);
+      if (
+        canonical(read) !== canonical(record) ||
+        canonical(read?.value) !== expected
+      )
         fail(
           "INTERNAL",
           "memory.add write did not match its readback; reconcile with memory.show before retrying",
@@ -666,6 +670,14 @@ module.exports = {
     return committed(() => {
       const counter = readCounter(target.state, NOTE_COUNTER);
       const number = counter.last + 1;
+      const value = fields(
+        [],
+        undefined,
+        target.level === "device" && input.scope === undefined
+          ? resolvedScope(config, services)
+          : undefined,
+      );
+      const expected = canonical(value);
       const [, record] = target.state.putMany([
         {
           key: NOTE_COUNTER,
@@ -674,19 +686,15 @@ module.exports = {
         },
         {
           key: noteKey(number),
-          value: fields(
-            [],
-            undefined,
-            target.level === "device" && input.scope === undefined
-              ? resolvedScope(config, services)
-              : undefined,
-          ),
+          value,
           expectRevision: 0,
         },
       ]);
+      const read = target.state.get(noteKey(number));
       if (
         !record ||
-        canonical(target.state.get(noteKey(number))) !== canonical(record)
+        canonical(read) !== canonical(record) ||
+        canonical(read?.value) !== expected
       )
         fail(
           "INTERNAL",
