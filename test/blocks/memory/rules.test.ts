@@ -22,7 +22,109 @@ interface Pointer {
 }
 const marker = "deploy PRIVATE_MEMORY_MARKER\v\f\u0085\u2028\u2029";
 
-test("default search keeps legacy device and project scopes while preferring resolved and general hits", async () => {
+test("empty normalized folder uses general for scope, rules and new device notes", async () => {
+  harness = await openHarness(["memory"], {}, { project: "你好" });
+  expect(done(await harness.call("memory.scope", {}))).toEqual({
+    scope: "general",
+  });
+  const empty = done(await harness.call("memory.rules", {})) as Pointer;
+  expect(empty.text.text).toContain("general 0.");
+  const added = done(
+    await harness.call("memory.add", {
+      level: "device",
+      text: "emptyfolderneedle",
+    }),
+  ) as { id: string; note: { scope?: string } };
+  expect(added.note.scope).toBe("general");
+  const rules = done(await harness.call("memory.rules", {})) as Pointer;
+  expect(rules.text.text).toContain("general 1.");
+  const found = done(
+    await harness.call("memory.search", {
+      query: "emptyfolderneedle",
+      scope: "general",
+    }),
+  ) as { hits: { id: string }[] };
+  expect(found.hits.map((hit) => hit.id)).toEqual([added.id]);
+}, 60_000);
+
+test("unscoped device and project notes keep baseline order and scope labels", async () => {
+  harness = await openHarness(["memory"]);
+  writeFileSync(
+    join(harness.deviceRoot, "memory-scopes.json"),
+    JSON.stringify({ project: "shared" }),
+  );
+  const add = async (
+    level: "device" | "project",
+    text: string,
+    scope?: string | null,
+  ) =>
+    done(
+      await harness!.call("memory.add", {
+        level,
+        text,
+        ...(scope === undefined ? {} : { scope }),
+      }),
+    ) as { id: string };
+  const device = await add("device", "rankgeneralneedle", null);
+  const project = await add("project", "rankprojectneedle");
+  const foreignDevice = await add("device", "rankgeneralneedle", "foreign");
+  const foreignProject = await add("device", "rankprojectneedle", "foreign");
+  for (const [query, unscoped, foreign] of [
+    ["rankgeneralneedle", device.id, foreignDevice.id],
+    ["rankprojectneedle", project.id, foreignProject.id],
+  ] as const) {
+    const found = done(await harness.call("memory.search", { query })) as {
+      hits: { id: string; scope?: string }[];
+    };
+    expect(found.hits.map((hit) => hit.id)).toEqual([foreign, unscoped]);
+    expect(found.hits.map((hit) => hit.scope)).toEqual(["foreign", undefined]);
+  }
+}, 60_000);
+
+test("alias changes between pages do not reorder or repeat baseline search results", async () => {
+  harness = await openHarness(["memory"]);
+  const alias = (scope: string) =>
+    writeFileSync(
+      join(harness!.deviceRoot, "memory-scopes.json"),
+      JSON.stringify({ project: scope }),
+    );
+  alias("alpha");
+  const ids: string[] = [];
+  for (const scope of ["alpha", "beta"]) {
+    const added = done(
+      await harness.call("memory.add", {
+        level: "device",
+        scope,
+        text: "paginationneedle",
+      }),
+    ) as { id: string };
+    ids.push(added.id);
+  }
+  const first = done(
+    await harness.call("memory.search", {
+      query: "paginationneedle",
+      limit: 1,
+    }),
+  ) as { hits: { id: string }[]; next: string };
+  expect(first.next).toBe("3:1");
+  alias("beta");
+  expect(done(await harness.call("memory.scope", {}))).toEqual({
+    scope: "beta",
+  });
+  const second = done(
+    await harness.call("memory.search", {
+      query: "paginationneedle",
+      limit: 1,
+      cursor: first.next,
+    }),
+  ) as { hits: { id: string }[]; next?: string };
+  expect([...first.hits, ...second.hits].map((hit) => hit.id)).toEqual(
+    [...ids].reverse(),
+  );
+  expect(second.next).toBeUndefined();
+}, 60_000);
+
+test("default search keeps legacy device and project scopes in baseline relevance order", async () => {
   harness = await openHarness(["memory"], {}, { project: "legacy" });
   const ids: string[] = [];
   for (const [level, scope] of [
@@ -53,12 +155,13 @@ test("default search keeps legacy device and project scopes while preferring res
     ) as { hits: { id: string; scope?: string }[]; next?: string };
   const found = await search();
   expect(found.hits.map((hit) => hit.id).sort()).toEqual([...ids].sort());
-  expect(
-    found.hits
-      .slice(0, 2)
-      .map((hit) => hit.scope)
-      .sort(),
-  ).toEqual(["general", "legacy"]);
+  expect(found.hits.map((hit) => hit.id)).toEqual([
+    ids[0]!,
+    ids[1]!,
+    ids[4]!,
+    ids[3]!,
+    ids[2]!,
+  ]);
   expect(
     (await search({ scope: "prior-label" })).hits.map((hit) => hit.id).sort(),
   ).toEqual(ids.slice(0, 2).sort());
@@ -77,7 +180,7 @@ test("default search keeps legacy device and project scopes while preferring res
   expect(rules.text.text).toContain("prefer hits scoped legacy or general");
 }, 60_000);
 
-test("outside a project default search keeps existing scoped device notes and prefers general", async () => {
+test("outside a project default search keeps existing scoped device notes in baseline order", async () => {
   const entry = loadEntry("memory");
   const state = memoryState();
   const services = { state, levels: state };
@@ -92,7 +195,11 @@ test("outside a project default search keeps existing scoped device notes and pr
     services,
   })) as { hits: { scope?: string }[] };
   expect(found.hits).toHaveLength(3);
-  expect(found.hits[0]!.scope).toBe("general");
+  expect(found.hits.map((hit) => hit.scope)).toEqual([
+    undefined,
+    "prior-label",
+    "general",
+  ]);
   expect(found.hits.some((hit) => hit.scope === "prior-label")).toBe(true);
 }, 30_000);
 
@@ -146,12 +253,11 @@ for (const [first, second, scope] of [
         expect(found.hits.map((hit) => hit.scope).sort()).toEqual(
           ["general", scope, "unrelated"].sort(),
         );
-        expect(
-          found.hits
-            .slice(0, 2)
-            .map((hit) => hit.scope)
-            .sort(),
-        ).toEqual(["general", scope].sort());
+        expect(found.hits.map((hit) => hit.scope)).toEqual([
+          "unrelated",
+          "general",
+          scope,
+        ]);
         expect(found.hits.some((hit) => hit.id === added.id)).toBe(true);
         expect(done(await current.call("memory.scope", {}))).toEqual({ scope });
         const rules = done(await current.call("memory.rules", {})) as Pointer;
@@ -242,7 +348,6 @@ test("scope aliases are re-read and invalid maps refuse before saving a note", a
     for (const [op, input] of [
       ["memory.scope", {}],
       ["memory.rules", {}],
-      ["memory.search", { query: "heron" }],
       ["memory.add", { level: "device", text: "must not be saved" }],
     ] as const) {
       const result = await harness.call(op, input);
@@ -265,6 +370,10 @@ test("scope aliases are re-read and invalid maps refuse before saving a note", a
     await harness.call("memory.search", { scope: "explicit", query: "heron" }),
   ) as { hits: { id: string }[] };
   expect(found.hits.map((hit) => hit.id)).toEqual([explicit.id]);
+  const defaults = done(
+    await harness.call("memory.search", { query: "heron" }),
+  ) as { hits: { id: string }[] };
+  expect(defaults.hits.map((hit) => hit.id)).toEqual([explicit.id]);
 }, 60_000);
 
 test("startup counts applicable scopes without text or ids in JSON or --text; commands retrieve on demand", async () => {

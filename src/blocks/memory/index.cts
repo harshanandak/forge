@@ -491,13 +491,12 @@ const TOMBSTONE = {
   deleted: true,
 } as const;
 
-function resolvedScope(
-  config: MemoryConfig,
-  services: Services,
-): string | undefined {
-  return services.levels.inProject
-    ? (config.scope ?? services.levels.defaultScope)
-    : undefined;
+function resolvedScope(config: MemoryConfig, services: Services): string {
+  return (
+    (services.levels.inProject
+      ? (config.scope ?? services.levels.defaultScope)
+      : undefined) ?? "general"
+  );
 }
 
 module.exports = {
@@ -508,7 +507,7 @@ module.exports = {
     config?: MemoryConfig;
     services: Services;
   }) => ({
-    scope: resolvedScope(config, services) ?? "general",
+    scope: resolvedScope(config, services),
   }),
   "memory.rules": async ({
     config = {},
@@ -524,7 +523,7 @@ module.exports = {
     if (project) sources.push(project);
     const scope = resolvedScope(config, services);
     const counts = new Map<string, number>([["general", 0]]);
-    if (scope !== undefined) counts.set(scope, 0);
+    counts.set(scope, 0);
     for (const source of sources) {
       let after = 0;
       for (;;) {
@@ -558,9 +557,7 @@ module.exports = {
         [...counts].map(([name, count]) => name + " " + count).join(", ") +
         ".",
       "Before a task, search memory for its topic; prefer hits scoped " +
-        (scope === undefined || scope === "general"
-          ? "general"
-          : scope + " or general") +
+        (scope === "general" ? "general" : scope + " or general") +
         ".",
       'forge memory search "<topic>"',
       "forge memory show <id>",
@@ -654,7 +651,9 @@ module.exports = {
           value: fields(
             [],
             undefined,
-            target.level === "device" && input.scope === undefined
+            target.level === "device" &&
+              services.levels.inProject &&
+              input.scope === undefined
               ? resolvedScope(config, services)
               : undefined,
           ),
@@ -679,7 +678,6 @@ module.exports = {
 
   "memory.search": async ({
     input,
-    config = {},
     services,
   }: {
     input: {
@@ -691,13 +689,8 @@ module.exports = {
       limit?: number;
       cursor?: string;
     };
-    config?: MemoryConfig;
     services: Services;
   }) => {
-    const scope =
-      input.scope === undefined
-        ? (resolvedScope(config, services) ?? "general")
-        : undefined;
     // Inside a project a search covers that project and the device. Another project is searched
     // only when the caller names it, and its notes come back read-only.
     const sources: Source[] = [];
@@ -792,8 +785,8 @@ module.exports = {
     const average =
       documents.reduce((sum, document) => sum + document.length, 0) /
       Math.max(1, total);
-    // Scope preference changes order, never visibility. Within each group, any query term may
-    // match; more, rarer terms rank first, newest first on a tie.
+    // Any query term may match (an agent's natural-language prompt never has every word in one
+    // note); notes that match more, rarer terms rank first, newest first on a tie.
     const scored = documents
       .map((document) => {
         let score = 0;
@@ -806,20 +799,11 @@ module.exports = {
             1.2 * (0.25 + (0.75 * document.length) / Math.max(1, average));
           score += (rarity * frequency * 2.2) / (frequency + norm);
         }
-        return {
-          document,
-          score,
-          preferred: Number(
-            input.scope === undefined &&
-              (document.note.value.scope === scope ||
-                document.note.value.scope === "general"),
-          ),
-        };
+        return { document, score };
       })
       .filter((entry) => entry.score > 0)
       .sort(
         (a, b) =>
-          b.preferred - a.preferred ||
           b.score - a.score ||
           b.document.note.number - a.document.note.number ||
           a.document.order - b.document.order,

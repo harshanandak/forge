@@ -4,7 +4,7 @@
   "properties": {
     "scope": {
       "$ref": "defs.json#/$defs/Scope",
-      "description": "Repo override for the memory scope used by rules, search and new notes. Otherwise uses the device memory-scopes.json alias for the normalized shared checkout folder name, then that folder name."
+      "description": "Repo override for the memory scope used by rules and new device notes. Otherwise uses the device memory-scopes.json alias for the normalized shared checkout folder name, then that folder name, or general when normalization leaves nothing."
     },
     "decisions": {
       "type": "object",

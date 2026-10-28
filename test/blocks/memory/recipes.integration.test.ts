@@ -71,6 +71,14 @@ test("recipe gives a valid on-demand search and forge-loop requires it", () => {
   expect(recipe).toContain('forge memory search "<topic>"');
   expect(recipe).toContain("forge memory show <id>");
   expect(recipe).toContain("Prefer hits in the resolved scope or general");
+  expect(recipe).toContain("Scope resolution uses the repo override");
+  expect(recipe).toContain("`memory-scopes.json` under `FORGE_DEVICE_ROOT`");
+  expect(recipe.indexOf("repo override")).toBeLessThan(
+    recipe.indexOf("device alias"),
+  );
+  expect(recipe.indexOf("device alias")).toBeLessThan(
+    recipe.indexOf("normalized folder name"),
+  );
   expect(loop).toContain("Search memory before starting a task");
   expect(loop).toContain("search/show commands");
   expect(loop).toContain("never note text");

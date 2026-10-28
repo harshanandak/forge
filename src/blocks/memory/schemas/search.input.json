@@ -22,7 +22,7 @@
     },
     "scope": {
       "$ref": "defs.json#/$defs/Scope",
-      "description": "Search exactly this scope. Left out, keep all matches and rank the resolved project scope and general first. Each scoped hit names its stored scope."
+      "description": "Search exactly this scope. Left out, keep all matches in baseline relevance order, independent of scope or aliases. Each scoped hit names its stored scope."
     },
     "tag": {
       "$ref": "defs.json#/$defs/Tag"
