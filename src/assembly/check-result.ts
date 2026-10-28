@@ -43,7 +43,7 @@ export function checkResult(
           merge.outcome === "REFUSED"
             ? "Merge gate refused; inspect result.gate.reasons and repair the evidence."
             : merge.outcome === "MERGE_UNVERIFIED"
-              ? "Merge could not be verified; run gh pr view <n> --json state,mergeCommit,headRefOid. Reconciled only if state is MERGED and headRefOid equals result.head; otherwise the merge is not verified: stop."
+              ? "Merge could not be verified; run gh pr view <n> --json state,mergeCommit,headRefOid. Reconciled only if state is MERGED, headRefOid equals result.head, and mergeCommit.oid is valid; otherwise the merge is not verified: stop."
               : merge.outcome === "HEAD_MOVED"
                 ? "Pull request head moved; rerun the merge gate."
                 : "GitHub refused the merge; inspect result.detail.",

@@ -356,6 +356,18 @@ test("unverified recovery requires the printed gate head", () => {
   expect(response.error.message).toContain("state,mergeCommit,headRefOid");
   expect(response.error.message).toContain("MERGED");
   expect(response.error.message).toContain("headRefOid equals result.head");
+  expect(response.error.message).toContain("mergeCommit.oid is valid");
+  for (const path of ["README.md", "docs.json"]) {
+    const text = readFileSync(
+      new URL(`../../../src/blocks/check/${path}`, import.meta.url),
+      "utf8",
+    );
+    expect(text).toContain("mergeCommit.oid");
+    expect(text).toMatch(
+      /MERGED.*headRefOid.*printed gate head.*valid.*mergeCommit\.oid/,
+    );
+    expect(text).toContain("otherwise the merge is not verified: stop");
+  }
   expect(response.error.message).toContain(
     "otherwise the merge is not verified: stop",
   );

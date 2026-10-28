@@ -686,7 +686,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       `On \`MERGE_UNVERIFIED\`, read \`${recoveryRead}\` before anything else`,
     );
     expect(text["forge-land"]).toContain(
-      `1. \`${recoveryRead}\` must show \`MERGED\` and \`headRefOid\` equal to \`<head>\`; otherwise the merge is not verified: stop. Keep its merge commit SHA`,
+      `1. \`${recoveryRead}\` must show \`MERGED\`, \`headRefOid\` equal to \`<head>\` and a valid \`mergeCommit.oid\`; otherwise the merge is not verified: stop. Keep its merge commit SHA`,
     );
     expect(text["forge-land"]).toContain("head moved means run the gate again");
     for (const rule of [

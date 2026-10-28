@@ -6,7 +6,7 @@ Gate timeouts report `INVOCATION_TIMEOUT`. Only readback showing MERGED at the p
 The result keeps `gate`, `head`, `receipt` and, on success, `mergeCommit`. Gate refusal exits 1.
 A nonzero merge exit with complete OPEN/CLOSED readback returns `HEAD_MOVED` at another head or `MERGE_REFUSED` at the pin (exit 1).
 A zero exit without verified MERGED readback at the pin, or an interrupted write, returns `MERGE_UNVERIFIED` (exit 2).
-Reconcile with `gh pr view <n> --json state,mergeCommit,headRefOid`: require MERGED and headRefOid equal to the printed gate head (`result.head`);
+Reconcile with `gh pr view <n> --json state,mergeCommit,headRefOid`: require MERGED, headRefOid equal to the printed gate head (`result.head`) and a valid `mergeCommit.oid`;
 otherwise the merge is not verified: stop. No automatic retry, admin override, merge queue or branch deletion is requested.
 This destructive, non-idempotent operation declares external process, network and write effects.
 Path or package copies need a human grant for those bytes and effects.

@@ -1,6 +1,6 @@
 ---
 name: forge-land
-description: "Use when a PR may be ready to merge, or after it merged. Gate, merge pinned, verify and close."
+description: "Use when a PR may be ready to merge, or after it merged."
 ---
 
 # forge-land
@@ -29,7 +29,7 @@ A refused merge because the head moved means run the gate again. Never merge wit
 
 ## Verify
 
-1. `gh pr view <n> --json state,mergeCommit,headRefOid` must show `MERGED` and `headRefOid` equal to `<head>`; otherwise the merge is not verified: stop. Keep its merge commit SHA.
+1. `gh pr view <n> --json state,mergeCommit,headRefOid` must show `MERGED`, `headRefOid` equal to `<head>` and a valid `mergeCommit.oid`; otherwise the merge is not verified: stop. Keep its merge commit SHA.
 2. Base CI: `gh run list --branch <base> --commit <sha>`. Wait through the harness, not a sleep loop. Red is a new bug: file at p0 or p1 and fix forward.
 3. Close the issue. The worker released its claim, so take it again first: `forge issue claim <slice>`. Run `forge issue links <slice>`; if the newest `delivers` link is not the PR being landed (or none exists), add the current PR URL first with `forge issue link <slice> --relation delivers --url "<pr url>"` while holding the claim. Then run `forge issue close <slice> --reason "merged in <sha>" --receipt <id>` using the gate's receipt or a `check run` receipt at the merge commit. On `RECEIPT_HEAD_MISMATCH` or `PR_NOT_MERGED`, stop; never switch to `withoutReceipt`. On `UNAVAILABLE`, retry.
 4. Inspect the worktree (`git -C <path> status --short` and `git -C <path> log origin/<base>..HEAD --oneline`). Remove only when both are empty; file or push anything left first. Removing work is a one-way door.
