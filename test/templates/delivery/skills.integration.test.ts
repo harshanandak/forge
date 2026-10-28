@@ -72,6 +72,33 @@ function fixture(
 }
 
 const adapterDirs = [".claude/skills", ".agents/skills"];
+test.each(["lstat", "stat", "cleanup"])(
+  "built sync isolates %s access errors",
+  (operation) => {
+    fixture((root) => {
+      const result = spawnSync(
+        Bun.which("node")!,
+        [
+          resolve(import.meta.dirname, "../../node-fixtures/skills/access.mjs"),
+          root,
+          operation,
+        ],
+        {
+          cwd: root,
+          env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 90_000,
+        },
+      );
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      for (const code of ["EACCES", "EBUSY", "EPERM"])
+        expect(result.stdout).toContain(`${operation} ${code}: reported`);
+    });
+  },
+  120_000,
+);
+
 function hashes(root: string) {
   return readdirSync(root, { recursive: true })
     .filter((file) => lstatSync(join(root, String(file))).isFile())
@@ -143,6 +170,15 @@ test("built sync manages marked skills and companions in both adapter directorie
     expect(skipped.stdout).toContain(
       "left alone because Forge did not write them:",
     );
+    const edited = join(root, ".agents/skills/forge-intake/SKILL.md");
+    writeFileSync(edited, `${readFileSync(edited, "utf8")}\nedit`);
+    const mixed = check();
+    expect(mixed.status).toBe(1);
+    expect(mixed.stdout).toContain(".agents/skills/forge-intake/SKILL.md");
+    expect(JSON.parse(mixed.stdout)).toMatchObject({
+      result: { skipped: [".claude/skills/forge-loop/SKILL.md"] },
+      warnings: [{ code: "SKILLS_SKIPPED" }],
+    });
   });
 }, 180_000);
 

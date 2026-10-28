@@ -889,43 +889,85 @@ export async function createAssembly(
                 code: "CLAIM_TTL_CONFIG_MOVE",
                 message: `Move /values/claims/ttlSeconds to /blocks/work/config/claimTtlSeconds with value ${JSON.stringify(legacyClaimTtl.value)} to preserve the claim lease duration.`,
               });
-            const synced = {
-              ...success(
-                request.op,
-                syncSkills(
-                  root,
-                  catalog.list(),
-                  composition(show).mcp?.toolPrefix,
-                  typeof input.dir === "string"
-                    ? input.dir
-                    : directories.length
-                      ? directories
-                      : undefined,
-                  {
-                    sources: show.templates.flatMap((t): TemplateFile[] => {
-                      if (t.source !== undefined)
-                        return [{ root, file: t.source }];
-                      const dir = call.shipped.dirOf(
-                        t.template.slice(0, t.template.lastIndexOf("@")),
-                      );
-                      return dir === undefined
-                        ? []
-                        : [{ root: dir, file: TEMPLATE_FILE }];
-                    }),
-                    values: show.effective.values,
-                  },
-                  input.check === true,
-                ),
-              ),
-              warnings,
-            };
-            const skipped = record(synced.result)?.skipped;
-            if (Array.isArray(skipped) && skipped.length)
+            const synced = syncSkills(
+              root,
+              catalog.list(),
+              composition(show).mcp?.toolPrefix,
+              typeof input.dir === "string"
+                ? input.dir
+                : directories.length
+                  ? directories
+                  : undefined,
+              {
+                sources: show.templates.flatMap((t): TemplateFile[] => {
+                  if (t.source !== undefined) return [{ root, file: t.source }];
+                  const dir = call.shipped.dirOf(
+                    t.template.slice(0, t.template.lastIndexOf("@")),
+                  );
+                  return dir === undefined
+                    ? []
+                    : [{ root: dir, file: TEMPLATE_FILE }];
+                }),
+                values: show.effective.values,
+              },
+              input.check === true,
+            );
+            const bounded = (message: string, limit: number): string =>
+              message.length <= limit
+                ? message
+                : `${message.slice(0, limit - 3)}...`;
+            if (synced.skipped.length)
               warnings.push({
                 code: "SKILLS_SKIPPED",
-                message: `left alone because Forge did not write them: ${skipped.join(", ")}; delete them to let sync write Forge's copies`,
+                message: bounded(
+                  `left alone because Forge did not write them: ${synced.skipped.join(", ")}; delete them to let sync write Forge's copies`,
+                  2000,
+                ),
               });
-            return synced;
+            for (const operation of ["read", "write", "remove"] as const) {
+              const errors = synced.errors.filter(
+                (error) => error.op === operation,
+              );
+              if (errors.length)
+                warnings.push({
+                  code: `SKILLS_${operation.toUpperCase()}_FAILED`,
+                  message: bounded(
+                    `Cannot ${operation} skills: ${errors.map((error) => error.path).join(", ")}; see result.errors for details`,
+                    2000,
+                  ),
+                });
+            }
+            const applyErrors = synced.errors.filter(
+              (error) => error.op !== "read",
+            );
+            const problems = applyErrors.map(
+              (error) => `${error.path}: ${error.message}`,
+            );
+            if (input.check === true && synced.differences.length)
+              problems.push(
+                `run forge skills sync; it overwrites edits to generated files; ${synced.differences.join("; ")}`,
+              );
+            for (const error of synced.errors.filter(
+              (error) => error.op === "read",
+            ))
+              problems.push(`${error.path}: ${error.message}`);
+            const applyError = applyErrors[0]
+              ? `SKILLS_${applyErrors[0].op.toUpperCase()}_FAILED`
+              : undefined;
+            if (applyError || (input.check === true && problems.length))
+              return {
+                ...failure(
+                  request.op,
+                  new ForgeFailure({
+                    code: applyError ?? "OUTPUT_INVALID",
+                    message: bounded(problems.join("; "), 4000),
+                    retry: "never",
+                  }),
+                ),
+                result: synced,
+                warnings,
+              };
+            return { ...success(request.op, synced), warnings };
           }
           if (request.op === "block.check" || request.op === "block.add") {
             await trustState.open(false);

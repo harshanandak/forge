@@ -1,12 +1,39 @@
 {
   "type": "object",
-  "required": ["dir", "written", "unchanged", "skipped", "removed"],
+  "required": [
+    "dir",
+    "written",
+    "unchanged",
+    "skipped",
+    "removed",
+    "errors",
+    "differences"
+  ],
   "properties": {
     "dir": { "type": "string" },
     "written": { "type": "array", "items": { "type": "string" } },
     "unchanged": { "type": "array", "items": { "type": "string" } },
     "skipped": { "type": "array", "items": { "type": "string" } },
-    "removed": { "type": "array", "items": { "type": "string" } }
+    "removed": { "type": "array", "items": { "type": "string" } },
+    "differences": {
+      "description": "Full list of paths planned for writing or deletion; --check retains this drift list even when messages are shortened.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "errors": {
+      "description": "Failed file or folder accesses with the operation and actual path. Other skills still sync; already applied actions are not rolled back. Complete details remain here when messages are shortened.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["op", "path", "message"],
+        "properties": {
+          "op": { "enum": ["read", "write", "remove"] },
+          "path": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
   },
   "additionalProperties": false
 }

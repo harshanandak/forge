@@ -107,7 +107,8 @@ export function entryKind(
     if (info.isDirectory()) return "directory";
     return info.isFile() ? "file" : "other";
   } catch (error) {
-    return errorCode(error) === "ENOENT" ? "missing" : "other";
+    if (errorCode(error) === "ENOENT") return "missing";
+    throw error;
   }
 }
 
@@ -124,7 +125,13 @@ export function removeEmptyParents(
     } catch (error) {
       if (errorCode(error) === "ENOTEMPTY" || errorCode(error) === "EEXIST")
         return;
-      if (errorCode(error) !== "ENOENT") throw error;
+      if (errorCode(error) !== "ENOENT")
+        throw Object.assign(
+          new Error(error instanceof Error ? error.message : String(error), {
+            cause: error,
+          }),
+          { relativePath: parent },
+        );
     }
     parent = parent.split("/").slice(0, -1).join("/");
   }

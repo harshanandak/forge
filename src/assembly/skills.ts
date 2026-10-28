@@ -4,6 +4,7 @@ import {
   removeEmptyParents,
 } from "../adapters/fs/index.ts";
 import type { McpCandidate } from "../contract/mcp.ts";
+import { ForgeFailure } from "../contract/failure.ts";
 import { refuse } from "../core/trust/index.ts";
 import {
   GENERATED_MARKER,
@@ -24,6 +25,12 @@ export interface SkillsSyncResult {
   readonly skipped: readonly string[];
   /** Generated files this run no longer produces, e.g. from a removed template. */
   readonly removed: readonly string[];
+  readonly differences: readonly string[];
+  readonly errors: readonly {
+    readonly op: "read" | "write" | "remove";
+    readonly path: string;
+    readonly message: string;
+  }[];
 }
 
 /** A template file to read skills from: a project file, or one shipped in the installed package. */
@@ -71,7 +78,21 @@ const equal = (a: Uint8Array, b: Uint8Array): boolean => {
   return Buffer.from(normalize(a)).equals(normalize(b));
 };
 
-function validate(root: string, path: string, origin: string): boolean {
+function accessFailure(error: unknown): boolean {
+  if (error instanceof ForgeFailure)
+    return error.error.code === "LIMIT_EXCEEDED";
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    ("code" in error || ("cause" in error && accessFailure(error.cause)))
+  );
+}
+
+function validate(
+  inspect: (path: string) => ReturnType<typeof entryKind>,
+  path: string,
+  origin: string,
+): boolean {
   if (
     /[\\:,\r\n]/.test(path) ||
     path !== path.trim() ||
@@ -82,14 +103,13 @@ function validate(root: string, path: string, origin: string): boolean {
   // Probe every component as a final component, so even an internal link is refused.
   const parts = path.split("/");
   try {
-    let clear = true;
     for (let i = 1; i <= parts.length; i++) {
-      const kind = entryKind(root, parts.slice(0, i).join("/"));
+      const kind = inspect(parts.slice(0, i).join("/"));
       if (kind === "link") throw new Error("symlinked path is not followed");
       if (i < parts.length && kind !== "missing" && kind !== "directory")
-        clear = false;
+        return false;
     }
-    return clear;
+    return true;
   } catch (error) {
     throw new Error(
       `Invalid companion path ${path} in ${origin}: ${error instanceof Error ? error.message : "cannot inspect path"}`,
@@ -164,8 +184,8 @@ function templateSkills(templates: TemplateSkills): Copy[] {
 
 /**
  * `skills.sync`: write each enabled block noun's skill and each imported template's skill under
- * the project root. A file it generated (it carries the marker line) is always replaced, whatever
- * its size, and deleted once no longer produced; a hand-written one is left alone.
+ * the project root. Readable marked files are replaced, or deleted once no longer produced.
+ * Oversized files follow the same left-alone path as unmarked user files.
  */
 export function syncSkills(
   root: string,
@@ -224,8 +244,24 @@ export function syncSkills(
   const skipped: string[] = [];
   const removed: string[] = [];
   const differences: string[] = [];
+  const errors: {
+    op: "read" | "write" | "remove";
+    path: string;
+    message: string;
+  }[] = [];
+  const report = (
+    op: "read" | "write" | "remove",
+    path: string,
+    error: unknown,
+  ): void => {
+    errors.push({
+      op,
+      path,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  };
   try {
-    const writes: { path: string; bytes: Uint8Array }[] = [];
+    const writes: { path: string; bytes: Uint8Array; folder: string }[] = [];
     const ownershipWrites: typeof writes = [];
     const deletes: { path: string; folder: string }[] = [];
     // Plan every directory first. Invalid metadata must not leave a partial sync.
@@ -236,30 +272,39 @@ export function syncSkills(
           name,
         ]),
       );
-      for (const name of names.values()) {
+      let accessed = dir;
+      const plan = (name: string): void => {
         const folder = `${dir}/${name}`;
+        accessed = folder;
         const copies = skills.filter((s) => key(s.noun) === key(name));
         const kind = entryKind(root, folder);
         if (kind !== "directory" && kind !== "missing") {
           if (copies.length) skipped.push(folder);
-          continue;
+          return;
         }
         const localRoot = `${root}/${folder}`;
-        const local = nodeConfigFiles(localRoot);
+        const base = nodeConfigFiles(localRoot);
+        const local = {
+          ...base,
+          read(relative: string, maxBytes?: number) {
+            accessed = `${folder}/${relative}`;
+            return base.read(relative, maxBytes);
+          },
+        };
+        const inspect = (relative: string): ReturnType<typeof entryKind> => {
+          accessed = `${folder}/${relative}`;
+          return entryKind(localRoot, relative);
+        };
         const path = `${folder}/SKILL.md`;
-        const skillKind = entryKind(localRoot, "SKILL.md");
-        let current: Uint8Array | undefined;
-        try {
-          current = skillKind === "file" ? local.read("SKILL.md") : undefined;
-        } catch {
-          current = undefined;
-        }
+        const skillKind = inspect("SKILL.md");
+        const current =
+          skillKind === "file" ? local.read("SKILL.md") : undefined;
         const listed = companions(current, path);
         if (listed === undefined && skillKind !== "missing") {
           if (copies.length) skipped.push(path);
-          continue;
+          return;
         }
-        for (const entry of listed ?? []) validate(localRoot, entry, path);
+        for (const entry of listed ?? []) validate(inspect, entry, path);
         const wanted = new Map(
           copies.map((s) => [key(s.path.slice(s.noun.length + 1)), s]),
         );
@@ -267,18 +312,17 @@ export function syncSkills(
         for (const [relative, copy] of wanted) {
           if (relative === key("SKILL.md")) continue;
           const destination = copy.path.slice(copy.noun.length + 1);
-          const clear = validate(localRoot, destination, path);
+          const clear = validate(inspect, destination, path);
           const bytes = copy.bytes!;
           const displaced = (listed ?? []).some(
             (p) =>
               !wanted.has(key(p)) &&
               key(destination).startsWith(`${key(p)}/`) &&
-              entryKind(localRoot, p) === "file",
+              inspect(p) === "file",
           );
           if (
             !displaced &&
-            (!clear ||
-              !["missing", "file"].includes(entryKind(localRoot, destination)))
+            (!clear || !["missing", "file"].includes(inspect(destination)))
           ) {
             skipped.push(`${folder}/${destination}`);
             continue;
@@ -307,7 +351,7 @@ export function syncSkills(
             deletes.push({ path, folder });
             differences.push(path);
           }
-          continue;
+          return;
         }
         for (const copy of copies) {
           const relative = copy.path.slice(copy.noun.length + 1);
@@ -329,21 +373,79 @@ export function syncSkills(
             (copy.bytes === undefined ? ownershipWrites : writes).push({
               path: target,
               bytes,
+              folder,
             });
             differences.push(target);
           }
         }
+      };
+      for (const name of names.values()) {
+        const lists = [
+          writes,
+          ownershipWrites,
+          deletes,
+          unchanged,
+          skipped,
+          differences,
+        ];
+        const lengths = lists.map((list) => list.length);
+        try {
+          plan(name);
+        } catch (error) {
+          if (!accessFailure(error)) throw error;
+          lists.forEach((list, i) => {
+            list.length = lengths[i]!;
+          });
+          if (
+            error instanceof ForgeFailure &&
+            error.error.code === "LIMIT_EXCEEDED" &&
+            accessed === `${dir}/${name}/SKILL.md`
+          ) {
+            if (skills.some((skill) => key(skill.noun) === key(name)))
+              skipped.push(accessed);
+          } else report("read", accessed, error);
+        }
       }
     }
     if (!check) {
-      for (const entry of deletes) {
-        files.remove(entry.path);
-        removed.push(entry.path);
-        removeEmptyParents(root, entry.path, entry.folder);
-      }
-      for (const entry of [...writes, ...ownershipWrites]) {
-        files.write(entry.path, entry.bytes);
-        written.push(entry.path);
+      const folders = new Set(
+        [...deletes, ...writes, ...ownershipWrites].map(
+          (entry) => entry.folder,
+        ),
+      );
+      for (const folder of folders) {
+        let operation: "write" | "remove" = "remove";
+        let path = `${folder}/SKILL.md`;
+        try {
+          for (const entry of deletes.filter(
+            (entry) => entry.folder === folder,
+          )) {
+            path = entry.path;
+            files.remove(entry.path);
+            removed.push(entry.path);
+            path = entry.path.split("/").slice(0, -1).join("/");
+            removeEmptyParents(root, entry.path, entry.folder);
+          }
+          operation = "write";
+          for (const entry of [...writes, ...ownershipWrites].filter(
+            (entry) => entry.folder === folder,
+          )) {
+            path = entry.path;
+            files.write(entry.path, entry.bytes);
+            written.push(entry.path);
+          }
+        } catch (error) {
+          report(
+            operation,
+            typeof error === "object" &&
+              error !== null &&
+              "relativePath" in error &&
+              typeof error.relativePath === "string"
+              ? error.relativePath
+              : path,
+            error,
+          );
+        }
       }
     }
   } catch (error) {
@@ -352,10 +454,13 @@ export function syncSkills(
       error instanceof Error ? error.message : "Cannot write skills",
     );
   }
-  if (check && differences.length)
-    refuse(
-      "OUTPUT_INVALID",
-      `${differences.join("; ")}; run forge skills sync; it overwrites edits to generated files`,
-    );
-  return { dir: dirs.join(", "), written, unchanged, skipped, removed };
+  return {
+    dir: dirs.join(", "),
+    written,
+    unchanged,
+    skipped,
+    removed,
+    differences,
+    errors,
+  };
 }

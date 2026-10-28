@@ -11,10 +11,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createAssembly, localCall } from "../../../src/assembly/index.ts";
+import {
+  createAssembly,
+  localCall,
+  type Assembly,
+} from "../../../src/assembly/index.ts";
 import { dispatch, record } from "../../../src/surface/dispatch.ts";
 import { GENERATED_MARKER } from "../../../src/surface/skills.ts";
 import { syncSkills } from "../../../src/assembly/skills.ts";
+import { runCli } from "../../../src/surface/cli.ts";
+import { validateResultEnvelope } from "../../../src/generated/validators.ts";
 
 const REVIEW = [
   "---",
@@ -35,7 +41,7 @@ type Call = (op: string, input?: object) => Promise<Record<string, unknown>>;
 
 /** A project with no blocks that imported tpl/forge.template.json, which carries values and one skill. */
 async function withTemplate(
-  run: (root: string, call: Call) => Promise<void>,
+  run: (root: string, call: Call, assembly: Assembly) => Promise<void>,
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "forge-template-skills-"));
   const put = (path: string, text: string): void => {
@@ -92,7 +98,7 @@ async function withTemplate(
         expectRevision: "",
       }),
     ).toMatchObject({ ok: true });
-    await run(root, call);
+    await run(root, call, assembly);
   } finally {
     await assembly.close();
     rmSync(root, { recursive: true, force: true });
@@ -237,6 +243,129 @@ test("unmarked SKILL.md protects its entire folder, including companions", async
   });
 }, 30_000);
 
+test("check reports both generated drift and a left-alone template skill", async () => {
+  await withTemplate(async (root, call, assembly) => {
+    const other = "tpl/skills/other/SKILL.md";
+    mkdirSync(dirname(join(root, other)));
+    writeFileSync(
+      join(root, other),
+      REVIEW.replace("name: review", "name: other"),
+    );
+    await call("skills.sync");
+    const edited = `${readFileSync(join(root, RENDERED), "utf8")}\nedit`;
+    writeFileSync(join(root, RENDERED), edited);
+    const skipped = ".agents/skills/other/SKILL.md";
+    writeFileSync(join(root, skipped), "user skill");
+    const checked = await runCli(
+      assembly.catalog,
+      ["skills", "sync", "--check"],
+      localCall(assembly),
+    );
+    expect(checked.exitCode).toBe(1);
+    expect(checked.stdout).toContain(RENDERED);
+    expect(checked.stdout).toContain("run forge skills sync");
+    expect(checked.envelope).toMatchObject({
+      result: { skipped: [skipped] },
+      warnings: [
+        {
+          code: "SKILLS_SKIPPED",
+          message: `left alone because Forge did not write them: ${skipped}; delete them to let sync write Forge's copies`,
+        },
+      ],
+    });
+    expect(readFileSync(join(root, RENDERED), "utf8")).toBe(edited);
+    expect(readFileSync(join(root, skipped), "utf8")).toBe("user skill");
+  });
+}, 30_000);
+
+test.each(["EACCES", "EBUSY"])(
+  "check reports %s reading a skill while sync still repairs other skills",
+  async (code) => {
+    await withTemplate(async (root, call, assembly) => {
+      const companion = "tpl/skills/review/data.txt";
+      writeFileSync(join(root, companion), "generated companion");
+      await call("skills.sync");
+      const original = readFileSync(join(root, RENDERED));
+      rmSync(join(root, companion));
+      const other = "tpl/skills/other/SKILL.md";
+      mkdirSync(dirname(join(root, other)));
+      writeFileSync(
+        join(root, other),
+        REVIEW.replace("name: review", "name: other"),
+      );
+      const mine = join(root, ".agents/skills/mine/SKILL.md");
+      mkdirSync(dirname(mine));
+      const oversized = "x".repeat(2 * 1024 * 1024);
+      writeFileSync(mine, oversized);
+      const real = fsAdapter.nodeConfigFiles;
+      const spy = spyOn(fsAdapter, "nodeConfigFiles").mockImplementation(
+        (folder) => {
+          const files = real(folder);
+          return {
+            ...files,
+            read(path, maxBytes) {
+              if (join(folder, path) === join(root, RENDERED))
+                throw Object.assign(new Error(`injected ${code}`), { code });
+              return files.read(path, maxBytes);
+            },
+          };
+        },
+      );
+      try {
+        expect(await call("skills.sync")).toMatchObject({
+          ok: true,
+          written: [".agents/skills/other/SKILL.md"],
+          skipped: [],
+          warnings: [
+            {
+              code: "SKILLS_READ_FAILED",
+              message: `Cannot read skills: ${RENDERED}; see result.errors for details`,
+            },
+          ],
+        });
+        const checked = await runCli(
+          assembly.catalog,
+          ["skills", "sync", "--check"],
+          localCall(assembly),
+        );
+        expect(checked.exitCode).toBe(1);
+        expect(checked.envelope).toMatchObject({
+          result: { skipped: [] },
+          warnings: [
+            {
+              code: "SKILLS_READ_FAILED",
+              message: `Cannot read skills: ${RENDERED}; see result.errors for details`,
+            },
+          ],
+        });
+        expect(checked.stdout).toContain(code);
+        expect(checked.stdout).not.toContain("left alone");
+        expect(checked.stdout).not.toContain("mine/SKILL.md");
+        expect(readFileSync(join(root, RENDERED))).toEqual(original);
+        expect(
+          readFileSync(join(root, ".agents/skills/review/data.txt"), "utf8"),
+        ).toBe("generated companion");
+        expect(
+          readFileSync(join(root, ".agents/skills/other/SKILL.md"), "utf8"),
+        ).toContain(GENERATED_MARKER);
+        expect(readFileSync(mine, "utf8")).toBe(oversized);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await call("skills.sync")).toMatchObject({
+        ok: true,
+        removed: [".agents/skills/review/data.txt"],
+      });
+      expect(await call("skills.sync", { check: true })).toMatchObject({
+        ok: true,
+        skipped: [],
+        warnings: [],
+      });
+    });
+  },
+  30_000,
+);
+
 test.each([
   "inside link",
   "outside link",
@@ -330,6 +459,40 @@ test.each(["directory", "parent file", "file"])(
   },
   30_000,
 );
+
+test("a known parent-file collision does not probe its impossible descendants", async () => {
+  await withTemplate(async (root, call) => {
+    mkdirSync(join(root, "tpl/skills/review/agents"));
+    writeFileSync(
+      join(root, "tpl/skills/review/agents/openai.yaml"),
+      "generated",
+    );
+    mkdirSync(join(root, ".agents/skills/review"), { recursive: true });
+    writeFileSync(join(root, ".agents/skills/review/agents"), "user parent");
+    const real = fsAdapter.entryKind;
+    const spy = spyOn(fsAdapter, "entryKind").mockImplementation(
+      (base, path) => {
+        if (
+          join(base, path) ===
+          join(root, ".agents/skills/review/agents/openai.yaml")
+        )
+          throw Object.assign(new Error("not a directory"), {
+            code: "ENOTDIR",
+          });
+        return real(base, path);
+      },
+    );
+    try {
+      expect(await call("skills.sync")).toMatchObject({
+        ok: true,
+        skipped: [".agents/skills/review/agents/openai.yaml"],
+        errors: [],
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+}, 30_000);
 
 test("R1 refuses an alias junction inside a marked skill and names its SKILL.md", async () => {
   await withTemplate(async (root, call) => {
@@ -582,6 +745,406 @@ test("a generated skill converted to CRLF is still recognized: updated when valu
     });
     expect(await call("skills.sync")).toMatchObject({ removed: [RENDERED] });
     expect(existsSync(target)).toBe(false);
+  });
+}, 30_000);
+
+test.each([
+  "folder metadata",
+  "metadata",
+  "companion metadata",
+  "second read",
+  "companion read",
+  "second companion read",
+  "write",
+  "remove",
+])(
+  "access failures isolate one skill's %s and discard its remaining actions",
+  async (operation) => {
+    await withTemplate(async (root, call, assembly) => {
+      const source = join(root, "tpl/skills/review");
+      const folder = join(root, ".agents/skills/review");
+      writeFileSync(join(source, "a.txt"), "retired");
+      writeFileSync(join(source, "z.txt"), "old");
+      await call("skills.sync");
+      const original = readFileSync(join(root, RENDERED));
+      rmSync(join(source, "a.txt"));
+      writeFileSync(join(source, "z.txt"), "new");
+      mkdirSync(join(root, "tpl/skills/other"));
+      writeFileSync(
+        join(root, "tpl/skills/other/SKILL.md"),
+        REVIEW.replace("name: review", "name: other"),
+      );
+      const real = fsAdapter.nodeConfigFiles;
+      const realKind = fsAdapter.entryKind;
+      let reads = 0;
+      let companionReads = 0;
+      const fail = (): never => {
+        throw Object.assign(new Error(`injected ${operation}`), {
+          code: "EPERM",
+        });
+      };
+      const kindSpy = spyOn(fsAdapter, "entryKind").mockImplementation(
+        (base, path) => {
+          if (operation === "folder metadata" && join(base, path) === folder)
+            fail();
+          if (
+            operation === "metadata" &&
+            join(base, path) === join(root, RENDERED)
+          )
+            fail();
+          if (
+            operation === "companion metadata" &&
+            join(base, path) === join(folder, "z.txt")
+          )
+            fail();
+          return realKind(base, path);
+        },
+      );
+      const spy = spyOn(fsAdapter, "nodeConfigFiles").mockImplementation(
+        (base) => {
+          const files = real(base);
+          return {
+            ...files,
+            read(path, maxBytes) {
+              if (
+                join(base, path) === join(root, RENDERED) &&
+                ++reads === 2 &&
+                operation === "second read"
+              )
+                fail();
+              if (
+                join(base, path) === join(folder, "z.txt") &&
+                ++companionReads ===
+                  (operation === "second companion read" ? 2 : 1) &&
+                ["companion read", "second companion read"].includes(operation)
+              )
+                fail();
+              return files.read(path, maxBytes);
+            },
+            write(path, bytes) {
+              if (
+                join(base, path) === join(folder, "z.txt") &&
+                operation === "write"
+              )
+                fail();
+              files.write(path, bytes);
+            },
+            remove(path) {
+              if (
+                join(base, path) === join(folder, "a.txt") &&
+                operation === "remove"
+              )
+                fail();
+              files.remove(path);
+            },
+          };
+        },
+      );
+      try {
+        const checked = await runCli(
+          assembly.catalog,
+          ["skills", "sync", "--check"],
+          localCall(assembly),
+        );
+        expect(checked.exitCode).toBe(1);
+        reads = 0;
+        companionReads = 0;
+        const synced = await runCli(
+          assembly.catalog,
+          ["skills", "sync"],
+          localCall(assembly),
+        );
+        const applying = ["write", "remove"].includes(operation);
+        const code =
+          operation === "write"
+            ? "SKILLS_WRITE_FAILED"
+            : operation === "remove"
+              ? "SKILLS_REMOVE_FAILED"
+              : "SKILLS_READ_FAILED";
+        expect(synced.exitCode).toBe(applying ? 1 : 0);
+        expect(synced.envelope.warnings.map((warning) => warning.code)).toEqual(
+          [code],
+        );
+        if (applying) {
+          const failed = `.agents/skills/review/${operation === "write" ? "z.txt" : "a.txt"}`;
+          expect(synced.envelope).toMatchObject({
+            ok: false,
+            error: { code },
+            result: {
+              errors: [
+                {
+                  op: operation,
+                  path: failed,
+                  message: `injected ${operation}`,
+                },
+              ],
+            },
+          });
+          expect(synced.stdout).toContain(failed);
+          expect(checked.stdout).toContain(failed);
+          const after = await runCli(
+            assembly.catalog,
+            ["skills", "sync", "--check"],
+            localCall(assembly),
+          );
+          expect(after.exitCode).toBe(1);
+          expect(after.stdout).toContain(failed);
+          expect(validateResultEnvelope(synced.envelope).ok).toBe(true);
+        }
+        expect(readFileSync(join(root, RENDERED))).toEqual(original);
+        expect(readFileSync(join(folder, "z.txt"), "utf8")).toBe("old");
+        if (operation !== "write")
+          expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("retired");
+        expect(existsSync(join(root, ".agents/skills/other/SKILL.md"))).toBe(
+          true,
+        );
+        if (!["write", "remove"].includes(operation)) {
+          const expected =
+            operation === "folder metadata"
+              ? ".agents/skills/review"
+              : operation.includes("companion")
+                ? ".agents/skills/review/z.txt"
+                : RENDERED;
+          const failures = record(synced.envelope.result)?.errors;
+          expect(
+            record(Array.isArray(failures) ? failures[0] : undefined)?.path,
+          ).toBe(expected);
+          expect(
+            checked.envelope.warnings.map((warning) => warning.code),
+          ).toEqual(["SKILLS_READ_FAILED"]);
+          expect(
+            JSON.stringify(record(checked.envelope.result)?.unchanged),
+          ).not.toContain("review/");
+        }
+      } finally {
+        spy.mockRestore();
+        kindSpy.mockRestore();
+      }
+    });
+  },
+  30_000,
+);
+
+test.each(["marked", "unmarked", "marker beyond limit"])(
+  "oversized %s skills retain ownership reporting without writes",
+  async (kind) => {
+    await withTemplate(async (root, call, assembly) => {
+      await call("skills.sync");
+      const text =
+        kind === "marked"
+          ? `${GENERATED_MARKER}\r\n${"x".repeat(2 * 1024 * 1024)}`
+          : kind === "marker beyond limit"
+            ? `${"x".repeat(2 * 1024 * 1024)}\n${GENERATED_MARKER}`
+            : "x".repeat(2 * 1024 * 1024);
+      writeFileSync(join(root, RENDERED), text);
+      for (const check of [false, true]) {
+        const response = await runCli(
+          assembly.catalog,
+          ["skills", "sync", ...(check ? ["--check"] : [])],
+          localCall(assembly),
+        );
+        expect(response.exitCode).toBe(0);
+        expect(
+          response.envelope.warnings.map((warning) => warning.code),
+        ).toEqual(["SKILLS_SKIPPED"]);
+        expect(record(response.envelope.result)?.skipped).toEqual([RENDERED]);
+        expect(readFileSync(join(root, RENDERED), "utf8")).toBe(text);
+      }
+    });
+  },
+  30_000,
+);
+
+test.each(["write", "remove"])(
+  "plain %s failure precedes many planned paths without repair advice",
+  async (operation) => {
+    await withTemplate(async (root, call, assembly) => {
+      const source = join(root, "tpl/skills/review");
+      writeFileSync(join(source, "old.txt"), "retired");
+      await call("skills.sync");
+      rmSync(join(source, "old.txt"));
+      const names = Array.from(
+        { length: 150 },
+        (_, i) => `item-${String(i).padStart(3, "0")}-${"x".repeat(24)}.txt`,
+      );
+      for (const name of names) writeFileSync(join(source, name), "new");
+      const failed = `.agents/skills/review/${operation === "write" ? names.at(-1)! : "old.txt"}`;
+      const real = fsAdapter.nodeConfigFiles;
+      const spy = spyOn(fsAdapter, "nodeConfigFiles").mockImplementation(
+        (base) => {
+          const files = real(base);
+          const fail = (path: string): void => {
+            if (join(base, path) === join(root, failed))
+              throw Object.assign(new Error("injected failure"), {
+                code: "EPERM",
+              });
+          };
+          return {
+            ...files,
+            write(path, bytes) {
+              if (operation === "write") fail(path);
+              files.write(path, bytes);
+            },
+            remove(path) {
+              if (operation === "remove") fail(path);
+              files.remove(path);
+            },
+          };
+        },
+      );
+      try {
+        const checked = await runCli(
+          assembly.catalog,
+          ["skills", "sync", "--check"],
+          localCall(assembly),
+        );
+        expect(checked.exitCode).toBe(1);
+        expect(checked.stdout).toContain("run forge skills sync");
+        expect(record(checked.envelope.result)?.differences).toContain(failed);
+        const synced = await runCli(
+          assembly.catalog,
+          ["skills", "sync"],
+          localCall(assembly),
+        );
+        expect(synced.exitCode).toBe(1);
+        expect(synced.envelope.ok).toBe(false);
+        if (!synced.envelope.ok) {
+          expect(synced.envelope.error.message).toContain(failed);
+          expect(synced.envelope.error.message).not.toContain(
+            "run forge skills sync",
+          );
+        }
+        expect(validateResultEnvelope(synced.envelope).ok).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  },
+  30_000,
+);
+
+test("successful removal and failed parent cleanup report different paths once", async () => {
+  await withTemplate(async (root, call, assembly) => {
+    const source = join(root, "tpl/skills/review/data/old.txt");
+    mkdirSync(dirname(source));
+    writeFileSync(source, "retired");
+    await call("skills.sync");
+    rmSync(source);
+    const parent = ".agents/skills/review/data";
+    const removed = `${parent}/old.txt`;
+    const spy = spyOn(fsAdapter, "removeEmptyParents").mockImplementation(
+      () => {
+        throw Object.assign(new Error("injected cleanup failure"), {
+          code: "EACCES",
+          relativePath: parent,
+        });
+      },
+    );
+    try {
+      const result = await runCli(
+        assembly.catalog,
+        ["skills", "sync"],
+        localCall(assembly),
+      );
+      expect(result.exitCode).toBe(1);
+      expect(record(result.envelope.result)?.removed).toEqual([removed]);
+      const failures = record(result.envelope.result)?.errors;
+      expect(
+        record(Array.isArray(failures) ? failures[0] : undefined)?.path,
+      ).toBe(parent);
+      expect(JSON.stringify(failures)).not.toContain(removed);
+      expect(existsSync(join(root, removed))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+}, 30_000);
+
+test("many read failures share one bounded warning and keep full diagnostics", async () => {
+  await withTemplate(async (root, call, assembly) => {
+    for (let i = 0; i < 100; i++) {
+      const folder = join(
+        root,
+        `.agents/skills/locked-${String(i).padStart(3, "0")}`,
+      );
+      mkdirSync(folder, { recursive: true });
+      writeFileSync(join(folder, "SKILL.md"), GENERATED_MARKER);
+    }
+    const real = fsAdapter.nodeConfigFiles;
+    const spy = spyOn(fsAdapter, "nodeConfigFiles").mockImplementation(
+      (base) => {
+        const files = real(base);
+        return {
+          ...files,
+          read(path, maxBytes) {
+            if (base.includes("locked-") && path === "SKILL.md")
+              throw Object.assign(new Error("EBUSY ".repeat(1000)), {
+                code: "EBUSY",
+              });
+            return files.read(path, maxBytes);
+          },
+        };
+      },
+    );
+    try {
+      for (const check of [false, true]) {
+        if (check)
+          writeFileSync(
+            join(root, RENDERED),
+            `${readFileSync(join(root, RENDERED), "utf8")}\ndrift`,
+          );
+        const response = await runCli(
+          assembly.catalog,
+          ["skills", "sync", ...(check ? ["--check"] : [])],
+          localCall(assembly),
+        );
+        expect(response.exitCode).toBe(check ? 1 : 0);
+        expect(validateResultEnvelope(response.envelope).ok).toBe(true);
+        expect(
+          response.envelope.warnings.map((warning) => warning.code),
+        ).toEqual(["SKILLS_READ_FAILED"]);
+        expect(record(response.envelope.result)?.errors).toHaveLength(100);
+        expect(
+          JSON.stringify(record(response.envelope.result)?.errors),
+        ).toContain("locked-099/SKILL.md");
+        if (!response.envelope.ok) {
+          expect(response.envelope.error.message).toContain(RENDERED);
+          expect(response.envelope.error.message).toContain(
+            "run forge skills sync",
+          );
+          expect(record(response.envelope.result)?.differences).toEqual([
+            RENDERED,
+          ]);
+        }
+      }
+      expect(existsSync(join(root, RENDERED))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+}, 30_000);
+
+test("skills check help and input description include read failures", async () => {
+  await withTemplate(async (_root, _call, assembly) => {
+    const help = await runCli(
+      assembly.catalog,
+      ["skills", "sync", "--help"],
+      localCall(assembly),
+    );
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toContain("read failures");
+    expect(help.stdout).toContain("oversized SKILL.md");
+    const described = await runCli(
+      assembly.catalog,
+      ["skills", "sync", "--help", "--json"],
+      localCall(assembly),
+    );
+    const entries = record(described.envelope.result)?.operations;
+    const input = record(
+      Array.isArray(entries) ? entries[0] : undefined,
+    )?.inputSchema;
+    expect(JSON.stringify(input)).toContain("read failures");
+    expect(JSON.stringify(input)).toContain("oversized SKILL.md");
   });
 }, 30_000);
 
