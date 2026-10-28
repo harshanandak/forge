@@ -13,11 +13,19 @@ export interface Counterfactual {
     | "initializeSession"
     | "fence"
     | "levels"
-    | "rules";
+    | "rules"
+    | "scopeDefault";
   readonly evidence: string;
 }
 
 export const counterfactuals: readonly Counterfactual[] = [
+  {
+    file: "blocks/memory/index.cjs",
+    from: 'target.level === "device" && services.levels.inProject && input.scope === undefined',
+    to: "false",
+    journey: "scopeDefault",
+    evidence: "device adds use the resolved scope",
+  },
   {
     file: "blocks/memory/index.cjs",
     from: "if (count !== undefined) counts.set(noteScope, count + 1);",

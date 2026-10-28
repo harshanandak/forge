@@ -1268,6 +1268,7 @@ export async function createAssembly(
                   const opened = openLevels({
                     root,
                     stateRoot,
+                    deviceRoot,
                     projectState,
                     deviceState,
                     namespace,

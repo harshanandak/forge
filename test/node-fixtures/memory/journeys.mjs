@@ -515,6 +515,7 @@ async function levels() {
       const device = await agent(alpha)("memory.add", {
         text: "shared release checklist",
         level: "device",
+        scope: "general",
       });
       const own = await agent(alpha)("memory.add", {
         text: "alpha release secret",
@@ -669,7 +670,7 @@ async function rules() {
       JSON.stringify({ text: marker, level, scope, tags }),
     ]).result;
   const device = add("device", "general", ["rule"]);
-  add("device", undefined);
+  add("device", null);
   const scope = mode === "rules" ? "myproj" : "project";
   add("device", scope);
   add("project", undefined);
@@ -704,9 +705,7 @@ async function rules() {
     assert.doesNotMatch(output, /[\v\f\u0085\u2028\u2029]/u);
   }
   assert.ok(
-    loaded.text.text.includes(
-      "use only hits scoped general or " + scope + " or unscoped",
-    ),
+    loaded.text.text.includes("prefer hits scoped " + scope + " or general"),
   );
   assert.ok(loaded.text.text.includes('forge memory search "<topic>"'));
   assert.ok(loaded.text.text.includes("forge memory show <id>"));
@@ -724,6 +723,29 @@ async function rules() {
   console.log("PASS rules");
 }
 
+async function scopeDefault() {
+  setup("memory");
+  const added = cli([
+    "memory",
+    "add",
+    "--input",
+    JSON.stringify({
+      level: "device",
+      text: "defaultscopeunique kestrel",
+    }),
+  ]).result;
+  assert.equal(
+    added.note.scope,
+    "project",
+    "device adds use the resolved scope",
+  );
+  assert.equal(cli(["memory", "scope"]).result.scope, added.note.scope);
+  const found = cli(["memory", "search", "defaultscopeunique"]).result;
+  assert.equal(found.hits[0].id, added.id);
+  assert.equal(found.hits[0].scope, added.note.scope);
+  console.log("PASS scopeDefault");
+}
+
 const journeys = {
   device,
   anywhere,
@@ -732,6 +754,7 @@ const journeys = {
   fence,
   levels,
   rules,
+  scopeDefault,
 };
 
 // Each journey has its own deadline; a journey spawns the CLI a dozen or so times.
