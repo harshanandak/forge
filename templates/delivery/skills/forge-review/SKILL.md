@@ -7,7 +7,7 @@ description: "Triage PR conflicts, threads and CI on each harness wake."
 
 ## Heavy proof
 
-Before heavy or critical PRs, read `forge route get review --text`. Count it with `forge issue call --input '{"id":"<slice>","role":"review"}'`; LIMIT_REACHED stops the intent. Retry REVISION_CONFLICT. Pass returned timeboxMinutes and stopBy. Tell the subagent to stop and report the checkpoint when timeboxMinutes expire, never later than stopBy. Use the route to review the diff, saved trunk/head scenario output and every acceptance item in fresh context. Save findings/evidence on the slice, with `single-family` if returned; never claim another family.
+Before heavy or critical PRs, read `forge route get review --text`. Count it with `forge issue call <slice> --role review`; LIMIT_REACHED stops the intent. Retry REVISION_CONFLICT. Pass returned timeboxMinutes and stopBy. Tell the subagent to stop and report the checkpoint when timeboxMinutes expire, never later than stopBy. Use the route to review the diff, saved trunk/head scenario output and every acceptance item in fresh context. Save findings/evidence on the slice, with `single-family` if returned; never claim another family.
 
 Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA/time, round in `next`, before replies.
 
