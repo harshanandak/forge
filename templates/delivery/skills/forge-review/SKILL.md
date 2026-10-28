@@ -5,6 +5,8 @@ description: "Triage PR conflicts, threads and CI on each harness wake."
 
 # forge-review
 
+If a worker brief says stop after push or PR open, link an open PR to the issue, release the claim, then stop; leave thread linking and CI watching to the orchestrator.
+
 ## Heavy proof
 
 Before heavy or critical PRs, read `forge route get review --text`. Count it with `forge issue call <slice> --role review`; LIMIT_REACHED stops the intent. Retry REVISION_CONFLICT. Pass returned timeboxMinutes and stopBy. Tell the subagent to stop and report the checkpoint when timeboxMinutes expire, never later than stopBy. Use the route to review the diff, saved trunk/head scenario output and every acceptance item in fresh context. Save findings/evidence on the slice, with `single-family` if returned; never claim another family.

@@ -1,5 +1,7 @@
 # Claim, workspace and PR handoff
 
+If a worker brief says stop after push or PR open, link an open PR to the issue, release the claim, then stop; leave thread linking and CI watching to the orchestrator.
+
 Print the optional Stop guard with `forge agent guard`; completion words outside code require a current-head PASS receipt and a `Not covered:` line, or an `Unverified:` line.
 
 ## Claim and workspace
@@ -22,7 +24,7 @@ If checkpoint returns REVISION_CONFLICT (another comment took the id), run `forg
 
 Fill the repo's PR template. Style: plain opening; bold takeaways; What review found; Verification.
 
-- **Opening**: the problem as a user sees it, then what this adds. Short sentences, plain words, no internal codes.
+- **Opening**: user-visible problem, then what it adds. Short, plain sentences; no internal codes.
 - **Before / after**: what a user observes when X happens, before and after. Numbers where real numbers exist, with how they were measured.
 - **What review found**: each blocker as a bold user-visible failure and a one-line fix. Empty on the first push.
 - **Verification**: the receipt ids from `forge check run`, the test that fails without the change, the CI run for this head when available.
