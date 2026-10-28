@@ -1,6 +1,7 @@
 // [integration] Real git worktrees and subprocesses; Forge is a PATH fixture.
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -52,6 +53,7 @@ function fixture() {
     join(main, "package.json"),
     '{"name":"lane-fixture","private":true}',
   );
+  writeFileSync(join(main, ".gitignore"), ".worktrees/\n");
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) =>
       /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|HOME|USERPROFILE)$/i.test(
@@ -88,7 +90,7 @@ function fixture() {
     return run.stdout.trim();
   }
   git(["init", "--initial-branch=main"]);
-  git(["add", "package.json"]);
+  git(["add", "package.json", ".gitignore"]);
   git([
     "-c",
     "user.name=Fixture",
@@ -152,7 +154,182 @@ function fixture() {
   };
 }
 
-test("three lanes start from fetched main beneath caller; fourth refuses with exact recovery", () => {
+function launch(f: ReturnType<typeof fixture>, id: string) {
+  const child = spawn(process.execPath, [script, ...f.args(id)], {
+    cwd: f.caller,
+    env: f.env,
+    windowsHide: true,
+    timeout: 30_000,
+  });
+  const done = new Promise<{ code: number | null; stdout: string }>(
+    (resolveRun, reject) => {
+      let stdout = "";
+      child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+      child.on("error", reject);
+      child.on("close", (code) => resolveRun({ code, stdout }));
+    },
+  );
+  return { child, done };
+}
+
+test("lanes started from main, caller, and a lane are siblings and survive parent removal", () => {
+  const f = fixture();
+  const parent = f.run(f.args("parent"), f.main);
+  expect(parent.code).toBe(0);
+  const child = f.run(f.args("child"), parent.output.worktree!);
+  expect(child.code).toBe(0);
+  const precious = join(child.output.worktree!, "uncommitted.txt");
+  writeFileSync(precious, "keep my work");
+  f.git(["worktree", "remove", parent.output.worktree!]);
+  expect(existsSync(precious)).toBe(true);
+  expect(readFileSync(precious, "utf8")).toBe("keep my work");
+  expect(child.output.worktree).toBe(join(f.main, ".worktrees", "child"));
+  const third = f.run(f.args("third"));
+  expect(third.output.worktree).toBe(join(f.main, ".worktrees", "third"));
+  expect(
+    f
+      .run(["list"])
+      .output.lanes.map((lane) => lane.issue)
+      .sort(),
+  ).toEqual(["child", "third"]);
+});
+
+for (const comment of [
+  "<!-- TODO: acceptance -->",
+  "<!--\nTODO: acceptance\n-->",
+])
+  test(`comment-only acceptance refuses (${comment.includes("\n") ? "multiline" : "inline"})`, () => {
+    const f = fixture();
+    writeFileSync(
+      f.brief,
+      f
+        .text("", "Acceptance test")
+        .replace("## Acceptance test\n", `## Acceptance test\n${comment}`),
+    );
+    const result = f.run(f.args("one"));
+    expect(result.code).toBe(1);
+    expect(result.output.reasons).toContain(
+      "brief requires non-empty section: Acceptance test",
+    );
+    expect(existsSync(f.registry)).toBe(false);
+  });
+
+for (const frontmatter of ["", "---\ntitle: brief\n---\n"])
+  test(`UTF-8 BOM brief starts (${frontmatter ? "frontmatter" : "first heading"})`, () => {
+    const f = fixture();
+    writeFileSync(f.brief, `\uFEFF${frontmatter}${f.text()}`);
+    const result = f.run(f.args("one"));
+    expect(result.code).toBe(0);
+    expect(result.output.verdict).toBe("started");
+  });
+
+test("UTF-8 BOM frontmatter cannot supply a missing Goal", () => {
+  const f = fixture();
+  writeFileSync(
+    f.brief,
+    `\uFEFF---\n## Goal\nfrontmatter bait\n---\n${f.text("Goal")}`,
+  );
+  expect(f.run(f.args("one")).output.reasons).toContain(
+    "brief requires non-empty section: Goal",
+  );
+});
+
+test("exactly one leading UTF-8 BOM is removed", () => {
+  const f = fixture();
+  writeFileSync(f.brief, `\uFEFF\uFEFF${f.text()}`);
+  expect(f.run(f.args("one")).output.reasons).toContain(
+    "brief requires non-empty section: Goal",
+  );
+});
+
+test("interrupted start recovers its dead owner lock", async () => {
+  const f = fixture(),
+    slow = join(f.root, "slow-upload-pack"),
+    marker = join(f.root, "fetch-started");
+  writeFileSync(
+    slow,
+    `#!/bin/sh\nprintf started > "${marker.replaceAll("\\", "/")}"\nsleep 3\nexec git upload-pack "$@"\n`,
+  );
+  chmodSync(slow, 0o755);
+  f.git(["config", "remote.origin.uploadpack", slow.replaceAll("\\", "/")]);
+  const running = launch(f, "interrupted");
+  try {
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(marker) && Date.now() < deadline)
+      await new Promise((done) => setTimeout(done, 10));
+    expect(existsSync(marker)).toBe(true);
+  } finally {
+    running.child.kill();
+    await running.done;
+  }
+  await new Promise((done) => setTimeout(done, 3_500));
+  const lock = join(f.main, ".git", "forge-lanes.lock");
+  expect(existsSync(lock)).toBe(true);
+  f.git(["config", "--unset", "remote.origin.uploadpack"]);
+  const recovered = f.run(f.args("recovered"));
+  expect(recovered.code).toBe(0);
+  expect(f.run(["list"]).output.lanes.map((lane) => lane.issue)).toEqual([
+    "recovered",
+  ]);
+  expect(existsSync(lock)).toBe(false);
+});
+
+test("simultaneous dead-owner lock reclaimers preserve the cap and registry", async () => {
+  const f = fixture(),
+    lock = join(f.main, ".git", "forge-lanes.lock");
+  const dead = spawnSync(process.execPath, ["-e", ""], {
+    windowsHide: true,
+    timeout: 5_000,
+  });
+  expect(dead.status).toBe(0);
+  mkdirSync(lock);
+  writeFileSync(join(lock, `owner-${dead.pid}-${randomUUID()}`), "");
+  const runs = await Promise.all(
+    ["one", "two", "three", "four", "five", "six"].map(
+      (id) => launch(f, id).done,
+    ),
+  );
+  expect(runs.filter((run) => run.code === 0)).toHaveLength(3);
+  expect(runs.filter((run) => run.code === 1)).toHaveLength(3);
+  const lanes = f.run(["list"]).output.lanes;
+  expect(lanes).toHaveLength(3);
+  expect(new Set(lanes.map((lane) => lane.issue)).size).toBe(3);
+  expect(
+    lanes.every((lane) => existsSync(join(lane.worktree, "package.json"))),
+  ).toBe(true);
+  expect(existsSync(lock)).toBe(false);
+});
+
+test("empty lock abandoned during dead-owner recovery is reclaimed", () => {
+  const f = fixture(),
+    lock = join(f.main, ".git", "forge-lanes.lock");
+  mkdirSync(lock);
+  const recovered = f.run(f.args("recovered"));
+  expect(recovered.code).toBe(0);
+  expect(f.run(["list"]).output.lanes.map((lane) => lane.issue)).toEqual([
+    "recovered",
+  ]);
+  expect(existsSync(lock)).toBe(false);
+});
+
+for (const owner of ["live", "unknown"])
+  test(`${owner} lock owner refuses within the bounded wait and names lock path`, () => {
+    const f = fixture(),
+      lock = join(f.main, ".git", "forge-lanes.lock");
+    mkdirSync(lock);
+    if (owner === "live")
+      writeFileSync(join(lock, `owner-${process.pid}-${randomUUID()}`), "");
+    else writeFileSync(join(lock, "unknown-owner"), "unknown");
+    const started = Date.now(),
+      result = f.run(f.args("one"));
+    expect(result.code).toBe(1);
+    expect(result.output.next).toContain(lock);
+    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(existsSync(lock)).toBe(true);
+    expect(existsSync(f.registry)).toBe(false);
+  });
+
+test("three lanes start from fetched main beneath main checkout; fourth refuses with exact recovery", () => {
   const f = fixture();
   f.git([
     "-c",
@@ -170,7 +347,7 @@ test("three lanes start from fetched main beneath caller; fourth refuses with ex
     const result = f.run(f.args(id));
     expect(result.code).toBe(0);
     expect(result.output.verdict).toBe("started");
-    expect(result.output.worktree).toBe(join(f.caller, ".worktrees", id));
+    expect(result.output.worktree).toBe(join(f.main, ".worktrees", id));
     expect(f.git(["rev-parse", "HEAD"], result.output.worktree!)).toBe(head);
     expect(f.git(["branch", "--show-current"], result.output.worktree!)).toBe(
       `lane/${id}`,
@@ -183,7 +360,7 @@ test("three lanes start from fetched main beneath caller; fourth refuses with ex
     "4 lanes, cap 3; next: wait for a lane to finish or remove one",
   );
   expect(refused.output.next).toBe("wait for a lane to finish or remove one");
-  expect(existsSync(join(f.caller, ".worktrees/four"))).toBe(false);
+  expect(existsSync(join(f.main, ".worktrees/four"))).toBe(false);
   expect(f.git(["status", "--porcelain"], f.main)).toBe("");
   expect(
     JSON.parse(readFileSync(join(f.root, "forge-args.json"), "utf8")),
@@ -206,7 +383,7 @@ for (const section of sections)
         "fill the named required sections and retry",
       );
       expect(existsSync(f.registry)).toBe(false);
-      expect(existsSync(join(f.caller, ".worktrees/one"))).toBe(false);
+      expect(existsSync(join(f.main, ".worktrees/one"))).toBe(false);
     });
 
 test("frontmatter and fenced headings cannot supply missing sections", () => {
@@ -224,7 +401,7 @@ test("list is read only, shared across worktrees, and removed worktrees release 
   expect(existsSync(f.registry)).toBe(false);
   for (const id of ["one", "two", "three"])
     expect(f.run(f.args(id)).code).toBe(0);
-  const lane = join(f.caller, ".worktrees/one");
+  const lane = join(f.main, ".worktrees/one");
   expect(
     f
       .run(["list"], lane)
@@ -238,16 +415,16 @@ test("list is read only, shared across worktrees, and removed worktrees release 
   expect(f.run(f.args("four")).code).toBe(0);
 });
 
-test("subdirectory calls report and create lanes beneath the caller checkout root", () => {
+test("subdirectory calls report and create lanes beneath the main checkout root", () => {
   const f = fixture(),
     nested = join(f.caller, "nested");
   mkdirSync(nested);
   const first = f.run(f.args("one", ["--max", "1"]), nested);
   expect(first.code).toBe(0);
-  expect(first.output.worktree).toBe(join(f.caller, ".worktrees/one"));
+  expect(first.output.worktree).toBe(join(f.main, ".worktrees/one"));
   const refused = f.run(f.args("two", ["--max", "1"]), nested);
   expect(refused.code).toBe(1);
-  expect(refused.output.worktree).toBe(join(f.caller, ".worktrees/two"));
+  expect(refused.output.worktree).toBe(join(f.main, ".worktrees/two"));
 });
 
 test("max overrides cap and invalid command arguments return one JSON with exit 2", () => {

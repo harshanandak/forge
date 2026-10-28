@@ -18,12 +18,16 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
+  rmdirSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
@@ -70,7 +74,10 @@ function run(command: string, args: string[], cwd = process.cwd()) {
   return result.stdout.trim();
 }
 function briefProblems(text: string): string[] {
-  const lines = text.split(/\r?\n/);
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, "")
+    .split(/\r?\n/);
   let start = 0;
   if (lines[0] === "---") {
     const end = lines.indexOf("---", 1);
@@ -178,6 +185,41 @@ function active(file: string, root: string): Lane[] {
     (lane) => existsSync(lane.worktree) && registered.has(lane.worktree),
   );
 }
+function removeEmpty(lock: string): void {
+  try {
+    rmdirSync(lock);
+  } catch (error) {
+    if (
+      !object(error) ||
+      !["ENOENT", "ENOTEMPTY", "EEXIST"].includes(String(error.code))
+    )
+      throw error;
+  }
+}
+function release(lock: string, owner: string): void {
+  // Unlink only this generation's owner, then refuse to remove a nonempty replacement.
+  unlinkSync(join(lock, owner));
+  removeEmpty(lock);
+}
+function reclaim(lock: string): void {
+  try {
+    const owners = readdirSync(lock);
+    // Atomic publication is nonempty; empty locks can only be abandoned cleanup.
+    if (owners.length === 0) return removeEmpty(lock);
+    const owner = owners.length === 1 ? owners[0] : undefined;
+    const match = owner?.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}$/);
+    if (!match) return;
+    try {
+      process.kill(Number(match[1]), 0);
+      return;
+    } catch (error) {
+      if (!object(error) || error.code !== "ESRCH") return;
+    }
+    release(lock, owner!);
+  } catch (error) {
+    if (!object(error) || error.code !== "ENOENT") throw error;
+  }
+}
 function main(): number {
   let parsed: Options | "list";
   let target: string | null = null;
@@ -204,11 +246,17 @@ function main(): number {
     return reply(error instanceof Error ? error.message : "invalid input", 2);
   }
   let lock: string | undefined;
+  let staged: string | undefined;
+  const owner = `owner-${process.pid}-${randomUUID()}`;
   let held = false;
   try {
-    const root = resolve(run("git", ["rev-parse", "--show-toplevel"]));
     const common = resolve(
       run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    );
+    const root = resolve(
+      run("git", ["--git-dir", common, "worktree", "list", "--porcelain", "-z"])
+        .split("\0")[0]!
+        .slice(9),
     );
     const registry = join(common, "forge-lanes.json");
     if (parsed === "list") {
@@ -237,13 +285,29 @@ function main(): number {
         "forge issue show did not return the requested issue successfully",
       );
     lock = join(common, "forge-lanes.lock");
+    const pending = `${lock}.${process.pid}.${randomUUID()}`;
+    mkdirSync(pending);
+    writeFileSync(join(pending, owner), "", { flag: "wx" });
+    staged = pending;
     const deadline = Date.now() + 15_000;
     while (!held) {
       try {
-        mkdirSync(lock);
+        // Publish the owner and directory together; an existing live lock is nonempty.
+        if (existsSync(lock)) {
+          reclaim(lock);
+          if (existsSync(lock))
+            throw Object.assign(new Error("locked"), { code: "EEXIST" });
+        }
+        renameSync(staged, lock);
         held = true;
       } catch (error) {
-        if (!object(error) || error.code !== "EEXIST") throw error;
+        if (
+          !object(error) ||
+          !["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(
+            String(error.code),
+          )
+        )
+          throw error;
         if (Date.now() >= deadline)
           return reply(
             `lane registry is locked; next: wait for a lane to finish or inspect ${lock}`,
@@ -299,7 +363,8 @@ function main(): number {
   } catch (error) {
     return reply(error instanceof Error ? error.message : "lane start failed");
   } finally {
-    if (held && lock) rmSync(lock, { recursive: true });
+    if (held && lock) release(lock, owner);
+    else if (staged) release(staged, owner);
   }
 }
 process.exitCode = main();
