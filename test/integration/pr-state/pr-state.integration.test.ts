@@ -1,5 +1,5 @@
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 
 setDefaultTimeout(60000);
 const root = mkdtempSync(join(tmpdir(), "forge-pr-state-"));
@@ -34,7 +34,7 @@ const env: NodeJS.ProcessEnv = Object.fromEntries(
     ),
   ),
 );
-env.PATH = fake;
+env.PATH = `${fake}${delimiter}${process.env.PATH ?? ""}`;
 env.FORGE_DEVICE_ROOT = join(root, "device");
 const initialized = spawnSync(git, ["init", "--quiet", root], {
   env,
@@ -44,15 +44,25 @@ const initialized = spawnSync(git, ["init", "--quiet", root], {
 });
 if (initialized.status !== 0)
   throw new Error("Could not initialize isolated Git fixture");
-writeFileSync(
-  join(root, ".forge/config.yaml"),
-  JSON.stringify({
-    schemaVersion: "forge.config/1",
-    blocks: {
-      check: { source: { builtin: "forge/check" }, config: { commands: {} } },
-    },
-  }),
-);
+function configure(rounds?: number) {
+  writeFileSync(
+    join(root, ".forge/config.yaml"),
+    JSON.stringify({
+      schemaVersion: "forge.config/1",
+      blocks: {
+        check: {
+          source: { builtin: "forge/check" },
+          config: {
+            commands: {},
+            ...(rounds === undefined ? {} : { review: { rounds } }),
+          },
+        },
+      },
+      mcp: { expose: ["pr"] },
+    }),
+  );
+}
+configure();
 writeFileSync(join(root, "package.json"), '{"name":"pr-state-fixture"}');
 copyFileSync(join(import.meta.dirname, "gh.mjs"), join(fake, "gh.mjs"));
 if (process.platform === "win32")
@@ -86,6 +96,8 @@ type State = {
   next: string;
   news: string[];
   end: boolean;
+  reviewRounds: number;
+  nextSteps?: string[];
 };
 function read(since?: string): State {
   const result = run(since);
@@ -101,6 +113,259 @@ function quiet(since: string) {
   expect(result.status).toBe(0);
   expect(result.stdout).toBe("");
 }
+
+async function mcpRead(): Promise<State> {
+  const child = spawn(node, [bin, "--mcp"], {
+    cwd: root,
+    env,
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let sequence = 0,
+    buffer = "",
+    errors = "";
+  const pending = new Map<number, (value: unknown) => void>();
+  child.stderr.on("data", (chunk) => {
+    errors += chunk;
+  });
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    while (buffer.includes("\n")) {
+      const end = buffer.indexOf("\n"),
+        line = buffer.slice(0, end);
+      buffer = buffer.slice(end + 1);
+      if (!line.trim()) continue;
+      const message = JSON.parse(line) as {
+        id?: number;
+        result?: unknown;
+        error?: unknown;
+      };
+      if (message.id !== undefined)
+        pending.get(message.id)?.(
+          message.error ? { error: message.error } : message.result,
+        );
+    }
+  });
+  async function rpc(method: string, params: object) {
+    const id = ++sequence;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const response = new Promise<unknown>((resolve, reject) => {
+      pending.set(id, resolve);
+      timer = setTimeout(
+        () => reject(new Error(`MCP ${method} timed out: ${errors}`)),
+        20000,
+      );
+    });
+    child.stdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n",
+    );
+    try {
+      return await response;
+    } finally {
+      clearTimeout(timer);
+      pending.delete(id);
+    }
+  }
+  try {
+    await rpc("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "pr-state-integration", version: "1" },
+    });
+    child.stdin.write(
+      '{"jsonrpc":"2.0","method":"notifications/initialized"}\n',
+    );
+    const result = (await rpc("tools/call", {
+      name: "pr_state",
+      arguments: { pr: 7 },
+    })) as {
+      content: { text: string }[];
+      structuredContent: { ok: boolean; result: State };
+    };
+    expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
+      ok: true,
+    });
+    expect(JSON.parse(result.content[0]!.text)).toEqual(
+      result.structuredContent,
+    );
+    return result.structuredContent.result;
+  } finally {
+    const exited = new Promise<void>((resolve) =>
+      child.once("exit", () => resolve()),
+    );
+    child.stdin.end();
+    const timer = setTimeout(() => child.kill(), 3000);
+    try {
+      if (child.exitCode === null) await exited;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function reviewedCycles() {
+  const commits = Array.from({ length: 4 }, (_, index) => ({
+    sha: String(index + 1).repeat(40),
+    time: `2026-10-27T${index * 2 + 10}:00:00Z`,
+    parents: index ? [String(index).repeat(40)] : [],
+    message: "fix: review feedback",
+  }));
+  const user = { login: "reviewer" };
+  return {
+    head: commits[3]!.sha,
+    commitPages: [commits.slice(0, 2), commits.slice(2)],
+    reviewPages: [
+      [],
+      [
+        {
+          id: 1,
+          user,
+          commit_id: commits[0]!.sha,
+          submitted_at: "2026-10-27T11:00:00Z",
+          state: "CHANGES_REQUESTED",
+        },
+      ],
+    ],
+    inlinePages: [
+      [],
+      [
+        {
+          id: 2,
+          user,
+          original_commit_id: commits[1]!.sha,
+          created_at: "2026-10-27T13:00:00Z",
+        },
+      ],
+    ],
+    issuePages: [
+      [],
+      [
+        {
+          id: 3,
+          user: { login: "reviewer[bot]", type: "Bot" },
+          body: `Review findings for ${commits[2]!.sha.slice(0, 8)}: approved`,
+          created_at: "2026-10-27T15:00:00Z",
+        },
+      ],
+    ],
+    commits,
+  };
+}
+
+test("built CLI and MCP count three completed reviews and honor the configured cap", async () => {
+  const history = reviewedCycles();
+  scenario(history);
+  const prompt =
+    "Round 3 exceeds the review cap (2). Write a three-line threat model, then choose ship, simplify or park; do not patch the same design again.";
+  const cli = read(),
+    mcp = await mcpRead();
+  for (const state of [cli, mcp])
+    expect(state).toMatchObject({
+      reviewRounds: 3,
+      nextSteps: [prompt],
+      verdict: "ready",
+    });
+  configure(3);
+  try {
+    const changed = read(cli.next);
+    for (const state of [changed, await mcpRead()]) {
+      expect(state.reviewRounds).toBe(3);
+      expect(state).not.toHaveProperty("nextSteps");
+    }
+    quiet(changed.next);
+  } finally {
+    configure();
+  }
+  console.log(
+    JSON.stringify({
+      scenario: "completed reviews",
+      cli: { reviewRounds: cli.reviewRounds, nextSteps: cli.nextSteps },
+      mcp: { reviewRounds: mcp.reviewRounds, nextSteps: mcp.nextSteps },
+      configuredCap: 3,
+    }),
+  );
+});
+
+test("built CLI and MCP leave base-only updates and in-progress review at zero", async () => {
+  const history = reviewedCycles();
+  const reviewed = history.commits[0]!;
+  for (const update of [false, true]) {
+    const sha = "9".repeat(40),
+      base = "b".repeat(40);
+    scenario({
+      head: sha,
+      commits: [
+        reviewed,
+        {
+          sha,
+          time: "2026-10-27T18:00:00Z",
+          parents: [reviewed.sha, base],
+          message: update
+            ? "Merge branch 'main' into feature"
+            : "Merge upstream",
+        },
+      ],
+      reviewPages: history.reviewPages,
+      baseParents: update ? [] : [base],
+    });
+    for (const state of [read(), await mcpRead()]) {
+      expect(state.reviewRounds).toBe(0);
+      expect(state).not.toHaveProperty("nextSteps");
+    }
+  }
+  scenario({
+    head: reviewed.sha,
+    commits: [reviewed],
+    reviewPages: history.reviewPages,
+  });
+  for (const state of [read(), await mcpRead()])
+    expect(state.reviewRounds).toBe(0);
+});
+
+test("human issue comments, embedded hashes and duplicate evidence do not inflate rounds", () => {
+  const history = reviewedCycles(),
+    sha = history.commits[0]!.sha,
+    time = "2026-10-27T11:00:00Z";
+  scenario({
+    head: history.head,
+    commits: history.commits,
+    comments: [
+      {
+        id: 1,
+        user: { login: "person" },
+        body: `Review findings ${sha}`,
+        created_at: time,
+      },
+      {
+        id: 2,
+        user: { login: "reviewer[bot]", type: "Bot" },
+        body: `Review findings z${sha}z`,
+        created_at: time,
+      },
+    ],
+  });
+  expect(read().reviewRounds).toBe(0);
+  scenario({
+    head: history.head,
+    commits: history.commits,
+    comments: [
+      {
+        id: 1,
+        user: { login: "reviewer[bot]", type: "Bot" },
+        body: `Review findings ${sha}`,
+        created_at: time,
+        updated_at: "2026-10-27T18:00:00Z",
+      },
+    ],
+  });
+  expect(read().reviewRounds).toBe(0);
+  scenario({
+    head: history.head,
+    commits: history.commits,
+    reviewPages: [history.reviewPages[1], history.reviewPages[1]],
+  });
+  expect(read().reviewRounds).toBe(1);
+});
 
 test("the fake rejects another PR in every read route", () => {
   for (const pr of [7, 23]) {

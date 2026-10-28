@@ -1448,9 +1448,9 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
   const viewArgs = ["pr", "view", String(input.pr), "--json"];
   const pr = await gh<Pr>([
     ...viewArgs,
-    "headRefOid,state,mergeable,mergeStateStatus,reviewDecision,isDraft,url,comments,reviews",
+    "headRefOid,baseRefOid,baseRefName,state,mergeable,mergeStateStatus,reviewDecision,isDraft,url,comments,reviews",
     "--jq",
-    "{head:.headRefOid,state,mergeable,merge:.mergeStateStatus,review:.reviewDecision,draft:.isDraft,url,remarks:([.comments[]|{id,author:.author.login,time:.createdAt}]+[.reviews[]|select(.submittedAt)|{id,author:.author.login,time:.submittedAt}])}",
+    "{head:.headRefOid,base:.baseRefOid,baseName:.baseRefName,state,mergeable,merge:.mergeStateStatus,review:.reviewDecision,draft:.isDraft,url,remarks:([.comments[]|{id,author:.author.login,time:.createdAt}]+[.reviews[]|select(.submittedAt)|{id,author:.author.login,time:.submittedAt}])}",
   ]);
   const [, , host, owner, repo] = pr.url!.split("/");
   const hash = (v: unknown) => services.crypto.sha256(JSON.stringify(v));
@@ -1493,8 +1493,94 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
   const threadHash = hash(threads);
   const inline = await api<Remark[]>(
     `repos/${owner}/${repo}/pulls/${input.pr}/comments?per_page=100`,
-    "[.[]|{id:(.id|tostring),author:(.user.login // (.user|tostring)),time:.created_at}] | @json",
+    "[.[]|{id:(.id|tostring),author:(.user.login // (.user|tostring)),time:.created_at,commit:(.original_commit_id // .commit_id)}] | @json",
   );
+  type Review = { commit: string; time: string };
+  // Numeric string literals survive Windows gh.cmd without shell-reinterpreted quotes.
+  const jqText = (text: string) =>
+    `([${[...text].map((char) => char.charCodeAt(0)).join(",")}]|implode)`;
+  const reviews = await api<Review[]>(
+    `repos/${owner}/${repo}/pulls/${input.pr}/reviews?per_page=100`,
+    `[.[]|select(.state != ${jqText("PENDING")} and .submitted_at != null)|{commit:.commit_id,time:.submitted_at}] | @json`,
+  );
+  const summaries = await api<{ commits: string[]; time: string }[]>(
+    `repos/${owner}/${repo}/issues/${input.pr}/comments?per_page=100`,
+    `[.[]|select(.user.type == ${jqText("Bot")} or (.user.login // empty | endswith(${jqText("[bot]")})))|select(.body // empty | test(${jqText("review|finding|approved|changes requested")};${jqText("i")}))|{time:(.updated_at // .created_at),commits:[.body // empty | scan(${jqText("[a-zA-Z0-9_]+")})|select(test(${jqText("^[a-fA-F0-9]{7,64}$")}))|ascii_downcase]}] | @json`,
+  );
+  type Commit = {
+    sha: string;
+    time: string;
+    parents: string[];
+    message: string;
+  };
+  const commitPages = await api<{ commits: Commit[]; more: boolean }[]>(
+    "graphql",
+    "(if .errors then error(.errors) else .data.repository.pullRequest.commits | {commits:[.nodes[].commit|{sha:.oid,time:.committedDate,message:.messageHeadline,parents:[.parents.nodes[].oid]}],more:.pageInfo.hasNextPage} end) | @json",
+    [
+      "-f",
+      "query=query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){commits(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{commit{oid committedDate messageHeadline parents(first:2){nodes{oid}}}}}}}}",
+      ...fields,
+    ],
+  );
+  if (
+    !commitPages.length ||
+    commitPages.some(
+      (page, index) => page.more !== index < commitPages.length - 1,
+    )
+  )
+    throw new Error("Incomplete commits");
+  const commits = commitPages.flatMap((page) => page.commits);
+  const baseMerges = new Set<string>();
+  for (const commit of commits) {
+    if (commit.parents.length < 2) continue;
+    const comparison = await gh<{ status: string }>([
+      "api",
+      `repos/${owner}/${repo}/compare/${commit.parents[1]}...${pr.base}`,
+      "--hostname",
+      host!,
+      "--jq",
+      "{status}",
+    ]);
+    if (
+      !["ahead", "behind", "identical", "diverged"].includes(comparison.status)
+    )
+      throw new Error("Invalid base ancestry");
+    if (
+      ["ahead", "identical"].includes(comparison.status) ||
+      commit.message.startsWith(`Merge branch '${pr.baseName}' into `)
+    )
+      baseMerges.add(commit.sha);
+  }
+  const evidence: Review[] = [
+    ...reviews,
+    ...(inline as (Remark & Partial<Review>)[]).filter(
+      (item): item is Remark & Review => typeof item.commit === "string",
+    ),
+  ];
+  for (const summary of summaries)
+    for (const prefix of summary.commits) {
+      const matches = commits.filter((commit) => commit.sha.startsWith(prefix));
+      if (matches.length === 1)
+        evidence.push({ commit: matches[0]!.sha, time: summary.time });
+    }
+  const completed = new Set<string>();
+  for (const review of evidence) {
+    const index = commits.findIndex((commit) => commit.sha === review.commit);
+    if (index < 0) continue;
+    const later = commits
+      .slice(index + 1)
+      .find((commit) => !baseMerges.has(commit.sha));
+    if (later && Date.parse(later.time) > Date.parse(review.time))
+      completed.add(review.commit);
+  }
+  const reviewRounds = completed.size;
+  const cap = args.config.review?.rounds ?? 2;
+  const nextSteps =
+    reviewRounds > cap
+      ? [
+          `Round ${reviewRounds} exceeds the review cap (${cap}). Write a three-line threat model, then choose ship, simplify or park; do not patch the same design again.`,
+        ]
+      : undefined;
   const current = await gh<Record<string, string>>([
     ...viewArgs,
     "headRefOid,state",
@@ -1535,7 +1621,11 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
   if (reasons.length) verdict = "blocked";
   if (!checks.length) reasons.push("no checks reported");
   if (pr.state !== "OPEN") verdict = "gone";
-  const state = hash([pr.state, verdict, reasons]),
+  const state = hash(
+      reviewRounds === 0
+        ? [pr.state, verdict, reasons]
+        : [pr.state, verdict, reasons, reviewRounds, nextSteps],
+    ),
     news: string[] = [];
   if (!old) news.push("head moved");
   for (const check of failed)
@@ -1596,6 +1686,8 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
     news: raced ? [moved ? "head moved" : "state changed"] : news,
     end: !raced && (verdict === "ready" || verdict === "gone"),
     next,
+    reviewRounds,
+    ...(nextSteps ? { nextSteps } : {}),
   };
 }
 

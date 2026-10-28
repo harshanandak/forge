@@ -28,6 +28,7 @@ export interface CheckConfig {
   readonly inputs: readonly string[];
   readonly maxInputBytes: number;
   readonly environment: readonly string[];
+  readonly review?: { readonly rounds?: number };
   readonly gate?: {
     readonly requiredChecks?: "github-required" | readonly string[];
     readonly receiptChecks?: readonly string[];

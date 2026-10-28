@@ -13,8 +13,12 @@ const requested =
     ? args[2]
     : args[0] === "api" && args[1] === "graphql"
       ? args.find((arg) => /^n=/.test(arg))?.slice(2)
-      : /\/pulls\/(\d+)(?:\/|\?|$)/.exec(args[1] ?? "")?.[1];
-if ((args[0] === "pr" || args[0] === "api") && Number(requested) !== pr) {
+      : /\/(?:pulls|issues)\/(\d+)(?:\/|\?|$)/.exec(args[1] ?? "")?.[1];
+if (
+  (args[0] === "pr" || args[0] === "api") &&
+  !args[1]?.includes("/compare/") &&
+  Number(requested) !== pr
+) {
   console.error(
     `fake gh: expected pull request ${pr}, got ${requested ?? "none"}`,
   );
@@ -59,7 +63,10 @@ if (args[0] === "pr" && args[1] === "view" && fields === "headRefOid,state") {
   if (!args.includes("--jq"))
     throw new Error("Metadata must be projected before capture");
   const projection = args[args.indexOf("--jq") + 1].replace(/\s+/g, "");
-  if (/\bbody(?:Text|HTML)?\b/i.test(projection))
+  if (
+    /\bbody(?:Text|HTML)?\b/i.test(projection) &&
+    !args[1]?.includes("/issues/")
+  )
     throw new Error("Projection must not capture comment or review bodies");
   const requireProjection = (expected) => {
     if (projection !== expected)
@@ -72,11 +79,13 @@ if (args[0] === "pr" && args[1] === "view" && fields === "headRefOid,state") {
   });
   if (args[0] === "pr" && args[1] === "view") {
     requireProjection(
-      "{head:.headRefOid,state,mergeable,merge:.mergeStateStatus,review:.reviewDecision,draft:.isDraft,url,remarks:([.comments[]|{id,author:.author.login,time:.createdAt}]+[.reviews[]|select(.submittedAt)|{id,author:.author.login,time:.submittedAt}])}",
+      "{head:.headRefOid,base:.baseRefOid,baseName:.baseRefName,state,mergeable,merge:.mergeStateStatus,review:.reviewDecision,draft:.isDraft,url,remarks:([.comments[]|{id,author:.author.login,time:.createdAt}]+[.reviews[]|select(.submittedAt)|{id,author:.author.login,time:.submittedAt}])}",
     );
     const comments = (state.issuePages ?? [state.comments ?? []]).flat();
     result = {
       head: head(),
+      base: state.base ?? "b".repeat(40),
+      baseName: "main",
       state: state.state ?? "OPEN",
       mergeable: state.mergeable ?? "MERGEABLE",
       merge: state.merge ?? "CLEAN",
@@ -90,6 +99,53 @@ if (args[0] === "pr" && args[1] === "view" && fields === "headRefOid,state") {
           .map((item) => metadata(item, "review", "submitted_at")),
       ],
     };
+  } else if (
+    args[1] === "graphql" &&
+    args.some((arg) => arg.includes("commits(first:100"))
+  ) {
+    paged = true;
+    const pages = state.commitPages ?? [state.commits ?? []];
+    result = pages.map((commits, index) => ({
+      commits,
+      more: index < pages.length - 1,
+    }));
+  } else if (args[1]?.includes("/compare/")) {
+    result = {
+      status: state.baseParents?.includes(
+        args[1].split("/compare/")[1].split("...")[0],
+      )
+        ? "ahead"
+        : "diverged",
+    };
+  } else if (args[1]?.includes("/reviews?")) {
+    paged = true;
+    result = (state.reviewPages ?? [state.reviews ?? []]).map((page) =>
+      page
+        .filter((item) => item.state !== "PENDING" && item.submitted_at)
+        .map((item) => ({ commit: item.commit_id, time: item.submitted_at })),
+    );
+  } else if (args[1]?.includes("/issues/")) {
+    if (
+      !projection.includes("commits:[.body") ||
+      !projection.endsWith("]|@json")
+    )
+      throw new Error("Bot bodies must only project commit IDs");
+    paged = true;
+    result = (state.issuePages ?? [state.comments ?? []]).map((page) =>
+      page
+        .filter(
+          (item) =>
+            (item.user?.type === "Bot" ||
+              item.user?.login?.endsWith("[bot]")) &&
+            /review|finding|approved|changes requested/i.test(item.body ?? ""),
+        )
+        .map((item) => ({
+          time: item.updated_at ?? item.created_at,
+          commits: ((item.body ?? "").match(/[a-zA-Z0-9_]+/g) ?? [])
+            .filter((word) => /^[a-fA-F0-9]{7,64}$/.test(word))
+            .map((word) => word.toLowerCase()),
+        })),
+    );
   } else if (args[1] === "graphql") {
     paged = true;
     const ids = state.threadCount
@@ -117,18 +173,19 @@ if (args[0] === "pr" && args[1] === "view" && fields === "headRefOid,state") {
         ];
   } else if (/\/pulls\/\d+\/comments\?/.test(args[1] ?? "")) {
     requireProjection(
-      "[.[]|{id:(.id|tostring),author:(.user.login//(.user|tostring)),time:.created_at}]|@json",
+      "[.[]|{id:(.id|tostring),author:(.user.login//(.user|tostring)),time:.created_at,commit:(.original_commit_id//.commit_id)}]|@json",
     );
     if (!args.includes("--paginate") || !args[1].endsWith("?per_page=100"))
       throw new Error("Inline comments must request every page of 100");
     paged = true;
-    const comments = state.reviewComments ?? [];
+    const comments = (state.inlinePages ?? [state.reviewComments ?? []]).flat();
     result = Array.from(
       { length: Math.max(1, Math.ceil(comments.length / 100)) },
       (_, page) =>
-        comments
-          .slice(page * 100, (page + 1) * 100)
-          .map((item) => metadata(item, "inline", "created_at")),
+        comments.slice(page * 100, (page + 1) * 100).map((item) => ({
+          ...metadata(item, "inline", "created_at"),
+          commit: item.original_commit_id ?? item.commit_id,
+        })),
     );
   } else throw new Error("Unexpected fake GitHub request");
 }

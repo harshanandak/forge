@@ -17,6 +17,14 @@
     "maxReceiptBytes"
   ],
   "properties": {
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "rounds": { "type": "integer", "minimum": 0, "default": 2 }
+      }
+    },
     "gate": {
       "type": "object",
       "additionalProperties": false,
