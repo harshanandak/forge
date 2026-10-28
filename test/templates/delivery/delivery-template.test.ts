@@ -673,7 +673,21 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       existsSync(join(root, ".agents/skills/forge-build/done-claim.mjs")),
     ).toBe(true);
     // The executable gate owns the merge conditions and returns the pinned head and receipt.
-    expect(text["forge-land"]).toContain("forge check gate");
+    expect(text["forge-land"]).toContain("forge check gate --pr <n>");
+    expect(text["forge-land"]).toContain(
+      "Use when a PR may be ready to merge, or after it merged.",
+    );
+    expect(text["forge-land"]).toContain("forge pr merge <n>");
+    expect(text["forge-land"]).toContain("Never run raw `gh pr merge`");
+    expect(text["forge-land"]).toContain("result.gate.reasons");
+    expect(text["forge-land"]).toContain("MERGE_UNVERIFIED");
+    const recoveryRead = "gh pr view <n> --json state,mergeCommit,headRefOid";
+    expect(text["forge-land"]).toContain(
+      `On \`MERGE_UNVERIFIED\`, read \`${recoveryRead}\` before anything else`,
+    );
+    expect(text["forge-land"]).toContain(
+      `1. \`${recoveryRead}\` must show \`MERGED\`, \`headRefOid\` equal to \`<head>\` and a valid \`mergeCommit.oid\`; otherwise the merge is not verified: stop. Keep its merge commit SHA`,
+    );
     expect(text["forge-land"]).toContain("head moved means run the gate again");
     for (const rule of [
       "forge issue claim <slice>",

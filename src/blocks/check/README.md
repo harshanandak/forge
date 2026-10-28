@@ -1,5 +1,16 @@
 # Declared-command execution
 
+`forge pr merge <n>` runs the private gate, then `gh pr merge <n> --squash --match-head-commit <head>` pinned to its head.
+Its 121.5-second budget gives the gate 65 seconds (standalone: 60), reserving 56.5 for merge, readback, process cleanup and finalization.
+Gate timeouts report `INVOCATION_TIMEOUT`. Only readback showing MERGED at the pin with a valid merge commit proves success, even after a write timeout.
+The result keeps `gate`, `head`, `receipt` and, on success, `mergeCommit`. Gate refusal exits 1.
+A nonzero merge exit with complete OPEN/CLOSED readback returns `HEAD_MOVED` at another head or `MERGE_REFUSED` at the pin (exit 1).
+A zero exit without verified MERGED readback at the pin, or an interrupted write, returns `MERGE_UNVERIFIED` (exit 2).
+Reconcile with `gh pr view <n> --json state,mergeCommit,headRefOid`: require MERGED, headRefOid equal to the printed gate head (`result.head`) and a valid `mergeCommit.oid`;
+otherwise the merge is not verified: stop. No automatic retry, admin override, merge queue or branch deletion is requested.
+This destructive, non-idempotent operation declares external process, network and write effects.
+Path or package copies need a human grant for those bytes and effects.
+
 `forge pr state <n> [--since <token>]` reads GitHub through `gh`: PR metadata,
 all and required checks, paged threads, projected remarks, then a final head/state check.
 It prints one JSON line with `ready`, `waiting`, `blocked` or `gone`, reasons, news,
@@ -81,7 +92,7 @@ cleanup. The runner-output adapter recognizes report formats and imports no runn
 
 ## Catalog services and configuration
 
-The first-party registration makes `check.run`, `check.list`, `check.show`, and `check.gate` discoverable
+The first-party registration makes `pr.merge`, `check.run`, `check.list`, `check.show`, and `check.gate` discoverable
 through the generated CLI and MCP. The captured `entry.cjs` contains the engine, command
 parser and receipt checks. It imports no runtime code. The host supplies the declared
 `process`, `files`, `environment`, `crypto`, `output` and `state` slots. The same pure

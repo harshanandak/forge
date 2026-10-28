@@ -1,5 +1,10 @@
 {
   "operations": {
+    "pr.merge": {
+      "title": "Gate and merge the pinned head",
+      "summary": "Gate, squash merge the pinned head, then verify readback. MERGED: exit 0. Gate or confirmed nonzero refusal: exit 1. Uncertain state, zero-exit unmerged state or post-write interruption: MERGE_UNVERIFIED, exit 2.",
+      "description": "Reconcile: gh pr view <n> --json state,mergeCommit,headRefOid. Only MERGED with headRefOid equal to the printed gate head and a valid mergeCommit.oid is reconciled; otherwise the merge is not verified: stop."
+    },
     "pr.state": {
       "title": "Read pull request state",
       "summary": "Read current-head GitHub checks, threads, merge readiness and remarks. Prints one JSON line with verdict, news and an opaque next token; --since suppresses unchanged reads. Read failures exit nonzero without advancing the token."

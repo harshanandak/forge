@@ -17,6 +17,7 @@ import type {
   RunInput,
   GateInput,
   GateResult,
+  MergeResult,
 } from "./types.ts";
 import type { SpawnOptions } from "../../ports/process.ts";
 
@@ -795,6 +796,7 @@ async function gate(
     reasons.push({ code, detail });
   };
   const deadline = scope?.deadline ?? services.clock.now() + 60000;
+  let timedOut = false;
   function active() {
     if (
       !Number.isSafeInteger(deadline) ||
@@ -824,6 +826,7 @@ async function gate(
       maxOutputBytes: 262144,
       ...(scope ? { signal: scope.signal } : {}),
     });
+    timedOut = result.timedOut;
     active();
     if (
       result.exitCode === null ||
@@ -1197,10 +1200,18 @@ async function gate(
     if (after.state !== "OPEN" || after.mergeStateStatus !== "CLEAN")
       refuse("PR_NOT_MERGEABLE", "Pull request is no longer OPEN and CLEAN");
   } catch {
-    refuse(
-      "GITHUB_EVIDENCE_INVALID",
-      "Gate evidence could not be read completely and verified; retry after repairing the CLI, access or response",
-    );
+    if (timedOut || services.clock.now() >= deadline)
+      refuse(
+        "INVOCATION_TIMEOUT",
+        "Gate invocation timed out; increase its deadline or GitHub command timeout",
+      );
+    else if (scope?.signal.aborted)
+      refuse("INVOCATION_CANCELLED", "Gate invocation cancelled");
+    else
+      refuse(
+        "GITHUB_EVIDENCE_INVALID",
+        "Gate evidence could not be read completely and verified; retry after repairing the CLI, access or response",
+      );
   }
   return {
     verdict: reasons.length ? "REFUSED" : "PASS",
@@ -1211,6 +1222,167 @@ async function gate(
     doorPaths: doors,
     reasons,
   };
+}
+
+function gateServices(args: Call<GateInput>) {
+  const services = args.services;
+  return {
+    process: services.process,
+    state: services.state,
+    crypto: services.crypto,
+    root: services.files.root,
+    environment: services.environment.select([
+      ...new Set([
+        ...args.config.environment,
+        "GH_TOKEN",
+        "GH_HOST",
+        "GH_ENTERPRISE_TOKEN",
+      ]),
+    ]),
+    clock: { now: () => Date.now() },
+  };
+}
+
+const MERGE_COMMAND = ["pr", "merge"] as const;
+const MERGE_FLAGS = ["--squash", "--match-head-commit"] as const;
+function readbackRecord(read: NonNullable<MergeResult["readbackProcess"]>) {
+  return {
+    exitCode: read.exitCode,
+    signal: read.signal,
+    timedOut: read.timedOut,
+    truncated:
+      read.truncated || read.stdout.length > 2048 || read.stderr.length > 2048,
+    stdout: read.stdout.slice(0, 2048),
+    stderr: read.stderr.slice(0, 2048),
+  };
+}
+async function prMerge(args: Call<GateInput>): Promise<MergeResult> {
+  function active() {
+    if (args.signal.aborted)
+      failure("INVOCATION_CANCELLED", "Merge invocation cancelled");
+    if (!Number.isSafeInteger(args.deadline) || Date.now() >= args.deadline)
+      failure("INVOCATION_TIMEOUT", "Merge invocation deadline exceeded");
+  }
+  active();
+  const services = gateServices(args);
+  const cleanupMs = args.services.process.cleanupBudgetMs ?? 10250;
+  const finalizationMs = 1000;
+  const readbackBudgetMs = 10000 + cleanupMs + finalizationMs;
+  const evidence = await gate(services, args.input, args.config, {
+    signal: args.signal,
+    deadline: args.deadline - 25000 - cleanupMs - readbackBudgetMs,
+  });
+  active();
+  let result: MergeResult = {
+    outcome: "MERGE_UNVERIFIED",
+    pr: args.input.pr,
+    head: evidence.head,
+    gate: evidence,
+    ...(evidence.receipt ? { receipt: evidence.receipt } : {}),
+  };
+  const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+  if (
+    evidence.verdict !== "PASS" ||
+    !oid.test(evidence.head) ||
+    !evidence.receipt
+  )
+    return { ...result, outcome: "REFUSED" };
+  async function gh(argv: readonly string[], timeoutMs: number) {
+    const executable = services.process.resolve("gh", services.environment);
+    if (executable.kind !== "resolved")
+      throw new Error("GitHub CLI unavailable");
+    return await services.process.run(executable, argv, {
+      cwd: services.root,
+      env: services.environment,
+      signal: args.signal,
+      timeoutMs,
+      maxOutputBytes: 262144,
+    });
+  }
+  active();
+  const mergeTimeout = Math.min(
+    25000,
+    args.deadline - Date.now() - cleanupMs - readbackBudgetMs,
+  );
+  if (mergeTimeout <= 0)
+    failure("INVOCATION_TIMEOUT", "Insufficient time for merge and readback");
+  let merge: Awaited<ReturnType<typeof gh>> | undefined;
+  try {
+    args.services.process.retainMergeOutcome?.(result);
+    merge = await gh(
+      [...MERGE_COMMAND, String(args.input.pr), ...MERGE_FLAGS, evidence.head],
+      mergeTimeout,
+    );
+  } catch {
+    // The write may have reached GitHub; only readback can establish its outcome.
+  }
+  try {
+    const remaining = args.deadline - Date.now() - cleanupMs - finalizationMs;
+    if (remaining <= 0) throw new Error("Readback deadline exceeded");
+    const read = await gh(
+      [
+        "pr",
+        "view",
+        String(args.input.pr),
+        "--json",
+        "state,headRefOid,mergeCommit",
+      ],
+      Math.min(10000, remaining),
+    );
+    result = {
+      ...result,
+      readbackProcess: readbackRecord(read),
+    };
+    args.services.process.retainMergeOutcome?.(result);
+    if (
+      read.exitCode !== 0 ||
+      read.signal !== null ||
+      read.timedOut ||
+      read.truncated ||
+      Object.values(read.outputEvidence ?? {}).some(
+        (stream) => !stream.complete,
+      )
+    )
+      throw new Error("Incomplete merge readback");
+    const value: unknown = JSON.parse(read.stdout);
+    if (
+      !isRecord(value) ||
+      typeof value.state !== "string" ||
+      !["OPEN", "CLOSED", "MERGED"].includes(value.state) ||
+      typeof value.headRefOid !== "string" ||
+      !oid.test(value.headRefOid) ||
+      !(
+        value.mergeCommit === null ||
+        (isRecord(value.mergeCommit) &&
+          typeof value.mergeCommit.oid === "string" &&
+          oid.test(value.mergeCommit.oid))
+      )
+    )
+      throw new Error("Invalid merge readback");
+    if (value.state === "MERGED") {
+      if (value.headRefOid === evidence.head && isRecord(value.mergeCommit))
+        return {
+          ...result,
+          outcome: "MERGED",
+          mergeCommit: value.mergeCommit.oid as string,
+        };
+    } else if (
+      merge &&
+      merge.exitCode !== null &&
+      merge.exitCode !== 0 &&
+      !merge.timedOut &&
+      merge.signal === null
+    )
+      return {
+        ...result,
+        outcome:
+          value.headRefOid !== evidence.head ? "HEAD_MOVED" : "MERGE_REFUSED",
+        detail: merge.stderr.slice(0, 300),
+      };
+  } catch {
+    // A failed or malformed read cannot prove whether the write happened.
+  }
+  return { ...result, outcome: "MERGE_UNVERIFIED" };
 }
 
 function watchToken(text: string, decode = false): string {
@@ -1433,28 +1605,12 @@ type Call<T> = import("../../contract/author.ts").HandlerCall<T> & {
 };
 const operations = {
   "pr.state": prState,
+  "pr.merge": prMerge,
   async "check.gate"(args: Call<GateInput>) {
-    const services = args.services;
-    return await gate(
-      {
-        process: services.process,
-        state: services.state,
-        crypto: services.crypto,
-        root: services.files.root,
-        environment: services.environment.select([
-          ...new Set([
-            ...args.config.environment,
-            "GH_TOKEN",
-            "GH_HOST",
-            "GH_ENTERPRISE_TOKEN",
-          ]),
-        ]),
-        clock: { now: () => Date.now() },
-      },
-      args.input,
-      args.config,
-      { signal: args.signal, deadline: args.deadline },
-    );
+    return await gate(gateServices(args), args.input, args.config, {
+      signal: args.signal,
+      deadline: args.deadline,
+    });
   },
   async "check.run"(args: Call<RunInput>) {
     validateBudgets(selectedConfig(args.config, args.input.checks).config);
@@ -1502,6 +1658,7 @@ const operations = {
 };
 module.exports = {
   ...operations,
+  readbackRecord,
   createCheck,
   commandArguments,
   canonical,

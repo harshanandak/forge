@@ -13,6 +13,7 @@ import type { StateRecord } from "../../../src/generated/types.ts";
 import { validateWithSchema } from "../../../src/contract/schema.ts";
 import schema from "../../../src/blocks/check/schemas/config.json" with { type: "json" };
 import manifest from "../../../src/blocks/check/forge.block.json" with { type: "json" };
+import mergeInput from "../../../src/blocks/check/schemas/pr-merge.input.json" with { type: "json" };
 import { validateBlockManifest } from "../../../src/contract/index.ts";
 import { captured } from "./fakes.ts";
 import {
@@ -20,6 +21,14 @@ import {
   validateBudgets,
 } from "../../../src/blocks/check/index.ts";
 import { commandArguments } from "../../../src/blocks/check/command.ts";
+
+test("merge input rejects unsafe PR numbers before the gate reads evidence", () => {
+  expect(
+    validateWithSchema(mergeInput, { pr: Number.MAX_SAFE_INTEGER }),
+  ).toEqual([]);
+  for (const pr of [Number.MAX_SAFE_INTEGER + 1, 1e20])
+    expect(validateWithSchema(mergeInput, { pr }).length).toBeGreaterThan(0);
+}, 1000);
 
 test("the check manifest uses locked major interface references in every slot", () => {
   expect(validateBlockManifest(manifest).ok).toBe(true);

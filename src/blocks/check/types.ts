@@ -49,6 +49,24 @@ export interface GateResult {
     readonly detail: string;
   }[];
 }
+export interface MergeResult {
+  readonly outcome:
+    "MERGED" | "REFUSED" | "HEAD_MOVED" | "MERGE_REFUSED" | "MERGE_UNVERIFIED";
+  readonly pr: number;
+  readonly head: string;
+  readonly receipt?: string;
+  readonly mergeCommit?: string;
+  readonly detail?: string;
+  readonly readbackProcess?: {
+    readonly exitCode: number | null;
+    readonly signal: string | null;
+    readonly timedOut: boolean;
+    readonly truncated: boolean;
+    readonly stdout: string;
+    readonly stderr: string;
+  };
+  readonly gate: GateResult;
+}
 export interface RunInput {
   readonly checks?: readonly string[];
   readonly trigger?: string;
