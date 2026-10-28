@@ -238,8 +238,10 @@ test("Monitor stops on the fifteenth failure before rearm with default cadence a
     { pr: 42, kind: "unreadable", fails: 15, next: "" },
   ]);
   expect(result.sleeps).toHaveLength(14);
-  expect(result.sleeps).toEqual(Array(14).fill(60));
-  expect(result.sleeps.reduce((total, seconds) => total + seconds, 0)).toBe(840);
+  expect(result.sleeps).toEqual(Array.from({ length: 14 }, () => 60));
+  expect(result.sleeps.reduce((total, seconds) => total + seconds, 0)).toBe(
+    840,
+  );
 });
 test("successful empty and news polls each reset the consecutive failure counter", () => {
   const result = run(monitor().command, "reset", {
