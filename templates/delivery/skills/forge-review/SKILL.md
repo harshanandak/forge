@@ -1,19 +1,19 @@
 ---
 name: forge-review
-description: "Triage a PR on each harness wake: conflicts, threads, CI; fix in-boundary P0/P1 in one push wave, file the rest, re-plan after round 2."
+description: "Triage PR conflicts, threads and CI on each harness wake."
 ---
 
 # forge-review
 
 ## Heavy proof
 
-Before heavy or critical PRs, read `forge route get review --text`. Count it with `forge issue call --input '{"id":"<slice>","role":"review"}'`; LIMIT_REACHED stops the intent. Retry REVISION_CONFLICT. Use the route to review the diff, saved trunk/head scenario output and every acceptance item in fresh context. Save findings/evidence on the slice, with `single-family` if returned; never claim another family.
+Before heavy or critical PRs, read `forge route get review --text`. Count it with `forge issue call --input '{"id":"<slice>","role":"review"}'`; LIMIT_REACHED stops the intent. Retry REVISION_CONFLICT. Pass returned timeboxMinutes and stopBy. Tell the subagent to stop and report the checkpoint when timeboxMinutes expire, never later than stopBy. Use the route to review the diff, saved trunk/head scenario output and every acceptance item in fresh context. Save findings/evidence on the slice, with `single-family` if returned; never claim another family.
 
 Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA/time, round in `next`, before replies.
 
 ## On each wake: conflicts, then threads, then CI
 
-1. Every wake runs `forge pr state <n>` and acts on `verdict`. Read checkpoint's last push SHA/time and round before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push. Never rebase a pushed branch or force-push.
+1. On wake, run `forge pr state <n>` and act on `verdict`. Read checkpoint's last push SHA/time and round before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push. Never rebase a pushed branch or force-push.
 2. Get `<owner> <repo>` from `gh repo view --json owner,name`. List unresolved threads: `node <skill-dir>/list-threads.mjs <owner> <repo> <n>`. Read full comments and timestamps with `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate` before deciding.
 3. Triage only comments and checks newer than the last push. Verify an old thread is fixed at head before closing with `Fixed in <sha>`. Other old threads wait for new evidence; age never justifies resolution.
 
@@ -44,5 +44,5 @@ Require `true`. On `reply <id> posted; resolve failed`, retry only `resolveRevie
 
 - One round is one triage pass plus one push. Log it: `forge issue comment --input '{"id":"<slice>","body":"review round <k>: fixed ..., filed ...; push <sha> at <time>"}'`.
 - At most 2 rounds. After round 2, a new blocker means split or re-plan with the orchestrator instead of a round 3.
-- On wake, run `forge pr state <n>` and act on `verdict`; no sleep loop. After each push, run `forge agent wait <n>`; for `t3-tool`, skip its steps (already watching); otherwise do each step and follow `then`.
+- No sleep loop. After each push, run `forge agent wait <n>`; for `t3-tool`, skip its steps (already watching); otherwise do each step and follow `then`.
 - When checks are green and the thread list prints nothing, hand over to `forge-land`.

@@ -18,7 +18,7 @@ Facts are the agent's job: look them up in code, tools or primary sources, or di
 
 Before dispatching any subagent, run `forge route get <role> --text` for its role and use the line it prints to select the dispatch.
 
-Before each dispatch, run `forge issue call --input '{"id":"<intent>","role":"<role>"}'` with that role; on LIMIT_REACHED stop and report. Retry REVISION_CONFLICT. These are intake's dispatch rules.
+Before each dispatch, run `forge issue call --input '{"id":"<intent>","role":"<role>"}'` with that role; on LIMIT_REACHED stop and report. Retry REVISION_CONFLICT. Pass returned timeboxMinutes and stopBy. Tell the subagent to stop and report the checkpoint when timeboxMinutes expire, never later than stopBy. These are intake's dispatch rules.
 
 ## Prototype when execution is the missing fact
 
