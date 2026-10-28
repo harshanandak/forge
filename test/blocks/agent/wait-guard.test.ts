@@ -303,6 +303,20 @@ test("precedence leaves unrelated ties and cycles undetected", () => {
   }
 });
 
+test("an adapter listing itself in over remains detected", () => {
+  const solo: Adapter = {
+    ...codex,
+    id: "solo",
+    over: ["solo"],
+    guard: { ...codex.guard!, file: "solo.json" },
+  };
+  const env = { CODEX_THREAD_ID: "1" };
+  expect(wait({ pr: 7 }, [solo], env).kind).toBe("t3-tool");
+  expect(
+    (operations["agent.guard"]!(call({}, [solo], env)) as Guard).file,
+  ).toBe("solo.json");
+});
+
 test("precedence only inherits from the first matched adapter and preserves explicit capabilities", () => {
   const claude: Adapter = {
     ...codex,

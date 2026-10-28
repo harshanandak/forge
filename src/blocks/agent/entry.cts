@@ -38,7 +38,10 @@ function detected({
     ),
   );
   const remaining = matches.filter(
-    (adapter) => !matches.some((other) => other.over?.includes(adapter.id)),
+    (adapter) =>
+      !matches.some(
+        (other) => other !== adapter && other.over?.includes(adapter.id),
+      ),
   );
   if (remaining.length !== 1) return undefined;
   const winner = remaining[0]!;

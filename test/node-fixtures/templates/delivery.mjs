@@ -35,9 +35,12 @@ function project(files) {
   const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") };
   for (const name of Object.keys(env))
     if (
-      ["CLAUDECODE", "CODEX_THREAD_ID", "T3CODE_CLI_PATH"].includes(
-        name.toUpperCase(),
-      )
+      [
+        "CLAUDECODE",
+        "CODEX_THREAD_ID",
+        "T3CODE_CLI_PATH",
+        "T3CODE_THREAD_ID",
+      ].includes(name.toUpperCase())
     )
       delete env[name];
   // check runs against a clean clone of the committed tree
@@ -91,6 +94,8 @@ function project(files) {
     [{ CLAUDECODE: "1", CODEX_THREAD_ID: "test" }, "codex"],
     [{ CLAUDECODE: "1", T3CODE_CLI_PATH: "fixture" }, "t3"],
     [{ CODEX_THREAD_ID: "test", T3CODE_CLI_PATH: "fixture" }, "t3"],
+    [{ CLAUDECODE: "1", T3CODE_THREAD_ID: "fixture" }, "t3"],
+    [{ CODEX_THREAD_ID: "test", T3CODE_THREAD_ID: "fixture" }, "t3"],
     [
       { CLAUDECODE: "1", CODEX_THREAD_ID: "test", T3CODE_CLI_PATH: "fixture" },
       "t3",
@@ -196,16 +201,18 @@ for (const [provider, file] of [
   [{ CODEX_THREAD_ID: "test" }, "~/.codex/hooks.json"],
   [{ CLAUDECODE: "1", CODEX_THREAD_ID: "test" }, "~/.codex/hooks.json"],
 ]) {
-  const detect = { ...provider, T3CODE_CLI_PATH: "fixture" };
-  assert.equal(
-    npm.cli(["agent", "wait", "7"], 0, detect).result.kind,
-    "t3-tool",
-  );
-  assert.equal(npm.cli(["agent", "guard"], 0, detect).result.file, file);
-  assert.equal(
-    npm.cli(["agent", "wait", "7", "--fallback"], 0, detect).result.kind,
-    "gh-checks",
-  );
+  for (const signal of ["T3CODE_CLI_PATH", "T3CODE_THREAD_ID"]) {
+    const detect = { ...provider, [signal]: "fixture" };
+    assert.equal(
+      npm.cli(["agent", "wait", "7"], 0, detect).result.kind,
+      "t3-tool",
+    );
+    assert.equal(npm.cli(["agent", "guard"], 0, detect).result.file, file);
+    assert.equal(
+      npm.cli(["agent", "wait", "7", "--fallback"], 0, detect).result.kind,
+      "gh-checks",
+    );
+  }
 }
 const guard = npm.cli(["agent", "guard", "codex"]).result;
 const hook = hookPath(guard.config.hooks.Stop[0].hooks[0].command);

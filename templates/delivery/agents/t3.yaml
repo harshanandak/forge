@@ -1,9 +1,10 @@
-# T3CODE_CLI_PATH was observed in a T3-launched Claude Code session.
-# T3 source 37de6cb forwards provider environments, but does not declare this variable:
-# apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts:906
-# apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts:1394-1403
-# Child workers inherit it too; agent wait --fallback selects gh-checks.
+# T3 source pingdotgg/t3code@0894156d9a38eeff8abfd9c266f3f57b8e524217:
+# CLI path setter: apps/desktop/src/backend/DesktopBackendConfiguration.ts:530-537.
+# Optional in dev/on shim failure: apps/desktop/src/app/DesktopCliShim.ts:122-124,157-160.
+# Claude thread setter: apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts:959-965;
+# T3CODE_THREAD_ID name: apps/server/src/preview/PortScanner.ts:65-69.
+# Child workers inherit these signals; agent wait --fallback selects gh-checks.
 id: t3
-detect: [T3CODE_CLI_PATH]
+detect: [T3CODE_CLI_PATH, T3CODE_THREAD_ID]
 over: [codex, claude]
 prWatch: t3-tool

@@ -110,6 +110,27 @@ test("Codex wins over inherited CLAUDECODE", () => {
 
 for (const [name, extra, harness, guard, kind] of [
   [
+    "T3 Claude with only the thread signal",
+    { CLAUDECODE: "1", T3CODE_THREAD_ID: "fixture" },
+    "t3",
+    "~/.claude/settings.json",
+    "t3-tool",
+  ],
+  [
+    "T3 Codex with only the thread signal",
+    { CODEX_THREAD_ID: "1", T3CODE_THREAD_ID: "fixture" },
+    "t3",
+    "~/.codex/hooks.json",
+    "t3-tool",
+  ],
+  [
+    "development Codex without a T3 signal ignores the overridable originator",
+    { CODEX_THREAD_ID: "1", CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "T3 Code" },
+    "codex",
+    "~/.codex/hooks.json",
+    "gh-checks",
+  ],
+  [
     "T3 Claude",
     { CLAUDECODE: "1", T3CODE_CLI_PATH: "fixture" },
     "t3",
