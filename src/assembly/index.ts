@@ -1,4 +1,4 @@
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import {
@@ -83,6 +83,7 @@ import {
   idPrefixObservation,
   agentAdapterObservation,
   projectStateRoot,
+  checkoutScopeRoot,
   type ProviderOptions,
 } from "./providers.ts";
 
@@ -106,12 +107,6 @@ function deviceMemoryRequest(op: string, input: unknown): boolean {
     !(typeof fields?.id === "string" && fields.id.startsWith("project/")) &&
     !(Array.isArray(fields?.projects) && fields.projects.length > 0)
   );
-}
-function checkoutRoot(root: string): string | undefined {
-  for (let folder = root; ; folder = dirname(folder)) {
-    if (existsSync(join(folder, ".git"))) return folder;
-    if (dirname(folder) === folder) return undefined;
-  }
 }
 const grantCandidate: McpCandidate = {
   op: "config.grant",
@@ -223,16 +218,7 @@ export async function createAssembly(
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   // Every git worktree of one repository shares one store; config and files stay at `root`.
   const stateRoot = await projectStateRoot(root, options.providers);
-  const checkout = checkoutRoot(root);
-  const checkoutStateRoot =
-    checkout === undefined
-      ? undefined
-      : checkout === root
-        ? stateRoot
-        : await projectStateRoot(checkout, options.providers);
-  const memoryRoot = existsSync(join(root, ".forge", "config.yaml"))
-    ? root
-    : (checkout ?? root);
+  const scopeRoot = await checkoutScopeRoot(root, options.providers);
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
@@ -269,10 +255,7 @@ export async function createAssembly(
     config: ReturnType<typeof createConfig>;
     configOperations: ReturnType<typeof createConfigOperations>;
   };
-  function callScope(
-    derived: readonly DetectionObservation[] = [],
-    configRoot = root,
-  ): CallScope {
+  function callScope(derived: readonly DetectionObservation[] = []): CallScope {
     const warnings: Array<ResultEnvelope["warnings"][number]> = [];
     const captures = new Map<string, CapturedBlock | { failed: unknown }>();
     const shipped = shippedTemplates();
@@ -299,7 +282,7 @@ export async function createAssembly(
     const environment = {
       warn: (message: string) =>
         warnings.push({ code: "CONFIG_FORMATTING_LOST", message }),
-      files: nodeConfigFiles(configRoot),
+      files: nodeConfigFiles(root),
       codec: yamlConfigCodec,
       clock: { now: () => Date.now() },
       detect: () => [
@@ -506,14 +489,8 @@ export async function createAssembly(
     try {
       if (invalidMemoryConfig) refuse("INPUT_INVALID", "Invalid memory config");
       configured = call.config.show();
-      if (deviceMemory) {
-        // A healthy ancestor never changes cwd discovery or binds its project context.
-        const checked =
-          !configured.configured && memoryRoot !== root
-            ? callScope([], memoryRoot).config.show()
-            : configured;
-        if (!checked.valid) refuse("INPUT_INVALID", "Invalid project config");
-      }
+      if (deviceMemory && !configured.valid)
+        refuse("INPUT_INVALID", "Invalid project config");
     } catch (error) {
       if (!deviceMemory) throw error;
       fallback = true;
@@ -796,13 +773,6 @@ export async function createAssembly(
       const deviceMemory = deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived);
       try {
-        if (
-          !deviceMemory &&
-          request.op.startsWith("memory.") &&
-          memoryRoot !== root &&
-          !callScope([], memoryRoot).config.show().valid
-        )
-          refuse("INPUT_INVALID", "Invalid .forge/config.yaml in checkout");
         derived.push(
           ...(await idPrefixObservation(root, stateRoot, options.providers)),
         );
@@ -1400,9 +1370,7 @@ export async function createAssembly(
                   const opened = openLevels({
                     root,
                     stateRoot,
-                    ...(checkoutStateRoot === undefined
-                      ? {}
-                      : { scopeRoot: checkoutStateRoot }),
+                    ...(scopeRoot === undefined ? {} : { scopeRoot }),
                     deviceRoot,
                     projectState,
                     deviceState,

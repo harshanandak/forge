@@ -86,6 +86,7 @@ test("device memory resolves checkout aliases through missing and invalid projec
         linked,
         join(linked, "nested"),
       ]) {
+        const degraded = invalid && (cwd === root || cwd === linked);
         const assembly = await createAssembly({
           root: cwd,
           deviceRoot,
@@ -95,7 +96,7 @@ test("device memory resolves checkout aliases through missing and invalid projec
           const result = (
             await runCli(assembly.catalog, args, localCall(assembly))
           ).envelope;
-          if (invalid && result.ok && args[0] === "memory") {
+          if (degraded && result.ok && args[0] === "memory") {
             const warning = result.warnings
               .map((entry) => entry.message)
               .join("\n");
@@ -109,7 +110,7 @@ test("device memory resolves checkout aliases through missing and invalid projec
         try {
           const scoped = await call(["memory", "scope"]);
           expect(scoped, cwd).toMatchObject({ ok: true, result: { scope } });
-          if (invalid) {
+          if (degraded) {
             expect(
               scoped.warnings.map((warning) => warning.message).join("\n"),
             ).toContain(".forge/config.yaml");
@@ -150,7 +151,7 @@ test("device memory resolves checkout aliases through missing and invalid projec
           };
           expect(rules.text.text).toContain(`general 0, ${scope} ${count}.`);
           expect(rules.text.text).not.toContain("checkout heron");
-          if (invalid) {
+          if (degraded) {
             for (const args of [
               ["issue", "list"],
               ["memory", "export", "--input", '{"level":"device"}'],

@@ -136,7 +136,8 @@ project keeps its own block selection and level policy.
 In any git checkout, device memory uses the shared checkout's normalized folder
 name or its alias in `memory-scopes.json` under `FORGE_DEVICE_ROOT`, including
 from nested folders and linked worktrees. A valid project's memory scope override
-takes precedence. Outside git and a Forge project, the scope is `general`.
+takes precedence. Project config is read from the current folder; nested folders
+do not inherit it. Outside git and a Forge project, the scope is `general`.
 New device notes default to the resolved scope; an explicit `scope: null` leaves
 them unscoped. If project config cannot load, `memory scope`, `rules`, `search`,
 `show` and device-level `add` remain available with a warning. The repo override

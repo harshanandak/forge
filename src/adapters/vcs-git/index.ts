@@ -100,10 +100,15 @@ function describeFailure(result: ProcessResult): Unavailable {
 }
 
 /** The nearest `.git` entry at or above `dir`: a folder in a main checkout, a file in a linked worktree. */
-function nearestGitEntry(dir: string): "folder" | "file" | undefined {
+function nearestGitEntry(
+  dir: string,
+): { root: string; kind: "folder" | "file" } | undefined {
   for (let current = resolvePath(dir); ;) {
     try {
-      return statSync(join(current, ".git")).isDirectory() ? "folder" : "file";
+      return {
+        root: current,
+        kind: statSync(join(current, ".git")).isDirectory() ? "folder" : "file",
+      };
     } catch {
       const parent = dirname(current);
       if (parent === current) return undefined;
@@ -124,7 +129,7 @@ export async function mainCheckoutPath(
   options: VcsAdapterOptions,
 ): Promise<string> {
   const own = resolvePath(dir);
-  if (nearestGitEntry(own) !== "file") return own;
+  if (nearestGitEntry(own)?.kind !== "file") return own;
   const env = gitEnvironment(options.env);
   const found = options.process.resolve("git", env);
   if (found.kind === "unavailable") return own;
@@ -160,6 +165,15 @@ export async function mainCheckoutPath(
       return own;
     throw error;
   }
+}
+
+/** The nearest checkout's shared root, or undefined outside git. Reads only git metadata. */
+export async function checkoutScopeRoot(
+  dir: string,
+  options: VcsAdapterOptions,
+): Promise<string | undefined> {
+  const checkout = nearestGitEntry(dir);
+  return checkout && mainCheckoutPath(checkout.root, options);
 }
 
 /**
