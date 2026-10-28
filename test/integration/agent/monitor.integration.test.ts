@@ -74,7 +74,7 @@ if [ "$#" -ne 3 ]; then
   [ "$#" -eq 5 ] && [ "$4" = --since ] && [ -n "$5" ] || exit 91
 fi
 count=0
-if [ -f "$FORGE_TEST_ROOT/count" ]; then count=$(cat "$FORGE_TEST_ROOT/count"); fi
+if [ -f "$FORGE_TEST_ROOT/count" ]; then read -r count < "$FORGE_TEST_ROOT/count"; fi
 count=$((count + 1))
 printf '%s' "$count" > "$FORGE_TEST_ROOT/count"
 news='{"pr":42,"head":"abc","verdict":"waiting","reasons":[],"news":["head moved"],"end":false,"next":"token-one"}'
@@ -85,6 +85,12 @@ case "$FORGE_TEST_MODE" in
   duration) if [ "$count" -eq 1 ]; then printf '%s\\n' "$news"; fi;;
   resume) :;;
   fail) exit 1;;
+  slow-fail)
+    time=0
+    [ ! -f "$FORGE_TEST_ROOT/time" ] || read -r time < "$FORGE_TEST_ROOT/time"
+    printf '%s' "$((time + 65))" > "$FORGE_TEST_ROOT/time"
+    exit 1;;
+  quiet) :;;
   reset)
     if [ "$count" -eq 2 ]; then :
     elif [ "$count" -eq 4 ]; then printf '%s\\n' "$news"
@@ -99,14 +105,14 @@ esac`,
 printf '%s\\n' "$*" >> "$FORGE_TEST_ROOT/sleeps"
 case "$FORGE_TEST_MODE" in
   duration|resume) printf '1' > "$FORGE_TEST_ROOT/time";;
-  fail) time=0
-    [ ! -f "$FORGE_TEST_ROOT/time" ] || time=$(cat "$FORGE_TEST_ROOT/time")
+  fail|slow-fail|quiet) time=0
+    [ ! -f "$FORGE_TEST_ROOT/time" ] || read -r time < "$FORGE_TEST_ROOT/time"
     printf '%s' "$((time + $1))" > "$FORGE_TEST_ROOT/time";;
 esac`,
   );
   executable(
     join(path, "bin/date"),
-    'if [ -f "$FORGE_TEST_ROOT/time" ]; then cat "$FORGE_TEST_ROOT/time"; else printf "0\\n"; fi',
+    'time=0; [ ! -f "$FORGE_TEST_ROOT/time" ] || read -r time < "$FORGE_TEST_ROOT/time"; printf "%s\\n" "$time"',
   );
   executable(
     join(path, "bin/gh"),
@@ -128,7 +134,14 @@ function run(command: string, mode: string, extra: Env = {}) {
   );
   const result = spawnSync(
     bash,
-    ["-c", 'PATH="$FORGE_TEST_ROOT/bin:$PATH"; export PATH\n' + command],
+    [
+      "-c",
+      'PATH="$FORGE_TEST_ROOT/bin:$PATH"; export PATH\n' +
+        'forge() { . "$FORGE_TEST_ROOT/bin/forge"; }\n' +
+        'date() { . "$FORGE_TEST_ROOT/bin/date"; }\n' +
+        'sleep() { . "$FORGE_TEST_ROOT/bin/sleep"; }\n' +
+        command,
+    ],
     {
       cwd: path,
       encoding: "utf8",
@@ -148,11 +161,16 @@ function run(command: string, mode: string, extra: Env = {}) {
   return {
     stdout: result.stdout,
     calls: fs.readFileSync(join(path, "calls"), "utf8").trim().split("\n"),
-    sleeps: fs
-      .readFileSync(join(path, "sleeps"), "utf8")
-      .trim()
-      .split("\n")
-      .map(Number),
+    sleeps: fs.existsSync(join(path, "sleeps"))
+      ? fs
+          .readFileSync(join(path, "sleeps"), "utf8")
+          .trim()
+          .split("\n")
+          .map(Number)
+      : [],
+    time: fs.existsSync(join(path, "time"))
+      ? Number(fs.readFileSync(join(path, "time"), "utf8"))
+      : 0,
   };
 }
 function events(stdout: string): Record<string, unknown>[] {
@@ -172,6 +190,13 @@ test("shipped Claude adapter renders a bounded Monitor with fresh-state guidance
   expect(wait().then).toMatch(/forge pr state 42/);
   expect(wait().then).toMatch(/rearm/i);
   expect(wait().then).toMatch(/(?:last|next).*token|token.*(?:last|next)/i);
+  expect(wait().then).toContain("FORGE_MONITOR_FAILS");
+  expect(wait().then).toMatch(/last fails value/);
+});
+test("Codex with inherited Claude detection keeps gh-checks for agent wait", () => {
+  expect(wait({ pr: 42 }, { CLAUDECODE: "1", CODEX_THREAD_ID: "1" }).kind).toBe(
+    "gh-checks",
+  );
 });
 test("cleanup has no Monitor, fallback uses gh-checks, and T3 overrides Claude", () => {
   for (const input of [
@@ -207,6 +232,7 @@ test("Monitor honors cadence and hands its token to the next quiet bounded run",
   const result = run(command, "duration", {
     FORGE_MONITOR_INTERVAL: "7",
     FORGE_MONITOR_DURATION: "1",
+    FORGE_MONITOR_FAILS: "14",
   });
   const output = events(result.stdout);
   expect(output[0]!.news).toEqual(["head moved"]);
@@ -214,6 +240,7 @@ test("Monitor honors cadence and hands its token to the next quiet bounded run",
     pr: 42,
     kind: "rearm",
     next: "token-one",
+    fails: 0,
   });
   expect(result.sleeps.length).toBeGreaterThan(0);
   expect(result.sleeps.every((seconds) => seconds > 0 && seconds <= 1)).toBe(
@@ -222,14 +249,46 @@ test("Monitor honors cadence and hands its token to the next quiet bounded run",
   const resumed = run(command, "resume", {
     FORGE_MONITOR_SINCE: "token-one",
     FORGE_MONITOR_DURATION: "1",
+    FORGE_MONITOR_FAILS: "14",
   });
   expect(events(resumed.stdout)).toEqual([
-    { pr: 42, kind: "rearm", next: "token-one" },
+    { pr: 42, kind: "rearm", next: "token-one", fails: 0 },
   ]);
   expect(
     resumed.calls.every((call) => call.includes("--since token-one")),
   ).toBe(true);
   expect(resumed.stdout).not.toContain("head moved");
+});
+test("quiet Monitor run rearms at the default 1740-second bound", () => {
+  const result = run(monitor().command, "quiet", {
+    FORGE_MONITOR_INTERVAL: "1000",
+  });
+  expect(result.time).toBe(1740);
+  expect(result.sleeps).toEqual([1000, 740]);
+  expect(events(result.stdout)).toEqual([
+    { pr: 42, kind: "rearm", next: "", fails: 0 },
+  ]);
+});
+test("slow unreadable polls carry consecutive failures across rearm", () => {
+  const command = monitor().command;
+  const first = run(command, "slow-fail", { FORGE_MONITOR_SINCE: "token-one" });
+  const rearm = events(first.stdout)[0]!;
+  const resumed = run(command, "slow-fail", {
+    FORGE_MONITOR_SINCE: typeof rearm.next === "string" ? rearm.next : "",
+    FORGE_MONITOR_FAILS:
+      typeof rearm.fails === "number" ? String(rearm.fails) : "0",
+  });
+  expect(first.calls).toHaveLength(14);
+  expect(first.time).toBe(1740);
+  expect([...first.calls, ...resumed.calls]).toHaveLength(15);
+  expect(resumed.calls).toHaveLength(1);
+  expect(resumed.time).toBe(65);
+  expect(events(first.stdout)).toEqual([
+    { pr: 42, kind: "rearm", next: "token-one", fails: 14 },
+  ]);
+  expect(events(resumed.stdout)).toEqual([
+    { pr: 42, kind: "unreadable", next: "token-one", fails: 15 },
+  ]);
 });
 test("Monitor stops on the fifteenth failure before rearm with default cadence and duration", () => {
   const result = run(monitor().command, "fail");
