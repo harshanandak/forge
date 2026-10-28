@@ -83,8 +83,6 @@ const refused: [string, string[]][] = [
       "declare -p APP_CRED",
       "declare -px GITHUB_TOKEN",
       "echo $KEYBOARD",
-      "echo $mixedSecret",
-      "printenv -- api_passwd",
     ],
   ],
   [
@@ -186,6 +184,8 @@ const allowed = [
   "env -u FOO bun test",
   "rm -f ~",
   "printf %s harmless",
+  "echo $mixedSecret",
+  "printenv -- api_passwd",
   "cat README.md",
   'echo "$( (true); printf ordinary )"',
 ];
@@ -358,6 +358,202 @@ const localRoundTwo: typeof localRoundOne = [
     ],
   ],
 ];
+const reviewRoundOne: typeof localRoundOne = [
+  [
+    "jq flags",
+    [
+      ["jq -e . credentials.json", 2, "secret-file"],
+      ["jq --exit-status . credentials.json", 2, "secret-file"],
+      ["jq -e .name package.json", 0],
+    ],
+  ],
+  [
+    "jq program files",
+    [
+      ["jq -f filter.jq .env", 2, "secret-file"],
+      ["jq --from-file filter.jq .env", 2, "secret-file"],
+      ["jq -f filter.jq package.json", 0],
+      ["jq -f credentials.json package.json", 2, "secret-file"],
+    ],
+  ],
+  [
+    "jq data files",
+    [
+      ["jq -n --rawfile s .env '$s'", 2, "secret-file"],
+      ["jq -n --slurpfile s credentials.json '$s'", 2, "secret-file"],
+      ["jq -n --rawfile s README.md '$s'", 0],
+      ["jq --arg s credentials.json . package.json", 0],
+    ],
+  ],
+  [
+    "documented reader options",
+    [
+      ...[
+        ["--max-filesize", "1M"],
+        ["--context-separator", "sep"],
+        ["--path-separator", "/"],
+        ["--dfa-size-limit", "1M"],
+        ["--regex-size-limit", "1M"],
+        ["--field-context-separator", "sep"],
+        ["--field-match-separator", "sep"],
+        ["--hostname-bin", "hostname"],
+        ["--hyperlink-format", "none"],
+        ["--generate", "man"],
+        ["-d", "1"],
+        ["--maxdepth", "1"],
+        ["-M", "100"],
+        ["--max-columns", "100"],
+        ["-j", "1"],
+        ["--threads", "1"],
+        ["--type-add", "custom:*.txt"],
+        ["--type-clear", "txt"],
+        ["--sort", "path"],
+        ["--sortr", "path"],
+        ["--color", "never"],
+        ["--colors", "match:none"],
+        ["-E", "utf-8"],
+        ["--encoding", "utf-8"],
+        ["--engine", "default"],
+        ["-g", "*.txt"],
+        ["--glob", "*.txt"],
+        ["--iglob", "*.txt"],
+        ["-t", "txt"],
+        ["--type", "txt"],
+        ["-T", "txt"],
+        ["--type-not", "txt"],
+        ["-m", "1"],
+        ["--max-count", "1"],
+        ["-A", "1"],
+        ["--after-context", "1"],
+        ["-B", "1"],
+        ["--before-context", "1"],
+        ["-C", "1"],
+        ["--context", "1"],
+        ["--max-depth", "1"],
+        ["--ignore-file", "ignore.txt"],
+        ["--pre", "processor"],
+        ["--pre-glob", "*.txt"],
+        ["-r", "replacement"],
+        ["--replace", "replacement"],
+      ].flatMap(([option, value]): [string, number, string?][] => [
+        [`rg ${option} ${value} credentials src/`, 0],
+        [`rg ${option} ${value} x .env`, 2, "secret-file"],
+        ...(option!.startsWith("--")
+          ? [[`rg ${option}=${value} credentials src/`, 0] as [string, number]]
+          : []),
+      ]),
+      ...["grep", "egrep", "fgrep"].flatMap((reader) =>
+        [
+          ["-m", "1"],
+          ["-A", "1"],
+          ["-B", "1"],
+          ["-C", "1"],
+          ["-d", "skip"],
+          ["-D", "skip"],
+          ["--max-count", "1"],
+          ["--after-context", "1"],
+          ["--before-context", "1"],
+          ["--context", "1"],
+          ["--group-separator", "sep"],
+          ["--include", "*.txt"],
+          ["--exclude", "*.txt"],
+          ["--exclude-from", "ignore.txt"],
+          ["--exclude-dir", "vendor"],
+          ["--label", "input"],
+          ["--binary-files", "text"],
+          ["--devices", "skip"],
+          ["--directories", "skip"],
+        ].flatMap(([option, value]): [string, number, string?][] => [
+          [`${reader} ${option} ${value} credentials src/`, 0],
+          [`${reader} ${option} ${value} x .env`, 2, "secret-file"],
+          ...(option!.startsWith("--")
+            ? [
+                [`${reader} ${option}=${value} credentials src/`, 0] as [
+                  string,
+                  number,
+                ],
+              ]
+            : []),
+        ]),
+      ),
+      ["rg -e credentials src/", 0],
+      ["rg --regexp=credentials src/", 0],
+      ["rg -f patterns.txt .env", 2, "secret-file"],
+      ["grep -e credentials src/", 0],
+      ["grep --regexp=credentials src/", 0],
+      ["grep -f patterns.txt .env", 2, "secret-file"],
+      ["rg x .env", 2, "secret-file"],
+    ],
+  ],
+  [
+    "unquoted heredoc expansions",
+    [
+      ["cat <<EOF\n$API_KEY\nEOF", 2, "secret-variable"],
+      ["cat <<EOF\n${API_KEY}\nEOF", 2, "secret-variable"],
+      ["cat <<EOF\n$(printenv)\nEOF", 2, "env-dump"],
+      ["cat <<EOF\n`printenv`\nEOF", 2, "env-dump"],
+      ["cat <<-EOF\n\t$API_KEY\n\tEOF", 2, "secret-variable"],
+      ["cat <<EOF\nplain env and cat credentials\nEOF", 0],
+      ["cat <<'EOF'\n$API_KEY $(printenv) `printenv`\nEOF", 0],
+      ['cat <<"EOF"\n$API_KEY $(printenv) `printenv`\nEOF', 0],
+      ["cat <<\\EOF\n$API_KEY $(printenv) `printenv`\nEOF", 0],
+      ["cat <<EOF\n\\$API_KEY \\$(printenv)\nEOF", 0],
+      ['cat <<EOF\n"$API_KEY"\nEOF', 2, "secret-variable"],
+    ],
+  ],
+  [
+    "secret names and presence",
+    [
+      ['for key in a b; do echo "$key"; done', 0],
+      ["echo ${API_KEY:+set}", 0],
+      ["echo ${#API_KEY}", 0],
+      ["echo $mixedSecret", 0],
+      ["printenv api_passwd", 0],
+      ["echo $API_KEY", 2, "secret-variable"],
+      ["echo ${API_KEY}", 2, "secret-variable"],
+      ["echo ${API_KEY:+$OTHER_SECRET}", 2, "secret-variable"],
+      ["echo $API_KEY_2", 2, "secret-variable"],
+    ],
+  ],
+  [
+    "cut key names",
+    [
+      ["cut -d= -f1 .env", 0],
+      ["cut -d = -f 1 .env", 0],
+      ["cut --delimiter = --fields 1 .env", 0],
+      ["cut --fields=1 .env", 0],
+      ["cut -f1 < .env", 0],
+      ["cut --complement -f1 .env", 2, "secret-file"],
+      ["cut -f2 .env", 2, "secret-file"],
+      ["cut -f1,2 .env", 2, "secret-file"],
+      ["cut -f1- .env", 2, "secret-file"],
+      ["cut -f2 < .env", 2, "secret-file"],
+      ["cut -c1 .env", 2, "secret-file"],
+    ],
+  ],
+  [
+    "command lookup",
+    [
+      ["command -v env", 0],
+      ["command -V printenv", 0],
+      ["command -pv env", 0],
+      ["command env", 2, "env-dump"],
+    ],
+  ],
+];
+for (const harness of ["claude", "codex"])
+  for (const [decision, rows] of reviewRoundOne)
+    for (const [index, [command, status, rule]] of rows.entries())
+      test(`${harness} review round one ${decision}: ${index}`, () => {
+        const result = run(payload(harness, command));
+        expect({ command, status: result.status }).toEqual({ command, status });
+        expect(result.stdout).toBe("");
+        if (rule)
+          expect(result.stderr).toMatch(
+            new RegExp(`^Forge guard refused \\(${rule}\\): [^\\r\\n]+\\n$`),
+          );
+        else expect(result.stderr).toBe("");
+      });
 for (const harness of ["claude", "codex"])
   for (const [decision, rows] of [...localRoundOne, ...localRoundTwo]) {
     test(`${harness} local regression: ${decision}`, () => {
