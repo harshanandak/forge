@@ -1,4 +1,4 @@
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import {
@@ -91,6 +91,28 @@ const DEVICE_MEMORY: BlockInstance = {
   source: { builtin: "forge/memory" },
   config: { levels: { human: "nearest", agent: "required" } },
 };
+const DEVICE_MEMORY_OPS = new Set([
+  "memory.scope",
+  "memory.rules",
+  "memory.search",
+  "memory.show",
+  "memory.add",
+]);
+function deviceMemoryRequest(op: string, input: unknown): boolean {
+  if (!DEVICE_MEMORY_OPS.has(op)) return false;
+  const fields = record(input);
+  return (
+    fields?.level !== "project" &&
+    !(typeof fields?.id === "string" && fields.id.startsWith("project/")) &&
+    !(Array.isArray(fields?.projects) && fields.projects.length > 0)
+  );
+}
+function checkoutRoot(root: string): string | undefined {
+  for (let folder = root; ; folder = dirname(folder)) {
+    if (existsSync(join(folder, ".git"))) return folder;
+    if (dirname(folder) === folder) return undefined;
+  }
+}
 const grantCandidate: McpCandidate = {
   op: "config.grant",
   admitted: true,
@@ -201,6 +223,17 @@ export async function createAssembly(
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   // Every git worktree of one repository shares one store; config and files stay at `root`.
   const stateRoot = await projectStateRoot(root, options.providers);
+  const checkout = checkoutRoot(root);
+  const checkoutStateRoot =
+    checkout === undefined
+      ? undefined
+      : checkout === root
+        ? stateRoot
+        : await projectStateRoot(checkout, options.providers);
+  const memoryRoot = existsSync(join(root, ".forge", "config.yaml"))
+    ? root
+    : (checkout ?? root);
+  const memoryStateRoot = memoryRoot === root ? stateRoot : checkoutStateRoot!;
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
@@ -208,6 +241,15 @@ export async function createAssembly(
     undefined,
     () => requireRegisteredStore(deviceState, stateRoot),
   );
+  const memoryProjectState =
+    memoryStateRoot === stateRoot
+      ? projectState
+      : new LocalState(
+          join(memoryStateRoot, ".forge", "state.sqlite"),
+          undefined,
+          undefined,
+          () => requireRegisteredStore(deviceState, memoryStateRoot),
+        );
   let trustActor: Actor | undefined;
   const trust = new TrustStore({
     get: (digest) =>
@@ -230,14 +272,21 @@ export async function createAssembly(
   // `derived` holds what git answers for this call (the id prefix): an invocation asks git each
   // time, so a long-lived server follows a changed origin; listings leave it to its default.
   type CallScope = {
+    root: string;
+    stateRoot: string;
+    projectState: LocalState;
     inProject: boolean;
-    warnings: ResultEnvelope["warnings"];
+    warnings: Array<ResultEnvelope["warnings"][number]>;
     captured(source: BlockSource): CapturedBlock;
     shipped: ReturnType<typeof shippedTemplates>;
     config: ReturnType<typeof createConfig>;
     configOperations: ReturnType<typeof createConfigOperations>;
   };
-  function callScope(derived: readonly DetectionObservation[] = []): CallScope {
+  function callScope(
+    derived: readonly DetectionObservation[] = [],
+    memory = false,
+  ): CallScope {
+    const callRoot = memory ? memoryRoot : root;
     const warnings: Array<ResultEnvelope["warnings"][number]> = [];
     const captures = new Map<string, CapturedBlock | { failed: unknown }>();
     const shipped = shippedTemplates();
@@ -248,7 +297,7 @@ export async function createAssembly(
         try {
           // Only a builtin source reads the installed package's own block folder (resolveBlock).
           found = captureBlock(
-            resolveBlock(root, source),
+            resolveBlock(callRoot, source),
             blockCapture,
             undefined,
             "builtin" in source,
@@ -264,11 +313,11 @@ export async function createAssembly(
     const environment = {
       warn: (message: string) =>
         warnings.push({ code: "CONFIG_FORMATTING_LOST", message }),
-      files: nodeConfigFiles(root),
+      files: nodeConfigFiles(callRoot),
       codec: yamlConfigCodec,
       clock: { now: () => Date.now() },
       detect: () => [
-        ...detectProject(createFolderFiles(root)).observations,
+        ...detectProject(createFolderFiles(callRoot)).observations,
         ...derived,
       ],
       templates: shipped,
@@ -295,8 +344,11 @@ export async function createAssembly(
       },
     };
     return {
+      root: callRoot,
+      stateRoot: memory ? memoryStateRoot : stateRoot,
+      projectState: memory ? memoryProjectState : projectState,
       inProject:
-        options.project ?? existsSync(join(root, ".forge", "config.yaml")),
+        options.project ?? existsSync(join(callRoot, ".forge", "config.yaml")),
       warnings,
       captured,
       shipped,
@@ -453,7 +505,11 @@ export async function createAssembly(
       remedy: `Repair the source or configuration for ${name}, or remove /blocks/${name} with config.apply at the current config revision.`,
     };
   }
-  function snapshot(call: CallScope): {
+  function snapshot(
+    call: CallScope,
+    deviceMemory = false,
+    configProblem?: string,
+  ): {
     show: ShowResult;
     document: ConfigDocument;
     catalog: Catalog;
@@ -462,7 +518,40 @@ export async function createAssembly(
     unavailable: readonly UnavailableBlock[];
     problems: readonly string[];
   } {
-    const configured = call.config.show();
+    let configured: ShowResult;
+    let fallback = false;
+    try {
+      if (configProblem !== undefined) refuse("INPUT_INVALID", configProblem);
+      configured = call.config.show();
+      if (deviceMemory && !configured.valid)
+        refuse("INPUT_INVALID", configured.problems.join("\n"));
+    } catch (error) {
+      if (!deviceMemory) throw error;
+      fallback = true;
+      call.inProject = false;
+      if (
+        !call.warnings.some(
+          (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
+        )
+      )
+        call.warnings.push({
+          code: "PROJECT_CONFIG_UNAVAILABLE",
+          message: `${error instanceof ForgeFailure ? error.error.message : error instanceof Error ? error.message : "Project config could not be loaded"}\nDevice memory is available; the repo override and project-level memory are unavailable until .forge/config.yaml is repaired.`,
+        });
+      configured = {
+        valid: true,
+        file: ".forge/config.yaml",
+        revision: "",
+        configured: false,
+        instances: [],
+        templates: [],
+        values: [],
+        ignored: [],
+        problems: [],
+        excluded: [],
+        effective: {},
+      };
+    }
     // A device-only host needs no project file to select the shipped memory block.
     const show: ShowResult =
       !call.inProject && !configured.configured
@@ -569,12 +658,28 @@ export async function createAssembly(
       ASSEMBLY_PROVIDES,
     );
     const executable = new Set(active.list());
+    if (
+      deviceMemory &&
+      !fallback &&
+      (show.problems.length || unavailable.length)
+    )
+      return snapshot(
+        call,
+        true,
+        [...show.problems, ...unavailable.map((block) => block.reason)].join(
+          "\n",
+        ),
+      );
     return {
       show,
       document,
       catalog: active,
       blocks,
-      candidates: candidates.filter((entry) => executable.has(entry.op)),
+      candidates: candidates.filter(
+        (entry) =>
+          executable.has(entry.op) &&
+          (!fallback || DEVICE_MEMORY_OPS.has(entry.op)),
+      ),
       unavailable,
       problems: [
         ...show.problems,
@@ -590,7 +695,7 @@ export async function createAssembly(
     unavailable: () => snapshot(callScope()).unavailable,
     diagnose(op) {
       if (parseOperationName(op) === undefined) return undefined;
-      const current = snapshot(callScope());
+      const current = snapshot(callScope([], op.startsWith("memory.")));
       if (
         [
           ...configCandidates,
@@ -674,19 +779,41 @@ export async function createAssembly(
         reconcileWith: "config.show",
       };
     },
-    list: () => [
-      ...configCandidates,
-      grantCandidate,
-      ...snapshot(callScope()).candidates,
-    ],
+    list() {
+      let current: readonly McpCandidate[] = [];
+      try {
+        current = snapshot(callScope()).candidates;
+      } catch {
+        // Device memory discovery survives a project config that cannot be read.
+      }
+      const memory = snapshot(callScope([], true), true).candidates;
+      return [
+        ...configCandidates,
+        grantCandidate,
+        ...current.filter((entry) =>
+          memoryRoot === root
+            ? !DEVICE_MEMORY_OPS.has(entry.op)
+            : !entry.op.startsWith("memory."),
+        ),
+        ...memory.filter((entry) =>
+          memoryRoot === root
+            ? DEVICE_MEMORY_OPS.has(entry.op)
+            : entry.op.startsWith("memory."),
+        ),
+      ];
+    },
     async invoke(request) {
       const derived: DetectionObservation[] = [];
-      const call = callScope(derived);
+      const deviceMemory = deviceMemoryRequest(request.op, request.input);
+      const call = callScope(derived, request.op.startsWith("memory."));
       try {
         derived.push(
           ...(await idPrefixObservation(root, stateRoot, options.providers)),
         );
-        for (const instance of call.config.show().instances)
+        for (const instance of (deviceMemory
+          ? snapshot(call, true).show
+          : call.config.show()
+        ).instances)
           if (
             instance.enabled &&
             "builtin" in instance.source &&
@@ -712,7 +839,15 @@ export async function createAssembly(
             message: `${result.error.message}\nSame T3 chat after a harness switch? Rerun with FORGE_SESSION=t3:<threadId> from t3_thread_configuration. Separate workers: keep your own session and stop.`,
           },
         };
-      return result;
+      return {
+        ...result,
+        warnings: [
+          ...call.warnings.filter(
+            (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
+          ),
+          ...result.warnings,
+        ],
+      };
     },
   };
   const direct = {
@@ -1086,7 +1221,8 @@ export async function createAssembly(
           }
           refuse("UNKNOWN_COMMAND", "Operation is not assembled");
         }
-        let current = snapshot(call);
+        const deviceMemory = deviceMemoryRequest(request.op, request.input);
+        let current = snapshot(call, deviceMemory);
         const target = current.candidates.find(
           (candidate) => candidate.op === request.op,
         );
@@ -1101,7 +1237,7 @@ export async function createAssembly(
           );
         if (target && !target.admitted) {
           await trustState.open(false);
-          current = snapshot(call);
+          current = snapshot(call, deviceMemory);
         }
         if (
           !current.catalog.list().includes(request.op) &&
@@ -1266,10 +1402,13 @@ export async function createAssembly(
                       "Project state needs an actor in the operation's context",
                     );
                   const opened = openLevels({
-                    root,
-                    stateRoot,
+                    root: call.root,
+                    stateRoot: call.stateRoot,
+                    ...(checkoutStateRoot === undefined
+                      ? {}
+                      : { scopeRoot: checkoutStateRoot }),
                     deviceRoot,
-                    projectState,
+                    projectState: call.projectState,
                     deviceState,
                     namespace,
                     actor: context.actor,
@@ -1380,7 +1519,12 @@ export async function createAssembly(
     },
     async close() {
       try {
-        await projectState.close();
+        try {
+          if (memoryProjectState !== projectState)
+            await memoryProjectState.close();
+        } finally {
+          await projectState.close();
+        }
       } finally {
         try {
           await deviceState.close();

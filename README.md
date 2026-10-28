@@ -133,6 +133,16 @@ device. Project-level writes, moves and exports require a Forge project. Reads
 create no stores, and device-only calls create no project state. A configured
 project keeps its own block selection and level policy.
 
+In any git checkout, device memory uses the shared checkout's normalized folder
+name or its alias in `memory-scopes.json` under `FORGE_DEVICE_ROOT`, including
+from nested folders and linked worktrees. A valid project's memory scope override
+takes precedence. Outside git and a Forge project, the scope is `general`.
+New device notes default to the resolved scope; an explicit `scope: null` leaves
+them unscoped. If project config cannot load, `memory scope`, `rules`, `search`,
+`show` and device-level `add` remain available with a warning. The repo override
+and project-level memory remain unavailable until the config is repaired; other
+commands retain their config errors.
+
 Run `forge memory rules` at session start for a pointer under 400 characters:
 note counts for general and this project's scope, with commands to search by
 topic and show relevant notes on demand. It prints no note text or ids. Use only

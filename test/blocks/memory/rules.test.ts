@@ -22,6 +22,35 @@ interface Pointer {
 }
 const marker = "deploy PRIVATE_MEMORY_MARKER\v\f\u0085\u2028\u2029";
 
+test("device memory uses the checkout scope without a project store", async () => {
+  const state = memoryState(undefined, { defaultScope: "checkout-alias" });
+  const entry = loadEntry("memory");
+  const services = { state, levels: state };
+  const config = { scope: "unavailable-project-override" };
+  expect(await entry["memory.scope"]!({ input: {}, config, services })).toEqual(
+    {
+      scope: "checkout-alias",
+    },
+  );
+  const added = (await entry["memory.add"]!({
+    input: { level: "device", text: "checkout heron" },
+    config,
+    services,
+  })) as { id: string; note: { scope?: string } };
+  expect(added.note.scope).toBe("checkout-alias");
+  const rules = (await entry["memory.rules"]!({
+    input: {},
+    config,
+    services,
+  })) as Pointer;
+  expect(rules.text.text).toContain("general 0, checkout-alias 1.");
+  const found = (await entry["memory.search"]!({
+    input: { query: "heron" },
+    services,
+  })) as { hits: { id: string; scope?: string }[] };
+  expect(found.hits).toMatchObject([{ id: added.id, scope: "checkout-alias" }]);
+}, 30_000);
+
 test("empty normalized folder uses general for scope, rules and new device notes", async () => {
   harness = await openHarness(["memory"], {}, { project: "你好" });
   expect(done(await harness.call("memory.scope", {}))).toEqual({
