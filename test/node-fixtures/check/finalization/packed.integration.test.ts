@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
 
-test("packed finalization timeouts identify phases and retain durable receipts", () => {
+test("packed unscoped slow finalization returns the durable receipt", () => {
   const work = mkdtempSync(join(tmpdir(), "forge-finalization-proof-"));
   try {
     const node = Bun.which("node");
@@ -44,27 +44,20 @@ test("packed finalization timeouts identify phases and retain durable receipts",
       expect(result.status, result.stderr).toBe(0);
       const report = JSON.parse(result.stdout) as {
         budgetMs: number;
-        error: { code: string; message: string };
-        readBackBeforeError: boolean;
+        returnedStatus: string;
+        readBackBeforeReturn: boolean;
         durableAfterReopen: boolean;
         receiptStatus: string;
         timings: { writeMs: number; readbackMs: number };
       };
       expect(report.budgetMs).toBe(3000);
-      expect(report.error.code).toBe("INVOCATION_TIMEOUT");
-      expect(report.error.message).toContain(
-        "Check receipt finalization deadline exceeded",
-      );
-      expect(report.readBackBeforeError).toBe(true);
+      expect(report.returnedStatus).toBe("NOT_EXECUTED");
+      expect(report.readBackBeforeReturn).toBe(true);
       expect(report.durableAfterReopen).toBe(true);
       expect(report.receiptStatus).toBe("NOT_EXECUTED");
       expect(
         report.timings[mode === "readback" ? "readbackMs" : "writeMs"],
       ).toBeGreaterThanOrEqual(3500);
-      for (const phase of ["snapshotMs", "writeMs", "readbackMs"])
-        expect(report.error.message, mode + " reports " + phase).toMatch(
-          new RegExp(phase + "=\\d+"),
-        );
     }
   } finally {
     rmSync(work, { recursive: true, force: true });

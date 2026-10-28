@@ -126,13 +126,13 @@ if (mode === "lock-holder") {
       process: createProcessPort(),
       output: createRunnerOutput(),
     });
-    const error = await engine.run({}, config).catch((failure) => failure);
-    assert.equal(error.code, "INVOCATION_TIMEOUT");
-    assert.match(error.message, /Check receipt finalization deadline exceeded/);
+    const result = await engine.run({}, config).catch((failure) => failure);
+    assert.equal(result.code, undefined, result.message);
+    assert.equal(result.status, "NOT_EXECUTED");
     assert.equal(
       readBack,
       true,
-      "the error follows successful receipt readback",
+      "the returned receipt follows successful readback",
     );
     if (exited) await exited;
     await opened.handle.close();
@@ -142,7 +142,8 @@ if (mode === "lock-holder") {
       now: () => Date.now(),
     });
     const receipt = reader.get("forge/check", "runs/" + receiptId)?.value;
-    assert.ok(receipt, "receipt remains durable after the invocation error");
+    assert.ok(receipt, "returned receipt remains durable after reopening");
+    assert.deepEqual(result, receipt);
     assert.equal(verifyReceipt(receipt, receipt.inputsDigest), true);
     console.log(
       JSON.stringify({
@@ -151,10 +152,10 @@ if (mode === "lock-holder") {
         budgetMs: finalizationTimeoutMs(config.maxReceiptBytes),
         injectedDelayMs: delayMs,
         timings,
-        error: { code: error.code, message: error.message },
+        returnedStatus: result.status,
         receiptId,
         receiptStatus: receipt.status,
-        readBackBeforeError: readBack,
+        readBackBeforeReturn: readBack,
         durableAfterReopen: true,
       }),
     );

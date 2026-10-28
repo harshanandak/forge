@@ -710,6 +710,11 @@ function createCheck(
           "LIMIT_EXCEEDED",
           "Process evidence exceeded its validated receipt budget",
         );
+      if (!scope && services.clock.now() >= finalizationDeadline)
+        failure(
+          "INVOCATION_TIMEOUT",
+          `Check receipt finalization deadline exceeded ${phaseTimes()}`,
+        );
       const writeStartedAt = services.clock.now();
       services.state.put(`runs/${receipt.id}`, receipt, { expectRevision: 0 });
       writeMs = services.clock.now() - writeStartedAt;
@@ -719,7 +724,7 @@ function createCheck(
       if (!stored || stored.digest !== receipt.digest)
         throw new Error("Check receipt readback failed");
       active();
-      if (services.clock.now() >= finalizationDeadline)
+      if (scope && services.clock.now() >= finalizationDeadline)
         failure(
           "INVOCATION_TIMEOUT",
           `Check receipt finalization deadline exceeded ${phaseTimes()}`,
