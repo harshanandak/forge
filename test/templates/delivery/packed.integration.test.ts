@@ -33,6 +33,7 @@ test("the delivery template ships in the npm package and runs the project's own 
     const installed = join(packedConsumer(), "node_modules/forge-workflow");
     for (const file of [
       "forge.template.json",
+      "agents/t3.yaml",
       "skills/forge-loop/SKILL.md",
       "skills/forge-intake/SKILL.md",
     ])

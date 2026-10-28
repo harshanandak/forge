@@ -169,6 +169,12 @@ test("derived agent adapters target the configured instance name", () => {
       value: [
         { id: "claude", detect: ["CLAUDECODE"] },
         { id: "codex", detect: ["CODEX_THREAD_ID"] },
+        {
+          id: "t3",
+          detect: ["T3CODE_CLI_PATH", "T3CODE_THREAD_ID"],
+          over: ["codex", "claude"],
+          prWatch: "t3-tool",
+        },
       ],
     },
   ]);

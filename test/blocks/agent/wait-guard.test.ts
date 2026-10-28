@@ -10,6 +10,8 @@ setDefaultTimeout(30_000);
 type Adapter = {
   id: string;
   detect: string[];
+  over?: string[];
+  skills?: string;
   prWatch?: string;
   guard?: { kind: string; file?: string; stop?: string; command?: string };
 };
@@ -224,9 +226,13 @@ test("adapter schema keeps optional capabilities closed and validates guard bran
     codex,
     { id: "plain", detect: [], guard: { kind: "none" } },
     { id: "old", detect: [] },
+    { id: "t3", detect: [], over: ["codex", "claude"] },
   ])
     expect(validateWithSchema(schema, value)).toEqual([]);
   for (const extra of [
+    { over: ["codex", "codex"] },
+    { over: ["Bad ID"] },
+    { over: "claude" },
     { prWatch: "future" },
     { guard: { kind: "hook", file: "a", stop: "Stop" } },
     { guard: { kind: "none", file: "a" } },
@@ -243,6 +249,104 @@ test("adapter schema keeps optional capabilities closed and validates guard bran
     expect(
       validateWithSchema(schema, { id: "bad", detect: [], ...extra }),
     ).not.toEqual([]);
+});
+
+test("precedence inherits the first matching over adapter without mutating config", () => {
+  const adapters: Adapter[] = [
+    {
+      ...codex,
+      prWatch: "gh-checks",
+      skills: ".agents/skills",
+      over: ["claude"],
+    },
+    { id: "claude", detect: ["CLAUDECODE"], skills: ".claude/skills" },
+    {
+      id: "t3",
+      detect: ["T3CODE_CLI_PATH"],
+      over: ["codex", "claude"],
+      prWatch: "t3-tool",
+    },
+  ];
+  const before = structuredClone(adapters);
+  const env = {
+    CODEX_THREAD_ID: "1",
+    CLAUDECODE: "1",
+    T3CODE_CLI_PATH: "fixture",
+  };
+  expect(wait({ pr: 7 }, adapters, env).kind).toBe("t3-tool");
+  expect(
+    (operations["agent.guard"]!(call({}, adapters, env)) as Guard).file,
+  ).toBe("~/.codex/hooks.json");
+  expect(wait({ pr: 7, fallback: true }, adapters, env).kind).toBe("gh-checks");
+  expect(adapters).toEqual(before);
+});
+
+test("precedence leaves unrelated ties and cycles undetected", () => {
+  for (const adapters of [
+    [
+      { id: "a", over: ["b"] },
+      { id: "b", over: ["a"] },
+    ],
+    [{ id: "a", over: ["missing"] }, { id: "b" }],
+  ]) {
+    expect(
+      wait(
+        { pr: 7 },
+        adapters.map((adapter) => ({
+          ...adapter,
+          detect: ["YES"],
+          prWatch: "t3-tool",
+        })),
+        { YES: "1" },
+      ).kind,
+    ).toBe("gh-checks");
+  }
+});
+
+test("an adapter listing itself in over remains detected", () => {
+  const solo: Adapter = {
+    ...codex,
+    id: "solo",
+    over: ["solo"],
+    guard: { ...codex.guard!, file: "solo.json" },
+  };
+  const env = { CODEX_THREAD_ID: "1" };
+  expect(wait({ pr: 7 }, [solo], env).kind).toBe("t3-tool");
+  expect(
+    (operations["agent.guard"]!(call({}, [solo], env)) as Guard).file,
+  ).toBe("solo.json");
+});
+
+test("precedence only inherits from the first matched adapter and preserves explicit capabilities", () => {
+  const claude: Adapter = {
+    ...codex,
+    id: "claude",
+    detect: ["CLAUDECODE"],
+    guard: { ...codex.guard!, file: "~/.claude/settings.json" },
+  };
+  const t3: Adapter = {
+    id: "t3",
+    detect: ["T3"],
+    over: ["missing", "codex", "claude"],
+    prWatch: "t3-tool",
+  };
+  const env = { T3: "1", CLAUDECODE: "1" };
+  expect(
+    (operations["agent.guard"]!(call({}, [t3, codex, claude], env)) as Guard)
+      .file,
+  ).toBe("~/.claude/settings.json");
+  const own = { ...t3, guard: { kind: "none" } };
+  expect(
+    (operations["agent.guard"]!(call({}, [own, claude], env)) as Guard).config,
+  ).toBeUndefined();
+  const first: Adapter = { id: codex.id, detect: codex.detect };
+  expect(
+    (
+      operations["agent.guard"]!(
+        call({}, [t3, first, claude], { ...env, CODEX_THREAD_ID: "1" }),
+      ) as Guard
+    ).config,
+  ).toBeUndefined();
 });
 test("wait schema rejects missing identity, nonpositive numbers and conflicting modes", () => {
   const schema = JSON.parse(

@@ -28,6 +28,11 @@
     },
     "skills": { "type": "string", "minLength": 1 },
     "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "over": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+    },
     "detect": {
       "type": "array",
       "uniqueItems": true,

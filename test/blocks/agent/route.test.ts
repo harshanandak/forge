@@ -8,7 +8,7 @@ import {
 
 setDefaultTimeout(30_000);
 
-type Adapter = { id: string; detect: string[] };
+type Adapter = { id: string; detect: string[]; over?: string[] };
 type Route = {
   model: string;
   effort: string;
@@ -110,7 +110,14 @@ test("exactly one matching adapter detects Claude or Codex", () => {
   }
 });
 
-test("companion variables alone do not detect a harness", () => {
+test("a sole adapter cannot override itself", () => {
+  expect(
+    route([{ id: "solo", detect: ["YES"], over: ["solo"] }], { YES: "1" })
+      .result.harness,
+  ).toBe("solo");
+});
+
+test("variables not declared by configured adapters do not detect a harness", () => {
   expect(
     route(
       [
