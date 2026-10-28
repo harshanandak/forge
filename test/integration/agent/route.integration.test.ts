@@ -156,7 +156,7 @@ for (const [name, extra, harness, guard, kind] of [
     { CLAUDECODE: "1" },
     "claude",
     "~/.claude/settings.json",
-    "gh-checks",
+    "monitor",
   ],
   [
     "Codex alone",
@@ -309,7 +309,7 @@ test("max names the routing file with INPUT_INVALID", () => {
 });
 
 test("agent wait and cleanup render guidance without contacting GitHub", () => {
-  for (const harness of [{}, { CLAUDECODE: "1" }, { CODEX_THREAD_ID: "1" }]) {
+  for (const harness of [{}, { CODEX_THREAD_ID: "1" }]) {
     const result = run(["agent", "wait", "42"], harness);
     expect(result.status).toBe(0);
     const value = readResult<WaitResult>(result.stdout);
@@ -485,7 +485,7 @@ test("an invalid shipped adapter names its YAML file, field and allowed values",
   const file = join(fixture, "templates/delivery/agents/codex.yaml");
   const original = readFileSync(file, "utf8");
   for (const [field, value, allowed] of [
-    ["prWatch", "bogus", ["t3-tool", "watch-block", "gh-checks"]],
+    ["prWatch", "bogus", ["t3-tool", "monitor", "watch-block", "gh-checks"]],
     ["guard", "{ kind: unknown }", ["hook", "none"]],
   ] as const) {
     writeFileSync(

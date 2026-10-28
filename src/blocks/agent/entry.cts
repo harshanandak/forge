@@ -5,7 +5,7 @@ interface Adapter {
   readonly detect: readonly string[];
   readonly over?: readonly string[];
   readonly skills?: string;
-  readonly prWatch?: "t3-tool" | "watch-block" | "gh-checks";
+  readonly prWatch?: "t3-tool" | "monitor" | "watch-block" | "gh-checks";
   readonly guard?:
     | { readonly kind: "none" }
     | {
@@ -76,24 +76,63 @@ module.exports = {
   },
   "agent.wait"(call: AgentCall) {
     const { input } = call;
+    const watch = !input.fallback && detected(call)?.prWatch;
     const kind =
-      !input.fallback && detected(call)?.prWatch === "t3-tool"
-        ? "t3-tool"
-        : "gh-checks";
+      watch === "t3-tool" || watch === "monitor" ? watch : "gh-checks";
     const steps =
-      kind === "gh-checks"
+      kind === "monitor"
         ? input.done || input.sweep
           ? []
-          : [`gh pr checks ${input.pr} --watch --fail-fast --interval 60`]
-        : input.sweep
-          ? ["list_thread_pull_requests"]
-          : input.done
-            ? [`unwatch_pull_request with the linked PR ${input.pr} identity`]
-            : [
-                `gh pr view ${input.pr} --json url`,
-                "link_pull_request with the URL from stdout's url field",
-                `watch_pull_request with the linked PR ${input.pr} identity`,
-              ];
+          : [
+              `Start Monitor with ${JSON.stringify({
+                timeout_ms: 1800000,
+                description: `PR #${input.pr}: checks, threads, conflicts`,
+                command: `n=${input.pr}; since=\${FORGE_MONITOR_SINCE:-}; fails=\${FORGE_MONITOR_FAILS:-0}
+case "$fails" in ''|*[!0-9]*|?????*) fails=0;; esac
+while [ "\${fails#0}" != "$fails" ]; do fails=\${fails#0}; done
+fails=\${fails:-0}
+interval=\${FORGE_MONITOR_INTERVAL:-60}; duration=\${FORGE_MONITOR_DURATION:-1740}
+limit=\${FORGE_MONITOR_FAILURE_LIMIT:-15}
+stop=$(( $(date +%s) + duration ))
+while [ "$(date +%s)" -lt "$stop" ]; do
+  set --
+  [ -n "$since" ] && set -- --since "$since"
+  if line=$(forge pr state "$n" "$@" 2>/dev/null); then
+    fails=0
+    if [ -n "$line" ]; then
+      printf '%s\\n' "$line"
+      since=$(printf '%s' "$line" | sed -n 's/.*"next":"\\([^"]*\\)".*/\\1/p')
+      case "$line" in *'"end":true'*) exit 0;; esac
+    fi
+  else
+    fails=$((fails + 1))
+    if [ "$fails" -ge "$limit" ]; then
+      printf '{"pr":%s,"kind":"unreadable","fails":%s,"next":"%s"}\\n' "$n" "$fails" "$since"
+      exit 0
+    fi
+  fi
+  wait=$interval
+  remaining=$((stop - $(date +%s)))
+  [ "$remaining" -le 0 ] && break
+  [ "$wait" -gt "$remaining" ] && wait=$remaining
+  sleep "$wait"
+done
+printf '{"pr":%s,"kind":"rearm","next":"%s","fails":%s}\\n' "$n" "$since" "$fails"`,
+              })}`,
+            ]
+        : kind === "gh-checks"
+          ? input.done || input.sweep
+            ? []
+            : [`gh pr checks ${input.pr} --watch --fail-fast --interval 60`]
+          : input.sweep
+            ? ["list_thread_pull_requests"]
+            : input.done
+              ? [`unwatch_pull_request with the linked PR ${input.pr} identity`]
+              : [
+                  `gh pr view ${input.pr} --json url`,
+                  "link_pull_request with the URL from stdout's url field",
+                  `watch_pull_request with the linked PR ${input.pr} identity`,
+                ];
     const then =
       input.sweep && kind === "t3-tool"
         ? "Session resumed: run forge agent wait <n> --done for each merged or closed PR; then read fresh state without re-arming watches."
@@ -101,7 +140,9 @@ module.exports = {
           ? "Finish cleanup after following these steps."
           : kind === "t3-tool"
             ? `End the turn; T3 wakes this thread on PR events. On wake run forge pr state ${input.pr} for fresh state and act. Only if the harness reports it stopped watching the PR, run forge agent wait ${input.pr} once more and do its steps.`
-            : `Run the command in the foreground; then run forge pr state ${input.pr} for fresh state and act. Run forge agent wait ${input.pr} again after each push; a new head needs a new wait.`;
+            : kind === "monitor"
+              ? `Reuse the running Monitor for this PR during fixes and after pushes; do not start a duplicate. On news run forge pr state ${input.pr} for fresh state and act. On rearm or Monitor timeout, start the same command with FORGE_MONITOR_SINCE set to the last next token received (empty if none). Carry the last fails value in FORGE_MONITOR_FAILS only from a rearm line of the same PR's continuous watch. After unreadable (15 failed polls), check access before re-arming with FORGE_MONITOR_FAILS=0. After a Monitor timeout, or for any fresh watch, use FORGE_MONITOR_FAILS=0. FORGE_MONITOR_INTERVAL and FORGE_MONITOR_DURATION override seconds for tests; defaults are 60 and 1740. FORGE_MONITOR_FAILURE_LIMIT overrides 15 for tests.`
+              : `Run the command in the foreground; then run forge pr state ${input.pr} for fresh state and act. Run forge agent wait ${input.pr} again after each push; a new head needs a new wait.`;
     return { kind, steps, then };
   },
   "agent.guard"(call: AgentCall) {

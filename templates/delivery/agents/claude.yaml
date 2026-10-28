@@ -1,6 +1,6 @@
 id: claude
 skills: .claude/skills
 detect: [CLAUDECODE]
-prWatch: gh-checks
+prWatch: monitor
 guard:
   { kind: hook, file: ~/.claude/settings.json, stop: Stop, command: PreToolUse }

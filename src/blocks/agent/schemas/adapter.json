@@ -3,7 +3,7 @@
   "additionalProperties": false,
   "required": ["id", "detect"],
   "properties": {
-    "prWatch": { "enum": ["t3-tool", "watch-block", "gh-checks"] },
+    "prWatch": { "enum": ["t3-tool", "monitor", "watch-block", "gh-checks"] },
     "guard": {
       "properties": { "kind": { "enum": ["hook", "none"] } },
       "oneOf": [
