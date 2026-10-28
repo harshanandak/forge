@@ -21,7 +21,7 @@ export interface Counterfactual {
 export const counterfactuals: readonly Counterfactual[] = [
   {
     file: "blocks/memory/index.cjs",
-    from: 'target.level === "device" && services.levels.inProject && input.scope === undefined',
+    from: 'target.level === "device" && input.scope === undefined',
     to: "false",
     journey: "scopeDefault",
     evidence: "device adds use the resolved scope",

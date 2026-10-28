@@ -99,7 +99,8 @@ test("device memory resolves checkout aliases through missing and invalid projec
             const warning = result.warnings
               .map((entry) => entry.message)
               .join("\n");
-            expect(warning).toContain("adapters");
+            expect(warning).toContain(".forge/config.yaml");
+            expect(warning).toContain("INPUT_INVALID");
             expect(warning).toContain("repo override");
             expect(warning).toContain("project-level memory");
           }
@@ -111,7 +112,7 @@ test("device memory resolves checkout aliases through missing and invalid projec
           if (invalid) {
             expect(
               scoped.warnings.map((warning) => warning.message).join("\n"),
-            ).toContain("adapters");
+            ).toContain(".forge/config.yaml");
             expect(
               scoped.warnings.map((warning) => warning.message).join("\n"),
             ).toContain("repo override");
