@@ -1,6 +1,6 @@
 ---
 name: forge-land
-description: "Gate and merge a pinned PR; verify, close, clean up, learn and re-plan."
+description: "Use when a PR may be ready to merge, or after it merged. Gate, merge pinned, verify and close."
 ---
 
 # forge-land

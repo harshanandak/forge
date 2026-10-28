@@ -1,21 +1,15 @@
 # Declared-command execution
 
-`forge pr merge <n>` runs the same private merge gate, then calls `gh` with
-`pr merge <n> --squash --match-head-commit <head>` pinned to the gate's head.
-Its 121.5-second operation budget leaves 65 seconds for the gate (standalone: 60 seconds)
-and reserves 56.5 seconds for merge, readback, process cleanup and finalization.
-Gate timeouts are reported as `INVOCATION_TIMEOUT`. Only readback showing MERGED
-at that head with a valid merge commit proves success, even if the write timed out.
-The result keeps `gate`, `head`, `receipt` and, on success, `mergeCommit`.
-Gate refusal exits 1. A nonzero merge exit with a complete OPEN/CLOSED readback
-returns `HEAD_MOVED` at another head or `MERGE_REFUSED` at the pinned head (exit 1).
-A zero exit without a verified MERGED readback at the pin, or an interrupted write,
-returns `MERGE_UNVERIFIED` (exit 2). Read `gh pr view <n> --json state,mergeCommit,headRefOid`.
-Reconcile only if state is MERGED and headRefOid equals the printed gate head (`result.head`);
-otherwise the merge is not verified: stop. No automatic retry,
-admin override, merge queue or branch deletion is requested. This destructive,
-non-idempotent operation declares external process, network and write effects;
-a path or package copy needs a human grant for those bytes and effects.
+`forge pr merge <n>` runs the private gate, then `gh pr merge <n> --squash --match-head-commit <head>` pinned to its head.
+Its 121.5-second budget gives the gate 65 seconds (standalone: 60), reserving 56.5 for merge, readback, process cleanup and finalization.
+Gate timeouts report `INVOCATION_TIMEOUT`. Only readback showing MERGED at the pin with a valid merge commit proves success, even after a write timeout.
+The result keeps `gate`, `head`, `receipt` and, on success, `mergeCommit`. Gate refusal exits 1.
+A nonzero merge exit with complete OPEN/CLOSED readback returns `HEAD_MOVED` at another head or `MERGE_REFUSED` at the pin (exit 1).
+A zero exit without verified MERGED readback at the pin, or an interrupted write, returns `MERGE_UNVERIFIED` (exit 2).
+Reconcile with `gh pr view <n> --json state,mergeCommit,headRefOid`: require MERGED and headRefOid equal to the printed gate head (`result.head`);
+otherwise the merge is not verified: stop. No automatic retry, admin override, merge queue or branch deletion is requested.
+This destructive, non-idempotent operation declares external process, network and write effects.
+Path or package copies need a human grant for those bytes and effects.
 
 `forge pr state <n> [--since <token>]` reads GitHub through `gh`: PR metadata,
 all and required checks, paged threads, projected remarks, then a final head/state check.

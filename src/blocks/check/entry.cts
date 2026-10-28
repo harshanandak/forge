@@ -1245,6 +1245,17 @@ function gateServices(args: Call<GateInput>) {
 
 const MERGE_COMMAND = ["pr", "merge"] as const;
 const MERGE_FLAGS = ["--squash", "--match-head-commit"] as const;
+function readbackRecord(read: NonNullable<MergeResult["readbackProcess"]>) {
+  return {
+    exitCode: read.exitCode,
+    signal: read.signal,
+    timedOut: read.timedOut,
+    truncated:
+      read.truncated || read.stdout.length > 2048 || read.stderr.length > 2048,
+    stdout: read.stdout.slice(0, 2048),
+    stderr: read.stderr.slice(0, 2048),
+  };
+}
 async function prMerge(args: Call<GateInput>): Promise<MergeResult> {
   function active() {
     if (args.signal.aborted)
@@ -1320,17 +1331,7 @@ async function prMerge(args: Call<GateInput>): Promise<MergeResult> {
     );
     result = {
       ...result,
-      readbackProcess: {
-        exitCode: read.exitCode,
-        signal: read.signal,
-        timedOut: read.timedOut,
-        truncated:
-          read.truncated ||
-          read.stdout.length > 2048 ||
-          read.stderr.length > 2048,
-        stdout: read.stdout.slice(0, 2048),
-        stderr: read.stderr.slice(0, 2048),
-      },
+      readbackProcess: readbackRecord(read),
     };
     args.services.process.retainMergeOutcome?.(result);
     if (
@@ -1657,6 +1658,7 @@ const operations = {
 };
 module.exports = {
   ...operations,
+  readbackRecord,
   createCheck,
   commandArguments,
   canonical,

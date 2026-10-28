@@ -674,6 +674,9 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     ).toBe(true);
     // The executable gate owns the merge conditions and returns the pinned head and receipt.
     expect(text["forge-land"]).toContain("forge check gate --pr <n>");
+    expect(text["forge-land"]).toContain(
+      "Use when a PR may be ready to merge, or after it merged.",
+    );
     expect(text["forge-land"]).toContain("forge pr merge <n>");
     expect(text["forge-land"]).toContain("Never run raw `gh pr merge`");
     expect(text["forge-land"]).toContain("result.gate.reasons");

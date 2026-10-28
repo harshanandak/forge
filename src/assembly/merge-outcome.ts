@@ -4,6 +4,12 @@ import { parseUntrustedJson } from "../contract/untrusted.ts";
 import type { MergeResult } from "../blocks/check/types.ts";
 import type { CatalogServices } from "../blocks/check/services.ts";
 import type { ProcessPort } from "../ports/process.ts";
+import entry from "../blocks/check/entry.cts";
+
+type Readback = NonNullable<MergeResult["readbackProcess"]>;
+const { readbackRecord } = entry as unknown as {
+  readbackRecord: (read: Readback) => Readback;
+};
 
 /** Keep evidence outside the evaluator, whose cancellation discards pending output. */
 export function createMergeOutcome(
@@ -81,17 +87,7 @@ export function createMergeOutcome(
             )
               retainMergeOutcome({
                 ...retained,
-                readbackProcess: {
-                  exitCode: read.exitCode,
-                  signal: read.signal,
-                  timedOut: read.timedOut,
-                  truncated:
-                    read.truncated ||
-                    read.stdout.length > 2048 ||
-                    read.stderr.length > 2048,
-                  stdout: read.stdout.slice(0, 2048),
-                  stderr: read.stderr.slice(0, 2048),
-                },
+                readbackProcess: readbackRecord(read),
               });
             return read;
           });
