@@ -44,10 +44,17 @@ test.each([
         text
           .split("\n")
           .find((line) => line.startsWith("If a worker brief says")) ?? "";
-      expect(rule).toContain("stop after push or after the PR opens");
-      expect(rule).toContain("stop there, overriding later steps");
+      expect(rule).toMatch(/stop after push or (?:after the PR opens|PR open)/);
+      expect(rule).toContain("link an open PR to the issue");
+      expect(rule).toContain("release the claim, then stop");
       expect(rule).toContain(
-        "leave PR linking and CI watching to the orchestrator",
+        "leave thread linking and CI watching to the orchestrator",
+      );
+      expect(rule.indexOf("link an open PR")).toBeLessThan(
+        rule.indexOf("release the claim"),
+      );
+      expect(rule.indexOf("release the claim")).toBeLessThan(
+        rule.indexOf("then stop"),
       );
       expect(text.indexOf(rule)).toBeLessThan(
         text.search(/forge (?:issue link|agent wait)/),

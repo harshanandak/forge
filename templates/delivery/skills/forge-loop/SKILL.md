@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # forge-loop
 
-If a worker brief says stop after push or after the PR opens, stop there, overriding later steps; leave PR linking and CI watching to the orchestrator.
+If a worker brief says stop after push or PR open, link an open PR to the issue, release the claim, then stop; leave thread linking and CI watching to the orchestrator. With no PR, the orchestrator claims, opens and links it.
 
 Every wake: read, route, stop. Read the chosen skill before acting.
 
