@@ -6,6 +6,8 @@
       "enum": [
         "proposed",
         "already_proposed",
+        "withdrawn",
+        "not_proposed",
         "not_found",
         "already_forgotten",
         "read_only"

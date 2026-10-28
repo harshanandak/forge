@@ -8,6 +8,10 @@
     "expectRevision": {
       "type": "integer",
       "minimum": 1
+    },
+    "withdraw": {
+      "type": "boolean",
+      "description": "Remove the proposal marker while retaining the note and its text history."
     }
   },
   "additionalProperties": false,

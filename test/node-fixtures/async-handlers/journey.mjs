@@ -14,8 +14,6 @@ import {
 import { join, basename, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  createAssembly,
-  localContext,
   Runtime,
   Catalog,
   TrustStore,
@@ -423,20 +421,7 @@ try {
       return JSON.parse(child.stdout);
     }
     cli(["block", "add", `./${basename(f.directory)}`]);
-    const assembly = await createAssembly({ root, deviceRoot: device });
-    try {
-      const admitted = await assembly.catalog.invoke({
-        schemaVersion: "forge.invocation/1",
-        requestId: "owner-admit",
-        op: "block.admit",
-        input: { digest: f.block.digest },
-        caller: "human",
-        context: localContext(assembly, { kind: "human", id: "fixture-owner" }),
-      });
-      assert.equal(admitted.ok, true, JSON.stringify(admitted));
-    } finally {
-      await assembly.close();
-    }
+    cli(["block", "admit", f.block.digest]);
     assert.equal(
       cli(["sample", "run", "--input", '{"value":"cli-awaited"}']).result,
       "cli-awaited",
@@ -510,6 +495,7 @@ try {
     }
   }
   if (["all", "leased"].includes(mode)) {
+    const { createAssembly } = await import("forge-workflow/runtime");
     const { createStateClient } = await import(
       new URL("dist/src/assembly/state-client.js", packageUrl)
     );
@@ -658,10 +644,7 @@ try {
         requestId: `assembled-${++sequence}`,
         op,
         input,
-        context:
-          caller === "human"
-            ? { ...context, actor: { kind: "human", id: "fixture-owner" } }
-            : context,
+        context,
         caller,
       });
     try {

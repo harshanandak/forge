@@ -109,26 +109,6 @@ function cli(root, args, expected = 0) {
   );
   return JSON.parse(result.stdout);
 }
-async function ownerSetup(root, op, input) {
-  const assembly = await createAssembly({
-    root,
-    deviceRoot: join(root, "device"),
-  });
-  try {
-    const result = await assembly.catalog.invoke({
-      schemaVersion: "forge.invocation/1",
-      requestId: `fixture-${op}`,
-      op,
-      input,
-      caller: "human",
-      context: localContext(assembly, { kind: "human", id: "fixture-owner" }),
-    });
-    assert.equal(result.ok, true, JSON.stringify(result));
-    return result;
-  } finally {
-    await assembly.close();
-  }
-}
 function block(path, noun) {
   mkdirSync(path, { recursive: true });
   const manifest = {
@@ -763,11 +743,13 @@ try {
     );
     const added = cli(root, ["block", "add", "./scopes"]),
       digest = added.result.digest;
-    await ownerSetup(root, "block.admit", { digest });
-    await ownerSetup(root, "config.grant", {
-      digest,
-      effects: ["scopes:write"],
-    });
+    cli(root, ["block", "admit", digest]);
+    cli(root, [
+      "config",
+      "grant",
+      "--input",
+      JSON.stringify({ digest, effects: ["scopes:write"] }),
+    ]);
     const assembly = await createAssembly({
       root,
       deviceRoot: join(root, "device"),
@@ -847,11 +829,16 @@ try {
     );
     const processAdded = cli(root, ["block", "add", "./stateless-process"]);
     const processDigest = processAdded.result.digest;
-    await ownerSetup(root, "block.admit", { digest: processDigest });
-    await ownerSetup(root, "config.grant", {
-      digest: processDigest,
-      effects: ["external:process", "environment:read"],
-    });
+    cli(root, ["block", "admit", processDigest]);
+    cli(root, [
+      "config",
+      "grant",
+      "--input",
+      JSON.stringify({
+        digest: processDigest,
+        effects: ["external:process", "environment:read"],
+      }),
+    ]);
     const processResult = cli(root, [
       "stateless-process",
       "echo",

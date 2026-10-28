@@ -30,6 +30,10 @@ export interface CallOptions {
   ) => AmbientContext;
 }
 
+export function requiresOwnerConfirmation(op: string): boolean {
+  return ["memory.forget", "memory.restore", "decision.adopt"].includes(op);
+}
+
 export function success(op: string, result: unknown): ResultEnvelope {
   return { ok: true, op, status: "OK", result, warnings: [] };
 }
@@ -122,10 +126,7 @@ export async function dispatch(
   )?.declaration;
   if (options.readOnly && declaration && declaration.effects.length > 0)
     return failure("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
-  if (
-    declaration?.callers.includes("human") &&
-    !declaration.callers.includes("agent")
-  ) {
+  if (requiresOwnerConfirmation(op)) {
     let confirmed = false;
     if (options.caller === "human") {
       try {

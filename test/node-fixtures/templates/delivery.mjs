@@ -14,10 +14,6 @@ import { join } from "node:path";
 
 const installed = process.argv[2];
 const bin = join(installed, "dist/bin/forge.js");
-const { pathToFileURL } = await import("node:url");
-const { createAssembly, localContext } = await import(
-  pathToFileURL(join(installed, "dist/src/assembly/index.js")).href
-);
 assert.equal(process.versions.bun, undefined);
 
 function hookPath(command) {
@@ -32,7 +28,7 @@ function hookPath(command) {
   return path;
 }
 
-async function project(files) {
+function project(files) {
   const root = realpathSync(mkdtempSync(join(process.cwd(), "delivery-")));
   for (const [name, text] of Object.entries(files))
     writeFileSync(join(root, name), text);
@@ -120,47 +116,29 @@ async function project(files) {
     recursive: true,
   });
   const digest = cli(["block", "check", "./check-bytes"]).result.digest;
-  const assembly = await createAssembly({
-    root,
-    deviceRoot: env.FORGE_DEVICE_ROOT,
-  });
-  try {
-    for (const [op, input] of [
-      ["block.admit", { digest }],
-      [
-        "config.grant",
-        {
-          digest,
-          effects: [
-            "check:write",
-            "process:write",
-            "external:process",
-            "external:write",
-            "files:read",
-            "environment:read",
-          ],
-        },
+  cli(["block", "admit", digest]);
+  cli([
+    "config",
+    "grant",
+    "--input",
+    JSON.stringify({
+      digest,
+      effects: [
+        "check:write",
+        "process:write",
+        "external:process",
+        "external:write",
+        "files:read",
+        "environment:read",
       ],
-    ]) {
-      const result = await assembly.catalog.invoke({
-        schemaVersion: "forge.invocation/1",
-        requestId: `owner-${op}`,
-        op,
-        input,
-        caller: "human",
-        context: localContext(assembly, { kind: "human", id: "fixture-owner" }),
-      });
-      assert.equal(result.ok, true, JSON.stringify(result));
-    }
-  } finally {
-    await assembly.close();
-  }
+    }),
+  ]);
   // No environment config: check's default finds the project's own npm on PATH.
   return { root, cli };
 }
 
 // An npm project: check runs the project's own test script, never a Bun command.
-const npm = await project({
+const npm = project({
   "package.json": JSON.stringify({
     name: "npm-project",
     version: "1.0.0",
@@ -295,7 +273,7 @@ assert.equal(
 assert.doesNotMatch(JSON.stringify(receipt), /\bbun\b/);
 
 // Nothing detected: the import refuses, naming check's missing commands, and writes nothing.
-const empty = await project({});
+const empty = project({});
 assert.equal(empty.refused.error.code, "INPUT_INVALID");
 assert.equal(
   empty.refused.error.message,

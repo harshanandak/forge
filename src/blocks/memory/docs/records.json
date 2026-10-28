@@ -37,7 +37,7 @@
       "title": "Propose forgetting a note",
       "summary": "Mark a note for the owner to forget while keeping it readable.",
       "examples": [{ "input": { "id": "device/note-1", "expectRevision": 1 } }],
-      "description": "Agents and humans can propose forgetting a device note or a note in their own project. The proposedForget marker appears in show and search; text, scope, tags, links and origin stay intact. The current text becomes an earlier version using the same bounded retention as an edit. Repeating a proposal writes nothing. An optional expectRevision refuses stale writes. Another project's notes stay read-only. The owner can confirm the proposal with memory forget; proposing does not hide or delete the note."
+      "description": "Agents and humans can propose forgetting a device note or a note in their own project. The proposedForget marker appears in show and search; text, scope, tags, links and origin stay intact. Proposing retains every readable text version without consuming a retention slot. Either caller can remove the marker with memory propose-forget <id> --withdraw, keeping the text and history. Repeating a proposal or withdrawal writes nothing. An optional expectRevision refuses stale writes. Moving or copying a note carries its marker to the destination. Another project's notes stay read-only. The owner can confirm the proposal with memory forget; proposing does not hide or delete the note."
     },
     "memory.forget": {
       "title": "Forget a note",

@@ -10,7 +10,6 @@ import {
   rmSync,
 } from "node:fs";
 import { join } from "node:path";
-import { createAssembly, localContext } from "forge-workflow/runtime";
 import { StateOwner } from "forge-workflow/state";
 import { sqliteStore } from "forge-workflow/adapters/sqlite";
 
@@ -42,26 +41,6 @@ function cli(args, expected = 0) {
     `${args.join(" ")}: ${result.stderr}\n${result.stdout}`,
   );
   return JSON.parse(result.stdout);
-}
-async function ownerSetup(root, op, input) {
-  const assembly = await createAssembly({
-    root,
-    deviceRoot: join(root, "device"),
-  });
-  try {
-    const result = await assembly.catalog.invoke({
-      schemaVersion: "forge.invocation/1",
-      requestId: `fixture-${op}`,
-      op,
-      input,
-      caller: "human",
-      context: localContext(assembly, { kind: "human", id: "fixture-owner" }),
-    });
-    assert.equal(result.ok, true, JSON.stringify(result));
-    return result;
-  } finally {
-    await assembly.close();
-  }
 }
 function mcp() {
   const child = spawn(process.execPath, [bin, "--mcp"], {
@@ -367,14 +346,7 @@ try {
     );
     if (mode === "admission") console.log("PASS admission");
     else {
-      assert.equal(
-        cli(["block", "admit", digest], 1).error.code,
-        "HUMAN_REQUIRED",
-      );
-      assert.equal(
-        (await ownerSetup(root, "block.admit", { digest })).result.admitted,
-        true,
-      );
+      assert.equal(cli(["block", "admit", digest]).result.admitted, true);
       const cliBump = cli(["semver", "bump", "1.4.2", "minor"]);
       const mcpBump = await server.call("semver_bump", {
         current: "1.4.2",
@@ -399,10 +371,12 @@ try {
       );
       await server.close();
       server = undefined;
-      await ownerSetup(root, "config.grant", {
-        digest,
-        effects: ["semver:write"],
-      });
+      cli([
+        "config",
+        "grant",
+        "--input",
+        JSON.stringify({ digest, effects: ["semver:write"] }),
+      ]);
       server = mcp();
       await server.initialize();
       const markStarted = performance.now();

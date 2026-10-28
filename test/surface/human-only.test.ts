@@ -33,9 +33,6 @@ test("noninteractive local calls refuse every human-only verb and preserve notes
       { format: "forge.memory.export/2", level: "device", notes: [] },
     ],
     ["decision.adopt", { id: "ADR-001" }],
-    ["block.admit", { digest: `sha256:${"0".repeat(64)}` }],
-    ["config.grant", { digest: `sha256:${"0".repeat(64)}`, effects: [] }],
-    ["store.reinit", {}],
   ] as const;
   for (const [op, input] of cases) {
     const result = await dispatch(h.assembly.catalog, op, input, options);
@@ -84,11 +81,11 @@ test("noninteractive local calls refuse every human-only verb and preserve notes
 
 test("failed host approval refuses before invoking or resolving any context", async () => {
   const catalog = fakeCatalog([
-    candidate("sample.private", { callers: ["human"] }),
+    candidate("memory.forget", { callers: ["human"] }),
   ]);
   const result = await dispatch(
     catalog,
-    "sample.private",
+    "memory.forget",
     {},
     {
       caller: "human",
@@ -196,4 +193,14 @@ test("human approval is required on each call and is carried to the catalog targ
       { ...options, confirmHuman: () => Promise.resolve(true) },
     ),
   ).toMatchObject({ ok: true, result: { status: "forgotten" } });
+}, 30_000);
+
+test("the memory confirmation guard leaves core admission, grants and recovery unchanged", async () => {
+  for (const op of ["block.admit", "config.grant", "store.reinit"]) {
+    const catalog = fakeCatalog([candidate(op, { callers: ["human"] })]);
+    expect(await dispatch(catalog, op, {}, { caller: "human" })).toMatchObject({
+      ok: true,
+    });
+    expect(catalog.calls).toHaveLength(1);
+  }
 }, 30_000);

@@ -33,11 +33,7 @@ async function forge(argv: readonly string[], session = "agent-one") {
   const options = localCall(assembly);
   if (previous === undefined) delete process.env.FORGE_SESSION;
   else process.env.FORGE_SESSION = previous;
-  const response = await runCli(assembly.catalog, argv, {
-    ...options,
-    caller: "human",
-    confirmHuman: () => Promise.resolve(true),
-  });
+  const response = await runCli(assembly.catalog, argv, options);
   return JSON.parse(response.stdout) as Envelope;
 }
 

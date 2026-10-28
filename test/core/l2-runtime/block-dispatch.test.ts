@@ -63,7 +63,6 @@ for (const blockName of ["sample", "a".repeat(41)])
         (
           await runCli(catalog, args, {
             caller: human ? "human" : "agent",
-            confirmHuman: () => Promise.resolve(human),
             context: {
               actor: { kind: "human", id: "owner" },
               device: { id: "local" },
@@ -109,14 +108,7 @@ for (const blockName of ["sample", "a".repeat(41)])
           input: { digest },
           caller: "human",
         }),
-        {
-          ok: false,
-          error: {
-            code: "HUMAN_REQUIRED",
-            repair:
-              "Ask the owner to run forge block admit in a terminal and confirm.",
-          },
-        },
+        { ok: false, error: { code: "UNKNOWN_COMMAND" } },
       );
       assert.partialDeepStrictEqual(
         await cli(["block", "admit", digest, "--dry-run"], true),
@@ -124,12 +116,8 @@ for (const blockName of ["sample", "a".repeat(41)])
       );
       assert.equal(catalog.list()[0]?.admitted, false);
       assert.partialDeepStrictEqual(
-        (
-          await runCli(catalog, ["block", "admit", digest], {
-            caller: "human",
-            confirmHuman: () => Promise.resolve(true),
-          })
-        ).envelope,
+        (await runCli(catalog, ["block", "admit", digest], { caller: "human" }))
+          .envelope,
         { ok: false, error: { code: "CONTEXT_MISSING" } },
       );
       assert.partialDeepStrictEqual(
