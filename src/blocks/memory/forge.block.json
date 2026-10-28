@@ -61,6 +61,17 @@
       "stability": "stable",
       "timeoutMs": 5000
     },
+    "memory.propose-forget": {
+      "input": "schemas/propose-forget.input.json",
+      "output": "schemas/propose-forget.output.json",
+      "context": "device",
+      "effects": ["memory:write"],
+      "args": ["id"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "stable",
+      "timeoutMs": 15000
+    },
     "memory.forget": {
       "input": "schemas/forget.input.json",
       "output": "schemas/forget.output.json",

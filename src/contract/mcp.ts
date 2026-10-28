@@ -14,6 +14,9 @@ export const DEFAULT_MCP_BUDGET = 40;
 
 export interface McpCandidate {
   readonly op: string;
+  /** Resolved block identity and original operation, unaffected by noun renames. */
+  readonly blockId?: string;
+  readonly declaredOp?: string;
   readonly declaration: OperationDeclaration;
   /** Only admitted operations are listed; others stay reachable as ADMISSION_REQUIRED refusals. */
   readonly admitted: boolean;

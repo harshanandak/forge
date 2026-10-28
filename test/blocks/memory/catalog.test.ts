@@ -22,6 +22,7 @@ const operations = {
   "memory.search": { effects: [], humanOnly: false },
   "memory.rules": { effects: [], humanOnly: false },
   "memory.show": { effects: [], humanOnly: false },
+  "memory.propose-forget": { effects: ["memory:write"], humanOnly: false },
   "memory.forget": { effects: ["memory:write"], humanOnly: true },
   "memory.export": { effects: [], humanOnly: false },
   "memory.restore": { effects: ["memory:write"], humanOnly: true },

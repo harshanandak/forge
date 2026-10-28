@@ -97,6 +97,7 @@ export class BlockCatalog {
       const entry = catalog.describe(op);
       return {
         ...entry,
+        declaredOp: operation.declaredOp,
         admitted: this.#admitted(block),
         docs: this.#docs(block)[operation.declaredOp]!,
         inputSchema: entry.inputSchema as McpCandidate["inputSchema"],

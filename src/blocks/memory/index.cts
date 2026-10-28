@@ -43,9 +43,13 @@ interface NoteValue {
   readonly tags: readonly string[];
   readonly links: readonly string[];
   readonly previous: readonly Version[];
+  /** Metadata writes keep the current text's original revision without consuming retention. */
+  readonly textRevision?: number;
   /** The note this one was moved or copied from: the transfer's identity. */
   readonly from?: string;
   readonly deleted?: true;
+  /** A request for the owner to forget this note; the note remains readable. */
+  readonly proposedForget?: true;
   /** On a moved note's tombstone: where it went. */
   readonly movedTo?: string;
 }
@@ -392,7 +396,10 @@ function versionsOf(
 ): { revision: number; at?: string }[] {
   return [
     ...value.previous.map((entry) => ({ revision: entry.revision })),
-    { revision: record.revision, at: record.updatedAt },
+    {
+      revision: value.textRevision ?? record.revision,
+      ...(value.textRevision === undefined ? { at: record.updatedAt } : {}),
+    },
   ];
 }
 function present(
@@ -411,6 +418,7 @@ function present(
     tags: [...value.tags],
     links: qualifiedLinks(value.links),
     ...(value.from === undefined ? {} : { from: value.from }),
+    ...(value.proposedForget === true ? { proposedForget: true as const } : {}),
     text: fence(text, `memory:${id}`, record.updatedAt),
     updatedAt: record.updatedAt,
     versions,
@@ -594,6 +602,9 @@ module.exports = {
         links: qualifiedLinks(input.links ?? kept?.links ?? []),
         previous,
         ...(kept?.from === undefined ? {} : { from: kept.from }),
+        ...(kept?.proposedForget === true
+          ? { proposedForget: true as const }
+          : {}),
       };
     };
     const editing = input.id === undefined ? undefined : qualified(input.id);
@@ -614,7 +625,7 @@ module.exports = {
         fields(
           [
             ...old.previous,
-            { revision: existing.revision, text: old.text },
+            { revision: old.textRevision ?? existing.revision, text: old.text },
           ].slice(-MAX_VERSIONS),
           old,
         ),
@@ -841,6 +852,9 @@ module.exports = {
             ? {}
             : { scope: note.value.scope }),
           tags: [...note.value.tags],
+          ...(note.value.proposedForget === true
+            ? { proposedForget: true as const }
+            : {}),
           snippet: fence(
             snippet(note.value.text, wanted),
             `memory:${note.id}`,
@@ -877,7 +891,11 @@ module.exports = {
       return value.movedTo === undefined
         ? { status: "forgotten" as const }
         : { status: "moved" as const, to: value.movedTo };
-    if (input.revision === undefined || input.revision === record.revision)
+    if (
+      input.revision === undefined ||
+      input.revision === record.revision ||
+      input.revision === value.textRevision
+    )
       return {
         status: "found" as const,
         note: present(
@@ -903,6 +921,49 @@ module.exports = {
         older.text,
         shown(source.state, record, value),
       ),
+    };
+  },
+
+  "memory.propose-forget": async ({
+    input,
+    services,
+  }: {
+    input: { id: string; expectRevision?: number; withdraw?: boolean };
+    services: Services;
+  }) => {
+    const id = qualified(input.id);
+    const found = await sourceFor(services, id);
+    if (unreached(found)) return { status: "not_found" as const, id };
+    const { source, number } = found;
+    if (source.readOnly) return { status: "read_only" as const, id };
+    const key = noteKey(number);
+    const existing = source.state.get(key);
+    if (!existing) return { status: "not_found" as const, id };
+    const old = existing.value as NoteValue;
+    if (old.deleted === true)
+      return { status: "already_forgotten" as const, id };
+    const withdraw = input.withdraw === true;
+    if ((old.proposedForget === true) !== withdraw)
+      return {
+        status: withdraw
+          ? ("not_proposed" as const)
+          : ("already_proposed" as const),
+        id,
+        note: present(source, id, existing, old, old.text),
+      };
+    const { proposedForget: _proposal, ...kept } = old;
+    const value: NoteValue = {
+      ...kept,
+      textRevision: old.textRevision ?? existing.revision,
+      ...(withdraw ? {} : { proposedForget: true as const }),
+    };
+    const record = source.state.put(key, value, {
+      expectRevision: input.expectRevision ?? existing.revision,
+    });
+    return {
+      status: withdraw ? ("withdrawn" as const) : ("proposed" as const),
+      id,
+      note: present(source, id, record, value, value.text),
     };
   },
 
@@ -978,6 +1039,9 @@ module.exports = {
       links: qualifiedLinks(value.links),
       previous: [],
       from: qualified(input.id),
+      ...(value.proposedForget === true
+        ? { proposedForget: true as const }
+        : {}),
     };
     // The transfer record names the copy and the revisions it was made at: the copy's own revision
     // and the source revision it was taken from. The copy and its record commit together, so a

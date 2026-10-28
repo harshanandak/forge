@@ -534,6 +534,7 @@ export async function createAssembly(
             const { block: captured, operation } = checked.resolve(op);
             return {
               ...described,
+              declaredOp: operation.declaredOp,
               admitted,
               docs: docs.operations[operation.declaredOp]!,
               inputSchema: described.inputSchema as McpCandidate["inputSchema"],
@@ -1430,6 +1431,37 @@ export function localCall(
 ): import("../surface/dispatch.ts").CallOptions {
   return {
     caller: "human",
+    confirmHuman: (op, _input) => {
+      if (
+        process.stdin.isTTY !== true ||
+        process.stdin.destroyed ||
+        process.stdin.readableEnded ||
+        localHarness() !== "local-cli" ||
+        process.env.FORGE_AGENT?.trim()
+      )
+        return Promise.resolve(false);
+      process.stderr.write(
+        `Owner confirmation: type "confirm ${op}" to proceed: `,
+      );
+      return new Promise<boolean>((resolve) => {
+        const finish = (confirmed: boolean) => {
+          process.stdin.off("data", answer);
+          process.stdin.off("end", refused);
+          process.stdin.off("close", refused);
+          process.stdin.off("error", refused);
+          process.stdin.pause();
+          resolve(confirmed);
+        };
+        const answer = (chunk: Buffer | string) =>
+          finish(chunk.toString().trim() === `confirm ${op}`);
+        const refused = () => finish(false);
+        process.stdin.once("data", answer);
+        process.stdin.once("end", refused);
+        process.stdin.once("close", refused);
+        process.stdin.once("error", refused);
+        process.stdin.resume();
+      });
+    },
     context: localContext(
       assembly,
       { kind: "human", id: "local-cli" },

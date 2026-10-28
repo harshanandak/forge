@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {
+      "enum": [
+        "proposed",
+        "already_proposed",
+        "withdrawn",
+        "not_proposed",
+        "not_found",
+        "already_forgotten",
+        "read_only"
+      ]
+    },
+    "id": {
+      "$ref": "defs.json#/$defs/NoteId"
+    },
+    "note": {
+      "$ref": "defs.json#/$defs/Note"
+    }
+  },
+  "additionalProperties": false,
+  "required": ["status", "id"]
+}
