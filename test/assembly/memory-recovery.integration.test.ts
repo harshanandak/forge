@@ -11,9 +11,9 @@ const inherited: Record<string, string> = {};
 for (const name of ["PATH", "Path", "PATHEXT", "SystemRoot", "TEMP", "TMP"])
   if (process.env[name] !== undefined) inherited[name] = process.env[name]!;
 
-function fixture() {
+function fixture(name = "project") {
   const work = mkdtempSync(join(tmpdir(), "forge-memory-recovery-"));
-  const root = join(work, "project");
+  const root = join(work, name);
   const nested = join(root, "nested");
   const deviceRoot = join(work, "device");
   mkdirSync(join(root, ".forge"), { recursive: true });
@@ -29,6 +29,7 @@ function fixture() {
   return {
     root,
     nested,
+    deviceRoot,
     config(value: string) {
       writeFileSync(join(root, ".forge/config.yaml"), value);
     },
@@ -51,6 +52,84 @@ function fixture() {
     },
   };
 }
+
+test("healthy child project uses its own scope and alias for rules and default device adds", () => {
+  for (const aliased of [false, true]) {
+    const place = fixture("repo");
+    const app = join(place.root, "app");
+    const scope = aliased ? "app-alias" : "app";
+    const checkoutScope = aliased ? "repo-alias" : "repo";
+    try {
+      mkdirSync(join(app, ".forge"), { recursive: true });
+      writeFileSync(join(app, ".forge/config.yaml"), "blocks:\n  memory: {}\n");
+      if (aliased) {
+        mkdirSync(place.deviceRoot, { recursive: true });
+        writeFileSync(
+          join(place.deviceRoot, "memory-scopes.json"),
+          JSON.stringify({ app: scope, repo: checkoutScope }),
+        );
+      }
+      const scoped = place.call(["memory", "scope"], app);
+      expect(scoped.status).toBe(0);
+      expect(scoped.envelope).toMatchObject({
+        ok: true,
+        result: { scope },
+        warnings: [],
+      });
+      for (const noteScope of [
+        "general",
+        scope,
+        checkoutScope,
+        checkoutScope,
+      ]) {
+        const added = place.call(
+          [
+            "memory",
+            "add",
+            "--input",
+            JSON.stringify({
+              text: "child project heron",
+              level: "device",
+              scope: noteScope,
+            }),
+          ],
+          app,
+        );
+        expect(added.status).toBe(0);
+      }
+      const rules = place.call(["memory", "rules"], app);
+      expect(rules.status).toBe(0);
+      expect(rules.envelope.warnings).toEqual([]);
+      if (!rules.envelope.ok) throw Error("Expected memory rules");
+      const pointer = rules.envelope.result as { text: { text: string } };
+      expect(pointer.text.text).toContain(`general 1, ${scope} 1.`);
+      expect(pointer.text.text).toContain(
+        `prefer hits scoped ${scope} or general.`,
+      );
+      expect(pointer.text.text).not.toContain(checkoutScope);
+      const added = place.call(
+        [
+          "memory",
+          "add",
+          "--input",
+          JSON.stringify({
+            text: "default child project heron",
+            level: "device",
+          }),
+        ],
+        app,
+      );
+      expect(added.status).toBe(0);
+      expect(added.envelope).toMatchObject({
+        ok: true,
+        result: { status: "added", note: { level: "device", scope } },
+        warnings: [],
+      });
+    } finally {
+      place.close();
+    }
+  }
+}, 120_000);
 
 test("memory recovery warnings name the config and safe kind without exposing config values on either stream", () => {
   const place = fixture();
