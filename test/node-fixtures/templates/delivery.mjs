@@ -187,10 +187,27 @@ assert.match(
 assert.deepEqual(npm.cli(["check", "list"]).result.commands, ["test"]);
 const receipt = npm.cli(["check", "run"]).result;
 assert.equal(receipt.status, "PASS", JSON.stringify(receipt));
-for (const detect of [{}, { CLAUDECODE: "1" }, { CODEX_THREAD_ID: "test" }]) {
-  assert.deepEqual(npm.cli(["agent", "wait", "7"], 0, detect).result.steps, [
-    "gh pr checks 7 --watch --fail-fast --interval 60",
-  ]);
+for (const [detect, kind] of [
+  [{}, "gh-checks"],
+  [{ CLAUDECODE: "1" }, "monitor"],
+  [{ CODEX_THREAD_ID: "test" }, "gh-checks"],
+]) {
+  const wait = npm.cli(["agent", "wait", "7"], 0, detect).result;
+  assert.equal(wait.kind, kind);
+  if (kind === "monitor") {
+    assert.equal(wait.steps.length, 1);
+    assert.match(wait.steps[0], /^Start Monitor with /);
+    const monitor = JSON.parse(
+      wait.steps[0].slice("Start Monitor with ".length),
+    );
+    assert.equal(monitor.timeout_ms, 1_800_000);
+    assert.equal(monitor.description, "PR #7: checks, threads, conflicts");
+    assert.match(monitor.command, /forge pr state/);
+  } else {
+    assert.deepEqual(wait.steps, [
+      "gh pr checks 7 --watch --fail-fast --interval 60",
+    ]);
+  }
   assert.deepEqual(
     npm.cli(["agent", "wait", "7", "--done"], 0, detect).result.steps,
     [],

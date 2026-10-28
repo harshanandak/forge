@@ -86,9 +86,9 @@ case "$FORGE_TEST_MODE" in
   resume) :;;
   fail) exit 1;;
   reset)
-    if [ "$count" -eq 15 ]; then :
-    elif [ "$count" -eq 30 ]; then printf '%s\\n' "$news"
-    elif [ "$count" -eq 45 ]; then printf '%s\\n' "$ready"
+    if [ "$count" -eq 2 ]; then :
+    elif [ "$count" -eq 4 ]; then printf '%s\\n' "$news"
+    elif [ "$count" -eq 6 ]; then printf '%s\\n' "$ready"
     else exit 1; fi;;
   *) exit 91;;
 esac`,
@@ -239,12 +239,20 @@ test("Monitor stops after fifteen consecutive unreadable polls and backs off", (
   expect(result.sleeps.every((seconds) => seconds <= 300)).toBe(true);
 });
 test("successful empty and news polls each reset the consecutive failure counter", () => {
-  const result = run(monitor().command, "reset");
-  expect(result.calls).toHaveLength(45);
+  const result = run(monitor().command, "reset", {
+    FORGE_MONITOR_FAILURE_LIMIT: "2",
+  });
+  expect(result.calls).toHaveLength(6);
   expect(result.stdout).not.toContain("unreadable");
   expect(events(result.stdout).at(-1)!.end).toBe(true);
-  expect(result.sleeps[14]).toBe(60);
-  expect(result.sleeps[29]).toBe(60);
-  expect(result.sleeps[15]).toBe(result.sleeps[0]);
-  expect(result.sleeps[30]).toBe(result.sleeps[0]);
+  expect(result.sleeps).toEqual([60, 60, 60, 60, 60]);
+});
+test("Monitor honors a test-only failure limit", () => {
+  const result = run(monitor().command, "fail", {
+    FORGE_MONITOR_FAILURE_LIMIT: "2",
+  });
+  expect(result.calls).toHaveLength(2);
+  expect(events(result.stdout)).toEqual([
+    { pr: 42, kind: "unreadable", fails: 2, next: "" },
+  ]);
 });

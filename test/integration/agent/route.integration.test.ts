@@ -485,7 +485,7 @@ test("an invalid shipped adapter names its YAML file, field and allowed values",
   const file = join(fixture, "templates/delivery/agents/codex.yaml");
   const original = readFileSync(file, "utf8");
   for (const [field, value, allowed] of [
-    ["prWatch", "bogus", ["t3-tool", "watch-block", "gh-checks"]],
+    ["prWatch", "bogus", ["t3-tool", "monitor", "watch-block", "gh-checks"]],
     ["guard", "{ kind: unknown }", ["hook", "none"]],
   ] as const) {
     writeFileSync(
