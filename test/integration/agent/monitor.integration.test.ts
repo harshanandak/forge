@@ -97,7 +97,12 @@ esac`,
     join(path, "bin/sleep"),
     `
 printf '%s\\n' "$*" >> "$FORGE_TEST_ROOT/sleeps"
-case "$FORGE_TEST_MODE" in duration|resume) printf '1' > "$FORGE_TEST_ROOT/time";; esac`,
+case "$FORGE_TEST_MODE" in
+  duration|resume) printf '1' > "$FORGE_TEST_ROOT/time";;
+  fail) time=0
+    [ ! -f "$FORGE_TEST_ROOT/time" ] || time=$(cat "$FORGE_TEST_ROOT/time")
+    printf '%s' "$((time + $1))" > "$FORGE_TEST_ROOT/time";;
+esac`,
   );
   executable(
     join(path, "bin/date"),
@@ -133,7 +138,6 @@ function run(command: string, mode: string, extra: Env = {}) {
         ...env,
         FORGE_TEST_ROOT: shellPath(path),
         FORGE_TEST_MODE: mode,
-        FORGE_MONITOR_DURATION: "1740",
         ...extra,
       },
     },
@@ -227,16 +231,15 @@ test("Monitor honors cadence and hands its token to the next quiet bounded run",
   ).toBe(true);
   expect(resumed.stdout).not.toContain("head moved");
 });
-test("Monitor stops after fifteen consecutive unreadable polls and backs off", () => {
+test("Monitor stops on the fifteenth failure before rearm with default cadence and duration", () => {
   const result = run(monitor().command, "fail");
   expect(result.calls).toHaveLength(15);
   expect(events(result.stdout)).toEqual([
     { pr: 42, kind: "unreadable", fails: 15, next: "" },
   ]);
   expect(result.sleeps).toHaveLength(14);
-  expect(result.sleeps[0]).toBeGreaterThanOrEqual(60);
-  expect(Math.max(...result.sleeps)).toBeGreaterThan(result.sleeps[0]!);
-  expect(result.sleeps.every((seconds) => seconds <= 300)).toBe(true);
+  expect(result.sleeps).toEqual(Array(14).fill(60));
+  expect(result.sleeps.reduce((total, seconds) => total + seconds, 0)).toBe(840);
 });
 test("successful empty and news polls each reset the consecutive failure counter", () => {
   const result = run(monitor().command, "reset", {

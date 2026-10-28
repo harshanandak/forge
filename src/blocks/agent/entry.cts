@@ -90,12 +90,12 @@ module.exports = {
                 command: `n=${input.pr}; since=\${FORGE_MONITOR_SINCE:-}; fails=0
 interval=\${FORGE_MONITOR_INTERVAL:-60}; duration=\${FORGE_MONITOR_DURATION:-1740}
 limit=\${FORGE_MONITOR_FAILURE_LIMIT:-15}
-stop=$(( $(date +%s) + duration )); backoff=$interval
+stop=$(( $(date +%s) + duration ))
 while [ "$(date +%s)" -lt "$stop" ]; do
   set --
   [ -n "$since" ] && set -- --since "$since"
   if line=$(forge pr state "$n" "$@" 2>/dev/null); then
-    fails=0; wait=$interval; backoff=$interval
+    fails=0
     if [ -n "$line" ]; then
       printf '%s\\n' "$line"
       since=$(printf '%s' "$line" | sed -n 's/.*"next":"\\([^"]*\\)".*/\\1/p')
@@ -107,9 +107,8 @@ while [ "$(date +%s)" -lt "$stop" ]; do
       printf '{"pr":%s,"kind":"unreadable","fails":%s,"next":"%s"}\\n' "$n" "$fails" "$since"
       exit 0
     fi
-    wait=$backoff; [ "$wait" -gt 300 ] && wait=300
-    backoff=$((wait * 2))
   fi
+  wait=$interval
   remaining=$((stop - $(date +%s)))
   [ "$remaining" -le 0 ] && break
   [ "$wait" -gt "$remaining" ] && wait=$remaining
