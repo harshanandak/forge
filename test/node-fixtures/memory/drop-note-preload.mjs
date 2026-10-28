@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 const root = resolve(process.env.FORGE_MEMORY_READBACK_ROOT);
-assert.equal(resolve(process.cwd()), root);
+// macOS reports the child's cwd as /private/var while tmpdir() gives /var.
+assert.equal(realpathSync(process.cwd()), realpathSync(root));
 assert.ok(basename(root).startsWith("forge-memory-readback-"));
 assert.equal(resolve(process.env.FORGE_DEVICE_ROOT), join(root, "device"));
 const mode = process.env.FORGE_MEMORY_READBACK_FAULT ?? "drop";
