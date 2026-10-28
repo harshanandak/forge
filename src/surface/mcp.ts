@@ -79,7 +79,11 @@ export function createMcpHandlers(
       { ...exposure, budget: 0 },
     ).overflow,
   );
-  const exposed = candidates.filter((candidate) => reachable.has(candidate.op));
+  const exposed = candidates.filter(
+    (candidate) =>
+      reachable.has(candidate.op) ||
+      !candidate.declaration.callers.includes("agent"),
+  );
   const restricted: SurfaceCatalog = {
     list: () => exposed,
     invoke: (request) => catalog.invoke(request),
@@ -108,7 +112,13 @@ export function createMcpHandlers(
             : { readOnly: exposure.readOnly }),
         });
       }
-      const candidate = byName.get(name);
+      const candidate =
+        byName.get(name) ??
+        [...discoveryOperations, ...candidates].find(
+          (entry) =>
+            !entry.declaration.callers.includes("agent") &&
+            mcpToolName(entry.op, exposure.toolPrefix) === name,
+        );
       if (
         candidate === undefined &&
         exposure.readOnly &&
@@ -126,6 +136,9 @@ export function createMcpHandlers(
         : dispatch(catalog, candidate.op, args, {
             ...options,
             caller: "agent",
+            ...(exposure.readOnly === undefined
+              ? {}
+              : { readOnly: exposure.readOnly }),
           });
     },
   };

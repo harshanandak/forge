@@ -24,7 +24,9 @@ test("catalog_call enforces exposure filters without blocking budget overflow", 
     const handlers = createMcpHandlers(catalog, exposure);
     expect(await handlers.callTool("catalog_call", { op })).toMatchObject({
       ok: false,
-      error: { code: "UNKNOWN_COMMAND" },
+      error: {
+        code: op === "sample.private" ? "HUMAN_REQUIRED" : "UNKNOWN_COMMAND",
+      },
     });
   }
   expect(catalog.calls).toHaveLength(0);

@@ -90,7 +90,16 @@ async function withProject(
           record(checked.ok ? checked.result : undefined)?.digest,
         );
         expect(
-          await dispatch(assembly.catalog, "block.admit", { digest }, call),
+          await dispatch(
+            assembly.catalog,
+            "block.admit",
+            { digest },
+            {
+              ...call,
+              caller: "human",
+              confirmHuman: () => Promise.resolve(true),
+            },
+          ),
         ).toMatchObject({ ok: true });
       }
       await run(assembly, root);

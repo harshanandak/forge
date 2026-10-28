@@ -15,6 +15,8 @@ import { validateInvocationRequest } from "../generated/validators.ts";
 
 export interface CallOptions {
   readonly caller: Caller;
+  /** Host-owned confirmation; invocation input and context cannot grant it. */
+  readonly confirmHuman?: (op: string, input: unknown) => Promise<boolean>;
   readonly readOnly?: boolean;
   readonly context?: AmbientContext;
   readonly requestId?: string;
@@ -99,6 +101,9 @@ export async function dispatch(
     const request = checked.value;
     return dispatch(catalog, request.op, request.input, {
       caller: options.caller,
+      ...(options.confirmHuman === undefined
+        ? {}
+        : { confirmHuman: options.confirmHuman }),
       ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
       context: request.context,
       explicitContext:
@@ -111,6 +116,40 @@ export async function dispatch(
         ? {}
         : { dryRun: options.dryRun === true || request.dryRun === true }),
     });
+  }
+  const declaration = [...discoveryOperations, ...catalog.list()].find(
+    (entry) => entry.op === op,
+  )?.declaration;
+  if (options.readOnly && declaration && declaration.effects.length > 0)
+    return failure("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
+  if (
+    declaration?.callers.includes("human") &&
+    !declaration.callers.includes("agent")
+  ) {
+    let confirmed = false;
+    if (options.caller === "human") {
+      try {
+        confirmed = (await options.confirmHuman?.(op, input)) === true;
+      } catch {
+        // An interrupted or failed confirmation never authorizes a write.
+      }
+    }
+    if (!confirmed)
+      return {
+        ok: false,
+        op,
+        status: "FAIL",
+        warnings: [],
+        error: {
+          code: "HUMAN_REQUIRED",
+          message: `${op} requires an owner's interactive confirmation.`,
+          retry: "never",
+          repair:
+            op === "memory.forget"
+              ? "Use forge memory propose-forget <id> to mark a proposal; ask the owner to run forge memory forget <id> in a terminal."
+              : `Ask the owner to run forge ${op.replace(".", " ")} in a terminal and confirm.`,
+        },
+      };
   }
   if (
     ![...discoveryOperations, ...catalog.list()].some(
@@ -129,9 +168,6 @@ export async function dispatch(
     );
   }
   try {
-    const declaration = catalog
-      .list()
-      .find((entry) => entry.op === op)?.declaration;
     const context =
       declaration === undefined || options.resolveContext === undefined
         ? (options.context ?? {})

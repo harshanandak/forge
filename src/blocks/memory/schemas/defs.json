@@ -89,6 +89,9 @@
         "readOnly": {
           "$ref": "defs.json#/$defs/ReadOnly"
         },
+        "proposedForget": {
+          "$ref": "defs.json#/$defs/ProposedForget"
+        },
         "revision": {
           "type": "integer",
           "minimum": 1
@@ -191,6 +194,10 @@
         }
       ],
       "description": "Where a note lives."
+    },
+    "ProposedForget": {
+      "const": true,
+      "description": "The owner has been asked to forget this note. Its content remains readable."
     },
     "ReadOnly": {
       "const": true,

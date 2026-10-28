@@ -46,6 +46,8 @@ interface NoteValue {
   /** The note this one was moved or copied from: the transfer's identity. */
   readonly from?: string;
   readonly deleted?: true;
+  /** A request for the owner to forget this note; the note remains readable. */
+  readonly proposedForget?: true;
   /** On a moved note's tombstone: where it went. */
   readonly movedTo?: string;
 }
@@ -411,6 +413,7 @@ function present(
     tags: [...value.tags],
     links: qualifiedLinks(value.links),
     ...(value.from === undefined ? {} : { from: value.from }),
+    ...(value.proposedForget === true ? { proposedForget: true as const } : {}),
     text: fence(text, `memory:${id}`, record.updatedAt),
     updatedAt: record.updatedAt,
     versions,
@@ -574,6 +577,9 @@ module.exports = {
         links: qualifiedLinks(input.links ?? kept?.links ?? []),
         previous,
         ...(kept?.from === undefined ? {} : { from: kept.from }),
+        ...(kept?.proposedForget === true
+          ? { proposedForget: true as const }
+          : {}),
       };
     };
     const editing = input.id === undefined ? undefined : qualified(input.id);
@@ -809,6 +815,9 @@ module.exports = {
             ? {}
             : { scope: note.value.scope }),
           tags: [...note.value.tags],
+          ...(note.value.proposedForget === true
+            ? { proposedForget: true as const }
+            : {}),
           snippet: fence(
             snippet(note.value.text, wanted),
             `memory:${note.id}`,
@@ -871,6 +880,48 @@ module.exports = {
         older.text,
         shown(source.state, record, value),
       ),
+    };
+  },
+
+  "memory.propose-forget": async ({
+    input,
+    services,
+  }: {
+    input: { id: string; expectRevision?: number };
+    services: Services;
+  }) => {
+    const id = qualified(input.id);
+    const found = await sourceFor(services, id);
+    if (unreached(found)) return { status: "not_found" as const, id };
+    const { source, number } = found;
+    if (source.readOnly) return { status: "read_only" as const, id };
+    const key = noteKey(number);
+    const existing = source.state.get(key);
+    if (!existing) return { status: "not_found" as const, id };
+    const old = existing.value as NoteValue;
+    if (old.deleted === true)
+      return { status: "already_forgotten" as const, id };
+    if (old.proposedForget === true)
+      return {
+        status: "already_proposed" as const,
+        id,
+        note: present(source, id, existing, old, old.text),
+      };
+    const value: NoteValue = {
+      ...old,
+      proposedForget: true,
+      previous: [
+        ...old.previous,
+        { revision: existing.revision, text: old.text },
+      ].slice(-MAX_VERSIONS),
+    };
+    const record = source.state.put(key, value, {
+      expectRevision: input.expectRevision ?? existing.revision,
+    });
+    return {
+      status: "proposed" as const,
+      id,
+      note: present(source, id, record, value, value.text),
     };
   },
 

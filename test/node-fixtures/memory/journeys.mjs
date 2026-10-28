@@ -323,8 +323,8 @@ async function projectBoundary() {
     assert.equal(
       cli(["decision", verb, "--input", JSON.stringify(input)], null).error
         ?.code,
-      "CONTEXT_MISSING",
-      `decision ${verb} requires a project`,
+      verb === "adopt" ? "HUMAN_REQUIRED" : "CONTEXT_MISSING",
+      `decision ${verb} requires ${verb === "adopt" ? "owner confirmation" : "a project"}`,
     );
     assert.equal(
       existsSync(join(root, ".forge")),

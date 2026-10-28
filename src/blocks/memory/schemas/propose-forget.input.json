@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "defs.json#/$defs/NoteRef"
+    },
+    "expectRevision": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": ["id"]
+}

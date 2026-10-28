@@ -6,6 +6,10 @@ const [installed, suppliedRoot] = process.argv.slice(2);
 mkdirSync(suppliedRoot, { recursive: true });
 const root = realpathSync(suppliedRoot);
 const bin = join(installed, "dist/bin/forge.js");
+const { pathToFileURL } = await import("node:url");
+const { createAssembly, localContext } = await import(
+  pathToFileURL(join(installed, "dist/src/assembly/index.js")).href
+);
 const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") };
 assert.ok(
   spawnSync("bun", ["--version"], { env, windowsHide: true }).error,
@@ -151,22 +155,37 @@ assert.equal(
   "ADMISSION_REQUIRED",
   "a path block reusing a built-in id must not inherit its trust",
 );
-cli(["block", "admit", digest]);
-cli([
-  "config",
-  "grant",
-  "--input",
-  JSON.stringify({ digest, effects: ["issue:write"] }),
-]);
+assert.equal(cli(["block", "admit", digest], 1).error.code, "HUMAN_REQUIRED");
+const ownerAssembly = await createAssembly({
+  root,
+  deviceRoot: env.FORGE_DEVICE_ROOT,
+});
+try {
+  for (const [op, input] of [
+    ["block.admit", { digest }],
+    ["config.grant", { digest, effects: ["issue:write"] }],
+  ]) {
+    const result = await ownerAssembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: `owner-${op}`,
+      op,
+      input,
+      caller: "human",
+      context: localContext(ownerAssembly, {
+        kind: "human",
+        id: "fixture-owner",
+      }),
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+  }
+} finally {
+  await ownerAssembly.close();
+}
 assert.deepEqual(call("show", { id: created.id }).result, closed);
 console.log(
   "PASS installed trust: built-in runs unadmitted; a same-id path copy needs admission",
 );
 
-const { pathToFileURL } = await import("node:url");
-const { createAssembly } = await import(
-  pathToFileURL(join(installed, "dist/src/assembly/index.js")).href
-);
 const { createMcpHandlers } = await import(
   pathToFileURL(join(installed, "dist/src/surface/mcp.js")).href
 );

@@ -20,6 +20,9 @@
           "readOnly": {
             "$ref": "defs.json#/$defs/ReadOnly"
           },
+          "proposedForget": {
+            "$ref": "defs.json#/$defs/ProposedForget"
+          },
           "score": {
             "type": "number"
           },

@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createAssembly, localContext } from "../../src/assembly/index.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
 
 const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
@@ -31,6 +32,24 @@ function project() {
     work,
     root,
     device,
+    async reinit(): Promise<ResultEnvelope> {
+      const assembly = await createAssembly({ root, deviceRoot: device });
+      try {
+        return await assembly.catalog.invoke({
+          schemaVersion: "forge.invocation/1",
+          requestId: "owner-reinit",
+          op: "store.reinit",
+          input: {},
+          caller: "human",
+          context: localContext(assembly, {
+            kind: "human",
+            id: "fixture-owner",
+          }),
+        });
+      } finally {
+        await assembly.close();
+      }
+    },
     cli(args: string[], status: number): ResultEnvelope {
       const result = spawnSync("node", [bin, ...args], {
         cwd: root,
@@ -70,7 +89,7 @@ test("fresh configured project reads still create no project or device store", (
 
 for (const lost of ["database", "directory"] as const) {
   for (const read of ["list", "show"] as const) {
-    test(`a missing established ${lost} refuses ${read} and supports explicit recovery`, () => {
+    test(`a missing established ${lost} refuses ${read} and supports explicit recovery`, async () => {
       const p = project();
       const path = join(p.root, ".forge/state.sqlite");
       const saved = join(p.work, "backup");
@@ -123,7 +142,12 @@ for (const lost of ["database", "directory"] as const) {
         });
         rmSync(path);
         // Recovery creates only the empty store, never an incidental issue.
-        expect(p.cli(["store", "reinit"], 0)).toMatchObject({
+        expect(p.cli(["store", "reinit"], 1)).toMatchObject({
+          ok: false,
+          error: { code: "HUMAN_REQUIRED" },
+        });
+        expect(existsSync(path)).toBe(false);
+        expect(await p.reinit()).toMatchObject({
           ok: true,
           op: "store.reinit",
         });
@@ -138,11 +162,11 @@ for (const lost of ["database", "directory"] as const) {
   }
 }
 
-test("store reinit refuses an existing store without changing its records", () => {
+test("store reinit refuses an existing store without changing its records", async () => {
   const p = project();
   try {
     p.cli(["issue", "create", "--title", "Keep me"], 0);
-    expect(p.cli(["store", "reinit"], 4)).toMatchObject({
+    expect(await p.reinit()).toMatchObject({
       ok: false,
       error: { code: "INPUT_CONFLICT" },
     });
@@ -155,11 +179,11 @@ test("store reinit refuses an existing store without changing its records", () =
   }
 }, 60_000);
 
-test("store reinit is universally available without an enabled block", () => {
+test("store reinit is universally available without an enabled block", async () => {
   const p = project();
   try {
     writeFileSync(join(p.root, ".forge/config.yaml"), "{}\n");
-    expect(p.cli(["store", "reinit"], 0)).toMatchObject({
+    expect(await p.reinit()).toMatchObject({
       ok: true,
       op: "store.reinit",
     });

@@ -81,7 +81,11 @@ test("one MCP session has no standing recovery permission after reinit", async (
     rmSync(path);
     expect(await call("store.reinit", {})).toMatchObject({
       ok: false,
-      error: { code: "UNKNOWN_COMMAND" },
+      error: {
+        code: "HUMAN_REQUIRED",
+        repair:
+          "Ask the owner to run forge store reinit in a terminal and confirm.",
+      },
     });
     expect(await h.call("store.reinit", {}, { caller: "agent" })).toMatchObject(
       {

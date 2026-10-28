@@ -11,7 +11,7 @@ import {
   existsSync,
 } from "node:fs";
 import { join } from "node:path";
-import { createAssembly } from "forge-workflow/runtime";
+import { createAssembly, localContext } from "forge-workflow/runtime";
 
 assert.equal(process.versions.bun, undefined);
 const mode = process.argv[2] ?? "all";
@@ -45,6 +45,26 @@ function cli(root, args, expected = 0) {
     `${args.join(" ")}: ${result.stdout}\n${result.stderr}`,
   );
   return JSON.parse(result.stdout);
+}
+async function ownerSetup(root, op, input) {
+  const assembly = await createAssembly({
+    root,
+    deviceRoot: join(root, "device"),
+  });
+  try {
+    const result = await assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: `fixture-${op}`,
+      op,
+      input,
+      caller: "human",
+      context: localContext(assembly, { kind: "human", id: "fixture-owner" }),
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    return result;
+  } finally {
+    await assembly.close();
+  }
 }
 function block(path, noun) {
   mkdirSync(path, { recursive: true });
@@ -175,7 +195,7 @@ try {
       await assembly.close();
     }
     const checked = cli(root, ["block", "check", "./good"]);
-    cli(root, ["block", "admit", checked.result.digest]);
+    await ownerSetup(root, "block.admit", { digest: checked.result.digest });
     assert.deepEqual(
       cli(root, ["good", "echo", "still works"]).result,
       { value: "still works" },
@@ -236,7 +256,7 @@ try {
       const added = cli(root, ["block", "add", spec]);
       assert.equal(added.result.admitted, false, "exports-hidden package add");
       const digest = added.result.digest;
-      cli(root, ["block", "admit", digest]);
+      await ownerSetup(root, "block.admit", { digest });
       assert.deepEqual(
         cli(root, [name, "echo", "from package"]).result,
         { value: "from package" },
