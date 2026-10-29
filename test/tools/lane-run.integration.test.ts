@@ -20,6 +20,10 @@ setDefaultTimeout(60_000);
 const script = resolve(import.meta.dirname, "../../tools/lane.ts");
 const runner = resolve(import.meta.dirname, "../../tools/lane-run.ts");
 const template = resolve(import.meta.dirname, "../../tools/lane-brief.md");
+const tiers = `    tiers:
+      security: ["src/core/trust/**", "src/core/state/**", "src/adapters/store-sqlite/**", "src/adapters/fs/**", "src/adapters/process/**", "templates/delivery/harness/**", ".github/workflows/**", "package.json", "bun.lock", "migrations/**"]
+      code: ["src/**", "tools/**", "templates/**", "bin/**", "schemas/**"]
+`;
 const sections = [
   "Goal",
   "Acceptance test",
@@ -48,6 +52,9 @@ type Verdict = {
   retries: number;
   stoppedAfterReply: boolean;
   worktree?: string;
+  tier?: string;
+  because?: string;
+  reviews?: string[];
 };
 type Attempt = { args: string[]; cwd: string; prompt: string };
 function fixture() {
@@ -143,7 +150,7 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='fail'?
   function roles(model = "gpt-6.1-sol", harness = "codex") {
     writeFileSync(
       config,
-      `values:\n  lanes:\n    roles:\n      builder:\n        harness: ${harness}\n        model: ${model}\n        effort: high\n`,
+      `values:\n  lanes:\n${tiers}    roles:\n      builder:\n        harness: ${harness}\n        model: ${model}\n        effort: high\n`,
     );
   }
   roles();
@@ -294,6 +301,7 @@ test("run uses the caller role table, lane cwd, complete prompt, and typed verdi
     "role",
     "session",
     "stoppedAfterReply",
+    "tier",
     "verdict",
   ]);
   expect(result.output).toMatchObject({
@@ -655,7 +663,7 @@ function roleFixture() {
     f.config,
     `values:
   lanes:
-    roles:
+${tiers}    roles:
 ${["builder", "fixer", "tester", "reviewer"]
   .map(
     (role) => `      ${role}:
@@ -697,6 +705,172 @@ ${["builder", "fixer", "tester", "reviewer"]
   const prompt = () => f.attempts().at(-1)!.prompt;
   return { ...f, runs, seed, runRole, prompt };
 }
+
+function change(f: ReturnType<typeof fixture>, files: string[]) {
+  const lane = join(f.main, ".worktrees", "one");
+  for (const file of files) {
+    mkdirSync(resolve(lane, file, ".."), { recursive: true });
+    writeFileSync(join(lane, file), `Changed ${file}.\n`);
+  }
+  f.git(["add", "--", ...files], lane);
+  f.git(
+    [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "-m",
+      "fixture changes",
+    ],
+    lane,
+  );
+}
+
+for (const [files, tier, because, reviews] of [
+  [[], "light", "no changes", ["tester", "github-codex"]],
+  [["docs/guide.md"], "light", "docs/guide.md", ["tester", "github-codex"]],
+  [["test/a.test.ts"], "light", "test/a.test.ts", ["tester", "github-codex"]],
+  [
+    ["tools/a.ts"],
+    "code",
+    "tools/a.ts",
+    ["tester", "reviewer", "github-codex"],
+  ],
+  [
+    ["src/core/trust/a.ts"],
+    "security",
+    "src/core/trust/a.ts",
+    ["tester", "reviewer", "security-reviewer", "github-codex"],
+  ],
+  [
+    ["docs/a.md", "tools/a.ts", "src/core/trust/z.ts", "src/core/trust/a.ts"],
+    "security",
+    "src/core/trust/a.ts",
+    ["tester", "reviewer", "security-reviewer", "github-codex"],
+  ],
+] as const)
+  test(`tier CLI classifies ${files.join(", ") || "no changes"} from the existing lane registry`, () => {
+    const f = fixture();
+    f.start();
+    if (files.length) change(f, [...files]);
+    const registry = JSON.parse(
+      readFileSync(join(f.main, ".git", "forge-lanes.json"), "utf8"),
+    ) as Record<string, unknown>[];
+    expect(Object.hasOwn(registry[0]!, "tier")).toBe(false);
+    const result = f.run(["tier", "one"]);
+    expect(result.output as unknown).toEqual({
+      tier,
+      because,
+      reviews: [...reviews],
+    });
+    expect(result.code).toBe(0);
+    expect(f.attempts()).toEqual([]);
+  });
+
+test("tier CLI uses caller policy and committed merge-base diff, including dotfiles", () => {
+  const f = fixture();
+  const lane = f.start();
+  writeFileSync(
+    f.config,
+    `values:\n  lanes:\n    tiers:\n      security: ["docs/**", ".github/**"]\n      code: ["tools/**"]\n`,
+  );
+  change(f, ["docs/policy.md", "tools/a.ts", ".github/check.yml"]);
+  writeFileSync(join(lane, "package.json"), "uncommitted security change");
+  mkdirSync(join(f.main, ".github"));
+  writeFileSync(join(f.main, ".github", "aaa.yml"), "Upstream.");
+  f.git(["add", ".github/aaa.yml"]);
+  f.git([
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "-m",
+    "upstream",
+  ]);
+  f.git(["push", "origin", "main"]);
+  f.git(["fetch", "origin", "main"]);
+  const result = f.run(["tier", "one"]);
+  expect(result.output).toMatchObject({
+    tier: "security",
+    because: ".github/check.yml",
+  });
+  expect(result.code).toBe(0);
+});
+
+for (const policy of [
+  "",
+  "    tiers: {}\n",
+  "    tiers: {security: [], code: [], typo: []}\n",
+  "    tiers: {security: [42], code: []}\n",
+  "    tiers: {security: ['[broken'], code: []}\n",
+  "    tiers: {security: ['{broken'], code: []}\n",
+  "    tiers: {security: [''], code: []}\n",
+])
+  test(`tier policy refusal prevents launch: ${policy.trim() || "missing tiers"}`, () => {
+    const f = fixture();
+    f.start();
+    writeFileSync(
+      f.config,
+      readFileSync(f.config, "utf8").replace(tiers, policy),
+    );
+    const result = f.run(["run", "one", "--role", "builder"]);
+    expect(result.output.verdict).toBe("refused");
+    expect(result.code).toBe(1);
+    expect(result.output.next).toContain("tiers");
+    expect(f.attempts()).toEqual([]);
+    const inspection = f.run(["tier", "one"]);
+    expect(inspection.output.verdict).toBe("refused");
+    expect(inspection.code).not.toBe(0);
+  });
+
+for (const role of ["tester", "reviewer"])
+  test(`tier is in ${role} brief, verdict and durable record`, () => {
+    const f = roleFixture();
+    change(f, ["src/core/trust/access.ts"]);
+    const result = f.runRole(role);
+    const prompt = f.prompt();
+    expect(prompt).toContain(
+      "Tier: security (because src/core/trust/access.ts). Reviews: tester, reviewer, security-reviewer, github-codex.",
+    );
+    expect(result.output.tier).toBe("security");
+    expect(
+      JSON.parse(readFileSync(join(result.output.folder!, "run.json"), "utf8")),
+    ).toMatchObject({ tier: "security" });
+    expect(result.code).toBe(0);
+    if (role === "reviewer") {
+      expect(prompt).toContain("First write a three-line threat model");
+      expect(prompt).toContain("threat, cause, out of scope");
+      expect(prompt).toContain("Review against that threat model");
+      expect(f.attempts()[0]!.args).toContain('sandbox_mode="read-only"');
+    }
+  });
+
+test("tier run keeps complete builder and fixer prompts identical", () => {
+  const f = roleFixture();
+  change(f, ["tools/changed.ts"]);
+  const expected = [
+    readFileSync(template, "utf8"),
+    "\nIssue:\n",
+    JSON.stringify({
+      ok: true,
+      result: {
+        id: "one",
+        title: "Fixture issue title",
+        body: "Fixture issue body: implement the requested lane.",
+      },
+    }),
+    "\nLane contract (takes precedence):\n",
+    readFileSync(f.brief, "utf8"),
+  ].join("\n");
+  for (const role of ["builder", "fixer"]) {
+    const result = f.runRole(role);
+    expect(f.prompt()).toBe(expected);
+    expect(result.output.tier).toBe("code");
+    expect(result.code).toBe(0);
+  }
+});
 
 test("tester round one uses its template, issue, contract, builder reply and durable metadata", () => {
   const f = roleFixture();

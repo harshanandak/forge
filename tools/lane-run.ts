@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { laneTier, type LaneTier, type ReviewTier } from "./lane-tier.ts";
 
 export type RunOptions = {
   worktree: string;
@@ -173,6 +174,7 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 type RunRecord = {
+  tier?: ReviewTier;
   role: string;
   round: number | null;
   model: string;
@@ -258,6 +260,7 @@ function roleBrief(
   id: string,
   round: number | null,
   records: RunRecord[],
+  classification: LaneTier,
   pr?: string,
 ) {
   if (role !== "tester" && role !== "reviewer")
@@ -288,6 +291,11 @@ function roleBrief(
     ID: id,
     ROUND: roundText,
     PR: pr ? `PR #${pr}, ` : "",
+    TIER: `Tier: ${classification.tier} (because ${classification.because}). Reviews: ${classification.reviews.join(", ")}.`,
+    THREAT:
+      classification.tier === "security"
+        ? "First write a three-line threat model (threat, cause, out of scope). Review against that threat model."
+        : "",
   };
   return readFileSync(
     join(
@@ -296,7 +304,7 @@ function roleBrief(
     ),
     "utf8",
   ).replace(
-    /\{\{(WT|BRANCH|BASE|HEAD|ID|ROUND|PR)\}\}/g,
+    /\{\{(WT|BRANCH|BASE|HEAD|ID|ROUND|PR|TIER|THREAT)\}\}/g,
     (_, key: keyof typeof values) => values[key],
   );
 }
@@ -312,6 +320,7 @@ export async function laneRun(
   },
 ) {
   let role: string | null = null,
+    tier: ReviewTier | null = null,
     harness: string | null = null,
     model: string | null = null,
     effort: string | null = null,
@@ -334,6 +343,7 @@ export async function laneRun(
       JSON.stringify({
         verdict: "refused",
         role,
+        tier,
         harness,
         model,
         effort,
@@ -402,6 +412,8 @@ export async function laneRun(
       throw new Error(`unsupported harness: ${harness}; configure codex`);
     const lane = context.lanes.find((item) => item.issue === id);
     if (!lane) throw new Error(`no active lane for ${id}; use start first`);
+    const classification = laneTier(lane.worktree, config);
+    tier = classification.tier;
     unlock = context.lock(id);
     const history = role === "tester" ? laneHistory(context.common, id) : [];
     const unknown = history.flatMap((item) =>
@@ -443,7 +455,16 @@ export async function laneRun(
     const prompt = custom
       ? readFileSync(resolve(custom), "utf8")
       : [
-          roleBrief(role, lane.worktree, lane.branch, id, round, records, pr),
+          roleBrief(
+            role,
+            lane.worktree,
+            lane.branch,
+            id,
+            round,
+            records,
+            classification,
+            pr,
+          ),
           "\nIssue:\n",
           JSON.stringify(issue),
           "\nLane contract (takes precedence):\n",
@@ -453,6 +474,7 @@ export async function laneRun(
     mkdirSync(folder, { recursive: true });
     record = {
       role,
+      tier: classification.tier,
       round,
       model,
       effort,

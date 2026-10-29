@@ -1,6 +1,24 @@
 schemaVersion: forge.config/1
 values:
   lanes:
+    tiers:
+      security:
+        - src/core/trust/**
+        - src/core/state/**
+        - src/adapters/store-sqlite/**
+        - src/adapters/fs/**
+        - src/adapters/process/**
+        - templates/delivery/harness/**
+        - .github/workflows/**
+        - package.json
+        - bun.lock
+        - migrations/**
+      code:
+        - src/**
+        - tools/**
+        - templates/**
+        - bin/**
+        - schemas/**
     roles:
       builder: { harness: codex, model: gpt-6.1-sol, effort: high }
       fixer: { harness: codex, model: gpt-6.1-sol, effort: high }

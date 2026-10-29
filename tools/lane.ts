@@ -32,6 +32,7 @@ import {
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { laneHistory, laneRun } from "./lane-run.ts";
+import { laneTier } from "./lane-tier.ts";
 
 type Lane = { issue: string; worktree: string; branch: string; brief: string };
 type Options = { issue: string; branch: string; brief: string; max: number };
@@ -117,8 +118,16 @@ function briefProblems(text: string): string[] {
     )
     .map((name) => `brief requires non-empty section: ${name}`);
 }
-function options(argv: string[]): Options | "list" | "run" {
+function options(argv: string[]): Options | "list" | "run" | "tier" {
   if (argv[0] === "run") return "run";
+  if (
+    argv[0] === "tier" &&
+    argv.length === 2 &&
+    /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(argv[1]!) &&
+    argv[1] !== "." &&
+    argv[1] !== ".."
+  )
+    return "tier";
   if (argv.length === 1 && argv[0] === "list") return "list";
   const [verb, issue, ...flags] = argv;
   if (
@@ -129,7 +138,7 @@ function options(argv: string[]): Options | "list" | "run" {
     issue === ".."
   )
     throw new Error(
-      "usage: start <issue-id> --branch <name> --brief <file> [--max N], or list",
+      "usage: start <issue-id> --branch <name> --brief <file> [--max N], tier <issue-id>, or list",
     );
   const values = new Map<string, string>();
   for (let i = 0; i < flags.length; i += 2) {
@@ -232,7 +241,7 @@ function reclaim(lock: string): void {
   }
 }
 async function main(): Promise<number> {
-  let parsed: Options | "list" | "run";
+  let parsed: Options | "list" | "run" | "tier";
   let target: string | null = null;
   const reply = (
     reason: string | string[],
@@ -270,6 +279,32 @@ async function main(): Promise<number> {
         .slice(9),
     );
     const registry = join(common, "forge-lanes.json");
+    if (parsed === "tier") {
+      const lane = active(registry, root).find(
+        (item) => item.issue === process.argv[3],
+      );
+      if (!lane)
+        throw new Error(
+          `no active lane for ${process.argv[3]}; use start first`,
+        );
+      console.log(
+        JSON.stringify(
+          laneTier(
+            lane.worktree,
+            Bun.YAML.parse(
+              readFileSync(
+                join(
+                  resolve(run("git", ["rev-parse", "--show-toplevel"])),
+                  ".forge/config.yaml",
+                ),
+                "utf8",
+              ),
+            ),
+          ),
+        ),
+      );
+      return 0;
+    }
     if (parsed === "run")
       return await laneRun(process.argv.slice(3), {
         common,
