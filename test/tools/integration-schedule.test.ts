@@ -22,13 +22,14 @@ test("spawn-heavy integration files run once, after the parallel group", () => {
     ["assembly/shared-store", "shared-store"],
     ["tools", "lane-run"],
     ["tools", "lane"],
+    ["tools", "lane-close"],
   ]) {
     const path = `test/${folder}/${name}.integration.test.ts`;
     expect(serial.split(" ").filter((arg) => arg === path)).toHaveLength(1);
     expect(ignore.match(path), `${path} excluded from bulk`).toBe(true);
   }
   const serialPaths = serial.split(" ").slice(4);
-  expect(serialPaths).toHaveLength(6);
+  expect(serialPaths).toHaveLength(7);
   const integrationPaths = [
     ...new Bun.Glob("test/**/*.integration.test.ts").scanSync("."),
   ]
