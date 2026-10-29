@@ -55,21 +55,27 @@ function run(
   cwd = process.cwd(),
   env = process.env,
 ) {
+  const failure =
+    command === "gh"
+      ? "gh command failed; check FORGE_GH_USER and authentication"
+      : `${command} command failed`;
   // npm and the installed Forge provide an extensionless shell shim beside forge.cmd.
   // sh preserves JSON arguments on Windows without cmd.exe's quote reinterpretation.
-  if (command === "forge" && process.platform === "win32") {
+  if (["forge", "gh"].includes(command) && process.platform === "win32") {
     const path =
       Object.entries(process.env).find(
         ([key]) => key.toLowerCase() === "path",
       )?.[1] ?? "";
     const shim = path
       .split(delimiter)
-      .map((part) => join(part.replace(/^"|"$/g, ""), "forge"))
+      .map((part) => join(part.replace(/^"|"$/g, ""), command))
       .find(existsSync);
-    if (!shim)
+    if (!shim && command === "forge")
       throw new Error("installed forge shell shim was not found on PATH");
-    args = [shim, ...args];
-    command = "sh";
+    if (shim) {
+      args = [shim, ...args];
+      command = "sh";
+    }
   }
   const result = spawnSync(command, args, {
     cwd,
@@ -78,8 +84,7 @@ function run(
     windowsHide: true,
     env,
   });
-  if (result.error || result.status !== 0)
-    throw new Error(`${command === "sh" ? "forge" : command} command failed`);
+  if (result.error || result.status !== 0) throw new Error(failure);
   return result.stdout.trim();
 }
 function briefProblems(text: string): string[] {

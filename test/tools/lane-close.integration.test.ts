@@ -48,7 +48,7 @@ type State = {
   hideClosed?: boolean;
   commitOnComment?: boolean;
 };
-function fixture() {
+function fixture(ignored: string[] = []) {
   const root = realpathSync.native(
     mkdtempSync(join(tmpdir(), "forge-lane-close-")),
   );
@@ -59,7 +59,10 @@ function fixture() {
   mkdirSync(main);
   mkdirSync(bin);
   writeFileSync(join(main, "package.json"), '{"name":"lane-close-fixture"}');
-  writeFileSync(join(main, ".gitignore"), ".worktrees/\n");
+  writeFileSync(
+    join(main, ".gitignore"),
+    [".worktrees/", ...ignored, ""].join("\n"),
+  );
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) =>
       /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|HOME|USERPROFILE)$/i.test(
@@ -446,6 +449,81 @@ test("close --keep-open comments and removes the lane while leaving the issue op
   expect(f.writes().map((call) => call.args[1])).toEqual(["comment"]);
   expect(f.readState().issue.status).toBe("open");
   expect(f.readState().comments).toEqual([expectedComment(f)]);
+  f.cleaned();
+});
+
+const ignoredFiles = ["ignored-note.txt", "ignored note with spaces.txt"];
+for (const file of ignoredFiles) {
+  test(`ignored-file safety: close refuses ${JSON.stringify(file)} before Forge writes`, () => {
+    const f = fixture(["ignored*.txt"]);
+    const content = "Local notes that must survive a refused close.\n";
+    writeFileSync(join(f.lane, file), content);
+    const registry = readFileSync(f.registry, "utf8");
+    const state = f.readState();
+    const result = f.close();
+    expect(result.code).toBe(1);
+    expect(result.output.verdict).toBe("refused");
+    expect((result.output.reasons as string[]).join("\n")).toContain(file);
+    expect(result.output.next).toBe(
+      "move what you need, then rerun close with --discard-ignored",
+    );
+    expect(f.writes()).toEqual([]);
+    expect(readFileSync(join(f.lane, file), "utf8")).toBe(content);
+    expect(readFileSync(f.registry, "utf8")).toBe(registry);
+    expect(f.readState()).toEqual(state);
+    f.retained();
+  });
+
+  test(`ignored-file safety: close --discard-ignored reports ${JSON.stringify(file)} and removes the lane`, () => {
+    const f = fixture(["ignored*.txt"]);
+    writeFileSync(join(f.lane, file), "Explicitly discarded local notes.\n");
+    const result = f.close(["--discard-ignored"]);
+    expect(result.code).toBe(0);
+    expect(result.output).toMatchObject({ ok: true, discarded: [file] });
+    expect(f.readState().issue.status).toBe("closed");
+    expect(f.readState().comments).toEqual([expectedComment(f)]);
+    f.cleaned();
+  });
+}
+
+for (const directory of ["node_modules", "dist"])
+  test(`ignored-file safety: close permits recreateable ${directory} without discard consent`, () => {
+    const f = fixture([`${directory}/`]);
+    mkdirSync(join(f.lane, directory));
+    writeFileSync(join(f.lane, directory, "artifact.txt"), "Recreateable.\n");
+    const result = f.close();
+    expect(result.code).toBe(0);
+    expect(result.output).toMatchObject({ ok: true, discarded: [] });
+    expect(f.readState().issue.status).toBe("closed");
+    f.cleaned();
+  });
+
+test("ignored-file safety: cleanup retry preserves discard consent and reports the discarded paths", () => {
+  const f = fixture(["ignored-note.txt"]);
+  writeFileSync(join(f.lane, "ignored-note.txt"), "Approved discard.\n");
+  f.cleanupFailure("worktree");
+  expect(f.close(["--discard-ignored"]).code).toBe(1);
+  expect(f.readState().issue.status).toBe("closed");
+  expect(f.readState().comments).toEqual([expectedComment(f)]);
+  const writes = f.writes();
+  const registry = readFileSync(f.registry, "utf8");
+  rmSync(join(f.root, "fail-cleanup"));
+  const refused = f.close();
+  expect(refused.code).toBe(1);
+  expect(refused.output.verdict).toBe("refused");
+  expect(f.writes()).toEqual(writes);
+  expect(readFileSync(f.registry, "utf8")).toBe(registry);
+  expect(readFileSync(join(f.lane, "ignored-note.txt"), "utf8")).toBe(
+    "Approved discard.\n",
+  );
+  f.retained();
+  const result = f.close(["--discard-ignored"]);
+  expect(result.code).toBe(0);
+  expect(result.output.discarded).toEqual(["ignored-note.txt"]);
+  expect(f.writes().filter((call) => call.args[1] === "close")).toHaveLength(1);
+  expect(f.writes().filter((call) => call.args[1] === "comment")).toHaveLength(
+    1,
+  );
   f.cleaned();
 });
 

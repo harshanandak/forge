@@ -209,3 +209,5 @@ Close checks the PR, local head, clean worktree and receipt before writing, then
 links, closes and comments on the issue and removes the worktree, branch and lane
 entry. Run history stays. `--keep-open` only comments and cleans up. Retry the same
 arguments after failure to finish without repeating the close or landing comment.
+Ignored paths other than `node_modules/` and `dist/` refuse closure. Move needed
+files first; `--discard-ignored` permits removal and lists the discarded paths.

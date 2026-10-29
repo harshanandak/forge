@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -9,7 +8,7 @@ import {
   rmdirSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 
 type Lane = { issue: string; worktree: string; branch: string; brief: string };
 type Context = {
@@ -34,6 +33,8 @@ export function laneClose(argv: string[], ctx: Context): number {
   let status: "open" | "closed" = "open",
     stage = "input";
   let lock: string | undefined;
+  let ignored: string[] = [],
+    next = "correct the reason and rerun close with the same arguments";
   const owner = `owner-${process.pid}-${randomUUID()}`;
   const reply = (ok: boolean, reason?: string) => {
     console.log(
@@ -45,12 +46,13 @@ export function laneClose(argv: string[], ctx: Context): number {
         receipt,
         status,
         removed: ok,
+        discarded: ok ? ignored : [],
         ...(reason
           ? {
               verdict: "refused",
               code: `${stage.toUpperCase()}_FAILED`,
               reasons: [reason],
-              next: "correct the reason and rerun close with the same arguments",
+              next,
             }
           : {}),
       }),
@@ -59,13 +61,12 @@ export function laneClose(argv: string[], ctx: Context): number {
   };
   try {
     const values = new Map<string, string>();
-    let keepOpen = false;
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(issue))
       throw new Error("invalid issue id");
     for (let i = 1; i < argv.length; i++) {
       const key = argv[i]!;
-      if (key === "--keep-open" && !keepOpen) {
-        keepOpen = true;
+      if (/^--(keep-open|discard-ignored)$/.test(key) && !values.has(key)) {
+        values.set(key, "true");
         continue;
       }
       const value = argv[++i];
@@ -78,6 +79,7 @@ export function laneClose(argv: string[], ctx: Context): number {
         throw new Error("invalid, duplicate, or missing option");
       values.set(key, value);
     }
+    const keepOpen = values.has("--keep-open");
     pr = Number(values.get("--pr"));
     receipt = values.get("--receipt") ?? "";
     if (
@@ -107,35 +109,11 @@ export function laneClose(argv: string[], ctx: Context): number {
         "pending close has different arguments; resume the original close",
       );
     const progress = object(saved) ? saved : undefined;
-    const gh = (args: string[], token?: string) => {
-      let command = "gh";
-      if (process.platform === "win32") {
-        const path =
-          Object.entries(process.env).find(
-            ([key]) => key.toLowerCase() === "path",
-          )?.[1] ?? "";
-        const shim = path
-          .split(delimiter)
-          .map((part) => join(part.replace(/^"|"$/g, ""), "gh"))
-          .find(existsSync);
-        if (shim) {
-          command = "sh";
-          args = [shim, ...args];
-        }
-      }
-      const result = spawnSync(command, args, {
-        cwd: ctx.root,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 30_000,
-        env: { ...process.env, ...(token ? { GH_TOKEN: token } : {}) },
+    const gh = (args: string[], token?: string) =>
+      ctx.run("gh", args, ctx.root, {
+        ...process.env,
+        ...(token ? { GH_TOKEN: token } : {}),
       });
-      if (result.error || result.status !== 0)
-        throw new Error(
-          "gh command failed; check FORGE_GH_USER and authentication",
-        );
-      return result.stdout.trim();
-    };
     if (!process.env.FORGE_GH_USER)
       throw new Error("FORGE_GH_USER is required");
     const token = gh(["auth", "token", "--user", process.env.FORGE_GH_USER]);
@@ -191,6 +169,14 @@ export function laneClose(argv: string[], ctx: Context): number {
         git(["status", "--porcelain", "--untracked-files=all"], lane.worktree)
       )
         throw new Error("lane worktree has uncommitted or untracked changes");
+      ignored = git(["status", "--porcelain", "--ignored", "-z"], lane.worktree)
+        .split("\0")
+        .filter((entry) => /^!! (?!node_modules\/|dist\/)/.test(entry))
+        .map((entry) => entry.slice(3));
+      if (ignored.length && !values.has("--discard-ignored")) {
+        next = "move what you need, then rerun close with --discard-ignored";
+        throw new Error(`ignored paths: ${ignored.join(", ")}`);
+      }
     } else if (!progress)
       throw new Error("lane worktree is missing; cannot verify a clean lane");
     const forge = (
