@@ -4,7 +4,7 @@ A dependency is acceptable when it adds real value we would otherwise build and 
 
 Each entry is a `### <package>` heading with these fields: **Saves** (what we would otherwise build), **Maintenance**, **Transitive packages**, **Fit** (Node 24/26 and Bun), **Licence**, **Trust**, **Swap proof**, and for runtime dependencies **Adapter**. Every `overrides` entry gets a `### override: <package>` entry with **Issue** and **Expires** (`YYYY-MM-DD`); an expired override fails the test.
 
-Not npm dependencies, so not entries here: Bun itself is pinned by `packageManager` (and `bun lint` / `bun fmt` run on a Bun canary build in CI until a stable Bun ships them; the scripts fail fast on a Bun without them), and `git` is the only external tool the shipped package may require.
+Not npm dependencies, so not entries here: Bun itself is pinned by `packageManager` (`bun fmt` is stable in 1.4.4; CI's static job keeps canary for `bun lint`; the scripts fail fast on a Bun without the built-in), and `git` is the only external tool the shipped package may require.
 
 ## Runtime dependencies
 
@@ -59,7 +59,7 @@ Each one gets an entry here and an adapter in the same pull request.
 ### @types/bun
 
 - **Saves:** type definitions for `bun:test` and `Bun.*` used by tests and structure guards, so `bun check` covers them.
-- **Maintenance:** released in step with Bun (1.4.3 published 2026-10-12); lives in DefinitelyTyped.
+- **Maintenance:** released in step with Bun (1.4.4 published 2026-10-23); lives in DefinitelyTyped.
 - **Transitive packages:** 2 (`bun-types`, `undici-types`), plus the shared `@types/node`.
 - **Fit:** only `tsconfig.json` (tests and tools) loads it; `tsconfig.build.json` loads Node types only, so Bun APIs cannot compile into the published package.
 - **Licence:** MIT.

@@ -7,7 +7,7 @@ Agents: use `forge <noun> <verb> --help --json` or `forge catalog describe <noun
 
 ## Gotchas
 
-- `bun lint` and `bun fmt` need the canary Bun build. The `lint` and `fmt` scripts reach it through `tools/bun-builtin.ts`, which exits 1 with an upgrade hint on a Bun without them. `bun check` needs Bun 1.4.3 or newer.
+- `bun lint` needs canary; `bun fmt` is stable in 1.4.4. The `lint` and `fmt` scripts use `tools/bun-builtin.ts`, which exits 1 with an upgrade hint on a Bun without the built-in. `bun check` needs Bun 1.4.3 or newer.
 - CI is the gate and there are no local git hooks. Run what you touched locally; the full matrix runs on the pull request. Fix the cause of a failing check; never skip one with `--no-verify` or `core.hooksPath` tricks.
 - Work in a git worktree under `.worktrees/`, based on the fetched `origin/main`.
 - Commit with conventional titles (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:`). The pull request title is checked and becomes the squash-merge title and the changelog line.

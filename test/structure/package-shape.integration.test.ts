@@ -14,7 +14,7 @@ import {
 const good = {
   type: "module",
   engines: { node: "^24.15.0 || >=26" },
-  packageManager: "bun@1.4.3",
+  packageManager: "bun@1.4.4",
   bin: { forge: "dist/bin/forge.js" },
   scripts: {
     check: "bun check",
@@ -37,6 +37,10 @@ const goodTsconfig = {
 };
 
 test("package.json and tsconfig keep the agreed shape", () => {
+  expect(readJson("package.json")).toHaveProperty(
+    "packageManager",
+    "bun@1.4.4",
+  );
   const found = findPackageShapeViolations(
     readJson("package.json"),
     readJson("tsconfig.json"),
