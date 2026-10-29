@@ -38,7 +38,18 @@ function git(worktree: string, args: string[]) {
     throw new Error("git command failed while computing lane tier");
   return result.stdout;
 }
-export function laneTier(worktree: string, config: unknown): LaneTier {
+export function laneTier(worktree: string): LaneTier {
+  let origin: string, config: unknown;
+  try {
+    origin = git(worktree, ["rev-parse", "origin/main"]).trim();
+    config = Bun.YAML.parse(
+      git(worktree, ["show", `${origin}:.forge/config.yaml`]),
+    );
+  } catch {
+    throw new Error(
+      "cannot read trusted tier policy from origin/main:.forge/config.yaml",
+    );
+  }
   const tiers: unknown =
     object(config) && object(config.values) && object(config.values.lanes)
       ? config.values.lanes.tiers
@@ -61,8 +72,14 @@ export function laneTier(worktree: string, config: unknown): LaneTier {
       patterns[key].push(new Bun.Glob(glob));
     }
   }
-  const base = git(worktree, ["merge-base", "origin/main", "HEAD"]).trim();
-  const files = git(worktree, ["diff", "--name-only", "-z", `${base}...HEAD`])
+  const base = git(worktree, ["merge-base", origin, "HEAD"]).trim();
+  const files = git(worktree, [
+    "diff",
+    "--no-renames",
+    "--name-only",
+    "-z",
+    `${base}...HEAD`,
+  ])
     .split("\0")
     .filter(Boolean);
   for (const tier of ["security", "code"] as const) {

@@ -3,6 +3,7 @@ values:
   lanes:
     tiers:
       security:
+        - .forge/config.yaml
         - src/core/trust/**
         - src/core/state/**
         - src/adapters/store-sqlite/**

@@ -287,22 +287,7 @@ async function main(): Promise<number> {
         throw new Error(
           `no active lane for ${process.argv[3]}; use start first`,
         );
-      console.log(
-        JSON.stringify(
-          laneTier(
-            lane.worktree,
-            Bun.YAML.parse(
-              readFileSync(
-                join(
-                  resolve(run("git", ["rev-parse", "--show-toplevel"])),
-                  ".forge/config.yaml",
-                ),
-                "utf8",
-              ),
-            ),
-          ),
-        ),
-      );
+      console.log(JSON.stringify(laneTier(lane.worktree)));
       return 0;
     }
     if (parsed === "run")

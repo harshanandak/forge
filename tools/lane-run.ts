@@ -412,7 +412,7 @@ export async function laneRun(
       throw new Error(`unsupported harness: ${harness}; configure codex`);
     const lane = context.lanes.find((item) => item.issue === id);
     if (!lane) throw new Error(`no active lane for ${id}; use start first`);
-    const classification = laneTier(lane.worktree, config);
+    const classification = laneTier(lane.worktree);
     tier = classification.tier;
     unlock = context.lock(id);
     const history = role === "tester" ? laneHistory(context.common, id) : [];
