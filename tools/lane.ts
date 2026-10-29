@@ -31,6 +31,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import { laneRun } from "./lane-run.ts";
 
 type Lane = { issue: string; worktree: string; branch: string; brief: string };
 type Options = { issue: string; branch: string; brief: string; max: number };
@@ -116,7 +117,8 @@ function briefProblems(text: string): string[] {
     )
     .map((name) => `brief requires non-empty section: ${name}`);
 }
-function options(argv: string[]): Options | "list" {
+function options(argv: string[]): Options | "list" | "run" {
+  if (argv[0] === "run") return "run";
   if (argv.length === 1 && argv[0] === "list") return "list";
   const [verb, issue, ...flags] = argv;
   if (
@@ -209,11 +211,18 @@ function reclaim(lock: string): void {
     // Atomic publication is nonempty; empty locks can only be abandoned cleanup.
     if (owners.length === 0) return removeEmpty(lock);
     const owner = owners.length === 1 ? owners[0] : undefined;
-    const match = owner?.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}$/);
+    const match = owner?.match(
+      /^owner-([1-9]\d*)-[0-9a-f-]{36}(?:-([1-9]\d*))?$/,
+    );
     if (!match) return;
     try {
       process.kill(Number(match[1]), 0);
       return;
+    } catch (error) {
+      if (!object(error) || error.code !== "ESRCH") return;
+    }
+    try {
+      if (match[2] && process.kill(Number(match[2]), 0)) return;
     } catch (error) {
       if (!object(error) || error.code !== "ESRCH") return;
     }
@@ -222,8 +231,8 @@ function reclaim(lock: string): void {
     if (!object(error) || error.code !== "ENOENT") throw error;
   }
 }
-function main(): number {
-  let parsed: Options | "list";
+async function main(): Promise<number> {
+  let parsed: Options | "list" | "run";
   let target: string | null = null;
   const reply = (
     reason: string | string[],
@@ -261,6 +270,36 @@ function main(): number {
         .slice(9),
     );
     const registry = join(common, "forge-lanes.json");
+    if (parsed === "run")
+      return await laneRun(process.argv.slice(3), {
+        common,
+        configRoot: resolve(run("git", ["rev-parse", "--show-toplevel"])),
+        lanes: active(registry, root),
+        issue: (id) =>
+          run("forge", ["issue", "show", "--input", JSON.stringify({ id })]),
+        lock: (id) => {
+          const lock = join(common, `forge-lane-${id}.lock`),
+            staged = `${lock}.${randomUUID()}`;
+          mkdirSync(staged);
+          writeFileSync(join(staged, owner), "", { flag: "wx" });
+          try {
+            reclaim(lock);
+            renameSync(staged, lock);
+          } catch {
+            release(staged, owner);
+            throw new Error(
+              "lane already running; wait for it to finish and retry",
+            );
+          }
+          let current = owner;
+          return (pid) => {
+            if (!pid) return release(lock, current);
+            const next = `${owner}-${pid}`;
+            renameSync(join(lock, current), join(lock, next));
+            current = next;
+          };
+        },
+      });
     if (parsed === "list") {
       console.log(JSON.stringify({ lanes: active(registry, root) }));
       return 0;
@@ -369,4 +408,4 @@ function main(): number {
     else if (staged) release(staged, owner);
   }
 }
-process.exitCode = main();
+process.exitCode = await main();

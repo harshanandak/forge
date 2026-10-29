@@ -1,4 +1,11 @@
 schemaVersion: forge.config/1
+values:
+  lanes:
+    roles:
+      builder: { harness: codex, model: gpt-6.1-sol, effort: high }
+      fixer: { harness: codex, model: gpt-6.1-sol, effort: high }
+      reviewer: { harness: codex, model: gpt-6.1-sol, effort: high }
+      tester: { harness: codex, model: gpt-6.1-terra, effort: max }
 blocks:
   agent:
     source:
