@@ -3,6 +3,7 @@ import {
   createCheck,
   verifyReceipt,
   type CheckServices,
+  type CheckReceipt,
 } from "../../../src/blocks/check/index.ts";
 import type {
   ProcessResult,
@@ -91,26 +92,113 @@ const config = {
   environment: [],
 };
 
-test("receipt finalization rejects a write/readback exceeding its own allowance", async () => {
+test("unscoped finalization refuses an expired allowance before writing", async () => {
   const { services, records } = fixture();
   let now = services.clock.now();
   const engine = createCheck({
     ...services,
-    clock: { now: () => now },
-    state: {
-      ...services.state,
-      put(...args) {
+    clock: {
+      now() {
+        const observed = now;
         now += finalizationTimeoutMs(config.maxReceiptBytes);
-        return services.state.put(...args);
+        return observed;
       },
     },
   });
   const failure = await engine.run({}, config).catch((error: unknown) => error);
-  expect(String(failure)).toContain(
-    "Check receipt finalization deadline exceeded",
+  expect(failure).toMatchObject({ code: "INVOCATION_TIMEOUT" });
+  expect(String(failure)).toMatch(
+    /Check receipt finalization deadline exceeded \(snapshotMs=\d+, writeMs=0, readbackMs=0\)/,
   );
-  expect(records.size).toBe(1);
+  expect(records.size).toBe(0);
 }, 1000);
+
+for (const [phase, writeMs, readbackMs] of [
+  ["write", 3500, 19],
+  ["readback", 19, 3500],
+] as const) {
+  for (const scoped of [false, true]) {
+    test(`${scoped ? "scoped" : "unscoped"} slow ${phase} ${scoped ? "keeps its invocation timeout and phase durations" : "returns the stored receipt"}`, async () => {
+      const { services, records } = fixture();
+      let now = services.clock.now();
+      const deadline = now + finalizationTimeoutMs(config.maxReceiptBytes);
+      let snapshots = 0;
+      let writes = 0;
+      const engine = createCheck({
+        ...services,
+        clock: { now: () => now },
+        snapshot() {
+          now += ++snapshots === 1 ? 101 : 7;
+          return services.snapshot();
+        },
+        state: {
+          ...services.state,
+          put(...args) {
+            writes++;
+            now += writeMs;
+            return services.state.put(...args);
+          },
+          get(key) {
+            now += readbackMs;
+            return services.state.get(key);
+          },
+        },
+      });
+      const result = await engine
+        .run(
+          {},
+          config,
+          scoped
+            ? { signal: new AbortController().signal, deadline }
+            : undefined,
+        )
+        .catch((error: unknown) => error);
+      if (scoped)
+        expect(result).toMatchObject({
+          code: "INVOCATION_TIMEOUT",
+          message: `INVOCATION_TIMEOUT: Check invocation deadline exceeded (snapshotMs=7, writeMs=${writeMs}, readbackMs=${readbackMs})`,
+        });
+      else expect(result).toEqual([...records.values()][0]!.value);
+      expect(snapshots).toBe(2);
+      expect(writes).toBe(1);
+      expect(records.size).toBe(1);
+      const stored = [...records.values()][0]!;
+      expect(stored.value).toMatchObject({ status: "PASS" });
+      expect<unknown>(engine.show(stored.key.slice("runs/".length))).toEqual(
+        stored.value,
+      );
+    }, 1000);
+  }
+}
+
+for (const readback of ["missing", "different"] as const) {
+  test(`unscoped late finalization rejects ${readback} readback`, async () => {
+    const { services, records } = fixture();
+    let now = services.clock.now();
+    const engine = createCheck({
+      ...services,
+      clock: { now: () => now },
+      state: {
+        ...services.state,
+        put(...args) {
+          now += 3500;
+          return services.state.put(...args);
+        },
+        get(key) {
+          const record = services.state.get(key);
+          if (!record || readback === "missing") return undefined;
+          const { digest: _digest, ...body } = record.value as CheckReceipt;
+          const changed = { ...body, subject: "different" };
+          return { ...record, value: { ...changed, digest: hash(changed) } };
+        },
+      },
+    });
+    await expect(engine.run({}, config)).rejects.toThrow(
+      "Check receipt readback failed",
+    );
+    expect(records.size).toBe(1);
+  }, 1000);
+}
 
 test("native private writes need five seconds of finalization at the 512 KiB cap", () => {
   expect(finalizationTimeoutMs(524288)).toBe(5000);
