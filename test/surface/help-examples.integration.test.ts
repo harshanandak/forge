@@ -1,10 +1,17 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { childStep } from "../child-step.ts";
+import { createProcessPort } from "../../src/adapters/process/index.ts";
 
 const { createAssembly, localCall } = (await import(
   pathToFileURL(resolve("dist/src/assembly/index.js")).href
@@ -15,6 +22,14 @@ const { runCli } = (await import(
 
 const windows = process.platform === "win32";
 const shells = ["POSIX", ...(windows ? ["PowerShell 5.1"] : [])];
+const children = createProcessPort({
+  supervision: {
+    cleanupTimeoutMs: 5000,
+    pollIntervalMs: 25,
+    drainTimeoutMs: 250,
+    maxConcurrent: 1,
+  },
+});
 for (const shell of shells) {
   test(`rendered scalar and JSON examples run in ${shell}`, async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-help-example-"));
@@ -27,7 +42,7 @@ for (const shell of shells) {
       root,
       deviceRoot: join(root, "device"),
     });
-    try {
+    const runExamples = async () => {
       let shellStarts = 0;
       const node = Bun.which("node");
       if (!node) throw new Error("Node runtime required");
@@ -102,46 +117,147 @@ for (const shell of shells) {
         shell === "POSIX"
           ? ["-c", script]
           : ["-NoProfile", "-NonInteractive", "-Command", script];
-      const result = await childStep(`${shell} help examples`, () => {
+      const result = await childStep(`${shell} help examples`, async () => {
         shellStarts += 1;
-        const result = spawnSync(executable, args, {
+        const env: Record<string, string> = {};
+        for (const [key, value] of Object.entries(process.env))
+          if (value !== undefined) env[key] = value;
+        env.FORGE_DEVICE_ROOT = join(root, "device");
+        const found = children.resolve(executable, env);
+        if (found.kind !== "resolved")
+          throw new Error(`${executable} is unavailable`);
+        const result = await children.run(found, args, {
           cwd: root,
-          env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
-          encoding: "utf8",
-          windowsHide: true,
-          timeout: 20_000,
+          env,
+          timeoutMs: 20_000,
+          maxOutputBytes: 1_000_000,
         });
-        const diagnostic = `${result.stdout}\n${result.stderr}`;
-        expect(result.error, diagnostic).toBeUndefined();
-        expect(result.status, diagnostic).toBe(0);
+        const op = [...result.stderr.matchAll(/^START ([^\r\n]+)/gm)].at(
+          -1,
+        )?.[1];
+        const example = cases.find((item) => item.op === op)?.example;
+        const diagnostic = `${shell}: ${op ?? "shell startup"}: ${example ?? ""}\n${result.stdout}\n${result.stderr}`;
+        expect(result.timedOut, diagnostic).toBe(false);
+        expect(result.exitCode, diagnostic).toBe(0);
         return result;
       });
-      const outputs = result.stdout.split(marker).filter((part) => part.trim());
-      expect(outputs).toHaveLength(cases.length);
+      const outputs = result.stdout.split(marker);
+      if (outputs.at(-1)?.trim() === "") outputs.pop();
       for (const [index, { op, example }] of cases.entries()) {
-        const diagnostic = `${shell}: ${example}\n${result.stdout}\n${result.stderr}`;
-        expect(result.error, diagnostic).toBeUndefined();
-        expect(result.stdout, diagnostic).not.toContain("INPUT_INVALID");
-        expect(result.status, diagnostic).toBe(0);
-        expect(JSON.parse(outputs[index]!)).toMatchObject({
-          ok: true,
-          ...(op === "issue.create"
-            ? { result: { title: "First task", kind: "task" } }
-            : op === "memory.add"
-              ? {
-                  result: {
-                    note: {
-                      text: { text: "The release job needs a clean tree" },
+        await childStep(`${shell}: ${op}: ${example}`, () => {
+          const diagnostic = `${shell}: ${example}\n${result.stdout}\n${result.stderr}`;
+          expect(outputs, diagnostic).toHaveLength(cases.length);
+          expect(result.timedOut, diagnostic).toBe(false);
+          expect(outputs[index]!, diagnostic).not.toContain("INPUT_INVALID");
+          expect(result.exitCode, diagnostic).toBe(0);
+          expect(JSON.parse(outputs[index]!)).toMatchObject({
+            ok: true,
+            ...(op === "issue.create"
+              ? { result: { title: "First task", kind: "task" } }
+              : op === "memory.add"
+                ? {
+                    result: {
+                      note: {
+                        text: { text: "The release job needs a clean tree" },
+                      },
                     },
-                  },
-                }
-              : {}),
+                  }
+                : {}),
+          });
         });
       }
       expect(shellStarts, "all examples share one shell session").toBe(1);
-    } finally {
+    };
+    await childStep(`${shell} help session`, runExamples, async () => {
       await assembly.close();
       rmSync(root, { recursive: true, force: true });
-    }
+    });
   }, 120_000);
 }
+
+test.each(["stall", "bad-json", "missing", "mismatch", "bad-exit", "invalid"])(
+  "help regression: %s identifies the example and stops its child",
+  async (mode) => {
+    const probe = mkdtempSync(join(tmpdir(), "forge-help-fault-"));
+    const record = join(probe, "child.json");
+    const injector = resolve("test/surface/fixtures/help-fault.cjs");
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env))
+      if (value !== undefined) env[key] = value;
+    Object.assign(env, {
+      HELP_FAULT: mode,
+      HELP_FAULT_ROOT: probe,
+      NODE_OPTIONS: `--require=${JSON.stringify(injector)}`,
+      FORGE_DEVICE_ROOT: join(probe, "device"),
+    });
+    const child = () => {
+      const data = JSON.parse(readFileSync(record, "utf8")) as {
+        pid: number;
+        cwd: string;
+      };
+      if (
+        !resolve(data.cwd).startsWith(resolve(tmpdir(), "forge-help-example-"))
+      )
+        throw new Error("Unexpected fault directory");
+      return data;
+    };
+    let aliveAtFailure: boolean | undefined;
+    let observed = "";
+    try {
+      const port = children;
+      const shell = windows ? "PowerShell 5.1" : "POSIX";
+      const result = await port.run(
+        { kind: "resolved", path: process.execPath },
+        [
+          "test",
+          "--test-name-pattern",
+          `^rendered scalar and JSON examples run in ${shell}$`,
+          "test/surface/help-examples.integration.test.ts",
+        ],
+        {
+          cwd: process.cwd(),
+          env,
+          timeoutMs: 25_000,
+          maxOutputBytes: 1_000_000,
+          observer: {
+            push(_stream, chunk) {
+              observed += Buffer.from(chunk).toString("utf8");
+              if (
+                aliveAtFailure === undefined &&
+                observed.includes("(fail)") &&
+                existsSync(record)
+              ) {
+                try {
+                  process.kill(child().pid, 0);
+                  aliveAtFailure = true;
+                } catch {
+                  aliveAtFailure = false;
+                }
+              }
+            },
+          },
+        },
+      );
+      const output = result.stdout + result.stderr;
+      expect(result.exitCode, output).toBe(1);
+      expect(result.timedOut, output).toBe(false);
+      expect(output).toMatch(/after \d+ ms/);
+      if (mode === "stall") {
+        expect(aliveAtFailure, output).toBe(false);
+        expect(output).not.toContain("EBUSY");
+      } else {
+        expect(output).toContain("memory.add");
+        expect(output).toContain("forge memory add --input");
+        expect(output).toMatch(
+          /error: [^\n]*memory\.add: forge memory add --input/,
+        );
+      }
+      expect(existsSync(child().cwd), output).toBe(false);
+    } finally {
+      if (existsSync(record))
+        rmSync(child().cwd, { recursive: true, force: true });
+      rmSync(probe, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);

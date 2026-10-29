@@ -400,11 +400,14 @@ test("concurrent builders are refused until the active lane run finishes", async
   expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
 });
 
-async function waitForProcess(ready: () => boolean) {
-  const deadline = Date.now() + 8_000;
+async function waitForProcess(step: string, ready: () => boolean) {
+  const started = Date.now();
+  const deadline = started + 8_000;
   while (!ready() && Date.now() < deadline)
     await new Promise((done) => setTimeout(done, 20));
-  expect(ready()).toBe(true);
+  expect(ready(), `waiting for ${step} after ${Date.now() - started}ms`).toBe(
+    true,
+  );
 }
 function alive(pid: number) {
   try {
@@ -423,7 +426,9 @@ test("hard-killed runner retains the harness lock until the harness exits", asyn
   let pid = 0;
   let second: ReturnType<typeof f.run> | undefined;
   try {
-    await waitForProcess(() => existsSync(join(f.root, "harness-pid")));
+    await waitForProcess("harness startup", () =>
+      existsSync(join(f.root, "harness-pid")),
+    );
     pid = Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
     expect(first.child.kill("SIGKILL")).toBe(true);
     await first;
@@ -433,7 +438,7 @@ test("hard-killed runner retains the harness lock until the harness exits", asyn
   } finally {
     writeFileSync(join(f.root, "finish"), "finish");
     await first;
-    if (pid) await waitForProcess(() => !alive(pid));
+    if (pid) await waitForProcess("harness exit", () => !alive(pid));
   }
   const reclaimed = f.run(["run", "one", "--role", "builder"]);
   expect(second?.code).toBe(1);
@@ -455,7 +460,9 @@ async function signalRun(emitted: boolean) {
   const first = f.launch(emitted ? helper : script, true);
   let pid = 0;
   try {
-    await waitForProcess(() => existsSync(join(f.root, "harness-pid")));
+    await waitForProcess("harness startup", () =>
+      existsSync(join(f.root, "harness-pid")),
+    );
     pid = Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
     if (emitted) writeFileSync(join(f.root, "signal"), "terminate");
     else expect(first.child.kill("SIGTERM")).toBe(true);
@@ -466,12 +473,12 @@ async function signalRun(emitted: boolean) {
     ) as Record<string, unknown>;
     expect(record.verdict).toBe("failed");
     expect(record.end).toMatch(/^\d{4}-/);
-    await waitForProcess(() => !alive(pid));
+    await waitForProcess("harness exit", () => !alive(pid));
     expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
   } finally {
     writeFileSync(join(f.root, "finish"), "finish");
     await first;
-    if (pid) await waitForProcess(() => !alive(pid));
+    if (pid) await waitForProcess("harness exit", () => !alive(pid));
   }
   writeFileSync(join(f.root, "mode"), "ok");
   expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
