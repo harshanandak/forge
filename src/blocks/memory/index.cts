@@ -774,6 +774,179 @@ module.exports = {
     };
   },
 
+  "memory.attach": async ({
+    input = {},
+    config = {},
+    services,
+  }: {
+    input?: {
+      ids?: string[];
+      labels?: string[];
+      paths?: string[];
+      seen?: { id: string; revision: number }[];
+    };
+    config?: MemoryConfig;
+    services: Services;
+  }) => {
+    const measure = (text: string) => {
+      let utf8Bytes = 0;
+      let characters = 0;
+      for (const character of text) {
+        const point = character.codePointAt(0)!;
+        utf8Bytes +=
+          point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
+        characters++;
+      }
+      return { utf8Bytes, characters, characterUnit: "Unicode code points" };
+    };
+    const ids = new Map([...new Set(input.ids ?? [])].map((id, i) => [id, i]));
+    const words = new Set(
+      [
+        ...(input.labels ?? []),
+        ...(input.paths ?? []).flatMap((path) => path.split(/[\\/.]/u)),
+      ]
+        .filter(Boolean)
+        .map((word) => word.toLowerCase()),
+    );
+    const seen = new Set(
+      (input.seen ?? []).map((note) => `${note.id}@${note.revision}`),
+    );
+    const sources = [deviceSource(services.state)];
+    const project = services.levels.inProject
+      ? await ownProject(services)
+      : undefined;
+    if (project) sources.push(project);
+    const scope = resolvedScope(config, services);
+    const candidates: {
+      id: string;
+      revision: number;
+      scope: string;
+      reasons: string[];
+      line: string;
+      number: number;
+      source: number;
+    }[] = [];
+    for (const [sourceIndex, source] of sources.entries()) {
+      let after = 0;
+      for (;;) {
+        const records = notePage(source, {
+          after,
+          limit: LIST_LIMIT,
+          descending: false,
+        });
+        for (const note of records) {
+          const value = note.value as Partial<NoteValue> | null;
+          if (
+            !value ||
+            typeof value.text !== "string" ||
+            value.deleted === true
+          )
+            continue;
+          const noteScope =
+            value.scope ??
+            (source.level === "project" ? scope : undefined) ??
+            "general";
+          if (noteScope !== "general" && noteScope !== scope) continue;
+          const reasons = [
+            ...new Set([
+              ...(ids.has(note.id) ? ["asked"] : []),
+              ...(value.tags ?? []).filter(
+                (tag) =>
+                  tag.toLowerCase().startsWith("on:") &&
+                  words.has(tag.slice(3).toLowerCase()),
+              ),
+            ]),
+          ];
+          if (!reasons.length) continue;
+          const at = dates(source.state, note.record, note.value).createdAt;
+          const updated = contentTime(source.state, note.record, note.value);
+          const text = value.text.replace(/[\s\u0085]+/gu, " ").trim();
+          const line = `- [${noteScope}] ${note.id} (created ${at.slice(0, 10)}${updated === at ? "" : `, updated ${updated.slice(0, 10)}`}) ${text}`;
+          candidates.push({
+            id: note.id,
+            revision: note.record.revision,
+            scope: noteScope,
+            reasons,
+            line,
+            number: note.number,
+            source: sourceIndex,
+          });
+        }
+        const last = records.at(-1);
+        if (records.length < LIST_LIMIT || !last) break;
+        after = last.number;
+      }
+    }
+    candidates.sort(
+      (a, b) =>
+        (ids.get(a.id) ?? Infinity) - (ids.get(b.id) ?? Infinity) ||
+        Number(b.scope === "general") - Number(a.scope === "general") ||
+        a.number - b.number ||
+        a.source - b.source,
+    );
+    const selected: {
+      id: string;
+      revision: number;
+      scope: string;
+      reasons: string[];
+    }[] = [];
+    const omitted: {
+      id: string;
+      revision: number;
+      scope: string;
+      reason: "seen" | "over-budget";
+    }[] = [];
+    const warnings = Array.from(
+      services.levels.warnings ?? [],
+      ({ code, message }) => ({ code, message }),
+    );
+    const lines: string[] = [];
+    let used = 0;
+    for (const note of candidates) {
+      const identity = {
+        id: note.id,
+        revision: note.revision,
+        scope: note.scope,
+      };
+      if (seen.has(`${note.id}@${note.revision}`)) {
+        omitted.push({ ...identity, reason: "seen" });
+        continue;
+      }
+      const line = fence(note.line, "memory:attach").text;
+      const size = measure(line).utf8Bytes + (lines.length ? 1 : 0);
+      if (used + size > 4096) {
+        if (!ids.has(note.id)) {
+          omitted.push({ ...identity, reason: "over-budget" });
+          continue;
+        }
+        warnings.push({
+          code: "ATTACH_OVER_BUDGET",
+          message: `Asked note ${note.id} exceeds the 4096 UTF-8 byte budget (${used + size} bytes used).`,
+        });
+      }
+      used += size;
+      lines.push(line);
+      selected.push({ ...identity, reasons: note.reasons });
+    }
+    const packet = fence(lines.join("\n"), "memory:attach");
+    return {
+      text: packet,
+      receipt: {
+        selected,
+        omitted,
+        packet: measure(packet.text),
+        cap: {
+          limit: 4096,
+          used,
+          unit: "UTF-8 bytes",
+          includes: "accepted note lines and newline separators",
+          excludes: "receipt",
+        },
+        warnings,
+      },
+    };
+  },
+
   "memory.add": async ({
     input,
     config = {},

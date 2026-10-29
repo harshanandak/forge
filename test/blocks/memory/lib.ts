@@ -202,6 +202,7 @@ export async function openHarness(
 export function blockSchema(
   block: BlockName,
   file: string,
+  references: readonly string[] = [],
 ): (value: unknown) => string[] {
   const base = `https://block.test/${block}/schemas/`;
   const load = (name: string): SchemaObject => ({
@@ -210,7 +211,11 @@ export function blockSchema(
     ) as SchemaObject),
     $id: `${base}${name}`,
   });
-  const registry = new SchemaRegistry([load("defs.json"), load(file)]);
+  const registry = new SchemaRegistry([
+    load("defs.json"),
+    ...references.map(load),
+    load(file),
+  ]);
   return (value) =>
     registry
       .validate(`${base}${file}`, value)

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "ids": { "type": "array", "items": { "type": "string" } },
+    "labels": { "type": "array", "items": { "type": "string" } },
+    "paths": { "type": "array", "items": { "type": "string" } },
+    "seen": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "revision": { "type": "integer", "minimum": 1 },
+          "scope": { "type": "string" },
+          "reasons": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["id", "revision"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
