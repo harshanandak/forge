@@ -423,7 +423,7 @@ test("undo keeps the current text revision from an ordinary add and edit", async
   );
   expect(
     await entry["memory.show"]!({
-      input: { id: "note-1", revision: 2 },
+      input: { id: "note-1", revision: before.note.versions.at(-1)!.revision },
       services,
     }),
   ).toMatchObject({ note: { text: { text: "latest" } } });

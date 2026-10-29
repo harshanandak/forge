@@ -525,6 +525,28 @@ function dates(
       : {}),
   };
 }
+function contentTime(
+  state: ExtendedStateClient,
+  record: StateRecord,
+  value: NoteValue,
+) {
+  if (value.changedAt !== undefined) return value.changedAt;
+  let changed = dates(state, record, value).createdAt;
+  let previous: string | undefined;
+  for (const { revision } of versionsOf(record, value)) {
+    const event = state.history({
+      key: record.key,
+      before: revision + 1,
+      limit: 1,
+    })[0];
+    const snapshot = event?.data as NoteValue | undefined;
+    if (event?.revision !== revision || !snapshot) continue;
+    const content = canonical([snapshot.text, snapshot.tags, snapshot.scope]);
+    if (previous !== undefined && content !== previous) changed = event.at;
+    previous = content;
+  }
+  return changed;
+}
 function terms(text: string): string[] {
   return text
     .normalize("NFKC")
@@ -659,7 +681,7 @@ module.exports = {
               text: value.text,
               at: dates(source.state, note.record, note.value).createdAt,
               id: note.id,
-              updated: value.changedAt ?? note.record.updatedAt,
+              updated: contentTime(source.state, note.record, note.value),
               source: sourceIndex,
               number: note.number,
             });
@@ -792,12 +814,15 @@ module.exports = {
         {
           ...old,
           ...dates(source.state, existing, old),
-          changedAt: old.changedAt ?? existing.updatedAt,
+          changedAt: contentTime(source.state, existing, old),
         },
       );
       if (approval !== undefined) Object.assign(value, { approval });
       if (removed !== undefined)
         Object.assign(value, { versionApproval: approval });
+      // Moves keep text version numbers while the destination store starts at revision one.
+      if ((old.textRevision ?? 0) > existing.revision)
+        Object.assign(value, { textRevision: old.textRevision! + 1 });
       const expected = canonical(value);
       const record = source.state.put(key, value, {
         expectRevision: input.expectRevision ?? existing.revision,
@@ -1086,7 +1111,8 @@ module.exports = {
         : { status: "moved" as const, to: value.movedTo };
     if (
       input.revision === undefined ||
-      input.revision === record.revision ||
+      (input.revision === record.revision &&
+        !value.previous.some((entry) => entry.revision === input.revision)) ||
       input.revision === value.textRevision
     )
       return {
@@ -1273,15 +1299,24 @@ module.exports = {
     // the same transaction, so a retry after a failure between the two stores finds the copy it
     // already made instead of making another.
     const marker = `${TRANSFER_PREFIX}${qualified(input.id)}`;
+    const stamps = shown(source.state, existing, value);
     const copy: NoteValue = {
       text: value.text,
       ...dates(source.state, existing, value),
-      changedAt: value.changedAt ?? existing.updatedAt,
-      textAt: value.textAt ?? existing.updatedAt,
+      changedAt: contentTime(source.state, existing, value),
+      textAt: stamps.at(-1)!.at,
+      textRevision: value.textRevision ?? existing.revision,
+      ...(value.approval ? { approval: value.approval } : {}),
+      ...(value.versionApproval
+        ? { versionApproval: value.versionApproval }
+        : {}),
       ...(value.scope === undefined ? {} : { scope: value.scope }),
       tags: value.tags,
       links: qualifiedLinks(value.links),
-      previous: [],
+      previous: value.previous.map((version, i) => ({
+        ...version,
+        at: stamps[i]!.at,
+      })),
       from: qualified(input.id),
       ...(value.proposedForget === true
         ? { proposedForget: true as const }
