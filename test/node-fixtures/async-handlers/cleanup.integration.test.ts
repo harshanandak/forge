@@ -96,8 +96,9 @@ test("a stale ready PID cannot kill an unrelated live process", async () => {
 }, 30000);
 
 // A connection that ignores "stop" makes cleanup fail the same way on every system.
-const stubborn = `const stubborn = (await import("node:net")).connect(cleanupPort, "127.0.0.1");
-    await new Promise((resolve) => stubborn.once("connect", resolve));`;
+// The client can connect before the server counts it; cleanup only waits for counted connections.
+const stubborn = `(await import("node:net")).connect(cleanupPort, "127.0.0.1");
+    while (descendants.size === 0) await pause(5);`;
 
 test("a cleanup failure after a journey failure keeps the journey's own error", () => {
   const result = run(`${stubborn}
