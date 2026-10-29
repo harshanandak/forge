@@ -30,6 +30,7 @@ import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { idPrefixObservation } from "../../../src/assembly/providers.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import { stageBlock } from "../../blocks/memory/lib.ts";
+import { childStep } from "../../child-step.ts";
 
 setDefaultTimeout(60_000);
 
@@ -51,13 +52,15 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
   if (found.kind !== "resolved") throw new Error("git is not installed");
   // Byte-identical checkouts keep the admitted block digest the same in both trees.
   const identity = ["-c", "user.name=Forge Test", "-c", "core.autocrlf=false"];
-  const result = await processPort.run(
-    found,
-    [...identity, "-c", "user.email=test@example.invalid", ...args],
-    { cwd, env, timeoutMs: 30_000, maxOutputBytes: 1_000_000 },
-  );
-  if (result.exitCode !== 0)
-    throw new Error(`git ${args[0]}: ${result.stderr}`);
+  await childStep(`git ${args.join(" ")}`, async () => {
+    const result = await processPort.run(
+      found,
+      [...identity, "-c", "user.email=test@example.invalid", ...args],
+      { cwd, env, timeoutMs: 20_000, maxOutputBytes: 1_000_000 },
+    );
+    if (result.exitCode !== 0)
+      throw new Error(`exit ${result.exitCode}: ${result.stderr}`);
+  });
 }
 
 let work: string;

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProcessPort } from "../../../src/adapters/process/index.ts";
 import { createVcsPort } from "../../../src/adapters/vcs-git/index.ts";
+import { childStep } from "../../child-step.ts";
 
 const processPort = createProcessPort({
   supervision: {
@@ -46,16 +47,18 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   }
   const found = processPort.resolve("git", env);
   if (found.kind !== "resolved") throw new Error("git is not installed");
-  const result = await processPort.run(found, [...identity, ...args], {
-    cwd,
-    env,
-    timeoutMs: 30_000,
-    maxOutputBytes: 1_000_000,
+  return childStep(`git ${args.join(" ")}`, async () => {
+    const result = await processPort.run(found, [...identity, ...args], {
+      cwd,
+      env,
+      timeoutMs: 20_000,
+      maxOutputBytes: 1_000_000,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(`exit ${result.exitCode}: ${result.stderr}`);
+    }
+    return result.stdout.trim();
   });
-  if (result.exitCode !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
-  }
-  return result.stdout.trim();
 }
 
 function repoPort(env: Record<string, string> = baseEnv) {
