@@ -15,7 +15,10 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
+import { RepositoryFixtures } from "./lane-fixture.ts";
+
 setDefaultTimeout(60_000);
+const repositories = new RepositoryFixtures<boolean>();
 const script = resolve(import.meta.dirname, "../../tools/lane.ts");
 const sections = [
   "Goal",
@@ -46,14 +49,17 @@ function fixture() {
   const main = join(root, "main"),
     caller = join(root, "caller"),
     bin = join(root, "bin");
-  mkdirSync(main);
+  const cached = repositories.restore("default", root);
+  if (!cached) {
+    mkdirSync(main);
+    // A manifest exists before any command can discover or install a package.
+    writeFileSync(
+      join(main, "package.json"),
+      '{"name":"lane-fixture","private":true}',
+    );
+    writeFileSync(join(main, ".gitignore"), ".worktrees/\n");
+  }
   mkdirSync(bin);
-  // A manifest exists before any command can discover or install a package.
-  writeFileSync(
-    join(main, "package.json"),
-    '{"name":"lane-fixture","private":true}',
-  );
-  writeFileSync(join(main, ".gitignore"), ".worktrees/\n");
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) =>
       /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|HOME|USERPROFILE)$/i.test(
@@ -89,22 +95,25 @@ function fixture() {
       throw new Error(`git ${args.join(" ")}: ${run.stderr}`);
     return run.stdout.trim();
   }
-  git(["init", "--initial-branch=main"]);
-  git(["add", "package.json", ".gitignore"]);
-  git([
-    "-c",
-    "user.name=Fixture",
-    "-c",
-    "user.email=fixture@example.test",
-    "commit",
-    "-m",
-    "fixture",
-  ]);
-  git(["init", "--bare", "--initial-branch=main", join(root, "remote.git")]);
-  git(["remote", "add", "origin", join(root, "remote.git")]);
-  git(["push", "origin", "main"]);
-  git(["fetch", "origin", "main"]);
-  git(["worktree", "add", "--detach", caller, "origin/main"]);
+  if (!cached) {
+    git(["init", "--initial-branch=main"]);
+    git(["add", "package.json", ".gitignore"]);
+    git([
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "-m",
+      "fixture",
+    ]);
+    git(["init", "--bare", "--initial-branch=main", join(root, "remote.git")]);
+    git(["remote", "add", "origin", join(root, "remote.git")]);
+    git(["push", "origin", "main"]);
+    git(["fetch", "origin", "main"]);
+    git(["worktree", "add", "--detach", caller, "origin/main"]);
+    repositories.save("default", root, true);
+  }
   const brief = join(root, "brief.md");
   const text = (omit = "", empty = "") =>
     sections
