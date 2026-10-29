@@ -182,7 +182,7 @@ rules still apply to that fallback.
 
 ## Contributing
 
-Install Bun 1.4.3+. From a clone of this repository:
+Install Bun 1.4.4+. From a clone of this repository:
 
 ```sh
 bun install
@@ -194,6 +194,6 @@ bun run test:structure
 
 The `test:integration` script runs process and Git journeys. `test:pack` builds,
 packs and installs the package with npm, then runs its packed journeys on Node.
-The `test` script runs all lanes. CI runs the full matrix. Lint and format
-scripts require a canary Bun that supplies those built-ins. Read
+The `test` script runs all lanes. CI runs the full matrix. Lint requires a canary
+Bun; format is available in stable Bun 1.4.4. Read
 [AGENTS.md](AGENTS.md) and [CODING_STANDARDS.md](CODING_STANDARDS.md) before editing.
