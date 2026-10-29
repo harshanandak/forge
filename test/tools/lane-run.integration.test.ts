@@ -16,7 +16,10 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
+import { RepositoryFixtures } from "./lane-fixture.ts";
+
 setDefaultTimeout(60_000);
+const repositories = new RepositoryFixtures<boolean>();
 const script = resolve(import.meta.dirname, "../../tools/lane.ts");
 const runner = resolve(import.meta.dirname, "../../tools/lane-run.ts");
 const template = resolve(import.meta.dirname, "../../tools/lane-brief.md");
@@ -65,15 +68,18 @@ function fixture(trustedPolicy = `values:\n  lanes:\n${tiers}`) {
   const main = join(root, "main"),
     caller = join(root, "caller"),
     bin = join(root, "bin");
-  mkdirSync(main);
+  const cached = repositories.restore(trustedPolicy, root);
+  if (!cached) {
+    mkdirSync(main);
+    writeFileSync(
+      join(main, "package.json"),
+      '{"name":"lane-run-fixture","private":true}',
+    );
+    writeFileSync(join(main, ".gitignore"), ".worktrees/\n");
+    mkdirSync(join(main, ".forge"));
+    writeFileSync(join(main, ".forge", "config.yaml"), trustedPolicy);
+  }
   mkdirSync(bin);
-  writeFileSync(
-    join(main, "package.json"),
-    '{"name":"lane-run-fixture","private":true}',
-  );
-  writeFileSync(join(main, ".gitignore"), ".worktrees/\n");
-  mkdirSync(join(main, ".forge"));
-  writeFileSync(join(main, ".forge", "config.yaml"), trustedPolicy);
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) =>
       /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|HOME|USERPROFILE)$/i.test(
@@ -94,10 +100,11 @@ function fixture(trustedPolicy = `values:\n  lanes:\n${tiers}`) {
   );
   writeFileSync(
     codex,
-    String.raw`import {appendFileSync,existsSync,readFileSync,writeFileSync} from 'node:fs';import {join} from 'node:path';
+    // The test polls this log while the child writes; publish complete JSON lines.
+    String.raw`import {existsSync,readFileSync,renameSync,writeFileSync} from 'node:fs';import {join} from 'node:path';
 const root=process.env.LANE_FIXTURE,args=process.argv.slice(2),file=join(root,'attempts.jsonl');
 const prompt=readFileSync(0,'utf8');const count=existsSync(file)?readFileSync(file,'utf8').trim().split('\n').length:0;
-appendFileSync(file,JSON.stringify({args,cwd:process.cwd(),prompt})+'\n');
+const pending=file+'.'+process.pid+'.tmp';writeFileSync(pending,(existsSync(file)?readFileSync(file,'utf8'):'')+JSON.stringify({args,cwd:process.cwd(),prompt})+'\n');renameSync(pending,file);
 const mode=readFileSync(join(root,'mode'),'utf8');
 writeFileSync(join(root,'harness-pid'),String(process.pid));
 if(mode==='capacity'||mode==='limit')console.log('session id: fake-session');else console.log(JSON.stringify({type:'thread.started',thread_id:'fake-session'}));
@@ -119,7 +126,9 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='fail'?
     );
     chmodSync(shim, 0o755);
   }
+  let pristine = false;
   function git(args: string[], cwd = main) {
+    pristine = false;
     const result = spawnSync("git", args, {
       cwd,
       env,
@@ -131,24 +140,28 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='fail'?
       throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.trim();
   }
-  git(["init", "--initial-branch=main"]);
-  git(["add", "package.json", ".gitignore", ".forge/config.yaml"]);
-  git([
-    "-c",
-    "user.name=Fixture",
-    "-c",
-    "user.email=fixture@example.test",
-    "commit",
-    "-m",
-    "fixture",
-  ]);
-  git(["init", "--bare", "--initial-branch=main", join(root, "remote.git")]);
-  git(["remote", "add", "origin", join(root, "remote.git")]);
-  git(["push", "origin", "main"]);
-  git(["fetch", "origin", "main"]);
-  git(["worktree", "add", "--detach", caller, "origin/main"]);
+  if (!cached) {
+    git(["init", "--initial-branch=main"]);
+    git(["add", "package.json", ".gitignore", ".forge/config.yaml"]);
+    git([
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "-m",
+      "fixture",
+    ]);
+    git(["init", "--bare", "--initial-branch=main", join(root, "remote.git")]);
+    git(["remote", "add", "origin", join(root, "remote.git")]);
+    git(["push", "origin", "main"]);
+    git(["fetch", "origin", "main"]);
+    git(["worktree", "add", "--detach", caller, "origin/main"]);
+    repositories.save(trustedPolicy, root, true);
+  }
   const config = join(caller, ".forge", "config.yaml");
   function roles(model = "gpt-6.1-sol", harness = "codex") {
+    pristine = false;
     writeFileSync(
       config,
       `values:\n  lanes:\n${tiers}    roles:\n      builder:\n        harness: ${harness}\n        model: ${model}\n        effort: high\n`,
@@ -181,6 +194,11 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='fail'?
     };
   }
   function start() {
+    const reuse = pristine;
+    pristine = false;
+    const key = `started:${trustedPolicy}`;
+    if (reuse && repositories.restore(key, root))
+      return join(main, ".worktrees", "one");
     const result = run([
       "start",
       "one",
@@ -190,6 +208,7 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='fail'?
       brief,
     ]);
     expect(result.code).toBe(0);
+    if (reuse) repositories.save(key, root, true);
     return result.output.worktree!;
   }
   function trust(policy: string) {
@@ -273,6 +292,7 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='fail'?
       "session" | "reply" | "log" | "exit" | "retries" | "stoppedAfterReply"
     >;
   }
+  pristine = true;
   return {
     root,
     main,

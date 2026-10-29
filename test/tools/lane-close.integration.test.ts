@@ -16,7 +16,10 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
+import { RepositoryFixtures } from "./lane-fixture.ts";
+
 setDefaultTimeout(60_000);
+const repositories = new RepositoryFixtures<{ head: string; merge: string }>();
 const script = resolve(import.meta.dirname, "../../tools/lane.ts");
 const roots: string[] = [];
 afterEach(() => {
@@ -62,18 +65,21 @@ function fixture(ignored: string[] = []) {
   const main = join(root, "main"),
     caller = join(root, "caller"),
     bin = join(root, "bin");
-  mkdirSync(main);
+  const cached = repositories.restore(JSON.stringify(ignored), root);
+  if (!cached) {
+    mkdirSync(main);
+    writeFileSync(join(main, "package.json"), '{"name":"lane-close-fixture"}');
+    mkdirSync(join(main, ".forge"));
+    writeFileSync(
+      join(main, ".forge", "config.yaml"),
+      "values:\n  lanes:\n    tiers: {security: [], code: []}\n    roles:\n      builder: {harness: codex, model: fixture, effort: high}\n",
+    );
+    writeFileSync(
+      join(main, ".gitignore"),
+      [".worktrees/", ...ignored, ""].join("\n"),
+    );
+  }
   mkdirSync(bin);
-  writeFileSync(join(main, "package.json"), '{"name":"lane-close-fixture"}');
-  mkdirSync(join(main, ".forge"));
-  writeFileSync(
-    join(main, ".forge", "config.yaml"),
-    "values:\n  lanes:\n    tiers: {security: [], code: []}\n    roles:\n      builder: {harness: codex, model: fixture, effort: high}\n",
-  );
-  writeFileSync(
-    join(main, ".gitignore"),
-    [".worktrees/", ...ignored, ""].join("\n"),
-  );
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) =>
       /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|HOME|USERPROFILE)$/i.test(
@@ -83,13 +89,8 @@ function fixture(ignored: string[] = []) {
   );
   const pathKey =
     Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-  const realGit = spawnSync(
-    process.platform === "win32" ? "where.exe" : "which",
-    ["git"],
-    { env, encoding: "utf8", timeout: 10_000, windowsHide: true },
-  )
-    .stdout.trim()
-    .split(/\r?\n/)[0]!;
+  const realGit = Bun.which("git");
+  if (!realGit) throw new Error("git executable not found");
   env[pathKey] = bin + delimiter + (env[pathKey] ?? "");
   env.FORGE_DEVICE_ROOT = join(root, "device");
   env.FORGE_GH_USER = "fixture-owner";
@@ -150,7 +151,7 @@ switch(op){
   shim("forge", fake, "forge");
   shim("gh", fake, "gh");
   shim("codex", fake, "codex");
-  function git(args: string[], cwd = main) {
+  const git = (args: string[], cwd = main) => {
     const result = spawnSync(realGit, args, {
       cwd,
       env,
@@ -161,7 +162,7 @@ switch(op){
     if (result.status !== 0)
       throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.trim();
-  }
+  };
   const commit = (message: string, cwd = main) =>
     git(
       [
@@ -175,14 +176,16 @@ switch(op){
       ],
       cwd,
     );
-  git(["init", "--initial-branch=main"]);
-  git(["add", "package.json", ".gitignore", ".forge/config.yaml"]);
-  commit("fixture");
-  git(["init", "--bare", "--initial-branch=main", join(root, "remote.git")]);
-  git(["remote", "add", "origin", join(root, "remote.git")]);
-  git(["push", "origin", "main"]);
-  git(["fetch", "origin", "main"]);
-  git(["worktree", "add", "--detach", caller, "origin/main"]);
+  if (!cached) {
+    git(["init", "--initial-branch=main"]);
+    git(["add", "package.json", ".gitignore", ".forge/config.yaml"]);
+    commit("fixture");
+    git(["init", "--bare", "--initial-branch=main", join(root, "remote.git")]);
+    git(["remote", "add", "origin", join(root, "remote.git")]);
+    git(["push", "origin", "main"]);
+    git(["fetch", "origin", "main"]);
+    git(["worktree", "add", "--detach", caller, "origin/main"]);
+  }
   const brief = join(root, "brief.md");
   writeFileSync(
     brief,
@@ -219,34 +222,40 @@ switch(op){
       stderr: result.stderr,
     };
   }
-  const started = run([
-    "start",
-    "one",
-    "--branch",
-    "lane/one",
-    "--brief",
-    brief,
-  ]);
-  expect(started.code).toBe(0);
-  const lane = String(started.output.worktree);
-  writeFileSync(join(lane, "change.txt"), "Delivered change.\n");
-  git(["add", "change.txt"], lane);
-  commit("lane change", lane);
-  const head = git(["rev-parse", "lane/one"]);
-  git([
-    "-c",
-    "user.name=Fixture",
-    "-c",
-    "user.email=fixture@example.test",
-    "merge",
-    "--no-ff",
-    "lane/one",
-    "-m",
-    "merge delivered lane",
-  ]);
-  const merge = git(["rev-parse", "HEAD"]);
-  git(["push", "origin", "main"]);
-  git(["fetch", "origin", "main"]);
+  const lane = join(main, ".worktrees", "one");
+  let head = cached?.head ?? "",
+    merge = cached?.merge ?? "";
+  if (!cached) {
+    const started = run([
+      "start",
+      "one",
+      "--branch",
+      "lane/one",
+      "--brief",
+      brief,
+    ]);
+    expect(started.code).toBe(0);
+    expect(started.output.worktree).toBe(lane);
+    writeFileSync(join(lane, "change.txt"), "Delivered change.\n");
+    git(["add", "change.txt"], lane);
+    commit("lane change", lane);
+    head = git(["rev-parse", "lane/one"]);
+    git([
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "merge",
+      "--no-ff",
+      "lane/one",
+      "-m",
+      "merge delivered lane",
+    ]);
+    merge = git(["rev-parse", "HEAD"]);
+    git(["push", "origin", "main"]);
+    git(["fetch", "origin", "main"]);
+    repositories.save(JSON.stringify(ignored), root, { head, merge });
+  }
   const state: State = {
     issue: { id: "one", title: "Fixture", status: "open" },
     pr: {
@@ -270,11 +279,7 @@ switch(op){
   };
   writeFileSync(stateFile, JSON.stringify(state));
   writeFileSync(callsFile, "");
-  const common = git([
-    "rev-parse",
-    "--path-format=absolute",
-    "--git-common-dir",
-  ]);
+  const common = join(main, ".git");
   const registry = join(common, "forge-lanes.json");
   const history = join(common, "forge-lane-runs", "one", "previous-run");
   mkdirSync(history, { recursive: true });
