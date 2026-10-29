@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -218,8 +219,12 @@ test.each([
         pid: number;
         cwd: string;
       };
+      // macOS tmpdir() is a symlink (/var -> /private/var), and a child reports the resolved path.
+      const temps = [tmpdir(), realpathSync.native(tmpdir())];
       if (
-        !resolve(data.cwd).startsWith(resolve(tmpdir(), "forge-help-example-"))
+        !temps.some((temp) =>
+          resolve(data.cwd).startsWith(resolve(temp, "forge-help-example-")),
+        )
       )
         throw new Error("Unexpected fault directory");
       return data;
