@@ -130,7 +130,31 @@ test("startup recipe uses the installer operation and documents every SessionSta
   expect(recipe).toContain("forge agent memory codex");
   expect(recipe).toContain("including forks");
   expect(recipe).toContain("/hooks");
-  expect(recipe).not.toContain('node -e "');
+  for (const block of recipe.matchAll(/```sh\n([\s\S]*?)\n```/g))
+    expect(block[1]).not.toContain("node -e");
+}, 30_000);
+
+test("startup upgrade replaces earlier memory hooks while preserving unrelated hooks", () => {
+  const prose = recipe.replace(/\s+/gu, " ");
+  expect(prose).toContain("existing Claude Code and Codex installations");
+  expect(prose).toContain("replace the old inline");
+  expect(prose).toContain("`forge memory rules | node -e ...`");
+  expect(prose).toContain(
+    "SessionStart entry or any earlier memory-start hook",
+  );
+  expect(prose).toContain("Preserve unrelated settings and hooks");
+  expect(prose).toContain("exactly one Forge memory SessionStart hook");
+}, 30_000);
+
+test("startup renderer explains the agent-block prerequisite and user-level alternative", () => {
+  const prose = recipe.replace(/\s+/gu, " ");
+  expect(prose).toContain("`forge agent memory <id>` requires the agent block");
+  expect(prose).toContain("the delivery template enables");
+  expect(prose).toContain("In a memory-only project, enable the agent block");
+  expect(prose).toContain(
+    "render the entry once from a project with that block enabled",
+  );
+  expect(prose).toContain("The target hook file is user-level");
 }, 30_000);
 
 test("recipe gives a valid on-demand search and forge-loop requires it", () => {

@@ -1,6 +1,12 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -126,6 +132,46 @@ test("integration: rendered memory command reads fresh rules from the installed 
         0,
       ),
     ).toBe(6000);
+    const docs = JSON.parse(
+      readFileSync(
+        resolve(import.meta.dirname, "../../../src/blocks/agent/docs.json"),
+        "utf8",
+      ),
+    ) as {
+      operations: { "agent.memory": { examples: { command: string }[] } };
+    };
+    for (const id of ["codex", "claude"]) {
+      const example = docs.operations["agent.memory"].examples.find(
+        ({ command }) => command.startsWith(`forge agent memory ${id}`),
+      );
+      expect(example).toBeDefined();
+      const [executable, ...args] = example!.command.split(/\s+/);
+      expect(executable).toBe("forge");
+      const output = spawnSync(node, [bin, ...args], {
+        cwd: project,
+        env,
+        encoding: "utf8",
+        timeout: 20_000,
+        windowsHide: true,
+      });
+      expect(output.error).toBeUndefined();
+      expect(output.status).toBe(0);
+      let envelope: { ok: boolean; result: Hook } | undefined;
+      try {
+        envelope = JSON.parse(output.stdout) as typeof envelope;
+      } catch {
+        // Display text cannot be merged as hook JSON.
+      }
+      expect(envelope).toBeDefined();
+      expect(envelope!.ok).toBe(true);
+      expect(envelope!.result.file).toBe(
+        id === "claude" ? "~/.claude/settings.json" : "~/.codex/hooks.json",
+      );
+      expect(Array.isArray(envelope!.result.config.hooks.SessionStart)).toBe(
+        true,
+      );
+      expect(envelope!.result.config.hooks.SessionStart).toHaveLength(1);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

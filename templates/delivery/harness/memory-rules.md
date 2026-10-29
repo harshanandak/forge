@@ -47,6 +47,11 @@ project without the memory block; it reports `UNKNOWN_COMMAND` instead.
 
 ## Claude Code and Codex with SessionStart hooks
 
+`forge agent memory <id>` requires the agent block, which the delivery template
+enables. In a memory-only project, enable the agent block or render the entry
+once from a project with that block enabled. The target hook file is user-level,
+so the rendered entry can serve other projects.
+
 Print the mergeable hook for the harness you use:
 
 ```sh
@@ -55,8 +60,12 @@ forge agent memory codex
 ```
 
 Merge the returned `config` into its target `file`: Claude's
-`~/.claude/settings.json` or Codex's `~/.codex/hooks.json`. Preserve existing
-settings and hooks. The operation prints configuration and never edits a file.
+`~/.claude/settings.json` or Codex's `~/.codex/hooks.json`.
+For existing Claude Code and Codex installations, replace the old inline
+`forge memory rules | node -e ...` SessionStart entry or any earlier memory-start
+hook with the printed entry. Preserve unrelated settings and hooks, and keep
+exactly one Forge memory SessionStart hook. The operation prints configuration
+and never edits a file.
 The command quotes the installed package's `memory-start.mjs`; Node is already
 required by Forge. The companion runs that package's own CLI using
 `process.execPath`, rather than resolving another Forge from PATH, and requests
