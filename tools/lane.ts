@@ -33,6 +33,7 @@ import {
 import { delimiter, join, resolve } from "node:path";
 import { laneHistory, laneRun } from "./lane-run.ts";
 import { laneTier } from "./lane-tier.ts";
+import { laneClose } from "./lane-close.ts";
 
 type Lane = { issue: string; worktree: string; branch: string; brief: string };
 type Options = { issue: string; branch: string; brief: string; max: number };
@@ -48,31 +49,42 @@ const pause = new Int32Array(new SharedArrayBuffer(4));
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-function run(command: string, args: string[], cwd = process.cwd()) {
+function run(
+  command: string,
+  args: string[],
+  cwd = process.cwd(),
+  env = process.env,
+) {
+  const failure =
+    command === "gh"
+      ? "gh command failed; check FORGE_GH_USER and authentication"
+      : `${command} command failed`;
   // npm and the installed Forge provide an extensionless shell shim beside forge.cmd.
   // sh preserves JSON arguments on Windows without cmd.exe's quote reinterpretation.
-  if (command === "forge" && process.platform === "win32") {
+  if (["forge", "gh"].includes(command) && process.platform === "win32") {
     const path =
       Object.entries(process.env).find(
         ([key]) => key.toLowerCase() === "path",
       )?.[1] ?? "";
     const shim = path
       .split(delimiter)
-      .map((part) => join(part.replace(/^"|"$/g, ""), "forge"))
+      .map((part) => join(part.replace(/^"|"$/g, ""), command))
       .find(existsSync);
-    if (!shim)
+    if (!shim && command === "forge")
       throw new Error("installed forge shell shim was not found on PATH");
-    args = [shim, ...args];
-    command = "sh";
+    if (shim) {
+      args = [shim, ...args];
+      command = "sh";
+    }
   }
   const result = spawnSync(command, args, {
     cwd,
     encoding: "utf8",
     timeout: 30_000,
     windowsHide: true,
+    env,
   });
-  if (result.error || result.status !== 0)
-    throw new Error(`${command === "sh" ? "forge" : command} command failed`);
+  if (result.error || result.status !== 0) throw new Error(failure);
   return result.stdout.trim();
 }
 function briefProblems(text: string): string[] {
@@ -118,7 +130,8 @@ function briefProblems(text: string): string[] {
     )
     .map((name) => `brief requires non-empty section: ${name}`);
 }
-function options(argv: string[]): Options | "list" | "run" | "tier" {
+function options(argv: string[]): Options | "list" | "run" | "tier" | "close" {
+  if (argv[0] === "close") return "close";
   if (argv[0] === "run") return "run";
   if (
     argv[0] === "tier" &&
@@ -240,8 +253,28 @@ function reclaim(lock: string): void {
     if (!object(error) || error.code !== "ENOENT") throw error;
   }
 }
+function acquireLaneLock(common: string, id: string, owner: string) {
+  const lock = join(common, `forge-lane-${id}.lock`),
+    staged = `${lock}.${randomUUID()}`;
+  mkdirSync(staged);
+  writeFileSync(join(staged, owner), "", { flag: "wx" });
+  try {
+    reclaim(lock);
+    renameSync(staged, lock);
+  } catch {
+    release(staged, owner);
+    throw new Error("lane already running; wait for it to finish and retry");
+  }
+  let current = owner;
+  return (pid?: number) => {
+    if (!pid) return release(lock, current);
+    const next = `${owner}-${pid}`;
+    renameSync(join(lock, current), join(lock, next));
+    current = next;
+  };
+}
 async function main(): Promise<number> {
-  let parsed: Options | "list" | "run" | "tier";
+  let parsed: Options | "list" | "run" | "tier" | "close";
   let target: string | null = null;
   const reply = (
     reason: string | string[],
@@ -279,6 +312,15 @@ async function main(): Promise<number> {
         .slice(9),
     );
     const registry = join(common, "forge-lanes.json");
+    const lockLane = (id: string) => acquireLaneLock(common, id, owner);
+    if (parsed === "close")
+      return laneClose(process.argv.slice(3), {
+        common,
+        root,
+        load: () => load(registry),
+        run,
+        lock: lockLane,
+      });
     if (parsed === "tier") {
       const lane = active(registry, root).find(
         (item) => item.issue === process.argv[3],
@@ -297,28 +339,7 @@ async function main(): Promise<number> {
         lanes: active(registry, root),
         issue: (id) =>
           run("forge", ["issue", "show", "--input", JSON.stringify({ id })]),
-        lock: (id) => {
-          const lock = join(common, `forge-lane-${id}.lock`),
-            staged = `${lock}.${randomUUID()}`;
-          mkdirSync(staged);
-          writeFileSync(join(staged, owner), "", { flag: "wx" });
-          try {
-            reclaim(lock);
-            renameSync(staged, lock);
-          } catch {
-            release(staged, owner);
-            throw new Error(
-              "lane already running; wait for it to finish and retry",
-            );
-          }
-          let current = owner;
-          return (pid) => {
-            if (!pid) return release(lock, current);
-            const next = `${owner}-${pid}`;
-            renameSync(join(lock, current), join(lock, next));
-            current = next;
-          };
-        },
+        lock: lockLane,
       });
     if (parsed === "list") {
       console.log(
