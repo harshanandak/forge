@@ -2,16 +2,19 @@ import assert from "node:assert/strict";
 import { createServer, type Socket } from "node:net";
 import { runWithin } from "../../../tools/pack-smoke/bounded.ts";
 import { isRunning } from "../../node-fixtures/process/liveness.ts";
+import { awaitDeadline } from "../../node-fixtures/async-handlers/deadline.mjs";
 
 const mode = process.argv[2]!;
 let descendant: number | undefined;
 let connection: Socket | undefined;
+let closed: Promise<void> | undefined;
 let ready!: () => void;
 const readiness = new Promise<void>((resolve) => (ready = resolve));
 const server = createServer((socket) => {
   connection = socket;
+  closed = new Promise((resolve) => socket.once("close", () => resolve()));
   socket.on("error", (error: NodeJS.ErrnoException) => {
-    // taskkill resets the ready runner's TCP connection on Windows.
+    // taskkill can reset the descendant's TCP connection on Windows.
     if (descendant === undefined || error.code !== "ECONNRESET") throw error;
   });
   socket.once("data", (data) => {
@@ -25,14 +28,13 @@ assert.ok(address && typeof address !== "string");
 const grandchild = `
 process.on('SIGTERM', () => {});
 process.on('SIGINT', () => {});
-process.send(process.pid);
+const socket = require('node:net').connect(${address.port}, '127.0.0.1', () => socket.write(String(process.pid)));
+socket.on('data', data => { if (String(data) === 'stop') process.exit(0); else process.send(Number(String(data))); });
+socket.on('error', () => process.exit(1));
 setInterval(() => {}, 1000);`;
 const runner = `
 const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], {stdio:['ignore','ignore','ignore','ipc']});
-child.once('message', pid => {
-  const socket = require('node:net').connect(${address.port}, '127.0.0.1', () => socket.write(String(pid)));
-  socket.on('data', data => process.exit(Number(String(data))));
-});
+child.once('message', code => process.exit(code));
 setInterval(() => {}, 1000);`;
 // Only the supervisor's deadline is virtual; both descendants are real OS processes.
 const timer = Object.getOwnPropertyDescriptor(globalThis, "setTimeout")!;
@@ -111,7 +113,9 @@ try {
     expire();
     await pending;
   }
-  if (descendant && isRunning(descendant)) process.kill(descendant, "SIGKILL");
+  // The socket belongs to the original descendant even if its PID has been reused.
+  if (connection && !connection.destroyed) connection.write("stop");
+  if (closed) await awaitDeadline(closed, 5000, "pack descendant cleanup");
   connection?.destroy();
   server.close();
 }
