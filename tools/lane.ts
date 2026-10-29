@@ -31,7 +31,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
-import { laneRun } from "./lane-run.ts";
+import { laneHistory, laneRun } from "./lane-run.ts";
 
 type Lane = { issue: string; worktree: string; branch: string; brief: string };
 type Options = { issue: string; branch: string; brief: string; max: number };
@@ -301,7 +301,14 @@ async function main(): Promise<number> {
         },
       });
     if (parsed === "list") {
-      console.log(JSON.stringify({ lanes: active(registry, root) }));
+      console.log(
+        JSON.stringify({
+          lanes: active(registry, root).map((lane) => ({
+            ...lane,
+            runs: laneHistory(common, lane.issue),
+          })),
+        }),
+      );
       return 0;
     }
     const worktree = join(root, ".worktrees", parsed.issue);

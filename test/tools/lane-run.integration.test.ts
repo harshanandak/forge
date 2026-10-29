@@ -96,7 +96,7 @@ if(mode==='limit'||(mode==='capacity'&&count===0)){console.log('Selected model i
 const flag=args.findIndex(a=>a==='--output-last-message'||a==='-o');if(flag<0)process.exit(8);
 writeFileSync(args[flag+1],mode==='empty'?'':'Fixture final reply.');
 if(mode==='hold'){setInterval(()=>{if(existsSync(join(root,'finish')))process.exit(0)},10)}
-else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
+else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='fail'?1:0);`,
   );
   writeFileSync(join(root, "mode"), "ok");
   for (const [name, file] of [
@@ -262,6 +262,7 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
     launch,
     attempts,
     direct,
+    git,
   };
 }
 function expectModel(attempt: Attempt, model: string) {
@@ -346,6 +347,16 @@ test("concurrent builders are refused until the active lane run finishes", async
   let refused: Awaited<ReturnType<typeof f.launch>> | undefined;
   try {
     await waitFor(() => f.attempts().length === 1);
+    const runs = join(f.main, ".git", "forge-lane-runs", "one");
+    const started = JSON.parse(
+      readFileSync(join(runs, readdirSync(runs)[0]!, "run.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(started).toMatchObject({
+      role: "builder",
+      round: null,
+      verdict: "started",
+      end: null,
+    });
     second = f.launch();
     void second.then((result) => {
       refused = result;
@@ -424,6 +435,12 @@ async function signalRun(emitted: boolean) {
     if (emitted) writeFileSync(join(f.root, "signal"), "terminate");
     else expect(first.child.kill("SIGTERM")).toBe(true);
     expect((await first).code).not.toBe(0);
+    const runs = join(f.main, ".git", "forge-lane-runs", "one");
+    const record = JSON.parse(
+      readFileSync(join(runs, readdirSync(runs)[0]!, "run.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(record.verdict).toBe("failed");
+    expect(record.end).toMatch(/^\d{4}-/);
     await waitForProcess(() => !alive(pid));
     expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
   } finally {
@@ -457,6 +474,15 @@ test("empty reply fails with a typed verdict and the log path", () => {
   expect(JSON.stringify(result.output)).toMatch(/no reply was written/i);
   expect(existsSync(result.output.log!)).toBe(true);
   expect(readFileSync(result.output.reply!, "utf8")).toBe("");
+  const record = JSON.parse(
+    readFileSync(join(result.output.folder!, "run.json"), "utf8"),
+  ) as Record<string, unknown>;
+  expect(record).toMatchObject({
+    verdict: "failed",
+    role: "builder",
+    session: "fake-session",
+  });
+  expect(record.end).toMatch(/^\d{4}-/);
   writeFileSync(join(f.root, "mode"), "ok");
   expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
 });
@@ -620,4 +646,424 @@ test("reply guard stops a lingering child after a reply and preserves the reply"
   expect(result.retries).toBe(0);
   expect(readFileSync(result.reply!, "utf8")).toBe("Fixture final reply.");
   expect(f.attempts()).toHaveLength(1);
+});
+
+function roleFixture() {
+  const f = fixture();
+  f.start();
+  writeFileSync(
+    f.config,
+    `values:
+  lanes:
+    roles:
+${["builder", "fixer", "tester", "reviewer"]
+  .map(
+    (role) => `      ${role}:
+        harness: codex
+        model: fixture-model
+        effort: high
+`,
+  )
+  .join("")}`,
+  );
+  const runs = join(f.main, ".git", "forge-lane-runs", "one");
+  let clock = 0;
+  function seed(
+    role: string,
+    round: number | null,
+    verdict = "completed",
+    reply = "Prior reply.",
+  ) {
+    const folder = join(runs, `arbitrary-${randomUUID()}`);
+    mkdirSync(folder, { recursive: true });
+    const path = join(folder, "reply.md");
+    writeFileSync(path, reply);
+    const record = {
+      role,
+      round,
+      model: "fixture-model",
+      effort: "high",
+      start: new Date(++clock * 1000).toISOString(),
+      end: new Date(clock * 1000 + 1).toISOString(),
+      verdict,
+      session: "fixture-session",
+      reply: path,
+    };
+    writeFileSync(join(folder, "run.json"), JSON.stringify(record));
+    return record;
+  }
+  const runRole = (role: string, extra: string[] = []) =>
+    f.run(["run", "one", "--role", role, ...extra]);
+  const prompt = () => f.attempts().at(-1)!.prompt;
+  return { ...f, runs, seed, runRole, prompt };
+}
+
+test("tester round one uses its template, issue, contract, builder reply and durable metadata", () => {
+  const f = roleFixture();
+  const builder = f.runRole("builder");
+  const result = f.runRole("tester");
+  expect(result.code).toBe(0);
+  expect(f.prompt()).toContain("You are the local tester");
+  expect(f.prompt()).toContain("This is test round 1.");
+  expect(f.prompt()).toContain(builder.output.reply!.replaceAll("\\", "/"));
+  expect(f.prompt()).toContain("Fixture issue title");
+  expect(f.prompt()).toContain(readFileSync(f.brief, "utf8"));
+  expect(f.prompt()).toContain("FORGE_CANARY_BUN_DIR");
+  expect(f.prompt()).toContain("FORGE_GH_USER");
+  expect(f.prompt()).not.toMatch(
+    /Personal-Projects|harshanandak|\{\{[A-Z]+\}\}/,
+  );
+  expect(
+    JSON.parse(readFileSync(join(result.output.folder!, "run.json"), "utf8")),
+  ).toMatchObject({
+    role: "tester",
+    round: 1,
+    model: "fixture-model",
+    effort: "high",
+    verdict: "completed",
+    session: "fake-session",
+    reply: result.output.reply,
+  });
+});
+
+test("tester round two names previous tester and only the subsequent newest fix", () => {
+  const f = roleFixture();
+  f.seed("builder", null);
+  const previous = f.seed("tester", 1);
+  const fix = f.seed("fixer", null);
+  f.runRole("tester");
+  expect(f.prompt()).toContain(
+    `This is test round 2. The previous report is ${previous.reply.replaceAll("\\", "/")} and the builder's fix reply is ${fix.reply.replaceAll("\\", "/")}.`,
+  );
+  expect(f.prompt()).toContain(
+    "First re-run every earlier repro and say for each finding whether it is fixed. Then re-run the checks and look for regressions the fixes introduced. New findings are welcome.",
+  );
+});
+
+test("third tester round refuses before launch, explicit caps permit three and reject bounds", () => {
+  const f = roleFixture();
+  f.seed("tester", 1);
+  f.seed("tester", 2);
+  const result = f.runRole("tester");
+  expect(result.output.verdict).toBe("refused");
+  expect(result.output.next).toBe(
+    "Test round 3 exceeds the cap (2). Write a three-line threat model, then choose ship, simplify or park.",
+  );
+  expect(f.attempts()).toHaveLength(0);
+  expect(f.runRole("tester", ["--round-cap", "3"]).code).toBe(0);
+  expect(f.prompt()).toContain("This is test round 3.");
+  expect(f.prompt()).toContain(
+    "No completed builder or fixer reply is available",
+  );
+  for (const cap of ["0", "11", "1.5"])
+    expect(f.runRole("tester", ["--round-cap", cap]).output.next).toContain(
+      "integer from 1 to 10",
+    );
+  expect(f.attempts()).toHaveLength(1);
+});
+
+test("review uses read-only template, exact lane diff and optional PR", () => {
+  const f = roleFixture();
+  const laneDir = join(f.main, ".worktrees", "one");
+  writeFileSync(join(laneDir, "review-change.txt"), "Lane change.");
+  f.git(["add", "review-change.txt"], laneDir);
+  f.git(
+    [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "-m",
+      "lane change",
+    ],
+    laneDir,
+  );
+  writeFileSync(join(f.main, "upstream-change.txt"), "Upstream change.");
+  f.git(["add", "upstream-change.txt"]);
+  f.git([
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "-m",
+    "upstream change",
+  ]);
+  f.git(["push", "origin", "main"]);
+  f.git(["fetch", "origin", "main"]);
+  const result = f.runRole("reviewer", ["--pr", "42"]);
+  expect(result.code).toBe(0);
+  expect(f.prompt()).toContain("You are an independent code reviewer.");
+  const lane = f.git(["rev-parse", "--show-toplevel"], f.attempts()[0]!.cwd);
+  const base = f.git(["merge-base", "origin/main", "HEAD"], lane);
+  const head = f.git(["rev-parse", "HEAD"], lane);
+  expect(base).not.toBe(head);
+  expect(base).not.toBe(f.git(["rev-parse", "origin/main"], lane));
+  expect(f.prompt()).toContain(`git diff ${base}...${head}`);
+  expect(f.prompt()).toContain("PR #42");
+  expect(f.prompt()).toContain("at most 300 words");
+  expect(f.prompt()).toContain("act on (P0/P1), consider and noted");
+  expect(f.prompt()).toContain(readFileSync(f.brief, "utf8"));
+  expect(f.attempts()[0]!.args).toContain('sandbox_mode="read-only"');
+  expect(f.attempts()[0]!.args).not.toContain(
+    "--dangerously-bypass-approvals-and-sandbox",
+  );
+  for (const pr of ["0", "-1", "1.5"])
+    expect(f.runRole("reviewer", ["--pr", pr]).code).toBe(1);
+  expect(f.runRole("reviewer").code).toBe(0);
+  expect(f.prompt()).toContain("You are an independent code reviewer.");
+  expect(f.prompt()).not.toContain("PR #");
+});
+
+test("builder and fixer assembly remains byte-identical while every launch records metadata", () => {
+  const f = roleFixture();
+  const result = f.runRole("builder");
+  const issue = {
+    ok: true,
+    result: {
+      id: "one",
+      title: "Fixture issue title",
+      body: "Fixture issue body: implement the requested lane.",
+    },
+  };
+  const expected = [
+    readFileSync(template, "utf8"),
+    "\nIssue:\n",
+    JSON.stringify(issue),
+    "\nLane contract (takes precedence):\n",
+    readFileSync(f.brief, "utf8"),
+  ].join("\n");
+  expect(f.prompt()).toBe(expected);
+  expect(existsSync(join(result.output.folder!, "run.json"))).toBe(true);
+  const record = JSON.parse(
+    readFileSync(join(result.output.folder!, "run.json"), "utf8"),
+  ) as Record<string, unknown>;
+  expect(record.start).toMatch(/^\d{4}-/);
+  expect(record.end).toMatch(/^\d{4}-/);
+  expect(record.verdict).toBe("completed");
+  expect(f.runRole("fixer").code).toBe(0);
+  expect(f.prompt()).toBe(expected);
+});
+
+test("failed and empty tester records do not count, explicit prompts override templates", () => {
+  const f = roleFixture();
+  const builder = f.seed("builder", null);
+  const failedFix = f.seed("fixer", null, "failed");
+  const emptyFix = f.seed("fixer", null, "completed", "  ");
+  f.seed("tester", 1, "failed");
+  f.seed("tester", 1, "completed", "  ");
+  for (const mode of ["empty", "fail"]) {
+    writeFileSync(join(f.root, "mode"), mode);
+    const failed = f.runRole("tester");
+    expect(failed.output.verdict).toBe("failed");
+    const record = JSON.parse(
+      readFileSync(join(failed.output.folder!, "run.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(record).toMatchObject({
+      role: "tester",
+      round: 1,
+      verdict: "failed",
+      session: "fake-session",
+    });
+    expect(record.end).toMatch(/^\d{4}-/);
+  }
+  writeFileSync(join(f.root, "mode"), "ok");
+  f.runRole("tester");
+  expect(f.prompt()).toContain("This is test round 1.");
+  expect(f.prompt()).toContain(builder.reply.replaceAll("\\", "/"));
+  expect(f.prompt()).not.toContain(failedFix.reply.replaceAll("\\", "/"));
+  expect(f.prompt()).not.toContain(emptyFix.reply.replaceAll("\\", "/"));
+  const custom = join(f.root, "custom-role.md");
+  writeFileSync(custom, "Exact tester override.\n");
+  expect(f.runRole("tester", ["--prompt", custom]).code).toBe(0);
+  expect(f.prompt()).toBe("Exact tester override.\n");
+});
+
+test("list reports per-lane durable role, round, verdict and reply history", () => {
+  const f = roleFixture();
+  const record = f.seed("tester", 7);
+  const result = f.run(["list"]);
+  expect(result.output).toMatchObject({
+    lanes: [
+      {
+        issue: "one",
+        runs: [
+          {
+            role: "tester",
+            round: 7,
+            verdict: "completed",
+            reply: record.reply,
+          },
+        ],
+      },
+    ],
+  });
+});
+
+function unknownRun(
+  f: ReturnType<typeof roleFixture>,
+  name: string,
+  contents?: string,
+) {
+  const folder = join(f.runs, name);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(
+    join(folder, "reply.md"),
+    "Unclassified reply must never be trusted.",
+  );
+  if (contents !== undefined) writeFileSync(join(folder, "run.json"), contents);
+  return folder;
+}
+function unknownRows(f: ReturnType<typeof roleFixture>) {
+  const result = f.run(["list"]);
+  expect(result.code).toBe(0);
+  return (
+    result.output as unknown as {
+      lanes: { runs: { role: string; folder?: string }[] }[];
+    }
+  ).lanes[0]!.runs.filter((run) => run.role === "unknown");
+}
+
+test("unknown history legacy-count fails closed, allows explicit cap and never invents prior replies", () => {
+  const f = roleFixture();
+  const folders = [unknownRun(f, "old-builder"), unknownRun(f, "old-tester")];
+  const refused = f.runRole("tester");
+  expect(refused.output.verdict).toBe("refused");
+  expect(refused.output.next).toBe(
+    "Test round 3 exceeds the cap (2). Write a three-line threat model, then choose ship, simplify or park.",
+  );
+  for (const folder of folders)
+    expect(JSON.stringify(refused.output)).toContain(
+      folder.replaceAll("\\", "\\\\"),
+    );
+  expect(f.attempts()).toHaveLength(0);
+  expect(
+    unknownRows(f)
+      .map((run) => run.folder)
+      .sort(),
+  ).toEqual(folders.sort());
+  const override = f.runRole("tester", ["--round-cap", "3"]);
+  expect(override.code).toBe(0);
+  expect(f.prompt()).toContain("This is test round 3.");
+  expect(f.prompt()).toContain(
+    "No completed builder or fixer reply is available",
+  );
+  expect(f.prompt()).not.toContain("The previous report is");
+  for (const folder of folders)
+    expect(f.prompt()).not.toContain(
+      join(folder, "reply.md").replaceAll("\\", "/"),
+    );
+});
+
+test("unknown history truncated and unreadable records list without blocking other roles", () => {
+  const f = roleFixture();
+  const truncated = unknownRun(f, "truncated", "{");
+  const unreadable = unknownRun(f, "unreadable");
+  mkdirSync(join(unreadable, "run.json"));
+  expect(
+    unknownRows(f)
+      .map((run) => run.folder)
+      .sort(),
+  ).toEqual([truncated, unreadable].sort());
+  for (const role of ["builder", "fixer", "reviewer"])
+    expect(f.runRole(role).code).toBe(0);
+  const refused = f.runRole("tester");
+  expect(refused.output.verdict).toBe("refused");
+  expect(refused.output.next).toContain("Test round 3 exceeds the cap (2).");
+  expect(f.attempts()).toHaveLength(3);
+});
+
+test("unknown history missing record counts alongside classified testers and custom prompts", () => {
+  const f = roleFixture();
+  f.seed("tester", 1);
+  const missing = unknownRun(f, "missing");
+  const custom = join(f.root, "custom-unknown.md");
+  writeFileSync(custom, "Exact unknown-history override.\n");
+  const refused = f.runRole("tester", ["--prompt", custom]);
+  expect(refused.output.verdict).toBe("refused");
+  expect(refused.output.next).toContain("Test round 3 exceeds the cap (2).");
+  expect(unknownRows(f)).toEqual([{ role: "unknown", folder: missing }]);
+  const override = f.runRole("tester", [
+    "--round-cap",
+    "3",
+    "--prompt",
+    custom,
+  ]);
+  expect(override.code).toBe(0);
+  expect(f.prompt()).toBe("Exact unknown-history override.\n");
+  expect(
+    JSON.parse(
+      readFileSync(join(override.output.folder!, "run.json"), "utf8"),
+    ) as Record<string, unknown>,
+  ).toMatchObject({ role: "tester", round: 3 });
+});
+
+test("unknown history noninteger and missing tester rounds never classify as completed testers", () => {
+  const f = roleFixture();
+  const rounds: unknown[] = [1.5, 0, 11, null, undefined, "1"];
+  const folders = rounds.map((round) => {
+    const record = f.seed("tester", 1);
+    const folder = join(record.reply, "..");
+    writeFileSync(
+      join(folder, "run.json"),
+      JSON.stringify({ ...record, round }),
+    );
+    return resolve(folder);
+  });
+  expect(
+    unknownRows(f)
+      .map((run) => run.folder)
+      .sort(),
+  ).toEqual(folders.sort());
+  const refused = f.runRole("tester");
+  expect(refused.output.verdict).toBe("refused");
+  expect(refused.output.next).toContain("Test round 7 exceeds the cap (2).");
+  expect(f.attempts()).toHaveLength(0);
+});
+
+test("unknown history wrongrole rejects unknown roles and non-tester rounds", () => {
+  const f = roleFixture();
+  const roles = ["builder", "fixer", "reviewer", "unrecognized"];
+  const folders = roles.map((role) => {
+    const record = f.seed(role, role === "unrecognized" ? null : 1);
+    return resolve(record.reply, "..");
+  });
+  expect(
+    unknownRows(f)
+      .map((run) => run.folder)
+      .sort(),
+  ).toEqual(folders.sort());
+  const allowed = f.runRole("tester", ["--round-cap", "5"]);
+  expect(allowed.code).toBe(0);
+  expect(f.prompt()).toContain("This is test round 5.");
+  expect(f.prompt()).toContain(
+    "No completed builder or fixer reply is available",
+  );
+  expect(f.prompt()).not.toContain("The previous report is");
+  for (const folder of folders)
+    expect(f.prompt()).not.toContain(
+      join(folder, "reply.md").replaceAll("\\", "/"),
+    );
+});
+
+test("run records retain the old complete JSON when atomic publication is interrupted", () => {
+  const f = roleFixture();
+  const before = join(f.root, "before-publication.json");
+  const helper = join(f.root, "interrupted-publish.ts");
+  writeFileSync(
+    helper,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};let injected=false;mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{if(String(to).endsWith('run.json')&&native.existsSync(to)&&!injected){injected=true;native.writeFileSync(${JSON.stringify(before)},native.readFileSync(to));throw new Error('injected publication interruption');}return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
+  );
+  const result = f.run(["run", "one", "--role", "builder"], f.caller, helper);
+  expect(existsSync(before)).toBe(true);
+  expect(
+    JSON.parse(readFileSync(before, "utf8")) as Record<string, unknown>,
+  ).toMatchObject({ verdict: "started", end: null });
+  expect(result.code).toBe(1);
+  expect(
+    JSON.parse(
+      readFileSync(join(result.output.folder!, "run.json"), "utf8"),
+    ) as Record<string, unknown>,
+  ).toMatchObject({ verdict: "failed" });
 });
