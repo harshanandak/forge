@@ -61,7 +61,7 @@
     "fmt": "bun tools/bun-builtin.ts fmt",
     "test": "bun run gen && bun run test:unit && bun run test:integration && bun run test:pack",
     "test:unit": "bun test --parallel --timeout 30000 --path-ignore-patterns '**/*.integration.test.ts'",
-    "test:integration": "bun run build && bun test --parallel --timeout 30000 --path-ignore-patterns '**/packed.integration.test.ts' .integration.test",
+    "test:integration": "bun run build && bun test --parallel --timeout 30000 --path-ignore-patterns '**/{packed,private-files,help-examples,vcs-git,shared-store,lane-run,lane}.integration.test.ts' .integration.test && bun test --timeout 30000 test/adapters/l5-state/private-files.integration.test.ts test/surface/help-examples.integration.test.ts test/adapters/vcs-git/vcs-git.integration.test.ts test/assembly/shared-store/shared-store.integration.test.ts test/tools/lane-run.integration.test.ts test/tools/lane.integration.test.ts",
     "test:structure": "bun test --timeout 30000 test/structure",
     "test:pack": "bun run build && node tools/pack-smoke/run.ts",
     "gen": "bun tools/gen/types.ts",
