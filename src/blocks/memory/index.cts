@@ -36,9 +36,16 @@ interface Untrusted {
 interface Version {
   readonly revision: number;
   readonly text: string;
+  readonly at?: string | undefined;
+  readonly approval?: Approval & { readonly at: string };
 }
 interface NoteValue {
   readonly text: string;
+  readonly createdAt?: string;
+  readonly createdAtApprox?: true;
+  readonly changedAt?: string;
+  readonly textAt?: string;
+  readonly versionApproval?: Approval & { readonly at: string };
   readonly scope?: string;
   readonly tags: readonly string[];
   readonly links: readonly string[];
@@ -73,6 +80,7 @@ interface DecisionValue {
   readonly text: string;
   readonly consequences?: string;
   readonly status: "proposed" | "adopted";
+  readonly proposedAt?: string;
   readonly approval?: Approval & { readonly at: string };
 }
 interface DecisionFormat {
@@ -449,12 +457,15 @@ function label(source: Source) {
 function versionsOf(
   record: StateRecord,
   value: NoteValue,
-): { revision: number; at?: string }[] {
+): Omit<Version, "text">[] {
   return [
-    ...value.previous.map((entry) => ({ revision: entry.revision })),
+    ...value.previous,
     {
       revision: value.textRevision ?? record.revision,
-      ...(value.textRevision === undefined ? { at: record.updatedAt } : {}),
+      at:
+        value.textAt ??
+        (value.textRevision === undefined ? record.updatedAt : undefined),
+      ...(value.versionApproval ? { approval: value.versionApproval } : {}),
     },
   ];
 }
@@ -464,7 +475,7 @@ function present(
   record: StateRecord,
   value: NoteValue,
   text: string,
-  versions: { revision: number; at?: string }[] = versionsOf(record, value),
+  versions = shown(source.state, record, value),
 ) {
   return {
     id,
@@ -477,26 +488,42 @@ function present(
     ...(value.proposedForget === true ? { proposedForget: true as const } : {}),
     text: fence(text, `memory:${id}`, record.updatedAt),
     updatedAt: record.updatedAt,
+    ...dates(source.state, record, value),
     versions,
     ...audit(value.approval, `memory:${id}`),
   };
 }
 
-/** Show adds timestamps from one bounded, indexed page of the note's own history. */
+/** Legacy versions lack durable times; each missing stamp uses one indexed history lookup. */
 function shown(
   state: ExtendedStateClient,
   record: StateRecord,
   value: NoteValue,
-): { revision: number; at?: string }[] {
-  const at = new Map(
-    state
-      .history({ key: record.key, limit: MAX_VERSIONS + 1 })
-      .map((event) => [event.revision, event.at] as const),
-  );
-  return versionsOf(record, value).map((version) => {
-    const when = at.get(version.revision);
-    return when === undefined ? version : { ...version, at: when };
+) {
+  return versionsOf(record, value).map(({ revision, at, approval }) => {
+    const event =
+      at === undefined
+        ? state.history({ key: record.key, before: revision + 1, limit: 1 })[0]
+        : undefined;
+    return {
+      revision,
+      at: at ?? (event?.revision === revision ? event.at : record.updatedAt),
+      ...audit(approval, `memory:${record.key}:version-${revision}`),
+    };
   });
+}
+function dates(
+  state: ExtendedStateClient,
+  record: StateRecord,
+  value: NoteValue,
+) {
+  return {
+    createdAt:
+      value.createdAt ?? shown(state, record, value)[0]?.at ?? record.updatedAt,
+    ...(value.createdAt === undefined || value.createdAtApprox
+      ? { createdAtApprox: true as const }
+      : {}),
+  };
 }
 function terms(text: string): string[] {
   return text
@@ -595,6 +622,8 @@ module.exports = {
       scope: string;
       text: string;
       at: string;
+      id: string;
+      updated: string;
       source: number;
       number: number;
     }[] = [];
@@ -628,14 +657,9 @@ module.exports = {
             rules.push({
               scope: noteScope,
               text: value.text,
-              at:
-                note.record.revision === 1
-                  ? note.record.updatedAt
-                  : (source.state.history({
-                      key: note.record.key,
-                      before: 2,
-                      limit: 1,
-                    })[0]?.at ?? note.record.updatedAt),
+              at: dates(source.state, note.record, note.value).createdAt,
+              id: note.id,
+              updated: value.changedAt ?? note.record.updatedAt,
               source: sourceIndex,
               number: note.number,
             });
@@ -667,12 +691,14 @@ module.exports = {
     );
     for (const rule of rules) {
       const note = rule.text.replace(/[\s\u0085]+/gu, " ").trim();
-      if (used + note.length > 6000) {
+      const line = `- [${rule.scope}] ${rule.id} (created ${rule.at.slice(0, 10)}${rule.updated === rule.at ? "" : `, updated ${rule.updated.slice(0, 10)}`}) ${note}`;
+      const size = line.length + (lines.length ? 1 : 0);
+      if (used + size > 6000) {
         dropped++;
         continue;
       }
-      used += note.length;
-      lines.push(`- [${rule.scope}] ${note}`);
+      used += size;
+      lines.push(line);
     }
     if (dropped)
       lines.push(`${dropped} more rule notes did not fit; search them.`);
@@ -695,6 +721,7 @@ module.exports = {
   }) => {
     // An edit is a partial update: a field left out keeps its stored value, and clearing is said
     // outright (null for the scope, an empty list for tags or links). A new note has nothing to keep.
+    const at = new Date().toISOString();
     const fields = (
       previous: readonly Version[],
       kept?: NoteValue,
@@ -706,10 +733,20 @@ module.exports = {
             ? newScope
             : kept.scope
           : (input.scope ?? undefined);
+      const tags = input.tags ?? kept?.tags ?? [];
+      const changed =
+        !kept ||
+        input.text !== kept.text ||
+        scope !== kept.scope ||
+        canonical(tags) !== canonical(kept.tags);
       return {
         text: input.text,
+        createdAt: kept?.createdAt ?? at,
+        ...(kept?.createdAtApprox ? { createdAtApprox: true as const } : {}),
+        changedAt: changed ? at : (kept?.changedAt ?? kept?.createdAt ?? at),
+        textAt: at,
         ...(scope === undefined ? {} : { scope }),
-        tags: input.tags ?? kept?.tags ?? [],
+        tags,
         links: qualifiedLinks(input.links ?? kept?.links ?? []),
         previous,
         ...(kept?.approval === undefined ? {} : { approval: kept.approval }),
@@ -743,14 +780,24 @@ module.exports = {
         removed === undefined
           ? old.approval
           : approved(input.approval, "memory.add", removed);
+      const stamps = shown(source.state, existing, old);
       const value = fields(
-        [
-          ...old.previous,
-          { revision: old.textRevision ?? existing.revision, text: old.text },
-        ].slice(-MAX_VERSIONS),
-        old,
+        versionsOf(existing, old)
+          .map((version, i) => ({
+            ...version,
+            text: old.previous[i]?.text ?? old.text,
+            at: stamps[i]!.at,
+          }))
+          .slice(-MAX_VERSIONS),
+        {
+          ...old,
+          ...dates(source.state, existing, old),
+          changedAt: old.changedAt ?? existing.updatedAt,
+        },
       );
       if (approval !== undefined) Object.assign(value, { approval });
+      if (removed !== undefined)
+        Object.assign(value, { versionApproval: approval });
       const expected = canonical(value);
       const record = source.state.put(key, value, {
         expectRevision: input.expectRevision ?? existing.revision,
@@ -1003,6 +1050,7 @@ module.exports = {
             note.record.updatedAt,
           ),
           updatedAt: note.record.updatedAt,
+          ...dates(source.state, note.record, note.value),
         };
       }),
       matched: scored.length,
@@ -1227,6 +1275,9 @@ module.exports = {
     const marker = `${TRANSFER_PREFIX}${qualified(input.id)}`;
     const copy: NoteValue = {
       text: value.text,
+      ...dates(source.state, existing, value),
+      changedAt: value.changedAt ?? existing.updatedAt,
+      textAt: value.textAt ?? existing.updatedAt,
       ...(value.scope === undefined ? {} : { scope: value.scope }),
       tags: value.tags,
       links: qualifiedLinks(value.links),
@@ -1496,6 +1547,10 @@ module.exports = {
           key,
           value: {
             text: note.text.text,
+            createdAt: approval.at,
+            changedAt: approval.at,
+            textAt: approval.at,
+            versionApproval: approval,
             ...(note.scope === undefined ? {} : { scope: note.scope }),
             tags: note.tags,
             links: relinked(note.links, restored),
@@ -1548,6 +1603,7 @@ module.exports = {
           ? {}
           : { consequences: input.consequences }),
         status: "proposed",
+        proposedAt: new Date().toISOString(),
       };
       const [, record] = state.putMany([
         {
@@ -1661,6 +1717,17 @@ module.exports = {
             revision: record.revision,
             title: fence(value.title, `decision:${value.id}`, record.updatedAt),
             updatedAt: record.updatedAt,
+            proposedAt:
+              value.proposedAt ??
+              services.state.history({
+                key: record.key,
+                before: 2,
+                limit: 1,
+              })[0]?.at ??
+              record.updatedAt,
+            ...(value.status === "adopted"
+              ? { adoptedAt: value.approval?.at ?? record.updatedAt }
+              : {}),
             ...audit(value.approval, `decision:${value.id}`),
           };
         }),

@@ -69,10 +69,13 @@
         "at": {
           "type": "string",
           "maxLength": 40
+        },
+        "approval": {
+          "$ref": "defs.json#/$defs/ApprovalAudit"
         }
       },
       "additionalProperties": false,
-      "required": ["revision"]
+      "required": ["revision", "at"]
     },
     "Note": {
       "type": "object",
@@ -111,6 +114,12 @@
         "updatedAt": {
           "type": "string",
           "maxLength": 40
+        },
+        "createdAt": {
+          "$ref": "defs.json#/$defs/Version/properties/at"
+        },
+        "createdAtApprox": {
+          "const": true
         },
         "versions": {
           "type": "array",

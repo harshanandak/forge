@@ -392,7 +392,7 @@ test("every write operation is exactly one transaction, so one durable commit pe
   });
 }, 30_000);
 
-test("a note response never waits on the event log: add and edit read no history, show reads one bounded page", async () => {
+test("new note responses use durable version times without reading the event log", async () => {
   const entry = loadEntry("memory");
   const state = memoryState();
   const noHistory = () => {
@@ -412,8 +412,7 @@ test("a note response never waits on the event log: add and edit read no history
     input: { id: "device/note-1" },
     services: { state, levels: state },
   })) as { note: { versions: { revision: number }[] } };
-  // One page, not the whole log; the kept versions come from the record itself.
-  expect(state.counts.history).toBe(1);
+  noHistory();
   expect(state.counts.events).toBe(0);
   expect(shown.note.versions.map((version) => version.revision)).toEqual([
     1, 2,

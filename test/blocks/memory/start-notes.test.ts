@@ -47,7 +47,7 @@ test("startup notes include only live rule text in scope order, with the legacy 
   const pointer = (await read({})).text.text;
   expect((await read({ notes: false })).text.text).toBe(pointer);
   expect((await read({ notes: true })).text.text).toBe(
-    `- [general] general first rule\n- [general] general second\n- [resolved] project first\n- [resolved] project second\n${pointer}`,
+    `- [general] device/note-1 (created 2026-10-18) general first rule\n- [general] device/note-6 (created 2026-10-18) general second\n- [resolved] device/note-2 (created 2026-10-18) project first\n- [resolved] project/0123456789abcdef/note-1 (created 2026-10-18) project second\n${pointer}`,
   );
   expect(pointer).toContain("general 3, resolved 2.");
   expect(device.counts.putMany).toBe(0);
@@ -56,8 +56,11 @@ test("startup notes include only live rule text in scope order, with the legacy 
 
 test("startup note budget keeps whole notes, skips oversized notes and reports every omission", async () => {
   const state = memoryState();
+  const prefix = (n: number) =>
+    `- [general] device/note-${n} (created 2026-10-18) `;
+  const textLength = 6000 - prefix(1).length - 1 - prefix(3).length - 3;
   for (const [n, text] of [
-    [1, "a".repeat(5997)],
+    [1, "a".repeat(textLength)],
     [2, "oversized"],
     [3, "end"],
     [4, "dropped"],
@@ -81,7 +84,7 @@ test("startup note budget keeps whole notes, skips oversized notes and reports e
     })) as { text: { text: string } };
   const pointer = (await read({})).text.text;
   expect((await read({ notes: true })).text.text).toBe(
-    `- [general] ${"a".repeat(5997)}\n- [general] end\n2 more rule notes did not fit; search them.\n${pointer}`,
+    `${prefix(1)}${"a".repeat(textLength)}\n${prefix(3)}end\n2 more rule notes did not fit; search them.\n${pointer}`,
   );
 }, 30_000);
 
@@ -120,7 +123,7 @@ test("startup notes merge device and project by recorded timestamp within each s
     services: { state, levels },
   })) as { text: { text: string } };
   expect(result.text.text).toStartWith(
-    "- [general] older project\n- [general] newer device\n",
+    "- [general] project/0123456789abcdef/note-1 (created 2020-01-01) older project\n- [general] device/note-1 (created 2026-10-18) newer device\n",
   );
 }, 30_000);
 
@@ -144,7 +147,9 @@ test("startup notes reread edits and tombstones, and general scope never duplica
     { ...value, text: "live after" },
     { expectRevision: 1 },
   );
-  expect((await read()).text.text).toStartWith("- [general] live after\n");
+  expect((await read()).text.text).toStartWith(
+    "- [general] device/note-1 (created 2026-10-18) live after\n",
+  );
   state.put(
     "note/000000001",
     { ...value, deleted: true },
@@ -178,22 +183,24 @@ test("editing an old rule does not move it behind newer rules", async () => {
     listRange: (options: Parameters<typeof state.listRange>[0]) =>
       state.listRange(options).map((record) => ({
         ...record,
+        value: {
+          ...(record.value as object),
+          createdAt: originalAt(record.key),
+          ...(record.key.endsWith("1")
+            ? { changedAt: "2026-01-01T00:00:00Z" }
+            : {}),
+        },
         revision: record.key.endsWith("1") ? 2 : 1,
         updatedAt: record.key.endsWith("1")
           ? "2026-01-01T00:00:00Z"
           : originalAt(record.key),
       })),
-    history: (options: Parameters<typeof state.history>[0]) => {
-      expect(options.before).toBe(2);
-      expect(options.limit).toBe(1);
-      return [{ at: originalAt(options.key) }];
-    },
   };
   const result = (await loadEntry("memory")["memory.rules"]!({
     input: { notes: true },
     services: { state: recorded, levels: state },
   })) as { text: { text: string } };
   expect(result.text.text).toStartWith(
-    "- [general] older edited rule\n- [general] newer rule\n",
+    "- [general] device/note-1 (created 2020-01-01, updated 2026-01-01) older edited rule\n- [general] device/note-2 (created 2021-01-01) newer rule\n",
   );
 }, 30_000);

@@ -693,6 +693,19 @@ async function rules() {
       JSON.stringify({ text: marker, level, scope, tags }),
     ]).result;
   const device = add("device", "general", ["rule"]);
+  assert.equal(
+    typeof device.note.createdAt,
+    "string",
+    "first decision time is returned",
+  );
+  const createdDate = device.note.createdAt.slice(0, 10);
+  const packet = () =>
+    cli(["memory", "rules", "--input", '{"notes":true}']).result.text.text;
+  assert.ok(
+    packet().includes(
+      `${device.id} (created ${createdDate}) deploy PRIVATE_STARTUP_MARKER`,
+    ),
+  );
   add("device", null);
   const scope = mode === "rules" ? "myproj" : "project";
   add("device", scope);
@@ -737,6 +750,27 @@ async function rules() {
   assert.ok(search.hits.length > 0);
   const shown = cli(["memory", "show", search.hits[0].id]).result;
   assert.equal(shown.note.text.text, marker);
+  assert.equal(shown.note.createdAt, search.hits[0].createdAt);
+  assert.equal(
+    search.hits.find((hit) => hit.id === device.id).createdAt,
+    device.note.createdAt,
+  );
+  const edited = cli([
+    "memory",
+    "add",
+    "--input",
+    JSON.stringify({
+      id: device.id,
+      expectRevision: 1,
+      text: "dated rule revision",
+    }),
+  ]).result.note;
+  assert.equal(edited.createdAt, device.note.createdAt);
+  assert.ok(
+    packet().includes(
+      `${device.id} (created ${createdDate}, updated ${edited.updatedAt.slice(0, 10)}) dated rule revision`,
+    ),
+  );
   const outside = join(work, "outside");
   mkdirSync(outside);
   const deviceOnly = cli(["memory", "rules"], 0, outside).result;
