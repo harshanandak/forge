@@ -211,11 +211,18 @@ function reclaim(lock: string): void {
     // Atomic publication is nonempty; empty locks can only be abandoned cleanup.
     if (owners.length === 0) return removeEmpty(lock);
     const owner = owners.length === 1 ? owners[0] : undefined;
-    const match = owner?.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}$/);
+    const match = owner?.match(
+      /^owner-([1-9]\d*)-[0-9a-f-]{36}(?:-([1-9]\d*))?$/,
+    );
     if (!match) return;
     try {
       process.kill(Number(match[1]), 0);
       return;
+    } catch (error) {
+      if (!object(error) || error.code !== "ESRCH") return;
+    }
+    try {
+      if (match[2] && process.kill(Number(match[2]), 0)) return;
     } catch (error) {
       if (!object(error) || error.code !== "ESRCH") return;
     }
@@ -284,7 +291,13 @@ async function main(): Promise<number> {
               "lane already running; wait for it to finish and retry",
             );
           }
-          return () => release(lock, owner);
+          let current = owner;
+          return (pid) => {
+            if (!pid) return release(lock, current);
+            const next = `${owner}-${pid}`;
+            renameSync(join(lock, current), join(lock, next));
+            current = next;
+          };
         },
       });
     if (parsed === "list") {

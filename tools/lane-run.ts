@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 export type RunOptions = {
   worktree: string;
@@ -18,6 +19,7 @@ export type RunOptions = {
   prompt: string;
   resume?: string;
   readOnly?: boolean;
+  started?: (pid: number) => void;
 };
 export async function runCodex(
   options: RunOptions,
@@ -38,6 +40,14 @@ export async function runCodex(
     retries = 0,
     stoppedAfterReply = false;
   let exit: number | null;
+  const controller = new AbortController(),
+    signals = ["SIGINT", "SIGTERM"] as const;
+  let stop = () => {};
+  const interrupt = () => {
+    controller.abort();
+    stop();
+  };
+  for (const signal of signals) process.on(signal, interrupt);
   try {
     for (;;) {
       const offset = retries ? readFileSync(log, "utf8").length : 0;
@@ -85,15 +95,33 @@ export async function runCodex(
       );
       const promptFile = openSync(promptPath, "r");
       let seen: number | undefined;
+      let timer: ReturnType<typeof setInterval> | undefined;
       try {
         exit = await new Promise<number | null>((done, fail) => {
           const child = spawn(command, args, {
             cwd: worktree,
             stdio: [promptFile, output, output],
             windowsHide: true,
-            detached: process.platform !== "win32",
+            detached: true,
           });
-          const timer = setInterval(() => {
+          stop = () => {
+            if (child.exitCode !== null || child.signalCode !== null) return;
+            if (process.platform === "win32")
+              spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)], {
+                windowsHide: true,
+                stdio: "ignore",
+                timeout: 10_000,
+              });
+            else if (child.pid) process.kill(-child.pid, "SIGKILL");
+          };
+          child.once("error", fail);
+          child.once("close", done);
+          try {
+            if (child.pid) options.started?.(child.pid);
+          } catch {
+            interrupt();
+          }
+          timer = setInterval(() => {
             if (seen === undefined && existsSync(reply)) seen = Date.now();
             if (
               seen !== undefined &&
@@ -101,28 +129,17 @@ export async function runCodex(
               child.exitCode === null
             ) {
               stoppedAfterReply = true;
-              if (process.platform === "win32")
-                spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)], {
-                  windowsHide: true,
-                  stdio: "ignore",
-                  timeout: 10_000,
-                });
-              else if (child.pid) process.kill(-child.pid, "SIGKILL");
+              stop();
             }
           }, timing.pollMs);
-          child.once("error", (error) => {
-            clearInterval(timer);
-            fail(error);
-          });
-          child.once("close", (code) => {
-            clearInterval(timer);
-            done(code);
-          });
         });
       } finally {
+        clearInterval(timer);
+        stop = () => {};
         closeSync(promptFile);
         closeSync(output);
       }
+      if (controller.signal.aborted) throw new Error("lane run interrupted");
       const text = readFileSync(log, "utf8").slice(offset);
       session ??=
         text.match(
@@ -138,12 +155,13 @@ export async function runCodex(
       )
         break;
       retries++;
-      await new Promise((done) =>
-        setTimeout(done, timing.retryDelayMs * retries),
-      );
+      await delay(timing.retryDelayMs * retries, undefined, {
+        signal: controller.signal,
+      });
     }
     return { session, reply, log, exit, retries, stoppedAfterReply };
   } finally {
+    for (const signal of signals) process.off(signal, interrupt);
     writeFileSync(join(folder, "end.txt"), new Date().toISOString() + "\n");
   }
 }
@@ -158,7 +176,7 @@ export async function laneRun(
     configRoot: string;
     lanes: { issue: string; worktree: string; brief: string }[];
     issue: (id: string) => string;
-    lock: (id: string) => () => void;
+    lock: (id: string) => (pid?: number) => void;
   },
 ) {
   let role: string | null = null,
@@ -166,7 +184,7 @@ export async function laneRun(
     model: string | null = null,
     effort: string | null = null,
     folder: string | null = null;
-  let unlock: (() => void) | undefined;
+  let unlock: ((pid?: number) => void) | undefined;
   const report = (data: Record<string, unknown>) =>
     console.log(
       JSON.stringify({
@@ -262,6 +280,7 @@ export async function laneRun(
       model,
       effort,
       prompt,
+      started: unlock,
       readOnly: role === "reviewer",
       ...(resume ? { resume } : {}),
     });

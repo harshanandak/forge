@@ -90,6 +90,7 @@ const root=process.env.LANE_FIXTURE,args=process.argv.slice(2),file=join(root,'a
 const prompt=readFileSync(0,'utf8');const count=existsSync(file)?readFileSync(file,'utf8').trim().split('\n').length:0;
 appendFileSync(file,JSON.stringify({args,cwd:process.cwd(),prompt})+'\n');
 const mode=readFileSync(join(root,'mode'),'utf8');
+writeFileSync(join(root,'harness-pid'),String(process.pid));
 if(mode==='capacity'||mode==='limit')console.log('session id: fake-session');else console.log(JSON.stringify({type:'thread.started',thread_id:'fake-session'}));
 if(mode==='limit'||(mode==='capacity'&&count===0)){console.log('Selected model is at capacity');process.exit(1)}
 const flag=args.findIndex(a=>a==='--output-last-message'||a==='-o');if(flag<0)process.exit(8);
@@ -183,10 +184,10 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
     expect(result.code).toBe(0);
     return result.output.worktree!;
   }
-  function launch() {
+  function launch(entry = script, allowEmpty = false) {
     const child = spawn(
       process.execPath,
-      [script, "run", "one", "--role", "builder"],
+      [entry, "run", "one", "--role", "builder"],
       {
         cwd: caller,
         env,
@@ -194,8 +195,8 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
         timeout: 20_000,
       },
     );
-    return new Promise<{ code: number | null; output: Verdict }>(
-      (done, fail) => {
+    return Object.assign(
+      new Promise<{ code: number | null; output: Verdict }>((done, fail) => {
         let stdout = "";
         child.stdout.on("data", (chunk: Buffer) => {
           stdout += chunk.toString();
@@ -203,7 +204,10 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
         child.once("error", fail);
         child.once("close", (code) => {
           try {
-            done({ code, output: JSON.parse(stdout) as Verdict });
+            done({
+              code,
+              output: JSON.parse(stdout || (allowEmpty ? "{}" : "")) as Verdict,
+            });
           } catch (error) {
             fail(
               error instanceof Error
@@ -212,7 +216,8 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
             );
           }
         });
-      },
+      }),
+      { child },
     );
   }
   const attempts = () =>
@@ -358,6 +363,83 @@ test("concurrent builders are refused until the active lane run finishes", async
   writeFileSync(join(f.root, "mode"), "ok");
   expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
 });
+
+async function waitForProcess(ready: () => boolean) {
+  const deadline = Date.now() + 8_000;
+  while (!ready() && Date.now() < deadline)
+    await new Promise((done) => setTimeout(done, 20));
+  expect(ready()).toBe(true);
+}
+function alive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("hard-killed runner retains the harness lock until the harness exits", async () => {
+  const f = fixture();
+  f.start();
+  writeFileSync(join(f.root, "mode"), "hold");
+  const first = f.launch(script, true);
+  let pid = 0;
+  let second: ReturnType<typeof f.run> | undefined;
+  try {
+    await waitForProcess(() => existsSync(join(f.root, "harness-pid")));
+    pid = Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
+    expect(first.child.kill("SIGKILL")).toBe(true);
+    await first;
+    expect(alive(pid)).toBe(true);
+    writeFileSync(join(f.root, "mode"), "ok");
+    second = f.run(["run", "one", "--role", "builder"]);
+  } finally {
+    writeFileSync(join(f.root, "finish"), "finish");
+    await first;
+    if (pid) await waitForProcess(() => !alive(pid));
+  }
+  const reclaimed = f.run(["run", "one", "--role", "builder"]);
+  expect(second?.code).toBe(1);
+  expect(second?.output.verdict).toBe("refused");
+  expect(second?.output.next).toMatch(/wait|finish/i);
+  expect(reclaimed.code).toBe(0);
+  expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
+});
+
+async function signalRun(emitted: boolean) {
+  const f = fixture();
+  f.start();
+  writeFileSync(join(f.root, "mode"), "hold");
+  const helper = join(f.root, "emit-term.ts");
+  writeFileSync(
+    helper,
+    `import {existsSync} from 'node:fs';const timer=setInterval(()=>{if(existsSync(${JSON.stringify(join(f.root, "signal"))})){clearInterval(timer);process.emit('SIGTERM');}},20);await import(${JSON.stringify(script)});`,
+  );
+  const first = f.launch(emitted ? helper : script, true);
+  let pid = 0;
+  try {
+    await waitForProcess(() => existsSync(join(f.root, "harness-pid")));
+    pid = Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
+    if (emitted) writeFileSync(join(f.root, "signal"), "terminate");
+    else expect(first.child.kill("SIGTERM")).toBe(true);
+    expect((await first).code).not.toBe(0);
+    await waitForProcess(() => !alive(pid));
+    expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
+  } finally {
+    writeFileSync(join(f.root, "finish"), "finish");
+    await first;
+    if (pid) await waitForProcess(() => !alive(pid));
+  }
+  writeFileSync(join(f.root, "mode"), "ok");
+  expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
+}
+test.skipIf(process.platform === "win32")(
+  "SIGTERM stops the harness and releases the lock",
+  () => signalRun(false),
+);
+test("SIGTERM handler stops the real harness tree and releases the lock", () =>
+  signalRun(true));
 
 test("brief restores the wrong-issue stop rule verbatim", () => {
   const rule =
