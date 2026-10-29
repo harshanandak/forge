@@ -126,23 +126,38 @@ for (const shell of shells) {
         const found = children.resolve(executable, env);
         if (found.kind !== "resolved")
           throw new Error(`${executable} is unavailable`);
+        let outputBytes = 0;
         const result = await children.run(found, args, {
           cwd: root,
           env,
           timeoutMs: 20_000,
           maxOutputBytes: 1_000_000,
+          observer: {
+            push(_stream, chunk) {
+              outputBytes += chunk.byteLength;
+            },
+          },
         });
         const op = [...result.stderr.matchAll(/^START ([^\r\n]+)/gm)].at(
           -1,
         )?.[1];
         const example = cases.find((item) => item.op === op)?.example;
+        const step = `${shell}: ${op ?? "shell startup"}: ${example ?? ""}`;
+        if (result.truncated)
+          throw new Error(
+            `${step}: output truncated after ${outputBytes} bytes`,
+          );
         const diagnostic = `${shell}: ${op ?? "shell startup"}: ${example ?? ""}\n${result.stdout}\n${result.stderr}`;
         expect(result.timedOut, diagnostic).toBe(false);
         expect(result.exitCode, diagnostic).toBe(0);
+        expect(
+          result.stdout.trimEnd().endsWith(marker),
+          `${step}: missing final frame terminator`,
+        ).toBe(true);
         return result;
       });
       const outputs = result.stdout.split(marker);
-      if (outputs.at(-1)?.trim() === "") outputs.pop();
+      outputs.pop();
       for (const [index, { op, example }] of cases.entries()) {
         await childStep(`${shell}: ${op}: ${example}`, () => {
           const diagnostic = `${shell}: ${example}\n${result.stdout}\n${result.stderr}`;
@@ -175,7 +190,15 @@ for (const shell of shells) {
   }, 120_000);
 }
 
-test.each(["stall", "bad-json", "missing", "mismatch", "bad-exit", "invalid"])(
+test.each([
+  "stall",
+  "bad-json",
+  "missing",
+  "mismatch",
+  "bad-exit",
+  "invalid",
+  "overflow",
+])(
   "help regression: %s identifies the example and stops its child",
   async (mode) => {
     const probe = mkdtempSync(join(tmpdir(), "forge-help-fault-"));
@@ -245,6 +268,10 @@ test.each(["stall", "bad-json", "missing", "mismatch", "bad-exit", "invalid"])(
       if (mode === "stall") {
         expect(aliveAtFailure, output).toBe(false);
         expect(output).not.toContain("EBUSY");
+      } else if (mode === "overflow") {
+        expect(output).toMatch(
+          /config\.preview: forge config preview[^\n]*truncated[^\n]*\d+ bytes/,
+        );
       } else {
         expect(output).toContain("memory.add");
         expect(output).toContain("forge memory add --input");
