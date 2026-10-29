@@ -12,7 +12,7 @@ afterEach(async () => {
   h = undefined;
 });
 
-test("noninteractive local calls refuse every human-only verb and preserve notes and decisions", async () => {
+test("noninteractive local calls need conversation approval and preserve notes and decisions", async () => {
   h = await openHarness(["memory"], {
     "memory.decisions": { idPattern: "ADR-NNN" },
   });
@@ -40,11 +40,9 @@ test("noninteractive local calls refuse every human-only verb and preserve notes
       ok: false,
       error: { code: "HUMAN_REQUIRED" },
     });
-    expect(!result.ok && result.error.repair).toContain("terminal");
-    if (op === "memory.forget")
-      expect(!result.ok && result.error.repair).toContain(
-        "memory propose-forget",
-      );
+    expect(!result.ok && result.error.repair).toContain(
+      "Ask the owner in the conversation",
+    );
     expect(await mcp.callTool("catalog_call", { op, input })).toMatchObject({
       ok: false,
       error: { code: "HUMAN_REQUIRED" },
@@ -79,14 +77,27 @@ test("noninteractive local calls refuse every human-only verb and preserve notes
   });
 }, 30_000);
 
-test("failed host approval refuses before invoking or resolving any context", async () => {
-  const catalog = fakeCatalog([
+test("failed terminal confirmation preserves the operation refusal", async () => {
+  const catalog = fakeCatalog(
+    [
+      {
+        ...candidate("memory.forget"),
+        blockId: "forge/memory",
+        declaredOp: "memory.forget",
+      },
+    ],
     {
-      ...candidate("memory.forget", { callers: ["human"] }),
-      blockId: "forge/memory",
-      declaredOp: "memory.forget",
+      ok: false,
+      op: "memory.forget",
+      status: "FAIL",
+      warnings: [],
+      error: {
+        code: "HUMAN_REQUIRED",
+        message: "Approval needed",
+        retry: "never",
+      },
     },
-  ]);
+  );
   const result = await dispatch(
     catalog,
     "memory.forget",
@@ -94,16 +105,14 @@ test("failed host approval refuses before invoking or resolving any context", as
     {
       caller: "human",
       confirmHuman: () => Promise.reject(new Error("terminal closed")),
-      resolveContext: () => {
-        throw new Error("must not resolve");
-      },
     },
   );
   expect(result).toMatchObject({
     ok: false,
     error: { code: "HUMAN_REQUIRED" },
   });
-  expect(catalog.calls).toEqual([]);
+  expect(catalog.calls).toHaveLength(1);
+  expect(catalog.calls[0]?.input).toEqual({});
 }, 30_000);
 
 test("local owner confirmation requires a terminal, an exact answer and no agent harness", async () => {
@@ -153,8 +162,15 @@ test("local owner confirmation requires a terminal, an exact answer and no agent
   }
 }, 30_000);
 
-test("an agent cannot approve a human-only call, including through catalog.call", async () => {
+test("an agent cannot use the terminal callback, including through catalog.call", async () => {
   h = await openHarness(["memory"]);
+  done(
+    await h.call("memory.add", {
+      level: "device",
+      text: "owner rule",
+      tags: ["rule"],
+    }),
+  );
   for (const [op, input] of [
     ["memory.forget", { id: "device/note-1" }],
     ["catalog.call", { op: "memory.forget", input: { id: "device/note-1" } }],
@@ -197,6 +213,16 @@ test("human approval is required on each call and is carried to the catalog targ
       { ...options, confirmHuman: () => Promise.resolve(true) },
     ),
   ).toMatchObject({ ok: true, result: { status: "forgotten" } });
+  expect(
+    done(await h.call("memory.show", { id: "device/note-1" })),
+  ).toMatchObject({
+    status: "forgotten",
+    approval: {
+      by: "owner",
+      quote: { text: "confirmed in terminal" },
+      at: expect.any(String) as unknown,
+    },
+  });
 }, 30_000);
 
 test("the memory confirmation guard leaves core admission, grants and recovery unchanged", async () => {

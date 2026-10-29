@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { createAssembly } from "../../../src/assembly/index.ts";
 import {
+  ownerApproval,
   done,
   loadEntry,
   memoryState,
@@ -99,14 +100,22 @@ test("notes are written, read, edited as versions and forgotten under the device
   expect(stale.ok).toBe(false);
   expect(!stale.ok && stale.error?.code).toBe("REVISION_CONFLICT");
 
-  expect(done(await h.call("memory.forget", { id: "device/note-1" }))).toEqual({
+  expect(
+    done(
+      await h.call("memory.forget", {
+        approval: ownerApproval,
+        id: "device/note-1",
+      }),
+    ),
+  ).toEqual({
     status: "forgotten",
     id: "device/note-1",
   });
   expect(
     done(await h.call("memory.show", { id: "device/note-1" }, agent)),
-  ).toEqual({
+  ).toMatchObject({
     status: "forgotten",
+    approval: { by: "owner" },
   });
   expect(
     done(await h.call("memory.search", { query: "release" }, agent)),
@@ -302,12 +311,26 @@ test("export and restore round-trip notes and leave existing ones alone", async 
   const second = await openHarness(["memory"], LEVELS);
   try {
     const target = { context: second.deviceOnly(), caller: "agent" as const };
-    expect(done(await second.call("memory.restore", exported))).toEqual({
+    expect(
+      done(
+        await second.call("memory.restore", {
+          ...(exported as object),
+          approval: ownerApproval,
+        }),
+      ),
+    ).toEqual({
       added: 2,
       skipped: 0,
       conflicts: [],
     });
-    expect(done(await second.call("memory.restore", exported))).toEqual({
+    expect(
+      done(
+        await second.call("memory.restore", {
+          ...(exported as object),
+          approval: ownerApproval,
+        }),
+      ),
+    ).toEqual({
       added: 0,
       skipped: 2,
       conflicts: [],
@@ -329,7 +352,14 @@ test("export and restore round-trip notes and leave existing ones alone", async 
         target,
       ),
     );
-    expect(done(await second.call("memory.restore", exported))).toMatchObject({
+    expect(
+      done(
+        await second.call("memory.restore", {
+          ...(exported as object),
+          approval: ownerApproval,
+        }),
+      ),
+    ).toMatchObject({
       added: 0,
       conflicts: ["device/note-1"],
     });
@@ -338,7 +368,7 @@ test("export and restore round-trip notes and leave existing ones alone", async 
   }
 }, 60_000);
 
-test("destructive and bulk operations are human only", async () => {
+test("destructive and bulk operations require recorded approval for agents", async () => {
   const { h, agent } = await open();
   done(await h.call("memory.add", { text: "x" }, agent));
   for (const [op, input] of [
@@ -407,16 +437,28 @@ test("decisions follow the project's own id format and numbering", async () => {
   ) as { id: string };
   expect(second.id).toBe("D-047");
 
-  // Adopting is a human choice.
+  // Adoption defaults to owner approval in the conversation.
   const refused = await h.call("decision.adopt", { id: "D-046" }, agent);
   expect(refused.ok).toBe(false);
-  expect(done(await h.call("decision.adopt", { id: "D-046" }))).toMatchObject({
+  expect(
+    done(
+      await h.call("decision.adopt", { approval: ownerApproval, id: "D-046" }),
+    ),
+  ).toMatchObject({
     status: "adopted",
   });
-  expect(done(await h.call("decision.adopt", { id: "D-046" }))).toMatchObject({
+  expect(
+    done(
+      await h.call("decision.adopt", { approval: ownerApproval, id: "D-046" }),
+    ),
+  ).toMatchObject({
     status: "already_adopted",
   });
-  expect(done(await h.call("decision.adopt", { id: "D-999" }))).toMatchObject({
+  expect(
+    done(
+      await h.call("decision.adopt", { approval: ownerApproval, id: "D-999" }),
+    ),
+  ).toMatchObject({
     status: "not_found",
   });
   const listed = done(await h.call("decision.list", {}, agent)) as {

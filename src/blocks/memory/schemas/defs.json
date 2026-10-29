@@ -121,6 +121,9 @@
         "from": {
           "$ref": "defs.json#/$defs/NoteId",
           "description": "The note this one was moved or copied from."
+        },
+        "approval": {
+          "$ref": "defs.json#/$defs/ApprovalAudit"
         }
       },
       "additionalProperties": false,
@@ -241,6 +244,82 @@
       "items": {
         "$ref": "defs.json#/$defs/NoteRef"
       }
+    },
+    "Approval": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "enum": ["owner", "agent"]
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": false,
+      "required": ["by"],
+      "allOf": [
+        {
+          "$ref": "defs.json#/$defs/ApprovalChoice"
+        }
+      ]
+    },
+    "ApprovalAudit": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "enum": ["owner", "agent"]
+        },
+        "quote": {
+          "$ref": "defs.json#/$defs/Untrusted"
+        },
+        "reason": {
+          "$ref": "defs.json#/$defs/Untrusted"
+        },
+        "at": {
+          "type": "string",
+          "maxLength": 40
+        }
+      },
+      "additionalProperties": false,
+      "required": ["by", "at"],
+      "allOf": [
+        {
+          "$ref": "defs.json#/$defs/ApprovalChoice"
+        }
+      ]
+    },
+    "ApprovalChoice": {
+      "oneOf": [
+        {
+          "properties": {
+            "by": {
+              "const": "owner"
+            }
+          },
+          "required": ["quote"],
+          "not": {
+            "required": ["reason"]
+          }
+        },
+        {
+          "properties": {
+            "by": {
+              "const": "agent"
+            }
+          },
+          "required": ["reason"],
+          "not": {
+            "required": ["quote"]
+          }
+        }
+      ]
     }
   }
 }

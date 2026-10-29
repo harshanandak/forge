@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { blockSchema, loadEntry, memoryState, type Counts } from "./lib.ts";
+import {
+  ownerApproval,
+  blockSchema,
+  loadEntry,
+  memoryState,
+  type Counts,
+} from "./lib.ts";
 import type { ExtendedStateClient } from "../../../src/ports/state.ts";
 
 // Scale is shown by counting what the block asks of the store and of its own tables, never by
@@ -71,7 +77,7 @@ async function backup(count: number, length: number) {
     expect(chunk.count).toBeLessThanOrEqual(25);
     reset(target.counts);
     const result = (await entry["memory.restore"]!({
-      input: chunk,
+      input: { ...(chunk as object), approval: ownerApproval },
       services: { state: target, levels: target },
     })) as { added: number; conflicts: string[] };
     // The whole page is one batch write; only the counter is written separately.
@@ -112,7 +118,12 @@ test("a restore page costs one batch write, not one write per note", async () =>
     text: { kind: "untrusted", source: "s", text: `n${index}` },
   }));
   await entry["memory.restore"]!({
-    input: { format: "forge.memory.export/2", level: "device", notes },
+    input: {
+      approval: ownerApproval,
+      format: "forge.memory.export/2",
+      level: "device",
+      notes,
+    },
     services: { state, levels: state },
   });
   // Before: 25 single writes (25 transactions, 25 syncs) plus one for the counter. After: one
@@ -341,7 +352,7 @@ test("every write operation is exactly one transaction, so one durable commit pe
   const adopt = await measure(
     async () =>
       await entry["decision.adopt"]!({
-        input: { id: "D-001" },
+        input: { approval: ownerApproval, id: "D-001" },
         services: { state, levels: state },
       }),
   );
@@ -349,6 +360,7 @@ test("every write operation is exactly one transaction, so one durable commit pe
     async () =>
       await entry["memory.restore"]!({
         input: {
+          approval: ownerApproval,
           format: "forge.memory.export/2",
           level: "device",
           notes: [
@@ -366,7 +378,7 @@ test("every write operation is exactly one transaction, so one durable commit pe
   const forget = await measure(
     async () =>
       await entry["memory.forget"]!({
-        input: { id: "device/note-1" },
+        input: { approval: ownerApproval, id: "device/note-1" },
         services: { state, levels: state },
       }),
   );

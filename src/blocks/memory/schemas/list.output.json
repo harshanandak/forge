@@ -37,6 +37,9 @@
           "updatedAt": {
             "type": "string",
             "maxLength": 40
+          },
+          "approval": {
+            "$ref": "defs.json#/$defs/ApprovalAudit"
           }
         },
         "additionalProperties": false,

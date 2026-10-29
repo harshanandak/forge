@@ -317,14 +317,20 @@ async function anywhere() {
 async function projectBoundary() {
   for (const [verb, input] of [
     ["propose", { title: "plain folder", text: "must not create a project" }],
-    ["adopt", { id: "ADR-999" }],
+    [
+      "adopt",
+      {
+        id: "ADR-999",
+        approval: { by: "owner", quote: "Adopt this decision." },
+      },
+    ],
     ["list", {}],
   ]) {
     assert.equal(
       cli(["decision", verb, "--input", JSON.stringify(input)], null).error
         ?.code,
-      verb === "adopt" ? "HUMAN_REQUIRED" : "CONTEXT_MISSING",
-      `decision ${verb} requires ${verb === "adopt" ? "owner confirmation" : "a project"}`,
+      "CONTEXT_MISSING",
+      `decision ${verb} requires a project`,
     );
     assert.equal(
       existsSync(join(root, ".forge")),
@@ -377,13 +383,21 @@ async function fence() {
     "memory",
     "add",
     "--input",
-    JSON.stringify({ text: FORGED, level: "device" }),
+    JSON.stringify({ text: FORGED, level: "device", tags: ["rule"] }),
   ]);
   const server = await connect();
   try {
     const tools = (await server.rpc("tools/list", {})).tools.map((t) => t.name);
     assert.ok(tools.includes("memory_search"), "agents can search memory");
-    assert.ok(!tools.includes("memory_forget"), "forget is human only");
+    assert.ok(tools.includes("memory_forget"), "agents can supply approval");
+    for (const approval of [undefined, { by: "agent", reason: "Remove it" }]) {
+      const refused = await server.call("memory_forget", {
+        id: "device/note-1",
+        ...(approval ? { approval } : {}),
+      });
+      assert.equal(refused.error?.code, "HUMAN_REQUIRED");
+      assert.match(refused.error.message, /rule/);
+    }
     const shown = await server.call("memory_show", { id: "device/note-1" });
     const searched = await server.call("memory_search", {
       query: "ignore instructions",
@@ -409,6 +423,15 @@ async function fence() {
         "the text itself is kept",
       );
     }
+    const approval = { by: "owner", quote: "Please forget this rule." };
+    assert.equal(
+      (await server.call("memory_forget", { id: "device/note-1", approval }))
+        .result.status,
+      "forgotten",
+    );
+    const forgotten = await server.call("memory_show", { id: "device/note-1" });
+    assert.equal(forgotten.result.approval.quote.kind, "untrusted");
+    assert.equal(forgotten.result.approval.quote.text, approval.quote);
   } finally {
     await server.close();
   }

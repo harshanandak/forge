@@ -1,5 +1,5 @@
 // forge/memory: project and device knowledge. One self-contained file: no imports at run time, no
-// clock, no files, only the bound `state` client.
+// files, only the bound state clients.
 //
 // Notes live at one of two levels. Device notes are in the device store and are visible from every
 // project on the device. Project notes are in the caller's project store and are visible only inside
@@ -52,7 +52,13 @@ interface NoteValue {
   readonly proposedForget?: true;
   /** On a moved note's tombstone: where it went. */
   readonly movedTo?: string;
+  /** Forget keeps recovery data private; readers never present this value. */
+  readonly forgotten?: NoteValue;
+  readonly approval?: Approval & { readonly at: string };
 }
+type Approval =
+  | { readonly by: "owner"; readonly quote: string }
+  | { readonly by: "agent"; readonly reason: string };
 interface NoteFields {
   readonly text: string;
   /** On an edit, null clears the scope and absent keeps it. */
@@ -67,6 +73,7 @@ interface DecisionValue {
   readonly text: string;
   readonly consequences?: string;
   readonly status: "proposed" | "adopted";
+  readonly approval?: Approval & { readonly at: string };
 }
 interface DecisionFormat {
   readonly idPattern?: string;
@@ -79,6 +86,10 @@ type LevelDefault = "required" | "nearest" | "project" | "device";
 interface MemoryConfig {
   readonly scope?: string;
   readonly decisions?: DecisionFormat;
+  readonly approval?: {
+    readonly ownerTags?: readonly string[];
+    readonly adopt?: "owner" | "agent";
+  };
   readonly levels?: {
     readonly human?: LevelDefault;
     readonly agent?: LevelDefault;
@@ -149,6 +160,41 @@ function fence(text: string, source: string, receivedAt?: string): Untrusted {
   };
   if (receivedAt !== undefined) fenced.receivedAt = receivedAt;
   return fenced;
+}
+function ownerTag(
+  tags: readonly string[],
+  config: MemoryConfig,
+): string | undefined {
+  return tags.find((tag) =>
+    (config.approval?.ownerTags ?? ["rule", "preference", "decision"]).includes(
+      tag,
+    ),
+  );
+}
+function approved(
+  approval: Approval | undefined,
+  operation: string,
+  rule?: string,
+): Approval & { at: string } {
+  if (!approval || (rule !== undefined && approval.by !== "owner"))
+    fail(
+      "HUMAN_REQUIRED",
+      `${operation} requires approval${rule === undefined ? "" : ` by owner for ${rule}`}. Ask the owner in the conversation, then retry with approval by owner and their words.`,
+    );
+  return { ...approval, at: new Date().toISOString() };
+}
+function audit(approval: NoteValue["approval"], source: string) {
+  return approval === undefined
+    ? {}
+    : {
+        approval: {
+          by: approval.by,
+          at: approval.at,
+          ...(approval.by === "owner"
+            ? { quote: fence(approval.quote, `${source}:approval`) }
+            : { reason: fence(approval.reason, `${source}:approval`) }),
+        },
+      };
 }
 
 function conflict(error: unknown): boolean {
@@ -432,6 +478,7 @@ function present(
     text: fence(text, `memory:${id}`, record.updatedAt),
     updatedAt: record.updatedAt,
     versions,
+    ...audit(value.approval, `memory:${id}`),
   };
 }
 
@@ -637,7 +684,12 @@ module.exports = {
     config = {},
     services,
   }: {
-    input: NoteFields & { id?: string; level?: Level; expectRevision?: number };
+    input: NoteFields & {
+      id?: string;
+      level?: Level;
+      expectRevision?: number;
+      approval?: Approval;
+    };
     config?: MemoryConfig;
     services: Services;
   }) => {
@@ -660,6 +712,7 @@ module.exports = {
         tags: input.tags ?? kept?.tags ?? [],
         links: qualifiedLinks(input.links ?? kept?.links ?? []),
         previous,
+        ...(kept?.approval === undefined ? {} : { approval: kept.approval }),
         ...(kept?.from === undefined ? {} : { from: kept.from }),
         ...(kept?.proposedForget === true
           ? { proposedForget: true as const }
@@ -679,6 +732,17 @@ module.exports = {
       const old = existing && (existing.value as NoteValue);
       if (!existing || !old || old.deleted === true)
         return { status: "not_found" as const, id: editing };
+      const removed =
+        input.tags === undefined
+          ? undefined
+          : ownerTag(
+              old.tags.filter((tag) => !input.tags!.includes(tag)),
+              config,
+            );
+      const approval =
+        removed === undefined
+          ? old.approval
+          : approved(input.approval, "memory.add", removed);
       const value = fields(
         [
           ...old.previous,
@@ -686,6 +750,7 @@ module.exports = {
         ].slice(-MAX_VERSIONS),
         old,
       );
+      if (approval !== undefined) Object.assign(value, { approval });
       const expected = canonical(value);
       const record = source.state.put(key, value, {
         expectRevision: input.expectRevision ?? existing.revision,
@@ -966,7 +1031,10 @@ module.exports = {
     const value = record.value as NoteValue;
     if (value.deleted === true)
       return value.movedTo === undefined
-        ? { status: "forgotten" as const }
+        ? {
+            status: "forgotten" as const,
+            ...audit(value.approval, `memory:${qualified(input.id)}`),
+          }
         : { status: "moved" as const, to: value.movedTo };
     if (
       input.revision === undefined ||
@@ -1046,26 +1114,74 @@ module.exports = {
 
   "memory.forget": async ({
     input,
+    config = {},
     services,
   }: {
-    input: { id: string; expectRevision?: number };
+    input: {
+      id: string;
+      expectRevision?: number;
+      undo?: boolean;
+      approval?: Approval;
+    };
+    config?: MemoryConfig;
     services: Services;
   }) => {
     const found = await sourceFor(services, qualified(input.id));
-    if (unreached(found))
+    if (unreached(found)) {
+      approved(input.approval, "memory.forget");
       return { status: "not_found" as const, id: qualified(input.id) };
+    }
     const { source, number } = found;
-    if (source.readOnly)
+    if (source.readOnly) {
+      approved(input.approval, "memory.forget");
       return { status: "read_only" as const, id: qualified(input.id) };
+    }
     const key = noteKey(number);
     const existing = source.state.get(key);
-    if (!existing)
+    if (!existing) {
+      approved(input.approval, "memory.forget");
       return { status: "not_found" as const, id: qualified(input.id) };
-    if ((existing.value as NoteValue).deleted === true)
+    }
+    const old = existing.value as NoteValue;
+    const approval = approved(
+      input.approval,
+      "memory.forget",
+      ownerTag(
+        old.deleted === true ? (old.forgotten?.tags ?? []) : old.tags,
+        config,
+      ),
+    );
+    if (input.undo === true) {
+      if (old.deleted !== true)
+        return { status: "not_forgotten" as const, id: qualified(input.id) };
+      if (old.movedTo !== undefined || old.forgotten === undefined)
+        return { status: "undo_unavailable" as const, id: qualified(input.id) };
+      const value = { ...old.forgotten, approval };
+      const record = source.state.put(key, value, {
+        expectRevision: input.expectRevision ?? existing.revision,
+      });
+      return {
+        status: "restored" as const,
+        id: qualified(input.id),
+        note: present(source, qualified(input.id), record, value, value.text),
+      };
+    }
+    if (old.deleted === true)
       return { status: "already_forgotten" as const, id: qualified(input.id) };
-    source.state.put(key, TOMBSTONE, {
-      expectRevision: input.expectRevision ?? existing.revision,
-    });
+    source.state.put(
+      key,
+      {
+        ...TOMBSTONE,
+        forgotten: {
+          ...old,
+          textRevision: old.textRevision ?? existing.revision,
+        },
+        approval,
+      },
+      {
+        expectRevision: input.expectRevision ?? existing.revision,
+      },
+    );
     return { status: "forgotten" as const, id: qualified(input.id) };
   },
 
@@ -1286,12 +1402,14 @@ module.exports = {
 
   "memory.restore": async ({
     input,
+    config = {},
     services,
   }: {
     input: {
       format: "forge.memory.export/1" | "forge.memory.export/2";
       level?: Level;
       project?: ProjectIdentity;
+      approval?: Approval;
       notes: readonly {
         id: string;
         scope?: string;
@@ -1300,6 +1418,7 @@ module.exports = {
         text: { text: string };
       }[];
     };
+    config?: MemoryConfig;
     services: Services;
   }) => {
     // Notes go back to the level they were exported from, in the store this call reaches: the
@@ -1364,6 +1483,14 @@ module.exports = {
         restored.add(qualified(note.id));
         adding.push({ key, note });
       }
+      const approval = approved(
+        input.approval,
+        "memory.restore",
+        ownerTag(
+          adding.flatMap(({ note }) => note.tags),
+          config,
+        ),
+      );
       for (const { key, note } of adding)
         entries.push({
           key,
@@ -1373,6 +1500,7 @@ module.exports = {
             tags: note.tags,
             links: relinked(note.links, restored),
             previous: [],
+            approval,
           },
           expectRevision: 0,
         });
@@ -1461,11 +1589,18 @@ module.exports = {
 
   "decision.adopt": ({
     input,
+    config = {},
     services,
   }: {
-    input: { id: string; expectRevision?: number };
+    input: { id: string; expectRevision?: number; approval?: Approval };
+    config?: MemoryConfig;
     services: Services;
   }) => {
+    const approval = approved(
+      input.approval,
+      "decision.adopt",
+      config.approval?.adopt === "agent" ? undefined : "adopt",
+    );
     const { state } = services;
     const index = state.get(`${DECISION_ID_PREFIX}${input.id}`);
     const match = index
@@ -1482,7 +1617,7 @@ module.exports = {
       return { status: "already_adopted" as const, id: input.id };
     const record = state.put(
       match.key,
-      { ...value, status: "adopted" },
+      { ...value, status: "adopted", approval },
       { expectRevision: input.expectRevision ?? match.revision },
     );
     return {
@@ -1526,6 +1661,7 @@ module.exports = {
             revision: record.revision,
             title: fence(value.title, `decision:${value.id}`, record.updatedAt),
             updatedAt: record.updatedAt,
+            ...audit(value.approval, `decision:${value.id}`),
           };
         }),
     };

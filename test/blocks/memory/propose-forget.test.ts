@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { runCli } from "../../../src/surface/cli.ts";
 import {
+  ownerApproval,
   blockSchema,
   done,
   loadEntry,
@@ -300,7 +301,11 @@ test("the catalog admits an agent proposal, shows its marker, and leaves owner f
   expect(refused.ok).toBe(false);
   expect(
     done(
-      await h.call("memory.forget", { id: "device/note-1", expectRevision: 3 }),
+      await h.call("memory.forget", {
+        approval: ownerApproval,
+        id: "device/note-1",
+        expectRevision: 3,
+      }),
     ),
   ).toEqual({
     status: "forgotten",
