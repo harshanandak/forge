@@ -1,5 +1,10 @@
 {
   "operations": {
+    "agent.memory": {
+      "title": "Render memory startup hook configuration",
+      "summary": "Print a mergeable SessionStart hook using the installed package companion. Name an adapter or detect exactly one harness. Merge the printed entry yourself, preserving existing settings and hooks; this command never edits them. Adapters without their own startup hook point to the underlying harness.",
+      "examples": [{ "command": "forge agent memory codex --text" }]
+    },
     "agent.wait": {
       "title": "Render PR wait or cleanup steps",
       "summary": "Run `forge agent wait <n>` after the PR opens and after each push; do each step, then follow `then`. `--sweep` on session resume; `--done` at land, abandon or handback.",

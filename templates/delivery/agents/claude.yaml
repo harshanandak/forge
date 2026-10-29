@@ -2,5 +2,6 @@ id: claude
 skills: .claude/skills
 detect: [CLAUDECODE]
 prWatch: monitor
+memory: { kind: hook, file: ~/.claude/settings.json, start: SessionStart }
 guard:
   { kind: hook, file: ~/.claude/settings.json, stop: Stop, command: PreToolUse }

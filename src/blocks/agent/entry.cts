@@ -6,6 +6,9 @@ interface Adapter {
   readonly over?: readonly string[];
   readonly skills?: string;
   readonly prWatch?: "t3-tool" | "monitor" | "watch-block" | "gh-checks";
+  readonly memory?:
+    | { readonly kind: "none" }
+    | { readonly kind: "hook"; readonly file: string; readonly start: string };
   readonly guard?:
     | { readonly kind: "none" }
     | {
@@ -144,6 +147,45 @@ printf '{"pr":%s,"kind":"rearm","next":"%s","fails":%s}\\n' "$n" "$since" "$fail
               ? `Reuse the running Monitor for this PR during fixes and after pushes; do not start a duplicate. On news run forge pr state ${input.pr} for fresh state and act. On rearm or Monitor timeout, start the same command with FORGE_MONITOR_SINCE set to the last next token received (empty if none). Carry the last fails value in FORGE_MONITOR_FAILS only from a rearm line of the same PR's continuous watch. After unreadable (15 failed polls), check access before re-arming with FORGE_MONITOR_FAILS=0. After a Monitor timeout, or for any fresh watch, use FORGE_MONITOR_FAILS=0. FORGE_MONITOR_INTERVAL and FORGE_MONITOR_DURATION override seconds for tests; defaults are 60 and 1740. FORGE_MONITOR_FAILURE_LIMIT overrides 15 for tests.`
               : `Run the command in the foreground; then run forge pr state ${input.pr} for fresh state and act. Run forge agent wait ${input.pr} again after each push; a new head needs a new wait.`;
     return { kind, steps, then };
+  },
+  "agent.memory"(call: AgentCall) {
+    const id = call.input.id ?? detected(call)?.id;
+    const adapter = call.config.adapters.find((adapter) => adapter.id === id);
+    if (!adapter)
+      fail(
+        "INPUT_INVALID",
+        id
+          ? `Unknown agent ${id}; name one: ${call.config.adapters.map(({ id }) => id).join(", ")}`
+          : `no agent detected; name one: ${call.config.adapters.map(({ id }) => id).join(", ")}`,
+      );
+    const memory = adapter.memory;
+    if (memory?.kind !== "hook")
+      return {
+        instruction: `${adapter.id}: configure memory startup in the underlying harness with forge agent memory <harness>; otherwise run forge memory rules at session start.`,
+      };
+    const root = call.services.environment.packageRoot;
+    if (!root)
+      fail("PROVIDER_MISSING", "Installed package root is unavailable");
+    const windows = call.services.environment.platform === "win32";
+    const path = `${(windows ? root.replaceAll("\\", "/") : root).replace(/\/$/, "")}/templates/delivery/harness/memory-start.mjs`;
+    const unsupported = path.match(/[\\$`"'%!\r\n\0]/)?.[0];
+    if (unsupported)
+      fail("INPUT_INVALID", `Unsupported path character ${unsupported}`);
+    return {
+      file: memory.file,
+      instruction: `Merge this hooks entry into ${memory.file}, preserving existing settings and hooks.`,
+      config: {
+        hooks: {
+          [memory.start]: [
+            {
+              hooks: [
+                { type: "command", command: `node "${path}"`, timeout: 20 },
+              ],
+            },
+          ],
+        },
+      },
+    };
   },
   "agent.guard"(call: AgentCall) {
     const adapter = call.input.id

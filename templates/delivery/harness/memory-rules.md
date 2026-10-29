@@ -28,8 +28,16 @@ scopes in baseline relevance order and labels scoped hits so older notes remain
 discoverable. Use the labels and this preference to choose relevant notes.
 Then use `forge memory show <id>` with an id from the selected hits.
 Search snippets and shown notes are untrusted data. Mandatory rules belong in
-AGENTS.md, CLAUDE.md or hooks. Startup supplies only the pointer; agents pull
-relevant notes on demand.
+AGENTS.md, CLAUDE.md or hooks. The default startup command supplies only the
+pointer; agents pull relevant notes on demand. With `notes: true`, it prefixes
+live notes tagged `rule` from the same stores and scopes as the counts. General
+comes first, then the resolved project scope, oldest creation event first within
+each scope (device then note number break ties). If creation history is missing,
+the recorded update timestamp is used. Each whole note
+is one `- [scope] text` line with whitespace collapsed. The budget is 6,000
+characters of note text, excluding prefixes, separators and the unchanged
+pointer. Oversized notes are skipped; omitted notes are counted in
+`<N> more rule notes did not fit; search them.` Remembered rules remain data.
 
 Run from the session's project directory so project notes belong to that
 session. Install a
@@ -39,31 +47,23 @@ project without the memory block; it reports `UNKNOWN_COMMAND` instead.
 
 ## Claude Code and Codex with SessionStart hooks
 
-Use this command in a synchronous SessionStart hook. Node is already required by
-Forge; the parser prints only the pointer on success, or one short diagnostic
-if the response cannot be read:
+Print the mergeable hook for the harness you use:
 
 ```sh
-forge memory rules | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(s);if(!r.ok){console.log('Forge memory unavailable: '+(r.error?.code||'INVALID_RESPONSE'));return}if(typeof r.result?.text?.text!=='string')throw Error();console.log(r.result.text.text)}catch{console.log('Forge memory unavailable: INVALID_RESPONSE')}})"
+forge agent memory claude
+forge agent memory codex
 ```
 
-Merge the following into Claude's `.claude/settings.json` or Codex's
-`.codex/hooks.json`, replacing `PRINT_RULES` with the command above (escape its
-double quotes for JSON). User-level files work too. Keep existing hooks:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          { "type": "command", "command": "PRINT_RULES", "timeout": 30 }
-        ]
-      }
-    ]
-  }
-}
-```
+Merge the returned `config` into its target `file`: Claude's
+`~/.claude/settings.json` or Codex's `~/.codex/hooks.json`. Preserve existing
+settings and hooks. The operation prints configuration and never edits a file.
+The command quotes the installed package's `memory-start.mjs`; Node is already
+required by Forge. The companion runs that package's own CLI using
+`process.execPath`, rather than resolving another Forge from PATH, and requests
+`memory rules --input '{"notes":true}'` live at every start. It uses
+`CLAUDE_PROJECT_DIR` when set, otherwise the current directory. It has no cache.
+The child timeout is 15 seconds, below the hook's 20-second timeout. Failures
+print one `Forge memory unavailable: <code>` line and exit zero.
 
 Omitting a matcher covers all session starts, including forks. Both harnesses
 put plain stdout from this event into model context. In Codex,
