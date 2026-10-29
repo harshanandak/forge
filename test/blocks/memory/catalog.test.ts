@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { resolveBlock } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
+import { renderSkills } from "../../../src/surface/skills.ts";
 import { openHarness, type Harness } from "./lib.ts";
 
 let harness: Harness | undefined;
@@ -17,15 +18,17 @@ test("forge/memory is a registered first-party source that resolves to its folde
 }, 30_000);
 
 const operations = {
+  "memory.scope": { effects: [], humanOnly: false },
   "memory.add": { effects: ["memory:write"], humanOnly: false },
   "memory.search": { effects: [], humanOnly: false },
   "memory.rules": { effects: [], humanOnly: false },
   "memory.show": { effects: [], humanOnly: false },
-  "memory.forget": { effects: ["memory:write"], humanOnly: true },
+  "memory.propose-forget": { effects: ["memory:write"], humanOnly: false },
+  "memory.forget": { effects: ["memory:write"], humanOnly: false },
   "memory.export": { effects: [], humanOnly: false },
-  "memory.restore": { effects: ["memory:write"], humanOnly: true },
+  "memory.restore": { effects: ["memory:write"], humanOnly: false },
   "decision.propose": { effects: ["decision:write"], humanOnly: false },
-  "decision.adopt": { effects: ["decision:write"], humanOnly: true },
+  "decision.adopt": { effects: ["decision:write"], humanOnly: false },
   "decision.list": { effects: [], humanOnly: false },
 } as const;
 
@@ -57,4 +60,30 @@ test("every operation is fully described in the catalog, so any surface can be g
   expect(context("memory.search")).toBe("device");
   expect(context("memory.rules")).toBe("device");
   expect(context("decision.propose")).toBe("project");
+}, 60_000);
+
+test("scope rejects notes while rules retains its opt-in input", async () => {
+  harness = await openHarness(["memory"]);
+  const scope = await harness.call("memory.scope", { notes: true });
+  expect(scope.ok).toBe(false);
+  if (!scope.ok) expect(scope.error.code).toBe("INPUT_INVALID");
+  expect((await harness.call("memory.scope", {})).ok).toBe(true);
+  expect((await harness.call("memory.rules", { notes: true })).ok).toBe(true);
+}, 60_000);
+
+test("scope input and generated skill retain the baseline empty-input contract", async () => {
+  harness = await openHarness(["memory"]);
+  const scope = harness.assembly.catalog
+    .list()
+    .find((entry) => entry.op === "memory.scope")!;
+  const baselineInput = {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  };
+  expect(scope.inputSchema).toEqual(baselineInput);
+  expect(renderSkills([scope])).toEqual(
+    renderSkills([{ ...scope, inputSchema: baselineInput }]),
+  );
 }, 60_000);

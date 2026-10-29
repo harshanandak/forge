@@ -30,6 +30,7 @@ import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { idPrefixObservation } from "../../../src/assembly/providers.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import { stageBlock } from "../../blocks/memory/lib.ts";
+import { childStep } from "../../child-step.ts";
 
 setDefaultTimeout(60_000);
 
@@ -51,13 +52,15 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
   if (found.kind !== "resolved") throw new Error("git is not installed");
   // Byte-identical checkouts keep the admitted block digest the same in both trees.
   const identity = ["-c", "user.name=Forge Test", "-c", "core.autocrlf=false"];
-  const result = await processPort.run(
-    found,
-    [...identity, "-c", "user.email=test@example.invalid", ...args],
-    { cwd, env, timeoutMs: 30_000, maxOutputBytes: 1_000_000 },
-  );
-  if (result.exitCode !== 0)
-    throw new Error(`git ${args[0]}: ${result.stderr}`);
+  await childStep(`git ${args.join(" ")}`, async () => {
+    const result = await processPort.run(
+      found,
+      [...identity, "-c", "user.email=test@example.invalid", ...args],
+      { cwd, env, timeoutMs: 20_000, maxOutputBytes: 1_000_000 },
+    );
+    if (result.exitCode !== 0)
+      throw new Error(`exit ${result.exitCode}: ${result.stderr}`);
+  });
 }
 
 let work: string;
@@ -288,6 +291,28 @@ test("linked worktree memory pointer scope uses the normalized shared checkout n
   expect(loaded.text.text).not.toContain("scoped-lane");
   expect(loaded.text.text).not.toContain("Device rule for");
   expect(existsSync(join(lane, ".forge/state.sqlite"))).toBe(false);
+  const aliases = join(work, "device", "memory-scopes.json");
+  writeFileSync(
+    aliases,
+    JSON.stringify({
+      "shared-proj": "shared-alias",
+      "scoped-lane": "wrong-alias",
+    }),
+  );
+  try {
+    for (const call of [fromMain, fromLane]) {
+      expect(done(await call("memory.scope", {}))).toEqual({
+        scope: "shared-alias",
+      });
+      const rules = done(await call("memory.rules", {})) as {
+        text: { text: string };
+      };
+      expect(rules.text.text).toContain("shared-alias 1");
+      expect(rules.text.text).not.toContain("wrong-alias");
+    }
+  } finally {
+    rmSync(aliases);
+  }
 }, 60_000);
 
 test("an agent cannot use land's old close reason to bypass the receipt requirement", async () => {

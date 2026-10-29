@@ -126,6 +126,9 @@ export function createMcpHandlers(
         : dispatch(catalog, candidate.op, args, {
             ...options,
             caller: "agent",
+            ...(exposure.readOnly === undefined
+              ? {}
+              : { readOnly: exposure.readOnly }),
           });
     },
   };

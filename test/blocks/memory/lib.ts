@@ -34,6 +34,10 @@ const repo = resolve(import.meta.dirname, "../../..");
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 
 export type BlockName = "memory";
+export const ownerApproval = {
+  by: "owner",
+  quote: "Confirmed by owner in conversation",
+} as const;
 
 /** Copy a block and emit its entry the way the build does, so the block runs as captured bytes. */
 export function stageBlock(name: BlockName, into: string): string {

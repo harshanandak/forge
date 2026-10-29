@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ForgeFailure } from "../contract/failure.ts";
-import { isAgentCallable } from "../contract/mcp.ts";
+import { isAgentCallable, type McpCandidate } from "../contract/mcp.ts";
 import { closestNames } from "../contract/schema.ts";
 import type {
   AmbientContext,
@@ -15,6 +15,8 @@ import { validateInvocationRequest } from "../generated/validators.ts";
 
 export interface CallOptions {
   readonly caller: Caller;
+  /** Host-owned interactive fallback when an operation requires conversation approval. */
+  readonly confirmHuman?: (op: string, input: unknown) => Promise<boolean>;
   readonly readOnly?: boolean;
   readonly context?: AmbientContext;
   readonly requestId?: string;
@@ -26,6 +28,17 @@ export interface CallOptions {
     context: AmbientContext,
     explicitContext: boolean,
   ) => AmbientContext;
+}
+
+export function requiresOwnerConfirmation(
+  candidate: McpCandidate | undefined,
+): boolean {
+  return (
+    candidate?.blockId === "forge/memory" &&
+    ["memory.forget", "memory.restore", "decision.adopt"].includes(
+      candidate.declaredOp ?? "",
+    )
+  );
 }
 
 export function success(op: string, result: unknown): ResultEnvelope {
@@ -99,6 +112,9 @@ export async function dispatch(
     const request = checked.value;
     return dispatch(catalog, request.op, request.input, {
       caller: options.caller,
+      ...(options.confirmHuman === undefined
+        ? {}
+        : { confirmHuman: options.confirmHuman }),
       ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
       context: request.context,
       explicitContext:
@@ -112,6 +128,12 @@ export async function dispatch(
         : { dryRun: options.dryRun === true || request.dryRun === true }),
     });
   }
+  const entry = [...discoveryOperations, ...catalog.list()].find(
+    (entry) => entry.op === op,
+  );
+  const declaration = entry?.declaration;
+  if (options.readOnly && declaration && declaration.effects.length > 0)
+    return failure("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
   if (
     ![...discoveryOperations, ...catalog.list()].some(
       (c) =>
@@ -129,9 +151,6 @@ export async function dispatch(
     );
   }
   try {
-    const declaration = catalog
-      .list()
-      .find((entry) => entry.op === op)?.declaration;
     const context =
       declaration === undefined || options.resolveContext === undefined
         ? (options.context ?? {})
@@ -140,7 +159,7 @@ export async function dispatch(
             options.context ?? {},
             options.explicitContext === true,
           );
-    return await catalog.invoke({
+    const request = {
       schemaVersion: "forge.invocation/1",
       requestId: options.requestId ?? randomUUID(),
       op,
@@ -148,7 +167,42 @@ export async function dispatch(
       caller: options.caller,
       context: await heldContext(catalog, op, input, { ...options, context }),
       ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
-    });
+    } as const;
+    let result = await catalog.invoke(request);
+    if (
+      !result.ok &&
+      result.error.code === "HUMAN_REQUIRED" &&
+      entry?.blockId === "forge/memory"
+    ) {
+      if (
+        requiresOwnerConfirmation(entry) &&
+        record(input)?.approval === undefined &&
+        options.caller === "human"
+      ) {
+        const confirmed = await Promise.resolve()
+          .then(() => options.confirmHuman?.(op, input))
+          .catch(() => false);
+        if (confirmed)
+          result = await catalog.invoke({
+            ...request,
+            input: {
+              ...record(input),
+              approval: { by: "owner", quote: "confirmed in terminal" },
+            },
+          });
+      }
+      if (!result.ok && result.error.code === "HUMAN_REQUIRED")
+        return {
+          ...result,
+          error: {
+            ...result.error,
+            message: `${op}: ${result.error.message}`,
+            repair:
+              "Ask the owner in the conversation, then retry with approval by owner and their words.",
+          },
+        };
+    }
+    return result;
   } catch (error) {
     if (error instanceof ForgeFailure)
       return {

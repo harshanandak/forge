@@ -21,7 +21,7 @@
           "type": "null"
         }
       ],
-      "description": "A label that groups notes. On an edit, leave it out to keep the stored scope, or send null to clear it."
+      "description": "A label that groups notes. New device notes default to the resolved project scope; null creates an unscoped note. On an edit, leave it out to keep the stored scope, or send null to clear it."
     },
     "tags": {
       "$ref": "defs.json#/$defs/Tags",
@@ -39,6 +39,9 @@
       "type": "integer",
       "minimum": 1,
       "description": "The revision you last read; required with id."
+    },
+    "approval": {
+      "$ref": "defs.json#/$defs/Approval"
     }
   },
   "additionalProperties": false,

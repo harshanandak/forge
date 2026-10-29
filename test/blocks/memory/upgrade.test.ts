@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { blockSchema, loadEntry, memoryState } from "./lib.ts";
+import { ownerApproval, blockSchema, loadEntry, memoryState } from "./lib.ts";
 
 // What main's memory block (#25) wrote must read, export, edit, search and restore cleanly after
 // levels. The old block is main's own entry source, kept verbatim as a fixture and run the way the
@@ -48,7 +48,10 @@ async function writtenByMain() {
 test("a store written by main's memory block shows, exports, edits and searches with valid, qualified output", async () => {
   const { state } = await writtenByMain();
   const entry = loadEntry("memory");
-  const services = { state, levels: state };
+  const services = {
+    state,
+    levels: { ...state, inProject: true, defaultScope: "repo:forge" },
+  };
   const shown = await entry["memory.show"]!({
     input: { id: "device/note-2" },
     services,
@@ -106,7 +109,7 @@ test("main's forge.memory.export/1 restores into device memory with qualified id
   const state = memoryState();
   const services = { state, levels: state };
   const restored = await entry["memory.restore"]!({
-    input: exported,
+    input: { ...(exported as object), approval: ownerApproval },
     services,
   });
   expect(valid("restore.output.json")(restored)).toEqual([]);
@@ -124,9 +127,12 @@ test("main's forge.memory.export/1 restores into device memory with qualified id
     },
   });
   // Restoring the same backup again changes nothing.
-  expect(await entry["memory.restore"]!({ input: exported, services })).toEqual(
-    { added: 0, skipped: 2, conflicts: [] },
-  );
+  expect(
+    await entry["memory.restore"]!({
+      input: { ...(exported as object), approval: ownerApproval },
+      services,
+    }),
+  ).toEqual({ added: 0, skipped: 2, conflicts: [] });
 }, 30_000);
 
 test("a bookmarked note-N id is accepted as input and answered with its qualified id", async () => {

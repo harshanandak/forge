@@ -10,6 +10,9 @@
     "expectRevision": {
       "type": "integer",
       "minimum": 1
+    },
+    "approval": {
+      "$ref": "defs.json#/$defs/Approval"
     }
   },
   "additionalProperties": false,

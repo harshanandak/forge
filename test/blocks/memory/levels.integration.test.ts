@@ -4,6 +4,7 @@ import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { createAssembly } from "../../../src/assembly/index.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import {
+  ownerApproval,
   done,
   loadEntry,
   memoryState,
@@ -77,11 +78,16 @@ async function add(
   h: Harness,
   text: string,
   level?: "device" | "project",
+  scope?: string,
 ): Promise<{ id: string; note: Note }> {
   return done(
     await h.call(
       "memory.add",
-      level === undefined ? { text } : { text, level },
+      {
+        text,
+        ...(level === undefined ? {} : { level }),
+        ...(scope === undefined ? {} : { scope }),
+      },
       agent,
     ),
   ) as { id: string; note: Note };
@@ -95,8 +101,13 @@ async function search(h: Harness, input: Record<string, unknown>) {
 }
 const projectOf = (id: string) => id.split("/")[1]!;
 
-test("integration: a device note is seen from every project; a project note only inside its own", async () => {
-  const device = await add(alpha, "the shared heron checklist", "device");
+test("integration: a general device note is seen from every project; a project note only inside its own", async () => {
+  const device = await add(
+    alpha,
+    "the shared heron checklist",
+    "device",
+    "general",
+  );
   const own = await add(alpha, "alpha heron uses the blue pipeline", "project");
   // Levels are part of the id, so the same number at two levels is two notes.
   expect(device.id).toMatch(/^device\/note-[0-9]+$/);
@@ -150,7 +161,11 @@ test("integration: another project's notes are pulled only by naming it, read-on
     expect(done(await beta.call(op, input, agent))).toMatchObject({
       status: "read_only",
     });
-  expect(done(await beta.call("memory.forget", { id: own.id }))).toMatchObject({
+  expect(
+    done(
+      await beta.call("memory.forget", { approval: ownerApproval, id: own.id }),
+    ),
+  ).toMatchObject({
     status: "read_only",
   });
   const still = done(
@@ -330,7 +345,13 @@ test("integration: a repeated copy never overwrites a later edit or revives a fo
           agent,
         ),
       );
-    else done(await alpha.call("memory.forget", { id: first.to }));
+    else
+      done(
+        await alpha.call("memory.forget", {
+          approval: ownerApproval,
+          id: first.to,
+        }),
+      );
     expect(done(await alpha.call("memory.move", request, agent))).toEqual(
       first,
     );
@@ -371,7 +392,14 @@ test("integration: export and restore work per level, and a project export resto
     deviceExport.notes.every((note) => note.id.startsWith("device/")),
   ).toBe(true);
   // Restoring alpha's project export in beta puts the notes in beta's project.
-  expect(done(await beta.call("memory.restore", exported))).toEqual({
+  expect(
+    done(
+      await beta.call("memory.restore", {
+        ...(exported as object),
+        approval: ownerApproval,
+      }),
+    ),
+  ).toEqual({
     added: exported.count,
     skipped: 0,
     conflicts: [],
@@ -463,7 +491,14 @@ test("integration: a backup made by main's memory block restores through the run
   ) as unknown;
   const fresh = await openHarness(["memory"], POLICY, { project: "legacy" });
   try {
-    expect(done(await fresh.call("memory.restore", backup))).toEqual({
+    expect(
+      done(
+        await fresh.call("memory.restore", {
+          ...(backup as object),
+          approval: ownerApproval,
+        }),
+      ),
+    ).toEqual({
       added: 2,
       skipped: 0,
       conflicts: [],

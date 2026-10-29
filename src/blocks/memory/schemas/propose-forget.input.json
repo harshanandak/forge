@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "defs.json#/$defs/NoteRef"
+    },
+    "expectRevision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "withdraw": {
+      "type": "boolean",
+      "description": "Remove the proposal marker while retaining the note and its text history."
+    }
+  },
+  "additionalProperties": false,
+  "required": ["id"]
+}

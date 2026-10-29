@@ -317,7 +317,13 @@ async function anywhere() {
 async function projectBoundary() {
   for (const [verb, input] of [
     ["propose", { title: "plain folder", text: "must not create a project" }],
-    ["adopt", { id: "ADR-999" }],
+    [
+      "adopt",
+      {
+        id: "ADR-999",
+        approval: { by: "owner", quote: "Adopt this decision." },
+      },
+    ],
     ["list", {}],
   ]) {
     assert.equal(
@@ -377,13 +383,21 @@ async function fence() {
     "memory",
     "add",
     "--input",
-    JSON.stringify({ text: FORGED, level: "device" }),
+    JSON.stringify({ text: FORGED, level: "device", tags: ["rule"] }),
   ]);
   const server = await connect();
   try {
     const tools = (await server.rpc("tools/list", {})).tools.map((t) => t.name);
     assert.ok(tools.includes("memory_search"), "agents can search memory");
-    assert.ok(!tools.includes("memory_forget"), "forget is human only");
+    assert.ok(tools.includes("memory_forget"), "agents can supply approval");
+    for (const approval of [undefined, { by: "agent", reason: "Remove it" }]) {
+      const refused = await server.call("memory_forget", {
+        id: "device/note-1",
+        ...(approval ? { approval } : {}),
+      });
+      assert.equal(refused.error?.code, "HUMAN_REQUIRED");
+      assert.match(refused.error.message, /rule/);
+    }
     const shown = await server.call("memory_show", { id: "device/note-1" });
     const searched = await server.call("memory_search", {
       query: "ignore instructions",
@@ -409,6 +423,15 @@ async function fence() {
         "the text itself is kept",
       );
     }
+    const approval = { by: "owner", quote: "Please forget this rule." };
+    assert.equal(
+      (await server.call("memory_forget", { id: "device/note-1", approval }))
+        .result.status,
+      "forgotten",
+    );
+    const forgotten = await server.call("memory_show", { id: "device/note-1" });
+    assert.equal(forgotten.result.approval.quote.kind, "untrusted");
+    assert.equal(forgotten.result.approval.quote.text, approval.quote);
   } finally {
     await server.close();
   }
@@ -515,6 +538,7 @@ async function levels() {
       const device = await agent(alpha)("memory.add", {
         text: "shared release checklist",
         level: "device",
+        scope: "general",
       });
       const own = await agent(alpha)("memory.add", {
         text: "alpha release secret",
@@ -669,7 +693,20 @@ async function rules() {
       JSON.stringify({ text: marker, level, scope, tags }),
     ]).result;
   const device = add("device", "general", ["rule"]);
-  add("device", undefined);
+  assert.equal(
+    typeof device.note.createdAt,
+    "string",
+    "first decision time is returned",
+  );
+  const createdDate = device.note.createdAt.slice(0, 10);
+  const packet = () =>
+    cli(["memory", "rules", "--input", '{"notes":true}']).result.text.text;
+  assert.ok(
+    packet().includes(
+      `${device.id} (created ${createdDate}) deploy PRIVATE_STARTUP_MARKER`,
+    ),
+  );
+  add("device", null);
   const scope = mode === "rules" ? "myproj" : "project";
   add("device", scope);
   add("project", undefined);
@@ -704,9 +741,7 @@ async function rules() {
     assert.doesNotMatch(output, /[\v\f\u0085\u2028\u2029]/u);
   }
   assert.ok(
-    loaded.text.text.includes(
-      "use only hits scoped general or " + scope + " or unscoped",
-    ),
+    loaded.text.text.includes("prefer hits scoped " + scope + " or general"),
   );
   assert.ok(loaded.text.text.includes('forge memory search "<topic>"'));
   assert.ok(loaded.text.text.includes("forge memory show <id>"));
@@ -715,6 +750,27 @@ async function rules() {
   assert.ok(search.hits.length > 0);
   const shown = cli(["memory", "show", search.hits[0].id]).result;
   assert.equal(shown.note.text.text, marker);
+  assert.equal(shown.note.createdAt, search.hits[0].createdAt);
+  assert.equal(
+    search.hits.find((hit) => hit.id === device.id).createdAt,
+    device.note.createdAt,
+  );
+  const edited = cli([
+    "memory",
+    "add",
+    "--input",
+    JSON.stringify({
+      id: device.id,
+      expectRevision: 1,
+      text: "dated rule revision",
+    }),
+  ]).result.note;
+  assert.equal(edited.createdAt, device.note.createdAt);
+  assert.ok(
+    packet().includes(
+      `${device.id} (created ${createdDate}, updated ${edited.updatedAt.slice(0, 10)}) dated rule revision`,
+    ),
+  );
   const outside = join(work, "outside");
   mkdirSync(outside);
   const deviceOnly = cli(["memory", "rules"], 0, outside).result;
@@ -722,6 +778,29 @@ async function rules() {
   assert.ok(!deviceOnly.text.text.includes(scope + " "));
   assert.equal(existsSync(join(outside, ".forge")), false);
   console.log("PASS rules");
+}
+
+async function scopeDefault() {
+  setup("memory");
+  const added = cli([
+    "memory",
+    "add",
+    "--input",
+    JSON.stringify({
+      level: "device",
+      text: "defaultscopeunique kestrel",
+    }),
+  ]).result;
+  assert.equal(
+    added.note.scope,
+    "project",
+    "device adds use the resolved scope",
+  );
+  assert.equal(cli(["memory", "scope"]).result.scope, added.note.scope);
+  const found = cli(["memory", "search", "defaultscopeunique"]).result;
+  assert.equal(found.hits[0].id, added.id);
+  assert.equal(found.hits[0].scope, added.note.scope);
+  console.log("PASS scopeDefault");
 }
 
 const journeys = {
@@ -732,6 +811,7 @@ const journeys = {
   fence,
   levels,
   rules,
+  scopeDefault,
 };
 
 // Each journey has its own deadline; a journey spawns the CLI a dozen or so times.

@@ -19,6 +19,36 @@ print nothing. Read failures exit nonzero. The caller carries the token; no stat
 Readiness requires CLEAN or HAS_HOOKS and complete nonempty check evidence; BLOCKED
 cannot distinguish missing checks from missing approvals. The receipt-based gate still decides merge.
 
+`reviewRounds` counts substantive commit intervals containing review activity. Review events
+are PR reviews' submitted times, inline comments' creation times, and bot summaries' creation
+and every edit time. Bot summaries must come from a Bot account or a login ending in `[bot]`
+and contain review/finding/approval language. Commit references in bodies are ignored.
+All connections are paginated, including each summary's nested edit history. Bodies and edit
+diffs are projected away before capture. Ordinary issue comments do not count. Multiple
+events within one interval still count once; the latest substantive commit never completes
+a round. A final head change omits both `reviewRounds` and `nextSteps` and returns `waiting`.
+
+GitHub's commit list does not expose ordinary push times. Forge conservatively requires the
+event to fall strictly after a substantive commit's committer timestamp and strictly before
+the next substantive commit's timestamp, ordered by committer time. Equal timestamps do not
+complete a round. Edited summaries are recognized from their current body. A diff consisting
+only of a short status such as `+Review running`, `+Review in progress` or `+Status: queued`
+is excluded, along with a matching creation timestamp. An interval with only that ambiguous
+status counts zero, conservatively losing at most one completed round in that interval.
+Full summary edits still count even when they contain running status alongside findings.
+Pre-created commits pushed later and reviewed heads removed by a force push can therefore
+be undercounted. Base-only
+updates do not complete cycles: merge commits whose second parent is on the captured base
+branch, and update-branch merges naming that branch, are ignored. Base ancestry is checked
+through the compare API against the captured base SHA.
+
+The check block's `review.rounds` config defaults to `2` (an integer from `1` through `10`).
+Only `reviewRounds > review.rounds` adds `nextSteps` containing exactly:
+`Round N exceeds the review cap (C). Write a three-line threat model, then choose ship, simplify or park; do not patch the same design again.`
+At or below the cap the field is omitted. The existing verdict and `next` cursor retain their
+roles; this advisory step never overrides a blocking check or thread. Changes to the count
+or advisory step wake a caller using `--since`, including changes to the configured cap.
+
 `createCheck(services)` is the check engine. Its consumer supplies the project's effective
 `commands`, a positive `timeoutMs`, and `maxOutputBytes` (1–262144 per output stream).
 Command strings describe one executable invocation. For shell composition, declare a
@@ -135,7 +165,11 @@ in the overall operation budget. A scoped run uses the runtime's one invocation
 deadline for finalization, including its durable commit and verified readback.
 It does not start a second, shorter clock after the final snapshot: Windows lock
 waits and commit latency can consume that clock even when the operation has time
-left. Native embeddings without an invocation scope retain the finite F deadline.
+left. Native embeddings without an invocation scope check F only before publishing:
+a run whose F has passed writes nothing and fails with `INVOCATION_TIMEOUT`, but
+once a write starts, its verified receipt is returned even if the write or readback
+outlasts F. The SQLite busy timeout bounds only the wait for the write lock; the
+commit and readback of an unscoped run have no deadline.
 Five Windows Node 24 samples sealing, writing and reading back a 512 KiB payload
 through an open native-ACL SQLite state owner took 421.30–1199.21 ms (median
 562.43 ms) under load. Store opening and directory preparation precede this

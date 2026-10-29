@@ -20,6 +20,9 @@
           "readOnly": {
             "$ref": "defs.json#/$defs/ReadOnly"
           },
+          "proposedForget": {
+            "$ref": "defs.json#/$defs/ProposedForget"
+          },
           "score": {
             "type": "number"
           },
@@ -39,6 +42,12 @@
           "updatedAt": {
             "type": "string",
             "maxLength": 40
+          },
+          "createdAt": {
+            "$ref": "defs.json#/$defs/Note/properties/createdAt"
+          },
+          "createdAtApprox": {
+            "$ref": "defs.json#/$defs/Note/properties/createdAtApprox"
           }
         },
         "additionalProperties": false,

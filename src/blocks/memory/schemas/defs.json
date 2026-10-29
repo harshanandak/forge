@@ -69,10 +69,13 @@
         "at": {
           "type": "string",
           "maxLength": 40
+        },
+        "approval": {
+          "$ref": "defs.json#/$defs/ApprovalAudit"
         }
       },
       "additionalProperties": false,
-      "required": ["revision"]
+      "required": ["revision", "at"]
     },
     "Note": {
       "type": "object",
@@ -88,6 +91,9 @@
         },
         "readOnly": {
           "$ref": "defs.json#/$defs/ReadOnly"
+        },
+        "proposedForget": {
+          "$ref": "defs.json#/$defs/ProposedForget"
         },
         "revision": {
           "type": "integer",
@@ -109,6 +115,12 @@
           "type": "string",
           "maxLength": 40
         },
+        "createdAt": {
+          "$ref": "defs.json#/$defs/Version/properties/at"
+        },
+        "createdAtApprox": {
+          "const": true
+        },
         "versions": {
           "type": "array",
           "items": {
@@ -118,6 +130,9 @@
         "from": {
           "$ref": "defs.json#/$defs/NoteId",
           "description": "The note this one was moved or copied from."
+        },
+        "approval": {
+          "$ref": "defs.json#/$defs/ApprovalAudit"
         }
       },
       "additionalProperties": false,
@@ -192,6 +207,10 @@
       ],
       "description": "Where a note lives."
     },
+    "ProposedForget": {
+      "const": true,
+      "description": "The owner has been asked to forget this note. Its content remains readable."
+    },
     "ReadOnly": {
       "const": true,
       "description": "Present on notes pulled from another project: they are read, never changed, from here."
@@ -234,6 +253,82 @@
       "items": {
         "$ref": "defs.json#/$defs/NoteRef"
       }
+    },
+    "Approval": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "enum": ["owner", "agent"]
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": false,
+      "required": ["by"],
+      "allOf": [
+        {
+          "$ref": "defs.json#/$defs/ApprovalChoice"
+        }
+      ]
+    },
+    "ApprovalAudit": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "enum": ["owner", "agent"]
+        },
+        "quote": {
+          "$ref": "defs.json#/$defs/Untrusted"
+        },
+        "reason": {
+          "$ref": "defs.json#/$defs/Untrusted"
+        },
+        "at": {
+          "type": "string",
+          "maxLength": 40
+        }
+      },
+      "additionalProperties": false,
+      "required": ["by", "at"],
+      "allOf": [
+        {
+          "$ref": "defs.json#/$defs/ApprovalChoice"
+        }
+      ]
+    },
+    "ApprovalChoice": {
+      "oneOf": [
+        {
+          "properties": {
+            "by": {
+              "const": "owner"
+            }
+          },
+          "required": ["quote"],
+          "not": {
+            "required": ["reason"]
+          }
+        },
+        {
+          "properties": {
+            "by": {
+              "const": "agent"
+            }
+          },
+          "required": ["reason"],
+          "not": {
+            "required": ["quote"]
+          }
+        }
+      ]
     }
   }
 }

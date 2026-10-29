@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { closeChild } from "./deadline.mjs";
+import { awaitDeadline, closeChild } from "./deadline.mjs";
 import { isRunning as alive } from "./liveness.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import {
-  readdirSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -11,7 +10,8 @@ import {
   existsSync,
   rmSync,
 } from "node:fs";
-import { join, basename, win32 } from "node:path";
+import { join, basename } from "node:path";
+import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import {
   Runtime,
@@ -122,6 +122,42 @@ function fixture(source, timeoutMs = 3000, effects = [], processContainment) {
   };
 }
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// A connection retains the descendant's identity even after its numeric PID is reused.
+const descendants = new Set();
+const descendantExits = new Set();
+let cleaning = false;
+const cleanupServer = createServer((socket) => {
+  let identity = "";
+  socket.setEncoding("utf8");
+  socket.on("data", (chunk) => {
+    identity += chunk;
+  });
+  const exited = new Promise((resolve) => socket.once("close", resolve)).then(
+    async () => {
+      // Windows can close TCP before releasing the process's working directory.
+      // This is a read-only wait, never a termination by the reported PID.
+      if (identity.endsWith(":")) {
+        const pid = Number(identity.slice(0, -1));
+        const deadline = Date.now() + 5000;
+        while (alive(pid)) {
+          assert.ok(Date.now() < deadline, "descendant must finish exiting");
+          await pause(25);
+        }
+      }
+    },
+  );
+  descendantExits.add(exited);
+  void exited.then(
+    () => descendantExits.delete(exited),
+    () => {},
+  );
+  socket.once("close", () => descendants.delete(socket));
+  socket.on("error", () => {}); // Forced containment can reset the connection.
+  descendants.add(socket);
+  if (cleaning) socket.write("stop");
+});
+await new Promise((resolve) => cleanupServer.listen(0, "127.0.0.1", resolve));
+const cleanupPort = cleanupServer.address().port;
 function report(result, containment, descendantPid) {
   const warnings = result.warnings.filter(
     (warning) => warning.code === "PROCESS_SUPERVISION",
@@ -204,7 +240,10 @@ async function tree(kind, containment = "supervised") {
   // On Windows libuv already ends a non-detached grandchild with its parent; detaching it leaves
   // only the Job Object to stop it, including after its root has exited.
   const late = join(root, `${containment}-${kind}.late`);
-  const grandchild = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)},String(process.pid)); setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'escaped'),6000); setInterval(()=>{},1000);`;
+  // writeFileSync creates the file before writing the PID; the rename makes an existing .ready always hold it.
+  // The grandchild leaves root first: Windows can hold an exited process's working directory after it
+  // reports stopped, which fails the final rmSync with EPERM.
+  const grandchild = `process.chdir(require('node:os').tmpdir()); const fs=require('node:fs'); const socket=require('node:net').connect(${cleanupPort},'127.0.0.1',()=>{socket.write(process.pid+':');fs.writeFileSync(${JSON.stringify(`${ready}.tmp`)},String(process.pid));fs.renameSync(${JSON.stringify(`${ready}.tmp`)},${JSON.stringify(ready)});}); socket.on('data',()=>process.exit(0)); socket.on('error',()=>process.exit(1)); setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'escaped'),6000); setInterval(()=>{},1000);`;
   const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:${strict || process.platform === "win32"},stdio:${JSON.stringify(strict ? "ignore" : "inherit")},env:${JSON.stringify(env)}}); c.unref(); ${kind === "rootexit" ? `const check=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(check);process.exit(0);}},5);` : "setInterval(()=>{},1000);"}`;
   const f = fixture(
     "async ({ input, services }) => { const result = await services.process.run(input.executable, input.args, input.options); if (result.exitCode !== 0) throw Error('child failed'); return 'root-exited'; }",
@@ -241,13 +280,6 @@ async function tree(kind, containment = "supervised") {
   assert.ok(existsSync(ready), "grandchild must have started");
   const pid = Number(readFileSync(ready, "utf8"));
   const survived = alive(pid);
-  // A counterfactual leaves a real orphan; stop it so it cannot outlive the journey.
-  if (survived)
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
   assert.equal(
     survived,
     false,
@@ -259,6 +291,18 @@ async function tree(kind, containment = "supervised") {
     "invocation must stop its entire process tree",
   );
   report(result, containment, pid);
+}
+// Failed counterfactuals still stop their real orphans; stale PID files are only evidence.
+async function cleanup() {
+  cleaning = true;
+  const closed = new Promise((resolve) => cleanupServer.close(resolve));
+  for (const socket of descendants) socket.write("stop");
+  await awaitDeadline(
+    closed.then(() => Promise.all(descendantExits)),
+    5000,
+    "descendant cleanup",
+  );
+  rmSync(root, { recursive: true, force: true });
 }
 try {
   if (["all", "async"].includes(mode)) {
@@ -693,29 +737,14 @@ try {
     }
   }
   console.log(`PASS async-handlers ${mode}`);
-} finally {
-  // Failed counterfactuals must not leave the very descendant they exposed running.
-  for (const file of readdirSync(root).filter((name) =>
-    name.endsWith(".ready"),
-  )) {
-    const pid = Number(readFileSync(join(root, file), "utf8"));
-    if (process.platform === "win32")
-      spawnSync(
-        win32.join(
-          process.env.SystemRoot ?? "C:/Windows",
-          "System32",
-          "taskkill.exe",
-        ),
-        ["/PID", String(pid), "/T", "/F"],
-        { windowsHide: true, stdio: "ignore", timeout: 5000 },
-      );
-    else {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        /* already stopped */
-      }
-    }
+} catch (error) {
+  // After a failure, a just-killed child can still hold root on Windows; the cleanup error must
+  // not replace the failure a counterfactual exists to show.
+  try {
+    await cleanup();
+  } catch (cleanupError) {
+    console.error(`cleanup after failure: ${cleanupError.message}`);
   }
-  rmSync(root, { recursive: true, force: true });
+  throw error;
 }
+await cleanup();

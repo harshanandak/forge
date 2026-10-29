@@ -6,12 +6,13 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { windowsPrivateFiles } from "../../../src/adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../../../src/adapters/store-sqlite/private-files.ts";
+import { childStep } from "../../child-step.ts";
 
 setDefaultTimeout(30000);
 
 test.skipIf(process.platform !== "win32")(
   "native private directory inheritance, cache invalidation and fail-closed file verification",
-  () => {
+  async () => {
     const dir = mkdtempSync(join(tmpdir(), "forge-native-acl-"));
     try {
       const native = windowsPrivateFiles();
@@ -36,12 +37,15 @@ test.skipIf(process.platform !== "win32")(
       expect(() => guard.file(file)).toThrow(file);
       const command = refusal.split("Repair in PowerShell:\n")[1];
       expect(command).toBeDefined();
-      const repair = spawnSync(
-        "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", command!],
-        { encoding: "utf8" },
-      );
-      expect(repair.status, repair.stderr).toBe(0);
+      await childStep("PowerShell printed private-file repair", () => {
+        const repair = spawnSync(
+          "powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-Command", command!],
+          { encoding: "utf8", timeout: 20_000, windowsHide: true },
+        );
+        expect(repair.error).toBeUndefined();
+        expect(repair.status, repair.stderr).toBe(0);
+      });
       guard.file(file);
       expect(native.read(file)).not.toContain(";;;WD)");
       expect(readFileSync(file, "utf8")).toBe("private");

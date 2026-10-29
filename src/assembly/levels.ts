@@ -9,6 +9,7 @@ import type { OwnedHandle } from "../ports/lifetime.ts";
 import { refuse } from "../core/trust/index.ts";
 import { createStateClient } from "./state-client.ts";
 import { LocalState } from "./state.ts";
+import { nodeConfigFiles } from "../adapters/fs/index.ts";
 
 /** The project's own identity record, in its project store. */
 const IDENTITY_NAMESPACE = "forge/core-project";
@@ -57,8 +58,8 @@ export interface StoreLevels {
   readonly caller: Caller;
   /** True when this host serves a project. Nothing is opened to answer it. */
   readonly inProject: boolean;
-  /** The normalized default scope, available without opening or creating a project store. */
-  readonly defaultScope?: string;
+  /** The device alias or normalized folder scope, without opening or creating a store. */
+  readonly defaultScope?: string | undefined;
   /**
    * The host's project store. A writing operation mints the project's identity on first use and
    * records the project on the device; a reading one never creates a store and gets undefined when
@@ -157,6 +158,9 @@ export function openLevels(options: {
   readonly root: string;
   /** The folder holding the project store; registered so every git worktree records one place. */
   readonly stateRoot: string;
+  /** The shared checkout label for device memory when no project is served. */
+  readonly scopeRoot?: string;
+  readonly deviceRoot?: string;
   readonly projectState: LocalState;
   readonly deviceState: LocalState;
   readonly namespace: string;
@@ -309,7 +313,10 @@ export function openLevels(options: {
     };
   }
 
-  const defaultScope = basename(options.stateRoot)
+  const scopeRoot = options.servesProject
+    ? options.stateRoot
+    : options.scopeRoot;
+  const defaultScope = basename(scopeRoot ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^[^a-z0-9]+/, "")
@@ -317,7 +324,42 @@ export function openLevels(options: {
   const levels: StoreLevels = {
     caller: options.caller,
     inProject: options.servesProject,
-    ...(options.servesProject && defaultScope ? { defaultScope } : {}),
+    get defaultScope() {
+      if (scopeRoot === undefined) return undefined;
+      const bytes =
+        options.deviceRoot === undefined
+          ? undefined
+          : nodeConfigFiles(options.deviceRoot).read("memory-scopes.json");
+      if (bytes === undefined) return defaultScope || undefined;
+      let aliases: unknown;
+      try {
+        aliases = JSON.parse(new TextDecoder().decode(bytes));
+      } catch {
+        refuse(
+          "INPUT_INVALID",
+          "memory-scopes.json must be a JSON object mapping normalized folder names to memory scopes",
+        );
+      }
+      if (
+        typeof aliases !== "object" ||
+        aliases === null ||
+        Array.isArray(aliases) ||
+        Object.entries(aliases).some(
+          ([folder, scope]) =>
+            !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(folder) ||
+            typeof scope !== "string" ||
+            !/^[a-z0-9][a-z0-9._:/-]{0,63}$/.test(scope),
+        )
+      )
+        refuse(
+          "INPUT_INVALID",
+          "memory-scopes.json must map normalized folder names to valid memory scopes (1-64 characters)",
+        );
+      const scope = Object.hasOwn(aliases, defaultScope)
+        ? (aliases as Record<string, string>)[defaultScope]
+        : undefined;
+      return scope ?? (defaultScope || undefined);
+    },
     project() {
       if (!options.servesProject) return Promise.resolve(undefined);
       own ??= openOwn();

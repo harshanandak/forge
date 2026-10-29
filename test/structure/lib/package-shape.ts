@@ -151,7 +151,7 @@ export function findPackageShapeViolations(
   ) {
     fail(
       "package.json",
-      '"packageManager" must pin Bun exactly, for example "bun@1.4.3"',
+      '"packageManager" must pin Bun exactly, for example "bun@1.4.4"',
     );
   }
   if (typeof asObject(pkg.bin).forge !== "string")

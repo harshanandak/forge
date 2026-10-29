@@ -23,7 +23,11 @@ const branchBin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 function fixture(
   run: (
     root: string,
-    cli: (args: string[], bin?: string) => SpawnSyncReturns<string>,
+    cli: (
+      args: string[],
+      bin?: string,
+      session?: string,
+    ) => SpawnSyncReturns<string>,
   ) => void,
   importBin = branchBin,
 ) {
@@ -36,10 +40,10 @@ function fixture(
     ),
   );
   env.FORGE_DEVICE_ROOT = join(root, "device");
-  const cli = (args: string[], bin = branchBin) =>
+  const cli = (args: string[], bin = branchBin, session?: string) =>
     spawnSync(Bun.which("node")!, [bin, ...args], {
       cwd: root,
-      env,
+      env: { ...env, ...(session ? { FORGE_SESSION: session } : {}) },
       encoding: "utf8",
       windowsHide: true,
       timeout: 45_000,
@@ -70,6 +74,85 @@ function fixture(
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+test.each(["PR open", "push"])(
+  "built CLI hands the claim to a second session after the worker's %s stop",
+  (stop) => {
+    fixture((root, cli) => {
+      const run = (session: string, args: string[]) =>
+        cli(args, branchBin, session);
+      const ok = (result: SpawnSyncReturns<string>): unknown => {
+        expect(result.status, result.stdout + result.stderr).toBe(0);
+        return JSON.parse(result.stdout);
+      };
+      ok(run("orchestrator", ["skills", "sync"]));
+      const text = readFileSync(
+        join(root, ".agents/skills/forge-build/pull-request.md"),
+        "utf8",
+      );
+      const rule =
+        text
+          .split("\n")
+          .find((line) => line.startsWith("If a worker brief says")) ?? "";
+      const created = ok(
+        run("orchestrator", [
+          "issue",
+          "create",
+          "--input",
+          JSON.stringify({ title: "Worker stop handoff", kind: "task" }),
+        ]),
+      ) as { result: { id: string } };
+      const id = created.result.id;
+      const url = "https://example.com/pull/570";
+      ok(run("worker", ["issue", "claim", id]));
+      // Follow only actions before the documented stop, using its actual CLI examples.
+      for (const [action] of rule.matchAll(
+        /link an open PR to the issue|release the claim|then stop|stop there/g,
+      )) {
+        if (action.includes("stop")) break;
+        if (action.startsWith("link") && stop === "push") continue;
+        const verb = action.startsWith("link") ? "link" : "release";
+        const example = new RegExp(
+          "`forge issue " + verb + " --input '([^']+)'`",
+        ).exec(text);
+        expect(example).not.toBeNull();
+        ok(
+          run("worker", [
+            "issue",
+            verb,
+            "--input",
+            example![1]!.replaceAll("<slice>", id).replaceAll("<pr url>", url),
+          ]),
+        );
+      }
+      const links = ok(run("orchestrator", ["issue", "links", id])) as {
+        result: { records: { value: { url: string } }[] };
+      };
+      const claimed = run("orchestrator", ["issue", "claim", id]);
+      console.log(
+        `${stop}: orchestrator links=${links.result.records.length}, claim exit=${claimed.status}`,
+      );
+      ok(claimed);
+      if (stop === "PR open") {
+        expect(links.result.records.map((record) => record.value.url)).toEqual([
+          url,
+        ]);
+      } else {
+        expect(links.result.records).toEqual([]);
+        ok(
+          run("orchestrator", [
+            "issue",
+            "link",
+            "--input",
+            JSON.stringify({ id, relation: "delivers", url }),
+          ]),
+        );
+      }
+      ok(run("orchestrator", ["issue", "release", id]));
+    });
+  },
+  120_000,
+);
 
 const adapterDirs = [".claude/skills", ".agents/skills"];
 test.each(["lstat", "stat", "cleanup"])(

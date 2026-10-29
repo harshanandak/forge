@@ -1,5 +1,13 @@
 {
   "operations": {
+    "agent.memory": {
+      "title": "Render memory startup hook configuration",
+      "summary": "Print SessionStart hook JSON for a named or detected adapter using the installed companion. Replace earlier Forge memory entries and preserve unrelated settings and hooks; Forge never edits them. Adapters without a startup hook point to the underlying harness.",
+      "examples": [
+        { "command": "forge agent memory claude" },
+        { "command": "forge agent memory codex" }
+      ]
+    },
     "agent.wait": {
       "title": "Render PR wait or cleanup steps",
       "summary": "Run `forge agent wait <n>` after the PR opens and after each push; do each step, then follow `then`. `--sweep` on session resume; `--done` at land, abandon or handback.",

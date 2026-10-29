@@ -133,6 +133,17 @@ device. Project-level writes, moves and exports require a Forge project. Reads
 create no stores, and device-only calls create no project state. A configured
 project keeps its own block selection and level policy.
 
+In any git checkout, device memory uses the shared checkout's normalized folder
+name or its alias in `memory-scopes.json` under `FORGE_DEVICE_ROOT`, including
+from nested folders and linked worktrees. A valid project's memory scope override
+takes precedence. Project config is read from the current folder; nested folders
+do not inherit it. Outside git and a Forge project, the scope is `general`.
+New device notes default to the resolved scope; an explicit `scope: null` leaves
+them unscoped. If project config cannot load, `memory scope`, `rules`, `search`,
+`show` and device-level `add` remain available with a warning. The repo override
+and project-level memory remain unavailable until the config is repaired; other
+commands retain their config errors.
+
 Run `forge memory rules` at session start for a pointer under 400 characters:
 note counts for general and this project's scope, with commands to search by
 topic and show relevant notes on demand. It prints no note text or ids. Use only
@@ -171,7 +182,7 @@ rules still apply to that fallback.
 
 ## Contributing
 
-Install Bun 1.4.3+. From a clone of this repository:
+Install Bun 1.4.4+. From a clone of this repository:
 
 ```sh
 bun install
@@ -183,6 +194,22 @@ bun run test:structure
 
 The `test:integration` script runs process and Git journeys. `test:pack` builds,
 packs and installs the package with npm, then runs its packed journeys on Node.
-The `test` script runs all lanes. CI runs the full matrix. Lint and format
-scripts require a canary Bun that supplies those built-ins. Read
+The `test` script runs all lanes. CI runs the full matrix. Lint requires a canary
+Bun; format is available in stable Bun 1.4.4. Read
 [AGENTS.md](AGENTS.md) and [CODING_STANDARDS.md](CODING_STANDARDS.md) before editing.
+
+Repository lanes use `bun tools/lane.ts start`, `run`, `tier` and `list`. After
+merging, close from outside the lane worktree with a PASS receipt on the merge commit:
+Run from an agent session, or set `FORGE_SESSION` to a stable session id in a plain
+terminal before running close.
+
+```sh
+FORGE_GH_USER=<github-user> bun tools/lane.ts close <issue> --pr <number> --receipt <id>
+```
+
+Close checks the PR, local head, clean worktree and receipt before writing, then
+links, closes and comments on the issue and removes the worktree, branch and lane
+entry. Run history stays. `--keep-open` only comments and cleans up. Retry the same
+arguments after failure to finish without repeating the close or landing comment.
+Ignored paths other than `node_modules/` and `dist/` refuse closure. Move needed
+files first; `--discard-ignored` permits removal and lists the discarded paths.

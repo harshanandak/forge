@@ -1,14 +1,23 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const installed = process.argv[2];
 const mcpOnly = process.argv[3] === "mcp";
 const bindingsOnly = process.argv[3] === "bindings";
-const reviewOnly = process.argv[3] === "review";
+const reviewScenario = process.argv[3]?.startsWith("review:")
+  ? process.argv[3].slice("review:".length)
+  : undefined;
+const reviewOnly = process.argv[3] === "review" || reviewScenario !== undefined;
 const honestScenario = process.argv[3]?.startsWith("honest:")
   ? process.argv[3].slice("honest:".length)
   : undefined;
@@ -71,7 +80,24 @@ const config = {
   environment: envNames,
 };
 let revision;
+let reviewConfig = config;
+function writeReviewConfig() {
+  writeFileSync(
+    join(root, ".forge/config.yaml"),
+    JSON.stringify({
+      mcp: { expose: ["check"] },
+      blocks: {
+        check: { source: { builtin: "forge/check" }, config: reviewConfig },
+      },
+    }),
+  );
+}
 function configure(changes) {
+  if (reviewScenario !== undefined) {
+    reviewConfig = { ...reviewConfig, ...changes };
+    writeReviewConfig();
+    return;
+  }
   const applied = cli(
     ["--hook", "config.apply"],
     0,
@@ -310,45 +336,59 @@ async function review() {
     outputHeadBytes: 1,
     outputTailBytes: 0,
   });
-  const first = runReceipt(cli(["check", "run"]));
-  assert.equal(
-    first.runs.length,
-    1,
-    "one-byte command budget returns a receipt",
-  );
-  assert.equal(
-    first.runs[0].stdoutEvidence.head,
-    "cA==",
-    "command retention stays at one byte",
-  );
-  const second = runReceipt(cli(["check", "run"]));
-  assert.equal(
-    first.inputsDigest,
-    second.inputsDigest,
-    "repeated CLI input binding is stable",
-  );
-  assert.equal(first.status, "PASS", "a one-byte display budget still passes");
-  const wire = await mcp("PASS");
-  assert.equal(
-    first.inputsDigest,
-    wire.inputsDigest,
-    "CLI and MCP input binding is stable",
-  );
-  for (const command of ["tool && other", 'tool "unterminated']) {
-    configure({ commands: { test: command } });
+  if (reviewScenario !== "parser") {
+    const first = runReceipt(cli(["check", "run"]));
     assert.equal(
-      cli(
-        ["check", "run"],
-        6,
-        undefined,
-        "invalid command string has a typed error",
-      ).error.code,
-      "INPUT_INVALID",
-      "invalid command string has a typed error",
+      first.runs.length,
+      1,
+      "one-byte command budget returns a receipt",
     );
+    assert.equal(
+      first.runs[0].stdoutEvidence.head,
+      "cA==",
+      "command retention stays at one byte",
+    );
+    if (reviewScenario !== "snapshot") {
+      const second = runReceipt(cli(["check", "run"]));
+      assert.equal(
+        first.inputsDigest,
+        second.inputsDigest,
+        "repeated CLI input binding is stable",
+      );
+    }
+    assert.equal(
+      first.status,
+      "PASS",
+      "a one-byte display budget still passes",
+    );
+    if (reviewScenario !== "snapshot") {
+      const wire = await mcp("PASS");
+      assert.equal(
+        first.inputsDigest,
+        wire.inputsDigest,
+        "CLI and MCP input binding is stable",
+      );
+    }
+  }
+  if (reviewScenario === undefined || reviewScenario === "parser") {
+    for (const command of ["tool && other", 'tool "unterminated']) {
+      configure({ commands: { test: command } });
+      assert.equal(
+        cli(
+          ["check", "run"],
+          6,
+          undefined,
+          "invalid command string has a typed error",
+        ).error.code,
+        "INPUT_INVALID",
+        "invalid command string has a typed error",
+      );
+    }
   }
   console.log(
-    "PASS packed final review: one-byte command cap, stable CLI/MCP bindings, typed parser errors",
+    reviewScenario === undefined
+      ? "PASS packed final review: one-byte command cap, stable CLI/MCP bindings, typed parser errors"
+      : `PASS packed final review: ${reviewScenario}`,
   );
 }
 try {
@@ -358,24 +398,30 @@ try {
     join(root, "command.mjs"),
     `const mode=process.argv[2];if(mode==="fail")process.exitCode=7;else if(mode==="timeout")setInterval(()=>{},1000);else if(mode==="maximum"){const text="H"+"x".repeat(262142)+"T";process.stdout.write(text);process.stderr.write(text);}else if(mode==="zero")console.log("Tests: 0 total");else if(mode==="malformed")console.log('{"numTotalTests":');else if(mode==="environment"){if(process.env.CHECK_PARENT_ONLY)process.exitCode=9;else console.log("isolated");}else console.log("project command");`,
   );
-  const initial = cli(["config", "show"]);
-  const applied = cli([
-    "config",
-    "apply",
-    "--input",
-    JSON.stringify({
-      expectRevision: initial.result.revision,
-      patch: [
-        { op: "set", path: "/mcp", value: { expose: ["check"] } },
-        {
-          op: "set",
-          path: "/blocks/check",
-          value: { source: { builtin: "forge/check" }, config },
-        },
-      ],
-    }),
-  ]);
-  revision = applied.result.revision;
+  if (reviewScenario !== undefined) {
+    // Full surfaces cover config CLI acceptance; each focused proof starts ready to run.
+    mkdirSync(join(root, ".forge"));
+    writeReviewConfig();
+  } else {
+    const initial = cli(["config", "show"]);
+    const applied = cli([
+      "config",
+      "apply",
+      "--input",
+      JSON.stringify({
+        expectRevision: initial.result.revision,
+        patch: [
+          { op: "set", path: "/mcp", value: { expose: ["check"] } },
+          {
+            op: "set",
+            path: "/blocks/check",
+            value: { source: { builtin: "forge/check" }, config },
+          },
+        ],
+      }),
+    ]);
+    revision = applied.result.revision;
+  }
   if (noHeadOnly) {
     const initial = cli(["check", "run"], 4);
     assert.equal(initial.ok, false);
@@ -396,11 +442,12 @@ try {
     "-qm",
     "fixture",
   ]);
-  assert.deepEqual(
-    cli(["check", "list"]).result.commands,
-    ["test"],
-    "the block shipped in the installed package needs no admit or grant step",
-  );
+  if (reviewScenario === undefined)
+    assert.deepEqual(
+      cli(["check", "list"]).result.commands,
+      ["test"],
+      "the block shipped in the installed package needs no admit or grant step",
+    );
   if (noHeadOnly) {
     // The first-commit repair above is the whole journey.
   } else if (honestOnly) {
