@@ -124,10 +124,11 @@ test.each([false, true])(
     console.log("ORPHAN", readFileSync(ready, "utf8"));
     throw Error("counterfactual evidence");
   `);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("counterfactual evidence");
+    const output = `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
+    expect(result.status, output).toBe(1);
+    expect(result.stderr, output).toContain("counterfactual evidence");
     const pid = Number(result.stdout.match(/ORPHAN (\d+)/)?.[1]);
-    expect(pid).toBeGreaterThan(0);
+    expect(pid, output).toBeGreaterThan(0);
     expect(await waitUntilGone([pid]), "real orphan must be stopped").toBe(
       true,
     );

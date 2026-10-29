@@ -240,7 +240,10 @@ async function tree(kind, containment = "supervised") {
   // On Windows libuv already ends a non-detached grandchild with its parent; detaching it leaves
   // only the Job Object to stop it, including after its root has exited.
   const late = join(root, `${containment}-${kind}.late`);
-  const grandchild = `const fs=require('node:fs'); const socket=require('node:net').connect(${cleanupPort},'127.0.0.1',()=>{socket.write(process.pid+':');fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));}); socket.on('data',()=>process.exit(0)); socket.on('error',()=>process.exit(1)); setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'escaped'),6000); setInterval(()=>{},1000);`;
+  // writeFileSync creates the file before writing the PID; the rename makes an existing .ready always hold it.
+  // The grandchild leaves root first: Windows can hold an exited process's working directory after it
+  // reports stopped, which fails the final rmSync with EPERM.
+  const grandchild = `process.chdir(require('node:os').tmpdir()); const fs=require('node:fs'); const socket=require('node:net').connect(${cleanupPort},'127.0.0.1',()=>{socket.write(process.pid+':');fs.writeFileSync(${JSON.stringify(`${ready}.tmp`)},String(process.pid));fs.renameSync(${JSON.stringify(`${ready}.tmp`)},${JSON.stringify(ready)});}); socket.on('data',()=>process.exit(0)); socket.on('error',()=>process.exit(1)); setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'escaped'),6000); setInterval(()=>{},1000);`;
   const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:${strict || process.platform === "win32"},stdio:${JSON.stringify(strict ? "ignore" : "inherit")},env:${JSON.stringify(env)}}); c.unref(); ${kind === "rootexit" ? `const check=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(check);process.exit(0);}},5);` : "setInterval(()=>{},1000);"}`;
   const f = fixture(
     "async ({ input, services }) => { const result = await services.process.run(input.executable, input.args, input.options); if (result.exitCode !== 0) throw Error('child failed'); return 'root-exited'; }",
