@@ -4,6 +4,8 @@ Where: {{WT}} (branch {{BRANCH}}, local commits on top of origin/main {{BASE}}, 
 
 {{ROUND}}
 
+{{TIER}}
+
 Rules:
 
 - Never edit, stage, commit, stash, reset, check out or delete tracked files in the worktree, and never push. Create scratch files only under the system temp folder. If a check leaves the worktree dirty, say which files and restore nothing yourself.
