@@ -49,6 +49,19 @@
         }
       },
       "additionalProperties": false
+    },
+    "approval": {
+      "type": "object",
+      "properties": {
+        "ownerTags": {
+          "$ref": "defs.json#/$defs/Tags"
+        },
+        "adopt": {
+          "enum": ["owner", "agent"]
+        }
+      },
+      "additionalProperties": false,
+      "description": "ownerTags defaults to rule, preference and decision. These tags require owner approval to forget, undo, restore as new notes, or remove on edit. adopt defaults to owner; agent permits a reason instead."
     }
   },
   "additionalProperties": false

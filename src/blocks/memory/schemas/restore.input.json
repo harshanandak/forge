@@ -55,6 +55,9 @@
             "additionalProperties": false,
             "required": ["id", "tags", "links", "text"]
           }
+        },
+        "approval": {
+          "$ref": "defs.json#/$defs/Approval"
         }
       },
       "additionalProperties": false,
@@ -115,6 +118,9 @@
             "additionalProperties": false,
             "required": ["id", "tags", "links", "text"]
           }
+        },
+        "approval": {
+          "$ref": "defs.json#/$defs/Approval"
         }
       },
       "additionalProperties": false,

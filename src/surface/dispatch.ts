@@ -15,7 +15,7 @@ import { validateInvocationRequest } from "../generated/validators.ts";
 
 export interface CallOptions {
   readonly caller: Caller;
-  /** Host-owned confirmation; invocation input and context cannot grant it. */
+  /** Host-owned interactive fallback when an operation requires conversation approval. */
   readonly confirmHuman?: (op: string, input: unknown) => Promise<boolean>;
   readonly readOnly?: boolean;
   readonly context?: AmbientContext;
@@ -134,32 +134,6 @@ export async function dispatch(
   const declaration = entry?.declaration;
   if (options.readOnly && declaration && declaration.effects.length > 0)
     return failure("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
-  if (requiresOwnerConfirmation(entry)) {
-    let confirmed = false;
-    if (options.caller === "human") {
-      try {
-        confirmed = (await options.confirmHuman?.(op, input)) === true;
-      } catch {
-        // An interrupted or failed confirmation never authorizes a write.
-      }
-    }
-    if (!confirmed)
-      return {
-        ok: false,
-        op,
-        status: "FAIL",
-        warnings: [],
-        error: {
-          code: "HUMAN_REQUIRED",
-          message: `${op} requires an owner's interactive confirmation.`,
-          retry: "never",
-          repair:
-            entry?.declaredOp === "memory.forget"
-              ? `Use forge ${op.replace(".forget", " propose-forget")} <id> to mark a proposal; ask the owner to run forge ${op.replace(".", " ")} <id> in a terminal.`
-              : `Ask the owner to run forge ${op.replace(".", " ")} in a terminal and confirm.`,
-        },
-      };
-  }
   if (
     ![...discoveryOperations, ...catalog.list()].some(
       (c) =>
@@ -185,7 +159,7 @@ export async function dispatch(
             options.context ?? {},
             options.explicitContext === true,
           );
-    return await catalog.invoke({
+    const request = {
       schemaVersion: "forge.invocation/1",
       requestId: options.requestId ?? randomUUID(),
       op,
@@ -193,7 +167,42 @@ export async function dispatch(
       caller: options.caller,
       context: await heldContext(catalog, op, input, { ...options, context }),
       ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
-    });
+    } as const;
+    let result = await catalog.invoke(request);
+    if (
+      !result.ok &&
+      result.error.code === "HUMAN_REQUIRED" &&
+      entry?.blockId === "forge/memory"
+    ) {
+      if (
+        requiresOwnerConfirmation(entry) &&
+        record(input)?.approval === undefined &&
+        options.caller === "human"
+      ) {
+        const confirmed = await Promise.resolve()
+          .then(() => options.confirmHuman?.(op, input))
+          .catch(() => false);
+        if (confirmed)
+          result = await catalog.invoke({
+            ...request,
+            input: {
+              ...record(input),
+              approval: { by: "owner", quote: "confirmed in terminal" },
+            },
+          });
+      }
+      if (!result.ok && result.error.code === "HUMAN_REQUIRED")
+        return {
+          ...result,
+          error: {
+            ...result.error,
+            message: `${op}: ${result.error.message}`,
+            repair:
+              "Ask the owner in the conversation, then retry with approval by owner and their words.",
+          },
+        };
+    }
+    return result;
   } catch (error) {
     if (error instanceof ForgeFailure)
       return {

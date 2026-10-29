@@ -8,6 +8,13 @@
     "expectRevision": {
       "type": "integer",
       "minimum": 1
+    },
+    "approval": {
+      "$ref": "defs.json#/$defs/Approval"
+    },
+    "undo": {
+      "type": "boolean",
+      "description": "Restore the hidden note saved by forget. Moved or legacy tombstones cannot be undone."
     }
   },
   "additionalProperties": false,

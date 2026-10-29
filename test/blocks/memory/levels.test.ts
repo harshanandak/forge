@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { loadEntry, memoryState } from "./lib.ts";
+import { ownerApproval, loadEntry, memoryState } from "./lib.ts";
 
 // Block-level level tests with in-memory stores: the level policy with no project, and the
 // transfer cases that need a failure injected between two stores. The real-store journeys are in
@@ -299,7 +299,7 @@ test("a project export restored under another project identity keeps its links b
   const clone = project(NEW);
   expect(
     await entry["memory.restore"]!({
-      input: exported,
+      input: { ...(exported as object), approval: ownerApproval },
       services: clone.services,
     }),
   ).toEqual({ added: 2, skipped: 0, conflicts: [] });
@@ -368,7 +368,7 @@ test("a partial project export relinks only to the notes it restores", async () 
   const clone = project(NEW);
   expect(
     await entry["memory.restore"]!({
-      input: exported,
+      input: { ...(exported as object), approval: ownerApproval },
       services: clone.services,
     }),
   ).toEqual({ added: 2, skipped: 0, conflicts: [] });

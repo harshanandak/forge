@@ -24,11 +24,11 @@ const operations = {
   "memory.rules": { effects: [], humanOnly: false },
   "memory.show": { effects: [], humanOnly: false },
   "memory.propose-forget": { effects: ["memory:write"], humanOnly: false },
-  "memory.forget": { effects: ["memory:write"], humanOnly: true },
+  "memory.forget": { effects: ["memory:write"], humanOnly: false },
   "memory.export": { effects: [], humanOnly: false },
-  "memory.restore": { effects: ["memory:write"], humanOnly: true },
+  "memory.restore": { effects: ["memory:write"], humanOnly: false },
   "decision.propose": { effects: ["decision:write"], humanOnly: false },
-  "decision.adopt": { effects: ["decision:write"], humanOnly: true },
+  "decision.adopt": { effects: ["decision:write"], humanOnly: false },
   "decision.list": { effects: [], humanOnly: false },
 } as const;
 

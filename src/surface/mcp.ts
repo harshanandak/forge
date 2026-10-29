@@ -7,11 +7,7 @@ import { mcpToolName } from "../contract/naming.ts";
 import type { McpExposure } from "../generated/types.ts";
 import type { McpHandlers } from "../ports/mcp-transport.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
-import {
-  dispatch,
-  requiresOwnerConfirmation,
-  type CallOptions,
-} from "./dispatch.ts";
+import { dispatch, type CallOptions } from "./dispatch.ts";
 import { discoveryOperations } from "./discovery.ts";
 import { failure } from "./result.ts";
 
@@ -83,10 +79,7 @@ export function createMcpHandlers(
       { ...exposure, budget: 0 },
     ).overflow,
   );
-  const exposed = candidates.filter(
-    (candidate) =>
-      reachable.has(candidate.op) || requiresOwnerConfirmation(candidate),
-  );
+  const exposed = candidates.filter((candidate) => reachable.has(candidate.op));
   const restricted: SurfaceCatalog = {
     list: () => exposed,
     invoke: (request) => catalog.invoke(request),
@@ -115,13 +108,7 @@ export function createMcpHandlers(
             : { readOnly: exposure.readOnly }),
         });
       }
-      const candidate =
-        byName.get(name) ??
-        [...discoveryOperations, ...candidates].find(
-          (entry) =>
-            requiresOwnerConfirmation(entry) &&
-            mcpToolName(entry.op, exposure.toolPrefix) === name,
-        );
+      const candidate = byName.get(name);
       if (
         candidate === undefined &&
         exposure.readOnly &&
