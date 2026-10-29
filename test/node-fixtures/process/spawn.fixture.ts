@@ -12,9 +12,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer, type Socket } from "node:net";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { waitUntilGone } from "./liveness.ts";
+import { awaitDeadline } from "../async-handlers/deadline.mjs";
 
 interface Adapter {
   createProcessPort(options: {
@@ -223,47 +225,64 @@ async function stoppedTree(
 ): Promise<Record<string, unknown>> {
   const pidFile = join(work, `${name}.pid`);
   const parentJs = join(work, `${name}.js`);
+  // Retain connections to both processes; a saved PID can already belong to someone else.
+  const connections = new Set<Socket>();
+  let cleaning = false;
+  const server = createServer((socket) => {
+    connections.add(socket);
+    socket.once("close", () => connections.delete(socket));
+    socket.on("error", () => {});
+    if (cleaning) socket.write("stop");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw Error("Missing cleanup port");
+  const control = `const socket=require('node:net').connect(${address.port},'127.0.0.1'); socket.on('data',()=>process.exit(0)); socket.on('error',()=>process.exit(1));`;
   writeFileSync(
     parentJs,
     [
       "const { spawn } = require('node:child_process');",
       "const fs = require('node:fs');",
+      control,
       // On Windows a non-detached child sits in libuv's kill-on-close job and would die with its
       // parent anyway; detaching it leaves only the tree kill to stop it.
-      `const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', detached: ${windows} });`,
+      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(`${control} setInterval(()=>{},1000);`)}], { stdio: 'ignore', detached: ${windows} });`,
       `fs.writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, String(child.pid));`,
       `fs.renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});`,
       "setInterval(()=>{},1000);",
     ].join("\n"),
   );
-  const pending = run(process.execPath, [parentJs], extra);
-  let settled = false;
-  void pending.then(
-    () => (settled = true),
-    () => (settled = true),
-  );
-  // Waits on the ready signal or the run ending, never on a clock: under load the parent may take
-  // any time to start, and the run's own timeout bounds this wait.
-  while (!settled && !existsSync(pidFile))
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  if (!settled) onReady();
-  const result = await pending;
-  const grandchildStarted = existsSync(pidFile);
-  const childPid = (result["supervision"] as { commandPid?: number })
-    .commandPid;
-  const pids = [
-    grandchildStarted ? Number(readFileSync(pidFile, "utf8")) : 0,
-    childPid ?? 0,
-  ].filter((pid) => pid > 0);
-  const stopped = await waitUntilGone(pids);
-  for (const pid of pids)
-    if (!stopped)
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // already gone
-      }
-  return { ...result, grandchildStarted, treeAlive: !stopped };
+  try {
+    const pending = run(process.execPath, [parentJs], extra);
+    let settled = false;
+    void pending.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    // Waits on the ready signal or the run ending, never on a clock: under load the parent may take
+    // any time to start, and the run's own timeout bounds this wait.
+    while (!settled && !existsSync(pidFile))
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    if (!settled) onReady();
+    const result = await pending;
+    const grandchildStarted = existsSync(pidFile);
+    const childPid = (result["supervision"] as { commandPid?: number })
+      .commandPid;
+    const pids = [
+      grandchildStarted ? Number(readFileSync(pidFile, "utf8")) : 0,
+      childPid ?? 0,
+    ].filter((pid) => pid > 0);
+    const stopped = await waitUntilGone(pids);
+    return { ...result, grandchildStarted, treeAlive: !stopped };
+  } finally {
+    cleaning = true;
+    const closed = new Promise<void>((resolve) =>
+      server.close(() => resolve()),
+    );
+    for (const socket of connections) socket.write("stop");
+    await awaitDeadline(closed, 5000, "process fixture cleanup");
+  }
 }
 // The timeout clock starts at spawn and covers the parent's own start-up, so under load the timeout
 // can end the parent before it starts the grandchild; then there is no grandchild to leak and the
