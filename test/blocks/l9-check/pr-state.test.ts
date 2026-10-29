@@ -14,7 +14,7 @@ type Result = {
   news: string[];
   end: boolean;
   next: string;
-  reviewRounds: number;
+  reviewRounds?: number;
   nextSteps?: string[];
 };
 function fixture() {
@@ -55,7 +55,12 @@ function fixture() {
     time: string;
     commit?: string;
   }[] = [];
-  const summaries: { commits: string[]; time: string }[] = [];
+  const summaries: {
+    commits?: string[];
+    time: string;
+    edits?: string[];
+    status?: string[];
+  }[] = [];
   const baseParents = new Set<string>();
   let corrupt = false,
     partial = false,
@@ -123,6 +128,21 @@ function fixture() {
       else if (args[1]?.includes("/reviews?")) value = reviews;
       else if (args[1]?.includes("/issues/")) value = summaries;
       else if (args[1]?.includes("/comments?")) value = inline;
+      else if (args.some((arg) => arg.includes("comments(first:100")))
+        value = {
+          summaries: summaries.map((summary, index) => ({
+            id: String(index),
+            time: summary.time,
+            edits: {
+              times: summary.edits ?? [],
+              status: summary.status ?? [],
+              more: false,
+              cursor: null,
+            },
+          })),
+          more: false,
+          cursor: null,
+        };
       else if (args.some((arg) => arg.includes("reviewThreads")))
         value = [
           {
@@ -273,7 +293,7 @@ test("a reviewed current head, duplicate evidence and pre-review commits do not 
     time: "2026-10-27T13:00:00Z",
   });
   f.inline.length = 0;
-  expect((await f.read())!.reviewRounds).toBe(0);
+  expect((await f.read())!.reviewRounds).toBe(1);
 });
 test("base-only merge after review is excluded by second-parent ancestry and update-branch message", async () => {
   for (const update of [false, true]) {
@@ -289,7 +309,7 @@ test("base-only merge after review is excluded by second-parent ancestry and upd
     expect((await f.read())!.reviewRounds).toBe(0);
   }
 });
-test("inline review findings and bot summaries resolve distinct reviewed heads", async () => {
+test("inline review findings and bot summaries complete distinct commit intervals", async () => {
   const f = reviewHistory();
   f.reviews.length = 0;
   f.inline.push({
@@ -303,6 +323,119 @@ test("inline review findings and bot summaries resolve distinct reviewed heads",
     time: "2026-10-27T13:00:00Z",
   });
   expect((await f.read())!.reviewRounds).toBe(2);
+});
+
+test("edited-in-place review summaries preserve the completed round before a base-only merge", async () => {
+  const f = fixture();
+  f.commits.push(
+    {
+      sha: "719a3a0" + "1".repeat(33),
+      time: "2026-10-28T21:58:00Z",
+      parents: [],
+      message: "fix: first",
+    },
+    {
+      sha: "18a5727" + "2".repeat(33),
+      time: "2026-10-28T22:11:00Z",
+      parents: [],
+      message: "fix: feedback",
+    },
+    {
+      sha: head,
+      time: "2026-10-28T22:14:00Z",
+      parents: ["18a5727" + "2".repeat(33), "b".repeat(40)],
+      message: "Merge branch 'main' into feature",
+    },
+  );
+  f.summaries.push({
+    commits: [],
+    time: "2026-10-28T21:59:00Z",
+    edits: ["2026-10-28T22:00:00Z", "2026-10-28T22:12:00Z"],
+  });
+  expect((await f.read())!.reviewRounds).toBe(1);
+});
+
+test("head movement omits the old head's count and redesign advice", async () => {
+  const f = reviewHistory();
+  f.changeDuringRead({ headRefOid: head });
+  const value = (await f.read())!;
+  expect(value).toMatchObject({
+    verdict: "waiting",
+    end: false,
+    news: ["head moved"],
+  });
+  expect(value).not.toHaveProperty("reviewRounds");
+  expect(value).not.toHaveProperty("nextSteps");
+});
+
+test("review intervals use sorted committer times and strictly exclude their boundaries", async () => {
+  const f = reviewHistory();
+  f.commits.reverse();
+  expect((await f.read())!.reviewRounds).toBe(3);
+  f.reviews.splice(0, f.reviews.length, {
+    commit: "irrelevant",
+    time: "2026-10-27T12:00:00Z",
+  });
+  expect((await f.read())!.reviewRounds).toBe(0);
+  f.reviews[0]!.time = "2026-10-27T12:00:01Z";
+  expect((await f.read())!.reviewRounds).toBe(1);
+});
+
+test("recorded PR 131 bot creation and edit events retain one round after the base merge", async () => {
+  const f = fixture();
+  f.commits.push(
+    {
+      sha: "719a3a0" + "1".repeat(33),
+      time: "2026-10-28T21:59:21Z",
+      parents: [],
+      message: "fix: first",
+    },
+    {
+      sha: "18a5727" + "2".repeat(33),
+      time: "2026-10-28T22:11:56Z",
+      parents: [],
+      message: "fix: feedback",
+    },
+    {
+      sha: head,
+      time: "2026-10-28T22:15:00Z",
+      parents: ["18a5727" + "2".repeat(33), "b".repeat(40)],
+      message: "Merge branch 'main' into feature",
+    },
+  );
+  f.summaries.push(
+    {
+      time: "2026-10-28T22:00:31Z",
+      edits: [
+        "2026-10-28T22:00:31Z",
+        "2026-10-28T22:14:17Z",
+        "2026-10-28T22:15:10Z",
+      ],
+    },
+    {
+      time: "2026-10-28T22:00:35Z",
+      edits: [
+        "2026-10-28T22:00:35Z",
+        "2026-10-28T22:01:56Z",
+        "2026-10-28T22:14:19Z",
+        "2026-10-28T22:15:11Z",
+        "2026-10-28T22:16:20Z",
+      ],
+    },
+  );
+  expect((await f.read())!.reviewRounds).toBe(1);
+});
+
+test("a confidently status-only edit also excludes its creation timestamp", async () => {
+  const f = reviewHistory();
+  f.reviews.length = 0;
+  f.summaries.push({
+    time: "2026-10-27T11:00:00Z",
+    status: ["2026-10-27T11:00:00Z"],
+  });
+  expect((await f.read())!.reviewRounds).toBe(0);
+  f.summaries[0]!.edits = ["2026-10-27T11:30:00Z"];
+  expect((await f.read())!.reviewRounds).toBe(1);
 });
 
 test("R1 optional failure blocks despite required checks passing", async () => {

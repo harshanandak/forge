@@ -19,25 +19,30 @@ print nothing. Read failures exit nonzero. The caller carries the token; no stat
 Readiness requires CLEAN or HAS_HOOKS and complete nonempty check evidence; BLOCKED
 cannot distinguish missing checks from missing approvals. The receipt-based gate still decides merge.
 
-`reviewRounds` counts completed review cycles, once per distinct reviewed head: a submitted
-PR review, an inline review finding (its original commit), or a review bot's issue-comment
-summary naming that commit, followed by a substantive head update. Reviews, inline comments,
-bot summaries and commits are read across every page. Bot summaries must come from a Bot
-account or a login ending in `[bot]`, contain review/finding/approval language, and name a
-full SHA or an unambiguous prefix of at least seven characters as a separate word. Ordinary
-issue comments do not count. Duplicate reviews of one head still count once. A reviewed
-current head has no completed cycle yet. Edited bot summaries use their last-updated time.
+`reviewRounds` counts substantive commit intervals containing review activity. Review events
+are PR reviews' submitted times, inline comments' creation times, and bot summaries' creation
+and every edit time. Bot summaries must come from a Bot account or a login ending in `[bot]`
+and contain review/finding/approval language. Commit references in bodies are ignored.
+All connections are paginated, including each summary's nested edit history. Bodies and edit
+diffs are projected away before capture. Ordinary issue comments do not count. Multiple
+events within one interval still count once; the latest substantive commit never completes
+a round. A final head change omits both `reviewRounds` and `nextSteps` and returns `waiting`.
 
 GitHub's commit list does not expose ordinary push times. Forge conservatively requires the
-next substantive PR commit after the reviewed commit to have a committer timestamp later
-than the review. A following commit already dated before review is evidence of a review of
-an intermediate commit, rather than a separate reviewed head. Pre-created commits pushed
-later and reviewed heads removed by a force push can therefore be undercounted. Base-only
+event to fall strictly after a substantive commit's committer timestamp and strictly before
+the next substantive commit's timestamp, ordered by committer time. Equal timestamps do not
+complete a round. Edited summaries are recognized from their current body. A diff consisting
+only of a short status such as `+Review running`, `+Review in progress` or `+Status: queued`
+is excluded, along with a matching creation timestamp. An interval with only that ambiguous
+status counts zero, conservatively losing at most one completed round in that interval.
+Full summary edits still count even when they contain running status alongside findings.
+Pre-created commits pushed later and reviewed heads removed by a force push can therefore
+be undercounted. Base-only
 updates do not complete cycles: merge commits whose second parent is on the captured base
 branch, and update-branch merges naming that branch, are ignored. Base ancestry is checked
 through the compare API against the captured base SHA.
 
-The check block's `review.rounds` config defaults to `2` (a nonnegative integer).
+The check block's `review.rounds` config defaults to `2` (an integer from `1` through `10`).
 Only `reviewRounds > review.rounds` adds `nextSteps` containing exactly:
 `Round N exceeds the review cap (C). Write a three-line threat model, then choose ship, simplify or park; do not patch the same design again.`
 At or below the cap the field is omitted. The existing verdict and `next` cursor retain their

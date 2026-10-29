@@ -22,7 +22,13 @@
       "additionalProperties": false,
       "default": {},
       "properties": {
-        "rounds": { "type": "integer", "minimum": 0, "default": 2 }
+        "rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 2,
+          "description": "Completed review round cap before redesign advice; an integer from 1 through 10."
+        }
       }
     },
     "gate": {

@@ -1493,20 +1493,86 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
   const threadHash = hash(threads);
   const inline = await api<Remark[]>(
     `repos/${owner}/${repo}/pulls/${input.pr}/comments?per_page=100`,
-    "[.[]|{id:(.id|tostring),author:(.user.login // (.user|tostring)),time:.created_at,commit:(.original_commit_id // .commit_id)}] | @json",
+    "[.[]|{id:(.id|tostring),author:(.user.login // (.user|tostring)),time:.created_at}] | @json",
   );
-  type Review = { commit: string; time: string };
+  type Review = { time: string };
   // Numeric string literals survive Windows gh.cmd without shell-reinterpreted quotes.
   const jqText = (text: string) =>
     `([${[...text].map((char) => char.charCodeAt(0)).join(",")}]|implode)`;
   const reviews = await api<Review[]>(
     `repos/${owner}/${repo}/pulls/${input.pr}/reviews?per_page=100`,
-    `[.[]|select(.state != ${jqText("PENDING")} and .submitted_at != null)|{commit:.commit_id,time:.submitted_at}] | @json`,
+    `[.[]|select(.state != ${jqText("PENDING")} and .submitted_at != null)|{time:.submitted_at}] | @json`,
   );
-  const summaries = await api<{ commits: string[]; time: string }[]>(
-    `repos/${owner}/${repo}/issues/${input.pr}/comments?per_page=100`,
-    `[.[]|select(.user.type == ${jqText("Bot")} or (.user.login // empty | endswith(${jqText("[bot]")})))|select(.body // empty | test(${jqText("review|finding|approved|changes requested")};${jqText("i")}))|{time:(.updated_at // .created_at),commits:[.body // empty | scan(${jqText("[a-zA-Z0-9_]+")})|select(test(${jqText("^[a-fA-F0-9]{7,64}$")}))|ascii_downcase]}] | @json`,
-  );
+  type Edits = {
+    times: string[];
+    status: string[];
+    more: boolean;
+    cursor: string | null;
+  };
+  type Summary = { id: string; time: string; edits: Edits };
+  type SummaryPage = {
+    summaries: Summary[];
+    more: boolean;
+    cursor: string | null;
+  };
+  const editFields = "pageInfo{hasNextPage endCursor} nodes{editedAt diff}";
+  const statusOnly = `(.diff // ${jqText("")} | test(${jqText("^[+[:space:]]*(review([[:space:]]+status)?|status)[[:space:]:*-]+(running|in[[:space:]]+progress|queued|pending)[[:space:].!]*$")};${jqText("i")}))`;
+  const editProjection = `{times:[.nodes[]|select(${statusOnly}|not)|.editedAt],status:[.nodes[]|select(${statusOnly})|.editedAt],more:.pageInfo.hasNextPage,cursor:.pageInfo.endCursor}`;
+  const comments: Summary[] = [];
+  const commentCursors = new Set<string>();
+  let commentCursor: string | null = null;
+  for (;;) {
+    const page: SummaryPage = await gh<SummaryPage>([
+      "api",
+      "graphql",
+      "--hostname",
+      host!,
+      "--jq",
+      `(if .errors then error(.errors) else .data.repository.pullRequest.comments | {summaries:[.nodes[]|select(.author.__typename == ${jqText("Bot")} or (.author.login // empty | endswith(${jqText("[bot]")})))|select(.body // empty | test(${jqText("review|finding|approved|changes requested")};${jqText("i")}))|{id,time:.createdAt,edits:(.userContentEdits|${editProjection})}],more:.pageInfo.hasNextPage,cursor:.pageInfo.endCursor} end)`,
+      "-f",
+      `query=query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){comments(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id createdAt author{__typename login} body userContentEdits(first:100){${editFields}}}}}}}`,
+      ...fields,
+      ...(commentCursor ? ["-F", `endCursor=${commentCursor}`] : []),
+    ]);
+    if (typeof page.more !== "boolean") throw new Error("Incomplete summaries");
+    comments.push(...page.summaries);
+    if (!page.more) break;
+    if (!page.cursor || commentCursors.has(page.cursor))
+      throw new Error("Incomplete summaries");
+    commentCursor = page.cursor;
+    commentCursors.add(commentCursor);
+  }
+  const summaries: Review[] = [];
+  for (const summary of comments) {
+    const status = new Set<string>();
+    let edits = summary.edits;
+    const cursors = new Set<string>();
+    for (;;) {
+      if (typeof edits.more !== "boolean")
+        throw new Error("Incomplete summary edits");
+      summaries.push(...edits.times.map((time) => ({ time })));
+      for (const time of edits.status) status.add(time);
+      if (!edits.more) break;
+      if (!edits.cursor || cursors.has(edits.cursor))
+        throw new Error("Incomplete summary edits");
+      cursors.add(edits.cursor);
+      edits = await gh<Edits>([
+        "api",
+        "graphql",
+        "--hostname",
+        host!,
+        "--jq",
+        `(if .errors then error(.errors) else .data.node.userContentEdits | ${editProjection} end)`,
+        "-f",
+        `query=query($id:ID!,$cursor:String!){node(id:$id){... on IssueComment{userContentEdits(first:100,after:$cursor){${editFields}}}}}`,
+        "-F",
+        `id=${summary.id}`,
+        "-F",
+        `cursor=${edits.cursor}`,
+      ]);
+    }
+    if (!status.has(summary.time)) summaries.push({ time: summary.time });
+  }
   type Commit = {
     sha: string;
     time: string;
@@ -1551,29 +1617,27 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
     )
       baseMerges.add(commit.sha);
   }
-  const evidence: Review[] = [
-    ...reviews,
-    ...(inline as (Remark & Partial<Review>)[]).filter(
-      (item): item is Remark & Review => typeof item.commit === "string",
-    ),
-  ];
-  for (const summary of summaries)
-    for (const prefix of summary.commits) {
-      const matches = commits.filter((commit) => commit.sha.startsWith(prefix));
-      if (matches.length === 1)
-        evidence.push({ commit: matches[0]!.sha, time: summary.time });
-    }
-  const completed = new Set<string>();
-  for (const review of evidence) {
-    const index = commits.findIndex((commit) => commit.sha === review.commit);
-    if (index < 0) continue;
-    const later = commits
-      .slice(index + 1)
-      .find((commit) => !baseMerges.has(commit.sha));
-    if (later && Date.parse(later.time) > Date.parse(review.time))
-      completed.add(review.commit);
-  }
-  const reviewRounds = completed.size;
+  const events = [...reviews, ...inline, ...summaries].map((item) =>
+    Date.parse(item.time),
+  );
+  const substantive = commits
+    .filter((commit) => !baseMerges.has(commit.sha))
+    .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+  if (
+    events.some((time) => !Number.isFinite(time)) ||
+    substantive.some((commit) => !Number.isFinite(Date.parse(commit.time)))
+  )
+    throw new Error("Invalid review timeline");
+  const reviewRounds = substantive.filter((commit, index) => {
+    const next = substantive[index + 1];
+    return (
+      next &&
+      events.some(
+        (time) =>
+          time > Date.parse(commit.time) && time < Date.parse(next.time),
+      )
+    );
+  }).length;
   const cap = args.config.review?.rounds ?? 2;
   const nextSteps =
     reviewRounds > cap
@@ -1686,8 +1750,7 @@ async function prState(args: Call<{ pr: number; since?: string }>) {
     news: raced ? [moved ? "head moved" : "state changed"] : news,
     end: !raced && (verdict === "ready" || verdict === "gone"),
     next,
-    reviewRounds,
-    ...(nextSteps ? { nextSteps } : {}),
+    ...(!moved ? { reviewRounds, ...(nextSteps ? { nextSteps } : {}) } : {}),
   };
 }
 

@@ -2,16 +2,7 @@
   "x-cli-output": "value",
   "type": ["object", "null"],
   "additionalProperties": false,
-  "required": [
-    "pr",
-    "head",
-    "verdict",
-    "reasons",
-    "news",
-    "end",
-    "next",
-    "reviewRounds"
-  ],
+  "required": ["pr", "head", "verdict", "reasons", "news", "end", "next"],
   "properties": {
     "pr": { "type": "integer", "minimum": 1 },
     "head": { "type": "string" },

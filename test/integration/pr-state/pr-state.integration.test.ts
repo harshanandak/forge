@@ -96,7 +96,7 @@ type State = {
   next: string;
   news: string[];
   end: boolean;
-  reviewRounds: number;
+  reviewRounds?: number;
   nextSteps?: string[];
 };
 function read(since?: string): State {
@@ -286,6 +286,109 @@ test("built CLI and MCP count three completed reviews and honor the configured c
   );
 });
 
+for (const cap of [0, 11, 1e100])
+  test(`built CLI rejects review cap ${cap}`, () => {
+    try {
+      configure(cap);
+      scenario({});
+      const result = run();
+      expect(result.status, `cap ${cap}`).not.toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_INVALID", reconcileWith: "config.show" },
+      });
+      expect(result.stdout).toContain("blocks.check.config.review.rounds");
+      expect(result.stdout).toContain(
+        cap === 0 ? "must be at least 1" : "must be at most 10",
+      );
+    } finally {
+      configure();
+    }
+  });
+
+test("built CLI and MCP retain edited bot review events across a fix and base-only merge", async () => {
+  const reviewed = "719a3a0" + "1".repeat(33),
+    fixed = "18a5727" + "2".repeat(33),
+    merged = "9".repeat(40);
+  scenario({
+    head: merged,
+    commits: [
+      {
+        sha: reviewed,
+        time: "2026-10-28T21:58:00Z",
+        parents: [],
+        message: "fix: first",
+      },
+      {
+        sha: fixed,
+        time: "2026-10-28T22:11:00Z",
+        parents: [reviewed],
+        message: "fix: feedback",
+      },
+      {
+        sha: merged,
+        time: "2026-10-28T22:14:00Z",
+        parents: [fixed, "b".repeat(40)],
+        message: "Merge branch 'main' into feature",
+      },
+    ],
+    issuePages: [
+      [],
+      [
+        {
+          id: 131,
+          user: { login: "reviewer[bot]", type: "Bot" },
+          body: "Review findings for the current revision",
+          created_at: "2026-10-28T21:57:00Z",
+          updated_at: "2026-10-28T22:12:00Z",
+          editPages: [
+            Array.from({ length: 100 }, () => ({
+              editedAt: "2026-10-28T22:12:00Z",
+              diff: "+Review completed",
+            })),
+            [{ editedAt: "2026-10-28T22:00:00Z", diff: "+Review findings" }],
+          ],
+        },
+      ],
+    ],
+  });
+  for (const state of [read(), await mcpRead()])
+    expect(state.reviewRounds).toBe(1);
+});
+
+test("built CLI and MCP omit stale review advisory on a final head race", async () => {
+  for (const readState of [() => Promise.resolve(read()), mcpRead]) {
+    scenario({ ...reviewedCycles(), afterHead: "a" });
+    const value = await readState();
+    expect(value).toMatchObject({ verdict: "waiting", end: false });
+    expect(value).not.toHaveProperty("reviewRounds");
+    expect(value).not.toHaveProperty("nextSteps");
+  }
+});
+
+test("built CLI excludes pure running edits and retains substantive summary edits", () => {
+  const history = reviewedCycles();
+  for (const [diff, count] of [
+    ["+Review running", 0],
+    ["+Review findings: issue found; review running", 1],
+  ] as const) {
+    scenario({
+      head: history.head,
+      commits: history.commits,
+      comments: [
+        {
+          id: 1,
+          user: { login: "reviewer[bot]", type: "Bot" },
+          body: "Review findings",
+          created_at: "2026-10-27T11:00:00Z",
+          editPages: [[{ editedAt: "2026-10-27T11:00:00Z", diff }]],
+        },
+      ],
+    });
+    expect(read().reviewRounds).toBe(count);
+  }
+});
+
 test("built CLI and MCP leave base-only updates and in-progress review at zero", async () => {
   const history = reviewedCycles();
   const reviewed = history.commits[0]!;
@@ -322,7 +425,7 @@ test("built CLI and MCP leave base-only updates and in-progress review at zero",
     expect(state.reviewRounds).toBe(0);
 });
 
-test("human issue comments, embedded hashes and duplicate evidence do not inflate rounds", () => {
+test("bot summary activity ignores hash references and duplicate evidence counts once", () => {
   const history = reviewedCycles(),
     sha = history.commits[0]!.sha,
     time = "2026-10-27T11:00:00Z";
@@ -338,7 +441,7 @@ test("human issue comments, embedded hashes and duplicate evidence do not inflat
       },
       {
         id: 2,
-        user: { login: "reviewer[bot]", type: "Bot" },
+        user: { login: "person" },
         body: `Review findings z${sha}z`,
         created_at: time,
       },
@@ -358,7 +461,7 @@ test("human issue comments, embedded hashes and duplicate evidence do not inflat
       },
     ],
   });
-  expect(read().reviewRounds).toBe(0);
+  expect(read().reviewRounds).toBe(1);
   scenario({
     head: history.head,
     commits: history.commits,
@@ -555,7 +658,11 @@ for (const [name, value, head] of [
   });
 
 test("failed or incomplete reads and invalid tokens exit nonzero without next", () => {
-  for (const broken of [{ failRead: true }, { incomplete: true }]) {
+  for (const broken of [
+    { failRead: true },
+    { incomplete: true },
+    { incompleteSummaries: true },
+  ]) {
     scenario(broken);
     const result = run();
     expect(result.status).not.toBe(0);
