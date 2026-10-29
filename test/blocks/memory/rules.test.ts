@@ -5,6 +5,7 @@ import { localCall } from "../../../src/assembly/index.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import {
+  ownerApproval,
   done,
   loadEntry,
   memoryState,
@@ -432,7 +433,12 @@ test("startup counts applicable scopes without text or ids in JSON or --text; co
       scope: "general",
     }),
   ) as { id: string };
-  done(await harness.call("memory.forget", { id: forgotten.id }));
+  done(
+    await harness.call("memory.forget", {
+      approval: ownerApproval,
+      id: forgotten.id,
+    }),
+  );
   const peer = await openHarness(
     ["memory"],
     {},

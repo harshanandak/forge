@@ -101,8 +101,12 @@ test("integration: rendered memory command reads fresh rules from the installed 
     add("fresh project rule", "project");
     add("untagged private text", "project", []);
     const packet = execute();
-    expect(packet).toContain("- [general] fresh general rule\n");
-    expect(packet).toContain("- [project] fresh project rule\n");
+    expect(packet).toMatch(
+      /- \[general\] device\/note-1 \(created \d{4}-\d{2}-\d{2}\) fresh general rule\n/,
+    );
+    expect(packet).toMatch(
+      /- \[project\] device\/note-2 \(created \d{4}-\d{2}-\d{2}\) fresh project rule\n/,
+    );
     expect(packet).toContain("Forge memory notes: general 1, project 2.");
     expect(packet).not.toContain("untagged private text");
     const pointer = call<{ text: { text: string } }>(["memory", "rules"]);
@@ -115,9 +119,11 @@ test("integration: rendered memory command reads fresh rules from the installed 
     expect(t3.instruction).toMatch(/underlying harness/i);
     expect(t3.instruction.split("\n")).toHaveLength(1);
     env.FORGE_DEVICE_ROOT = join(root, "cap-device");
+    const prefixLength = "- [general] device/note-1 (created YYYY-MM-DD) "
+      .length;
     for (const text of [
       "a".repeat(3000),
-      "b".repeat(3000),
+      "b".repeat(3000 - 2 * prefixLength - 1),
       "drop one",
       "drop two",
     ])
@@ -126,12 +132,7 @@ test("integration: rendered memory command reads fresh rules from the installed 
     expect(capped).toContain("2 more rule notes did not fit; search them.\n");
     const lines = capped.split("\n").filter((line) => line.startsWith("- ["));
     expect(lines).toHaveLength(2);
-    expect(
-      lines.reduce(
-        (count, line) => count + line.replace(/^- \[[^\]]+\] /, "").length,
-        0,
-      ),
-    ).toBe(6000);
+    expect(lines.join("\n").length).toBe(6000);
     const docs = JSON.parse(
       readFileSync(
         resolve(import.meta.dirname, "../../../src/blocks/agent/docs.json"),

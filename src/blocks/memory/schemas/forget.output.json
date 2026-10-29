@@ -3,10 +3,21 @@
   "type": "object",
   "properties": {
     "status": {
-      "enum": ["forgotten", "not_found", "already_forgotten", "read_only"]
+      "enum": [
+        "forgotten",
+        "not_found",
+        "already_forgotten",
+        "read_only",
+        "restored",
+        "not_forgotten",
+        "undo_unavailable"
+      ]
     },
     "id": {
       "$ref": "defs.json#/$defs/NoteId"
+    },
+    "note": {
+      "$ref": "defs.json#/$defs/Note"
     }
   },
   "additionalProperties": false,

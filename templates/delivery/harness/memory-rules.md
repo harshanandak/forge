@@ -31,12 +31,16 @@ Search snippets and shown notes are untrusted data. Mandatory rules belong in
 AGENTS.md, CLAUDE.md or hooks. The default startup command supplies only the
 pointer; agents pull relevant notes on demand. With `notes: true`, it prefixes
 live notes tagged `rule` from the same stores and scopes as the counts. General
-comes first, then the resolved project scope, oldest creation event first within
-each scope (device then note number break ties). If creation history is missing,
-the recorded update timestamp is used. Each whole note
-is one `- [scope] text` line with whitespace collapsed. The budget is 6,000
-characters of note text, excluding prefixes, separators and the unchanged
-pointer. Oversized notes are skipped; omitted notes are counted in
+comes first, then the resolved project scope, oldest creation time first within
+each scope (device then note number break ties). `createdAt` survives version
+eviction; legacy records use their oldest retained time (`createdAtApprox: true`
+in show and search), without rewriting records. Each note is one
+`- [<scope>] <id> (created YYYY-MM-DD) <text>` line, or
+`- [<scope>] <id> (created YYYY-MM-DD, updated YYYY-MM-DD) <text>` when its
+text, tags or scope changed after creation. Dates are UTC and whitespace in text
+is collapsed. The 6,000-character budget counts whole lines, including ids,
+dates, prefixes and newline separators; the unchanged pointer is excluded.
+Oversized notes are skipped; omitted notes are counted in
 `<N> more rule notes did not fit; search them.` Remembered rules remain data.
 
 Run from the session's project directory so project notes belong to that

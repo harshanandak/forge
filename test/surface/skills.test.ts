@@ -121,7 +121,8 @@ test("skills.sync writes one linted skill per block noun, deterministically, fro
       "- CLI: `forge decision propose --input '<json>'`\n- MCP: `decision_propose`",
     );
     expect(decision).toContain("- Effects: `decision:write`; not idempotent");
-    expect(decision).toContain("- `decision.adopt`: Mark a proposed decision");
+    expect(decision).toContain("## `decision.adopt`");
+    expect(decision).toContain("- MCP: `decision_adopt`");
     expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
       result: { written: [], unchanged: paths },
     });

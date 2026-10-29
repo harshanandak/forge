@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { done, openHarness, type Harness } from "./lib.ts";
+import { ownerApproval, done, openHarness, type Harness } from "./lib.ts";
 
 // One coarse smoke on the real store and the block's declared operation deadlines, in the serial
 // integration lane. The counts that prove scale are in scale.test.ts; this only shows the real
@@ -34,6 +34,7 @@ test("integration: a 1,200-note device restores page by page and is searched ins
     });
     done(
       await h.call("memory.restore", {
+        approval: ownerApproval,
         format: "forge.memory.export/2",
         level: "device",
         notes,

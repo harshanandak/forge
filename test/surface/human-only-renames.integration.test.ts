@@ -20,10 +20,6 @@ const { createAssembly, localCall } = (await import(
 const { createMcpHandlers } = (await import(
   pathToFileURL(resolve("dist/src/surface/mcp.js")).href
 )) as typeof import("../../src/surface/mcp.ts");
-const { dispatch } = (await import(
-  pathToFileURL(resolve("dist/src/surface/dispatch.js")).href
-)) as typeof import("../../src/surface/dispatch.ts");
-
 const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
 const operations = [
   {
@@ -151,9 +147,10 @@ for (const route of ["cli", "cli-catalog", "mcp", "mcp-catalog"] as const)
           });
         }
         const repair = (refused as { error: { repair: string } }).error.repair;
-        expect(repair).toContain(`forge ${op.replace(".", " ")}`);
-        if (op === "notes.forget")
-          expect(repair).toContain("forge notes propose-forget");
+        expect(repair).toContain("Ask the owner in the conversation");
+        expect(
+          (refused as { error: { message: string } }).error.message,
+        ).toContain(op);
         expect(snapshot(root)).toEqual(before);
         expect(
           await prepare("notes.show", { id: "device/note-1" }),
@@ -164,12 +161,45 @@ for (const route of ["cli", "cli-catalog", "mcp", "mcp-catalog"] as const)
         expect(await prepare("choices.list", {})).toMatchObject({
           decisions: [{ status: "proposed" }],
         });
-        if (route === "cli") {
-          const approved = await dispatch(assembly.catalog, op, input, {
-            ...options,
-            confirmHuman: () => Promise.resolve(true),
+        const approvedInput = {
+          ...input,
+          approval: { by: "owner", quote: "Please make this change." },
+        };
+        if (route.startsWith("cli")) {
+          const args =
+            route === "cli"
+              ? [...op.split("."), "--input", JSON.stringify(approvedInput)]
+              : [
+                  "catalog",
+                  "call",
+                  "--input",
+                  JSON.stringify({ op, input: approvedInput }),
+                ];
+          const approved = spawnSync("node", [bin, ...args], {
+            cwd: root,
+            env: {
+              ...process.env,
+              FORGE_DEVICE_ROOT: deviceRoot,
+              FORGE_AGENT: "test-agent",
+            },
+            encoding: "utf8",
+            timeout: 20_000,
+            windowsHide: true,
           });
-          expect(approved).toMatchObject({ ok: true, result: expected });
+          if (approved.error) throw approved.error;
+          expect(JSON.parse(approved.stdout)).toMatchObject({
+            ok: true,
+            result: expected,
+          });
+          expect(approved.status).toBe(0);
+        } else {
+          const handlers = createMcpHandlers(assembly.catalog, {}, options);
+          expect(
+            await handlers.callTool(
+              route === "mcp" ? op.replace(".", "_") : "catalog_call",
+              route === "mcp" ? approvedInput : { op, input: approvedInput },
+            ),
+          ).toMatchObject({ ok: true, result: expected });
         }
       } finally {
         await assembly.close();

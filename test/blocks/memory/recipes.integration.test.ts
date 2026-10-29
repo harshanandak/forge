@@ -177,3 +177,15 @@ test("recipe gives a valid on-demand search and forge-loop requires it", () => {
   expect(loop).toContain("search/show commands");
   expect(loop).toContain("never note text");
 }, 30_000);
+
+test("startup recipe documents decision dates and a complete-line rule budget", () => {
+  const prose = recipe.replace(/\s+/gu, " ");
+  expect(prose).toContain("`- [<scope>] <id> (created YYYY-MM-DD) <text>`");
+  expect(prose).toContain(
+    "`- [<scope>] <id> (created YYYY-MM-DD, updated YYYY-MM-DD) <text>`",
+  );
+  expect(prose).toContain("UTC");
+  expect(prose).toContain("text, tags or scope");
+  expect(prose).toContain("whole lines");
+  expect(prose).toContain("createdAtApprox");
+}, 30_000);

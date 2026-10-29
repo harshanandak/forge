@@ -23,6 +23,9 @@
       "type": "string",
       "maxLength": 64,
       "description": "The project that could not be read."
+    },
+    "approval": {
+      "$ref": "defs.json#/$defs/ApprovalAudit"
     }
   },
   "additionalProperties": false,
