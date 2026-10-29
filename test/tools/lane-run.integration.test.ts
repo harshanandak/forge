@@ -752,6 +752,9 @@ test("third tester round refuses before launch, explicit caps permit three and r
   expect(f.attempts()).toHaveLength(0);
   expect(f.runRole("tester", ["--round-cap", "3"]).code).toBe(0);
   expect(f.prompt()).toContain("This is test round 3.");
+  expect(f.prompt()).toContain(
+    "No completed builder or fixer reply is available",
+  );
   for (const cap of ["0", "11", "1.5"])
     expect(f.runRole("tester", ["--round-cap", cap]).output.next).toContain(
       "integer from 1 to 10",
@@ -896,4 +899,171 @@ test("list reports per-lane durable role, round, verdict and reply history", () 
       },
     ],
   });
+});
+
+function unknownRun(
+  f: ReturnType<typeof roleFixture>,
+  name: string,
+  contents?: string,
+) {
+  const folder = join(f.runs, name);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(
+    join(folder, "reply.md"),
+    "Unclassified reply must never be trusted.",
+  );
+  if (contents !== undefined) writeFileSync(join(folder, "run.json"), contents);
+  return folder;
+}
+function unknownRows(f: ReturnType<typeof roleFixture>) {
+  const result = f.run(["list"]);
+  expect(result.code).toBe(0);
+  return (
+    result.output as unknown as {
+      lanes: { runs: { role: string; folder?: string }[] }[];
+    }
+  ).lanes[0]!.runs.filter((run) => run.role === "unknown");
+}
+
+test("unknown history legacy-count fails closed, allows explicit cap and never invents prior replies", () => {
+  const f = roleFixture();
+  const folders = [unknownRun(f, "old-builder"), unknownRun(f, "old-tester")];
+  const refused = f.runRole("tester");
+  expect(refused.output.verdict).toBe("refused");
+  expect(refused.output.next).toBe(
+    "Test round 3 exceeds the cap (2). Write a three-line threat model, then choose ship, simplify or park.",
+  );
+  for (const folder of folders)
+    expect(JSON.stringify(refused.output)).toContain(
+      folder.replaceAll("\\", "\\\\"),
+    );
+  expect(f.attempts()).toHaveLength(0);
+  expect(
+    unknownRows(f)
+      .map((run) => run.folder)
+      .sort(),
+  ).toEqual(folders.sort());
+  const override = f.runRole("tester", ["--round-cap", "3"]);
+  expect(override.code).toBe(0);
+  expect(f.prompt()).toContain("This is test round 3.");
+  expect(f.prompt()).toContain(
+    "No completed builder or fixer reply is available",
+  );
+  expect(f.prompt()).not.toContain("The previous report is");
+  for (const folder of folders)
+    expect(f.prompt()).not.toContain(
+      join(folder, "reply.md").replaceAll("\\", "/"),
+    );
+});
+
+test("unknown history truncated and unreadable records list without blocking other roles", () => {
+  const f = roleFixture();
+  const truncated = unknownRun(f, "truncated", "{");
+  const unreadable = unknownRun(f, "unreadable");
+  mkdirSync(join(unreadable, "run.json"));
+  expect(
+    unknownRows(f)
+      .map((run) => run.folder)
+      .sort(),
+  ).toEqual([truncated, unreadable].sort());
+  for (const role of ["builder", "fixer", "reviewer"])
+    expect(f.runRole(role).code).toBe(0);
+  const refused = f.runRole("tester");
+  expect(refused.output.verdict).toBe("refused");
+  expect(refused.output.next).toContain("Test round 3 exceeds the cap (2).");
+  expect(f.attempts()).toHaveLength(3);
+});
+
+test("unknown history missing record counts alongside classified testers and custom prompts", () => {
+  const f = roleFixture();
+  f.seed("tester", 1);
+  const missing = unknownRun(f, "missing");
+  const custom = join(f.root, "custom-unknown.md");
+  writeFileSync(custom, "Exact unknown-history override.\n");
+  const refused = f.runRole("tester", ["--prompt", custom]);
+  expect(refused.output.verdict).toBe("refused");
+  expect(refused.output.next).toContain("Test round 3 exceeds the cap (2).");
+  expect(unknownRows(f)).toEqual([{ role: "unknown", folder: missing }]);
+  const override = f.runRole("tester", [
+    "--round-cap",
+    "3",
+    "--prompt",
+    custom,
+  ]);
+  expect(override.code).toBe(0);
+  expect(f.prompt()).toBe("Exact unknown-history override.\n");
+  expect(
+    JSON.parse(
+      readFileSync(join(override.output.folder!, "run.json"), "utf8"),
+    ) as Record<string, unknown>,
+  ).toMatchObject({ role: "tester", round: 3 });
+});
+
+test("unknown history noninteger and missing tester rounds never classify as completed testers", () => {
+  const f = roleFixture();
+  const rounds: unknown[] = [1.5, 0, 11, null, undefined, "1"];
+  const folders = rounds.map((round) => {
+    const record = f.seed("tester", 1);
+    const folder = join(record.reply, "..");
+    writeFileSync(
+      join(folder, "run.json"),
+      JSON.stringify({ ...record, round }),
+    );
+    return resolve(folder);
+  });
+  expect(
+    unknownRows(f)
+      .map((run) => run.folder)
+      .sort(),
+  ).toEqual(folders.sort());
+  const refused = f.runRole("tester");
+  expect(refused.output.verdict).toBe("refused");
+  expect(refused.output.next).toContain("Test round 7 exceeds the cap (2).");
+  expect(f.attempts()).toHaveLength(0);
+});
+
+test("unknown history wrongrole rejects unknown roles and non-tester rounds", () => {
+  const f = roleFixture();
+  const roles = ["builder", "fixer", "reviewer", "unrecognized"];
+  const folders = roles.map((role) => {
+    const record = f.seed(role, role === "unrecognized" ? null : 1);
+    return resolve(record.reply, "..");
+  });
+  expect(
+    unknownRows(f)
+      .map((run) => run.folder)
+      .sort(),
+  ).toEqual(folders.sort());
+  const allowed = f.runRole("tester", ["--round-cap", "5"]);
+  expect(allowed.code).toBe(0);
+  expect(f.prompt()).toContain("This is test round 5.");
+  expect(f.prompt()).toContain(
+    "No completed builder or fixer reply is available",
+  );
+  expect(f.prompt()).not.toContain("The previous report is");
+  for (const folder of folders)
+    expect(f.prompt()).not.toContain(
+      join(folder, "reply.md").replaceAll("\\", "/"),
+    );
+});
+
+test("run records retain the old complete JSON when atomic publication is interrupted", () => {
+  const f = roleFixture();
+  const before = join(f.root, "before-publication.json");
+  const helper = join(f.root, "interrupted-publish.ts");
+  writeFileSync(
+    helper,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};let injected=false;mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{if(String(to).endsWith('run.json')&&native.existsSync(to)&&!injected){injected=true;native.writeFileSync(${JSON.stringify(before)},native.readFileSync(to));throw new Error('injected publication interruption');}return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
+  );
+  const result = f.run(["run", "one", "--role", "builder"], f.caller, helper);
+  expect(existsSync(before)).toBe(true);
+  expect(
+    JSON.parse(readFileSync(before, "utf8")) as Record<string, unknown>,
+  ).toMatchObject({ verdict: "started", end: null });
+  expect(result.code).toBe(1);
+  expect(
+    JSON.parse(
+      readFileSync(join(result.output.folder!, "run.json"), "utf8"),
+    ) as Record<string, unknown>,
+  ).toMatchObject({ verdict: "failed" });
 });

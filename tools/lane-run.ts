@@ -7,6 +7,8 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
@@ -181,27 +183,54 @@ type RunRecord = {
   session: string | null;
   reply: string;
 };
-export function laneHistory(common: string, id: string): RunRecord[] {
+type KnownRun = RunRecord & {
+  role: "builder" | "fixer" | "reviewer" | "tester";
+};
+type UnknownRun = { role: "unknown"; folder: string };
+export function laneHistory(
+  common: string,
+  id: string,
+): (KnownRun | UnknownRun)[] {
   const root = join(common, "forge-lane-runs", id);
   if (!existsSync(root)) return [];
-  return readdirSync(root)
-    .flatMap((name) => {
-      const file = join(root, name, "run.json");
-      if (!existsSync(file)) return [];
-      const value: unknown = JSON.parse(readFileSync(file, "utf8"));
-      if (
-        !object(value) ||
-        !["role", "model", "effort", "start", "verdict", "reply"].every(
-          (key) => typeof value[key] === "string",
-        ) ||
-        !(value.round === null || Number.isInteger(value.round)) ||
-        !(value.end === null || typeof value.end === "string") ||
-        !(value.session === null || typeof value.session === "string")
-      )
-        throw new Error("invalid lane run record");
-      return [value as RunRecord];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry): KnownRun | UnknownRun => {
+      const folder = join(root, entry.name);
+      try {
+        const value: unknown = JSON.parse(
+          readFileSync(join(folder, "run.json"), "utf8"),
+        );
+        if (
+          !object(value) ||
+          !["role", "model", "effort", "start", "verdict", "reply"].every(
+            (key) => typeof value[key] === "string",
+          ) ||
+          !["builder", "fixer", "reviewer", "tester"].includes(
+            String(value.role),
+          ) ||
+          !(value.role === "tester"
+            ? Number.isInteger(value.round) &&
+              Number(value.round) >= 1 &&
+              Number(value.round) <= 10
+            : value.round === null) ||
+          !["started", "completed", "failed"].includes(String(value.verdict)) ||
+          !(value.verdict === "started"
+            ? value.end === null
+            : typeof value.end === "string") ||
+          !(value.session === null || typeof value.session === "string")
+        )
+          throw new Error("invalid lane run record");
+        return value as KnownRun;
+      } catch {
+        return { role: "unknown", folder };
+      }
     })
-    .sort((a, b) => a.start.localeCompare(b.start));
+    .sort((a, b) =>
+      (a.role === "unknown" ? "" : a.start).localeCompare(
+        b.role === "unknown" ? "" : b.start,
+      ),
+    );
 }
 function completed(record: RunRecord) {
   return (
@@ -247,10 +276,9 @@ function roleBrief(
       )
       .at(-1);
     const path = (record: RunRecord) => record.reply.replaceAll("\\", "/");
-    roundText =
-      round === 1
-        ? `This is test round 1.${fix ? ` The builder's reply is ${path(fix)}: treat every claim in it as unverified until you run it.` : " No completed builder or fixer reply is available; treat every implementation claim as unverified until you run it."}`
-        : `This is test round ${round}. The previous report is ${path(previous!)}${fix ? ` and the builder's fix reply is ${path(fix)}` : ""}. First re-run every earlier repro and say for each finding whether it is fixed. Then re-run the checks and look for regressions the fixes introduced. New findings are welcome.`;
+    roundText = !previous
+      ? `This is test round ${round}.${fix ? ` The builder's reply is ${path(fix)}: treat every claim in it as unverified until you run it.` : " No completed builder or fixer reply is available; treat every implementation claim as unverified until you run it."}${round !== 1 ? " No classified previous tester report is available." : ""}`
+      : `This is test round ${round}. The previous report is ${path(previous)}${fix ? ` and the builder's fix reply is ${path(fix)}` : ""}. First re-run every earlier repro and say for each finding whether it is fixed. Then re-run the checks and look for regressions the fixes introduced. New findings are welcome.${!fix ? " No completed builder or fixer reply is available; treat every implementation claim as unverified until you run it." : ""}`;
   }
   const values = {
     WT: worktree.replaceAll("\\", "/"),
@@ -291,11 +319,15 @@ export async function laneRun(
   let unlock: ((pid?: number) => void) | undefined;
   let record: RunRecord | undefined;
   const save = () => {
-    if (record && folder)
-      writeFileSync(
-        join(folder, "run.json"),
-        `${JSON.stringify(record, null, 2)}\n`,
-      );
+    if (!record || !folder) return;
+    const file = join(folder, "run.json"),
+      temp = `${file}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`);
+      renameSync(temp, file);
+    } finally {
+      rmSync(temp, { force: true });
+    }
   };
   const report = (data: Record<string, unknown>) =>
     console.log(
@@ -371,15 +403,30 @@ export async function laneRun(
     const lane = context.lanes.find((item) => item.issue === id);
     if (!lane) throw new Error(`no active lane for ${id}; use start first`);
     unlock = context.lock(id);
-    const records = laneHistory(context.common, id).filter(completed);
+    const history = role === "tester" ? laneHistory(context.common, id) : [];
+    const unknown = history.flatMap((item) =>
+      item.role === "unknown" ? [item.folder] : [],
+    );
+    const records = history
+      .filter((item): item is KnownRun => item.role !== "unknown")
+      .filter(completed);
     const round =
       role === "tester"
-        ? records.filter((record) => record.role === "tester").length + 1
+        ? records.filter((record) => record.role === "tester").length +
+          unknown.length +
+          1
         : null;
-    if (round !== null && round > Number(cap))
-      throw new Error(
-        `Test round ${round} exceeds the cap (${cap}). Write a three-line threat model, then choose ship, simplify or park.`,
-      );
+    if (round !== null && round > Number(cap)) {
+      const next = `Test round ${round} exceeds the cap (${cap}). Write a three-line threat model, then choose ship, simplify or park.`;
+      report({
+        reasons: [
+          next,
+          ...unknown.map((folder) => `Unknown run folder: ${folder}`),
+        ],
+        next,
+      });
+      return 1;
+    }
     const custom = values.get("--prompt"),
       resume = values.get("--resume");
     const issue: unknown = custom ? null : JSON.parse(context.issue(id));
