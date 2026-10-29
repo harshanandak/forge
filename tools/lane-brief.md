@@ -4,8 +4,9 @@ in the way. Work only in your current lane worktree, on its current branch.
 
 No separate plan: the issue and lane contract below state the fix and test. Read
 the issue with the installed `forge issue show`. Confirm the problem by reproducing
-it and make the smallest correct fix. If already fixed on fetched origin/main,
-stop with evidence. The lane contract takes precedence over this template.
+it and make the smallest correct fix. If the issue is wrong about the code, or
+already fixed on main, stop and say so with evidence instead of changing code.
+The lane contract takes precedence over this template.
 
 How:
 

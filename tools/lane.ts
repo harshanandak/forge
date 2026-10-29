@@ -270,6 +270,22 @@ async function main(): Promise<number> {
         lanes: active(registry, root),
         issue: (id) =>
           run("forge", ["issue", "show", "--input", JSON.stringify({ id })]),
+        lock: (id) => {
+          const lock = join(common, `forge-lane-${id}.lock`),
+            staged = `${lock}.${randomUUID()}`;
+          mkdirSync(staged);
+          writeFileSync(join(staged, owner), "", { flag: "wx" });
+          try {
+            reclaim(lock);
+            renameSync(staged, lock);
+          } catch {
+            release(staged, owner);
+            throw new Error(
+              "lane already running; wait for it to finish and retry",
+            );
+          }
+          return () => release(lock, owner);
+        },
       });
     if (parsed === "list") {
       console.log(JSON.stringify({ lanes: active(registry, root) }));

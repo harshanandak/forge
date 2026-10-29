@@ -76,21 +76,14 @@ export async function runCodex(
         command = "sh";
       }
       const output = openSync(log, retries ? "a" : "w");
-      const input = openSync(
-        join(folder, retries ? "continue.txt" : "brief.md"),
-        "w+",
-      );
+      const promptPath = join(folder, retries ? "continue.txt" : "brief.md");
       writeFileSync(
-        input,
+        promptPath,
         retries
           ? "Continue the same task after the capacity error. All original rules and the final reply format still apply.\n"
           : options.prompt,
       );
-      closeSync(input);
-      const promptFile = openSync(
-        join(folder, retries ? "continue.txt" : "brief.md"),
-        "r",
-      );
+      const promptFile = openSync(promptPath, "r");
       let seen: number | undefined;
       try {
         exit = await new Promise<number | null>((done, fail) => {
@@ -165,6 +158,7 @@ export async function laneRun(
     configRoot: string;
     lanes: { issue: string; worktree: string; brief: string }[];
     issue: (id: string) => string;
+    lock: (id: string) => () => void;
   },
 ) {
   let role: string | null = null,
@@ -172,6 +166,7 @@ export async function laneRun(
     model: string | null = null,
     effort: string | null = null,
     folder: string | null = null;
+  let unlock: (() => void) | undefined;
   const report = (data: Record<string, unknown>) =>
     console.log(
       JSON.stringify({
@@ -259,6 +254,7 @@ export async function laneRun(
           "\nLane contract (takes precedence):\n",
           readFileSync(lane.brief, "utf8"),
         ].join("\n");
+    unlock = context.lock(id);
     folder = join(context.common, "forge-lane-runs", id, randomUUID());
     const result = await runCodex({
       worktree: lane.worktree,
@@ -269,13 +265,14 @@ export async function laneRun(
       readOnly: role === "reviewer",
       ...(resume ? { resume } : {}),
     });
-    const success =
+    const hasReply =
       existsSync(result.reply) &&
-      (result.exit === 0 || result.stoppedAfterReply);
+      readFileSync(result.reply, "utf8").trim().length > 0;
+    const success = hasReply && (result.exit === 0 || result.stoppedAfterReply);
     report({
       ...result,
-      folder,
       verdict: success ? "completed" : "failed",
+      ...(!hasReply ? { reasons: ["no reply was written"] } : {}),
       next: success
         ? "read the reply and follow the contract stop point"
         : "inspect the log and retry with --resume when a session is available",
@@ -284,7 +281,11 @@ export async function laneRun(
   } catch (error) {
     report({
       reasons: [error instanceof Error ? error.message : "lane run failed"],
+      next:
+        error instanceof Error ? error.message : "inspect the log and retry",
     });
     return 1;
+  } finally {
+    unlock?.();
   }
 }

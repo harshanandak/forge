@@ -1,12 +1,14 @@
 // [integration] Real git worktrees and subprocesses; Forge and Codex are PATH fixtures.
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -91,8 +93,9 @@ const mode=readFileSync(join(root,'mode'),'utf8');
 if(mode==='capacity'||mode==='limit')console.log('session id: fake-session');else console.log(JSON.stringify({type:'thread.started',thread_id:'fake-session'}));
 if(mode==='limit'||(mode==='capacity'&&count===0)){console.log('Selected model is at capacity');process.exit(1)}
 const flag=args.findIndex(a=>a==='--output-last-message'||a==='-o');if(flag<0)process.exit(8);
-writeFileSync(args[flag+1],'Fixture final reply.');
-if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
+writeFileSync(args[flag+1],mode==='empty'?'':'Fixture final reply.');
+if(mode==='hold'){setInterval(()=>{if(existsSync(join(root,'finish')))process.exit(0)},10)}
+else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
   );
   writeFileSync(join(root, "mode"), "ok");
   for (const [name, file] of [
@@ -153,8 +156,8 @@ if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
       )
       .join("\n"),
   );
-  function run(args: string[], cwd = caller) {
-    const result = spawnSync(process.execPath, [script, ...args], {
+  function run(args: string[], cwd = caller, entry = script) {
+    const result = spawnSync(process.execPath, [entry, ...args], {
       cwd,
       env,
       encoding: "utf8",
@@ -179,6 +182,38 @@ if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
     ]);
     expect(result.code).toBe(0);
     return result.output.worktree!;
+  }
+  function launch() {
+    const child = spawn(
+      process.execPath,
+      [script, "run", "one", "--role", "builder"],
+      {
+        cwd: caller,
+        env,
+        windowsHide: true,
+        timeout: 20_000,
+      },
+    );
+    return new Promise<{ code: number | null; output: Verdict }>(
+      (done, fail) => {
+        let stdout = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString();
+        });
+        child.once("error", fail);
+        child.once("close", (code) => {
+          try {
+            done({ code, output: JSON.parse(stdout) as Verdict });
+          } catch (error) {
+            fail(
+              error instanceof Error
+                ? error
+                : new Error("invalid verdict", { cause: error }),
+            );
+          }
+        });
+      },
+    );
   }
   const attempts = () =>
     existsSync(join(root, "attempts.jsonl"))
@@ -219,6 +254,7 @@ if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(0);`,
     roles,
     run,
     start,
+    launch,
     attempts,
     direct,
   };
@@ -288,6 +324,100 @@ test("run uses the caller role table, lane cwd, complete prompt, and typed verdi
   expect(prompt).toContain(rules);
   for (const text of [rules, readFileSync(f.brief, "utf8")])
     expect(text).not.toMatch(/[A-Z]:[\\/]|\/Users\/|\/home\//);
+});
+
+test("concurrent builders are refused until the active lane run finishes", async () => {
+  const f = fixture();
+  f.start();
+  writeFileSync(join(f.root, "mode"), "hold");
+  const first = f.launch();
+  const waitFor = async (ready: () => boolean) => {
+    const deadline = Date.now() + 10_000;
+    while (!ready() && Date.now() < deadline)
+      await new Promise((done) => setTimeout(done, 10));
+    expect(ready()).toBe(true);
+  };
+  let second: ReturnType<typeof f.launch> | undefined;
+  let refused: Awaited<ReturnType<typeof f.launch>> | undefined;
+  try {
+    await waitFor(() => f.attempts().length === 1);
+    second = f.launch();
+    void second.then((result) => {
+      refused = result;
+    });
+    await waitFor(() => refused !== undefined || f.attempts().length === 2);
+  } finally {
+    writeFileSync(join(f.root, "finish"), "finish");
+    await Promise.all([first, second]);
+  }
+  expect((await first).code).toBe(0);
+  expect(refused?.code).toBe(1);
+  expect(refused?.output.verdict).toBe("refused");
+  expect(refused?.output.next).toMatch(/wait|finish/i);
+  expect(f.attempts()).toHaveLength(1);
+  writeFileSync(join(f.root, "mode"), "ok");
+  expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
+});
+
+test("brief restores the wrong-issue stop rule verbatim", () => {
+  const rule =
+    "If the issue is wrong about the code, or already fixed on main, stop and say so with evidence instead of changing code.";
+  expect(readFileSync(template, "utf8").replace(/\s+/g, " ")).toContain(rule);
+});
+
+test("empty reply fails with a typed verdict and the log path", () => {
+  const f = fixture();
+  f.start();
+  writeFileSync(join(f.root, "mode"), "empty");
+  const result = f.run(["run", "one", "--role", "builder"]);
+  expect(result.code).toBe(1);
+  expect(result.output.verdict).toBe("failed");
+  expect(JSON.stringify(result.output)).toMatch(/no reply was written/i);
+  expect(existsSync(result.output.log!)).toBe(true);
+  expect(readFileSync(result.output.reply!, "utf8")).toBe("");
+  writeFileSync(join(f.root, "mode"), "ok");
+  expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
+});
+
+test("a dead owner run lock is reclaimed and released", () => {
+  const f = fixture();
+  f.start();
+  const dead = spawnSync(process.execPath, ["-e", ""], {
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  expect(dead.status).toBe(0);
+  const lock = join(f.main, ".git", "forge-lane-one.lock");
+  mkdirSync(lock);
+  writeFileSync(join(lock, `owner-${dead.pid}-${randomUUID()}`), "");
+  expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
+  expect(existsSync(lock)).toBe(false);
+  expect(
+    readdirSync(join(f.main, ".git")).filter((name) =>
+      name.startsWith("forge-lane-one.lock"),
+    ),
+  ).toEqual([]);
+});
+
+test("reply guard releases the lane run lock after stopping the harness", () => {
+  const f = fixture();
+  f.start();
+  writeFileSync(join(f.root, "mode"), "hang");
+  const helper = join(f.root, "fast-clock.ts");
+  // Accelerate the child clock; exercise the CLI's actual 90-second guard and finally.
+  writeFileSync(
+    helper,
+    `const now=Date.now;Date.now=()=>now()*1000;await import(${JSON.stringify(script)});`,
+  );
+  const result = f.run(["run", "one", "--role", "builder"], f.caller, helper);
+  expect(result.code).toBe(0);
+  expect(result.output.stoppedAfterReply).toBe(true);
+  expect(readFileSync(result.output.reply!, "utf8")).toBe(
+    "Fixture final reply.",
+  );
+  expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
+  writeFileSync(join(f.root, "mode"), "ok");
+  expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
 });
 
 test("a changed caller role model changes the launched Codex model", () => {
