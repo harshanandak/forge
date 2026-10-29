@@ -253,6 +253,26 @@ function reclaim(lock: string): void {
     if (!object(error) || error.code !== "ENOENT") throw error;
   }
 }
+function acquireLaneLock(common: string, id: string, owner: string) {
+  const lock = join(common, `forge-lane-${id}.lock`),
+    staged = `${lock}.${randomUUID()}`;
+  mkdirSync(staged);
+  writeFileSync(join(staged, owner), "", { flag: "wx" });
+  try {
+    reclaim(lock);
+    renameSync(staged, lock);
+  } catch {
+    release(staged, owner);
+    throw new Error("lane already running; wait for it to finish and retry");
+  }
+  let current = owner;
+  return (pid?: number) => {
+    if (!pid) return release(lock, current);
+    const next = `${owner}-${pid}`;
+    renameSync(join(lock, current), join(lock, next));
+    current = next;
+  };
+}
 async function main(): Promise<number> {
   let parsed: Options | "list" | "run" | "tier" | "close";
   let target: string | null = null;
@@ -292,12 +312,14 @@ async function main(): Promise<number> {
         .slice(9),
     );
     const registry = join(common, "forge-lanes.json");
+    const lockLane = (id: string) => acquireLaneLock(common, id, owner);
     if (parsed === "close")
       return laneClose(process.argv.slice(3), {
         common,
         root,
         load: () => load(registry),
         run,
+        lock: lockLane,
       });
     if (parsed === "tier") {
       const lane = active(registry, root).find(
@@ -317,28 +339,7 @@ async function main(): Promise<number> {
         lanes: active(registry, root),
         issue: (id) =>
           run("forge", ["issue", "show", "--input", JSON.stringify({ id })]),
-        lock: (id) => {
-          const lock = join(common, `forge-lane-${id}.lock`),
-            staged = `${lock}.${randomUUID()}`;
-          mkdirSync(staged);
-          writeFileSync(join(staged, owner), "", { flag: "wx" });
-          try {
-            reclaim(lock);
-            renameSync(staged, lock);
-          } catch {
-            release(staged, owner);
-            throw new Error(
-              "lane already running; wait for it to finish and retry",
-            );
-          }
-          let current = owner;
-          return (pid) => {
-            if (!pid) return release(lock, current);
-            const next = `${owner}-${pid}`;
-            renameSync(join(lock, current), join(lock, next));
-            current = next;
-          };
-        },
+        lock: lockLane,
       });
     if (parsed === "list") {
       console.log(

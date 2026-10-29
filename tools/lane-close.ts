@@ -15,6 +15,7 @@ type Context = {
   common: string;
   root: string;
   load: () => Lane[];
+  lock: (id: string) => (pid?: number) => void;
   run: (
     command: string,
     args: string[],
@@ -33,6 +34,7 @@ export function laneClose(argv: string[], ctx: Context): number {
   let status: "open" | "closed" = "open",
     stage = "input";
   let lock: string | undefined;
+  let unlock: ((pid?: number) => void) | undefined;
   let ignored: string[] = [],
     next = "correct the reason and rerun close with the same arguments";
   const owner = `owner-${process.pid}-${randomUUID()}`;
@@ -89,6 +91,12 @@ export function laneClose(argv: string[], ctx: Context): number {
     )
       throw new Error("close requires numeric --pr and --receipt");
     stage = "preflight";
+    try {
+      unlock = ctx.lock(issue);
+    } catch (error) {
+      next = "a lane run is active; wait for it to finish and retry close";
+      throw error;
+    }
     const lane = ctx.load().find((item) => item.issue === issue);
     if (!lane) throw new Error(`no active lane for ${issue}`);
     const journal = join(ctx.common, `forge-lane-close-${issue}.json`);
@@ -146,6 +154,26 @@ export function laneClose(argv: string[], ctx: Context): number {
     if (pull.headRefName !== lane.branch)
       throw new Error("PR head branch is not the lane branch");
     const git = (args: string[], cwd = ctx.root) => ctx.run("git", args, cwd);
+    const checkIgnored = () => {
+      // Explicit mode: status.showUntrackedFiles=no would otherwise hide ignored files too.
+      ignored = git(
+        [
+          "status",
+          "--porcelain",
+          "--ignored",
+          "--untracked-files=normal",
+          "-z",
+        ],
+        lane.worktree,
+      )
+        .split("\0")
+        .filter((entry) => /^!! (?!node_modules\/|dist\/)/.test(entry))
+        .map((entry) => entry.slice(3));
+      if (ignored.length && !values.has("--discard-ignored")) {
+        next = "move what you need, then rerun close with --discard-ignored";
+        throw new Error(`ignored paths: ${ignored.join(", ")}`);
+      }
+    };
     const ref = `refs/heads/${lane.branch}`;
     const hasBranch = git(["for-each-ref", "--format=%(refname)", ref])
       .split("\n")
@@ -169,24 +197,7 @@ export function laneClose(argv: string[], ctx: Context): number {
         git(["status", "--porcelain", "--untracked-files=all"], lane.worktree)
       )
         throw new Error("lane worktree has uncommitted or untracked changes");
-      // Explicit mode: status.showUntrackedFiles=no would otherwise hide ignored files too.
-      ignored = git(
-        [
-          "status",
-          "--porcelain",
-          "--ignored",
-          "--untracked-files=normal",
-          "-z",
-        ],
-        lane.worktree,
-      )
-        .split("\0")
-        .filter((entry) => /^!! (?!node_modules\/|dist\/)/.test(entry))
-        .map((entry) => entry.slice(3));
-      if (ignored.length && !values.has("--discard-ignored")) {
-        next = "move what you need, then rerun close with --discard-ignored";
-        throw new Error(`ignored paths: ${ignored.join(", ")}`);
-      }
+      checkIgnored();
     } else if (!progress)
       throw new Error("lane worktree is missing; cannot verify a clean lane");
     const forge = (
@@ -327,7 +338,10 @@ export function laneClose(argv: string[], ctx: Context): number {
         git(["rev-parse", "HEAD"], lane.worktree) !== head)
     )
       throw new Error("lane head changed during close; preserve the new work");
-    if (existsSync(lane.worktree)) git(["worktree", "remove", lane.worktree]);
+    if (existsSync(lane.worktree)) {
+      checkIgnored();
+      git(["worktree", "remove", lane.worktree]);
+    }
     if (hasBranch) git(["update-ref", "-d", ref, head]);
     const registry = join(ctx.common, "forge-lanes.json"),
       temp = `${registry}.${process.pid}.tmp`;
@@ -348,9 +362,13 @@ export function laneClose(argv: string[], ctx: Context): number {
       error instanceof Error ? error.message : "lane close failed",
     );
   } finally {
-    if (lock) {
-      rmSync(join(lock, owner));
-      rmdirSync(lock);
+    try {
+      if (lock) {
+        rmSync(join(lock, owner));
+        rmdirSync(lock);
+      }
+    } finally {
+      unlock?.();
     }
   }
 }

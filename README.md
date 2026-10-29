@@ -200,6 +200,8 @@ Bun; format is available in stable Bun 1.4.4. Read
 
 Repository lanes use `bun tools/lane.ts start`, `run`, `tier` and `list`. After
 merging, close from outside the lane worktree with a PASS receipt on the merge commit:
+Run from an agent session, or set `FORGE_SESSION` to a stable session id in a plain
+terminal before running close.
 
 ```sh
 FORGE_GH_USER=<github-user> bun tools/lane.ts close <issue> --pr <number> --receipt <id>

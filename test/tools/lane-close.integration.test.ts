@@ -1,12 +1,14 @@
 // [integration] Real local git repositories; Forge, GitHub and cleanup failures are PATH fixtures.
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -25,6 +27,7 @@ type Call = {
   command: string;
   args: string[];
   input?: Record<string, unknown>;
+  laneLocked?: boolean;
 };
 type Receipt = {
   id: string;
@@ -47,6 +50,9 @@ type State = {
   fail?: string;
   hideClosed?: boolean;
   commitOnComment?: boolean;
+  ignoredOnComment?: boolean;
+  runOnComment?: boolean;
+  observeLock?: boolean;
 };
 function fixture(ignored: string[] = []) {
   const root = realpathSync.native(
@@ -59,6 +65,11 @@ function fixture(ignored: string[] = []) {
   mkdirSync(main);
   mkdirSync(bin);
   writeFileSync(join(main, "package.json"), '{"name":"lane-close-fixture"}');
+  mkdirSync(join(main, ".forge"));
+  writeFileSync(
+    join(main, ".forge", "config.yaml"),
+    "values:\n  lanes:\n    tiers: {security: [], code: []}\n    roles:\n      builder: {harness: codex, model: fixture, effort: high}\n",
+  );
   writeFileSync(
     join(main, ".gitignore"),
     [".worktrees/", ...ignored, ""].join("\n"),
@@ -84,16 +95,19 @@ function fixture(ignored: string[] = []) {
   env.FORGE_GH_USER = "fixture-owner";
   env.LANE_CLOSE_FIXTURE = root;
   env.LANE_CLOSE_REAL_GIT = realGit;
+  env.LANE_CLOSE_RUN_SCRIPT = script;
+  env.LANE_CLOSE_CALLER = caller;
   const stateFile = join(root, "state.json");
   const callsFile = join(root, "calls.jsonl");
   const fake = join(root, "fake.mjs");
   writeFileSync(
     fake,
-    String.raw`import {appendFileSync,readFileSync,writeFileSync} from 'node:fs';import {join} from 'node:path';import {spawnSync} from 'node:child_process';
+    String.raw`import {appendFileSync,existsSync,readFileSync,writeFileSync} from 'node:fs';import {join} from 'node:path';import {spawnSync} from 'node:child_process';
 const root=process.env.LANE_CLOSE_FIXTURE,[command,...args]=process.argv.slice(2),file=join(root,'state.json');
 const state=JSON.parse(readFileSync(file,'utf8'));
 const inputIndex=args.indexOf('--input');const input=inputIndex<0?undefined:JSON.parse(args[inputIndex+1]);
-appendFileSync(join(root,'calls.jsonl'),JSON.stringify({command,args,...(input?{input}:{})})+'\n');
+appendFileSync(join(root,'calls.jsonl'),JSON.stringify({command,args,...(input?{input}:{}),...(state.observeLock?{laneLocked:existsSync(join(root,'main','.git','forge-lane-one.lock'))}:{})})+'\n');
+if(command==='codex'){const output=args.findIndex(arg=>arg==='--output-last-message'||arg==='-o');if(output<0)process.exit(97);readFileSync(0,'utf8');writeFileSync(args[output+1],'Fixture reply.\n');console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-session'}));process.exit(0)}
 const save=()=>writeFileSync(file,JSON.stringify(state));
 const ok=result=>console.log(JSON.stringify({ok:true,op:args.slice(0,2).join('.'),status:'OK',result,warnings:[]}));
 const record=(value,index)=>({namespace:'work',key:'fixture:'+index,revision:1,value,updatedAt:'2026-10-29T00:00:00.000Z',updatedBy:{kind:'human',id:'fixture'}});
@@ -116,7 +130,7 @@ switch(op){
  case 'issue.owns':ok({id:input.id,owned:true});break;
  case 'issue.link':state.links.push({relation:input.relation,url:input.url});save();ok(record(input,state.links.length));break;
  case 'issue.close':state.issue.status='closed';state.issue.receipt=input.receipt;save();ok(state.issue);break;
- case 'issue.comment':state.comments.push(input.body);save();if(state.commitOnComment){const lane=join(root,'main','.worktrees','one');writeFileSync(join(lane,'change.txt'),'Clean new commit during close.\n');const result=spawnSync(process.env.LANE_CLOSE_REAL_GIT,['-C',lane,'-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','-am','new commit during landing comment'],{env:process.env,encoding:'utf8',windowsHide:true});if(result.status!==0)process.exit(95)}ok({id:input.id,commentId:'comment:fixture:'+state.comments.length});break;
+ case 'issue.comment':state.comments.push(input.body);save();if(state.ignoredOnComment)writeFileSync(join(root,'main','.worktrees','one','ignored-during-comment.txt'),'Local note created during landing comment.\n');if(state.runOnComment){const result=spawnSync(process.execPath,[process.env.LANE_CLOSE_RUN_SCRIPT,'run','one','--role','builder','--prompt',join(root,'brief.md')],{cwd:process.env.LANE_CLOSE_CALLER,env:process.env,encoding:'utf8',timeout:15000,windowsHide:true});writeFileSync(join(root,'concurrent-run.json'),JSON.stringify({code:result.status,stdout:result.stdout,stderr:result.stderr,error:result.error?.message}));}if(state.commitOnComment){const lane=join(root,'main','.worktrees','one');writeFileSync(join(lane,'change.txt'),'Clean new commit during close.\n');const result=spawnSync(process.env.LANE_CLOSE_REAL_GIT,['-C',lane,'-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','-am','new commit during landing comment'],{env:process.env,encoding:'utf8',windowsHide:true});if(result.status!==0)process.exit(95)}ok({id:input.id,commentId:'comment:fixture:'+state.comments.length});break;
  default:console.error('Unexpected fake Forge operation: '+op);process.exit(94);
 }`,
   );
@@ -135,6 +149,7 @@ switch(op){
   }
   shim("forge", fake, "forge");
   shim("gh", fake, "gh");
+  shim("codex", fake, "codex");
   function git(args: string[], cwd = main) {
     const result = spawnSync(realGit, args, {
       cwd,
@@ -161,7 +176,7 @@ switch(op){
       cwd,
     );
   git(["init", "--initial-branch=main"]);
-  git(["add", "package.json", ".gitignore"]);
+  git(["add", "package.json", ".gitignore", ".forge/config.yaml"]);
   commit("fixture");
   git(["init", "--bare", "--initial-branch=main", join(root, "remote.git")]);
   git(["remote", "add", "origin", join(root, "remote.git")]);
@@ -376,6 +391,165 @@ switch(op){
 function expectedComment(f: ReturnType<typeof fixture>) {
   return `PR #42 landed: https://github.com/fixture/repo/pull/42\nMerge commit: ${f.merge}\nReceipt: receipt-one\nChecks: unit: PASS, types: PASS`;
 }
+
+function released(f: ReturnType<typeof fixture>) {
+  expect(
+    readdirSync(f.common).filter((name) =>
+      name.startsWith("forge-lane-one.lock"),
+    ),
+  ).toEqual([]);
+  expect(existsSync(join(f.common, "forge-lanes.lock"))).toBe(false);
+}
+
+test("close serialization: a live run owner refuses close before external calls and preserves its lock", () => {
+  const f = fixture();
+  const lock = join(f.common, "forge-lane-one.lock");
+  const owner = `owner-${process.pid}-${randomUUID()}`;
+  mkdirSync(lock);
+  writeFileSync(join(lock, owner), "Existing run owner.\n");
+  const registry = readFileSync(f.registry, "utf8");
+  const state = f.readState();
+  const result = f.close();
+  expect(result.code).toBe(1);
+  expect(result.output).toMatchObject({
+    ok: false,
+    verdict: "refused",
+    removed: false,
+    next: "a lane run is active; wait for it to finish and retry close",
+  });
+  expect(f.calls()).toEqual([]);
+  expect(readFileSync(f.registry, "utf8")).toBe(registry);
+  expect(f.readState()).toEqual(state);
+  expect(f.git(["rev-parse", "refs/heads/lane/one"])).toBe(f.head);
+  expect(readFileSync(join(f.lane, "change.txt"), "utf8")).toBe(
+    "Delivered change.\n",
+  );
+  expect(existsSync(join(f.common, "forge-lane-close-one.json"))).toBe(false);
+  expect(readdirSync(lock)).toEqual([owner]);
+  expect(readFileSync(join(lock, owner), "utf8")).toBe("Existing run owner.\n");
+  expect(existsSync(join(f.common, "forge-lanes.lock"))).toBe(false);
+  f.retained();
+});
+
+test("close serialization: a dead run owner is reclaimed and close releases the lane lock", () => {
+  const f = fixture();
+  const dead = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+    encoding: "utf8",
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  expect(dead.status).toBe(0);
+  expect(() => process.kill(dead.pid, 0)).toThrow();
+  const lock = join(f.common, "forge-lane-one.lock");
+  mkdirSync(lock);
+  writeFileSync(join(lock, `owner-${dead.pid}-${randomUUID()}`), "");
+  expect(f.close().code).toBe(0);
+  f.cleaned();
+  released(f);
+});
+
+test("close serialization: a run started during the landing comment refuses without launching Codex", () => {
+  const f = fixture();
+  f.change((state) => {
+    state.runOnComment = true;
+    state.observeLock = true;
+  });
+  const result = f.close();
+  const concurrent = JSON.parse(
+    readFileSync(join(f.root, "concurrent-run.json"), "utf8"),
+  ) as { code: number; stdout: string; stderr: string; error?: string };
+  expect(concurrent.error).toBeUndefined();
+  expect(concurrent.code).toBe(1);
+  expect(JSON.parse(concurrent.stdout)).toMatchObject({
+    verdict: "refused",
+    next: "lane already running; wait for it to finish and retry",
+  });
+  expect(f.calls().filter((call) => call.command === "codex")).toEqual([]);
+  expect(readdirSync(join(f.common, "forge-lane-runs", "one"))).toEqual([
+    "previous-run",
+  ]);
+  expect(result.code).toBe(0);
+  expect(f.calls().every((call) => call.laneLocked === true)).toBe(true);
+  f.cleaned();
+  released(f);
+});
+
+for (const failure of ["gh", "issue.close", undefined])
+  test(`close serialization: lane lock spans external calls and releases after ${failure ?? "success"}`, () => {
+    const f = fixture();
+    f.change((state) => {
+      state.observeLock = true;
+      if (failure) state.fail = failure;
+    });
+    const result = f.close();
+    expect(result.code).toBe(failure ? 1 : 0);
+    expect(f.calls().length).toBeGreaterThan(0);
+    expect(f.calls().every((call) => call.laneLocked === true)).toBe(true);
+    released(f);
+    if (failure) f.retained();
+    else f.cleaned();
+  });
+
+test("close serialization: an ignored note created during the landing comment preserves cleanup and resumes once moved", () => {
+  const f = fixture(["ignored*.txt"]);
+  f.change((state) => {
+    state.ignoredOnComment = true;
+  });
+  const registry = readFileSync(f.registry, "utf8");
+  const result = f.close();
+  expect(result.code).toBe(1);
+  expect(result.output).toMatchObject({
+    ok: false,
+    code: "CLEANUP_FAILED",
+    status: "closed",
+    removed: false,
+    next: "move what you need, then rerun close with --discard-ignored",
+  });
+  expect((result.output.reasons as string[]).join("\n")).toContain(
+    "ignored-during-comment.txt",
+  );
+  expect(readFileSync(join(f.lane, "ignored-during-comment.txt"), "utf8")).toBe(
+    "Local note created during landing comment.\n",
+  );
+  expect(readFileSync(f.registry, "utf8")).toBe(registry);
+  expect(f.readState().issue.status).toBe("closed");
+  expect(f.readState().comments).toEqual([expectedComment(f)]);
+  const journal = join(f.common, "forge-lane-close-one.json");
+  expect(JSON.parse(readFileSync(journal, "utf8"))).toMatchObject({
+    pr: 42,
+    receipt: "receipt-one",
+    head: f.head,
+    worktree: f.lane,
+  });
+  f.retained();
+  released(f);
+  rmSync(join(f.lane, "ignored-during-comment.txt"));
+  expect(f.close().code).toBe(0);
+  expect(f.writes().filter((call) => call.args[1] === "close")).toHaveLength(1);
+  expect(f.writes().filter((call) => call.args[1] === "comment")).toHaveLength(
+    1,
+  );
+  expect(existsSync(journal)).toBe(false);
+  f.cleaned();
+  released(f);
+});
+
+test("close serialization: discard consent covers and reports an ignored note created during the landing comment", () => {
+  const f = fixture(["ignored*.txt"]);
+  f.change((state) => {
+    state.ignoredOnComment = true;
+  });
+  const result = f.close(["--discard-ignored"]);
+  expect(result.code).toBe(0);
+  expect(result.output).toMatchObject({
+    ok: true,
+    discarded: ["ignored-during-comment.txt"],
+  });
+  expect(f.readState().issue.status).toBe("closed");
+  expect(f.readState().comments).toEqual([expectedComment(f)]);
+  f.cleaned();
+  released(f);
+});
 
 test("close claims, links, closes with the merge receipt, verifies and comments before removing the lane", () => {
   const f = fixture();
