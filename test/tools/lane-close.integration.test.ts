@@ -486,6 +486,21 @@ for (const file of ignoredFiles) {
   });
 }
 
+test("ignored-file safety: close refuses an ignored note when git config hides untracked files", () => {
+  const f = fixture(["ignored-note.txt"]);
+  f.git(["config", "status.showUntrackedFiles", "no"]);
+  const content = "Local notes that must survive a hiding git config.\n";
+  writeFileSync(join(f.lane, "ignored-note.txt"), content);
+  const result = f.close();
+  expect(result.code).toBe(1);
+  expect((result.output.reasons as string[]).join("\n")).toContain(
+    "ignored-note.txt",
+  );
+  expect(f.writes()).toEqual([]);
+  expect(readFileSync(join(f.lane, "ignored-note.txt"), "utf8")).toBe(content);
+  f.retained();
+});
+
 for (const directory of ["node_modules", "dist"])
   test(`ignored-file safety: close permits recreateable ${directory} without discard consent`, () => {
     const f = fixture([`${directory}/`]);

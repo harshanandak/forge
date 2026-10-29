@@ -169,7 +169,17 @@ export function laneClose(argv: string[], ctx: Context): number {
         git(["status", "--porcelain", "--untracked-files=all"], lane.worktree)
       )
         throw new Error("lane worktree has uncommitted or untracked changes");
-      ignored = git(["status", "--porcelain", "--ignored", "-z"], lane.worktree)
+      // Explicit mode: status.showUntrackedFiles=no would otherwise hide ignored files too.
+      ignored = git(
+        [
+          "status",
+          "--porcelain",
+          "--ignored",
+          "--untracked-files=normal",
+          "-z",
+        ],
+        lane.worktree,
+      )
         .split("\0")
         .filter((entry) => /^!! (?!node_modules\/|dist\/)/.test(entry))
         .map((entry) => entry.slice(3));
