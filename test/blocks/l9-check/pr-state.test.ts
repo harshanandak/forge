@@ -14,6 +14,8 @@ type Result = {
   news: string[];
   end: boolean;
   next: string;
+  reviewRounds?: number;
+  nextSteps?: string[];
 };
 function fixture() {
   const pr = {
@@ -40,6 +42,26 @@ function fixture() {
     author: { login: string };
     createdAt: string;
   }[] = [];
+  const commits: {
+    sha: string;
+    time: string;
+    parents: string[];
+    message: string;
+  }[] = [];
+  const reviews: { commit: string; time: string }[] = [];
+  const inline: {
+    id: string;
+    author: string;
+    time: string;
+    commit?: string;
+  }[] = [];
+  const summaries: {
+    commits?: string[];
+    time: string;
+    edits?: string[];
+    status?: string[];
+  }[] = [];
+  const baseParents = new Set<string>();
   let corrupt = false,
     partial = false,
     reads = 0;
@@ -65,6 +87,8 @@ function fixture() {
         } else {
           value = {
             head: pr.headRefOid,
+            base: "b".repeat(40),
+            baseName: "main",
             state: pr.state,
             mergeable: pr.mergeable,
             merge: pr.mergeStateStatus,
@@ -91,7 +115,35 @@ function fixture() {
                   ? "fail"
                   : "pass",
           }));
-      } else if (args.some((arg) => arg.includes("reviewThreads")))
+      } else if (args.some((arg) => arg.includes("commits(first:100")))
+        value = [{ commits, more: false }];
+      else if (args[1]?.includes("/compare/"))
+        value = {
+          status: baseParents.has(
+            args[1].split("/compare/")[1]!.split("...")[0]!,
+          )
+            ? "ahead"
+            : "diverged",
+        };
+      else if (args[1]?.includes("/reviews?")) value = reviews;
+      else if (args[1]?.includes("/issues/")) value = summaries;
+      else if (args[1]?.includes("/comments?")) value = inline;
+      else if (args.some((arg) => arg.includes("comments(first:100")))
+        value = {
+          summaries: summaries.map((summary, index) => ({
+            id: String(index),
+            time: summary.time,
+            edits: {
+              times: summary.edits ?? [],
+              status: summary.status ?? [],
+              more: false,
+              cursor: null,
+            },
+          })),
+          more: false,
+          cursor: null,
+        };
+      else if (args.some((arg) => arg.includes("reviewThreads")))
         value = [
           {
             viewer: "self",
@@ -135,7 +187,7 @@ function fixture() {
       });
     },
   };
-  const read = (since?: string) =>
+  const read = (since?: string, cap = 2) =>
     (
       entry as unknown as Record<
         string,
@@ -143,7 +195,11 @@ function fixture() {
       >
     )["pr.state"]!({
       input: { pr: 7, ...(since ? { since } : {}) },
-      config: { timeoutMs: 1000, environment: ["PATH"] },
+      config: {
+        timeoutMs: 1000,
+        environment: ["PATH"],
+        review: { rounds: cap },
+      },
       signal: new AbortController().signal,
       deadline: Date.now() + 10000,
       services: {
@@ -158,6 +214,11 @@ function fixture() {
     checks,
     threads,
     remarks,
+    commits,
+    reviews,
+    inline,
+    summaries,
+    baseParents,
     read,
     corrupt: () => {
       corrupt = true;
@@ -173,6 +234,209 @@ function fixture() {
 }
 test("pr.state declares a callable shared read", () =>
   expect(Object.hasOwn(entry, "pr.state")).toBe(true));
+
+function reviewHistory() {
+  const f = fixture();
+  for (let index = 0; index < 4; index++) {
+    const sha = String(index + 1).repeat(40);
+    f.commits.push({
+      sha,
+      time: `2026-10-27T${String(index * 2 + 10).padStart(2, "0")}:00:00Z`,
+      parents: index ? [String(index).repeat(40)] : [],
+      message: "fix: feedback",
+    });
+    if (index < 3)
+      f.reviews.push({
+        commit: sha,
+        time: `2026-10-27T${index * 2 + 11}:00:00Z`,
+      });
+  }
+  f.pr.headRefOid = f.commits[3]!.sha;
+  return f;
+}
+test("completed review rounds add a redesign step only beyond the configured cap", async () => {
+  const f = reviewHistory();
+  const value = (await f.read())!;
+  expect(value.reviewRounds).toBe(3);
+  expect(value.nextSteps).toEqual([
+    "Round 3 exceeds the review cap (2). Write a three-line threat model, then choose ship, simplify or park; do not patch the same design again.",
+  ]);
+  expect(value.verdict).toBe("ready");
+  expect(value.next).toMatch(/^[A-Za-z0-9_-]+$/);
+  expect((await f.read(undefined, 3))!.nextSteps).toBeUndefined();
+  const changed = (await f.read(value.next, 3))!;
+  expect(changed.reviewRounds).toBe(3);
+  expect(changed.nextSteps).toBeUndefined();
+  expect(await f.read(changed.next, 3)).toBeNull();
+});
+test("a reviewed current head, duplicate evidence and pre-review commits do not complete a round", async () => {
+  const f = reviewHistory();
+  f.reviews.splice(0, 3, {
+    commit: f.pr.headRefOid,
+    time: "2026-10-27T17:00:00Z",
+  });
+  expect((await f.read())!.reviewRounds).toBe(0);
+  f.reviews.push({ commit: f.commits[0]!.sha, time: "2026-10-27T17:00:00Z" });
+  expect((await f.read())!.reviewRounds).toBe(0);
+  f.reviews.push({ commit: f.commits[0]!.sha, time: "2026-10-27T11:00:00Z" });
+  f.inline.push({
+    id: "inline",
+    author: "other",
+    commit: f.commits[0]!.sha,
+    time: "2026-10-27T11:00:00Z",
+  });
+  expect((await f.read())!.reviewRounds).toBe(1);
+  f.reviews.push({ ...f.reviews[2]! });
+  expect((await f.read())!.reviewRounds).toBe(1);
+  f.reviews.splice(0, f.reviews.length, {
+    commit: f.commits[0]!.sha,
+    time: "2026-10-27T13:00:00Z",
+  });
+  f.inline.length = 0;
+  expect((await f.read())!.reviewRounds).toBe(1);
+});
+test("base-only merge after review is excluded by second-parent ancestry and update-branch message", async () => {
+  for (const update of [false, true]) {
+    const f = reviewHistory();
+    f.reviews.length = 1;
+    f.commits.splice(1, 3, {
+      sha: f.pr.headRefOid,
+      time: "2026-10-27T16:00:00Z",
+      parents: [f.commits[0]!.sha, "b".repeat(40)],
+      message: update ? "Merge branch 'main' into feature" : "Merge upstream",
+    });
+    if (!update) f.baseParents.add("b".repeat(40));
+    expect((await f.read())!.reviewRounds).toBe(0);
+  }
+});
+test("inline review findings and bot summaries complete distinct commit intervals", async () => {
+  const f = reviewHistory();
+  f.reviews.length = 0;
+  f.inline.push({
+    id: "inline",
+    author: "other",
+    commit: f.commits[0]!.sha,
+    time: "2026-10-27T11:00:00Z",
+  });
+  f.summaries.push({
+    commits: [f.commits[1]!.sha.slice(0, 8)],
+    time: "2026-10-27T13:00:00Z",
+  });
+  expect((await f.read())!.reviewRounds).toBe(2);
+});
+
+test("edited-in-place review summaries preserve the completed round before a base-only merge", async () => {
+  const f = fixture();
+  f.commits.push(
+    {
+      sha: "719a3a0" + "1".repeat(33),
+      time: "2026-10-28T21:58:00Z",
+      parents: [],
+      message: "fix: first",
+    },
+    {
+      sha: "18a5727" + "2".repeat(33),
+      time: "2026-10-28T22:11:00Z",
+      parents: [],
+      message: "fix: feedback",
+    },
+    {
+      sha: head,
+      time: "2026-10-28T22:14:00Z",
+      parents: ["18a5727" + "2".repeat(33), "b".repeat(40)],
+      message: "Merge branch 'main' into feature",
+    },
+  );
+  f.summaries.push({
+    commits: [],
+    time: "2026-10-28T21:59:00Z",
+    edits: ["2026-10-28T22:00:00Z", "2026-10-28T22:12:00Z"],
+  });
+  expect((await f.read())!.reviewRounds).toBe(1);
+});
+
+test("head movement omits the old head's count and redesign advice", async () => {
+  const f = reviewHistory();
+  f.changeDuringRead({ headRefOid: head });
+  const value = (await f.read())!;
+  expect(value).toMatchObject({
+    verdict: "waiting",
+    end: false,
+    news: ["head moved"],
+  });
+  expect(value).not.toHaveProperty("reviewRounds");
+  expect(value).not.toHaveProperty("nextSteps");
+});
+
+test("review intervals use sorted committer times and strictly exclude their boundaries", async () => {
+  const f = reviewHistory();
+  f.commits.reverse();
+  expect((await f.read())!.reviewRounds).toBe(3);
+  f.reviews.splice(0, f.reviews.length, {
+    commit: "irrelevant",
+    time: "2026-10-27T12:00:00Z",
+  });
+  expect((await f.read())!.reviewRounds).toBe(0);
+  f.reviews[0]!.time = "2026-10-27T12:00:01Z";
+  expect((await f.read())!.reviewRounds).toBe(1);
+});
+
+test("recorded PR 131 bot creation and edit events retain one round after the base merge", async () => {
+  const f = fixture();
+  f.commits.push(
+    {
+      sha: "719a3a0" + "1".repeat(33),
+      time: "2026-10-28T21:59:21Z",
+      parents: [],
+      message: "fix: first",
+    },
+    {
+      sha: "18a5727" + "2".repeat(33),
+      time: "2026-10-28T22:11:56Z",
+      parents: [],
+      message: "fix: feedback",
+    },
+    {
+      sha: head,
+      time: "2026-10-28T22:15:00Z",
+      parents: ["18a5727" + "2".repeat(33), "b".repeat(40)],
+      message: "Merge branch 'main' into feature",
+    },
+  );
+  f.summaries.push(
+    {
+      time: "2026-10-28T22:00:31Z",
+      edits: [
+        "2026-10-28T22:00:31Z",
+        "2026-10-28T22:14:17Z",
+        "2026-10-28T22:15:10Z",
+      ],
+    },
+    {
+      time: "2026-10-28T22:00:35Z",
+      edits: [
+        "2026-10-28T22:00:35Z",
+        "2026-10-28T22:01:56Z",
+        "2026-10-28T22:14:19Z",
+        "2026-10-28T22:15:11Z",
+        "2026-10-28T22:16:20Z",
+      ],
+    },
+  );
+  expect((await f.read())!.reviewRounds).toBe(1);
+});
+
+test("a confidently status-only edit also excludes its creation timestamp", async () => {
+  const f = reviewHistory();
+  f.reviews.length = 0;
+  f.summaries.push({
+    time: "2026-10-27T11:00:00Z",
+    status: ["2026-10-27T11:00:00Z"],
+  });
+  expect((await f.read())!.reviewRounds).toBe(0);
+  f.summaries[0]!.edits = ["2026-10-27T11:30:00Z"];
+  expect((await f.read())!.reviewRounds).toBe(1);
+});
 
 test("R1 optional failure blocks despite required checks passing", async () => {
   const f = fixture();
@@ -227,6 +491,13 @@ test("ready is current head with complete green checks; unchanged cursor is quie
     first = (await f.read())!;
   expect(first).toMatchObject({ pr: 7, head, verdict: "ready", end: true });
   expect(first.news).toContain("required checks passed");
+  expect(
+    (
+      JSON.parse(Buffer.from(first.next, "base64url").toString()) as {
+        v: string;
+      }
+    ).v,
+  ).toBe("f0afa7173801d37cdaa18156baa07af87f01b9b361103c65ca6074ee82e5fb61");
   expect(await f.read(first.next)).toBeNull();
 });
 test("failed checks arrive while another is pending; optional failures are news too", async () => {

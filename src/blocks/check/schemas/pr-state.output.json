@@ -10,6 +10,12 @@
     "reasons": { "type": "array", "items": { "type": "string" } },
     "news": { "type": "array", "items": { "type": "string" } },
     "end": { "type": "boolean" },
-    "next": { "type": "string" }
+    "next": { "type": "string" },
+    "reviewRounds": { "type": "integer", "minimum": 0 },
+    "nextSteps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    }
   }
 }

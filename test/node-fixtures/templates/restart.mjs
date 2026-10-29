@@ -205,9 +205,23 @@ if (process.argv[2] === "--gh") {
     const url = gh("pr", "create", "--title", "Fix add after restart");
     const number = Number(/\/pull\/(\d+)$/.exec(url)?.[1]);
     assert.ok(Number.isInteger(number) && number > 0);
+    const base = git("rev-parse", `${head}^`);
     writeFileSync(
       join(root, "fixture.json"),
-      JSON.stringify({ pr: number, head, url }),
+      JSON.stringify({
+        pr: number,
+        head,
+        base,
+        url,
+        commits: [
+          {
+            sha: head,
+            time: git("show", "-s", "--format=%cI", head),
+            parents: [base],
+            message: git("show", "-s", "--format=%s", head),
+          },
+        ],
+      }),
     );
     input("issue", "link", { id: slice.id, relation: "delivers", url });
     input("issue", "checkpoint", {
@@ -255,6 +269,7 @@ if (process.argv[2] === "--gh") {
     assert.equal(state.head, head);
     assert.equal(state.verdict, "ready");
     assert.equal(state.end, true);
+    assert.equal(state.reviewRounds, 0);
     const review = input("issue", "call", { id: slice.id, role: "review" });
     assert.equal(review.id, intent.id);
     assert.equal(review.call, 3);
@@ -273,6 +288,9 @@ if (process.argv[2] === "--gh") {
       ["pr", "checks"],
       ["api", "graphql"],
       ["api", `repos/fixture/first-run/pulls/${number}/comments?per_page=100`],
+      ["api", `repos/fixture/first-run/pulls/${number}/reviews?per_page=100`],
+      ["api", "graphql"],
+      ["api", "graphql"],
       ["pr", "view"],
       ["pr", "merge"],
       ["pr", "view"],
