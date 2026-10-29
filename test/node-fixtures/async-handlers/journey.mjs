@@ -292,6 +292,18 @@ async function tree(kind, containment = "supervised") {
   );
   report(result, containment, pid);
 }
+// Failed counterfactuals still stop their real orphans; stale PID files are only evidence.
+async function cleanup() {
+  cleaning = true;
+  const closed = new Promise((resolve) => cleanupServer.close(resolve));
+  for (const socket of descendants) socket.write("stop");
+  await awaitDeadline(
+    closed.then(() => Promise.all(descendantExits)),
+    5000,
+    "descendant cleanup",
+  );
+  rmSync(root, { recursive: true, force: true });
+}
 try {
   if (["all", "async"].includes(mode)) {
     const f = fixture(`async ({ input, services, signal, deadline }) => {
@@ -725,15 +737,14 @@ try {
     }
   }
   console.log(`PASS async-handlers ${mode}`);
-} finally {
-  // Failed counterfactuals still stop their real orphans; stale PID files are only evidence.
-  cleaning = true;
-  const closed = new Promise((resolve) => cleanupServer.close(resolve));
-  for (const socket of descendants) socket.write("stop");
-  await awaitDeadline(
-    closed.then(() => Promise.all(descendantExits)),
-    5000,
-    "descendant cleanup",
-  );
-  rmSync(root, { recursive: true, force: true });
+} catch (error) {
+  // After a failure, a just-killed child can still hold root on Windows; the cleanup error must
+  // not replace the failure a counterfactual exists to show.
+  try {
+    await cleanup();
+  } catch (cleanupError) {
+    console.error(`cleanup after failure: ${cleanupError.message}`);
+  }
+  throw error;
 }
+await cleanup();

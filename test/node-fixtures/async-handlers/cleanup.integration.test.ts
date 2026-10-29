@@ -95,6 +95,27 @@ test("a stale ready PID cannot kill an unrelated live process", async () => {
   }
 }, 30000);
 
+// A connection that ignores "stop" makes cleanup fail the same way on every system.
+// The client can connect before the server counts it; cleanup only waits for counted connections.
+const stubborn = `(await import("node:net")).connect(cleanupPort, "127.0.0.1");
+    while (descendants.size === 0) await pause(5);`;
+
+test("a cleanup failure after a journey failure keeps the journey's own error", () => {
+  const result = run(`${stubborn}
+    throw Error("counterfactual evidence");`);
+  const output = `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
+  expect(result.status, output).toBe(1);
+  expect(result.stderr, output).toContain("counterfactual evidence");
+  expect(result.stderr, output).toContain("descendant cleanup exceeded");
+}, 30000);
+
+test("a cleanup failure still fails a journey that passed", () => {
+  const result = run(stubborn);
+  const output = `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
+  expect(result.status, output).toBe(1);
+  expect(result.stderr, output).toContain("descendant cleanup exceeded");
+}, 30000);
+
 test.each([false, true])(
   "cleanup stops a real orphan and preserves its failure (early socket close: %s)",
   async (earlyClose) => {
