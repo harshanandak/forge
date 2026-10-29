@@ -165,7 +165,11 @@ in the overall operation budget. A scoped run uses the runtime's one invocation
 deadline for finalization, including its durable commit and verified readback.
 It does not start a second, shorter clock after the final snapshot: Windows lock
 waits and commit latency can consume that clock even when the operation has time
-left. Native embeddings without an invocation scope retain the finite F deadline.
+left. Native embeddings without an invocation scope check F only before publishing:
+a run whose F has passed writes nothing and fails with `INVOCATION_TIMEOUT`, but
+once a write starts, its verified receipt is returned even if the write or readback
+outlasts F. The SQLite busy timeout bounds only the wait for the write lock; the
+commit and readback of an unscoped run have no deadline.
 Five Windows Node 24 samples sealing, writing and reading back a 512 KiB payload
 through an open native-ACL SQLite state owner took 421.30–1199.21 ms (median
 562.43 ms) under load. Store opening and directory preparation precede this
