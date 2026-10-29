@@ -6,6 +6,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   writeFileSync,
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
@@ -169,12 +170,115 @@ export async function runCodex(
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+type RunRecord = {
+  role: string;
+  round: number | null;
+  model: string;
+  effort: string;
+  start: string;
+  end: string | null;
+  verdict: string;
+  session: string | null;
+  reply: string;
+};
+export function laneHistory(common: string, id: string): RunRecord[] {
+  const root = join(common, "forge-lane-runs", id);
+  if (!existsSync(root)) return [];
+  return readdirSync(root)
+    .flatMap((name) => {
+      const file = join(root, name, "run.json");
+      if (!existsSync(file)) return [];
+      const value: unknown = JSON.parse(readFileSync(file, "utf8"));
+      if (
+        !object(value) ||
+        !["role", "model", "effort", "start", "verdict", "reply"].every(
+          (key) => typeof value[key] === "string",
+        ) ||
+        !(value.round === null || Number.isInteger(value.round)) ||
+        !(value.end === null || typeof value.end === "string") ||
+        !(value.session === null || typeof value.session === "string")
+      )
+        throw new Error("invalid lane run record");
+      return [value as RunRecord];
+    })
+    .sort((a, b) => a.start.localeCompare(b.start));
+}
+function completed(record: RunRecord) {
+  return (
+    record.verdict === "completed" &&
+    record.end !== null &&
+    existsSync(record.reply) &&
+    readFileSync(record.reply, "utf8").trim().length > 0
+  );
+}
+function git(worktree: string, args: string[]) {
+  const result = spawnSync("git", args, {
+    cwd: worktree,
+    encoding: "utf8",
+    timeout: 30_000,
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0)
+    throw new Error("git command failed while assembling role brief");
+  return result.stdout.trim();
+}
+function roleBrief(
+  role: string,
+  worktree: string,
+  branch: string,
+  id: string,
+  round: number | null,
+  records: RunRecord[],
+  pr?: string,
+) {
+  if (role !== "tester" && role !== "reviewer")
+    return readFileSync(join(import.meta.dirname, "lane-brief.md"), "utf8");
+  const base = git(worktree, ["merge-base", "origin/main", "HEAD"]);
+  let roundText = "";
+  if (role === "tester") {
+    const previous = records
+      .filter((record) => record.role === "tester")
+      .at(-1);
+    const fix = records
+      .filter(
+        (record) =>
+          ["builder", "fixer"].includes(record.role) &&
+          (!previous || record.start > previous.end!),
+      )
+      .at(-1);
+    const path = (record: RunRecord) => record.reply.replaceAll("\\", "/");
+    roundText =
+      round === 1
+        ? `This is test round 1.${fix ? ` The builder's reply is ${path(fix)}: treat every claim in it as unverified until you run it.` : " No completed builder or fixer reply is available; treat every implementation claim as unverified until you run it."}`
+        : `This is test round ${round}. The previous report is ${path(previous!)}${fix ? ` and the builder's fix reply is ${path(fix)}` : ""}. First re-run every earlier repro and say for each finding whether it is fixed. Then re-run the checks and look for regressions the fixes introduced. New findings are welcome.`;
+  }
+  const values = {
+    WT: worktree.replaceAll("\\", "/"),
+    BRANCH: branch,
+    BASE: base,
+    HEAD: git(worktree, ["rev-parse", "HEAD"]),
+    ID: id,
+    ROUND: roundText,
+    PR: pr ? `PR #${pr}, ` : "",
+  };
+  return readFileSync(
+    join(
+      import.meta.dirname,
+      role === "tester" ? "lane-test.md" : "lane-review.md",
+    ),
+    "utf8",
+  ).replace(
+    /\{\{(WT|BRANCH|BASE|HEAD|ID|ROUND|PR)\}\}/g,
+    (_, key: keyof typeof values) => values[key],
+  );
+}
+
 export async function laneRun(
   argv: string[],
   context: {
     common: string;
     configRoot: string;
-    lanes: { issue: string; worktree: string; brief: string }[];
+    lanes: { issue: string; worktree: string; branch: string; brief: string }[];
     issue: (id: string) => string;
     lock: (id: string) => (pid?: number) => void;
   },
@@ -185,6 +289,14 @@ export async function laneRun(
     effort: string | null = null,
     folder: string | null = null;
   let unlock: ((pid?: number) => void) | undefined;
+  let record: RunRecord | undefined;
+  const save = () => {
+    if (record && folder)
+      writeFileSync(
+        join(folder, "run.json"),
+        `${JSON.stringify(record, null, 2)}\n`,
+      );
+  };
   const report = (data: Record<string, unknown>) =>
     console.log(
       JSON.stringify({
@@ -211,7 +323,9 @@ export async function laneRun(
       const key = flags[i]!,
         value = flags[i + 1];
       if (
-        !["--role", "--prompt", "--resume"].includes(key) ||
+        !["--role", "--prompt", "--resume", "--round-cap", "--pr"].includes(
+          key,
+        ) ||
         !value ||
         values.has(key)
       )
@@ -221,8 +335,14 @@ export async function laneRun(
     role = values.get("--role") ?? null;
     if (!id || !role)
       throw new Error(
-        "usage: run <issue-id> --role <role> [--prompt <file>] [--resume <session>]",
+        "usage: run <issue-id> --role <role> [--prompt <file>] [--resume <session>] [--round-cap 1..10] [--pr N]",
       );
+    const cap = values.get("--round-cap") ?? "2",
+      pr = values.get("--pr");
+    if (!/^(?:[1-9]|10)$/.test(cap))
+      throw new Error("round-cap must be an integer from 1 to 10");
+    if (pr && (!/^[1-9]\d*$/.test(pr) || !Number.isSafeInteger(Number(pr))))
+      throw new Error("pr must be a positive integer");
     const config = Bun.YAML.parse(
       readFileSync(join(context.configRoot, ".forge/config.yaml"), "utf8"),
     );
@@ -250,6 +370,16 @@ export async function laneRun(
       throw new Error(`unsupported harness: ${harness}; configure codex`);
     const lane = context.lanes.find((item) => item.issue === id);
     if (!lane) throw new Error(`no active lane for ${id}; use start first`);
+    unlock = context.lock(id);
+    const records = laneHistory(context.common, id).filter(completed);
+    const round =
+      role === "tester"
+        ? records.filter((record) => record.role === "tester").length + 1
+        : null;
+    if (round !== null && round > Number(cap))
+      throw new Error(
+        `Test round ${round} exceeds the cap (${cap}). Write a three-line threat model, then choose ship, simplify or park.`,
+      );
     const custom = values.get("--prompt"),
       resume = values.get("--resume");
     const issue: unknown = custom ? null : JSON.parse(context.issue(id));
@@ -266,14 +396,26 @@ export async function laneRun(
     const prompt = custom
       ? readFileSync(resolve(custom), "utf8")
       : [
-          readFileSync(join(import.meta.dirname, "lane-brief.md"), "utf8"),
+          roleBrief(role, lane.worktree, lane.branch, id, round, records, pr),
           "\nIssue:\n",
           JSON.stringify(issue),
           "\nLane contract (takes precedence):\n",
           readFileSync(lane.brief, "utf8"),
         ].join("\n");
-    unlock = context.lock(id);
     folder = join(context.common, "forge-lane-runs", id, randomUUID());
+    mkdirSync(folder, { recursive: true });
+    record = {
+      role,
+      round,
+      model,
+      effort,
+      start: new Date().toISOString(),
+      end: null,
+      verdict: "started",
+      session: resume ?? null,
+      reply: join(folder, "reply.md"),
+    };
+    save();
     const result = await runCodex({
       worktree: lane.worktree,
       folder,
@@ -288,6 +430,12 @@ export async function laneRun(
       existsSync(result.reply) &&
       readFileSync(result.reply, "utf8").trim().length > 0;
     const success = hasReply && (result.exit === 0 || result.stoppedAfterReply);
+    Object.assign(record, {
+      end: new Date().toISOString(),
+      verdict: success ? "completed" : "failed",
+      session: result.session,
+    });
+    save();
     report({
       ...result,
       verdict: success ? "completed" : "failed",
@@ -298,6 +446,11 @@ export async function laneRun(
     });
     return success ? 0 : 1;
   } catch (error) {
+    if (record) {
+      record.end = new Date().toISOString();
+      record.verdict = "failed";
+      save();
+    }
     report({
       reasons: [error instanceof Error ? error.message : "lane run failed"],
       next:
