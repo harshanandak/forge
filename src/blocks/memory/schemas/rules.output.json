@@ -4,12 +4,7 @@
   "properties": {
     "text": {
       "$ref": "defs.json#/$defs/Untrusted",
-      "properties": {
-        "text": {
-          "type": "string",
-          "maxLength": 399
-        }
-      }
+      "description": "The default pointer is under 400 characters. With notes enabled, whole rule notes precede it within a 6000-character note-text budget."
     }
   },
   "additionalProperties": false,

@@ -23,6 +23,17 @@
       "stability": "experimental",
       "args": ["pr"]
     },
+    "agent.memory": {
+      "input": "schemas/guard.input.json",
+      "output": "schemas/guard.output.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": ["environment:read"],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
     "agent.guard": {
       "input": "schemas/guard.input.json",
       "output": "schemas/guard.output.json",

@@ -9,7 +9,7 @@
   "configSchema": "schemas/config.json",
   "operations": {
     "memory.scope": {
-      "input": "schemas/rules.input.json",
+      "input": "schemas/scope.input.json",
       "output": "schemas/scope.output.json",
       "context": "device",
       "effects": [],

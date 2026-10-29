@@ -528,9 +528,11 @@ module.exports = {
     scope: resolvedScope(config, services),
   }),
   "memory.rules": async ({
+    input = {},
     config = {},
     services,
   }: {
+    input?: { notes?: boolean };
     config?: MemoryConfig;
     services: Services;
   }) => {
@@ -542,7 +544,14 @@ module.exports = {
     const scope = resolvedScope(config, services);
     const counts = new Map<string, number>([["general", 0]]);
     counts.set(scope, 0);
-    for (const source of sources) {
+    const rules: {
+      scope: string;
+      text: string;
+      at: string;
+      source: number;
+      number: number;
+    }[] = [];
+    for (const [sourceIndex, source] of sources.entries()) {
       let after = 0;
       for (;;) {
         const records = notePage(source, {
@@ -564,6 +573,25 @@ module.exports = {
             "general";
           const count = counts.get(noteScope);
           if (count !== undefined) counts.set(noteScope, count + 1);
+          if (
+            count !== undefined &&
+            input.notes &&
+            value.tags?.includes("rule")
+          )
+            rules.push({
+              scope: noteScope,
+              text: value.text,
+              at:
+                note.record.revision === 1
+                  ? note.record.updatedAt
+                  : (source.state.history({
+                      key: note.record.key,
+                      before: 2,
+                      limit: 1,
+                    })[0]?.at ?? note.record.updatedAt),
+              source: sourceIndex,
+              number: note.number,
+            });
         }
         const last = records.at(-1);
         if (records.length < LIST_LIMIT || !last) break;
@@ -580,7 +608,28 @@ module.exports = {
       'forge memory search "<topic>"',
       "forge memory show <id>",
     ].join("\n");
-    return { text: fence(text, "memory:rules") };
+    const lines: string[] = [];
+    let used = 0;
+    let dropped = 0;
+    rules.sort(
+      (a, b) =>
+        Number(b.scope === "general") - Number(a.scope === "general") ||
+        a.at.localeCompare(b.at) ||
+        a.source - b.source ||
+        a.number - b.number,
+    );
+    for (const rule of rules) {
+      const note = rule.text.replace(/[\s\u0085]+/gu, " ").trim();
+      if (used + note.length > 6000) {
+        dropped++;
+        continue;
+      }
+      used += note.length;
+      lines.push(`- [${rule.scope}] ${note}`);
+    }
+    if (dropped)
+      lines.push(`${dropped} more rule notes did not fit; search them.`);
+    return { text: fence([...lines, text].join("\n"), "memory:rules") };
   },
 
   "memory.add": async ({

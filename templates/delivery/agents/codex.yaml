@@ -3,5 +3,6 @@ skills: .agents/skills
 detect: [CODEX_THREAD_ID]
 over: [claude]
 prWatch: gh-checks
+memory: { kind: hook, file: ~/.codex/hooks.json, start: SessionStart }
 guard:
   { kind: hook, file: ~/.codex/hooks.json, stop: Stop, command: PreToolUse }
