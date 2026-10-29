@@ -3,7 +3,12 @@ import { realpathSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { StateOwner } from "../core/state/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
-import type { Actor, BoundContext, Caller } from "../generated/types.ts";
+import type {
+  Actor,
+  BoundContext,
+  Caller,
+  Warning,
+} from "../generated/types.ts";
 import type { ExtendedStateClient } from "../ports/state.ts";
 import type { OwnedHandle } from "../ports/lifetime.ts";
 import { refuse } from "../core/trust/index.ts";
@@ -60,6 +65,8 @@ export interface StoreLevels {
   readonly inProject: boolean;
   /** The device alias or normalized folder scope, without opening or creating a store. */
   readonly defaultScope?: string | undefined;
+  /** Host warnings already known when the operation reads its memory packet. */
+  readonly warnings?: readonly Warning[];
   /**
    * The host's project store. A writing operation mints the project's identity on first use and
    * records the project on the device; a reading one never creates a store and gets undefined when
@@ -172,6 +179,7 @@ export function openLevels(options: {
   /** The operation declared its record write effect; its stores open writable. */
   readonly write: boolean;
   readonly requestId: string;
+  readonly warnings?: readonly Warning[];
   /** Only the explicit recovery invocation replaces registrations for this root. */
   readonly replaceRegistration?: boolean;
 }): { readonly levels: StoreLevels; close(): Promise<void> } {
@@ -324,6 +332,7 @@ export function openLevels(options: {
   const levels: StoreLevels = {
     caller: options.caller,
     inProject: options.servesProject,
+    warnings: options.warnings ?? [],
     get defaultScope() {
       if (scopeRoot === undefined) return undefined;
       const bytes =

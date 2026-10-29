@@ -1377,6 +1377,7 @@ export async function createAssembly(
                     namespace,
                     actor: context.actor,
                     servesProject: call.inProject,
+                    warnings: call.warnings,
                     // The authenticated caller, never the actor kind a caller put in its context.
                     caller: request.caller,
                     write: scope.effects.includes(

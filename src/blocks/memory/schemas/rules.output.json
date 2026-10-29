@@ -4,9 +4,84 @@
   "properties": {
     "text": {
       "$ref": "defs.json#/$defs/Untrusted",
-      "description": "The default pointer is under 400 characters. With notes enabled, whole rule notes precede it within a 6000-character note-text budget."
+      "description": "The default pointer is under 400 characters. With notes enabled, whole rule lines precede it within a 6000 UTF-16 code-unit cap including prefixes and separators; the omission line and pointer do not consume the cap."
+    },
+    "receipt": {
+      "type": "object",
+      "description": "Read-only accounting of the returned packet and the rules considered when notes is true. Pointer-only calls have empty selected and omitted arrays. Warnings are those known by the host when the packet is read.",
+      "properties": {
+        "selected": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Rule" }
+        },
+        "omitted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "revision": { "type": "integer", "minimum": 1 },
+              "scope": { "type": "string" },
+              "reason": { "const": "over-cap" }
+            },
+            "required": ["id", "revision", "scope", "reason"],
+            "additionalProperties": false
+          }
+        },
+        "packet": {
+          "type": "object",
+          "description": "Measures result.text.text after neutralization, including rule lines, omission line, pointer and every separator; excludes the hook's trailing newline and any receipt notice.",
+          "properties": {
+            "utf8Bytes": { "type": "integer", "minimum": 0 },
+            "characters": { "type": "integer", "minimum": 0 },
+            "characterUnit": { "const": "Unicode code points" }
+          },
+          "required": ["utf8Bytes", "characters", "characterUnit"],
+          "additionalProperties": false
+        },
+        "cap": {
+          "type": "object",
+          "properties": {
+            "limit": { "const": 6000 },
+            "used": { "type": "integer", "minimum": 0, "maximum": 6000 },
+            "unit": { "const": "UTF-16 code units" },
+            "includes": {
+              "const": "accepted rule lines and newline separators"
+            },
+            "excludes": { "const": "omission line and pointer" }
+          },
+          "required": ["limit", "used", "unit", "includes", "excludes"],
+          "additionalProperties": false
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" }
+            },
+            "required": ["code", "message"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["selected", "omitted", "packet", "cap", "warnings"],
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "Rule": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "scope": { "type": "string" }
+      },
+      "required": ["id", "revision", "scope"],
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,
-  "required": ["text"]
+  "required": ["text", "receipt"]
 }

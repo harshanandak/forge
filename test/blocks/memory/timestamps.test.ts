@@ -190,6 +190,23 @@ test("the 6000 rule budget includes complete prefixes, ids, dates and separators
     'Forge memory notes: general 2, resolved 0.\nBefore a task, search memory for its topic; prefer hits scoped resolved or general.\nforge memory search "<topic>"\nforge memory show <id>';
   expect(await call("memory.rules", {})).toEqual({
     text: { kind: "untrusted", source: "memory:rules", text: pointer },
+    receipt: {
+      selected: [],
+      omitted: [],
+      packet: {
+        utf8Bytes: Buffer.byteLength(pointer, "utf8"),
+        characters: [...pointer].length,
+        characterUnit: "Unicode code points",
+      },
+      cap: {
+        limit: 6000,
+        used: 0,
+        unit: "UTF-16 code units",
+        includes: "accepted rule lines and newline separators",
+        excludes: "omission line and pointer",
+      },
+      warnings: [],
+    },
   });
   const text = (
     (await call("memory.rules", { notes: true })) as { text: { text: string } }
