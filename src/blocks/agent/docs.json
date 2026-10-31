@@ -18,8 +18,8 @@
       ]
     },
     "agent.guard": {
-      "title": "Render a done-claim guard configuration",
-      "summary": "Print a mergeable Stop hook using the installed package companion. Name an adapter or detect exactly one harness. Install the printed entry yourself, preserving existing settings.",
+      "title": "Render done-claim and command guard hooks",
+      "summary": "Print mergeable Stop and PreToolUse hooks using the installed package companions. Name an adapter or detect exactly one harness. Install the printed entries yourself, preserving existing settings and hooks.",
       "examples": [{ "command": "forge agent guard codex --text" }]
     },
     "route.get": {
