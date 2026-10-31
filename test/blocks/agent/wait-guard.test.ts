@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { yamlConfigCodec } from "../../../src/adapters/config-yaml/index.ts";
 import {
   type JsonSchema,
   validateWithSchema,
 } from "../../../src/contract/schema.ts";
+import { DEFAULT_PARSE_LIMITS } from "../../../src/contract/untrusted.ts";
 
 setDefaultTimeout(30_000);
 type Adapter = {
@@ -13,7 +15,13 @@ type Adapter = {
   over?: string[];
   skills?: string;
   prWatch?: string;
-  guard?: { kind: string; file?: string; stop?: string; command?: string };
+  guard?: {
+    kind: string;
+    file?: string;
+    stop?: string;
+    command?: string;
+    output?: string;
+  };
 };
 type Call = {
   input: {
@@ -201,6 +209,65 @@ test("guard gives a clear warning when the named adapter has no done-claim guard
   }
 });
 
+test("output hooks preserve every existing hook and select each harness protocol", () => {
+  for (const output of ["claude", "codex"]) {
+    const adapter = { ...codex, guard: { ...codex.guard!, output } };
+    const baseline = operations["agent.guard"]!(
+      call({ id: "codex" }, [codex]),
+    ) as Guard;
+    const result = operations["agent.guard"]!(
+      call({ id: "codex" }, [adapter]),
+    ) as Guard;
+    const hooks = result.config!.hooks;
+    expect(hooks.PostToolUse).toEqual([
+      {
+        hooks: [
+          {
+            type: "command",
+            command: `node "C:/Forge install/templates/delivery/harness/output-guard.mjs" ${output}`,
+          },
+        ],
+      },
+    ]);
+    if (output === "claude")
+      expect(hooks.PostToolUseFailure).toEqual(hooks.PostToolUse);
+    else expect(hooks.PostToolUseFailure).toBeUndefined();
+    const {
+      PostToolUse: _post,
+      PostToolUseFailure: _failure,
+      ...existing
+    } = hooks;
+    expect(JSON.stringify(existing)).toBe(
+      JSON.stringify(baseline.config!.hooks),
+    );
+  }
+});
+
+for (const harness of ["claude", "codex"])
+  test(`shipped ${harness} adapter leaves output hooks opt-in`, () => {
+    const decoded = yamlConfigCodec.decode(
+      readFileSync(
+        resolve(root, `../../../templates/delivery/agents/${harness}.yaml`),
+        "utf8",
+      ),
+      DEFAULT_PARSE_LIMITS,
+    );
+    expect(decoded.ok).toBe(true);
+    if (!decoded.ok) throw new Error(decoded.error.message);
+    const adapter = decoded.value as Adapter;
+    const result = operations["agent.guard"]!(
+      call({ id: harness }, [adapter]),
+    ) as Guard;
+    const hooks = result.config!.hooks;
+    expect(hooks.PostToolUse).toBeUndefined();
+    expect(hooks.PostToolUseFailure).toBeUndefined();
+    expect(JSON.stringify(hooks)).not.toContain("output-guard.mjs");
+    expect(hooks.Stop![0]!.hooks[0]!.command).toContain("done-claim.mjs");
+    expect(hooks.PreToolUse![0]!.hooks[0]!.command).toContain(
+      "harness/guard.mjs",
+    );
+  });
+
 for (const platform of ["win32", "linux", "darwin"] as const) {
   test(`R2-3 ${platform} guard double-quotes installed paths containing spaces`, () => {
     const fixture = call({ id: "codex" }, [codex]);
@@ -246,6 +313,27 @@ test("guard refuses colliding hook events", () => {
     ),
   ).toThrow("INPUT_INVALID");
 });
+
+for (const { field, event, output } of [
+  { field: "command", event: "PostToolUse", output: "codex" },
+  { field: "command", event: "PostToolUse", output: "claude" },
+  { field: "stop", event: "PostToolUseFailure", output: "claude" },
+] as const) {
+  test(`guard refuses ${field} ${event} colliding with ${output} output`, () => {
+    expect(() =>
+      operations["agent.guard"]!(
+        call({ id: "codex" }, [
+          {
+            ...codex,
+            guard: { ...codex.guard!, [field]: event, output },
+          },
+        ]),
+      ),
+    ).toThrow(
+      `INPUT_INVALID: Output hook event ${event} conflicts with guard.${field}; move guard.${field} to another event or drop guard.output`,
+    );
+  });
+}
 
 test("adapter schema keeps optional capabilities closed and validates guard branches", () => {
   const schema = JSON.parse(
