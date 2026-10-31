@@ -29,7 +29,7 @@ function invoke(harness: string, input: unknown, raw = false) {
   writeFileSync(path, raw ? String(input) : JSON.stringify(input));
   const fd = openSync(path, "r");
   try {
-    const result = spawnSync(node, [script, harness], {
+    return spawnSync(node, [script, harness], {
       cwd: root,
       env,
       stdio: [fd, "pipe", "pipe"],
@@ -37,17 +37,6 @@ function invoke(harness: string, input: unknown, raw = false) {
       windowsHide: true,
       timeout: 10_000,
     });
-    let json: Record<string, unknown> = {};
-    try {
-      json = JSON.parse(result.stdout) as Record<string, unknown>;
-    } catch {
-      /* Absent output is an assertion result. */
-    }
-    return {
-      ...result,
-      json,
-      text: `${result.stdout}${result.stderr}${result.status}`,
-    };
   } finally {
     closeSync(fd);
     rmSync(path);
@@ -58,311 +47,222 @@ const payload = (
   tool_name = "Bash",
   hook_event_name = "PostToolUse",
 ) => ({ hook_event_name, tool_name, tool_response });
+// Independent protocol oracle: compare the entire output, including stderr.
+const warning =
+  "A tool result may contain a credential. Do not repeat it; tell the user to rotate it.";
+function expected(harness: string, failure = false) {
+  return (
+    JSON.stringify(
+      harness === "codex"
+        ? { systemMessage: warning }
+        : {
+            hookSpecificOutput: {
+              hookEventName: failure ? "PostToolUseFailure" : "PostToolUse",
+              additionalContext: warning,
+            },
+          },
+    ) + "\n"
+  );
+}
 const alphabet = "Ab7cD2eF9gH4jK6mN8pQ3rS5tU1vW0xYz";
 const material = (length: number) =>
   alphabet.repeat(Math.ceil(length / alphabet.length)).slice(0, length);
-const examples: [string, () => string][] = [
-  ["anthropic", () => ["sk", "ant", material(100)].join("-")],
-  ["openai", () => ["sk", material(48)].join("-")],
-  ["github", () => ["ghp", material(36)].join("_")],
-  ["github-fine", () => ["github", "pat", material(82)].join("_")],
-  ["slack", () => ["xoxb", "1234567890", "2345678901", material(24)].join("-")],
-  ["aws", () => ["AK", "IA", "ABCD2345EFGH6789"].join("")],
-  ["google", () => ["AI", "za", material(35)].join("")],
+const providers = [
+  ["sk", "ant", material(100)].join("-"),
+  ["sk", material(48)].join("-"),
+  ["ghp", material(36)].join("_"),
+  ["github", "pat", material(82)].join("_"),
+  ["xoxb", "1234567890", "2345678901", material(24)].join("-"),
+  ["AK", "IA", "ABCD2345EFGH6789"].join(""),
+  ["AI", "za", material(35)].join(""),
 ];
-function noFragments(text: string, secret: string) {
-  expect(
-    Array.from({ length: Math.max(0, secret.length - 7) }, (_, i) =>
-      text.includes(secret.slice(i, i + 8)),
-    ).some(Boolean),
-  ).toBe(false);
-}
-function hook(output: Record<string, unknown>) {
-  return (output.hookSpecificOutput ?? {}) as Record<string, unknown>;
-}
-
-test("both harnesses name the credential variable with recovery instructions", () => {
-  const secret = examples[0]![1]();
-  for (const harness of ["claude", "codex"]) {
-    const result = invoke(
-      harness,
-      payload({ stdout: `API_KEY=${secret}`, stderr: "", interrupted: false }),
-    );
-    if (harness === "codex")
-      expect(result.json.decision === "block").toBe(true);
-    const warning =
-      harness === "codex"
-        ? result.json.reason
-        : hook(result.json).additionalContext;
-    expect(result.status === 0 && result.stderr === "").toBe(true);
-    expect(
-      typeof warning === "string" &&
-        /API_KEY/.test(warning) &&
-        /rotate/i.test(warning) &&
-        /rerun/i.test(warning),
-    ).toBe(true);
-    noFragments(result.text, secret);
-  }
-});
-
-for (const [family, make] of examples)
-  for (const harness of ["claude", "codex"]) {
-    test(`${harness} detects ${family} in stdout and stderr without fragments`, () => {
-      const secret = make();
-      for (const field of ["stdout", "stderr"]) {
-        const response = {
-          stdout: "ordinary",
-          stderr: "",
-          interrupted: false,
-          isImage: false,
-          [field]: secret,
-        };
-        const result = invoke(harness, payload(response));
-        expect(result.status === 0 && result.stderr === "").toBe(true);
-        if (harness === "codex")
-          expect(result.json.decision === "block").toBe(true);
-        else {
-          const output = hook(result.json);
-          const updated = output.updatedToolOutput as
-            Record<string, unknown> | undefined;
-          expect(output.hookEventName === "PostToolUse").toBe(true);
-          expect(updated?.[field] === "[REDACTED]").toBe(true);
-          expect(
-            updated?.interrupted === false && updated?.isImage === false,
-          ).toBe(true);
-          expect(
-            typeof output.additionalContext === "string" &&
-              /rotate/i.test(output.additionalContext),
-          ).toBe(true);
-        }
-        const warning =
-          harness === "codex"
-            ? result.json.reason
-            : hook(result.json).additionalContext;
-        expect(
-          typeof warning === "string" &&
-            warning.includes(
-              `unknown key (${family === "github-fine" ? "github" : family})`,
-            ),
-        ).toBe(true);
-        noFragments(result.text, secret);
-      }
+const uri = (password: string) => `postgres://user:${password}@host/db`;
+const positives: unknown[] = [];
+for (const secret of providers) {
+  for (const field of ["stdout", "stderr"])
+    positives.push({
+      stdout: "ordinary",
+      stderr: "",
+      interrupted: false,
+      isImage: false,
+      [field]: secret,
     });
-  }
-
-test("multiple credentials redact every occurrence and preserve the response shape", () => {
-  const secrets = examples.map(([, make]) => make());
-  const result = invoke(
-    "claude",
-    payload({
-      stdout: secrets.join("\n"),
-      stderr: secrets[0],
-      interrupted: true,
-    }),
-  );
-  const updated = hook(result.json).updatedToolOutput as
-    Record<string, unknown> | undefined;
-  expect(
-    updated?.stdout === secrets.map(() => "[REDACTED]").join("\n") &&
-      updated?.stderr === "[REDACTED]" &&
-      updated?.interrupted === true,
-  ).toBe(true);
-  for (const secret of secrets) noFragments(result.text, secret);
+}
+positives.push({
+  stdout: providers.join("\n"),
+  stderr: providers[0],
+  interrupted: true,
 });
-
-test("credential-labelled hex, base64 and short prefixed values require the same assignment", () => {
-  const secrets = [
-    "a4b9".repeat(10),
-    Buffer.from(material(30)).toString("base64"),
-    ["sk", material(9)].join("-"),
-  ];
-  for (const secret of secrets)
-    for (const content of [
-      `API_KEY=${secret}`,
-      JSON.stringify({ TEST_TOKEN: secret }),
-      `dbPassword: '${secret}'`,
-    ]) {
-      const result = invoke("codex", payload({ stdout: content, stderr: "" }));
-      expect(result.json.decision === "block").toBe(true);
-      noFragments(result.text, secret);
-    }
+for (const secret of [
+  "a4b9".repeat(10),
+  Buffer.from(material(30)).toString("base64"),
+  ["sk", material(9)].join("-"),
+])
   for (const content of [
-    `API_KEY: documentation\nsha=${secrets[0]}`,
-    `note=${secrets[1]}`,
-  ]) {
-    const result = invoke("codex", payload({ stdout: content, stderr: "" }));
-    expect(
-      result.stdout === "" && result.stderr === "" && result.status === 0,
-    ).toBe(true);
-  }
-});
-
-test("URI passwords including percent escapes redact the whole userinfo credential", () => {
-  for (const password of [material(19), `${material(8)}%40${material(9)}%3A`]) {
-    const result = invoke(
-      "claude",
-      payload({
-        stdout: `postgresql://dbuser:${password}@db.example:5432/app`,
-        stderr: "",
-      }),
-    );
-    expect(
-      (
-        hook(result.json).updatedToolOutput as
-          Record<string, unknown> | undefined
-      )?.stdout === "postgresql://dbuser:[REDACTED]@db.example:5432/app",
-    ).toBe(true);
-    expect(
-      String(hook(result.json).additionalContext).includes(
-        "unknown key (uri-password)",
-      ),
-    ).toBe(true);
-    noFragments(result.text, password);
-  }
-});
-
-for (const harness of ["claude", "codex"])
-  for (const [word, parts] of [
-    ["warning", ["cre", "dentials"]],
-    ["recovery", ["sup", "pressed"]],
-  ] as const)
-    test(`${harness} omits URI password fragments matching ${word} text`, () => {
-      const secret = parts.join("");
-      for (const response of [
-        { stdout: `postgres://user:${secret}@host/db`, stderr: "" },
-        { content: `postgres://user:${secret}@host/db` },
-      ]) {
-        const result = invoke(harness, payload(response));
-        expect(result.status === 0 && result.stderr === "").toBe(true);
-        expect(
-          harness === "codex"
-            ? result.json.decision === "block"
-            : typeof hook(result.json).additionalContext === "string",
-        ).toBe(true);
-        noFragments(result.text, secret);
-      }
-    });
-
-test("Claude replacement collisions clear the warning and preserve existing replacement output", () => {
-  const secret = ["RE", "DACTED"].join("");
-  const result = invoke(
-    "claude",
-    payload({ stdout: `postgres://user:${secret}@host/db`, stderr: "" }),
+    `API_KEY=${secret}`,
+    JSON.stringify({ TEST_TOKEN: secret }),
+    `dbPassword: '${secret}'`,
+  ])
+    positives.push({ stdout: content, stderr: "" });
+for (const password of [
+  material(19),
+  `${material(8)}%40${material(9)}%3A`,
+  "credentials",
+  "suppressed",
+  "longcredentialsPhrase2026",
+  "REDACTED",
+  "[REDACTED]",
+  "ordinaryREDACTED2026",
+  "credential",
+  "contain",
+  "prefixcredentialSuffix",
+])
+  for (const response of [
+    { stdout: uri(password), stderr: "" },
+    { content: uri(password) },
+  ])
+    positives.push(response);
+for (const key of ["primaryKey", "apiKey"])
+  positives.push(
+    { stdout: `${key}=${material(40)}`, stderr: "" },
+    { nested: { [key]: material(40) } },
   );
-  expect(
-    result.status === 0 &&
-      result.stderr === "" &&
-      hook(result.json).additionalContext === "" &&
-      (
-        hook(result.json).updatedToolOutput as
-          Record<string, unknown> | undefined
-      )?.stdout
-        ?.toString()
-        .includes(secret) === true,
-  ).toBe(true);
+positives.push(
+  providers[2],
+  { content: [{ type: "text", text: providers[2] }] },
+  { stdout: providers[2], stderr: "", metadata: { count: 2 } },
+  { stdout: providers[2], stderr: "", unexpected: "ordinary" },
+  { nested: { SERVICE_SECRET: material(40) } },
+);
+for (const name of ["FOO", "x".repeat(100) + "_TOKEN", "bad-name-TOKEN"])
+  positives.push({ stdout: `${name}=${providers[2]}`, stderr: "" });
+const secret = "a4b9".repeat(8),
+  other = "c7d2".repeat(8);
+for (const content of [
+  `SECRET_${secret}=${secret}`,
+  `API_KEY=${secret}\nSECRET_${secret}=${other}`,
+  `SECRET_${secret.slice(0, 8)}=${secret}`,
+  `API_KEY=${secret}\nSECRET_${secret.slice(0, 8)}=${other}`,
+])
+  positives.push({ stdout: content, stderr: secret });
+positives.push({
+  stdout: `API_KEY=${providers[0]}\n`.repeat(1000),
+  stderr: "",
 });
+positives.push(
+  { stdout: `API_KEY=${providers[0]}`, stderr: "", interrupted: false },
+  { stdout: `DATABASE_URL=${uri(providers[2]!)}`, stderr: "" },
+  { stdout: `API_KEY=REPLACE_WITH_YOUR_OWN_API_KEY`, stderr: "" },
+  { nested: { servicePassword: "a9c4".repeat(9) } },
+);
+for (const content of [
+  `API_TOKEN=ordinary\n${["ghp", "Cd8Ef2".repeat(6)].join("_")}`,
+  `API_TOKEN=ordinary; note=${["ghp", "Cd8Ef2".repeat(6)].join("_")}`,
+  `${"A".repeat(130)}TOKEN=${["ghp", "Cd8Ef2".repeat(6)].join("_")}`,
+])
+  positives.push({ stdout: content, stderr: "" });
 
 for (const harness of ["claude", "codex"])
-  test(`${harness} accepts UUID credential keys and still blocks generic primaryKey values`, () => {
-    const uuid = ["014df517", "39d1", "4453", "b7b3", "9930c563627c"].join("-");
-    for (const value of [uuid, uuid.toUpperCase()])
-      for (const key of ["primaryKey", "apiKey"])
-        for (const response of [
-          { stdout: `${key}=${value}`, stderr: "" },
-          { nested: { [key]: value } },
-        ]) {
-          const result = invoke(harness, payload(response));
-          expect(
-            result.status === 0 && result.stdout === "" && result.stderr === "",
-          ).toBe(true);
-        }
-    const secret = material(40);
-    for (const response of [
-      { stdout: `primaryKey=${secret}`, stderr: "" },
-      { nested: { primaryKey: secret } },
-    ]) {
+  test(`${harness} property: every positive fixture emits only the fixed warning`, () => {
+    for (const response of positives) {
       const result = invoke(harness, payload(response));
-      expect(
-        harness === "codex"
-          ? result.json.decision === "block"
-          : typeof hook(result.json).additionalContext === "string",
-      ).toBe(true);
-      noFragments(result.text, secret);
+      const output = result.stdout + result.stderr;
+      expect(result.status).toBe(0);
+      expect(["", expected(harness)].includes(output)).toBe(true);
+      // Valid, bounded positive fixtures must actually warn; empty is not success.
+      expect(output === expected(harness)).toBe(true);
     }
   });
 
-test("unknown Claude shapes detect nested values but emit only a warning", () => {
-  const secret = examples[2]![1]();
-  for (const response of [
-    secret,
-    { content: [{ type: "text", text: secret }] },
-    { stdout: secret, stderr: "", metadata: { count: 2 } },
-    { stdout: secret, stderr: "", unexpected: "ordinary" },
-  ]) {
-    const result = invoke("claude", payload(response));
-    expect(hook(result.json).updatedToolOutput === undefined).toBe(true);
-    expect(
-      /not redacted/i.test(String(hook(result.json).additionalContext)),
-    ).toBe(true);
-    noFragments(result.text, secret);
-  }
+test("tool results are never altered or blocked for either protocol or tool shape", () => {
+  for (const harness of ["claude", "codex"])
+    for (const response of positives) {
+      const original = JSON.stringify(response);
+      const result = invoke(harness, payload(response, "mcp__example__read"));
+      expect(result.status).toBe(0);
+      expect(result.stdout + result.stderr === expected(harness)).toBe(true);
+      expect(JSON.stringify(response)).toBe(original);
+    }
 });
 
-test("structured response credential keys retain adjacent identifier context", () => {
-  const secret = material(40);
-  const result = invoke(
-    "codex",
-    payload({ nested: { SERVICE_SECRET: secret } }, "other"),
-  );
-  expect(
-    result.json.decision === "block" &&
-      String(result.json.reason).includes("SERVICE_SECRET"),
-  ).toBe(true);
-  noFragments(result.text, secret);
+test("Claude failure paths retain the fixed warning even for warning-word passwords", () => {
+  for (const password of [
+    providers[0]!,
+    "credentials",
+    "longcredentialsPhrase2026",
+    "credential",
+    "REDACTED",
+  ])
+    for (const input of [
+      { hook_event_name: "PostToolUseFailure", error: uri(password) },
+      {
+        hook_event_name: "PostToolUseFailure",
+        tool_response: { content: uri(password) },
+        error: "ordinary",
+      },
+    ]) {
+      const result = invoke("claude", input);
+      expect(result.status).toBe(0);
+      expect(result.stdout + result.stderr === expected("claude", true)).toBe(
+        true,
+      );
+    }
 });
 
-test("provider and URI diagnostics accept ordinary short adjacent identifiers", () => {
-  const secret = examples[2]![1]();
-  for (const [name, content] of [
-    ["FOO", `FOO=${secret}`],
-    ["DATABASE_URL", `DATABASE_URL=postgres://user:${secret}@host/db`],
-  ] as const) {
-    const result = invoke("codex", payload({ stdout: content, stderr: "" }));
-    expect(
-      result.json.decision === "block" &&
-        String(result.json.reason).includes(name),
-    ).toBe(true);
-    noFragments(result.text, secret);
-  }
+test("round-1 and round-2 negative cases remain silent", () => {
+  const uuid = ["014df517", "39d1", "4453", "b7b3", "9930c563627c"].join("-");
+  const negatives: unknown[] = [
+    {
+      stdout: [
+        "commit " + "a4b9".repeat(10),
+        uuid,
+        JSON.stringify({
+          integrity: `sha512-${Buffer.from(material(64)).toString("base64")}`,
+          sha: "abcdef1234567890".repeat(4),
+        }),
+        "bun test v1.4.4\n123 pass\n0 fail\nChecked 235 files\nOn branch feature\nnothing to commit, working tree clean",
+        "API_KEY=<redacted>\nTOKEN=${TOKEN}\nSECRET=[REDACTED]\nhttps://user@example.test/path",
+        "sk-short ghp_short AKIAshort AIzashort xoxb-short",
+      ].join("\n"),
+      stderr: "",
+    },
+    { stdout: `API_KEY: documentation\nsha=${"a4b9".repeat(10)}`, stderr: "" },
+    {
+      stdout: `note=${Buffer.from(material(30)).toString("base64")}`,
+      stderr: "",
+    },
+  ];
+  for (const key of ["primaryKey", "apiKey"])
+    for (const value of [uuid, uuid.toUpperCase()])
+      negatives.push(
+        { stdout: `${key}=${value}`, stderr: "" },
+        { nested: { [key]: value } },
+      );
+  for (const harness of ["claude", "codex"])
+    for (const response of negatives) {
+      const result = invoke(harness, payload(response));
+      expect(result.status).toBe(0);
+      expect(result.stdout + result.stderr).toBe("");
+    }
 });
 
-test("Claude failure output gets a value-free warning without replacement", () => {
-  const secret = examples[0]![1]();
-  const result = invoke("claude", {
-    hook_event_name: "PostToolUseFailure",
-    tool_name: "Bash",
-    error: `failed: ${secret}`,
-  });
-  expect(result.status === 0 && result.stderr === "").toBe(true);
-  expect(
-    hook(result.json).hookEventName === "PostToolUseFailure" &&
-      hook(result.json).updatedToolOutput === undefined &&
-      /rotate/i.test(String(hook(result.json).additionalContext)),
-  ).toBe(true);
-  noFragments(result.text, secret);
-});
-
-test("depth limit fails open without propagating an exception or credential", () => {
-  const secret = examples[1]![1]();
-  let response: unknown = secret;
-  for (let i = 0; i < 70; i++) response = { child: response };
-  const result = invoke("claude", payload(response));
-  expect(
-    result.status === 0 &&
-      result.stderr === "" &&
-      /not scanned/i.test(String(result.json.systemMessage)),
-  ).toBe(true);
-  noFragments(result.text, secret);
+test("depth, malformed, oversized and unsupported input fail open silently", () => {
+  let deep: unknown = providers[0];
+  for (let i = 0; i < 70; i++) deep = { child: deep };
+  for (const harness of ["claude", "codex"])
+    for (const input of [
+      `{${providers[0]}`,
+      JSON.stringify(payload("z".repeat(1_048_577))),
+      "null",
+      "[]",
+      "{}",
+      JSON.stringify(payload("safe", "Bash", "PreToolUse")),
+      JSON.stringify(payload(deep)),
+    ]) {
+      const result = invoke(harness, input, true);
+      expect(result.status).toBe(0);
+      expect(result.stdout + result.stderr).toBe("");
+    }
 });
 
 test("an open stdin pipe is bounded without waiting for EOF", async () => {
@@ -386,89 +286,7 @@ test("an open stdin pipe is bounded without waiting for EOF", async () => {
     child.on("error", reject);
     child.on("exit", done);
   });
-  expect(
-    status === 0 &&
-      error === "" &&
-      /not scanned.*timeout/i.test(output) &&
-      performance.now() - started < 3000,
-  ).toBe(true);
+  expect(status).toBe(0);
+  expect(output + error).toBe("");
+  expect(performance.now() - started < 3000).toBe(true);
 }, 5000);
-
-test("unsafe identifier labels use only the provider family", () => {
-  const secret = examples[2]![1]();
-  for (const name of ["x".repeat(100) + "_TOKEN", "bad-name-TOKEN"]) {
-    const result = invoke(
-      "codex",
-      payload({ stdout: `${name}=${secret}`, stderr: "" }),
-    );
-    expect(String(result.json.reason).includes("unknown key (github)")).toBe(
-      true,
-    );
-    expect(String(result.json.reason).includes(name)).toBe(false);
-    noFragments(result.text, secret);
-  }
-});
-
-test("credential material inside labels and other fields never reaches hook output", () => {
-  const secret = "a4b9".repeat(8),
-    other = "c7d2".repeat(8);
-  for (const harness of ["claude", "codex"])
-    for (const content of [
-      `SECRET_${secret}=${secret}`,
-      `API_KEY=${secret}\nSECRET_${secret}=${other}`,
-      `SECRET_${secret.slice(0, 8)}=${secret}`,
-      `API_KEY=${secret}\nSECRET_${secret.slice(0, 8)}=${other}`,
-    ]) {
-      const result = invoke(
-        harness,
-        payload({ stdout: content, stderr: secret }),
-      );
-      expect(
-        harness === "codex"
-          ? result.json.decision === "block"
-          : hook(result.json).updatedToolOutput !== undefined,
-      ).toBe(true);
-      noFragments(result.text, secret);
-      noFragments(result.text, other);
-    }
-});
-
-test("safe corpus leaves hashes, UUIDs, integrity data and ordinary repository output alone", () => {
-  const corpus = [
-    "commit " + "a4b9".repeat(10),
-    "014df517-39d1-4453-b7b3-9930c563627c",
-    JSON.stringify({
-      integrity: `sha512-${Buffer.from(material(64)).toString("base64")}`,
-      sha: "abcdef1234567890".repeat(4),
-    }),
-    "bun test v1.4.4\n123 pass\n0 fail\nChecked 235 files\nOn branch feature\nnothing to commit, working tree clean",
-    "API_KEY=<redacted>\nTOKEN=${TOKEN}\nSECRET=[REDACTED]\nhttps://user@example.test/path",
-    "sk-short ghp_short AKIAshort AIzashort xoxb-short",
-  ].join("\n");
-  for (const harness of ["claude", "codex"]) {
-    const result = invoke(harness, payload({ stdout: corpus, stderr: "" }));
-    expect(
-      result.status === 0 && result.stdout === "" && result.stderr === "",
-    ).toBe(true);
-  }
-});
-
-test("malformed, oversized and unsupported input fail open with a value-free note", () => {
-  const secret = examples[0]![1]();
-  for (const input of [
-    `{${secret}`,
-    `{"tool_response":"${"z".repeat(1_048_577)}${secret}"}`,
-    "null",
-    "[]",
-    "{}",
-    JSON.stringify(payload("safe", "Bash", "PreToolUse")),
-  ]) {
-    const result = invoke("codex", input, true);
-    expect(result.status === 0).toBe(true);
-    expect(result.stderr === "").toBe(true);
-    expect(
-      /not scanned|unsupported/i.test(String(result.json.systemMessage)),
-    ).toBe(true);
-    noFragments(result.text, secret);
-  }
-});
