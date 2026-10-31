@@ -11,6 +11,7 @@ interface Attached {
   receipt: {
     selected: (Identity & { reasons: string[] })[];
     omitted: (Identity & { reason: string })[];
+    omittedCount: number;
     packet: { utf8Bytes: number; characters: number; characterUnit: string };
     cap: { limit: number; used: number; unit: string };
     warnings: { code: string; message: string }[];
@@ -197,4 +198,69 @@ test("attachment scans beyond the first page and ignores empty path segments", a
   expect(result.receipt.selected.map((note) => note.id)).toEqual([
     "device/note-206",
   ]);
+}, 30_000);
+
+test("attach bounds omission details to the first 50 and counts seen and over-budget notes", async () => {
+  const state = memoryState();
+  for (let n = 1; n <= 100; n++) put(state, n, "x".repeat(8000));
+  const result = await attach(state, {
+    labels: ["memory"],
+    seen: [{ id: "device/note-1", revision: 1 }],
+  });
+  expect(result.receipt.selected).toEqual([]);
+  expect(result.receipt.omitted).toHaveLength(50);
+  expect(result.receipt.omittedCount).toBe(100);
+  expect(result.receipt.omitted.map((note) => note.id)).toEqual(
+    Array.from({ length: 50 }, (_, i) => `device/note-${i + 1}`),
+  );
+  expect(result.receipt.omitted[0]?.reason).toBe("seen");
+  expect(result.receipt.omitted[49]?.reason).toBe("over-budget");
+  const validate = blockSchema("memory", "attach.output.json", [
+    "rules.output.json",
+  ]);
+  expect(
+    validate({
+      ...result,
+      receipt: { ...result.receipt, omittedCount: undefined },
+    }),
+  ).not.toEqual([]);
+  expect(
+    validate({
+      ...result,
+      receipt: {
+        ...result.receipt,
+        omitted: [...result.receipt.omitted, result.receipt.omitted[0]],
+      },
+    }),
+  ).not.toEqual([]);
+}, 30_000);
+
+test("attach delivers large asked notes within the response ceiling and names the rest", async () => {
+  const state = memoryState();
+  const ids = Array.from({ length: 33 }, (_, i) => `device/note-${i + 1}`);
+  for (let n = 1; n <= 33; n++) put(state, n, "x".repeat(8000));
+  const result = await attach(state, { ids });
+  expect(result.receipt.selected.length).toBeGreaterThan(0);
+  expect(result.receipt.selected.length).toBeLessThan(33);
+  expect(result.receipt.selected.map((note) => note.id)).toEqual(
+    ids.slice(0, result.receipt.selected.length),
+  );
+  expect(result.receipt.omitted.map((note) => note.id)).toEqual(
+    ids.slice(result.receipt.selected.length),
+  );
+  expect(
+    result.receipt.omitted.every((note) => note.reason === "response-limit"),
+  ).toBe(true);
+  expect(result.receipt.omittedCount).toBe(33 - result.receipt.selected.length);
+  expect(result.receipt.warnings).toContainEqual({
+    code: "ATTACH_RESPONSE_LIMIT",
+    message: `${result.receipt.omittedCount} asked notes exceeded the response limit; request them again in another call.`,
+  });
+  expect(
+    result.receipt.warnings.some(
+      (warning) => warning.code === "ATTACH_OVER_BUDGET",
+    ),
+  ).toBe(true);
+  expect(result.text.text.length).toBeLessThan(262_144);
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(1_048_576);
 }, 30_000);
