@@ -7,6 +7,9 @@ the issue with the installed `forge issue show`. Confirm the problem by reproduc
 it and make the smallest correct fix. If the issue is wrong about the code, or
 already fixed on main, stop and say so with evidence instead of changing code.
 The lane contract takes precedence over this template.
+Record `premise holds: <evidence>` or `premise does not hold: <evidence>`
+through the installed `forge`, before any code change:
+`forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'`.
 
 How:
 
