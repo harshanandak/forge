@@ -19,6 +19,7 @@ test("forge/memory is a registered first-party source that resolves to its folde
 
 const operations = {
   "memory.scope": { effects: [], humanOnly: false },
+  "memory.attach": { effects: [], humanOnly: false },
   "memory.add": { effects: ["memory:write"], humanOnly: false },
   "memory.search": { effects: [], humanOnly: false },
   "memory.rules": { effects: [], humanOnly: false },
