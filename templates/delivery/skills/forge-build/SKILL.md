@@ -30,9 +30,10 @@ Standing rules: <adopted rules; layer 1 passes the memory packet>
 ## Red, then green
 
 1. Read `forge issue resume <slice>` and every Touches file before editing; later comments override the body. Read `forge issue comments <slice>` once before acting if a checkpoint exists or `more` is true. forge-cut risk: light 0-1, standard 2-3, heavy 4-5.
-2. Every slice goes red then green. Name a check whose expected value is independent of the implementation. Run the new assertion on trunk first; it must fail on that assertion, not setup or unrelated errors.
-3. `forge check run --input '{"checks":["<name>"]}'`. Expect exit 1 and `ok:false` for FAIL (exit 2 for INCOMPLETE or NOT_EXECUTED); keep the full `result` receipt and its id even on nonzero exit. PASS alone exits 0. Do not chain red checks with `&&` or discard their output on failure.
-4. Make the smallest fix, rerun to green and keep its receipt id. Use small conventional commits.
+2. Reproduce the issue (or read the code named) before editing. Log: `forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'` or `premise does not hold: <evidence>`; if false, stop and report; change no code.
+3. Every slice goes red then green. Name a check's implementation-independent expected value. Run the new assertion on trunk first; it must fail on that assertion, not setup or unrelated errors.
+4. `forge check run --input '{"checks":["<name>"]}'`. FAIL: exit 1, `ok:false`; INCOMPLETE/NOT_EXECUTED: exit 2; only PASS exits 0. Keep full `result`/receipt id, even nonzero. No `&&` red chains or discarded failure output.
+5. Make the smallest fix, rerun to green and keep its receipt id. Use small conventional commits.
 
 Three proof levels, scaled to risk:
 
@@ -46,9 +47,9 @@ Three proof levels, scaled to risk:
 
 - Unrelated findings: search open issues first, then file or comment with a priority label. Never fix them here.
 - Before push, compare `git diff --name-only origin/main...HEAD` with Owns. A file outside Owns, or a need missing from main, means file a `contract-gap` issue, add a failing test that pins the gap, and stop.
-- After 2 failed fixes on the same check, stop editing. Write the premise with `forge issue comment --input '{"id":"<slice>","body":"premise: ..."}'`, test it directly, then re-slice or escalate.
+- After 2 failed fixes on the same check, stop editing. Record as above, test it directly, then re-slice or escalate.
 - Long processes run in the background with a timeout. Edit with the editor tool or a script file, never long inline shell strings. Checkpoint on the issue and restart clean when needed.
 
 ## Final-head proof
 
-Read `forge check list --input '{}'`. Run all configured `receiptChecks` on the final tree: `forge check run --input '{"checks":["<name>"]}'`; if empty, pick a relevant declared check. Run the slice regression; CI carries remaining project checks. Require exit 0, `ok:true` and receipt status PASS. Read `forge check show --input '{"id":"<receipt>"}'`; its subject must equal your head. Show alone is not PASS.
+`forge check list --input '{}'`. All final-tree `receiptChecks`: `forge check run --input '{"checks":["<name>"]}'`; if empty, use a relevant declared check. Run slice regression; CI carries remaining project checks. Require exit 0, `ok:true`, receipt PASS. `forge check show --input '{"id":"<receipt>"}'` subject must be head. Show alone is not PASS.
