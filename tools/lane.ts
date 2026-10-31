@@ -17,7 +17,6 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -30,10 +29,11 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { laneHistory, laneRun } from "./lane-run.ts";
 import { laneTier } from "./lane-tier.ts";
 import { laneClose } from "./lane-close.ts";
+import { runCommand } from "./run-command.ts";
 
 type Lane = { issue: string; worktree: string; branch: string; brief: string };
 type Options = { issue: string; branch: string; brief: string; max: number };
@@ -59,25 +59,7 @@ function run(
     command === "gh"
       ? "gh command failed; check FORGE_GH_USER and authentication"
       : `${command} command failed`;
-  // npm and the installed Forge provide an extensionless shell shim beside forge.cmd.
-  // sh preserves JSON arguments on Windows without cmd.exe's quote reinterpretation.
-  if (["forge", "gh"].includes(command) && process.platform === "win32") {
-    const path =
-      Object.entries(process.env).find(
-        ([key]) => key.toLowerCase() === "path",
-      )?.[1] ?? "";
-    const shim = path
-      .split(delimiter)
-      .map((part) => join(part.replace(/^"|"$/g, ""), command))
-      .find(existsSync);
-    if (!shim && command === "forge")
-      throw new Error("installed forge shell shim was not found on PATH");
-    if (shim) {
-      args = [shim, ...args];
-      command = "sh";
-    }
-  }
-  const result = spawnSync(command, args, {
+  const result = runCommand(command, args, {
     cwd,
     encoding: "utf8",
     timeout: 30_000,

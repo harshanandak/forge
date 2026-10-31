@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { runCommand } from "./run-command.ts";
 
 type Job = {
   databaseId: number;
@@ -24,7 +24,7 @@ function command(program: string, args: string[], auth = false): string {
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
   if (!auth) env.GH_TOKEN = token;
-  const result = spawnSync(executable, args, {
+  const result = runCommand(program === "gh" ? program : executable, args, {
     env,
     encoding: "utf8",
     timeout: 30_000,
@@ -98,17 +98,17 @@ function compare(pr: string) {
       mainJob: Job | undefined,
       mainRun: Run | undefined;
     let reason = mainError;
-    if (!reason && (!runId || !jobId))
-      reason = "PR job cannot be identified from its GitHub Actions URL";
-    if (!reason && runId) {
+    if (!runId || !jobId)
+      reason ??= "PR job cannot be identified from its GitHub Actions URL";
+    if (runId && jobId) {
       let source = prRuns.get(runId);
       if (!source) {
         source = view<Workflow>(runId, "workflowDatabaseId,jobs");
         prRuns.set(runId, source);
       }
       prJob = source.jobs.find((job) => String(job.databaseId) === jobId);
-      if (!prJob) reason = "PR job ID is absent from the PR run";
-      else {
+      if (!prJob) reason ??= "PR job ID is absent from the PR run";
+      else if (!reason) {
         let baseline = mainRuns.get(source.workflowDatabaseId);
         if (!baseline) {
           const args = [

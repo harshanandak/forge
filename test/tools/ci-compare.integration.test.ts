@@ -101,21 +101,14 @@ else {console.error('unexpected read command '+JSON.stringify(a));process.exit(1
   );
   writeFileSync(
     join(bin, "gh"),
-    `#!${process.execPath.replaceAll("\\", "/")}\nimport ${JSON.stringify(fake.replaceAll("\\", "/"))};\n`,
+    `#!/bin/sh\nexec "${process.execPath.replaceAll("\\", "/")}" "${fake.replaceAll("\\", "/")}" "$@"\n`,
   );
   chmodSync(join(bin, "gh"), 0o755);
-  if (process.platform === "win32") {
-    const compiled = spawnSync(
-      process.execPath,
-      ["build", fake, "--compile", "--outfile", join(bin, "gh.exe")],
-      {
-        cwd: shared,
-        encoding: "utf8",
-        timeout: 15_000,
-      },
+  if (process.platform === "win32")
+    writeFileSync(
+      join(bin, "gh.cmd"),
+      `@"${process.execPath}" "${fake}" %*\r\n`,
     );
-    expect(compiled.status, compiled.stderr).toBe(0);
-  }
 });
 function fixture(
   options: {
@@ -321,8 +314,11 @@ test("no failed checks and no origin/main returns an empty result", () => {
   expect(f.calls().some((a) => a[0] === "run")).toBe(false);
 });
 
-test("failed check without origin/main gives an unknown reason", () => {
+test("failed check without origin/main preserves the PR failed step and gives an unknown reason", () => {
   const r = output(fixture({ noMain: true }));
+  expect(r.comparisons[0]).toMatchObject({
+    pr: { failedStep: "Unit tests" },
+  });
   expect(r.comparisons[0]!.verdict).toBe("main-unknown");
   expect(r.comparisons[0]!.reason).toContain("origin/main");
 });
