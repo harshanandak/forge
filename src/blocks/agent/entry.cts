@@ -206,6 +206,18 @@ printf '{"pr":%s,"kind":"rearm","next":"%s","fails":%s}\\n' "$n" "$since" "$fail
       };
     if (guard.stop === guard.command)
       fail("INPUT_INVALID", "Stop and command hook events must differ");
+    if (guard.output)
+      for (const field of ["stop", "command"] as const) {
+        const event = guard[field];
+        if (
+          event === "PostToolUse" ||
+          (guard.output === "claude" && event === "PostToolUseFailure")
+        )
+          fail(
+            "INPUT_INVALID",
+            `Output hook event ${event} conflicts with guard.${field}; move guard.${field} to another event or drop guard.output`,
+          );
+      }
     const root = call.services.environment.packageRoot;
     if (!root)
       fail("PROVIDER_MISSING", "Installed package root is unavailable");

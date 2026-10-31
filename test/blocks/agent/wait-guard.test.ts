@@ -314,6 +314,27 @@ test("guard refuses colliding hook events", () => {
   ).toThrow("INPUT_INVALID");
 });
 
+for (const { field, event, output } of [
+  { field: "command", event: "PostToolUse", output: "codex" },
+  { field: "command", event: "PostToolUse", output: "claude" },
+  { field: "stop", event: "PostToolUseFailure", output: "claude" },
+] as const) {
+  test(`guard refuses ${field} ${event} colliding with ${output} output`, () => {
+    expect(() =>
+      operations["agent.guard"]!(
+        call({ id: "codex" }, [
+          {
+            ...codex,
+            guard: { ...codex.guard!, [field]: event, output },
+          },
+        ]),
+      ),
+    ).toThrow(
+      `INPUT_INVALID: Output hook event ${event} conflicts with guard.${field}; move guard.${field} to another event or drop guard.output`,
+    );
+  });
+}
+
 test("adapter schema keeps optional capabilities closed and validates guard branches", () => {
   const schema = JSON.parse(
     readFileSync(resolve(root, "schemas/adapter.json"), "utf8"),
