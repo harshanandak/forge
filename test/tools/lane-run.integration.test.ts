@@ -378,7 +378,7 @@ test("run uses the caller role table, lane cwd, complete prompt, and typed verdi
   expect(premise).toBeLessThan(prompt.indexOf("Tests first:"));
   expect(prompt).toContain("premise does not hold: <evidence>");
   expect(prompt).toContain(
-    `forge issue comment --input '{"id":"<slice>","body":"premise holds: ..."}'`,
+    `forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'`,
   );
   expect(prompt).toContain(
     "through the installed `forge`, before any code change",

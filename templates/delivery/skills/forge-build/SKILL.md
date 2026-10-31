@@ -30,7 +30,7 @@ Standing rules: <adopted rules; layer 1 passes the memory packet>
 ## Red, then green
 
 1. Read `forge issue resume <slice>` and every Touches file before editing; later comments override the body. Read `forge issue comments <slice>` once before acting if a checkpoint exists or `more` is true. forge-cut risk: light 0-1, standard 2-3, heavy 4-5.
-2. Reproduce the issue (or read the code it names) before editing. Log: `forge issue comment --input '{"id":"<slice>","body":"premise holds: ..."}'` or `premise does not hold: <evidence>`; if false, stop and report; change no code.
+2. Reproduce the issue (or read the code named) before editing. Log: `forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'` or `premise does not hold: <evidence>`; if false, stop and report; change no code.
 3. Every slice goes red then green. Name a check's implementation-independent expected value. Run the new assertion on trunk first; it must fail on that assertion, not setup or unrelated errors.
 4. `forge check run --input '{"checks":["<name>"]}'`. FAIL: exit 1, `ok:false`; INCOMPLETE/NOT_EXECUTED: exit 2; only PASS exits 0. Keep full `result`/receipt id, even nonzero. No `&&` red chains or discarded failure output.
 5. Make the smallest fix, rerun to green and keep its receipt id. Use small conventional commits.

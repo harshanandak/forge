@@ -38,14 +38,14 @@ test("rendered build records the premise before red and stops on a stale issue",
       .split("## Red, then green")[1]!
       .split("Three proof levels")[0]!;
     const premise = steps.indexOf(
-      "Reproduce the issue (or read the code it names)",
+      "Reproduce the issue (or read the code named)",
     );
     expect(premise).toBeGreaterThanOrEqual(0);
     expect(premise).toBeLessThan(
       steps.indexOf("Every slice goes red then green"),
     );
     expect(steps).toContain(
-      `forge issue comment --input '{"id":"<slice>","body":"premise holds: ..."}'`,
+      `forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'`,
     );
     expect(steps).toContain("premise does not hold: <evidence>");
     expect(steps).toContain("stop and report; change no code");
