@@ -201,22 +201,45 @@ printf '{"pr":%s,"kind":"rearm","next":"%s","fails":%s}\\n' "$n" "$since" "$fail
     const guard = adapter.guard;
     if (guard?.kind !== "hook")
       return {
-        instruction: `Warning: no done-claim guard for ${adapter.id}.`,
+        instruction: `Warning: no done-claim guard for ${adapter.id}, and no command guard.`,
       };
+    if (guard.stop === guard.command)
+      fail("INPUT_INVALID", "Stop and command hook events must differ");
     const root = call.services.environment.packageRoot;
     if (!root)
       fail("PROVIDER_MISSING", "Installed package root is unavailable");
     const windows = call.services.environment.platform === "win32";
-    const path = `${(windows ? root.replaceAll("\\", "/") : root).replace(/\/$/, "")}/templates/delivery/skills/forge-build/done-claim.mjs`;
-    const unsupported = path.match(/[$`"'%!]/)?.[0];
-    if (unsupported)
-      fail("INPUT_INVALID", `Unsupported path character ${unsupported}`);
-    const command = `node "${path}"`;
+    const companion = (rel: string) => {
+      const path = `${(windows ? root.replaceAll("\\", "/") : root).replace(/\/$/, "")}/templates/delivery/${rel}`;
+      const unsupported = path.match(/[$`"'%!]/)?.[0];
+      if (unsupported)
+        fail("INPUT_INVALID", `Unsupported path character ${unsupported}`);
+      return `node "${path}"`;
+    };
     return {
       file: guard.file,
-      instruction: `Merge this hooks entry into ${guard.file}, preserving existing settings and hooks.`,
+      instruction: `Merge these hooks entries into ${guard.file}, preserving existing settings and hooks.`,
       config: {
-        hooks: { [guard.stop]: [{ hooks: [{ type: "command", command }] }] },
+        hooks: {
+          [guard.stop]: [
+            {
+              hooks: [
+                {
+                  type: "command",
+                  command: companion("skills/forge-build/done-claim.mjs"),
+                },
+              ],
+            },
+          ],
+          [guard.command]: [
+            {
+              matcher: "Bash",
+              hooks: [
+                { type: "command", command: companion("harness/guard.mjs") },
+              ],
+            },
+          ],
+        },
       },
     };
   },

@@ -245,6 +245,39 @@ const hookEnv = Object.fromEntries(
   ),
 );
 hookEnv.FORGE_DEVICE_ROOT = join(npm.root, "device");
+for (const id of ["claude", "codex"]) {
+  const rendered = npm.cli(["agent", "guard", id]).result;
+  const group = rendered.config.hooks.PreToolUse[0];
+  assert.equal(group.matcher, "Bash");
+  const commandHook = hookPath(group.hooks[0].command);
+  assert.equal(
+    realpathSync(commandHook),
+    realpathSync(join(installed, "templates/delivery/harness/guard.mjs")),
+  );
+  for (const [command, status] of [
+    ["printenv", 2],
+    ["git status", 0],
+  ]) {
+    const checked = spawnSync(process.execPath, [commandHook], {
+      cwd: npm.root,
+      env: hookEnv,
+      input: JSON.stringify({
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command },
+        ...(id === "codex" ? { turn_id: "fixture", model: "fixture" } : {}),
+      }),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30_000,
+    });
+    assert.equal(checked.status, status);
+    assert.equal(checked.stdout, "");
+    if (status === 2)
+      assert.match(checked.stderr, /^Forge guard refused \(env-dump\):/);
+    else assert.equal(checked.stderr, "");
+  }
+}
 for (const [message, blocked] of [
   ["Done", true],
   [`Verified ${receipt.id}\nNot covered: live hooks`, false],

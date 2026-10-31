@@ -30,6 +30,22 @@ const SKILLS = [
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
+test("command guard recipe explains both hooks and its limits", () => {
+  const recipe = readFileSync(
+    join(repo, "templates/delivery/harness/command-guard.md"),
+    "utf8",
+  );
+  for (const text of [
+    "forge agent guard",
+    "Stop",
+    "PreToolUse",
+    "not a sandbox",
+    "features.hooks",
+    "/hooks",
+  ])
+    expect(recipe).toContain(text);
+}, 30_000);
+
 test.each([
   "forge-loop/SKILL.md",
   "forge-build/pull-request.md",

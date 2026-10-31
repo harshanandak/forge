@@ -29,7 +29,15 @@ type WaitResult = { kind: string; steps: string[]; then: string };
 type GuardResult = {
   file: string;
   instruction: string;
-  config: { hooks: { Stop: { hooks: { type: string; command: string }[] }[] } };
+  config: {
+    hooks: {
+      Stop: { hooks: { type: string; command: string }[] }[];
+      PreToolUse: {
+        matcher: string;
+        hooks: { type: string; command: string }[];
+      }[];
+    };
+  };
 };
 function readResult<T>(stdout: string): T {
   return (JSON.parse(stdout) as { result: T }).result;
@@ -348,6 +356,12 @@ test("shipped guards resolve an existing installed companion from an unrelated c
     expect(isAbsolute(path)).toBe(true);
     expect(existsSync(path)).toBe(true);
     expect(path).toContain("done-claim.mjs");
+    const commandGroup = guard.config.hooks.PreToolUse[0]!;
+    expect(commandGroup.matcher).toBe("Bash");
+    const commandPath = hookPath(commandGroup.hooks[0]!.command);
+    expect(isAbsolute(commandPath)).toBe(true);
+    expect(existsSync(commandPath)).toBe(true);
+    expect(commandPath.replaceAll("\\", "/")).toEndWith("harness/guard.mjs");
   }
   const detected = run(["agent", "guard"], { CODEX_THREAD_ID: "1" });
   expect(detected.status).toBe(0);
