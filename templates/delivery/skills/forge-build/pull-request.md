@@ -6,13 +6,13 @@ Print the optional Stop guard with `forge agent guard`; completion words outside
 
 ## Claim and workspace
 
-1. Threaded chats: MCP `t3_thread_configuration` once (no args); `FORGE_SESSION=t3:<threadId>` on every forge command across harnesses. Workers: own sessions. Start: `forge memory rules` unless hook-supplied; `result.text.text` is a pointer, never note text. Before tasks: memory search/show. CLI before claim: POSIX `export FORGE_SESSION="<slice>-worker"`; PowerShell `$env:FORGE_SESSION="<slice>-worker"`; reuse on re-dispatch.
+1. Threaded chats: MCP `t3_thread_configuration` once (no args); `FORGE_SESSION=t3:<threadId>` on every forge command across harnesses. Workers: own sessions. Start: `forge memory rules` unless hook-supplied; `result.text.text` is a pointer, never note text. Before tasks: memory search/show. Separate CLI workers, before claim: POSIX `export FORGE_SESSION="<slice>-worker"`; PowerShell `$env:FORGE_SESSION="<slice>-worker"`; reuse on re-dispatch.
 2. `forge issue claim <slice>`. Refused because someone holds it: steer the live worker, never start a second on that slice. Renew during long work: `forge issue renew <slice>`.
 3. Use the supplied isolated worktree, or ask the harness for one with dependencies installed; otherwise `git worktree add <path> -b <branch> origin/main`, then the project's install.
 
 ## Checkpoints
 
-Run `forge issue checkpoint <slice> --step <step> --branch "<branch>" --worktree "<path>" --next "<next action>"` after claim/red/green/push (`claimed`/`red`/`green`/`pushed`), or timebox expiry (`stopped`). Available: `--head`, `--pr`, `--receipt`; `next`: 1-300 chars, required. Checkpoint before stopping; report it, receipts, remaining work.
+Run `forge issue checkpoint <slice> --step <step> --branch "<branch>" --worktree "<path>" --next "<next action>"` at `claimed`, `red`, `green`, `pushed`, and timebox expiry (`stopped`). Include `--head`, `--pr`, `--receipt` when available; `next`: 1-300 chars, required. Checkpoint before stopping; report it, receipts, remaining work.
 
 If checkpoint returns REVISION_CONFLICT (another comment took the id), run `forge issue resume <slice>` and read `forge issue comments <slice>`, then write the checkpoint again. Do not retry silently.
 
@@ -20,7 +20,7 @@ If checkpoint returns REVISION_CONFLICT (another comment took the id), run `forg
 
 1. Require SKILL.md's Final-head proof. Target at most 800 changed lines and 15 files; above 1500 lines, split before opening. Commits carry no co-author or tool trailers (trailers: none).
 2. `git push -u origin <branch>`. Never force-push; that is a one-way door.
-3. Write body file with editor tool, then `gh pr create --base <base> --title "<plain conventional commit>" --body-file <file>`. For speed, memory, size or work savings, name the user-visible gain and number in plain words.
+3. Write body file with editor tool, then `gh pr create --base <base> --title "<plain conventional commit>" --body-file <file>`. Speed, memory, size or work savings: the title names the user-visible gain and its number.
 
 Fill the repo's PR template. Style: plain opening; bold takeaways; What review found; Verification.
 
@@ -28,7 +28,7 @@ Fill the repo's PR template. Style: plain opening; bold takeaways; What review f
 - **Before / after**: user observations before and after X. Real numbers if available; how they were measured. Performance only: name the workload; separate component and end-to-end timings.
 - **What review found**: each blocker as a bold user-visible failure and a one-line fix. Empty on the first push.
 - **Verification**: `forge check run` receipt ids; test that fails without the change; CI for this head if available. Performance only: pin the saving with a work, process or call count or size bound.
-- **Not verified**: what you did not check. Always present, never empty-by-omission. Performance only: say what the measurement does not establish.
+- **Not verified**: what you did not check. Always present, never empty-by-omission. Performance only: what the measurement does not establish.
 - **Models**: for each of planned, implemented and reviewed, give the model's display name, model id, reasoning level and harness, e.g. `Implemented: <display name> (<model id>, reasoning <effort>) via <harness>`. Use `not yet reviewed` when there is no review. Roles alone are not allowed. No tool-branding footer.
 - `Tracking: <issue id>`.
 

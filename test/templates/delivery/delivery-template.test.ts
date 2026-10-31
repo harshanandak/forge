@@ -238,8 +238,10 @@ test("performance PR handoff scopes measured gains and regression guards", async
     const lines = text.split("\n");
     const title = lines.find((line) => line.includes("gh pr create"));
     expect(title).toContain("plain conventional commit");
-    expect(title).toContain("For speed, memory, size or work savings");
-    expect(title).toContain("user-visible gain and number in plain words");
+    expect(title).toContain("Speed, memory, size or work savings:");
+    expect(title).toContain(
+      "the title names the user-visible gain and its number",
+    );
     for (const [section, rule] of [
       [
         "Before / after",
@@ -264,6 +266,15 @@ test("performance PR handoff scopes measured gains and regression guards", async
     expect(
       lines.find((line) => line.startsWith("- **Not verified**:")),
     ).toContain("Always present");
+    // Making room for the performance rules must not drop the worker session or checkpoint field rules.
+    expect(
+      lines.find((line) => line.startsWith("1. Threaded chats:")),
+    ).toContain(
+      'Separate CLI workers, before claim: POSIX `export FORGE_SESSION="<slice>-worker"`',
+    );
+    expect(
+      lines.find((line) => line.startsWith("Run `forge issue checkpoint")),
+    ).toContain("Include `--head`, `--pr`, `--receipt` when available");
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
     expect(
       readFileSync(
