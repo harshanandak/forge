@@ -280,6 +280,8 @@ function readerFiles(cmd, args, inputs) {
         cmd === "cut" &&
         delimiter === "=" &&
         fields === "1" &&
+        // Without -s, cut prints lines that have no delimiter whole: the body of a multi-line value.
+        (args.includes("-s") || args.includes("--only-delimited")) &&
         !args.includes("--complement") &&
         /^\.env(?:\.|$)/i.test(basename(file)) &&
         !/\.(pem|p12|pfx|key)$/i.test(file)
