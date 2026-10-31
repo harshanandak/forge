@@ -193,6 +193,7 @@ test("the 6000 rule budget includes complete prefixes, ids, dates and separators
     receipt: {
       selected: [],
       omitted: [],
+      omittedCount: 0,
       packet: {
         utf8Bytes: Buffer.byteLength(pointer, "utf8"),
         characters: [...pointer].length,

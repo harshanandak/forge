@@ -712,6 +712,7 @@ module.exports = {
       reason: "over-cap";
     }[] = [];
     let used = 0;
+    let omittedCount = 0;
     rules.sort(
       (a, b) =>
         Number(b.scope === "general") - Number(a.scope === "general") ||
@@ -729,15 +730,17 @@ module.exports = {
       const line = `- [${rule.scope}] ${rule.id} (created ${rule.at.slice(0, 10)}${rule.updated === rule.at ? "" : `, updated ${rule.updated.slice(0, 10)}`}) ${note}`;
       const size = line.length + (lines.length ? 1 : 0);
       if (used + size > 6000) {
-        omitted.push({ ...identity, reason: "over-cap" });
+        omittedCount++;
+        if (omitted.length < 50)
+          omitted.push({ ...identity, reason: "over-cap" });
         continue;
       }
       used += size;
       lines.push(line);
       selected.push(identity);
     }
-    if (omitted.length)
-      lines.push(`${omitted.length} more rule notes did not fit; search them.`);
+    if (omittedCount)
+      lines.push(`${omittedCount} more rule notes did not fit; search them.`);
     const packet = fence([...lines, text].join("\n"), "memory:rules");
     let utf8Bytes = 0;
     let characters = 0;
@@ -754,6 +757,7 @@ module.exports = {
       receipt: {
         selected,
         omitted,
+        omittedCount,
         packet: { utf8Bytes, characters, characterUnit: "Unicode code points" },
         cap: {
           limit: 6000,

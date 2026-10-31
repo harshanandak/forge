@@ -16,6 +16,8 @@
         },
         "omitted": {
           "type": "array",
+          "description": "The first 50 omitted rules in packet order; omittedCount includes all omitted rules.",
+          "maxItems": 50,
           "items": {
             "type": "object",
             "properties": {
@@ -27,6 +29,11 @@
             "required": ["id", "revision", "scope", "reason"],
             "additionalProperties": false
           }
+        },
+        "omittedCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total eligible rules omitted from the packet, including those beyond the detail bound."
         },
         "packet": {
           "type": "object",
@@ -66,7 +73,14 @@
           }
         }
       },
-      "required": ["selected", "omitted", "packet", "cap", "warnings"],
+      "required": [
+        "selected",
+        "omitted",
+        "omittedCount",
+        "packet",
+        "cap",
+        "warnings"
+      ],
       "additionalProperties": false
     }
   },

@@ -11,6 +11,7 @@ interface Rules {
   receipt: {
     selected: Identity[];
     omitted: (Identity & { reason: "over-cap" })[];
+    omittedCount: number;
     packet: { utf8Bytes: number; characters: number; characterUnit: string };
     cap: {
       limit: number;
@@ -145,6 +146,29 @@ test("receipt measures the final neutralized packet in UTF8 bytes and Unicode co
     result.text.text.length,
   );
   expect(result.receipt.packet.characters).toBe(result.text.text.length - 1);
+}, 30_000);
+
+test("receipt bounds omitted details in packet order and keeps the true total and packet", async () => {
+  const state = memoryState();
+  put(state, 1, "kept");
+  for (let n = 2; n <= 56; n++) put(state, n, "x".repeat(6000));
+  const result = await read(state);
+  expect(result.receipt.omitted).toEqual(
+    Array.from({ length: 50 }, (_, n) => ({
+      id: `device/note-${n + 2}`,
+      revision: 1,
+      scope: "general",
+      reason: "over-cap",
+    })),
+  );
+  expect(result.receipt.omittedCount).toBe(55);
+  expect(result.receipt.selected).toEqual([
+    { id: "device/note-1", revision: 1, scope: "general" },
+  ]);
+  expect(result.text.text).toBe(
+    '- [general] device/note-1 (created 2026-10-18) kept\n55 more rule notes did not fit; search them.\nForge memory notes: general 56.\nBefore a task, search memory for its topic; prefer hits scoped general.\nforge memory search "<topic>"\nforge memory show <id>',
+  );
+  packet(result);
 }, 30_000);
 
 test("pointer-only receipt has no selected or omitted notes even when rules exist", async () => {

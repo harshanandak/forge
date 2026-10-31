@@ -332,7 +332,9 @@ export function openLevels(options: {
   const levels: StoreLevels = {
     caller: options.caller,
     inProject: options.servesProject,
-    warnings: options.warnings ?? [],
+    warnings: Object.freeze(
+      (options.warnings ?? []).map((warning) => Object.freeze({ ...warning })),
+    ),
     get defaultScope() {
       if (scopeRoot === undefined) return undefined;
       const bytes =

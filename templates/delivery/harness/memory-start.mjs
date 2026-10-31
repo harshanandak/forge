@@ -32,7 +32,7 @@ try {
     throw { code: "INVALID_RESPONSE" };
   console.log(response.result.text.text);
   const receipt = response.result.receipt;
-  const omitted = receipt?.omitted?.length ?? 0;
+  const omitted = receipt?.omittedCount ?? receipt?.omitted?.length ?? 0;
   const warnings = receipt?.warnings?.length ?? 0;
   if (omitted || warnings)
     console.log(

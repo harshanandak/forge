@@ -96,6 +96,34 @@ test("integration: companion appends one receipt notice only for omissions or wa
   }
 }, 30_000);
 
+test("integration: companion prints the omitted total beyond the bounded details", () => {
+  const envelope = {
+    ok: true,
+    result: {
+      text: { text: "unchanged packet" },
+      receipt: {
+        omitted: Array.from({ length: 50 }, () => ({
+          id: "device/note-2",
+          reason: "over-cap",
+        })),
+        omittedCount: 55,
+        warnings: [],
+      },
+    },
+  };
+  fixture(
+    `console.log(${JSON.stringify(JSON.stringify(envelope))})`,
+    (root, hook) => {
+      const result = start(root, hook);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toBe(
+        "unchanged packet\nForge memory receipt: 55 omitted, 0 warnings; forge memory rules --notes --json\n",
+      );
+    },
+  );
+}, 30_000);
+
 for (const [name, output, code] of [
   ["invalid JSON", "not JSON", "INVALID_RESPONSE"],
   [
