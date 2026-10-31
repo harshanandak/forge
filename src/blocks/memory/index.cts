@@ -791,13 +791,30 @@ module.exports = {
     const measure = (text: string) => {
       let utf8Bytes = 0;
       let characters = 0;
+      let jsonBytes = 0;
       for (const character of text) {
         const point = character.codePointAt(0)!;
-        utf8Bytes +=
+        const bytes =
           point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
+        utf8Bytes += bytes;
+        // Count JSON's escaped payload without allocating and scanning an encoded copy.
+        jsonBytes +=
+          point === 0x22 || point === 0x5c
+            ? 2
+            : point < 0x20
+              ? point === 8 ||
+                point === 9 ||
+                point === 10 ||
+                point === 12 ||
+                point === 13
+                ? 2
+                : 6
+              : point >= 0xd800 && point <= 0xdfff
+                ? 6
+                : bytes;
         characters++;
       }
-      return { utf8Bytes, characters, characterUnit: "Unicode code points" };
+      return { utf8Bytes, characters, jsonBytes };
     };
     const ids = new Map([...new Set(input.ids ?? [])].map((id, i) => [id, i]));
     const words = new Set(
@@ -923,7 +940,8 @@ module.exports = {
         continue;
       }
       const line = fence(note.line, "memory:attach").text;
-      const size = measure(line).utf8Bytes + (lines.length ? 1 : 0);
+      const lineSize = measure(line);
+      const size = lineSize.utf8Bytes + (lines.length ? 1 : 0);
       if (used + size > 4096 && !ids.has(note.id)) {
         omit(note, "over-budget");
         continue;
@@ -935,13 +953,15 @@ module.exports = {
               message: `Asked note ${note.id} exceeds the 4096 UTF-8 byte budget (${used + size} bytes used).`,
             }
           : undefined;
-      const responseSize = measure(
-        JSON.stringify([
-          line,
-          { ...identity, reasons: note.reasons },
-          overBudget,
-        ]),
-      ).utf8Bytes;
+      const responseSize =
+        lineSize.jsonBytes +
+        measure(
+          JSON.stringify([
+            "",
+            { ...identity, reasons: note.reasons },
+            overBudget,
+          ]),
+        ).utf8Bytes;
       if (responseUsed + responseSize > responseLimit) {
         omit(note, "response-limit");
         if (ids.has(note.id)) responseOmissions++;
@@ -960,13 +980,18 @@ module.exports = {
         message: `${responseOmissions} asked note${responseOmissions === 1 ? "" : "s"} exceeded the response limit; request them again in another call.${oversized ? ` Read an individually oversized note in full with forge memory show ${oversized}.` : ""}`,
       });
     const packet = fence(lines.join("\n"), "memory:attach");
+    const packetSize = measure(packet.text);
     return {
       text: packet,
       receipt: {
         selected,
         omitted,
         omittedCount,
-        packet: measure(packet.text),
+        packet: {
+          utf8Bytes: packetSize.utf8Bytes,
+          characters: packetSize.characters,
+          characterUnit: "Unicode code points",
+        },
         cap: {
           limit: 4096,
           used,
