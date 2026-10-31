@@ -30,6 +30,32 @@ const SKILLS = [
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
+test("rendered build records the premise before red and stops on a stale issue", async () => {
+  await withDelivery(async (root, call, lint) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const text = readFileSync(join(root, rendered("forge-build")), "utf8");
+    const steps = text
+      .split("## Red, then green")[1]!
+      .split("Three proof levels")[0]!;
+    const premise = steps.indexOf(
+      "Reproduce the issue (or read the code it names)",
+    );
+    expect(premise).toBeGreaterThanOrEqual(0);
+    expect(premise).toBeLessThan(
+      steps.indexOf("Every slice goes red then green"),
+    );
+    expect(steps).toContain(
+      `forge issue comment --input '{"id":"<slice>","body":"premise holds: ..."}'`,
+    );
+    expect(steps).toContain("premise does not hold: <evidence>");
+    expect(steps).toContain("stop and report; change no code");
+    expect(steps).toContain("before editing");
+    expect(steps).toContain("evidence");
+    expect(lint(text)).toEqual([]);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
+  });
+}, 30_000);
+
 test("command guard recipe explains both hooks and its limits", () => {
   const recipe = readFileSync(
     join(repo, "templates/delivery/harness/command-guard.md"),

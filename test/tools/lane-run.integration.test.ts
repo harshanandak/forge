@@ -373,6 +373,16 @@ test("run uses the caller role table, lane cwd, complete prompt, and typed verdi
   for (const section of sections) expect(prompt).toContain(`## ${section}`);
   const rules = readFileSync(template, "utf8").trim();
   expect(prompt).toContain(rules);
+  const premise = prompt.indexOf("premise holds: <evidence>");
+  expect(premise).toBeGreaterThanOrEqual(0);
+  expect(premise).toBeLessThan(prompt.indexOf("Tests first:"));
+  expect(prompt).toContain("premise does not hold: <evidence>");
+  expect(prompt).toContain(
+    `forge issue comment --input '{"id":"<slice>","body":"premise holds: ..."}'`,
+  );
+  expect(prompt).toContain(
+    "through the installed `forge`, before any code change",
+  );
   for (const text of [rules, readFileSync(f.brief, "utf8")])
     expect(text).not.toMatch(/[A-Z]:[\\/]|\/Users\/|\/home\//);
 });
