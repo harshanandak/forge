@@ -645,6 +645,7 @@ module.exports = {
       text: string;
       at: string;
       id: string;
+      revision: number;
       updated: string;
       source: number;
       number: number;
@@ -681,6 +682,7 @@ module.exports = {
               text: value.text,
               at: dates(source.state, note.record, note.value).createdAt,
               id: note.id,
+              revision: note.record.revision,
               updated: contentTime(source.state, note.record, note.value),
               source: sourceIndex,
               number: note.number,
@@ -702,8 +704,15 @@ module.exports = {
       "forge memory show <id>",
     ].join("\n");
     const lines: string[] = [];
+    const selected: { id: string; revision: number; scope: string }[] = [];
+    const omitted: {
+      id: string;
+      revision: number;
+      scope: string;
+      reason: "over-cap";
+    }[] = [];
     let used = 0;
-    let dropped = 0;
+    let omittedCount = 0;
     rules.sort(
       (a, b) =>
         Number(b.scope === "general") - Number(a.scope === "general") ||
@@ -712,19 +721,57 @@ module.exports = {
         a.number - b.number,
     );
     for (const rule of rules) {
+      const identity = {
+        id: rule.id,
+        revision: rule.revision,
+        scope: rule.scope,
+      };
       const note = rule.text.replace(/[\s\u0085]+/gu, " ").trim();
       const line = `- [${rule.scope}] ${rule.id} (created ${rule.at.slice(0, 10)}${rule.updated === rule.at ? "" : `, updated ${rule.updated.slice(0, 10)}`}) ${note}`;
       const size = line.length + (lines.length ? 1 : 0);
       if (used + size > 6000) {
-        dropped++;
+        omittedCount++;
+        if (omitted.length < 50)
+          omitted.push({ ...identity, reason: "over-cap" });
         continue;
       }
       used += size;
       lines.push(line);
+      selected.push(identity);
     }
-    if (dropped)
-      lines.push(`${dropped} more rule notes did not fit; search them.`);
-    return { text: fence([...lines, text].join("\n"), "memory:rules") };
+    if (omittedCount)
+      lines.push(`${omittedCount} more rule notes did not fit; search them.`);
+    const packet = fence([...lines, text].join("\n"), "memory:rules");
+    let utf8Bytes = 0;
+    let characters = 0;
+    // The block VM has no encoder; string iteration yields code points, including lone surrogates
+    // which UTF-8 encodes as the three-byte replacement character.
+    for (const character of packet.text) {
+      const point = character.codePointAt(0)!;
+      utf8Bytes +=
+        point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
+      characters++;
+    }
+    return {
+      text: packet,
+      receipt: {
+        selected,
+        omitted,
+        omittedCount,
+        packet: { utf8Bytes, characters, characterUnit: "Unicode code points" },
+        cap: {
+          limit: 6000,
+          used,
+          unit: "UTF-16 code units",
+          includes: "accepted rule lines and newline separators",
+          excludes: "omission line and pointer",
+        },
+        warnings: Array.from(
+          services.levels.warnings ?? [],
+          ({ code, message }) => ({ code, message }),
+        ),
+      },
+    };
   },
 
   "memory.add": async ({

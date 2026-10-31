@@ -52,6 +52,78 @@ function start(root: string, hook: string, project?: string) {
   });
 }
 
+test("integration: companion appends one receipt notice only for omissions or warnings", () => {
+  const packet =
+    "- [general] device/note-1 (created 2026-10-18) é😀\nForge memory notes: general 1.";
+  for (const [omitted, warnings] of [
+    [0, 0],
+    [2, 0],
+    [0, 1],
+    [2, 1],
+  ] as const) {
+    const envelope = {
+      ok: true,
+      result: {
+        text: { text: packet },
+        receipt: {
+          omitted: Array.from({ length: omitted }, () => ({
+            id: "device/note-2",
+            reason: "over-cap",
+          })),
+          warnings: Array.from({ length: warnings }, () => ({
+            code: "PROJECT_CONFIG_UNAVAILABLE",
+            message: "config unavailable",
+          })),
+        },
+      },
+      warnings: Array.from({ length: warnings }, () => ({
+        code: "PROJECT_CONFIG_UNAVAILABLE",
+      })),
+    };
+    fixture(
+      `console.log(${JSON.stringify(JSON.stringify(envelope))})`,
+      (root, hook) => {
+        const result = start(root, hook);
+        expect(result.status).toBe(0);
+        expect(result.stderr).toBe("");
+        const notice =
+          omitted || warnings
+            ? `Forge memory receipt: ${omitted} omitted, ${warnings} warnings; forge memory rules --notes --json\n`
+            : "";
+        expect(result.stdout).toBe(`${packet}\n${notice}`);
+      },
+    );
+  }
+}, 30_000);
+
+test("integration: companion prints the omitted total beyond the bounded details", () => {
+  const envelope = {
+    ok: true,
+    result: {
+      text: { text: "unchanged packet" },
+      receipt: {
+        omitted: Array.from({ length: 50 }, () => ({
+          id: "device/note-2",
+          reason: "over-cap",
+        })),
+        omittedCount: 55,
+        warnings: [],
+      },
+    },
+  };
+  fixture(
+    `console.log(${JSON.stringify(JSON.stringify(envelope))})`,
+    (root, hook) => {
+      const result = start(root, hook);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toBe(
+        "unchanged packet\nForge memory receipt: 55 omitted, 0 warnings; forge memory rules --notes --json\n",
+      );
+    },
+  );
+}, 30_000);
+
 for (const [name, output, code] of [
   ["invalid JSON", "not JSON", "INVALID_RESPONSE"],
   [
