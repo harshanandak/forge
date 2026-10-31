@@ -24,6 +24,18 @@ function note(reason = "unsupported or malformed payload") {
 const object = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 let deadline;
+function safeWarning(warning, replacement = "") {
+  for (const value of values)
+    for (const text of [warning, replacement]) {
+      if (performance.now() > deadline) throw new Error();
+      if (text.includes(value)) return "";
+      for (let i = 0; i + 8 <= value.length; i++) {
+        if (performance.now() > deadline) throw new Error();
+        if (text.includes(value.slice(i, i + 8))) return "";
+      }
+    }
+  return warning;
+}
 function inspect(value, names, key, depth = 0) {
   if (depth > 64 || performance.now() > deadline) throw new Error();
   if (typeof value === "string") {
@@ -75,7 +87,7 @@ function handle() {
       );
     const warning = `Forge output guard detected credentials: ${labels.join(", ")}. Rotate affected credentials and rerun with output suppressed or redacted.`;
     if (harness === "codex")
-      return finish({ decision: "block", reason: warning });
+      return finish({ decision: "block", reason: safeWarning(warning) });
     const response = input.tool_response;
     const known =
       !failure &&
@@ -103,8 +115,10 @@ function handle() {
     finish({
       hookSpecificOutput: {
         hookEventName: input.hook_event_name,
-        additionalContext:
+        additionalContext: safeWarning(
           warning + (known ? " Output redacted." : " Output not redacted."),
+          known ? JSON.stringify(updated) : "",
+        ),
         ...(known ? { updatedToolOutput: updated } : {}),
       },
     });

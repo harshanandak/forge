@@ -120,6 +120,29 @@ test("scanner accepts mixed-case credential keys and ignores unrelated long valu
   ).toBe(true);
 });
 
+for (const key of ["primaryKey", "apiKey"])
+  for (const uppercase of [false, true])
+    test(`scanner ignores ${uppercase ? "uppercase" : "lowercase"} UUIDs under ${key} while retaining generic detection`, async () => {
+      const scan = await scanner();
+      if (!scan) return;
+      const uuid = ["014df517", "39d1", "4453", "b7b3", "9930c563627c"].join(
+        "-",
+      );
+      const value = uppercase ? uuid.toUpperCase() : uuid;
+      expect(
+        scan(`${key}=${value}`).findings.length === 0 &&
+          scan(value, key).findings.length === 0,
+      ).toBe(true);
+      const secret = "a9c4".repeat(9);
+      for (const result of [
+        scan(`primaryKey=${secret}`),
+        scan(secret, "primaryKey"),
+      ]) {
+        expect(result.findings.length === 1).toBe(true);
+        hidden(result, secret);
+      }
+    });
+
 test("scanner handles near-limit noncredential text without pathological backtracking", async () => {
   const scan = await scanner();
   if (!scan) return;

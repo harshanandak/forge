@@ -6,9 +6,10 @@
 const credential = /KEY|TOKEN|SECRET|PASSWORD/i;
 const identifier = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const generic = (value) =>
-  /^[a-f0-9]+$/i.test(value)
+  !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value) &&
+  (/^[a-f0-9]+$/i.test(value)
     ? value.length >= 32
-    : /^[A-Za-z0-9+/_-]{24,}={0,2}$/.test(value);
+    : /^[A-Za-z0-9+/_-]{24,}={0,2}$/.test(value));
 const provider =
   /(?<![A-Za-z0-9_-])(?:sk-ant-[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+|xoxb-[A-Za-z0-9-]+|AKIA[A-Z0-9]+|AIza[A-Za-z0-9_-]+)(?![A-Za-z0-9_-])/g;
 function safeName(name) {

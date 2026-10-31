@@ -221,6 +221,76 @@ test("URI passwords including percent escapes redact the whole userinfo credenti
   }
 });
 
+for (const harness of ["claude", "codex"])
+  for (const [word, parts] of [
+    ["warning", ["cre", "dentials"]],
+    ["recovery", ["sup", "pressed"]],
+  ] as const)
+    test(`${harness} omits URI password fragments matching ${word} text`, () => {
+      const secret = parts.join("");
+      for (const response of [
+        { stdout: `postgres://user:${secret}@host/db`, stderr: "" },
+        { content: `postgres://user:${secret}@host/db` },
+      ]) {
+        const result = invoke(harness, payload(response));
+        expect(result.status === 0 && result.stderr === "").toBe(true);
+        expect(
+          harness === "codex"
+            ? result.json.decision === "block"
+            : typeof hook(result.json).additionalContext === "string",
+        ).toBe(true);
+        noFragments(result.text, secret);
+      }
+    });
+
+test("Claude replacement collisions clear the warning and preserve existing replacement output", () => {
+  const secret = ["RE", "DACTED"].join("");
+  const result = invoke(
+    "claude",
+    payload({ stdout: `postgres://user:${secret}@host/db`, stderr: "" }),
+  );
+  expect(
+    result.status === 0 &&
+      result.stderr === "" &&
+      hook(result.json).additionalContext === "" &&
+      (
+        hook(result.json).updatedToolOutput as
+          Record<string, unknown> | undefined
+      )?.stdout
+        ?.toString()
+        .includes(secret) === true,
+  ).toBe(true);
+});
+
+for (const harness of ["claude", "codex"])
+  test(`${harness} accepts UUID credential keys and still blocks generic primaryKey values`, () => {
+    const uuid = ["014df517", "39d1", "4453", "b7b3", "9930c563627c"].join("-");
+    for (const value of [uuid, uuid.toUpperCase()])
+      for (const key of ["primaryKey", "apiKey"])
+        for (const response of [
+          { stdout: `${key}=${value}`, stderr: "" },
+          { nested: { [key]: value } },
+        ]) {
+          const result = invoke(harness, payload(response));
+          expect(
+            result.status === 0 && result.stdout === "" && result.stderr === "",
+          ).toBe(true);
+        }
+    const secret = material(40);
+    for (const response of [
+      { stdout: `primaryKey=${secret}`, stderr: "" },
+      { nested: { primaryKey: secret } },
+    ]) {
+      const result = invoke(harness, payload(response));
+      expect(
+        harness === "codex"
+          ? result.json.decision === "block"
+          : typeof hook(result.json).additionalContext === "string",
+      ).toBe(true);
+      noFragments(result.text, secret);
+    }
+  });
+
 test("unknown Claude shapes detect nested values but emit only a warning", () => {
   const secret = examples[2]![1]();
   for (const response of [
