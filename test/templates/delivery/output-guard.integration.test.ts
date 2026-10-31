@@ -54,7 +54,13 @@ function expected(harness: string, failure = false) {
   return (
     JSON.stringify(
       harness === "codex"
-        ? { systemMessage: warning }
+        ? {
+            systemMessage: warning,
+            hookSpecificOutput: {
+              hookEventName: "PostToolUse",
+              additionalContext: warning,
+            },
+          }
         : {
             hookSpecificOutput: {
               hookEventName: failure ? "PostToolUseFailure" : "PostToolUse",
@@ -173,6 +179,19 @@ for (const harness of ["claude", "codex"])
       expect(output === expected(harness)).toBe(true);
     }
   });
+
+test("Codex envelope pins UI warning and model context", () => {
+  const result = invoke("codex", payload({ stdout: providers[0] }));
+  expect(result.status).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout)).toEqual({
+    systemMessage: warning,
+    hookSpecificOutput: {
+      hookEventName: "PostToolUse",
+      additionalContext: warning,
+    },
+  });
+});
 
 test("tool results are never altered or blocked for either protocol or tool shape", () => {
   for (const harness of ["claude", "codex"])

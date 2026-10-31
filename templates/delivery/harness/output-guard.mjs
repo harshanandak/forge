@@ -52,7 +52,13 @@ function handle() {
       return finish();
     finish(
       harness === "codex"
-        ? { systemMessage: warning }
+        ? {
+            systemMessage: warning,
+            hookSpecificOutput: {
+              hookEventName: "PostToolUse",
+              additionalContext: warning,
+            },
+          }
         : {
             hookSpecificOutput: {
               hookEventName: failure ? "PostToolUseFailure" : "PostToolUse",

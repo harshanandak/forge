@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { yamlConfigCodec } from "../../../src/adapters/config-yaml/index.ts";
 import {
   type JsonSchema,
   validateWithSchema,
 } from "../../../src/contract/schema.ts";
+import { DEFAULT_PARSE_LIMITS } from "../../../src/contract/untrusted.ts";
 
 setDefaultTimeout(30_000);
 type Adapter = {
@@ -238,14 +240,33 @@ test("output hooks preserve every existing hook and select each harness protocol
     expect(JSON.stringify(existing)).toBe(
       JSON.stringify(baseline.config!.hooks),
     );
-    expect(
-      readFileSync(
-        resolve(root, `../../../templates/delivery/agents/${output}.yaml`),
-        "utf8",
-      ),
-    ).toContain(`output: ${output}`);
   }
 });
+
+for (const harness of ["claude", "codex"])
+  test(`shipped ${harness} adapter leaves output hooks opt-in`, () => {
+    const decoded = yamlConfigCodec.decode(
+      readFileSync(
+        resolve(root, `../../../templates/delivery/agents/${harness}.yaml`),
+        "utf8",
+      ),
+      DEFAULT_PARSE_LIMITS,
+    );
+    expect(decoded.ok).toBe(true);
+    if (!decoded.ok) throw new Error(decoded.error.message);
+    const adapter = decoded.value as Adapter;
+    const result = operations["agent.guard"]!(
+      call({ id: harness }, [adapter]),
+    ) as Guard;
+    const hooks = result.config!.hooks;
+    expect(hooks.PostToolUse).toBeUndefined();
+    expect(hooks.PostToolUseFailure).toBeUndefined();
+    expect(JSON.stringify(hooks)).not.toContain("output-guard.mjs");
+    expect(hooks.Stop![0]!.hooks[0]!.command).toContain("done-claim.mjs");
+    expect(hooks.PreToolUse![0]!.hooks[0]!.command).toContain(
+      "harness/guard.mjs",
+    );
+  });
 
 for (const platform of ["win32", "linux", "darwin"] as const) {
   test(`R2-3 ${platform} guard double-quotes installed paths containing spaces`, () => {
