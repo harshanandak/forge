@@ -13,7 +13,13 @@ type Adapter = {
   over?: string[];
   skills?: string;
   prWatch?: string;
-  guard?: { kind: string; file?: string; stop?: string; command?: string };
+  guard?: {
+    kind: string;
+    file?: string;
+    stop?: string;
+    command?: string;
+    output?: string;
+  };
 };
 type Call = {
   input: {
@@ -198,6 +204,46 @@ test("guard gives a clear warning when the named adapter has no done-claim guard
     expect(result.config).toBeUndefined();
     expect(result.instruction).toMatch(/no done-claim guard/i);
     expect(result.instruction).toContain("no command guard");
+  }
+});
+
+test("output hooks preserve every existing hook and select each harness protocol", () => {
+  for (const output of ["claude", "codex"]) {
+    const adapter = { ...codex, guard: { ...codex.guard!, output } };
+    const baseline = operations["agent.guard"]!(
+      call({ id: "codex" }, [codex]),
+    ) as Guard;
+    const result = operations["agent.guard"]!(
+      call({ id: "codex" }, [adapter]),
+    ) as Guard;
+    const hooks = result.config!.hooks;
+    expect(hooks.PostToolUse).toEqual([
+      {
+        hooks: [
+          {
+            type: "command",
+            command: `node "C:/Forge install/templates/delivery/harness/output-guard.mjs" ${output}`,
+          },
+        ],
+      },
+    ]);
+    if (output === "claude")
+      expect(hooks.PostToolUseFailure).toEqual(hooks.PostToolUse);
+    else expect(hooks.PostToolUseFailure).toBeUndefined();
+    const {
+      PostToolUse: _post,
+      PostToolUseFailure: _failure,
+      ...existing
+    } = hooks;
+    expect(JSON.stringify(existing)).toBe(
+      JSON.stringify(baseline.config!.hooks),
+    );
+    expect(
+      readFileSync(
+        resolve(root, `../../../templates/delivery/agents/${output}.yaml`),
+        "utf8",
+      ),
+    ).toContain(`output: ${output}`);
   }
 });
 

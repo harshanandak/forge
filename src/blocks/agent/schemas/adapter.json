@@ -41,7 +41,8 @@
             "kind": { "const": "hook" },
             "file": { "type": "string", "minLength": 1 },
             "stop": { "type": "string", "minLength": 1 },
-            "command": { "type": "string", "minLength": 1 }
+            "command": { "type": "string", "minLength": 1 },
+            "output": { "enum": ["claude", "codex"] }
           }
         }
       ]

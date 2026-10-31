@@ -16,6 +16,7 @@ interface Adapter {
         readonly file: string;
         readonly stop: string;
         readonly command: string;
+        readonly output?: "claude" | "codex";
       };
 }
 
@@ -216,6 +217,10 @@ printf '{"pr":%s,"kind":"rearm","next":"%s","fails":%s}\\n' "$n" "$since" "$fail
         fail("INPUT_INVALID", `Unsupported path character ${unsupported}`);
       return `node "${path}"`;
     };
+    const outputHook = {
+      type: "command",
+      command: `${companion("harness/output-guard.mjs")} ${guard.output}`,
+    };
     return {
       file: guard.file,
       instruction: `Merge these hooks entries into ${guard.file}, preserving existing settings and hooks.`,
@@ -239,6 +244,10 @@ printf '{"pr":%s,"kind":"rearm","next":"%s","fails":%s}\\n' "$n" "$since" "$fail
               ],
             },
           ],
+          ...(guard.output ? { PostToolUse: [{ hooks: [outputHook] }] } : {}),
+          ...(guard.output === "claude"
+            ? { PostToolUseFailure: [{ hooks: [outputHook] }] }
+            : {}),
         },
       },
     };
