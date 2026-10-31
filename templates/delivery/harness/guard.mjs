@@ -211,14 +211,13 @@ function rootOrHome(path) {
 }
 function readerFiles(cmd, args, inputs) {
   const files = [...inputs];
-  let fields, delimiter;
   // GNU grep manual and ripgrep crates/core/flags/defs.rs: required-value options.
   const values = {
     grep: /^(?:-[efmABCdD]|--(?:regexp|file|max-count|after-context|before-context|context|group-separator|include|exclude|exclude-from|exclude-dir|label|binary-files|devices|directories))$/,
     rg: /^(?:-[efgtTmABCMjErd]|--(?:regexp|file|glob|iglob|type|type-not|type-add|type-clear|max-count|after-context|before-context|context|context-separator|max-columns|threads|encoding|max-depth|maxdepth|max-filesize|ignore-file|replace|sort|sortr|color|colors|engine|pre|pre-glob|path-separator|dfa-size-limit|regex-size-limit|field-context-separator|field-match-separator|generate|hostname-bin|hyperlink-format))$/,
     jq: /^(?:-L|--(?:library-path|arg|argjson|rawfile|slurpfile|indent))$/,
     awk: /^(?:-[vF]|--(?:assign|field-separator))$/,
-    cut: /^(?:-d|--(?:delimiter|output-delimiter))$/,
+    cut: /^(?:-[bcdf]|--(?:bytes|characters|delimiter|fields|output-delimiter))$/,
   }[/^(egrep|fgrep)$/.test(cmd) ? "grep" : cmd];
   let pattern =
     !/^(grep|egrep|fgrep|rg|awk|sed|jq)$/.test(cmd) ||
@@ -235,17 +234,7 @@ function readerFiles(cmd, args, inputs) {
       continue;
     }
     if (options && arg.startsWith("-")) {
-      if (cmd === "cut" && /^(?:-f|--fields(?:=|$))/.test(arg))
-        fields =
-          arg === "-f" || arg === "--fields"
-            ? args[++i]
-            : arg.replace(/^(?:-f|--fields=)/, "");
-      else if (cmd === "cut" && /^(?:-d|--delimiter(?:=|$))/.test(arg))
-        delimiter =
-          arg === "-d" || arg === "--delimiter"
-            ? args[++i]
-            : arg.replace(/^(?:-d|--delimiter=)/, "");
-      else if (
+      if (
         (cmd === "jq"
           ? /^(?:-f|--from-file(?:=|$))/
           : /^(?:-f|--file(?:=|$))/
@@ -273,20 +262,7 @@ function readerFiles(cmd, args, inputs) {
     if (pattern) files.push(arg);
     else pattern = true;
   }
-  return files.filter(
-    (file) =>
-      file !== undefined &&
-      !(
-        cmd === "cut" &&
-        delimiter === "=" &&
-        fields === "1" &&
-        // Without -s, cut prints lines that have no delimiter whole: the body of a multi-line value.
-        (args.includes("-s") || args.includes("--only-delimited")) &&
-        !args.includes("--complement") &&
-        /^\.env(?:\.|$)/i.test(basename(file)) &&
-        !/\.(pem|p12|pfx|key)$/i.test(file)
-      ),
-  );
+  return files.filter((file) => file !== undefined);
 }
 function check(tokens, depth) {
   const raw = tokens.map((token) => token.text);
