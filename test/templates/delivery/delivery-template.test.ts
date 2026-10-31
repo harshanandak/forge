@@ -30,6 +30,65 @@ const SKILLS = [
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
+test("rendered build follows the optional project verification guide", async () => {
+  await withDelivery(async (root, call, lint) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const text = readFileSync(join(root, rendered("forge-build")), "utf8");
+    expect(text).toContain("If `.forge/verify.md` exists");
+    expect(text).toContain("use its scenario for the slice");
+    expect(text).toContain("run its declared check with `forge check run`");
+    expect(text).toContain("save its named evidence");
+    expect(text).toContain("list evidence paths in a slice comment");
+    expect(text).toContain("Otherwise");
+    expect(text).toContain("built artifact as users get it");
+    expect(text).toContain("pass predicate and output");
+    expect(lint(text)).toEqual([]);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
+    console.log(`rendered forge-build: ${Buffer.byteLength(text)} bytes`);
+  });
+}, 30_000);
+
+test("rendered PR Verification names the guide scenario and evidence", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const text = readFileSync(
+      join(root, ".agents/skills/forge-build/pull-request.md"),
+      "utf8",
+    );
+    const verification = text
+      .split("\n")
+      .find((line) => line.startsWith("- **Verification**:"));
+    expect(verification).toContain("User-visible PRs with `.forge/verify.md`");
+    expect(verification).toContain(
+      "name the guide scenario and list saved evidence paths",
+    );
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
+    console.log(`rendered pull-request.md: ${Buffer.byteLength(text)} bytes`);
+  });
+}, 30_000);
+
+test("verification recipe scenarios reference exactly its declared checks", () => {
+  const recipe = readFileSync(
+    join(repo, "templates/delivery/verify-guide.md"),
+    "utf8",
+  );
+  const guide = recipe.match(/```markdown\n([\s\S]*?)```/)?.[1];
+  const config = recipe.match(/```yaml\n([\s\S]*?)```/)?.[1];
+  expect(guide).toBeDefined();
+  expect(config).toBeDefined();
+  const checks = [...guide!.matchAll(/Check: `(verify-[\w-]+)`/g)].map(
+    (match) => match[1],
+  );
+  const declared = [...config!.matchAll(/^ {8}(verify-[\w-]+):/gm)].map(
+    (match) => match[1],
+  );
+  expect(checks).toEqual(["verify-cli-help", "verify-ui-page"]);
+  expect(declared).toEqual(checks);
+  expect(recipe).toContain(
+    "a guide whose command fails reports FAIL, and a missing tool reports INCOMPLETE; neither is a pass",
+  );
+}, 30_000);
+
 test("rendered build records the premise before red and stops on a stale issue", async () => {
   await withDelivery(async (root, call, lint) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
