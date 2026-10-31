@@ -15,13 +15,12 @@ import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
-import { done, stageBlock } from "./lib.ts";
+import { done, ownerApproval, stageBlock } from "./lib.ts";
 
 async function warningReceipt(tamper = false, large = false) {
   const work = mkdtempSync(join(tmpdir(), "forge-receipt-warning-"));
   const root = join(work, "project");
   mkdirSync(join(root, ".forge"), { recursive: true });
-  writeFileSync(join(root, ".forge/config.yaml"), "blocks: [invalid\n");
   const staged = stageBlock("memory", join(work, "blocks"));
   if (tamper)
     appendFileSync(
@@ -62,27 +61,43 @@ module.exports["memory.rules"] = (args) => {
         )
       ).envelope,
     ) as { id: string };
+    // Restore writes a page of 25 notes in one transaction; 55 single adds outlast the deadline on Windows CI.
     if (large)
-      for (let n = 0; n < 55; n++)
+      for (let start = 0; start < 55; start += 25)
         done(
           (
             await runCli(
               assembly.catalog,
               [
                 "memory",
-                "add",
+                "restore",
                 "--input",
                 JSON.stringify({
+                  approval: ownerApproval,
+                  format: "forge.memory.export/2",
                   level: "device",
-                  scope: "general",
-                  text: "x".repeat(6000),
-                  tags: ["rule"],
+                  notes: Array.from(
+                    { length: Math.min(25, 55 - start) },
+                    (_, offset) => ({
+                      id: `device/note-${start + offset + 100}`,
+                      scope: "general",
+                      tags: ["rule"],
+                      links: [],
+                      text: {
+                        kind: "untrusted",
+                        source: "seed",
+                        text: "x".repeat(6000),
+                      },
+                    }),
+                  ),
                 }),
               ],
               options,
             )
           ).envelope,
         );
+    // Broken after seeding: restore refuses an unreadable config, while rules must still answer.
+    writeFileSync(join(root, ".forge/config.yaml"), "blocks: [invalid\n");
     const cli = (
       await runCli(
         assembly.catalog,
