@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["text", "receipt"],
+  "additionalProperties": false,
+  "properties": {
+    "text": { "$ref": "defs.json#/$defs/Untrusted" },
+    "receipt": {
+      "type": "object",
+      "required": [
+        "selected",
+        "omitted",
+        "omittedCount",
+        "packet",
+        "cap",
+        "warnings"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "selected": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Selected" }
+        },
+        "omitted": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "$ref": "#/$defs/Omitted" }
+        },
+        "omittedCount": { "type": "integer", "minimum": 0 },
+        "packet": {
+          "$ref": "rules.output.json#/properties/receipt/properties/packet"
+        },
+        "warnings": {
+          "$ref": "rules.output.json#/properties/receipt/properties/warnings",
+          "description": "Host warnings, ATTACH_OVER_BUDGET for each delivered asked note over 4096 bytes, and ATTACH_RESPONSE_LIMIT naming the total asked notes omitted at the 131072-byte ceiling of JSON-encoded delivered lines, selections and per-note warnings. Request omitted ids again; for an individually oversized restored note the warning names a forge memory show <id> command to read it in full."
+        },
+        "cap": {
+          "type": "object",
+          "required": ["limit", "used", "unit", "includes", "excludes"],
+          "additionalProperties": false,
+          "properties": {
+            "limit": { "const": 4096 },
+            "used": { "type": "integer", "minimum": 0 },
+            "unit": { "const": "UTF-8 bytes" },
+            "includes": {
+              "const": "accepted note lines and newline separators"
+            },
+            "excludes": { "const": "receipt" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Selected": {
+      "type": "object",
+      "required": ["id", "revision", "scope", "reasons"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "scope": { "type": "string" },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "Omitted": {
+      "type": "object",
+      "required": ["id", "revision", "scope", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "scope": { "type": "string" },
+        "reason": { "enum": ["seen", "over-budget", "response-limit"] }
+      }
+    }
+  }
+}

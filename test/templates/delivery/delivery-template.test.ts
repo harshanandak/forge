@@ -228,6 +228,63 @@ test("restart guidance reads older direction and every review push checkpoints w
   expect(resume).not.toContain("--input");
 }, 30_000);
 
+test("performance PR handoff scopes measured gains and regression guards", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const text = readFileSync(
+      join(root, ".agents/skills/forge-build/pull-request.md"),
+      "utf8",
+    );
+    const lines = text.split("\n");
+    const title = lines.find((line) => line.includes("gh pr create"));
+    expect(title).toContain("plain conventional commit");
+    expect(title).toContain("Speed, memory, size or work savings:");
+    expect(title).toContain(
+      "the title names the user-visible gain and its number",
+    );
+    for (const [section, rule] of [
+      [
+        "Before / after",
+        "name the workload; separate component and end-to-end timings",
+      ],
+      [
+        "Verification",
+        "pin the saving with a work, process or call count or size bound",
+      ],
+      ["Not verified", "what the measurement does not establish"],
+    ]) {
+      const line = lines.find((line) => line.startsWith(`- **${section}**:`));
+      expect(line).toContain("Performance only:");
+      expect(line).toContain(rule);
+    }
+    expect(
+      lines.find((line) => line.startsWith("- **Before / after**:")),
+    ).toContain("how they were measured");
+    expect(
+      lines.find((line) => line.startsWith("- **Verification**:")),
+    ).toContain("test that fails without the change");
+    expect(
+      lines.find((line) => line.startsWith("- **Not verified**:")),
+    ).toContain("Always present");
+    // Making room for the performance rules must not drop the worker session or checkpoint field rules.
+    expect(
+      lines.find((line) => line.startsWith("1. Threaded chats:")),
+    ).toContain(
+      'Separate CLI workers, before claim: POSIX `export FORGE_SESSION="<slice>-worker"`',
+    );
+    expect(
+      lines.find((line) => line.startsWith("Run `forge issue checkpoint")),
+    ).toContain("Include `--head`, `--pr`, `--receipt` when available");
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
+    expect(
+      readFileSync(
+        join(repo, "templates/delivery/skills/forge-build/pull-request.md"),
+        "utf8",
+      ),
+    ).toBe(text);
+  });
+}, 30_000);
+
 test("intake counts its routed call before dispatch", () => {
   const text = readFileSync(
     join(repo, "templates/delivery/skills/forge-intake/SKILL.md"),

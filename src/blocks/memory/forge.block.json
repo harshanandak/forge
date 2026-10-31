@@ -28,6 +28,16 @@
       "stability": "stable",
       "timeoutMs": 5000
     },
+    "memory.attach": {
+      "input": "schemas/attach.input.json",
+      "output": "schemas/attach.output.json",
+      "context": "device",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "stable",
+      "timeoutMs": 5000
+    },
     "memory.add": {
       "input": "schemas/add.input.json",
       "output": "schemas/add.output.json",
