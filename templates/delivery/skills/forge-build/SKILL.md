@@ -38,7 +38,7 @@ Standing rules: <adopted rules; layer 1 passes the memory packet>
 Three proof levels:
 
 - **Light, not user-visible**: independent red/green assertion plus final-head receipt.
-- **User-visible, including standard slices** (UI, CLI output, API response, published package): If `.forge/verify.md` exists, use its scenario for the slice, run its declared check with `forge check run`, save its named evidence and list evidence paths in a slice comment. Otherwise save one scenario on the built artifact as users get it, with a pass predicate and output.
+- **User-visible, including standard slices** (UI, CLI output, API response, published package): Save one scenario on the built artifact as users get it, with a pass predicate and output; if `.forge/verify.md` exists, take that scenario from it, run its declared check with `forge check run`, save its named evidence and list the evidence paths in a slice comment.
 - **Heavy or critical**: always run that scenario on trunk and head, even without a user-visible change, and get a fresh-context review against every acceptance item through `forge-review` before opening.
 
 Receipts are evidence, not "should pass" or "was passing". Unknown, truncated or zero-test output never passes.

@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { parse } from "yaml";
 import {
   type Assembly,
   createAssembly,
@@ -34,14 +35,17 @@ test("rendered build follows the optional project verification guide", async () 
   await withDelivery(async (root, call, lint) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
     const text = readFileSync(join(root, rendered("forge-build")), "utf8");
-    expect(text).toContain("If `.forge/verify.md` exists");
-    expect(text).toContain("use its scenario for the slice");
-    expect(text).toContain("run its declared check with `forge check run`");
-    expect(text).toContain("save its named evidence");
-    expect(text).toContain("list evidence paths in a slice comment");
-    expect(text).toContain("Otherwise");
-    expect(text).toContain("built artifact as users get it");
-    expect(text).toContain("pass predicate and output");
+    const scenario = text
+      .split("\n")
+      .find((line) =>
+        line.startsWith("- **User-visible, including standard slices**"),
+      );
+    expect(scenario).toContain(
+      "Save one scenario on the built artifact as users get it, with a pass predicate and output; if `.forge/verify.md` exists, take that scenario from it",
+    );
+    expect(scenario).toContain("run its declared check with `forge check run`");
+    expect(scenario).toContain("save its named evidence");
+    expect(scenario).toContain("list the evidence paths in a slice comment");
     expect(lint(text)).toEqual([]);
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
     console.log(`rendered forge-build: ${Buffer.byteLength(text)} bytes`);
@@ -67,23 +71,44 @@ test("rendered PR Verification names the guide scenario and evidence", async () 
   });
 }, 30_000);
 
+function recipeChecks(recipe: string): {
+  checks: string[];
+  declared: string[];
+} {
+  const guide = recipe.match(/```markdown\n([\s\S]*?)```/)?.[1];
+  const config = recipe.match(/```yaml\n([\s\S]*?)```/)?.[1];
+  expect(guide).toBeDefined();
+  expect(config).toBeDefined();
+  const checks = [...guide!.matchAll(/^Check: `([^`]+)`/gm)].map(
+    (match) => match[1]!,
+  );
+  const parsed = parse(config!) as {
+    blocks: { check: { config: { commands: Record<string, string> } } };
+  };
+  return { checks, declared: Object.keys(parsed.blocks.check.config.commands) };
+}
+
 test("verification recipe scenarios reference exactly its declared checks", () => {
   const recipe = readFileSync(
     join(repo, "templates/delivery/verify-guide.md"),
     "utf8",
   );
-  const guide = recipe.match(/```markdown\n([\s\S]*?)```/)?.[1];
-  const config = recipe.match(/```yaml\n([\s\S]*?)```/)?.[1];
-  expect(guide).toBeDefined();
-  expect(config).toBeDefined();
-  const checks = [...guide!.matchAll(/Check: `(verify-[\w-]+)`/g)].map(
-    (match) => match[1],
+  const { checks, declared } = recipeChecks(recipe);
+  expect(checks.length).toBeGreaterThan(0);
+  expect([...new Set(checks)].sort()).toEqual(declared.sort());
+  const extraScenario = recipe.replace(
+    "```markdown\n",
+    "```markdown\nCheck: `smoke`\n",
   );
-  const declared = [...config!.matchAll(/^ {8}(verify-[\w-]+):/gm)].map(
-    (match) => match[1],
+  const extra = recipeChecks(extraScenario);
+  expect(extra.checks).toContain("smoke");
+  expect(extra.checks.sort()).not.toEqual(extra.declared.sort());
+  const renamed = recipeChecks(recipe.replaceAll("verify-cli-help", "smoke"));
+  expect(renamed.checks).toContain("smoke");
+  expect(renamed.checks.sort()).toEqual(renamed.declared.sort());
+  expect(recipe).toContain(
+    "Each declared check must run the built artifact, not the source.",
   );
-  expect(checks).toEqual(["verify-cli-help", "verify-ui-page"]);
-  expect(declared).toEqual(checks);
   expect(recipe).toContain(
     "a guide whose command fails reports FAIL, and a missing tool reports INCOMPLETE; neither is a pass",
   );

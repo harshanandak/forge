@@ -18,6 +18,8 @@ Pass: the built app's home page shows Welcome and its primary button works.
 Evidence: receipt output and screenshot evidence/home.png (or recording evidence/home.webm).
 ```
 
+Each declared check must run the built artifact, not the source.
+
 Declare the matching checks in `.forge/config.yaml`:
 
 ```yaml
