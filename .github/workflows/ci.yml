@@ -99,7 +99,8 @@ jobs:
     timeout-minutes: 20
     env:
       FORGE_TEST_SHARD_ARG: ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
-      FORGE_TEST_TIMINGS_ARG: ${{ matrix.shard && '--timings=test/timings.json' || '' }}
+      FORGE_TEST_TIMINGS_ARG: ${{ matrix.shard && '--timings=timings-unit.json --timings=test/timings.json' || '' }}
+      FORGE_TEST_UPDATE_ARG: ${{ matrix.shard && '--update-timings' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -109,9 +110,8 @@ jobs:
         # 1200 s limit once the spawn-heavy files ran serially (forge-648).
         # Each Windows tests leg now has three time-balanced shards; spawn-heavy files
         # stay serial inside each shard. Pack and the other platforms retain their coverage.
-        # Initial timings sum measured test durations per file from Windows Node 24 job
-        # 124770514279 (run 41280231270). Refresh on Windows, without a shard, then commit:
-        # FORGE_TEST_TIMINGS_ARG=--timings=test/timings.json FORGE_TEST_UPDATE_ARG=--update-timings bun exec 'bun run test:unit && bun run test:integration'
+        # Refresh from CI artifacts, taking the slower Node value per file, then commit:
+        # bun tools/timings-merge.ts <run-id>
         include:
           - { os: ubuntu-latest, node: "24", suite: all }
           - { os: ubuntu-latest, node: "26", suite: all }
@@ -151,7 +151,20 @@ jobs:
         run: bun run test:unit
       - name: Integration tests
         if: matrix.suite != 'pack'
-        run: bun run test:integration
+        run: |
+          if [ -z "$FORGE_TEST_SHARD_ARG" ]; then bun run test:integration; exit; fi
+          bun run build
+          for phase in 1 2; do
+            suite=parallel; if [ "$phase" = 2 ]; then suite=serial; fi
+            export FORGE_TEST_TIMINGS_ARG="--timings=timings-$suite.json --timings=test/timings.json"
+            bun exec "$(bun -p "require('./package.json').scripts['test:integration'].split(' && ')[$phase]")"
+          done
+      - if: matrix.shard
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-timings-node-${{ matrix.node }}-shard-${{ startsWith(matrix.shard, '1/') && '1' || startsWith(matrix.shard, '2/') && '2' || '3' }}
+          path: timings-*.json
+          if-no-files-found: error
       # Pack once: every packed journey runs against the smoke's one npm install.
       - name: Pack smoke
         if: matrix.suite != 'tests'
