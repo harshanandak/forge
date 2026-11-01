@@ -22,8 +22,43 @@
       "type": "string",
       "maxLength": 40,
       "description": "The transfer's identity: the source note's id, recorded at the destination."
+    },
+    "moved": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "defs.json#/$defs/NoteId" },
+          "to": { "$ref": "defs.json#/$defs/NoteId" }
+        },
+        "required": ["id", "to"],
+        "additionalProperties": false
+      }
+    },
+    "remaining": { "type": "integer", "minimum": 0 },
+    "complete": { "type": "boolean" },
+    "next": { "type": "string", "maxLength": 1000 },
+    "stopped": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "defs.json#/$defs/NoteId" },
+        "code": {
+          "enum": ["REVISION_CONFLICT", "TRANSFER_CONFLICT", "VERIFY_FAILED"]
+        }
+      },
+      "required": ["id", "code"],
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,
-  "required": ["status", "id"]
+  "required": ["status"],
+  "oneOf": [
+    { "required": ["id"], "not": { "required": ["moved"] } },
+    {
+      "required": ["moved", "remaining", "complete"],
+      "properties": { "status": { "const": "moved" } },
+      "not": { "required": ["id"] }
+    }
+  ]
 }

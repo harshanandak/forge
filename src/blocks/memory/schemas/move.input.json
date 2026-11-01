@@ -17,8 +17,26 @@
     "keep": {
       "type": "boolean",
       "description": "Copy instead of move: the source note stays."
-    }
+    },
+    "scope": { "$ref": "defs.json#/$defs/Scope" },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 }
   },
   "additionalProperties": false,
-  "required": ["id", "to", "expectRevision"]
+  "required": ["to"],
+  "oneOf": [
+    {
+      "required": ["id", "expectRevision"],
+      "not": { "anyOf": [{ "required": ["scope"] }, { "required": ["limit"] }] }
+    },
+    {
+      "required": ["scope"],
+      "properties": {
+        "scope": { "not": { "const": "general" } },
+        "to": { "const": "project" },
+        "id": false,
+        "expectRevision": false,
+        "keep": false
+      }
+    }
+  ]
 }
