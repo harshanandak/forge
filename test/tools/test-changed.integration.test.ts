@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,7 +15,9 @@ test("test:changed selects affected tools or memory tests, excludes packed journ
   const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as {
     scripts: Record<string, string>;
   };
-  const work = mkdtempSync(join(tmpdir(), "forge-test-changed-"));
+  const work = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "forge-test-changed-")),
+  );
   const scripts = {
     "test:changed": pkg.scripts["test:changed"],
     build: "bun -e 'console.log(\"BUILD_ONCE\")'",
