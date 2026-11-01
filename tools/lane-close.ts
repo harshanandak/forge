@@ -26,7 +26,45 @@ type Context = {
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-export function laneClose(argv: string[], ctx: Context): number {
+function closeOptions(argv: string[]): Map<string, string> {
+  const issue = argv[0] ?? "";
+  const values = new Map<string, string>();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(issue))
+    throw new Error("invalid issue id");
+  for (let i = 1; i < argv.length; i++) {
+    const key = argv[i]!;
+    if (/^--(keep-open|discard-ignored)$/.test(key) && !values.has(key)) {
+      values.set(key, "true");
+      continue;
+    }
+    const value = argv[++i];
+    if (
+      !["--pr", "--receipt", "--dropped"].includes(key) ||
+      !value?.trim() ||
+      value.startsWith("--") ||
+      values.has(key)
+    )
+      throw new Error("invalid, duplicate, or missing option");
+    values.set(key, value);
+  }
+  if (values.has("--dropped") && values.has("--receipt"))
+    throw new Error("--dropped cannot be combined with --receipt");
+  if (
+    !/^[1-9]\d*$/.test(values.get("--pr") ?? "") ||
+    !Number.isSafeInteger(Number(values.get("--pr"))) ||
+    (!values.has("--dropped") && !values.has("--receipt"))
+  )
+    throw new Error(
+      values.has("--dropped")
+        ? "close --dropped requires numeric --pr"
+        : "close requires numeric --pr and --receipt",
+    );
+  return values;
+}
+export function laneClose(
+  argv: string[],
+  context: Context | (() => Context),
+): number {
   const issue = argv[0] ?? "";
   let pr = 0,
     receipt = "",
@@ -62,35 +100,13 @@ export function laneClose(argv: string[], ctx: Context): number {
     return ok ? 0 : stage === "input" ? 2 : 1;
   };
   try {
-    const values = new Map<string, string>();
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(issue))
-      throw new Error("invalid issue id");
-    for (let i = 1; i < argv.length; i++) {
-      const key = argv[i]!;
-      if (/^--(keep-open|discard-ignored)$/.test(key) && !values.has(key)) {
-        values.set(key, "true");
-        continue;
-      }
-      const value = argv[++i];
-      if (
-        !["--pr", "--receipt"].includes(key) ||
-        !value ||
-        value.startsWith("--") ||
-        values.has(key)
-      )
-        throw new Error("invalid, duplicate, or missing option");
-      values.set(key, value);
-    }
-    const keepOpen = values.has("--keep-open");
+    const values = closeOptions(argv);
+    const dropped = values.get("--dropped") ?? "";
+    const keepOpen = Boolean(dropped) || values.has("--keep-open");
     pr = Number(values.get("--pr"));
     receipt = values.get("--receipt") ?? "";
-    if (
-      !/^[1-9]\d*$/.test(values.get("--pr") ?? "") ||
-      !Number.isSafeInteger(pr) ||
-      !receipt.trim()
-    )
-      throw new Error("close requires numeric --pr and --receipt");
     stage = "preflight";
+    const ctx = typeof context === "function" ? context() : context;
     try {
       unlock = ctx.lock(issue);
     } catch (error) {
@@ -109,6 +125,7 @@ export function laneClose(argv: string[], ctx: Context): number {
         saved.pr !== pr ||
         saved.receipt !== receipt ||
         saved.keepOpen !== keepOpen ||
+        (saved.dropped ?? "") !== dropped ||
         saved.branch !== lane.branch ||
         saved.worktree !== lane.worktree ||
         typeof saved.head !== "string")
@@ -140,17 +157,23 @@ export function laneClose(argv: string[], ctx: Context): number {
     );
     if (
       !object(pull) ||
-      pull.state !== "MERGED" ||
-      !object(pull.mergeCommit) ||
-      typeof pull.mergeCommit.oid !== "string" ||
-      !/^[a-f0-9]{40}$/i.test(pull.mergeCommit.oid) ||
+      (dropped
+        ? pull.state !== "CLOSED" || pull.mergeCommit !== null
+        : pull.state !== "MERGED" ||
+          !object(pull.mergeCommit) ||
+          typeof pull.mergeCommit.oid !== "string" ||
+          !/^[a-f0-9]{40}$/i.test(pull.mergeCommit.oid)) ||
       typeof pull.url !== "string" ||
       !new RegExp(`^https://[^/\\s]+/[^/\\s]+/[^/\\s]+/pull/${pr}$`).test(
         pull.url,
       )
     )
-      throw new Error("PR must be MERGED with a merge commit and URL");
-    mergeCommit = pull.mergeCommit.oid;
+      throw new Error(
+        dropped
+          ? "--dropped requires a CLOSED, unmerged PR"
+          : "PR must be MERGED with a merge commit and URL",
+      );
+    mergeCommit = object(pull.mergeCommit) ? String(pull.mergeCommit.oid) : "";
     if (pull.headRefName !== lane.branch)
       throw new Error("PR head branch is not the lane branch");
     const git = (args: string[], cwd = ctx.root) => ctx.run("git", args, cwd);
@@ -178,12 +201,21 @@ export function laneClose(argv: string[], ctx: Context): number {
     const hasBranch = git(["for-each-ref", "--format=%(refname)", ref])
       .split("\n")
       .includes(ref);
-    const head = hasBranch ? git(["rev-parse", ref]) : progress?.head;
-    if (typeof head !== "string" || head !== pull.headRefOid)
-      throw new Error("PR head does not equal the local lane head");
+    let head = hasBranch ? git(["rev-parse", ref]) : progress?.head;
+    if (
+      typeof head !== "string" ||
+      typeof pull.headRefOid !== "string" ||
+      !/^[a-f0-9]{40}$/i.test(pull.headRefOid)
+    )
+      throw new Error("invalid PR or local lane head");
+    if (head !== pull.headRefOid) {
+      const location = `'${lane.worktree.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`;
+      next = `inspect and preserve local changes, then git -C ${location} fetch origin pull/${pr}/head; git -C ${location} merge --ff-only ${pull.headRefOid}; rerun close`;
+    }
     if (
       progress &&
-      (progress.head !== head || progress.mergeCommit !== mergeCommit)
+      (progress.head !== pull.headRefOid ||
+        progress.mergeCommit !== mergeCommit)
     )
       throw new Error("PR or local head changed since close began");
     if (existsSync(lane.worktree)) {
@@ -200,6 +232,21 @@ export function laneClose(argv: string[], ctx: Context): number {
       checkIgnored();
     } else if (!progress)
       throw new Error("lane worktree is missing; cannot verify a clean lane");
+    if (head !== pull.headRefOid) {
+      if (!hasBranch || !existsSync(lane.worktree))
+        throw new Error("PR head does not equal the local lane head");
+      git(["fetch", "origin", `pull/${pr}/head`], lane.worktree);
+      if (git(["rev-parse", "FETCH_HEAD"], lane.worktree) !== pull.headRefOid)
+        throw new Error("fetched PR head does not match GitHub headRefOid");
+      git(
+        ["merge-base", "--is-ancestor", head, pull.headRefOid],
+        lane.worktree,
+      );
+      git(["merge", "--ff-only", pull.headRefOid], lane.worktree);
+      head = git(["rev-parse", "HEAD"], lane.worktree);
+      if (head !== pull.headRefOid)
+        throw new Error("fast-forward did not reach the PR head");
+    }
     const forge = (
       noun: string,
       verb: string,
@@ -217,24 +264,31 @@ export function laneClose(argv: string[], ctx: Context): number {
         throw new Error(`forge ${noun} ${verb} failed`);
       return response.result;
     };
-    const proof = forge("check", "show", { id: receipt });
-    if (!object(proof) || proof.id !== receipt || proof.status !== "PASS")
-      throw new Error("receipt must be PASS");
-    if (proof.subject !== mergeCommit)
-      throw new Error("receipt subject must equal the PR merge commit");
-    if (
-      !Array.isArray(proof.runs) ||
-      !proof.runs.length ||
-      proof.runs.some(
-        (run: unknown) =>
-          !object(run) || typeof run.name !== "string" || run.status !== "PASS",
+    let checks = "";
+    if (!dropped) {
+      const proof = forge("check", "show", { id: receipt });
+      if (!object(proof) || proof.id !== receipt || proof.status !== "PASS")
+        throw new Error("receipt must be PASS");
+      if (proof.subject !== mergeCommit)
+        throw new Error("receipt subject must equal the PR merge commit");
+      if (
+        !Array.isArray(proof.runs) ||
+        !proof.runs.length ||
+        proof.runs.some(
+          (run: unknown) =>
+            !object(run) ||
+            typeof run.name !== "string" ||
+            run.status !== "PASS",
+        )
       )
-    )
-      throw new Error("receipt must contain passing checks");
-    const checks = proof.runs
-      .map((run: Record<string, unknown>) => `${String(run.name)}: PASS`)
-      .join(", ");
-    const note = `PR #${pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}\nChecks: ${checks}`;
+        throw new Error("receipt must contain passing checks");
+      checks = proof.runs
+        .map((run: Record<string, unknown>) => `${String(run.name)}: PASS`)
+        .join(", ");
+    }
+    const note = dropped
+      ? `PR #${pr} dropped: ${pull.url}\nReason: ${dropped}`
+      : `PR #${pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}\nChecks: ${checks}`;
     const current = forge("issue", "show", { id: issue });
     const links = forge("issue", "links", { id: issue });
     const comments = forge("issue", "comments", { id: issue });
@@ -257,7 +311,7 @@ export function laneClose(argv: string[], ctx: Context): number {
         record.value.url === pull.url,
     );
     if (
-      (keepOpen && status !== "open") ||
+      (!dropped && keepOpen && status !== "open") ||
       (!keepOpen &&
         status === "closed" &&
         (!linked || current.receipt !== receipt))
@@ -291,6 +345,7 @@ export function laneClose(argv: string[], ctx: Context): number {
       pr,
       receipt,
       keepOpen,
+      dropped,
       branch: lane.branch,
       worktree: lane.worktree,
       head,
@@ -342,7 +397,16 @@ export function laneClose(argv: string[], ctx: Context): number {
       checkIgnored();
       git(["worktree", "remove", lane.worktree]);
     }
-    if (hasBranch) git(["update-ref", "-d", ref, head]);
+    if (hasBranch && !dropped) git(["update-ref", "-d", ref, head]);
+    if (dropped) {
+      const history = join(ctx.common, "forge-lane-runs", issue);
+      mkdirSync(history, { recursive: true });
+      writeFileSync(
+        join(history, `close-${randomUUID()}.json`),
+        JSON.stringify({ ...state, closedAt: new Date().toISOString() }),
+        { flag: "wx" },
+      );
+    }
     const registry = join(ctx.common, "forge-lanes.json"),
       temp = `${registry}.${process.pid}.tmp`;
     writeFileSync(
