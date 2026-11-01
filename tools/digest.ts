@@ -159,7 +159,10 @@ try {
       "issue",
       "list",
       "--input",
-      JSON.stringify({ limit: 1000, createdSince: since }),
+      JSON.stringify({
+        limit: 1000,
+        createdSince: new Date(since).toISOString(),
+      }),
     ]);
     const r = JSON.parse(raw) as {
       ok: boolean;

@@ -6,6 +6,11 @@ import {
   SchemaRegistry,
   validateWithSchema,
 } from "../../../src/contract/schema.ts";
+import {
+  validateListItemsInput,
+  validateListItemsOutput,
+} from "../../../src/generated/validators.ts";
+import type { TrackerVerbs } from "../../../src/ports/tracker.ts";
 
 setDefaultTimeout(30_000);
 
@@ -46,7 +51,7 @@ function services(items: readonly Item[]) {
       ...item,
       title: item.id,
       status: "open",
-      createdAt: item.createdAt ?? "x",
+      createdAt: item.createdAt ?? "2026-10-20T00:00:00Z",
     },
   }));
   return {
@@ -130,6 +135,42 @@ test("issue.list counts matches after all filters and compares timestamps", () =
     items: [],
     truncated: false,
   });
+});
+
+test("tracker list accepts full timestamp filters and legacy inputs and outputs", () => {
+  const input: TrackerVerbs["list"][0] = {
+    createdSince: "2026-01-01T00:16:40Z",
+    limit: 2,
+  };
+  expect(validateListItemsInput(input).ok).toBe(true);
+  expect(validateListItemsInput({}).ok).toBe(true);
+  expect(
+    validateListItemsInput({ status: "open", ready: true, limit: 1 }).ok,
+  ).toBe(true);
+  for (const createdSince of ["2026-01-02", "2026-01-02T00:00:00", "invalid"])
+    expect(validateListItemsInput({ createdSince }).ok).toBe(false);
+  const legacy: TrackerVerbs["list"][1] = { items: [] };
+  const page: TrackerVerbs["list"][1] = { ...legacy, truncated: false };
+  expect(validateListItemsOutput(legacy).ok).toBe(true);
+  expect(validateListItemsOutput(page).ok).toBe(true);
+  expect(validateListItemsOutput({ items: [], truncated: "false" }).ok).toBe(
+    false,
+  );
+});
+
+test("ordinary issue.list complete and truncated results satisfy the tracker contract", () => {
+  for (const limit of [1, 2]) {
+    const result = listed(dated.slice(1000, 1002), {
+      createdSince: dated[1000]!.createdAt,
+      limit,
+    });
+    expect(result.items).toHaveLength(limit);
+    expect(result.truncated).toBe(limit === 1);
+    expect(validateListItemsOutput(result)).toMatchObject({ ok: true });
+    expect(validateListItemsOutput({ items: result.items })).toMatchObject({
+      ok: true,
+    });
+  }
 });
 
 test("issue.ready orders by the first configured label, then stored order", () => {

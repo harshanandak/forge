@@ -24,6 +24,7 @@ import { runCommand } from "../../src/surface/command.ts";
 import { dispatch, record, success } from "../../src/surface/dispatch.ts";
 import {
   GENERATED_MARKER,
+  SKILL_MAX_BYTES,
   lintSkill,
   renderSkills,
 } from "../../src/surface/skills.ts";
@@ -53,7 +54,7 @@ async function forge(assembly: Assembly, argv: readonly string[]) {
  * runs them. A human admits the blocks named in `admit`; the rest stay enabled but unadmitted.
  */
 async function withProject(
-  run: (assembly: Assembly, root: string) => Promise<void>,
+  run: (assembly: Assembly, root: string) => Promise<void> | void,
   admit: readonly string[] = ["work", "memory"],
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "forge-skills-"));
@@ -194,6 +195,25 @@ test("the generated issue skill lists the resolved issue.create input fields wit
     expect(create).toContain("`labels` string[] (optional)");
     expect(create).toContain("`body` string (optional)");
     expect(lintSkill(text, assembly.catalog.list())).toEqual([]);
+  });
+}, 30_000);
+
+test("the generated issue skill explains the inclusive timestamp cutoff within its size limit", async () => {
+  await withProject((assembly) => {
+    const catalog = assembly.catalog.list();
+    const text = renderSkills(catalog).find(
+      (skill) => skill.noun === "issue",
+    )!.text;
+    const list = text.split("## `issue.list`")[1]?.split("\n## ")[0];
+    expect(list).toContain("inclusive full RFC 3339 timestamp");
+    expect(list).toContain("before limit");
+    expect(list).toContain("truncated: more matches");
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(SKILL_MAX_BYTES);
+    expect(lintSkill(text, catalog)).toEqual([]);
+    for (const entry of catalog.filter((entry) =>
+      entry.op.startsWith("issue."),
+    ))
+      expect(text).toContain(`## \`${entry.op}\``);
   });
 }, 30_000);
 

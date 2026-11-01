@@ -12,7 +12,7 @@
     },
     "issue.list": {
       "title": "Issue list",
-      "summary": "List issues. ready: open, dependencies closed, no live lease. labels: match all. createdSince filters before the limit; truncated means more matches."
+      "summary": "List issues. ready: open, deps closed, no live lease. labels: match all. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches."
     },
     "issue.update": {
       "title": "Issue update",
