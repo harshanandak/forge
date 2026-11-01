@@ -112,7 +112,7 @@ if(mode==='limit'||(mode==='capacity'&&count===0)){console.log('Selected model i
 const flag=args.findIndex(a=>a==='--output-last-message'||a==='-o');if(flag<0)process.exit(8);
 if(mode.startsWith('auto')){
  const role=args[args.indexOf('-m')+1],prior=readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line));
- if(role==='builder'||role==='fixer'||(mode==='auto-move-'+role&&prior.filter(a=>a.args[a.args.indexOf('-m')+1]===role).length===1)||mode==='auto-move-always-'+role){
+ if((role==='builder'&&mode!=='auto-no-commit')||role==='fixer'||(mode==='auto-move-'+role&&prior.filter(a=>a.args[a.args.indexOf('-m')+1]===role).length===1)||mode==='auto-move-always-'+role){
   writeFileSync('lane-change.md',String(count));
   for(const a of [['add','lane-change.md'],['-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','-m','fixture lane change']]){if(spawnSync('git',a).status!==0)process.exit(9)}
  }
@@ -852,6 +852,86 @@ test("auto chains builder, failed tester, fixer and passing tester to ready", ()
   expect(f.roles()).toHaveLength(4);
 });
 
+test("auto blocks a builder reply without a commit and preserves the block on resume", () => {
+  const f = autoFixture("auto-no-commit");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = f.auto();
+    expect(result.code).toBe(1);
+    expect(result.lines.at(-1)).toMatchObject({
+      outcome: "blocked",
+      reason: "no-commit",
+      step: "builder",
+    });
+    expect(f.roles()).toEqual(["builder"]);
+  }
+});
+
+test("auto rejects resumed builder and PASS history without a lane commit", () => {
+  const f = autoFixture("auto-pass");
+  for (const record of [
+    f.seed("builder", null),
+    f.seed("tester", 1, "completed", "Verdict: PASS"),
+  ])
+    writeFileSync(
+      join(record.reply, "..", "run.json"),
+      JSON.stringify({ ...record, head: f.head() }),
+    );
+  const result = f.auto();
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "no-commit",
+  });
+  expect(f.roles()).toEqual([]);
+});
+
+for (const mode of ["auto-clean", "auto-act"])
+  test(`auto requires the security review before ready after ${mode}`, () => {
+    const f = autoFixture(mode);
+    change(f, ["src/core/trust/access.ts"]);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = f.auto();
+      expect(result.code).toBe(1);
+      expect(result.lines.at(-1)).toMatchObject({
+        outcome: "blocked",
+        reason: "security-review",
+        next: "run the security review, then push",
+      });
+      expect(f.roles()).toEqual(
+        mode === "auto-clean"
+          ? ["tester", "reviewer"]
+          : ["tester", "reviewer", "fixer", "tester"],
+      );
+    }
+  });
+
+for (const state of ["tracked", "staged", "untracked"])
+  test(`auto blocks ready with ${state} worktree changes after local reviews`, () => {
+    const f = autoFixture("auto-clean");
+    change(f, ["tools/changed.ts"]);
+    const lane = join(f.main, ".worktrees", "one");
+    for (const [role, round, reply] of [
+      ["tester", 1, "Verdict: PASS"],
+      ["reviewer", null, "Verdict: CLEAN"],
+    ] as const) {
+      const record = f.seed(role, round, "completed", reply);
+      writeFileSync(
+        join(record.reply, "..", "run.json"),
+        JSON.stringify({ ...record, head: f.head() }),
+      );
+    }
+    const file = state === "untracked" ? "untracked.md" : "tools/changed.ts";
+    writeFileSync(join(lane, file), "Uncommitted change.\n");
+    if (state === "staged") f.git(["add", "--", file], lane);
+    const result = f.auto();
+    expect(result.code).toBe(1);
+    expect(result.lines.at(-1)).toMatchObject({
+      outcome: "blocked",
+      reason: "dirty-worktree",
+    });
+    expect(f.roles()).toEqual([]);
+  });
+
 test("auto bounds failing tester rounds and resumes the blocked cap", () => {
   const f = autoFixture("auto-fail");
   const result = f.auto(["--round-cap", "2"]);
@@ -870,6 +950,7 @@ test("auto bounds failing tester rounds and resumes the blocked cap", () => {
 for (const verdict of ["FAIL", "PASS"])
   test(`auto resumes a completed builder and tester ${verdict} from history`, () => {
     const f = autoFixture("auto-pass");
+    change(f, ["docs/guide.md"]);
     const head = f.head();
     for (const record of [
       f.seed("builder", null),

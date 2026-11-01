@@ -329,14 +329,16 @@ async function laneAuto(
         ["rev-list", "--count", "origin/main..HEAD"],
         lane.worktree,
       );
-      const built =
-        changed !== "0" ||
-        records.some(
-          (r) =>
-            r.verdict === "completed" &&
-            (r.completionHead ?? r.head) === head &&
-            ["builder", "fixer"].includes(r.role),
-        );
+      const built = changed !== "0";
+      const completedBuild = records.findLast(
+        (record) =>
+          record.verdict === "completed" &&
+          ["builder", "fixer"].includes(record.role),
+      );
+      if (!built && completedBuild) {
+        step = completedBuild.role;
+        return blocked("no-commit", "commit the lane changes, then retry");
+      }
       step = built ? "tester" : "builder";
       if (
         built &&
@@ -364,6 +366,16 @@ async function laneAuto(
         }
       }
       if (step === "ready") {
+        if (laneTier(lane.worktree).reviews.includes("security-reviewer"))
+          return blocked(
+            "security-review",
+            "run the security review, then push",
+          );
+        if (run("git", ["status", "--porcelain"], lane.worktree))
+          return blocked(
+            "dirty-worktree",
+            "commit or remove the worktree changes, then retry",
+          );
         emit({ outcome: "ready", head, next: "push and open the PR" });
         return 0;
       }
