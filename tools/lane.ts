@@ -136,7 +136,7 @@ function options(
     issue === ".."
   )
     throw new Error(
-      "usage: start <issue-id> --branch <name> --brief <file> [--max N], tier <issue-id>, or list",
+      "usage: start <issue-id> --branch <name> --brief <file> [--max N], tier <issue-id>, list, or close <issue-id> --pr N (--receipt <id> [--keep-open] | --dropped <reason>) [--discard-ignored]",
     );
   const values = new Map<string, string>();
   for (let i = 0; i < flags.length; i += 2) {
