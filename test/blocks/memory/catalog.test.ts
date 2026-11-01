@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { resolveBlock } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { renderSkills } from "../../../src/surface/skills.ts";
+import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import { openHarness, type Harness } from "./lib.ts";
 
 let harness: Harness | undefined;
@@ -9,6 +10,19 @@ afterEach(async () => {
   await harness?.close();
   harness = undefined;
 });
+
+test("scope moves advertise non-idempotence through the catalog and MCP", async () => {
+  harness = await openHarness(["memory"]);
+  const move = harness.assembly.catalog
+    .list()
+    .find((entry) => entry.op === "memory.move");
+  expect(move?.declaration.idempotent).toBe(false);
+  const tool = createMcpHandlers(harness.assembly.catalog, { budget: 100 })
+    .listTools()
+    .find((entry) => entry.name === "memory_move");
+  expect(tool).toBeDefined();
+  expect(tool?.annotations?.idempotentHint).toBe(false);
+}, 30_000);
 
 test("forge/memory is a registered first-party source that resolves to its folder", () => {
   expect(Object.keys(firstPartyBlocks)).toContain("forge/memory");

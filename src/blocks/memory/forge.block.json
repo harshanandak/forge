@@ -100,7 +100,7 @@
       "context": "device",
       "effects": ["memory:write"],
       "args": ["id", "to"],
-      "idempotent": true,
+      "idempotent": false,
       "callers": ["agent", "human"],
       "stability": "stable",
       "timeoutMs": 15000

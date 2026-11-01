@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { runCli } from "../../../src/surface/cli.ts";
 import {
   blockSchema,
   done,
@@ -88,8 +89,9 @@ test("scope batches move 25, then 5, then zero, preserving every record and old-
   expect(first.moved.map((n) => n.id)).toEqual(
     Array.from({ length: 25 }, (_, i) => `device/note-${i + 1}`),
   );
-  expect(first.next).toContain('"scope":"alpha"');
-  expect(first.next).toContain('"limit":25');
+  expect(first.next).toBe(
+    "forge memory move --scope alpha --to project --limit 25",
+  );
   const second = await move();
   expect(second).toMatchObject({ remaining: 0, complete: true });
   expect(second.moved).toHaveLength(5);
@@ -161,6 +163,57 @@ test("interrupted scope batch resumes the committed copy without duplication", a
   expect(project.list("note/")).toHaveLength(3);
 }, 30_000);
 
+test("scope batch reads only its selection pages and one paged remaining count", async () => {
+  const { move, call, device } = await setup(1);
+  for (let n = 0; n < 999; n += 1)
+    await call("memory.add", { level: "device", scope: "beta", text: "other" });
+  await call("memory.add", { level: "device", scope: "alpha", text: "last" });
+  const pages: Parameters<typeof device.listRange>[0][] = [];
+  const listRange = device.listRange.bind(device);
+  device.listRange = (options) => {
+    pages.push(options);
+    return listRange(options);
+  };
+  const before = device.counts.listedRecords;
+  expect(await move({ ...input, limit: 1 })).toMatchObject({
+    moved: [{ id: "device/note-1" }],
+    remaining: 1,
+    complete: false,
+  });
+  expect(device.counts.listedRecords - before).toBeLessThanOrEqual(1201);
+  expect(pages.length).toBe(7);
+  expect(pages.every((page) => page.limit <= 200 && !page.descending)).toBe(
+    true,
+  );
+}, 30_000);
+
+test("scope continuation flags parse back to the same CLI input", async () => {
+  const { move } = await setup(2);
+  const value = { ...input, limit: 1 };
+  const batch = await move(value);
+  expect(batch.next).toBe(
+    "forge memory move --scope alpha --to project --limit 1",
+  );
+  const h = await openHarness(["memory"]);
+  try {
+    let parsed: unknown;
+    const response = await runCli(
+      {
+        list: () => h.assembly.catalog.list(),
+        invoke: (request) => {
+          parsed = request.input;
+          return h.call(request.op, request.input);
+        },
+      },
+      batch.next!.split(" ").slice(1),
+    );
+    expect(response.exitCode).toBe(0);
+    expect(parsed).toEqual(value);
+  } finally {
+    await h.close();
+  }
+}, 30_000);
+
 for (const code of ["REVISION_CONFLICT", "TRANSFER_CONFLICT"]) {
   test(`scope batch stops at ${code} without skipping the conflicting note`, async () => {
     const { move, device, project } = await setup();
@@ -192,7 +245,7 @@ for (const code of ["REVISION_CONFLICT", "TRANSFER_CONFLICT"]) {
   }, 30_000);
 }
 
-for (const field of ["text", "tags", "links", "movedTo"]) {
+for (const field of ["text", "tags", "links", "scope", "movedTo"]) {
   test(`scope verification stops on a ${field} mismatch`, async () => {
     const { move, device, project } = await setup();
     const store = field === "movedTo" ? device : project;

@@ -1647,18 +1647,27 @@ module.exports = {
       const limit = input.limit ?? 25;
       const target = await writeTarget(services, "project");
       const source = deviceSource(services.state);
-      const scan = () =>
-        source.state
-          .list(NOTE_PREFIX)
-          .map((record) => noteOf(source, record))
-          .filter(
-            (note) =>
-              note.value.deleted !== true && note.value.scope === input.scope,
-          )
-          .sort((a, b) => a.number - b.number);
+      const scope = input.scope;
+      const scan = function* () {
+        let after = 0;
+        for (;;) {
+          const records = notePage(source, {
+            after,
+            limit: LIST_LIMIT,
+            descending: false,
+          });
+          for (const note of records) {
+            if (note.value.deleted !== true && note.value.scope === scope)
+              yield note;
+          }
+          const last = records.at(-1);
+          if (records.length < LIST_LIMIT || !last) break;
+          after = last.number;
+        }
+      };
       const moved: { id: string; to: string }[] = [];
       let stopped: { id: string; code: string } | undefined;
-      for (const note of scan().slice(0, limit)) {
+      for (const note of scan()) {
         try {
           const result = await move({
             input: {
@@ -1678,6 +1687,7 @@ module.exports = {
             !to ||
             !value ||
             value.deleted === true ||
+            value.scope !== input.scope ||
             value.text !== note.value.text ||
             canonical(value.tags) !== canonical(note.value.tags) ||
             canonical(value.links) !==
@@ -1689,6 +1699,7 @@ module.exports = {
             break;
           }
           moved.push({ id: note.id, to });
+          if (moved.length === limit) break;
         } catch (error) {
           const code = (error as { error?: { code?: string } } | null)?.error
             ?.code;
@@ -1698,7 +1709,8 @@ module.exports = {
           break;
         }
       }
-      const remaining = scan().length;
+      let remaining = 0;
+      for (const _note of scan()) remaining += 1;
       return {
         status: "moved" as const,
         moved,
@@ -1707,7 +1719,7 @@ module.exports = {
         ...(stopped ? { stopped } : {}),
         ...(remaining
           ? {
-              next: `forge memory move --input '${JSON.stringify({ scope: input.scope, to: "project", limit })}'`,
+              next: `forge memory move --scope ${input.scope} --to project --limit ${limit}`,
             }
           : {}),
       };
