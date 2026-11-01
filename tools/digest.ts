@@ -174,11 +174,10 @@ try {
     return lanes.flatMap((lane) => {
       const runs = lane.runs
         .filter((r) => r.start)
-        .sort((a, b) => b.start.localeCompare(a.start));
-      if (runs.some((r) => r.end === null) || lane.state === "running")
-        return [];
-      const last = runs[0],
-        end = lane.state && lane.since ? lane.since : last?.end;
+        .sort((a, b) => Date.parse(b.start) - Date.parse(a.start));
+      const last = runs[0];
+      if (last ? last.end === null : lane.state === "running") return [];
+      const end = last ? last.end : lane.state && lane.since;
       const idleHours =
         (Date.parse(startedAt) - Date.parse(end ?? "")) / 3600_000;
       const verdict =
@@ -220,9 +219,7 @@ ${list(stalled.map((l) => `lane ${l.issue} ${l.reason}`))}
 Issues filed:
 ${list(issues.map((i) => `${i.id} ${i.title}`))}
 ${list(errors.map((e) => `Source failed: ${e.source}; next: ${e.next}`))}`;
-  const output = flags.json
-    ? JSON.stringify(result)
-    : text.replaceAll("—", ":");
+  const output = flags.json ? JSON.stringify(result) : text;
   console.log(token ? output.replaceAll(token, "[redacted]") : output);
   process.exitCode = errors.length ? 1 : 0;
 } catch (error) {

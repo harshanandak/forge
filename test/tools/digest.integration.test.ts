@@ -33,6 +33,8 @@ function fixture(
   options: {
     fail?: string;
     prs?: unknown[];
+    merged?: typeof merged;
+    issues?: { id: string; title: string; createdAt: string }[];
     lanes?: unknown[];
     truncated?: boolean;
     checks?: Record<
@@ -105,7 +107,7 @@ const [source,...raw]=process.argv.slice(2), a=raw.flatMap(s=>s.startsWith('--')
 appendFileSync('calls.jsonl',JSON.stringify([source,...a])+'\\n');
 const out=x=>console.log(JSON.stringify(x));
 if(r.fail===source){console.error('source unavailable');process.exit(1)}
-if(source==='forge'){out({ok:true,result:{items:[{id:'forge-601',title:'New issue',createdAt:${JSON.stringify(mergedAt)}}],truncated:r.truncated??false}})}
+if(source==='forge'){out({ok:true,result:{items:r.issues??[{id:'forge-601',title:'New issue',createdAt:${JSON.stringify(mergedAt)}}],truncated:r.truncated??false}})}
 else if(a[0]==='auth'){console.log('fake-digest-credential')}
 else if(process.env.GH_TOKEN!=='fake-digest-credential'){process.exit(2)}
 else if(a[0]==='repo'){out({nameWithOwner:'owner/repo'})}
@@ -229,6 +231,101 @@ test("JSON has text parity and advances the marker", () => {
   for (const p of data.merged) expect(out).toContain(p.url);
   for (const decision of data.decisions) expect(out).toContain(decision);
   expect(Date.parse(f.seen())).toBeGreaterThan(Date.parse(since));
+});
+
+test("text preserves em dashes in merged PR, blocked PR and issue titles", () => {
+  const titles = ["Merged — café", "Blocked — review", "Issue — follow-up"];
+  const f = fixture({
+    merged: merged.map((pr) => ({ ...pr, title: titles[0]! })),
+    prs: [
+      {
+        number: 3,
+        title: titles[1],
+        url: "https://example.test/3",
+        mergeable: "MERGEABLE",
+        reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
+      },
+    ],
+    issues: [{ id: "forge-601", title: titles[2]!, createdAt: mergedAt }],
+  });
+  const plain = f.run("--peek"),
+    json = f.run("--peek", "--json");
+  expect(plain.status).toBe(0);
+  expect(json.status).toBe(0);
+  const data = JSON.parse(json.stdout) as {
+    merged: { title: string }[];
+    blocked: { title: string }[];
+    issues: { title: string }[];
+  };
+  expect([
+    data.merged[0]?.title,
+    data.blocked[0]?.title,
+    data.issues[0]?.title,
+  ]).toEqual(titles);
+  for (const row of [...data.merged, ...data.blocked, ...data.issues])
+    expect(plain.stdout).toContain(row.title);
+  let generated = plain.stdout;
+  for (const title of titles) generated = generated.replaceAll(title, "");
+  expect(generated).not.toContain("—");
+});
+
+test("only the latest run determines lane activity and the stall clock", () => {
+  const ago = (hours: number) =>
+    new Date(Date.now() - hours * 3600_000).toISOString();
+  const interrupted = {
+    start: ago(10),
+    end: null,
+    role: "fixer",
+    verdict: "interrupted",
+  };
+  const completed = {
+    start: ago(4),
+    end: ago(3),
+    role: "tester",
+    verdict: "PASS",
+  };
+  const f = fixture({
+    lanes: [
+      { issue: "old-interrupted", runs: [interrupted, completed] },
+      { issue: "reverse-order", runs: [completed, interrupted] },
+      {
+        issue: "stale-state",
+        state: "running",
+        since: ago(0.5),
+        runs: [interrupted, completed],
+      },
+      {
+        issue: "recent-state",
+        state: "idle",
+        since: ago(0.5),
+        runs: [completed],
+      },
+      {
+        issue: "latest-active",
+        runs: [completed, { ...interrupted, start: ago(1) }],
+      },
+      {
+        issue: "latest-recent",
+        runs: [completed, { ...completed, start: ago(1), end: ago(0.5) }],
+      },
+    ],
+  });
+  const r = f.run("--peek", "--json");
+  expect(r.status).toBe(0);
+  const data = JSON.parse(r.stdout) as {
+    stalled: { issue: string; idleHours: number; reason: string }[];
+  };
+  expect(data.stalled.map((lane) => lane.issue)).toEqual([
+    "old-interrupted",
+    "reverse-order",
+    "stale-state",
+    "recent-state",
+  ]);
+  for (const lane of data.stalled) {
+    expect(lane.idleHours).toBeGreaterThanOrEqual(3);
+    expect(lane.idleHours).toBeLessThan(3.1);
+    expect(lane.reason).toBe("idle 3 h after tester PASS");
+  }
 });
 test("all blocker reasons, running lanes, state fields and incomplete sources", () => {
   const f = fixture({
