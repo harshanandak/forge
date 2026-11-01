@@ -31,6 +31,8 @@ type Call = {
   args: string[];
   input?: Record<string, unknown>;
   laneLocked?: boolean;
+  laneHead?: string;
+  branchHead?: string;
 };
 type Receipt = {
   id: string;
@@ -56,6 +58,7 @@ type State = {
   ignoredOnComment?: boolean;
   runOnComment?: boolean;
   observeLock?: boolean;
+  observeHead?: boolean;
 };
 function fixture(ignored: string[] = []) {
   const root = realpathSync.native(
@@ -107,7 +110,8 @@ function fixture(ignored: string[] = []) {
 const root=process.env.LANE_CLOSE_FIXTURE,[command,...args]=process.argv.slice(2),file=join(root,'state.json');
 const state=JSON.parse(readFileSync(file,'utf8'));
 const inputIndex=args.indexOf('--input');const input=inputIndex<0?undefined:JSON.parse(args[inputIndex+1]);
-appendFileSync(join(root,'calls.jsonl'),JSON.stringify({command,args,...(input?{input}:{}),...(state.observeLock?{laneLocked:existsSync(join(root,'main','.git','forge-lane-one.lock'))}:{})})+'\n');
+const head=ref=>spawnSync(process.env.LANE_CLOSE_REAL_GIT,['-C',join(root,'main','.worktrees','one'),'rev-parse',ref],{encoding:'utf8',windowsHide:true}).stdout.trim();
+appendFileSync(join(root,'calls.jsonl'),JSON.stringify({command,args,...(input?{input}:{}),...(state.observeLock?{laneLocked:existsSync(join(root,'main','.git','forge-lane-one.lock'))}:{}),...(state.observeHead?{laneHead:head('HEAD'),branchHead:head('refs/heads/lane/one')}:{})})+'\n');
 if(command==='codex'){const output=args.findIndex(arg=>arg==='--output-last-message'||arg==='-o');if(output<0)process.exit(97);readFileSync(0,'utf8');writeFileSync(args[output+1],'Fixture reply.\n');console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-session'}));process.exit(0)}
 const save=()=>writeFileSync(file,JSON.stringify(state));
 const ok=result=>console.log(JSON.stringify({ok:true,op:args.slice(0,2).join('.'),status:'OK',result,warnings:[]}));
@@ -207,9 +211,9 @@ switch(op){
     stateFile,
     JSON.stringify({ issue: { id: "one", title: "Fixture", status: "open" } }),
   );
-  function run(args: string[]) {
+  function run(args: string[], cwd = caller) {
     const result = spawnSync(process.execPath, [script, ...args], {
-      cwd: caller,
+      cwd,
       env,
       encoding: "utf8",
       timeout: 30_000,
@@ -405,6 +409,282 @@ function released(f: ReturnType<typeof fixture>) {
   ).toEqual([]);
   expect(existsSync(join(f.common, "forge-lanes.lock"))).toBe(false);
 }
+
+function updateBranch(f: ReturnType<typeof fixture>) {
+  writeFileSync(join(f.main, "main.txt"), "New main work.\n");
+  f.git(["add", "main.txt"]);
+  f.commit("advance main");
+  f.git(
+    [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "merge",
+      "--no-ff",
+      "main",
+      "-m",
+      "update branch",
+    ],
+    f.lane,
+  );
+  const head = f.git(["rev-parse", "HEAD"], f.lane);
+  f.git(["push", "origin", "lane/one", `${head}:refs/pull/42/head`]);
+  f.git(["push", "origin", "--delete", "lane/one"]);
+  f.git(["reset", "--hard", f.head], f.lane);
+  f.change((state) => {
+    state.pr.headRefOid = head;
+    state.observeHead = true;
+  });
+  return head;
+}
+
+test("update-branch head closes in one call after the remote branch is deleted", () => {
+  const f = fixture();
+  const head = updateBranch(f);
+  const result = f.close();
+  expect(result.code).toBe(0);
+  expect(f.calls().find((call) => call.args[1] === "comment")).toMatchObject({
+    laneHead: head,
+    branchHead: head,
+  });
+  f.cleaned();
+});
+
+test("update-branch cleanup resumes with the fast-forwarded journal head", () => {
+  const f = fixture();
+  const head = updateBranch(f);
+  f.cleanupFailure("worktree");
+  expect(f.close().output.code).toBe("CLEANUP_FAILED");
+  expect(
+    JSON.parse(
+      readFileSync(join(f.common, "forge-lane-close-one.json"), "utf8"),
+    ),
+  ).toMatchObject({ head });
+  rmSync(join(f.root, "fail-cleanup"));
+  expect(f.close().code).toBe(0);
+  f.cleaned();
+});
+
+for (const kind of ["diverged", "dirty", "fetched mismatch"] as const)
+  test(`update-branch ${kind} refuses without moving the branch and names recovery commands`, () => {
+    const f = fixture();
+    const head = updateBranch(f);
+    if (kind === "diverged") {
+      writeFileSync(join(f.lane, "local.txt"), "Local work.\n");
+      f.git(["add", "local.txt"], f.lane);
+      f.commit("local divergence", f.lane);
+    } else if (kind === "dirty") {
+      writeFileSync(join(f.lane, "change.txt"), "Unsaved work.\n");
+    } else {
+      f.git(["push", "origin", ":refs/pull/42/head"]);
+      f.git(["push", "origin", `${f.merge}:refs/pull/42/head`]);
+    }
+    const before = f.git(["rev-parse", "HEAD"], f.lane);
+    const result = f.close();
+    expect(result.code).toBe(1);
+    expect(result.output.next).toContain("fetch origin pull/42/head");
+    expect(result.output.next).toContain(`merge --ff-only ${head}`);
+    expect(f.git(["rev-parse", "HEAD"], f.lane)).toBe(before);
+    expect(f.git(["rev-parse", "lane/one"])).toBe(before);
+    expect(f.writes()).toEqual([]);
+    if (kind === "dirty")
+      expect(readFileSync(join(f.lane, "change.txt"), "utf8")).toBe(
+        "Unsaved work.\n",
+      );
+    f.retained();
+  });
+
+function dropped(f: ReturnType<typeof fixture>, extra: string[] = []) {
+  return f.run([
+    "close",
+    "one",
+    "--pr",
+    "42",
+    "--dropped",
+    "measured slower",
+    ...extra,
+  ]);
+}
+function closedPR(f: ReturnType<typeof fixture>) {
+  f.change((state) => {
+    state.pr.state = "CLOSED";
+    state.pr.mergeCommit = null;
+    state.receipt = null;
+  });
+}
+
+function closingRecords(f: ReturnType<typeof fixture>) {
+  const history = join(f.common, "forge-lane-runs", "one");
+  return readdirSync(history)
+    .filter((name) => /^close(?:-.*)?\.json$/.test(name))
+    .map(
+      (name) =>
+        JSON.parse(readFileSync(join(history, name), "utf8")) as Record<
+          string,
+          unknown
+        >,
+    );
+}
+
+test("two dropped closes for one issue retain both closing records", () => {
+  const f = fixture();
+  closedPR(f);
+  expect(dropped(f).code).toBe(0);
+  f.git(["worktree", "add", "filler", "lane/one"]);
+  f.git(["worktree", "move", "filler", f.lane]);
+  writeFileSync(
+    f.registry,
+    JSON.stringify([
+      {
+        issue: "one",
+        branch: "lane/one",
+        worktree: f.lane,
+        brief: join(f.root, "brief.md"),
+      },
+    ]),
+  );
+  f.change((state) => {
+    state.pr.url = "https://github.com/fixture/repo/pull/43";
+  });
+  expect(
+    f.run(["close", "one", "--pr", "43", "--dropped", "second reason"]).code,
+  ).toBe(0);
+  expect(closingRecords(f)).toHaveLength(2);
+  expect(
+    closingRecords(f)
+      .map(({ pr, dropped }) => ({ pr, dropped }))
+      .sort((a, b) => Number(a.pr) - Number(b.pr)),
+  ).toEqual([
+    { pr: 42, dropped: "measured slower" },
+    { pr: 43, dropped: "second reason" },
+  ]);
+});
+
+test("dropped and receipt are refused before external calls", () => {
+  const f = fixture();
+  const result = f.run(
+    [
+      "close",
+      "one",
+      "--pr",
+      "42",
+      "--dropped",
+      "reason",
+      "--receipt",
+      "unvalidated",
+    ],
+    f.root,
+  );
+  expect(result.code).toBe(2);
+  expect(result.output.reasons).toEqual([
+    "--dropped cannot be combined with --receipt",
+  ]);
+  expect(JSON.stringify(result.output)).not.toContain("unvalidated");
+  expect(result.stderr).toBe("");
+  expect(f.calls()).toEqual([]);
+});
+
+for (const pr of [[], ["--pr", "invalid"], ["--pr", "9007199254740992"]])
+  test(`dropped requires only numeric PR: ${pr.join(" ") || "missing"}`, () => {
+    const f = fixture();
+    const result = f.run(["close", "one", ...pr, "--dropped", "reason"]);
+    expect(result.code).toBe(2);
+    expect(result.output.reasons).toEqual([
+      "close --dropped requires numeric --pr",
+    ]);
+    expect(f.calls()).toEqual([]);
+  });
+
+test("head mismatch recovery commands preserve shell characters in the worktree path", () => {
+  const f = fixture();
+  const head = updateBranch(f);
+  const lane = join(f.main, ".worktrees", "one $draft `tick's");
+  f.git(["worktree", "move", f.lane, lane]);
+  const entries = JSON.parse(readFileSync(f.registry, "utf8")) as {
+    worktree: string;
+  }[];
+  entries[0]!.worktree = lane;
+  writeFileSync(f.registry, JSON.stringify(entries));
+  writeFileSync(join(lane, "change.txt"), "Preserve this work.\n");
+  const result = f.close();
+  expect(result.code).toBe(1);
+  const commands = String(result.output.next).match(
+    /git -C .*?; git -C .*?(?=; rerun close)/,
+  )?.[0];
+  expect(commands).toBeDefined();
+  const executed = spawnSync("bash", ["-c", commands!], {
+    cwd: f.root,
+    env: { ...process.env, draft: "WRONG_DIRECTORY" },
+    encoding: "utf8",
+    timeout: 15_000,
+    windowsHide: true,
+  });
+  expect(executed.error).toBeUndefined();
+  expect(executed.status).toBe(0);
+  expect(f.git(["rev-parse", "HEAD"], lane)).toBe(head);
+  expect(readFileSync(join(lane, "change.txt"), "utf8")).toBe(
+    "Preserve this work.\n",
+  );
+});
+
+test("dropped CLOSED lane needs no receipt, preserves local and remote branches and records why", () => {
+  const f = fixture();
+  closedPR(f);
+  f.git(["push", "origin", "lane/one"]);
+  expect(dropped(f).code).toBe(0);
+  expect(f.git(["rev-parse", "lane/one"])).toBe(f.head);
+  expect(f.git(["ls-remote", "origin", "refs/heads/lane/one"])).toContain(
+    f.head,
+  );
+  expect(existsSync(f.lane)).toBe(false);
+  expect(f.run(["list"]).output.lanes).toEqual([]);
+  expect(f.readState().issue.status).toBe("open");
+  expect(f.writes().map((call) => call.args[1])).toEqual(["comment"]);
+  expect(closingRecords(f)[0]).toMatchObject({
+    dropped: "measured slower",
+    pr: 42,
+    head: f.head,
+  });
+});
+
+for (const kind of ["MERGED", "OPEN", "dirty"] as const)
+  test(`dropped refuses ${kind} without tracker writes`, () => {
+    const f = fixture();
+    if (kind !== "MERGED") closedPR(f);
+    if (kind === "OPEN")
+      f.change((state) => {
+        state.pr.state = kind;
+      });
+    if (kind === "dirty")
+      writeFileSync(join(f.lane, "change.txt"), "Unsaved.\n");
+    const result = dropped(f);
+    expect(result.code).toBe(1);
+    expect(result.output.reasons).toEqual([
+      kind === "dirty"
+        ? "lane worktree has uncommitted or untracked changes"
+        : "--dropped requires a CLOSED, unmerged PR",
+    ]);
+    expect(f.writes()).toEqual([]);
+    f.retained();
+  });
+
+test("dropped honours ignored-file consent and retries cleanup without duplicate comments", () => {
+  const f = fixture(["ignored-note.txt"]);
+  closedPR(f);
+  writeFileSync(join(f.lane, "ignored-note.txt"), "Local notes.\n");
+  expect(dropped(f).output.next).toContain("--discard-ignored");
+  expect(f.writes()).toEqual([]);
+  f.cleanupFailure("worktree");
+  expect(dropped(f, ["--discard-ignored"]).output.code).toBe("CLEANUP_FAILED");
+  rmSync(join(f.root, "fail-cleanup"));
+  expect(dropped(f, ["--discard-ignored"]).output).toMatchObject({
+    ok: true,
+    discarded: ["ignored-note.txt"],
+  });
+  expect(f.writes().map((call) => call.args[1])).toEqual(["comment"]);
+  expect(f.git(["rev-parse", "lane/one"])).toBe(f.head);
+});
 
 test("close serialization: a live run owner refuses close before external calls and preserves its lock", () => {
   const f = fixture();
@@ -737,6 +1017,7 @@ const refusals: {
     edit: (f) =>
       f.change((s) => {
         s.pr.state = "CLOSED";
+        s.pr.mergeCommit = null;
       }),
   },
   {
