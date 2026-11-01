@@ -17,8 +17,117 @@ import { join, resolve } from "node:path";
 import { GENERATED_MARKER } from "../../../src/surface/skills.ts";
 import { yamlConfigCodec } from "../../../src/adapters/config-yaml/index.ts";
 import { DEFAULT_PARSE_LIMITS } from "../../../src/contract/untrusted.ts";
+import { verifyReceipt } from "../../../src/blocks/check/index.ts";
+import { parse } from "yaml";
 
 const branchBin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
+
+test("guide's declared check saves stdout and a broken command goes red", () => {
+  fixture((root, cli) => {
+    const recipe = readFileSync(
+      resolve(
+        import.meta.dirname,
+        "../../../templates/delivery/verify-guide.md",
+      ),
+      "utf8",
+    );
+    const guide = recipe.match(/```markdown\n([\s\S]*?)```/)![1]!;
+    const config = parse(recipe.match(/```yaml\n([\s\S]*?)```/)![1]!) as {
+      blocks: { check: { config: { commands: Record<string, string> } } };
+    };
+    writeFileSync(join(root, ".forge/verify.md"), guide);
+    mkdirSync(join(root, "scripts"));
+    writeFileSync(
+      join(root, "scripts/verify-cli-help.mjs"),
+      'console.log("Usage: example [options]");\n',
+    );
+    const writeConfig = () =>
+      writeFileSync(
+        join(root, ".forge/config.yaml"),
+        JSON.stringify({ schemaVersion: "forge.config/1", ...config }),
+      );
+    writeConfig();
+    const git = (...args: string[]) => {
+      const result = spawnSync("git", args, {
+        cwd: root,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 5000,
+      });
+      expect(result.status, result.stderr).toBe(0);
+    };
+    git("init", "--quiet");
+    git("add", ".");
+    git(
+      "-c",
+      "user.name=Forge Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "fixture",
+    );
+    const run = () =>
+      cli(["check", "run", "--input", '{"checks":["verify-cli-help"]}']);
+    const passed = run();
+    expect(passed.status, passed.stdout + passed.stderr).toBe(0);
+    const green = JSON.parse(passed.stdout) as {
+      result: { inputsDigest: string };
+    };
+    expect(verifyReceipt(green.result, green.result.inputsDigest)).toBe(true);
+    expect(green).toMatchObject({
+      ok: true,
+      result: {
+        status: "PASS",
+        runs: [
+          { name: "verify-cli-help", stdout: "Usage: example [options]\n" },
+        ],
+      },
+    });
+    config.blocks.check.config.commands["verify-cli-help"] =
+      "node scripts/missing.mjs";
+    writeConfig();
+    const failed = run();
+    expect(failed.status, failed.stdout + failed.stderr).toBe(1);
+    const red = JSON.parse(failed.stdout) as {
+      result: { inputsDigest: string };
+    };
+    expect(verifyReceipt(red.result, red.result.inputsDigest)).toBe(true);
+    expect(red).toMatchObject({
+      ok: false,
+      status: "FAIL",
+      result: {
+        status: "FAIL",
+        runs: [{ name: "verify-cli-help", status: "FAIL" }],
+      },
+    });
+    config.blocks.check.config.commands["verify-cli-help"] =
+      "forge-536-nonexistent-executable";
+    writeConfig();
+    const missing = run();
+    expect(missing.status, missing.stdout + missing.stderr).toBe(2);
+    const incomplete = JSON.parse(missing.stdout) as {
+      result: { inputsDigest: string };
+    };
+    expect(
+      verifyReceipt(incomplete.result, incomplete.result.inputsDigest),
+    ).toBe(true);
+    expect(incomplete).toMatchObject({
+      ok: false,
+      status: "INCOMPLETE",
+      result: {
+        status: "INCOMPLETE",
+        runs: [
+          { name: "verify-cli-help", status: "INCOMPLETE", executable: null },
+        ],
+      },
+    });
+    console.log(
+      `guide PASS receipt: ${passed.stdout.trim()}\nguide FAIL receipt: ${failed.stdout.trim()}\nguide INCOMPLETE receipt: ${missing.stdout.trim()}`,
+    );
+  });
+}, 120_000);
 
 function fixture(
   run: (
