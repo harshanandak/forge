@@ -14,6 +14,11 @@
       "minimum": 1,
       "maximum": 1000
     },
+    "createdSince": {
+      "description": "Created at or after this ISO time.",
+      "type": "string",
+      "format": "date-time"
+    },
     "labels": {
       "description": "Only items that carry every one of these labels.",
       "type": "array",

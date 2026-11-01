@@ -12,7 +12,7 @@
     },
     "issue.list": {
       "title": "Issue list",
-      "summary": "List issues; ready means open, dependencies closed and no live lease. Pass labels to keep only items that carry every one of them."
+      "summary": "List issues. ready: open, deps closed, no live lease. labels: match all. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches."
     },
     "issue.update": {
       "title": "Issue update",
@@ -35,12 +35,12 @@
     },
     "issue.claim": {
       "title": "Issue claim",
-      "summary": "Acquire an open issue lease for the current session. Omitted ttlSeconds uses the block's claimTtlSeconds config (3600 seconds by default); explicit ttlSeconds overrides it.",
+      "summary": "Acquire an open issue lease for this session. ttlSeconds overrides claimTtlSeconds (default 3600 seconds).",
       "examples": [{ "input": { "id": "demo-1", "ttlSeconds": 7200 } }]
     },
     "issue.renew": {
       "title": "Issue renew",
-      "summary": "Renew a live lease at its current generation; expired leases must be acquired again. Omitted ttlSeconds uses the block's claimTtlSeconds config (3600 seconds by default); explicit ttlSeconds overrides it.",
+      "summary": "Renew a live lease at its current generation; reacquire expired leases. ttlSeconds overrides claimTtlSeconds (default 3600 seconds).",
       "examples": [{ "input": { "id": "demo-1", "ttlSeconds": 7200 } }]
     },
     "issue.release": {
