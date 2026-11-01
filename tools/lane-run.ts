@@ -239,8 +239,9 @@ function completed(record: RunRecord) {
   return (
     record.verdict === "completed" &&
     record.end !== null &&
-    existsSync(record.reply) &&
-    readFileSync(record.reply, "utf8").trim().length > 0
+    (["tester", "reviewer"].includes(record.role) ||
+      (existsSync(record.reply) &&
+        readFileSync(record.reply, "utf8").trim().length > 0))
   );
 }
 function git(worktree: string, args: string[]) {
@@ -284,6 +285,15 @@ function roleBrief(
     roundText = !previous
       ? `This is test round ${round}.${fix ? ` The builder's reply is ${path(fix)}: treat every claim in it as unverified until you run it.` : " No completed builder or fixer reply is available; treat every implementation claim as unverified until you run it."}${round !== 1 ? " No classified previous tester report is available." : ""}`
       : `This is test round ${round}. The previous report is ${path(previous)}${fix ? ` and the builder's fix reply is ${path(fix)}` : ""}. First re-run every earlier repro and say for each finding whether it is fixed. Then re-run the checks and look for regressions the fixes introduced. New findings are welcome.${!fix ? " No completed builder or fixer reply is available; treat every implementation claim as unverified until you run it." : ""}`;
+    const review = records
+      .filter(
+        (record) =>
+          record.role === "reviewer" &&
+          (!previous || record.start > previous.end!),
+      )
+      .at(-1);
+    if (review)
+      roundText += ` The reviewer report is ${path(review)}. Read it and verify every P0/P1 finding by re-running its repro, even if the fixer reply omits it. Only return Verdict: PASS after verifying each is fixed; an unreadable report or an unresolved finding requires Verdict: FAIL.`;
   }
   const values = {
     WT: worktree.replaceAll("\\", "/"),
@@ -506,10 +516,16 @@ export async function laneRun(
       readOnly: role === "reviewer",
       ...(resume ? { resume } : {}),
     });
-    const hasReply =
-      existsSync(result.reply) &&
-      readFileSync(result.reply, "utf8").trim().length > 0;
-    const success = hasReply && (result.exit === 0 || result.stoppedAfterReply);
+    let hasReply = false;
+    try {
+      hasReply = readFileSync(result.reply, "utf8").trim().length > 0;
+    } catch {
+      /* Successful verdict roles default to FAIL/ACT without a readable reply. */
+    }
+    const success =
+      (result.exit === 0 &&
+        (hasReply || ["tester", "reviewer"].includes(role))) ||
+      (hasReply && result.stoppedAfterReply);
     Object.assign(record, {
       head: git(lane.worktree, ["rev-parse", "HEAD"]),
       end: new Date().toISOString(),
@@ -520,7 +536,7 @@ export async function laneRun(
     report({
       ...result,
       verdict: success ? "completed" : "failed",
-      ...(!hasReply ? { reasons: ["no reply was written"] } : {}),
+      ...(!hasReply && !success ? { reasons: ["no reply was written"] } : {}),
       next: success
         ? "read the reply and follow the contract stop point"
         : "inspect the log and retry with --resume when a session is available",

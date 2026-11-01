@@ -117,9 +117,16 @@ if(mode.startsWith('auto')){
   for(const a of [['add','lane-change.md'],['-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','-m','fixture lane change']]){if(spawnSync('git',a).status!==0)process.exit(9)}
  }
  const round=prior.filter(a=>a.args[a.args.indexOf('-m')+1]==='tester').length;
- const verdict=role==='tester'?(mode==='auto-missing'?'No verdict.':mode==='auto-fail'||(mode==='auto-chain'&&round===1)?'Verdict: FAIL':'Verdict: PASS'):role==='reviewer'?(mode==='auto-act'?'Verdict: ACT':mode==='auto-review-missing'?'No verdict.':'Verdict: CLEAN'):'Committed.';
- writeFileSync(args[flag+1],verdict+'\nFixture reply.');process.exit(0);
+ const verdict=role==='tester'?(mode==='auto-missing'?'No verdict.':mode==='auto-fail'||(mode==='auto-chain'&&round===1)?'Verdict: FAIL':'Verdict: PASS'):role==='reviewer'?((mode==='auto-act'||mode==='auto-handoff')?'Verdict: ACT':mode==='auto-review-missing'?'No verdict.':'Verdict: CLEAN'):'Committed.';
+ let reply=verdict+'\nFixture reply.';
+ if(mode==='auto-empty-'+role)reply='';
+ if(mode==='auto-handoff'&&role==='tester'&&round>1){
+  const review=prior.find(a=>a.args[a.args.indexOf('-m')+1]==='reviewer');
+  if(prompt.includes(review.args[review.args.indexOf('-o')+1].replaceAll('\\','/')))reply='Verdict: FAIL\nReviewer P1 remains unfixed.';
+ }
+ writeFileSync(args[flag+1],reply);process.exit(0);
 }
+if(mode==='no-reply')process.exit(0);
 writeFileSync(args[flag+1],mode==='empty'?'':'Fixture final reply.');
 if(mode==='hold'){setInterval(()=>{if(existsSync(join(root,'finish')))process.exit(0)},10)}
 else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='timeout'?124:mode==='fail'?1:0);`,
@@ -893,6 +900,94 @@ for (const mode of ["auto-act", "auto-clean", "auto-review-missing"])
     expect(f.roles()).toHaveLength(mode === "auto-clean" ? 2 : 4);
   });
 
+test("auto hands reviewer findings to the final tester before accepting PASS", () => {
+  const f = autoFixture("auto-handoff");
+  change(f, ["tools/changed.ts"]);
+  const result = f.auto();
+  expect(f.roles()).toEqual(["tester", "reviewer", "fixer", "tester"]);
+  const review = String(result.lines[1]!.reply).replaceAll("\\", "/");
+  const finalPrompt = f.attempts()[3]!.prompt;
+  expect(finalPrompt).toContain(review);
+  expect(finalPrompt).toContain("verify every P0/P1 finding");
+  expect(finalPrompt).toContain("Only return Verdict: PASS");
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "failed",
+  });
+});
+
+test("auto resumes review repair with the reviewer report in the tester prompt", () => {
+  const f = autoFixture("auto-pass");
+  change(f, ["tools/changed.ts"]);
+  f.seed("tester", 1, "completed", "Verdict: PASS");
+  const review = f.seed(
+    "reviewer",
+    null,
+    "completed",
+    "Verdict: ACT\nP1: missed finding.",
+  );
+  const fix = f.seed("fixer", null, "completed", "Committed.");
+  writeFileSync(
+    join(fix.reply, "..", "run.json"),
+    JSON.stringify({ ...fix, head: f.head() }),
+  );
+  const result = f.auto();
+  expect(result.code).toBe(0);
+  expect(f.roles()).toEqual(["tester"]);
+  expect(f.prompt()).toContain(review.reply.replaceAll("\\", "/"));
+  expect(f.prompt()).toContain("verify every P0/P1 finding");
+});
+
+test("auto treats empty tester replies as FAIL, consumes rounds and resumes at the cap", () => {
+  const f = autoFixture("auto-empty-tester");
+  const result = f.auto();
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "round-cap",
+  });
+  expect(f.roles()).toEqual(["builder", "tester", "fixer", "tester"]);
+  expect(
+    result.lines
+      .filter((row) => row.step === "tester" && !row.outcome)
+      .map((row) => [row.round, row.verdict]),
+  ).toEqual([
+    [1, "FAIL"],
+    [2, "FAIL"],
+  ]);
+  expect(f.auto().code).toBe(1);
+  expect(f.roles()).toHaveLength(4);
+});
+
+test("auto treats an empty reviewer reply as ACT and verifies its report after repair", () => {
+  const f = autoFixture("auto-empty-reviewer");
+  change(f, ["tools/changed.ts"]);
+  const result = f.auto();
+  expect(result.code).toBe(0);
+  expect(f.roles()).toEqual(["tester", "reviewer", "fixer", "tester"]);
+  expect(result.lines[1]).toMatchObject({ step: "reviewer", verdict: "ACT" });
+  expect(f.attempts()[3]!.prompt).toContain(
+    String(result.lines[1]!.reply).replaceAll("\\", "/"),
+  );
+  expect(f.auto().code).toBe(0);
+  expect(f.roles()).toHaveLength(4);
+});
+
+for (const role of ["tester", "reviewer"])
+  for (const mode of ["empty", "no-reply"])
+    test(`successful ${role} with ${mode} reply completes for default verdict handling`, () => {
+      const f = roleFixture();
+      writeFileSync(join(f.root, "mode"), mode);
+      const result = f.runRole(role);
+      expect(result.code).toBe(0);
+      expect(result.output.verdict).toBe("completed");
+      if (role === "tester") {
+        expect(f.runRole(role, ["--round-cap", "1"]).code).toBe(1);
+        expect(f.attempts()).toHaveLength(1);
+      }
+    });
+
 test("auto treats a missing tester verdict as failure", () => {
   const f = autoFixture("auto-missing");
   const result = f.auto(["--round-cap", "1"]);
@@ -1469,14 +1564,13 @@ test("builder and fixer assembly remains byte-identical while every launch recor
   expect(f.prompt()).toBe(expected);
 });
 
-test("failed and empty tester records do not count, explicit prompts override templates", () => {
+test("failed tester and empty fixer records do not count, explicit prompts override templates", () => {
   const f = roleFixture();
   const builder = f.seed("builder", null);
   const failedFix = f.seed("fixer", null, "failed");
   const emptyFix = f.seed("fixer", null, "completed", "  ");
   f.seed("tester", 1, "failed");
-  f.seed("tester", 1, "completed", "  ");
-  for (const mode of ["empty", "fail"]) {
+  for (const mode of ["fail"]) {
     writeFileSync(join(f.root, "mode"), mode);
     const failed = f.runRole("tester");
     expect(failed.output.verdict).toBe("failed");
