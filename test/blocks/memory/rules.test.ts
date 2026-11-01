@@ -496,7 +496,7 @@ test("startup counts applicable scopes without text or ids in JSON or --text; co
     status: "found",
     note: { text: { text: marker } },
   });
-  expect(result.text.text).toContain("general 3, forge 3.");
+  expect(result.text.text).toContain("general 3, forge 4.");
   expect((await harness.call("memory.rules", { level: "device" })).ok).toBe(
     false,
   );

@@ -300,7 +300,11 @@ test("integration: a note moves between levels once, and repeating the move chan
   expect(moved.to).toMatch(/^device\//);
   expect(done(await alpha.call("memory.move", request, agent))).toEqual(moved);
   expect(done(await alpha.call("memory.show", { id: note.id }, agent))).toEqual(
-    { status: "moved", to: moved.to },
+    {
+      status: "moved",
+      to: moved.to,
+      next: `Run forge memory show ${moved.to} from a host on this device.`,
+    },
   );
   // Now on the device, beta finds it too; alpha finds it once.
   expect(
