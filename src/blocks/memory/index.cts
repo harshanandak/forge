@@ -1625,13 +1625,93 @@ module.exports = {
     return { status: "forgotten" as const, id: qualified(input.id) };
   },
 
-  "memory.move": async ({
+  "memory.move": async function move({
     input,
     services,
   }: {
-    input: { id: string; to: Level; expectRevision: number; keep?: boolean };
+    input:
+      | {
+          id: string;
+          to: Level;
+          expectRevision: number;
+          keep?: boolean;
+        }
+      | {
+          scope: string;
+          to: "project";
+          limit?: number;
+        };
     services: Services;
-  }) => {
+  }): Promise<object> {
+    if ("scope" in input) {
+      const limit = input.limit ?? 25;
+      const target = await writeTarget(services, "project");
+      const source = deviceSource(services.state);
+      const scan = () =>
+        source.state
+          .list(NOTE_PREFIX)
+          .map((record) => noteOf(source, record))
+          .filter(
+            (note) =>
+              note.value.deleted !== true && note.value.scope === input.scope,
+          )
+          .sort((a, b) => a.number - b.number);
+      const moved: { id: string; to: string }[] = [];
+      let stopped: { id: string; code: string } | undefined;
+      for (const note of scan().slice(0, limit)) {
+        try {
+          const result = await move({
+            input: {
+              id: note.id,
+              to: "project",
+              expectRevision: note.record.revision,
+            },
+            services,
+          });
+          const to = (result as { to?: string }).to;
+          const ref = to === undefined ? undefined : parseRef(to);
+          const destination = ref && target.state.get(noteKey(ref.number));
+          const tombstone = source.state.get(note.record.key)?.value as
+            NoteValue | undefined;
+          const value = destination?.value as NoteValue | undefined;
+          if (
+            !to ||
+            !value ||
+            value.deleted === true ||
+            value.text !== note.value.text ||
+            canonical(value.tags) !== canonical(note.value.tags) ||
+            canonical(value.links) !==
+              canonical(qualifiedLinks(note.value.links)) ||
+            tombstone?.deleted !== true ||
+            tombstone.movedTo !== to
+          ) {
+            stopped = { id: note.id, code: "VERIFY_FAILED" };
+            break;
+          }
+          moved.push({ id: note.id, to });
+        } catch (error) {
+          const code = (error as { error?: { code?: string } } | null)?.error
+            ?.code;
+          if (code !== "REVISION_CONFLICT" && code !== "TRANSFER_CONFLICT")
+            throw error;
+          stopped = { id: note.id, code };
+          break;
+        }
+      }
+      const remaining = scan().length;
+      return {
+        status: "moved" as const,
+        moved,
+        remaining,
+        complete: remaining === 0,
+        ...(stopped ? { stopped } : {}),
+        ...(remaining
+          ? {
+              next: `forge memory move --input '${JSON.stringify({ scope: input.scope, to: "project", limit })}'`,
+            }
+          : {}),
+      };
+    }
     const found = await sourceFor(services, qualified(input.id));
     if (unreached(found))
       return { status: "not_found" as const, id: qualified(input.id) };
