@@ -308,10 +308,7 @@ async function laneAuto(
       (flag && (flag !== "--round-cap" || args.length !== 3)) ||
       !/^(?:[1-9]|10)$/.test(capText)
     )
-      return blocked(
-        "refused",
-        "usage: auto <issue-id> [--round-cap 1..10] [--detach]",
-      );
+      return blocked("refused", "usage: auto <id> [--round-cap N] [--detach]");
     const cap = Number(capText),
       lane = context.lanes.find((item) => item.issue === id);
     if (!lane)
@@ -324,17 +321,14 @@ async function laneAuto(
       const log = join(root, `auto-${stamp}.log`),
         output = openSync(log, "wx");
       try {
-        const child = spawn(
-          process.execPath,
-          [import.meta.filename, "auto", ...args],
-          {
-            cwd: process.cwd(),
-            detached: true,
-            windowsHide: true,
-            stdio: ["ignore", output, output],
-            env: { ...process.env, FORGE_LANE_LOCK_OWNER: laneOwner },
-          },
-        );
+        const childArgs = [import.meta.filename, "auto", ...args];
+        const child = spawn(process.execPath, childArgs, {
+          cwd: process.cwd(),
+          detached: true,
+          windowsHide: true,
+          stdio: ["ignore", output, output],
+          env: { ...process.env, FORGE_LANE_LOCK_OWNER: laneOwner },
+        });
         await once(child, "spawn");
         unlock(child.pid);
         unlock = undefined;
@@ -419,7 +413,7 @@ async function laneAuto(
           step = "fixer";
         }
       }
-      if (retry) step = pending!.role;
+      if (retry) step = pending.role;
       if (step === "ready") {
         if (laneTier(lane.worktree).reviews.includes("security-reviewer"))
           return blocked(
@@ -435,7 +429,8 @@ async function laneAuto(
         return 0;
       }
       if (
-        (step === "tester" || (step === "fixer" && last?.role === "tester")) &&
+        (step === "tester" ||
+          (!retry && step === "fixer" && last?.role === "tester")) &&
         rounds >= cap
       ) {
         step = "tester";
@@ -583,12 +578,10 @@ async function main(): Promise<number> {
             } catch {
               /* A live lane stays untouched. */
             }
-            if (unlock) {
-              try {
-                interruptLaneRuns(common, lane.issue);
-              } finally {
-                unlock();
-              }
+            try {
+              if (unlock) interruptLaneRuns(common, lane.issue);
+            } finally {
+              unlock?.();
             }
             const runs = laneHistory(common, lane.issue),
               last = runs.at(-1);

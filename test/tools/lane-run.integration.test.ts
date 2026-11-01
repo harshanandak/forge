@@ -1134,7 +1134,7 @@ test("detached auto survives parent exit and refuses a second chain", async () =
       "run.json",
     );
     const before = readFileSync(record, "utf8");
-    expect(JSON.parse(before).verdict).toBe("started");
+    expect(JSON.parse(before) as unknown).toMatchObject({ verdict: "started" });
     f.run(["list"]);
     expect(readFileSync(record, "utf8")).toBe(before);
     const deadline = Date.now() + 20_000;
@@ -1198,7 +1198,10 @@ for (const detect of ["list", "auto", "run"])
           ? f.runRole("tester", ["--round-cap", "1"])
           : f.auto(["--round-cap", "1"]);
       expect(result.code).toBe(0);
-      const interrupted = JSON.parse(readFileSync(record, "utf8"));
+      const interrupted = JSON.parse(readFileSync(record, "utf8")) as Record<
+        string,
+        unknown
+      >;
       expect(interrupted).toMatchObject({
         verdict: "interrupted",
         role: "tester",
@@ -1208,8 +1211,11 @@ for (const detect of ["list", "auto", "run"])
       expect(interrupted.end).toMatch(/^\d{4}-/);
       expect(f.attempts()[1]!.args).toContain("resume");
       expect(f.attempts()[1]!.args).toContain("fake-session");
-      const history = readdirSync(f.runs).map((name) =>
-        JSON.parse(readFileSync(join(f.runs, name, "run.json"), "utf8")),
+      const history = readdirSync(f.runs).map(
+        (name) =>
+          JSON.parse(
+            readFileSync(join(f.runs, name, "run.json"), "utf8"),
+          ) as Record<string, unknown>,
       );
       expect(
         history.filter((row) => row.role === "tester").map((row) => row.round),
@@ -1235,12 +1241,18 @@ for (const session of ["fixture-session", null])
         args.slice(args.indexOf("resume"), args.indexOf("resume") + 2),
       ).toEqual(["resume", session]);
     else expect(args).not.toContain("resume");
-    expect(JSON.parse(readFileSync(file, "utf8")).verdict).toBe("interrupted");
+    expect(JSON.parse(readFileSync(file, "utf8")) as unknown).toMatchObject({
+      verdict: "interrupted",
+    });
     expect(readdirSync(f.runs)).toHaveLength(3);
   });
 
-for (const role of ["fixer", "reviewer"])
-  test(`interrupted ${role} reruns before accepting prior tester history`, () => {
+for (const [role, cap] of [
+  ["fixer", "1"],
+  ["fixer", "2"],
+  ["reviewer", "2"],
+] as const)
+  test(`interrupted ${role} reruns before accepting prior tester history at cap ${cap}`, () => {
     const f = autoFixture("auto-clean");
     change(f, ["docs/guide.md"]);
     const prior = f.seed(
@@ -1256,14 +1268,24 @@ for (const role of ["fixer", "reviewer"])
     const record = f.seed(role, null, "started");
     const file = join(record.reply, "..", "run.json");
     writeFileSync(file, JSON.stringify({ ...record, end: null }));
-    expect(f.auto().code).toBe(0);
+    const result = f.auto(["--round-cap", cap]);
+    expect(result.code).toBe(cap === "1" ? 1 : 0);
+    if (cap === "1") {
+      expect(f.roles()).toEqual(["fixer"]);
+      expect(result.lines.at(-1)).toMatchObject({
+        outcome: "blocked",
+        reason: "round-cap",
+      });
+    }
     expect(f.roles()[0]).toBe(role);
     expect(f.attempts()[0]!.args).toContain("fixture-session");
     if (role === "fixer")
       expect(f.attempts()[0]!.prompt).toContain(
         prior.reply.replaceAll("\\", "/"),
       );
-    expect(JSON.parse(readFileSync(file, "utf8")).verdict).toBe("interrupted");
+    expect(JSON.parse(readFileSync(file, "utf8")) as unknown).toMatchObject({
+      verdict: "interrupted",
+    });
   });
 
 test("auto chains builder, failed tester, fixer and passing tester to ready", () => {
