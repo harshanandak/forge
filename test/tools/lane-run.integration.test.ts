@@ -843,6 +843,9 @@ test("auto chains builder, failed tester, fixer and passing tester to ready", ()
     String(firstTest.reply).replaceAll("\\", "/"),
   );
   expect(f.attempts()[2]!.prompt).toContain("fix every P1");
+  expect(f.attempts()[2]!.prompt).toContain(
+    "Re-run the tester's applicable targeted checks and repros, including existing tests covering the changed code.",
+  );
   const list = f.run(["list"]).lines[0] as {
     lanes: { state: string; since: string; runs: { end: string }[] }[];
   };
