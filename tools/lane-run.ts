@@ -175,6 +175,7 @@ function object(value: unknown): value is Record<string, unknown> {
 }
 type RunRecord = {
   head?: string;
+  completionHead?: string;
   tier?: ReviewTier;
   role: string;
   round: number | null;
@@ -278,7 +279,7 @@ function roleBrief(
       .filter(
         (record) =>
           ["builder", "fixer"].includes(record.role) &&
-          (!previous || record.start > previous.end!),
+          (!previous || record.start >= previous.end!),
       )
       .at(-1);
     const path = (record: RunRecord) => record.reply.replaceAll("\\", "/");
@@ -289,7 +290,7 @@ function roleBrief(
       .filter(
         (record) =>
           record.role === "reviewer" &&
-          (!previous || record.start > previous.end!),
+          (!previous || record.start >= previous.end!),
       )
       .at(-1);
     if (review)
@@ -529,7 +530,7 @@ export async function laneRun(
           (context.auto === true && ["tester", "reviewer"].includes(role)))) ||
       (hasReply && result.stoppedAfterReply);
     Object.assign(record, {
-      head: git(lane.worktree, ["rev-parse", "HEAD"]),
+      completionHead: git(lane.worktree, ["rev-parse", "HEAD"]),
       end: new Date().toISOString(),
       verdict: success ? "completed" : "failed",
       session: result.session,

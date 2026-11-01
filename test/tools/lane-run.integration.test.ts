@@ -112,7 +112,7 @@ if(mode==='limit'||(mode==='capacity'&&count===0)){console.log('Selected model i
 const flag=args.findIndex(a=>a==='--output-last-message'||a==='-o');if(flag<0)process.exit(8);
 if(mode.startsWith('auto')){
  const role=args[args.indexOf('-m')+1],prior=readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line));
- if(role==='builder'||role==='fixer'){
+ if(role==='builder'||role==='fixer'||(mode==='auto-move-'+role&&prior.filter(a=>a.args[a.args.indexOf('-m')+1]===role).length===1)||mode==='auto-move-always-'+role){
   writeFileSync('lane-change.md',String(count));
   for(const a of [['add','lane-change.md'],['-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','-m','fixture lane change']]){if(spawnSync('git',a).status!==0)process.exit(9)}
  }
@@ -1028,6 +1028,69 @@ test("auto does not trust tester or reviewer reports from another head", () => {
   change(f, ["tools/changed.ts"]);
   expect(f.auto().code).toBe(0);
   expect(f.roles()).toEqual(["tester", "reviewer"]);
+});
+
+for (const role of ["tester", "reviewer"])
+  test(`auto retests when HEAD moves during the ${role} run`, () => {
+    const f = autoFixture(`auto-move-${role}`);
+    change(f, role === "reviewer" ? ["tools/changed.ts"] : ["docs/guide.md"]);
+    const startHead = f.head();
+    const result = f.auto();
+    const runs = (
+      f.run(["list"]).lines[0] as {
+        lanes: { runs: { role: string; head: string }[] }[];
+      }
+    ).lanes[0]!.runs;
+    expect(runs.find((run) => run.role === role)!.head).toBe(startHead);
+    expect(f.head()).not.toBe(startHead);
+    expect(f.roles()).toEqual(
+      role === "tester"
+        ? ["tester", "tester"]
+        : ["tester", "reviewer", "tester", "reviewer"],
+    );
+    expect(result.code).toBe(0);
+    expect(result.lines.at(-1)).toMatchObject({
+      outcome: "ready",
+      head: f.head(),
+    });
+  });
+
+test("auto counts stale tester results against the round cap", () => {
+  const f = autoFixture("auto-move-always-tester");
+  change(f, ["docs/guide.md"]);
+  const result = f.auto();
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "round-cap",
+    step: "tester",
+  });
+  expect(f.roles()).toEqual(["tester", "tester"]);
+});
+
+test("auto includes a reviewer report starting at the preceding tester end", () => {
+  const f = autoFixture("auto-pass");
+  change(f, ["tools/changed.ts"]);
+  const tester = f.seed("tester", 1, "completed", "Verdict: PASS");
+  const review = f.seed(
+    "reviewer",
+    null,
+    "completed",
+    "Verdict: ACT\nP1: missed finding.",
+  );
+  writeFileSync(
+    join(review.reply, "..", "run.json"),
+    JSON.stringify({ ...review, start: tester.end }),
+  );
+  const fix = f.seed("fixer", null, "completed", "Committed.");
+  writeFileSync(
+    join(fix.reply, "..", "run.json"),
+    JSON.stringify({ ...fix, head: f.head() }),
+  );
+  expect(f.auto().code).toBe(0);
+  expect(f.roles()).toEqual(["tester"]);
+  expect(f.prompt()).toContain(review.reply.replaceAll("\\", "/"));
+  expect(f.prompt()).toContain("verify every P0/P1 finding");
 });
 
 test("auto requires a passing tester before accepting a standalone clean reviewer", () => {

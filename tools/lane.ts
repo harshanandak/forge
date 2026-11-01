@@ -321,7 +321,7 @@ async function laneAuto(
         reviewer = records.at(-3);
       const repair =
         previous?.role === "fixer" &&
-        previous.head === head &&
+        (previous.completionHead ?? previous.head) === head &&
         reviewer?.role === "reviewer" &&
         stepVerdict(reviewer) === "ACT";
       const changed = run(
@@ -334,7 +334,7 @@ async function laneAuto(
         records.some(
           (r) =>
             r.verdict === "completed" &&
-            r.head === head &&
+            (r.completionHead ?? r.head) === head &&
             ["builder", "fixer"].includes(r.role),
         );
       step = built ? "tester" : "builder";
