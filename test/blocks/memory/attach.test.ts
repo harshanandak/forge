@@ -264,3 +264,85 @@ test("attach delivers large asked notes within the response ceiling and names th
   expect(result.text.text.length).toBeLessThan(262_144);
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(1_048_576);
 }, 30_000);
+
+test("33 maximum-size asked notes use one store read and never JSON-encode note-sized data", async () => {
+  const state = memoryState();
+  const ids = Array.from({ length: 33 }, (_, i) => `device/note-${i + 1}`);
+  for (let n = 1; n <= 33; n++)
+    put(state, n, (n === 1 ? "\u0000" : "x").repeat(8000), {
+      createdAt: "2026-10-18T00:00:00Z",
+      changedAt: "2026-10-18T00:00:00Z",
+    });
+  let noteSizedEncodes = 0;
+  const entry = loadEntry("memory", undefined, {
+    JSON: {
+      stringify(value: unknown) {
+        const encoded = JSON.stringify(value);
+        if (encoded !== undefined && Buffer.byteLength(encoded) >= 8000)
+          noteSizedEncodes++;
+        return encoded;
+      },
+    },
+  });
+  const result = (await entry["memory.attach"]!({
+    input: { ids },
+    services: { state, levels: state },
+  })) as Attached;
+  expect(result.receipt.selected[0]?.id).toBe(ids[0]);
+  expect(result.text.text).toContain("\u0000".repeat(8000));
+  expect(result.receipt.omittedCount).toBeGreaterThan(0);
+  expect(state.counts.list).toBe(1);
+  expect(state.counts.listedRecords).toBe(33);
+  expect(state.counts.get + state.counts.history).toBe(0);
+  expect(noteSizedEncodes).toBe(0);
+}, 30_000);
+
+test("JSON escapes and Unicode retain the exact response ceiling", async () => {
+  const prefix = "- [general] device/note-1 (created 2026-10-18) ";
+  // Include short/long escapes, paired/lone surrogates and neutralized fence delimiters.
+  const raw = '\u0000\b\u0001"\\é中😀\ud800x\udc00⟦⟧'.repeat(100);
+  const neutralized = raw.replaceAll("⟦", "(").replaceAll("⟧", ")");
+  const encodedSize = (filler: number) => {
+    const line = prefix + neutralized + "x".repeat(filler);
+    return Buffer.byteLength(
+      JSON.stringify([
+        line,
+        {
+          id: "device/note-1",
+          revision: 1,
+          scope: "general",
+          reasons: ["asked"],
+        },
+        {
+          code: "ATTACH_OVER_BUDGET",
+          message: `Asked note device/note-1 exceeds the 4096 UTF-8 byte budget (${Buffer.byteLength(line)} bytes used).`,
+        },
+      ]),
+    );
+  };
+  let filler = 131072 - encodedSize(0);
+  filler += 131072 - encodedSize(filler);
+  expect(encodedSize(filler)).toBe(131072);
+  const state = memoryState();
+  const timestamps = {
+    createdAt: "2026-10-18T00:00:00Z",
+    changedAt: "2026-10-18T00:00:00Z",
+  };
+  put(state, 1, raw + "x".repeat(filler), timestamps);
+  const exact = await attach(state, { ids: ["device/note-1"] });
+  expect(exact.receipt.selected.map((note) => note.id)).toEqual([
+    "device/note-1",
+  ]);
+  expect(exact.text.text).toBe(prefix + neutralized + "x".repeat(filler));
+  put(state, 1, raw + "x".repeat(filler + 1), timestamps, 1);
+  const over = await attach(state, { ids: ["device/note-1"] });
+  expect(over.receipt.selected).toEqual([]);
+  expect(over.receipt.omitted).toEqual([
+    {
+      id: "device/note-1",
+      revision: 2,
+      scope: "general",
+      reason: "response-limit",
+    },
+  ]);
+}, 30_000);
