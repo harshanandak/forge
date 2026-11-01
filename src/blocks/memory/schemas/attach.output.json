@@ -17,6 +17,20 @@
       ],
       "additionalProperties": false,
       "properties": {
+        "moved": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "status", "to", "next"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "$ref": "defs.json#/$defs/NoteId" },
+              "status": { "const": "moved" },
+              "to": { "$ref": "defs.json#/$defs/NoteId" },
+              "next": { "type": "string" }
+            }
+          }
+        },
         "selected": {
           "type": "array",
           "items": { "$ref": "#/$defs/Selected" }
@@ -60,6 +74,7 @@
         "id": { "type": "string" },
         "revision": { "type": "integer", "minimum": 1 },
         "scope": { "type": "string" },
+        "movedFrom": { "$ref": "defs.json#/$defs/NoteId" },
         "reasons": {
           "type": "array",
           "minItems": 1,
@@ -75,6 +90,7 @@
         "id": { "type": "string" },
         "revision": { "type": "integer", "minimum": 1 },
         "scope": { "type": "string" },
+        "movedFrom": { "$ref": "defs.json#/$defs/NoteId" },
         "reason": { "enum": ["seen", "over-budget", "response-limit"] }
       }
     }

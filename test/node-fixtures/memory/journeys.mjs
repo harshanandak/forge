@@ -719,8 +719,8 @@ async function rules() {
     "general device notes are counted",
   );
   assert.ok(
-    loaded.text.text.includes(scope + " 2"),
-    "current scope counts both levels",
+    loaded.text.text.includes(scope + " 3"),
+    "current scope counts device notes and every own-project scope",
   );
   assert.ok(loaded.text.text.length < 400);
   const textOutput = spawnSync(

@@ -28,8 +28,8 @@ export const counterfactuals: readonly Counterfactual[] = [
   },
   {
     file: "blocks/memory/index.cjs",
-    from: "if (count !== undefined) counts.set(noteScope, count + 1);",
-    to: 'if (count !== undefined && source.level !== "device") counts.set(noteScope, count + 1);',
+    from: "if (count !== undefined) counts.set(countScope, count + 1);",
+    to: 'if (count !== undefined && source.level !== "device") counts.set(countScope, count + 1);',
     journey: "rules",
     evidence: "general device notes are counted",
   },
