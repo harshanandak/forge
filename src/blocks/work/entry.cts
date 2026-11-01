@@ -32,7 +32,10 @@ type LinkInput = {
   readonly relation: string;
   readonly url: string;
 };
-type WorkListInput = ListItemsInput & { readonly labels?: readonly string[] };
+type WorkListInput = ListItemsInput & {
+  readonly labels?: readonly string[];
+  readonly createdSince?: string;
+};
 type WorkConfig = {
   readonly labelOrder?: readonly string[];
   readonly idPrefix?: string;
@@ -374,7 +377,7 @@ function list(
   input: WorkListInput,
   mode?: "ready" | "blocked" | "stale",
   config?: WorkConfig,
-): { items: readonly TrackerItem[] } {
+): { items: readonly TrackerItem[]; truncated: boolean } {
   let records = state.list("issue:");
   const graph = dependencyGraph(state, records);
   const wanted = input.labels;
@@ -386,6 +389,12 @@ function list(
     records = records.filter(
       (record) => stored(record).status === input.status,
     );
+  if (input.createdSince !== undefined) {
+    const since = Date.parse(input.createdSince);
+    records = records.filter(
+      (record) => Date.parse(stored(record).createdAt) >= since,
+    );
+  }
   if (mode || input.ready)
     records = records.filter((record) => {
       const value = stored(record);
@@ -409,6 +418,7 @@ function list(
     );
   const ids = idsFor(state, config);
   return {
+    truncated: records.length > (input.limit ?? 1000),
     items: records
       .slice(0, input.limit ?? 1000)
       .map((record) => item(state, record, ids)),

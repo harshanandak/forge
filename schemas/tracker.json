@@ -98,7 +98,12 @@
           "description": "Only open items whose dependencies are closed and that no live lease holds.",
           "type": "boolean"
         },
-        "limit": { "type": "integer", "minimum": 1, "maximum": 1000 }
+        "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "createdSince": {
+          "description": "Include items created at or after this full RFC 3339 timestamp, before limiting.",
+          "type": "string",
+          "format": "date-time"
+        }
       },
       "additionalProperties": false
     },
@@ -109,6 +114,10 @@
         "items": {
           "type": "array",
           "items": { "$ref": "#/$defs/TrackerItem" }
+        },
+        "truncated": {
+          "description": "More items matched than were returned; narrow the filters to read a complete list.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false

@@ -233,6 +233,94 @@ test("JSON has text parity and advances the marker", () => {
   expect(Date.parse(f.seen())).toBeGreaterThan(Date.parse(since));
 });
 
+test("complete 1000-issue page succeeds and sends createdSince to forge", () => {
+  const issues = Array.from({ length: 1000 }, (_, i) => ({
+    id: `issue-${i}`,
+    title: `Recent issue ${i}`,
+    createdAt: mergedAt,
+  }));
+  const f = fixture({ issues });
+  const r = f.run("--json");
+  expect(r.status).toBe(0);
+  const data = JSON.parse(r.stdout) as { issues: unknown[] };
+  expect(data.issues).toHaveLength(1000);
+  expect(f.seen()).not.toBe(since);
+  const calls = readFileSync(join(f.root, "calls.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
+  const call = calls.find((args) => args[0] === "forge")!;
+  expect(JSON.parse(call[call.indexOf("--input") + 1]!)).toEqual({
+    limit: 1000,
+    createdSince: since,
+  });
+});
+
+test("date-only since sends a normalized timestamp and includes matching issues", () => {
+  const issues = [
+    { id: "before", title: "Before", createdAt: "2026-01-01T23:59:59Z" },
+    { id: "at", title: "At cutoff", createdAt: "2026-01-02T00:00:00Z" },
+    { id: "after", title: "After", createdAt: "2026-01-02T01:00:00Z" },
+  ];
+  const f = fixture({ issues });
+  const r = f.run("--since", "2026-01-02", "--peek", "--json");
+  expect(r.status).toBe(0);
+  const data = JSON.parse(r.stdout) as {
+    issues: typeof issues;
+    errors: unknown[];
+  };
+  expect(data.issues).toEqual(issues.slice(1));
+  expect(data.errors).toEqual([]);
+  const calls = readFileSync(join(f.root, "calls.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
+  const call = calls.find((args) => args[0] === "forge")!;
+  expect(JSON.parse(call[call.indexOf("--input") + 1]!)).toEqual({
+    limit: 1000,
+    createdSince: "2026-01-02T00:00:00.000Z",
+  });
+  expect(f.seen()).toBe(since);
+});
+
+for (const source of ["issues", "merges"])
+  test(`incomplete ${source} retains every row in text and JSON and keeps marker`, () => {
+    const fullMerges = Array.from({ length: 1000 }, (_, i) => ({
+      ...merged[0]!,
+      number: i + 1,
+      title: `Capped merge ${i + 1}`,
+    }));
+    const f = fixture(
+      source === "issues" ? { truncated: true } : { merged: fullMerges },
+    );
+    for (const args of [[], ["--json"]]) {
+      const r = f.run(...args);
+      expect(r.status).toBe(1);
+      expect(f.seen()).toBe(since);
+      if (args.length) {
+        const data = JSON.parse(r.stdout) as {
+          issues: unknown[];
+          merged: unknown[];
+          errors: { source: string; next: string }[];
+        };
+        expect(data.issues).toHaveLength(1);
+        expect(data.merged).toHaveLength(source === "merges" ? 1000 : 2);
+        expect(data.errors).toHaveLength(1);
+        expect(data.errors[0]!.source).toBe(
+          source === "issues" ? "forge issue list" : "gh merged PRs",
+        );
+        expect(data.errors[0]!.next).toContain("incomplete");
+      } else {
+        expect(r.stdout).toContain("forge-601 New issue");
+        if (source === "merges")
+          for (const row of fullMerges)
+            expect(r.stdout).toContain(`PR #${row.number} ${row.title} `);
+        expect(r.stdout).toContain("incomplete");
+        expect(r.stdout).toContain("next:");
+      }
+    }
+  });
+
 test("text preserves em dashes in merged PR, blocked PR and issue titles", () => {
   const titles = ["Merged — café", "Blocked — review", "Issue — follow-up"];
   const f = fixture({

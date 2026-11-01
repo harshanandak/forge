@@ -6,15 +6,25 @@ import {
   SchemaRegistry,
   validateWithSchema,
 } from "../../../src/contract/schema.ts";
+import {
+  validateListItemsInput,
+  validateListItemsOutput,
+} from "../../../src/generated/validators.ts";
+import type { TrackerVerbs } from "../../../src/ports/tracker.ts";
 
 setDefaultTimeout(30_000);
 
-type Item = { id: string; labels: string[]; dependsOn: string[] };
+type Item = {
+  id: string;
+  labels: string[];
+  dependsOn: string[];
+  createdAt?: string;
+};
 type Handler = (call: {
   input: Record<string, unknown>;
   config?: unknown;
   services: unknown;
-}) => { items: { id: string }[] };
+}) => { items: { id: string }[]; truncated: boolean };
 
 const root = resolve(import.meta.dirname, "../../../src/blocks/work");
 let operations: Record<string, Handler>;
@@ -37,7 +47,12 @@ function services(items: readonly Item[]) {
     key: `issue:${item.id}`,
     revision: 1,
     updatedAt: "2026-10-20T00:00:00Z",
-    value: { ...item, title: item.id, status: "open", createdAt: "x" },
+    value: {
+      ...item,
+      title: item.id,
+      status: "open",
+      createdAt: item.createdAt ?? "2026-10-20T00:00:00Z",
+    },
   }));
   return {
     state: {
@@ -75,6 +90,87 @@ test("issue.list with labels filters and keeps blocked items", () => {
   expect(ids("issue.list", { labels: ["p0"] })).toEqual(["d", "f"]);
   expect(ids("issue.list", { labels: ["p0"], limit: 1 })).toEqual(["d"]);
   expect(ids("issue.list", {})).toHaveLength(backlog.length);
+});
+
+const dated = Array.from({ length: 1005 }, (_, i) => ({
+  id: `dated-${i}`,
+  labels: [i % 2 ? "odd" : "even"],
+  dependsOn: [],
+  createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+}));
+function listed(items: readonly Item[], input: Record<string, unknown> = {}) {
+  return operations["issue.list"]!({ input, services: services(items) });
+}
+test("issue.list reports truncation after 1000 of 1005 matches", () => {
+  const result = listed(dated);
+  expect(result.items).toHaveLength(1000);
+  expect(result.truncated).toBe(true);
+});
+test("issue.list filters createdSince inclusively before limiting", () => {
+  const result = listed(dated, { createdSince: dated[1000]!.createdAt });
+  expect(result.items.map((item) => item.id)).toEqual(
+    dated.slice(1000).map((item) => item.id),
+  );
+  expect(result.truncated).toBe(false);
+});
+test("issue.list reports complete small and exactly full lists", () => {
+  for (const count of [3, 1000]) {
+    const result = listed(dated.slice(0, count));
+    expect(result.items).toHaveLength(count);
+    expect(result.truncated).toBe(false);
+  }
+});
+test("issue.list counts matches after all filters and compares timestamps", () => {
+  const result = listed(dated, {
+    createdSince: "2026-01-01T01:16:40+01:00",
+    labels: ["even"],
+    limit: 2,
+  });
+  expect(result.items.map((item) => item.id)).toEqual([
+    "dated-1000",
+    "dated-1002",
+  ]);
+  expect(result.truncated).toBe(true);
+  expect(listed(dated, { createdSince: "2027-01-01T00:00:00Z" })).toEqual({
+    items: [],
+    truncated: false,
+  });
+});
+
+test("tracker list accepts full timestamp filters and legacy inputs and outputs", () => {
+  const input: TrackerVerbs["list"][0] = {
+    createdSince: "2026-01-01T00:16:40Z",
+    limit: 2,
+  };
+  expect(validateListItemsInput(input).ok).toBe(true);
+  expect(validateListItemsInput({}).ok).toBe(true);
+  expect(
+    validateListItemsInput({ status: "open", ready: true, limit: 1 }).ok,
+  ).toBe(true);
+  for (const createdSince of ["2026-01-02", "2026-01-02T00:00:00", "invalid"])
+    expect(validateListItemsInput({ createdSince }).ok).toBe(false);
+  const legacy: TrackerVerbs["list"][1] = { items: [] };
+  const page: TrackerVerbs["list"][1] = { ...legacy, truncated: false };
+  expect(validateListItemsOutput(legacy).ok).toBe(true);
+  expect(validateListItemsOutput(page).ok).toBe(true);
+  expect(validateListItemsOutput({ items: [], truncated: "false" }).ok).toBe(
+    false,
+  );
+});
+
+test("ordinary issue.list complete and truncated results satisfy the tracker contract", () => {
+  for (const limit of [1, 2]) {
+    const result = listed(dated.slice(1000, 1002), {
+      createdSince: dated[1000]!.createdAt,
+      limit,
+    });
+    expect(result.items).toHaveLength(limit);
+    expect(result.truncated).toBe(limit === 1);
+    expect(validateListItemsOutput(result)).toMatchObject({ ok: true });
+    expect(validateListItemsOutput({ items: result.items })).toMatchObject({
+      ok: true,
+    });
+  }
 });
 
 test("issue.ready orders by the first configured label, then stored order", () => {
