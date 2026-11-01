@@ -18,9 +18,13 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   existsSync,
+  closeSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -30,7 +34,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { laneHistory, laneRun } from "./lane-run.ts";
+import { interruptLaneRuns, laneHistory, laneRun } from "./lane-run.ts";
 import { laneTier } from "./lane-tier.ts";
 import { laneClose } from "./lane-close.ts";
 import { runCommand } from "./run-command.ts";
@@ -240,15 +244,20 @@ function reclaim(lock: string): void {
 }
 function acquireLaneLock(common: string, id: string, owner: string) {
   const lock = join(common, `forge-lane-${id}.lock`),
-    staged = `${lock}.${randomUUID()}`;
-  mkdirSync(staged);
-  writeFileSync(join(staged, owner), "", { flag: "wx" });
-  try {
-    reclaim(lock);
-    renameSync(staged, lock);
-  } catch {
-    release(staged, owner);
-    throw new Error("lane already running; wait for it to finish and retry");
+    staged = `${lock}.${randomUUID()}`,
+    prior = join(lock, `${inheritedOwner}-${process.pid}`);
+  if (inheritedOwner && existsSync(prior)) {
+    renameSync(prior, join(lock, owner));
+  } else {
+    mkdirSync(staged);
+    writeFileSync(join(staged, owner), "", { flag: "wx" });
+    try {
+      reclaim(lock);
+      renameSync(staged, lock);
+    } catch {
+      release(staged, owner);
+      throw new Error("lane already running; wait for it to finish and retry");
+    }
   }
   let current = owner;
   return (pid?: number) => {
@@ -282,32 +291,77 @@ async function laneAuto(
   context: Parameters<typeof laneRun>[1],
 ) {
   let step = "builder";
+  let unlock: ((pid?: number) => void) | undefined;
   const emit = (value: object) => console.log(JSON.stringify(value));
   const blocked = (reason: string, next: string) => {
     emit({ outcome: "blocked", reason, step, next });
     return 1;
   };
   try {
-    const [id, flag, capText = "2", ...extra] = argv;
+    const detach = argv.includes("--detach"),
+      args = argv.filter((arg) => arg !== "--detach");
+    const [id, flag, capText = "2", ...extra] = args;
     if (
       !id ||
       extra.length ||
-      (flag && (flag !== "--round-cap" || argv.length !== 3)) ||
+      argv.length - args.length > 1 ||
+      (flag && (flag !== "--round-cap" || args.length !== 3)) ||
       !/^(?:[1-9]|10)$/.test(capText)
     )
-      return blocked("refused", "usage: auto <issue-id> [--round-cap 1..10]");
+      return blocked(
+        "refused",
+        "usage: auto <issue-id> [--round-cap 1..10] [--detach]",
+      );
     const cap = Number(capText),
       lane = context.lanes.find((item) => item.issue === id);
     if (!lane)
       return blocked("refused", `no active lane for ${id}; use start first`);
+    unlock = context.lock(id);
+    if (detach) {
+      const root = join(context.common, "forge-lane-runs", id),
+        stamp = new Date().toISOString().replaceAll(":", "-");
+      mkdirSync(root, { recursive: true });
+      const log = join(root, `auto-${stamp}.log`),
+        output = openSync(log, "wx");
+      try {
+        const child = spawn(
+          process.execPath,
+          [import.meta.filename, "auto", ...args],
+          {
+            cwd: process.cwd(),
+            detached: true,
+            windowsHide: true,
+            stdio: ["ignore", output, output],
+            env: { ...process.env, FORGE_LANE_LOCK_OWNER: laneOwner },
+          },
+        );
+        await once(child, "spawn");
+        unlock(child.pid);
+        unlock = undefined;
+        child.unref();
+        emit({
+          outcome: "detached",
+          pid: child.pid,
+          log,
+          next: "bun tools/lane.ts list",
+        });
+        return 0;
+      } finally {
+        closeSync(output);
+      }
+    }
+    interruptLaneRuns(context.common, id);
     for (;;) {
       const history = laneHistory(context.common, id);
       if (history.some((record) => record.role === "unknown"))
         throw new Error("inspect unknown lane history before resuming");
-      const records = history.filter((record) => record.role !== "unknown");
+      const runs = history.filter((record) => record.role !== "unknown");
+      const pending = runs.at(-1),
+        retry = pending?.verdict === "interrupted";
+      const records = runs.filter((record) => record.verdict !== "interrupted");
       const last = records.at(-1),
         head = run("git", ["rev-parse", "HEAD"], lane.worktree);
-      if (last && last.verdict !== "completed") {
+      if (last && !retry && last.verdict !== "completed") {
         step = last.role;
         return blocked(
           "failed",
@@ -335,7 +389,7 @@ async function laneAuto(
           record.verdict === "completed" &&
           ["builder", "fixer"].includes(record.role),
       );
-      if (!built && completedBuild) {
+      if (!retry && !built && completedBuild) {
         step = completedBuild.role;
         return blocked("no-commit", "commit the lane changes, then retry");
       }
@@ -365,6 +419,7 @@ async function laneAuto(
           step = "fixer";
         }
       }
+      if (retry) step = pending!.role;
       if (step === "ready") {
         if (laneTier(lane.worktree).reviews.includes("security-reviewer"))
           return blocked(
@@ -395,8 +450,11 @@ async function laneAuto(
         [id, "--role", step, "--round-cap", String(cap)],
         {
           ...context,
+          lock: () => (pid) => {
+            if (pid) unlock!(pid);
+          },
           auto: true,
-          ...(step === "fixer" ? { fixReport: last!.reply } : {}),
+          ...(step === "fixer" && last ? { fixReport: last.reply } : {}),
           report: (json) => {
             report = JSON.parse(json) as Record<string, unknown>;
           },
@@ -429,8 +487,13 @@ async function laneAuto(
       "refused",
       error instanceof Error ? error.message : "inspect lane history and retry",
     );
+  } finally {
+    unlock?.();
   }
 }
+const laneOwner = `owner-${process.pid}-${randomUUID()}`;
+const inheritedOwner = process.env.FORGE_LANE_LOCK_OWNER;
+delete process.env.FORGE_LANE_LOCK_OWNER;
 async function main(): Promise<number> {
   let parsed: Options | "list" | "run" | "auto" | "tier" | "close";
   let target: string | null = null;
@@ -458,7 +521,7 @@ async function main(): Promise<number> {
   }
   let lock: string | undefined;
   let staged: string | undefined;
-  const owner = `owner-${process.pid}-${randomUUID()}`;
+  const owner = laneOwner;
   let held = false;
   try {
     const context = () => {
@@ -514,6 +577,19 @@ async function main(): Promise<number> {
       console.log(
         JSON.stringify({
           lanes: active(registry, root).map((lane) => {
+            let unlock: (() => void) | undefined;
+            try {
+              unlock = lockLane(lane.issue);
+            } catch {
+              /* A live lane stays untouched. */
+            }
+            if (unlock) {
+              try {
+                interruptLaneRuns(common, lane.issue);
+              } finally {
+                unlock();
+              }
+            }
             const runs = laneHistory(common, lane.issue),
               last = runs.at(-1);
             return {

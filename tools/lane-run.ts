@@ -302,7 +302,9 @@ export function laneHistory(
               Number(value.round) >= 1 &&
               Number(value.round) <= 10
             : value.round === null) ||
-          !["started", "completed", "failed"].includes(String(value.verdict)) ||
+          !["started", "completed", "failed", "interrupted"].includes(
+            String(value.verdict),
+          ) ||
           !(value.verdict === "started"
             ? value.end === null
             : typeof value.end === "string") ||
@@ -319,6 +321,34 @@ export function laneHistory(
         b.role === "unknown" ? "" : b.start,
       ),
     );
+}
+// Caller holds the lane lock: no live owner or harness can still be writing.
+export function interruptLaneRuns(common: string, id: string) {
+  for (const record of laneHistory(common, id)) {
+    if (record.role === "unknown" || record.verdict !== "started") continue;
+    const file = join(record.reply, "..", "run.json"),
+      temp = `${file}.${randomUUID()}.tmp`;
+    let log = "";
+    try {
+      log = readFileSync(join(file, "..", "log.txt"), "utf8");
+    } catch {
+      /* A step may die before spawning. */
+    }
+    record.session ??=
+      log.match(
+        /"type"\s*:\s*"thread.started"[^\n]*?"thread_id"\s*:\s*"([^"]+)"/,
+      )?.[1] ??
+      log.match(/session id: (\S+)/)?.[1] ??
+      null;
+    record.verdict = "interrupted";
+    record.end = new Date().toISOString();
+    try {
+      writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`);
+      renameSync(temp, file);
+    } finally {
+      rmSync(temp, { force: true });
+    }
+  }
 }
 function completed(record: RunRecord, auto: boolean) {
   return (
@@ -522,7 +552,10 @@ export async function laneRun(
     const classification = laneTier(lane.worktree);
     tier = classification.tier;
     unlock = context.lock(id);
-    const history = role === "tester" ? laneHistory(context.common, id) : [];
+    interruptLaneRuns(context.common, id);
+    const allHistory = laneHistory(context.common, id),
+      last = allHistory.at(-1);
+    const history = role === "tester" ? allHistory : [];
     const unknown = history.flatMap((item) =>
       item.role === "unknown" ? [item.folder] : [],
     );
@@ -547,7 +580,13 @@ export async function laneRun(
       return 1;
     }
     const custom = values.get("--prompt"),
-      resume = values.get("--resume");
+      resume =
+        values.get("--resume") ??
+        (last?.role === role &&
+        last.role !== "unknown" &&
+        last.verdict === "interrupted"
+          ? (last.session ?? undefined)
+          : undefined);
     const issue: unknown = custom ? null : JSON.parse(context.issue(id));
     if (
       !custom &&

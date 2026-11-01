@@ -109,6 +109,8 @@ const mode=readFileSync(join(root,'mode'),'utf8');
 writeFileSync(join(root,'harness-pid'),String(process.pid));
 if(mode==='capacity'||mode==='limit')console.log('session id: fake-session');else console.log(JSON.stringify({type:'thread.started',thread_id:'fake-session'}));
 if(mode==='limit'||(mode==='capacity'&&count===0)){console.log('Selected model is at capacity');process.exit(1)}
+if(mode==='auto-slow')await new Promise(done=>setTimeout(done,3000));
+if(mode==='auto-hold'&&args[args.indexOf('-m')+1]==='tester')await new Promise(()=>setInterval(()=>{},1000));
 const flag=args.findIndex(a=>a==='--output-last-message'||a==='-o');if(flag<0)process.exit(8);
 if(mode.startsWith('auto')){
  const role=args[args.indexOf('-m')+1],prior=readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line));
@@ -273,17 +275,18 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
     git(["push", "origin", "main"]);
     git(["fetch", "origin", "main"]);
   }
-  function launch(entry = script, allowEmpty = false) {
-    const child = spawn(
-      process.execPath,
-      [entry, "run", "one", "--role", "builder"],
-      {
-        cwd: caller,
-        env,
-        windowsHide: true,
-        timeout: 20_000,
-      },
-    );
+  function launch(
+    entry = script,
+    allowEmpty = false,
+    args = ["run", "one", "--role", "builder"],
+  ) {
+    const child = spawn(process.execPath, [entry, ...args], {
+      cwd: caller,
+      env,
+      windowsHide: true,
+      timeout: 20_000,
+      detached: args.includes("--detach"),
+    });
     return Object.assign(
       new Promise<{ code: number | null; output: Verdict }>((done, fail) => {
         let stdout = "";
@@ -711,6 +714,11 @@ test("hard-killed runner retains the harness lock until the harness exits", asyn
     expect(first.child.kill("SIGKILL")).toBe(true);
     await first;
     expect(alive(pid)).toBe(true);
+    const runs = join(f.main, ".git", "forge-lane-runs", "one");
+    const record = join(runs, readdirSync(runs)[0]!, "run.json");
+    const before = readFileSync(record, "utf8");
+    f.run(["list"]);
+    expect(readFileSync(record, "utf8")).toBe(before);
     writeFileSync(join(f.root, "mode"), "ok");
     second = f.run(["run", "one", "--role", "builder"]);
   } finally {
@@ -1069,6 +1077,194 @@ test("auto reads the Claude tester verdict through the same parser as Codex", ()
   expect(f.attempts()[1]!.args).toContain("--model");
   expect(f.attempts()[1]!.args).toContain("claude-sonnet-5-5");
 });
+
+function killFixture(pid: number, group = false) {
+  if (process.platform === "win32")
+    spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], {
+      windowsHide: true,
+      stdio: "ignore",
+      timeout: 10_000,
+    });
+  else {
+    try {
+      process.kill(group ? -pid : pid, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  }
+}
+
+test("detached auto survives parent exit and refuses a second chain", async () => {
+  const f = autoFixture("auto-slow"),
+    start = Date.now();
+  const launched = f.launch(script, false, [
+    "auto",
+    "one",
+    "--round-cap",
+    "1",
+    "--detach",
+  ]);
+  const first = await launched;
+  expect(first.code).toBe(0);
+  expect(Object.keys(first.output).sort()).toEqual([
+    "log",
+    "next",
+    "outcome",
+    "pid",
+  ]);
+  expect(first.output).toMatchObject({
+    outcome: "detached",
+    next: "bun tools/lane.ts list",
+  });
+  const { pid, log } = first.output as unknown as { pid: number; log: string };
+  try {
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(pid).toBeGreaterThan(0);
+    expect(log).toStartWith(f.runs);
+    killFixture(launched.child.pid!, true);
+    await waitForProcess("detached harness", () => f.attempts().length === 1);
+    const folders = readdirSync(f.runs);
+    const second = f.auto(["--detach"]);
+    expect(second.code).toBe(1);
+    expect(second.lines[0]?.next).toContain("already running");
+    expect(readdirSync(f.runs)).toEqual(folders);
+    const record = join(
+      f.runs,
+      folders.find((name) => existsSync(join(f.runs, name, "run.json")))!,
+      "run.json",
+    );
+    const before = readFileSync(record, "utf8");
+    expect(JSON.parse(before).verdict).toBe("started");
+    f.run(["list"]);
+    expect(readFileSync(record, "utf8")).toBe(before);
+    const deadline = Date.now() + 20_000;
+    while (
+      !readFileSync(log, "utf8").includes('"outcome":"ready"') &&
+      Date.now() < deadline
+    )
+      await new Promise((done) => setTimeout(done, 50));
+    expect(
+      JSON.parse(readFileSync(log, "utf8").trim().split(/\r?\n/).at(-1)!),
+    ).toMatchObject({ outcome: "ready" });
+    expect(f.roles()).toEqual(["builder", "tester"]);
+  } finally {
+    killFixture(pid, true);
+    if (existsSync(join(f.root, "harness-pid")))
+      killFixture(Number(readFileSync(join(f.root, "harness-pid"), "utf8")));
+  }
+});
+
+for (const detect of ["list", "auto", "run"])
+  test(`interrupted tester recovers through ${detect} and resumes its session without consuming the cap`, async () => {
+    const f = autoFixture("auto-hold");
+    change(f, ["docs/guide.md"]);
+    const first = f.launch(script, true, [
+      "run",
+      "one",
+      "--role",
+      "tester",
+      "--round-cap",
+      "1",
+    ]);
+    let pid = 0;
+    try {
+      await waitForProcess("held tester", () =>
+        existsSync(join(f.root, "harness-pid")),
+      );
+      pid = Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
+      const record = join(f.runs, readdirSync(f.runs)[0]!, "run.json");
+      await waitForProcess("session log", () =>
+        readFileSync(join(record, "..", "log.txt"), "utf8").includes(
+          "fake-session",
+        ),
+      );
+      const lock = join(f.main, ".git", "forge-lane-one.lock");
+      const child = Number(readdirSync(lock)[0]!.split("-").at(-1));
+      expect(first.child.kill("SIGKILL")).toBe(true);
+      await first;
+      killFixture(child, true);
+      killFixture(pid);
+      await waitForProcess(
+        "killed harness",
+        () => !alive(pid) && !alive(child),
+      );
+      writeFileSync(join(f.root, "mode"), "auto-clean");
+      if (detect === "list") {
+        const listed = f.run(["list"]);
+        expect(JSON.stringify(listed.lines)).toContain("tester interrupted");
+      }
+      const result =
+        detect === "run"
+          ? f.runRole("tester", ["--round-cap", "1"])
+          : f.auto(["--round-cap", "1"]);
+      expect(result.code).toBe(0);
+      const interrupted = JSON.parse(readFileSync(record, "utf8"));
+      expect(interrupted).toMatchObject({
+        verdict: "interrupted",
+        role: "tester",
+        round: 1,
+        session: "fake-session",
+      });
+      expect(interrupted.end).toMatch(/^\d{4}-/);
+      expect(f.attempts()[1]!.args).toContain("resume");
+      expect(f.attempts()[1]!.args).toContain("fake-session");
+      const history = readdirSync(f.runs).map((name) =>
+        JSON.parse(readFileSync(join(f.runs, name, "run.json"), "utf8")),
+      );
+      expect(
+        history.filter((row) => row.role === "tester").map((row) => row.round),
+      ).toEqual([1, 1]);
+      expect(f.roles()).toEqual(["tester", "tester"]);
+    } finally {
+      killFixture(first.child.pid!);
+      if (pid) killFixture(pid);
+      await first;
+    }
+  });
+
+for (const session of ["fixture-session", null])
+  test(`interrupted history starts a fresh folder with session ${session}`, () => {
+    const f = autoFixture("auto-clean");
+    const record = f.seed("builder", null, "started");
+    const file = join(record.reply, "..", "run.json");
+    writeFileSync(file, JSON.stringify({ ...record, end: null, session }));
+    expect(f.auto().code).toBe(0);
+    const args = f.attempts()[0]!.args;
+    if (session)
+      expect(
+        args.slice(args.indexOf("resume"), args.indexOf("resume") + 2),
+      ).toEqual(["resume", session]);
+    else expect(args).not.toContain("resume");
+    expect(JSON.parse(readFileSync(file, "utf8")).verdict).toBe("interrupted");
+    expect(readdirSync(f.runs)).toHaveLength(3);
+  });
+
+for (const role of ["fixer", "reviewer"])
+  test(`interrupted ${role} reruns before accepting prior tester history`, () => {
+    const f = autoFixture("auto-clean");
+    change(f, ["docs/guide.md"]);
+    const prior = f.seed(
+      "tester",
+      1,
+      "completed",
+      role === "fixer" ? "Verdict: FAIL" : "Verdict: PASS",
+    );
+    writeFileSync(
+      join(prior.reply, "..", "run.json"),
+      JSON.stringify({ ...prior, head: f.head() }),
+    );
+    const record = f.seed(role, null, "started");
+    const file = join(record.reply, "..", "run.json");
+    writeFileSync(file, JSON.stringify({ ...record, end: null }));
+    expect(f.auto().code).toBe(0);
+    expect(f.roles()[0]).toBe(role);
+    expect(f.attempts()[0]!.args).toContain("fixture-session");
+    if (role === "fixer")
+      expect(f.attempts()[0]!.prompt).toContain(
+        prior.reply.replaceAll("\\", "/"),
+      );
+    expect(JSON.parse(readFileSync(file, "utf8")).verdict).toBe("interrupted");
+  });
 
 test("auto chains builder, failed tester, fixer and passing tester to ready", () => {
   const f = autoFixture();
