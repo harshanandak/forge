@@ -26,7 +26,45 @@ type Context = {
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-export function laneClose(argv: string[], ctx: Context): number {
+function closeOptions(argv: string[]): Map<string, string> {
+  const issue = argv[0] ?? "";
+  const values = new Map<string, string>();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(issue))
+    throw new Error("invalid issue id");
+  for (let i = 1; i < argv.length; i++) {
+    const key = argv[i]!;
+    if (/^--(keep-open|discard-ignored)$/.test(key) && !values.has(key)) {
+      values.set(key, "true");
+      continue;
+    }
+    const value = argv[++i];
+    if (
+      !["--pr", "--receipt", "--dropped"].includes(key) ||
+      !value?.trim() ||
+      value.startsWith("--") ||
+      values.has(key)
+    )
+      throw new Error("invalid, duplicate, or missing option");
+    values.set(key, value);
+  }
+  if (values.has("--dropped") && values.has("--receipt"))
+    throw new Error("--dropped cannot be combined with --receipt");
+  if (
+    !/^[1-9]\d*$/.test(values.get("--pr") ?? "") ||
+    !Number.isSafeInteger(Number(values.get("--pr"))) ||
+    (!values.has("--dropped") && !values.has("--receipt"))
+  )
+    throw new Error(
+      values.has("--dropped")
+        ? "close --dropped requires numeric --pr"
+        : "close requires numeric --pr and --receipt",
+    );
+  return values;
+}
+export function laneClose(
+  argv: string[],
+  context: Context | (() => Context),
+): number {
   const issue = argv[0] ?? "";
   let pr = 0,
     receipt = "",
@@ -62,36 +100,13 @@ export function laneClose(argv: string[], ctx: Context): number {
     return ok ? 0 : stage === "input" ? 2 : 1;
   };
   try {
-    const values = new Map<string, string>();
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(issue))
-      throw new Error("invalid issue id");
-    for (let i = 1; i < argv.length; i++) {
-      const key = argv[i]!;
-      if (/^--(keep-open|discard-ignored)$/.test(key) && !values.has(key)) {
-        values.set(key, "true");
-        continue;
-      }
-      const value = argv[++i];
-      if (
-        !["--pr", "--receipt", "--dropped"].includes(key) ||
-        !value?.trim() ||
-        value.startsWith("--") ||
-        values.has(key)
-      )
-        throw new Error("invalid, duplicate, or missing option");
-      values.set(key, value);
-    }
+    const values = closeOptions(argv);
     const dropped = values.get("--dropped") ?? "";
     const keepOpen = Boolean(dropped) || values.has("--keep-open");
     pr = Number(values.get("--pr"));
     receipt = values.get("--receipt") ?? "";
-    if (
-      !/^[1-9]\d*$/.test(values.get("--pr") ?? "") ||
-      !Number.isSafeInteger(pr) ||
-      (!dropped && !receipt.trim())
-    )
-      throw new Error("close requires numeric --pr and --receipt");
     stage = "preflight";
+    const ctx = typeof context === "function" ? context() : context;
     try {
       unlock = ctx.lock(issue);
     } catch (error) {
@@ -194,7 +209,7 @@ export function laneClose(argv: string[], ctx: Context): number {
     )
       throw new Error("invalid PR or local lane head");
     if (head !== pull.headRefOid) {
-      const location = JSON.stringify(lane.worktree.replaceAll("\\", "/"));
+      const location = `'${lane.worktree.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`;
       next = `inspect and preserve local changes, then git -C ${location} fetch origin pull/${pr}/head; git -C ${location} merge --ff-only ${pull.headRefOid}; rerun close`;
     }
     if (
@@ -387,8 +402,9 @@ export function laneClose(argv: string[], ctx: Context): number {
       const history = join(ctx.common, "forge-lane-runs", issue);
       mkdirSync(history, { recursive: true });
       writeFileSync(
-        join(history, "close.json"),
+        join(history, `close-${randomUUID()}.json`),
         JSON.stringify({ ...state, closedAt: new Date().toISOString() }),
+        { flag: "wx" },
       );
     }
     const registry = join(ctx.common, "forge-lanes.json"),

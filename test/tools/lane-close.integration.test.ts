@@ -211,9 +211,9 @@ switch(op){
     stateFile,
     JSON.stringify({ issue: { id: "one", title: "Fixture", status: "open" } }),
   );
-  function run(args: string[]) {
+  function run(args: string[], cwd = caller) {
     const result = spawnSync(process.execPath, [script, ...args], {
-      cwd: caller,
+      cwd,
       env,
       encoding: "utf8",
       timeout: 30_000,
@@ -514,6 +514,120 @@ function closedPR(f: ReturnType<typeof fixture>) {
   });
 }
 
+function closingRecords(f: ReturnType<typeof fixture>) {
+  const history = join(f.common, "forge-lane-runs", "one");
+  return readdirSync(history)
+    .filter((name) => /^close(?:-.*)?\.json$/.test(name))
+    .map(
+      (name) =>
+        JSON.parse(readFileSync(join(history, name), "utf8")) as Record<
+          string,
+          unknown
+        >,
+    );
+}
+
+test("two dropped closes for one issue retain both closing records", () => {
+  const f = fixture();
+  closedPR(f);
+  expect(dropped(f).code).toBe(0);
+  f.git(["worktree", "add", "filler", "lane/one"]);
+  f.git(["worktree", "move", "filler", f.lane]);
+  writeFileSync(
+    f.registry,
+    JSON.stringify([
+      {
+        issue: "one",
+        branch: "lane/one",
+        worktree: f.lane,
+        brief: join(f.root, "brief.md"),
+      },
+    ]),
+  );
+  f.change((state) => {
+    state.pr.url = "https://github.com/fixture/repo/pull/43";
+  });
+  expect(
+    f.run(["close", "one", "--pr", "43", "--dropped", "second reason"]).code,
+  ).toBe(0);
+  expect(closingRecords(f)).toHaveLength(2);
+  expect(
+    closingRecords(f)
+      .map(({ pr, dropped }) => ({ pr, dropped }))
+      .sort((a, b) => Number(a.pr) - Number(b.pr)),
+  ).toEqual([
+    { pr: 42, dropped: "measured slower" },
+    { pr: 43, dropped: "second reason" },
+  ]);
+});
+
+test("dropped and receipt are refused before external calls", () => {
+  const f = fixture();
+  const result = f.run(
+    [
+      "close",
+      "one",
+      "--pr",
+      "42",
+      "--dropped",
+      "reason",
+      "--receipt",
+      "unvalidated",
+    ],
+    f.root,
+  );
+  expect(result.code).toBe(2);
+  expect(result.output.reasons).toEqual([
+    "--dropped cannot be combined with --receipt",
+  ]);
+  expect(JSON.stringify(result.output)).not.toContain("unvalidated");
+  expect(result.stderr).toBe("");
+  expect(f.calls()).toEqual([]);
+});
+
+for (const pr of [[], ["--pr", "invalid"], ["--pr", "9007199254740992"]])
+  test(`dropped requires only numeric PR: ${pr.join(" ") || "missing"}`, () => {
+    const f = fixture();
+    const result = f.run(["close", "one", ...pr, "--dropped", "reason"]);
+    expect(result.code).toBe(2);
+    expect(result.output.reasons).toEqual([
+      "close --dropped requires numeric --pr",
+    ]);
+    expect(f.calls()).toEqual([]);
+  });
+
+test("head mismatch recovery commands preserve shell characters in the worktree path", () => {
+  const f = fixture();
+  const head = updateBranch(f);
+  const lane = join(f.main, ".worktrees", "one $draft `tick's");
+  f.git(["worktree", "move", f.lane, lane]);
+  const entries = JSON.parse(readFileSync(f.registry, "utf8")) as {
+    worktree: string;
+  }[];
+  entries[0]!.worktree = lane;
+  writeFileSync(f.registry, JSON.stringify(entries));
+  writeFileSync(join(lane, "change.txt"), "Preserve this work.\n");
+  const result = f.close();
+  expect(result.code).toBe(1);
+  const commands = String(result.output.next).match(
+    /git -C .*?; git -C .*?(?=; rerun close)/,
+  )?.[0];
+  expect(commands).toBeDefined();
+  const executed = spawnSync("bash", ["-c", commands!], {
+    cwd: f.root,
+    env: { ...process.env, draft: "WRONG_DIRECTORY" },
+    encoding: "utf8",
+    timeout: 15_000,
+    windowsHide: true,
+  });
+  expect(executed.error).toBeUndefined();
+  expect(executed.status).toBe(0);
+  expect(f.git(["rev-parse", "HEAD"], lane)).toBe(head);
+  expect(readFileSync(join(lane, "change.txt"), "utf8")).toBe(
+    "Preserve this work.\n",
+  );
+});
+
 test("dropped CLOSED lane needs no receipt, preserves local and remote branches and records why", () => {
   const f = fixture();
   closedPR(f);
@@ -527,14 +641,7 @@ test("dropped CLOSED lane needs no receipt, preserves local and remote branches 
   expect(f.run(["list"]).output.lanes).toEqual([]);
   expect(f.readState().issue.status).toBe("open");
   expect(f.writes().map((call) => call.args[1])).toEqual(["comment"]);
-  expect(
-    JSON.parse(
-      readFileSync(
-        join(f.common, "forge-lane-runs", "one", "close.json"),
-        "utf8",
-      ),
-    ),
-  ).toMatchObject({
+  expect(closingRecords(f)[0]).toMatchObject({
     dropped: "measured slower",
     pr: 42,
     head: f.head,
