@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { parse } from "yaml";
 
 const script = resolve(import.meta.dir, "../../tools/timings-merge.ts");
 function fixture(missing = "", invalid = false) {
@@ -92,6 +93,96 @@ test("downloads every shard and merges all files using the slower Node measureme
     rmSync(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("CI collection preserves the baseline and every phase's shard coverage", () => {
+  const repo = resolve(import.meta.dir, "../..");
+  const root = mkdtempSync(join(tmpdir(), "forge-timings-collection-"));
+  const workflow = parse(
+    readFileSync(join(repo, ".github/workflows/ci.yml"), "utf8"),
+  ) as {
+    jobs: {
+      verify: {
+        env: Record<string, string>;
+        steps: { name?: string; run?: string }[];
+      };
+    };
+  };
+  const job = workflow.jobs.verify;
+  const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as {
+    scripts: Record<string, string>;
+  };
+  pkg.scripts.build = "bun -e 'console.log(\"BUILD\")'";
+  pkg.scripts.prebuild = "";
+  pkg.scripts.postbuild = "";
+  const files = [
+    "test/a.test.ts",
+    "test/b.test.ts",
+    "test/c.test.ts",
+    "test/a.integration.test.ts",
+    "test/b.integration.test.ts",
+    "test/c.integration.test.ts",
+    "test/adapters/l5-state/private-files.integration.test.ts",
+    "test/surface/help-examples.integration.test.ts",
+    "test/adapters/vcs-git/vcs-git.integration.test.ts",
+    "test/assembly/shared-store/shared-store.integration.test.ts",
+    "test/tools/lane-run.integration.test.ts",
+    "test/tools/lane.integration.test.ts",
+    "test/tools/lane-close.integration.test.ts",
+  ];
+  try {
+    writeFileSync(join(root, "package.json"), JSON.stringify(pkg));
+    for (const path of files) {
+      mkdirSync(resolve(root, path, ".."), { recursive: true });
+      writeFileSync(
+        join(root, path),
+        "import {test} from 'bun:test'; test('file',()=>{},1000);",
+      );
+    }
+    const baseline = JSON.stringify({
+      version: 1,
+      files: Object.fromEntries(files.map((path, i) => [path, (i + 1) * 10])),
+    });
+    writeFileSync(join(root, "test/timings.json"), baseline);
+    const selected: string[] = [];
+    for (const shard of [1, 2, 3]) {
+      const env = {
+        ...process.env,
+        FORGE_DEVICE_ROOT: join(root, "device"),
+        FORGE_TEST_SHARD_ARG: `--shard=${shard}/3`,
+        FORGE_TEST_TIMINGS_ARG: job.env.FORGE_TEST_TIMINGS_ARG!.split("'")[1]!,
+        FORGE_TEST_UPDATE_ARG: "--update-timings",
+      };
+      for (const name of ["Unit tests", "Integration tests"]) {
+        const command = job.steps
+          .find((step) => step.name === name)!
+          .run!.replaceAll(/\$\{\{.*?\}\}/g, "--timings=test/timings.json");
+        const result = spawnSync(
+          "bash",
+          ["-e", "-o", "pipefail", "-c", command],
+          { cwd: root, env, encoding: "utf8", timeout: 15_000 },
+        );
+        expect(result.status, result.stdout + result.stderr).toBe(0);
+      }
+      for (const suite of ["unit", "parallel", "serial"]) {
+        const path = join(root, `timings-${suite}.json`);
+        expect(
+          Bun.file(path).size,
+          `Missing ${suite} timing file`,
+        ).toBeGreaterThan(0);
+        const data = JSON.parse(readFileSync(path, "utf8")) as {
+          files: Record<string, number>;
+        };
+        selected.push(...Object.keys(data.files));
+      }
+      expect(readFileSync(join(root, "test/timings.json"), "utf8")).toBe(
+        baseline,
+      );
+    }
+    expect(selected.sort()).toEqual(files.sort());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
 
 test("missing shard and invalid timing fail clearly without replacing the baseline", () => {
   for (const invalid of [false, true]) {

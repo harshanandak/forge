@@ -99,7 +99,7 @@ jobs:
     timeout-minutes: 20
     env:
       FORGE_TEST_SHARD_ARG: ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
-      FORGE_TEST_TIMINGS_ARG: ${{ matrix.shard && '--timings=timings-unit.json --timings=test/timings.json' || '' }}
+      FORGE_TEST_TIMINGS_ARG: ${{ matrix.shard && '--timings=timings-unit.json' || '' }}
       FORGE_TEST_UPDATE_ARG: ${{ matrix.shard && '--update-timings' || '' }}
     strategy:
       fail-fast: false
@@ -148,7 +148,7 @@ jobs:
         run: bun run check
       - name: Unit tests
         if: matrix.suite != 'pack'
-        run: bun run test:unit
+        run: bun run test:unit ${{ matrix.shard && '--timings=test/timings.json' || '' }}
       - name: Integration tests
         if: matrix.suite != 'pack'
         run: |
@@ -156,8 +156,8 @@ jobs:
           bun run build
           for phase in 1 2; do
             suite=parallel; if [ "$phase" = 2 ]; then suite=serial; fi
-            export FORGE_TEST_TIMINGS_ARG="--timings=timings-$suite.json --timings=test/timings.json"
-            bun exec "$(bun -p "require('./package.json').scripts['test:integration'].split(' && ')[$phase]")"
+            export FORGE_TEST_TIMINGS_ARG="--timings=timings-$suite.json"
+            bun exec "$(bun -p "require('./package.json').scripts['test:integration'].split(' && ')[$phase]") --timings=test/timings.json"
           done
       - if: matrix.shard
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
