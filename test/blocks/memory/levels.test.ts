@@ -15,7 +15,7 @@ test("on a host with no project, nearest is the device and a project level is re
     config,
     services,
   })) as { id: string };
-  expect(added.id).toBe("device/note-1");
+  expect(added.id).toBe("general/note-1");
   let refused: unknown;
   try {
     await entry["memory.add"]!({

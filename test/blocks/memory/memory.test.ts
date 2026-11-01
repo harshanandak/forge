@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { createAssembly } from "../../../src/assembly/index.ts";
+import type { StateRecord } from "../../../src/generated/types.ts";
 import {
   ownerApproval,
   done,
@@ -64,7 +65,7 @@ test("notes are written, read, edited as versions and forgotten under the device
       agent,
     ),
   ) as Added;
-  expect(added).toMatchObject({ status: "added", id: "device/note-1" });
+  expect(added).toMatchObject({ status: "added", id: "project/note-1" });
   expect(added.note.revision).toBe(1);
 
   const edited = done(
@@ -109,7 +110,7 @@ test("notes are written, read, edited as versions and forgotten under the device
     ),
   ).toEqual({
     status: "forgotten",
-    id: "device/note-1",
+    id: "project/note-1",
   });
   expect(
     done(await h.call("memory.show", { id: "device/note-1" }, agent)),
@@ -164,8 +165,8 @@ test("a natural-language prompt finds notes that match any of its words, best fi
   ) as Hits;
   // Every word of the prompt is not in any one note; any word may match.
   expect(found.hits.map((hit) => hit.id)).toEqual([
-    "device/note-1",
-    "device/note-2",
+    "project/note-1",
+    "project/note-2",
   ]);
   expect(found.hits[0]!.score).toBeGreaterThan(found.hits[1]!.score);
   expect(found.matched).toBe(2);
@@ -204,12 +205,12 @@ test("search narrows by scope and tag and honours the limit", async () => {
       .map((hit) => hit.id)
       .sort();
   expect(await ids({ scope: "repo:a" })).toEqual([
-    "device/note-1",
-    "device/note-3",
+    "repo:a/note-1",
+    "repo:a/note-2",
   ]);
-  expect(await ids({ tag: "y" })).toEqual(["device/note-2", "device/note-3"]);
-  expect(await ids({ scope: "repo:b", tag: "y" })).toEqual(["device/note-2"]);
-  expect(await ids({ scope: "repo:a", tag: "y" })).toEqual(["device/note-3"]);
+  expect(await ids({ tag: "y" })).toEqual(["repo:a/note-2", "repo:b/note-1"]);
+  expect(await ids({ scope: "repo:b", tag: "y" })).toEqual(["repo:b/note-1"]);
+  expect(await ids({ scope: "repo:a", tag: "y" })).toEqual(["repo:a/note-2"]);
   expect(await ids({ limit: 1 })).toHaveLength(1);
 }, 30_000);
 
@@ -237,7 +238,7 @@ test("a note that imitates a provenance marker is read back fenced as untrusted 
   for (const fenced of [shown.note.text, searched.hits[0]!.snippet]) {
     // The fence is ours and names where the text came from, not what the note claims.
     expect(fenced.kind).toBe("untrusted");
-    expect(fenced.source).toBe("memory:device/note-1");
+    expect(fenced.source).toBe("memory:project/note-1");
     // The note's own delimiter is defanged, and its fake marker stays inside the text value.
     expect(fenced.text).not.toContain("⟦");
     expect(fenced.text).not.toContain("⟧");
@@ -245,7 +246,7 @@ test("a note that imitates a provenance marker is read back fenced as untrusted 
   }
   expect(exported.notes[0]!.text).toMatchObject({
     kind: "untrusted",
-    source: "memory:device/note-1",
+    source: "memory:project/note-1",
   });
 }, 30_000);
 
@@ -343,7 +344,7 @@ test("export and restore round-trip notes and leave existing ones alone", async 
     const next = done(
       await second.call("memory.add", { text: "after" }, target),
     ) as Added;
-    expect(next.id).toBe("device/note-3");
+    expect(next.id).toBe("project/note-2");
     // A different text under a restored id is a conflict, and is left alone.
     done(
       await second.call(
@@ -361,7 +362,7 @@ test("export and restore round-trip notes and leave existing ones alone", async 
       ),
     ).toMatchObject({
       added: 0,
-      conflicts: ["device/note-1"],
+      conflicts: ["repo:a/note-1"],
     });
   } finally {
     await second.close();
@@ -525,26 +526,43 @@ test("without a configured format a decision is not invented", async () => {
   ).toHaveLength(0);
 }, 30_000);
 
-test("a writer that loses the race for a note id retries and gets the next one", async () => {
-  const entry = loadEntry("memory");
-  const state = memoryState((records) => {
-    // Another writer takes counter value 1 between this writer's read and its write.
-    records.set("meta/note-counter", {
+/** Another scoped writer commits between this writer's initial read and its first write. */
+function competingWriter(records: Map<string, StateRecord>): void {
+  for (const [key, value] of [
+    ["meta/note-counter", { last: 1 }],
+    ["scope-counter/general", { last: 1 }],
+    ["note-id/general/note-1", { number: 1 }],
+    [
+      "note/000000001",
+      {
+        text: "the other writer's note",
+        tags: [],
+        links: [],
+        previous: [],
+        scopeNumber: { scope: "general", number: 1 },
+      },
+    ],
+  ] as const)
+    records.set(key, {
       namespace: "forge/memory",
-      key: "meta/note-counter",
+      key,
       revision: 1,
-      value: { last: 1 },
+      value,
       updatedAt: "2026-10-18T00:00:00Z",
       updatedBy: { kind: "agent", id: "b" },
     });
-  });
+}
+
+test("a writer that loses the race for a note id retries and gets the next one", async () => {
+  const entry = loadEntry("memory");
+  const state = memoryState(competingWriter);
   const added = (await entry["memory.add"]!({
     input: { text: "mine", level: "device" },
     services: { state, levels: state },
   })) as {
     id: string;
   };
-  expect(added.id).toBe("device/note-2");
+  expect(added.id).toBe("general/note-2");
 }, 30_000);
 
 test("without the retry the same lost race surfaces as a failed write", async () => {
@@ -552,16 +570,7 @@ test("without the retry the same lost race surfaces as a failed write", async ()
     from: "if (!conflict(error)) throw error;\n      last = error;",
     to: "throw error;",
   });
-  const state = memoryState((records) => {
-    records.set("meta/note-counter", {
-      namespace: "forge/memory",
-      key: "meta/note-counter",
-      revision: 1,
-      value: { last: 1 },
-      updatedAt: "2026-10-18T00:00:00Z",
-      updatedBy: { kind: "agent", id: "b" },
-    });
-  });
+  const state = memoryState(competingWriter);
   let lost: unknown;
   try {
     await entry["memory.add"]!({

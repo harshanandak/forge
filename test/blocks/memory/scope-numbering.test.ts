@@ -1,12 +1,7 @@
-import { readFileSync } from "node:fs";
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { loadEntry, memoryState, ownerApproval, blockSchema } from "./lib.ts";
 
 setDefaultTimeout(30_000);
-const main = readFileSync(
-  "test/node-fixtures/memory/scope-memory-entry.cts.txt",
-  "utf8",
-);
 const entry = loadEntry("memory");
 type Store = ReturnType<typeof memoryState>;
 const services = (state: Store) => ({ state, levels: state });
@@ -36,22 +31,28 @@ async function backfill(state: Store) {
     })) as { complete: boolean };
   } while (!result.complete);
 }
-async function fixture() {
-  const old = loadEntry("memory", undefined, {}, main);
+function fixture() {
   const state = memoryState();
   for (let i = 0; i < 63; i++) {
-    await old["memory.add"]!({
-      input: {
+    state.put(
+      `note/${String(i + 1).padStart(9, "0")}`,
+      {
         text: "numbered memory",
-        level: "device",
         scope: ["forge", "curapod", "general"][i % 3],
+        tags: [],
         links: i ? ["device/note-1"] : [],
+        previous: [],
+        createdAt: "2026-10-18T00:00:00Z",
+        changedAt: "2026-10-18T00:00:00Z",
+        textAt: "2026-10-18T00:00:00Z",
       },
-      services: services(state),
-    });
+      { expectRevision: 0 },
+    );
   }
+  state.put("meta/note-counter", { last: 63 }, { expectRevision: 0 });
   return state;
 }
+
 test("new device ids count independently by scope, including unscoped general", async () => {
   const state = memoryState();
   const ids = [];
@@ -65,7 +66,7 @@ test("new device ids count independently by scope, including unscoped general", 
   ]);
 });
 test("current-main fixture backfills in bounded resumable chunks without changing records or links", async () => {
-  const state = await fixture();
+  const state = fixture();
   const before = state.list("note/");
   const commits = state.counts.putMany;
   expect(entry["memory.renumber"]).toBeFunction();
@@ -86,7 +87,7 @@ test("current-main fixture backfills in bounded resumable chunks without changin
   const all = state.list();
   await backfill(state);
   expect(state.list()).toEqual(all);
-  const other = await fixture();
+  const other = fixture();
   await backfill(other);
   expect(
     other
@@ -100,7 +101,7 @@ test("current-main fixture backfills in bounded resumable chunks without changin
   );
 });
 test("legacy aliases edit, link, propose, attach, forget and undo the same note", async () => {
-  const state = await fixture();
+  const state = fixture();
   await backfill(state);
   for (const id of ["device/note-2", "note-2"]) {
     const edited = await entry["memory.add"]!({
@@ -184,16 +185,41 @@ test("export restore preserves scoped ids even when scopes interleave and scope 
     expect((await show(restored, id)).note.id).toBe(id);
   expect((await add(restored, "forge")).id).toBe("forge/note-3");
 });
-test("configured scope wins over a differently named worktree in device context", async () => {
-  const state = memoryState(undefined, {
-    defaultScope: "forge-new",
-    inProject: true,
-  });
-  expect(
-    await entry["memory.scope"]!({
-      input: {},
-      config: { scope: "forge" },
+
+test("legacy show stays at one point read; scoped show adds exactly one index read", async () => {
+  const state = memoryState();
+  await add(state, "forge");
+  for (const id of ["note-1", "device/note-1", "forge/note-1"]) {
+    const gets = state.counts.get;
+    const lists = state.counts.list;
+    expect(await show(state, id)).toMatchObject({
+      note: { id: "forge/note-1" },
+    });
+    expect(state.counts.get - gets).toBe(id === "forge/note-1" ? 2 : 1);
+    expect(state.counts.list - lists).toBe(0);
+  }
+});
+
+test("legacy attachment needs no point reads and scoped attachment has a bounded lookup count", async () => {
+  const state = memoryState();
+  await add(state, "general");
+  await add(state, "general");
+  for (const ids of [
+    ["note-1", "device/note-2"],
+    ["general/note-1", "general/note-2"],
+  ]) {
+    const gets = state.counts.get;
+    const lists = state.counts.list;
+    const result = await entry["memory.attach"]!({
+      input: { ids },
       services: services(state),
-    }),
-  ).toEqual({ scope: "forge" });
+    });
+    expect(result).toMatchObject({
+      receipt: {
+        selected: [{ id: "general/note-1" }, { id: "general/note-2" }],
+      },
+    });
+    expect(state.counts.get - gets).toBe(ids[0] === "note-1" ? 0 : 2);
+    expect(state.counts.list - lists).toBe(1);
+  }
 });

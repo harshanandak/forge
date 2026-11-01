@@ -124,7 +124,9 @@ for (const level of ["device", "project"] as const) {
         const entry = loadEntry("memory");
         const h = stores(level);
         const id =
-          level === "device" ? "device/note-1" : `project/${PROJECT_ID}/note-1`;
+          level === "device"
+            ? "general/note-1"
+            : `project/${PROJECT_ID}/note-1`;
         if (operation === "edit") {
           expect(
             await entry["memory.add"]!({

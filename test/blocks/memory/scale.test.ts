@@ -47,6 +47,18 @@ function seedRecords(
 function reset(counts: Counts): void {
   for (const key of Object.keys(counts) as (keyof Counts)[]) counts[key] = 0;
 }
+async function renumber(
+  entry: ReturnType<typeof loadEntry>,
+  state: ReturnType<typeof memoryState>,
+): Promise<void> {
+  let result: { complete: boolean };
+  do {
+    result = (await entry["memory.renumber"]!({
+      input: {},
+      services: { state, levels: state },
+    })) as { complete: boolean };
+  } while (!result.complete);
+}
 
 const validRestore = blockSchema("memory", "restore.input.json");
 
@@ -230,16 +242,17 @@ test("a note added after thousands of forgotten ones is still found by an exact 
   const state = memoryState();
   // 5,001 old records, all forgotten, then one new note.
   seedRecords(state, 5001, () => undefined);
+  await renumber(entry, state);
   const added = (await entry["memory.add"]!({
     input: { text: "the quokka sanctuary opens in spring", level: "device" },
     services: { state, levels: state },
   })) as { id: string };
-  expect(added.id).toBe("device/note-5002");
+  expect(added.id).toBe("general/note-5002");
   const found = (await entry["memory.search"]!({
     input: { query: "quokka sanctuary" },
     services: { state, levels: state },
   })) as Page;
-  expect(found.hits.map((hit) => hit.id)).toEqual(["device/note-5002"]);
+  expect(found.hits.map((hit) => hit.id)).toEqual(["general/note-5002"]);
 }, 60_000);
 
 test("a cursor walk of a search reaches every matching note, however many there are", async () => {
@@ -440,7 +453,7 @@ test("a failing history lookup cannot turn a committed add into a failed call", 
     input: { text: "kept", level: "device" },
     services: { state: broken, levels: broken },
   })) as { status: string; id: string };
-  expect(added).toMatchObject({ status: "added", id: "device/note-1" });
+  expect(added).toMatchObject({ status: "added", id: "general/note-1" });
   // The note exists exactly once: a caller who saw a response has nothing to retry.
   expect(state.counts.putMany).toBe(1);
   expect(state.get("note/000000001")).toBeDefined();
@@ -452,6 +465,7 @@ test("a search walk is pinned to where it started: a note added between pages ne
   const total = 1500;
   // More than one window, every note matching, so the walk crosses a window boundary too.
   seedRecords(state, total, (number) => `shared word unique${number}`);
+  await renumber(entry, state);
   const search = async (cursor?: string) =>
     (await entry["memory.search"]!({
       input:
@@ -482,14 +496,14 @@ test("a search walk is pinned to where it started: a note added between pages ne
   // Exactly the notes that existed when the walk began, each once.
   expect(new Set(seen).size).toBe(seen.length);
   expect(seen).toHaveLength(total);
-  expect(seen).not.toContain(`device/note-${total + 1}`);
+  expect(seen).not.toContain(`general/note-${total + 1}`);
   // A new walk sees them.
   const fresh = (await entry["memory.search"]!({
     input: { query: "added", limit: 50 },
     services: { state, levels: state },
   })) as SearchPage;
   expect(fresh.hits.map((hit) => hit.id).sort()).toEqual([
-    `device/note-${total + 1}`,
-    `device/note-${total + 2}`,
+    `general/note-${total + 1}`,
+    `general/note-${total + 2}`,
   ]);
 }, 120_000);

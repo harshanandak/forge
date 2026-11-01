@@ -47,6 +47,7 @@ interface NoteValue {
   readonly textAt?: string;
   readonly versionApproval?: Approval & { readonly at: string };
   readonly scope?: string;
+  readonly scopeNumber?: { readonly scope: string; readonly number: number };
   readonly tags: readonly string[];
   readonly links: readonly string[];
   readonly previous: readonly Version[];
@@ -129,6 +130,8 @@ interface Source {
 const NOTE_PREFIX = "note/";
 const NOTE_END = "note/\u{10FFFF}";
 const NOTE_COUNTER = "meta/note-counter";
+const NOTE_ID = "note-id/";
+const SCOPE_COUNTER = "scope-counter/";
 const TRANSFER_PREFIX = "transfer/";
 const DECISION_PREFIX = "decision/";
 const DECISION_END = "decision/\u{10FFFF}";
@@ -258,8 +261,42 @@ function noteKey(number: number): string {
 function numberOf(record: StateRecord): number {
   return Number(record.key.slice(NOTE_PREFIX.length));
 }
-function idIn(source: Source, number: number): string {
-  return `${source.prefix}/note-${number}`;
+function idIn(source: Source, number: number, value?: NoteValue): string {
+  const identity = source.level === "device" ? value?.scopeNumber : undefined;
+  return identity
+    ? `${identity.scope}/note-${identity.number}`
+    : `${source.prefix}/note-${number}`;
+}
+/** Assign immutable identity and queue its index and scope counter with the note write. */
+function indexNote(
+  source: Source,
+  number: number,
+  value: NoteValue,
+  entries: BatchEntry[],
+) {
+  if (source.level !== "device") return;
+  const scope = value.scopeNumber?.scope ?? value.scope ?? "general";
+  const key = `${SCOPE_COUNTER}${scope}`;
+  const counter = readCounter(source.state, key);
+  const queued = entries.findIndex((entry) => entry.key === key);
+  const last =
+    queued < 0
+      ? counter.last
+      : (entries[queued]!.value as { last: number }).last;
+  const identity = value.scopeNumber ?? { scope, number: last + 1 };
+  const update = {
+    key,
+    value: { last: Math.max(last, identity.number) },
+    expectRevision: counter.revision,
+  };
+  if (queued < 0) entries.push(update);
+  else entries[queued] = update;
+  Object.assign(value, { scopeNumber: identity });
+  entries.push({
+    key: `${NOTE_ID}${idIn(source, number, value)}`,
+    value: { number },
+    expectRevision: 0,
+  });
 }
 /**
  * The one place an id from before levels is read: a bare note-N, stored in a link or given as
@@ -274,9 +311,18 @@ function qualifiedLinks(links: readonly string[]): string[] {
 /** A note id split into where it lives and its number. */
 function parseRef(
   id: string,
-): { level: Level; project?: string; number: number } | undefined {
+):
+  | { level: Level; project?: string; scope?: string; number: number }
+  | undefined {
   const match = NOTE_REF.exec(id);
-  if (!match) return undefined;
+  if (!match) {
+    const scoped = /^([a-z0-9][a-z0-9._:/-]{0,63})\/note-([0-9]{1,9})$/.exec(
+      id,
+    );
+    return scoped
+      ? { level: "device", scope: scoped[1]!, number: Number(scoped[2]) }
+      : undefined;
+  }
   return match[2] === undefined
     ? { level: "device", number: Number(match[3]) }
     : { level: "project", project: match[2], number: Number(match[3]) };
@@ -362,8 +408,18 @@ async function sourceFor(
 ): Promise<{ source: Source; number: number } | Unreached> {
   const ref = parseRef(id);
   if (!ref) return { ref: id, status: "not_found" };
-  if (ref.level === "device")
-    return { source: deviceSource(services.state), number: ref.number };
+  if (ref.level === "device") {
+    const number =
+      ref.scope === undefined
+        ? ref.number
+        : (
+            services.state.get(`${NOTE_ID}${id}`)?.value as
+              { number: number } | undefined
+          )?.number;
+    return number === undefined
+      ? { ref: id, status: "not_found" }
+      : { source: deviceSource(services.state), number };
+  }
   const own = services.levels.inProject
     ? await ownProject(services)
     : undefined;
@@ -414,7 +470,7 @@ function noteOf(
 ): { id: string; number: number; value: NoteValue; record: StateRecord } {
   const number = numberOf(record);
   return {
-    id: idIn(source, number),
+    id: idIn(source, number, record.value as NoteValue),
     number,
     value: record.value as NoteValue,
     record,
@@ -477,6 +533,7 @@ function present(
   text: string,
   versions = shown(source.state, record, value),
 ) {
+  id = idIn(source, numberOf(record), value);
   return {
     id,
     ...label(source),
@@ -816,7 +873,16 @@ module.exports = {
       }
       return { utf8Bytes, characters, jsonBytes };
     };
-    const ids = new Map([...new Set(input.ids ?? [])].map((id, i) => [id, i]));
+    const asked = await Promise.all(
+      (input.ids ?? []).map(async (id) => {
+        if (parseRef(id)?.scope === undefined) return qualified(id);
+        const found = await sourceFor(services, id);
+        return unreached(found)
+          ? id
+          : `${found.source.prefix}/note-${found.number}`;
+      }),
+    );
+    const ids = new Map([...new Set(asked)].map((id, i) => [id, i]));
     const words = new Set(
       [
         ...(input.labels ?? []),
@@ -826,7 +892,9 @@ module.exports = {
         .map((word) => word.toLowerCase()),
     );
     const seen = new Set(
-      (input.seen ?? []).map((note) => `${note.id}@${note.revision}`),
+      (input.seen ?? []).map(
+        (note) => `${qualified(note.id)}@${note.revision}`,
+      ),
     );
     const sources = [deviceSource(services.state)];
     const project = services.levels.inProject
@@ -844,6 +912,7 @@ module.exports = {
       line: string;
       number: number;
       source: number;
+      ref: string;
     })[] = [];
     for (const [sourceIndex, source] of sources.entries()) {
       let after = 0;
@@ -864,8 +933,9 @@ module.exports = {
           const noteScope =
             value.scope ?? (source.level === "project" ? scope : "general");
           if (noteScope !== "general" && noteScope !== scope) continue;
+          const ref = `${source.prefix}/note-${note.number}`;
           const reasons = [
-            ...(ids.has(note.id) ? ["asked"] : []),
+            ...(ids.has(ref) ? ["asked"] : []),
             ...(value.tags ?? []).filter(
               (tag) =>
                 tag.toLowerCase().startsWith("on:") &&
@@ -879,6 +949,7 @@ module.exports = {
           const line = `- [${noteScope}] ${note.id} (created ${at.slice(0, 10)}${updated === at ? "" : `, updated ${updated.slice(0, 10)}`}) ${text}`;
           candidates.push({
             id: note.id,
+            ref,
             revision: note.record.revision,
             scope: noteScope,
             reasons,
@@ -894,7 +965,7 @@ module.exports = {
     }
     candidates.sort(
       (a, b) =>
-        (ids.get(a.id) ?? Infinity) - (ids.get(b.id) ?? Infinity) ||
+        (ids.get(a.ref) ?? Infinity) - (ids.get(b.ref) ?? Infinity) ||
         Number(b.scope === "general") - Number(a.scope === "general") ||
         a.number - b.number ||
         a.source - b.source,
@@ -935,19 +1006,22 @@ module.exports = {
         revision: note.revision,
         scope: note.scope,
       };
-      if (seen.has(`${note.id}@${note.revision}`)) {
+      if (
+        seen.has(`${note.id}@${note.revision}`) ||
+        seen.has(`${note.ref}@${note.revision}`)
+      ) {
         omit(note, "seen");
         continue;
       }
       const line = fence(note.line, "memory:attach").text;
       const lineSize = measure(line);
       const size = lineSize.utf8Bytes + (lines.length ? 1 : 0);
-      if (used + size > 4096 && !ids.has(note.id)) {
+      if (used + size > 4096 && !ids.has(note.ref)) {
         omit(note, "over-budget");
         continue;
       }
       const overBudget =
-        used + size > 4096 && ids.has(note.id)
+        used + size > 4096 && ids.has(note.ref)
           ? {
               code: "ATTACH_OVER_BUDGET",
               message: `Asked note ${note.id} exceeds the 4096 UTF-8 byte budget (${used + size} bytes used).`,
@@ -1050,12 +1124,15 @@ module.exports = {
         previous,
         ...(kept?.approval === undefined ? {} : { approval: kept.approval }),
         ...(kept?.from === undefined ? {} : { from: kept.from }),
+        ...(kept?.scopeNumber === undefined
+          ? {}
+          : { scopeNumber: kept.scopeNumber }),
         ...(kept?.proposedForget === true
           ? { proposedForget: true as const }
           : {}),
       };
     };
-    const editing = input.id === undefined ? undefined : qualified(input.id);
+    let editing = input.id === undefined ? undefined : qualified(input.id);
     if (editing !== undefined) {
       // The id says where the note lives; another project's notes are never changed from here.
       const found = await sourceFor(services, editing);
@@ -1068,6 +1145,7 @@ module.exports = {
       const old = existing && (existing.value as NoteValue);
       if (!existing || !old || old.deleted === true)
         return { status: "not_found" as const, id: editing };
+      editing = idIn(source, number, old);
       const removed =
         input.tags === undefined
           ? undefined
@@ -1133,6 +1211,18 @@ module.exports = {
     return committed(() => {
       const counter = readCounter(target.state, NOTE_COUNTER);
       const number = counter.last + 1;
+      if (
+        target.level === "device" &&
+        counter.last &&
+        !(
+          target.state.get(noteKey(counter.last))?.value as
+            NoteValue | undefined
+        )?.scopeNumber
+      )
+        fail(
+          "UPGRADE_REQUIRED",
+          "Run forge memory renumber until complete before adding device notes",
+        );
       const value = fields(
         [],
         undefined,
@@ -1140,6 +1230,8 @@ module.exports = {
           ? resolvedScope(config, services)
           : undefined,
       );
+      const entries: BatchEntry[] = [];
+      indexNote(target, number, value, entries);
       const expected = canonical(value);
       const [, record] = target.state.putMany([
         {
@@ -1152,6 +1244,7 @@ module.exports = {
           value,
           expectRevision: 0,
         },
+        ...entries,
       ]);
       const read = target.state.get(noteKey(number));
       if (
@@ -1163,7 +1256,7 @@ module.exports = {
           "INTERNAL",
           "memory.add write did not match its readback; reconcile with memory.show before retrying",
         );
-      const id = idIn(target, number);
+      const id = idIn(target, number, value);
       return {
         status: "added" as const,
         id,
@@ -1427,7 +1520,7 @@ module.exports = {
     input: { id: string; expectRevision?: number; withdraw?: boolean };
     services: Services;
   }) => {
-    const id = qualified(input.id);
+    let id = qualified(input.id);
     const found = await sourceFor(services, id);
     if (unreached(found)) return { status: "not_found" as const, id };
     const { source, number } = found;
@@ -1436,6 +1529,7 @@ module.exports = {
     const existing = source.state.get(key);
     if (!existing) return { status: "not_found" as const, id };
     const old = existing.value as NoteValue;
+    id = idIn(source, number, old);
     if (old.deleted === true)
       return { status: "already_forgotten" as const, id };
     const withdraw = input.withdraw === true;
@@ -1494,6 +1588,7 @@ module.exports = {
       return { status: "not_found" as const, id: qualified(input.id) };
     }
     const old = existing.value as NoteValue;
+    input = { ...input, id: idIn(source, number, old) };
     const approval = approved(
       input.approval,
       "memory.forget",
@@ -1504,10 +1599,20 @@ module.exports = {
     );
     if (input.undo === true) {
       if (old.deleted !== true)
-        return { status: "not_forgotten" as const, id: qualified(input.id) };
+        return {
+          status: "not_forgotten" as const,
+          id: qualified(input.id),
+        };
       if (old.movedTo !== undefined || old.forgotten === undefined)
-        return { status: "undo_unavailable" as const, id: qualified(input.id) };
-      const value = { ...old.forgotten, approval };
+        return {
+          status: "undo_unavailable" as const,
+          id: qualified(input.id),
+        };
+      const value = {
+        ...old.forgotten,
+        ...(old.scopeNumber ? { scopeNumber: old.scopeNumber } : {}),
+        approval,
+      };
       const record = source.state.put(key, value, {
         expectRevision: input.expectRevision ?? existing.revision,
       });
@@ -1518,11 +1623,15 @@ module.exports = {
       };
     }
     if (old.deleted === true)
-      return { status: "already_forgotten" as const, id: qualified(input.id) };
+      return {
+        status: "already_forgotten" as const,
+        id: qualified(input.id),
+      };
     source.state.put(
       key,
       {
         ...TOMBSTONE,
+        ...(old.scopeNumber ? { scopeNumber: old.scopeNumber } : {}),
         forgotten: {
           ...old,
           textRevision: old.textRevision ?? existing.revision,
@@ -1556,6 +1665,7 @@ module.exports = {
     if (!existing)
       return { status: "not_found" as const, id: qualified(input.id) };
     const value = existing.value as NoteValue;
+    input = { ...input, id: idIn(source, number, value) };
     // A finished move answers the same way every time it is repeated.
     if (value.deleted === true)
       return value.movedTo === undefined
@@ -1575,7 +1685,7 @@ module.exports = {
     // The source's id is the transfer's identity. The destination records it beside the copy in
     // the same transaction, so a retry after a failure between the two stores finds the copy it
     // already made instead of making another.
-    const marker = `${TRANSFER_PREFIX}${qualified(input.id)}`;
+    const marker = `${TRANSFER_PREFIX}${source.prefix}/note-${number}`;
     const stamps = shown(source.state, existing, value);
     const copy: NoteValue = {
       text: value.text,
@@ -1611,6 +1721,10 @@ module.exports = {
         const counter = readCounter(target.state, NOTE_COUNTER);
         const at = recorded?.number ?? counter.last + 1;
         const current = target.state.get(noteKey(at));
+        if (current)
+          Object.assign(copy, {
+            scopeNumber: (current.value as NoteValue).scopeNumber,
+          });
         if (made && recorded) {
           // A transfer of another source revision is a different transfer, never a retry.
           if (recorded.sourceRevision !== existing.revision)
@@ -1631,6 +1745,8 @@ module.exports = {
         }
         // The first copy, or a transfer record whose copy never landed.
         const written = (current?.revision ?? 0) + 1;
+        const entries: BatchEntry[] = [];
+        indexNote(target, at, copy, entries);
         target.state.putMany([
           ...(recorded
             ? []
@@ -1655,12 +1771,13 @@ module.exports = {
             } satisfies Transfer,
             expectRevision: made?.revision ?? 0,
           },
+          ...entries,
         ]);
         return { at, settled: false };
       },
     );
     if ("conflict" in placed) return fail("TRANSFER_CONFLICT", placed.conflict);
-    const to = idIn(target, placed.at);
+    const to = idIn(target, placed.at, copy);
     if (input.keep === true)
       return {
         status: "copied" as const,
@@ -1671,7 +1788,11 @@ module.exports = {
     // Retiring the source comes last: until it commits, the source still holds the note.
     source.state.put(
       key,
-      { ...TOMBSTONE, movedTo: to },
+      {
+        ...TOMBSTONE,
+        ...(value.scopeNumber ? { scopeNumber: value.scopeNumber } : {}),
+        movedTo: to,
+      },
       { expectRevision: existing.revision },
     );
     return {
@@ -1752,6 +1873,9 @@ module.exports = {
         id: note.id,
         revision: note.record.revision,
         ...(note.value.scope === undefined ? {} : { scope: note.value.scope }),
+        ...(note.value.scopeNumber
+          ? { scopeNumber: note.value.scopeNumber }
+          : {}),
         tags: [...note.value.tags],
         links: qualifiedLinks(note.value.links),
         text: {
@@ -1776,6 +1900,7 @@ module.exports = {
       notes: readonly {
         id: string;
         scope?: string;
+        scopeNumber?: NoteValue["scopeNumber"];
         tags: readonly string[];
         links: readonly string[];
         text: { text: string };
@@ -1819,16 +1944,30 @@ module.exports = {
       // The exported ids of the notes this call restores: added, or already here unchanged.
       const restored = new Set<string>();
       const adding: { key: string; note: (typeof input.notes)[number] }[] = [];
-      let highest = 0;
+      let highest = readCounter(state, NOTE_COUNTER).last;
       for (const note of input.notes) {
         const ref = parseRef(note.id);
-        if (!ref || ref.level !== level) {
+        if (
+          !ref ||
+          ref.level !== level ||
+          (ref.scope !== undefined &&
+            (!note.scopeNumber ||
+              `${note.scopeNumber.scope}/note-${note.scopeNumber.number}` !==
+                note.id))
+        ) {
           conflicts.push(qualified(note.id));
           continue;
         }
-        const key = noteKey(ref.number);
-        const id = idIn(target, ref.number);
-        highest = Math.max(highest, ref.number);
+        const number =
+          ref.scope === undefined
+            ? ref.number
+            : ((
+                state.get(`${NOTE_ID}${note.id}`)?.value as
+                  { number: number } | undefined
+              )?.number ?? highest + 1);
+        const key = noteKey(number);
+        const id = ref.scope === undefined ? idIn(target, number) : note.id;
+        highest = Math.max(highest, number);
         const existing = state.get(key);
         if (existing) {
           const old = existing.value as NoteValue;
@@ -1864,6 +2003,7 @@ module.exports = {
             textAt: approval.at,
             versionApproval: approval,
             ...(note.scope === undefined ? {} : { scope: note.scope }),
+            ...(note.scopeNumber ? { scopeNumber: note.scopeNumber } : {}),
             tags: note.tags,
             links: relinked(note.links, restored),
             previous: [],
@@ -1872,6 +2012,16 @@ module.exports = {
           expectRevision: 0,
         });
       const added = entries.length;
+      for (const entry of [...entries]) {
+        const value = entry.value as NoteValue;
+        if (value.scopeNumber)
+          indexNote(
+            target,
+            Number(entry.key.slice(NOTE_PREFIX.length)),
+            value,
+            entries,
+          );
+      }
       const counter = readCounter(state, NOTE_COUNTER);
       if (counter.last < highest)
         entries.push({

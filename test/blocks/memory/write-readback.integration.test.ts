@@ -225,14 +225,16 @@ for (const level of ["device", "project"] as const) {
         h.cli("add", { level, text: "seed", scope: "old", tags: ["old"] }),
       );
       const events: string[] = [];
-      let next = 2;
+      let next = level === "device" ? 1 : 2;
       let revision = 1;
       for (const operation of ["add", "edit"] as const) {
         for (const field of ["text", "tags", "scope"] as const) {
           const id =
             operation === "edit"
               ? seed.id
-              : seed.id.replace(/note-\d+$/, `note-${next++}`);
+              : level === "device"
+                ? `requested/note-${next++}`
+                : seed.id.replace(/note-\d+$/, `note-${next++}`);
           const result = h.cli(
             "add",
             {

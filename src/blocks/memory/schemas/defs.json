@@ -26,9 +26,18 @@
     },
     "NoteId": {
       "type": "string",
-      "pattern": "^(?:device|project/[0-9a-f]{16})/note-[0-9]{1,9}$",
-      "maxLength": 40,
+      "pattern": "^(?:[a-z0-9][a-z0-9._:/-]{0,63}|project/[0-9a-f]{16})/note-[0-9]{1,9}$",
+      "maxLength": 80,
       "description": "A note's level and origin are part of its id: device/note-3 lives on this device, project/<project id>/note-3 in that project."
+    },
+    "ScopeNumber": {
+      "type": "object",
+      "properties": {
+        "scope": { "$ref": "defs.json#/$defs/Scope" },
+        "number": { "type": "integer", "minimum": 1, "maximum": 999999999 }
+      },
+      "required": ["scope", "number"],
+      "additionalProperties": false
     },
     "Scope": {
       "type": "string",
@@ -242,8 +251,8 @@
     },
     "NoteRef": {
       "type": "string",
-      "pattern": "^(?:(?:device|project/[0-9a-f]{16})/)?note-[0-9]{1,9}$",
-      "maxLength": 40,
+      "pattern": "^(?:(?:[a-z0-9][a-z0-9._:/-]{0,63}|project/[0-9a-f]{16})/)?note-[0-9]{1,9}$",
+      "maxLength": 80,
       "description": "A note id as input. A bare note-3 is a device note, as ids were before notes had levels; every output id is qualified."
     },
     "LinkRefs": {

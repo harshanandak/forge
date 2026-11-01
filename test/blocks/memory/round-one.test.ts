@@ -112,7 +112,7 @@ test("a new-format rule marker retains creation without a spurious updated date"
   setDay(4);
   await call("memory.propose-forget", { id: "device/note-1" });
   expect(await line()).toBe(
-    "- [general] device/note-1 (created 2026-10-01) new owner rule",
+    "- [general] general/note-1 (created 2026-10-01) new owner rule",
   );
 });
 

@@ -32,6 +32,7 @@
           "id": {
             "$ref": "defs.json#/$defs/NoteId"
           },
+          "scopeNumber": { "$ref": "defs.json#/$defs/ScopeNumber" },
           "revision": {
             "type": "integer",
             "minimum": 1

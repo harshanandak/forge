@@ -295,7 +295,7 @@ test("the catalog admits an agent proposal, shows its marker, and leaves owner f
     done(await h.call("memory.search", { query: "owner rule" }, agent)),
   ).toMatchObject({
     matched: 1,
-    hits: [{ id: "device/note-1", proposedForget: true }],
+    hits: [{ id: "project/note-1", proposedForget: true }],
   });
   const refused = await h.call("memory.forget", { id: "device/note-1" }, agent);
   expect(refused.ok).toBe(false);
@@ -309,13 +309,13 @@ test("the catalog admits an agent proposal, shows its marker, and leaves owner f
     ),
   ).toEqual({
     status: "forgotten",
-    id: "device/note-1",
+    id: "project/note-1",
   });
   expect(
     done(await h.call("memory.propose-forget", { id: "device/note-1" }, agent)),
   ).toEqual({
     status: "already_forgotten",
-    id: "device/note-1",
+    id: "project/note-1",
   });
 }, 60_000);
 

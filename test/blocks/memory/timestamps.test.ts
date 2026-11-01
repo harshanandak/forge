@@ -127,7 +127,7 @@ test("rule lines carry ids and UTC creation/change dates while ignoring metadata
       }
     ).text.text.split("\n")[0];
   expect(await line()).toBe(
-    "- [general] device/note-1 (created 2026-10-02) owner rule",
+    "- [general] general/note-1 (created 2026-10-02) owner rule",
   );
   setDay(3);
   await call("memory.add", {
@@ -146,12 +146,12 @@ test("rule lines carry ids and UTC creation/change dates while ignoring metadata
     approval: ownerApproval,
   });
   expect(await line()).toBe(
-    "- [general] device/note-1 (created 2026-10-02) owner rule",
+    "- [general] general/note-1 (created 2026-10-02) owner rule",
   );
   setDay(4);
   await call("memory.add", { id: "note-1", text: "changed rule" });
   expect(await line()).toBe(
-    "- [general] device/note-1 (created 2026-10-02, updated 2026-10-04) changed rule",
+    "- [general] general/note-1 (created 2026-10-02, updated 2026-10-04) changed rule",
   );
   setDay(5);
   await call("memory.add", {
@@ -167,13 +167,13 @@ test("rule lines carry ids and UTC creation/change dates while ignoring metadata
     scope: "resolved",
   });
   expect(await line()).toBe(
-    "- [resolved] device/note-1 (created 2026-10-02, updated 2026-10-06) changed rule",
+    "- [resolved] general/note-1 (created 2026-10-02, updated 2026-10-06) changed rule",
   );
 });
 
 test("the 6000 rule budget includes complete prefixes, ids, dates and separators while pointer stays identical", async () => {
   const { call } = setup();
-  const prefix = "- [general] device/note-1 (created 2026-10-01) ";
+  const prefix = "- [general] general/note-1 (created 2026-10-01) ";
   await call("memory.add", {
     level: "device",
     scope: "general",

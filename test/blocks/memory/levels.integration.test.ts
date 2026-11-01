@@ -109,8 +109,8 @@ test("integration: a general device note is seen from every project; a project n
     "general",
   );
   const own = await add(alpha, "alpha heron uses the blue pipeline", "project");
-  // Levels are part of the id, so the same number at two levels is two notes.
-  expect(device.id).toMatch(/^device\/note-[0-9]+$/);
+  // Device ids name their creation scope; project ids name their project identity.
+  expect(device.id).toMatch(/^general\/note-[0-9]+$/);
   expect(own.id).toMatch(/^project\/[0-9a-f]{16}\/note-[0-9]+$/);
   expect(own.note.origin).toEqual({
     level: "project",
@@ -247,7 +247,7 @@ test("integration: a device call works whatever project the caller's ambient con
       stale,
     ),
   ) as { id: string };
-  expect(added.id).toMatch(/^device\//);
+  expect(added.id).toMatch(/^plain\/note-[0-9]+$/);
   const found = done(
     await plain.call("memory.search", { query: "wren" }, stale),
   ) as { hits: Hit[] };
@@ -297,7 +297,7 @@ test("integration: a note moves between levels once, and repeating the move chan
     transfer: string;
   };
   expect(moved).toMatchObject({ status: "moved", transfer: note.id });
-  expect(moved.to).toMatch(/^device\//);
+  expect(moved.to).toMatch(/^general\/note-[0-9]+$/);
   expect(done(await alpha.call("memory.move", request, agent))).toEqual(moved);
   expect(done(await alpha.call("memory.show", { id: note.id }, agent))).toEqual(
     { status: "moved", to: moved.to },
@@ -389,7 +389,7 @@ test("integration: export and restore work per level, and a project export resto
   ) as { notes: { id: string }[] };
   expect(deviceExport.notes.map((note) => note.id)).toContain(fact.id);
   expect(
-    deviceExport.notes.every((note) => note.id.startsWith("device/")),
+    deviceExport.notes.every((note) => /^[^/]+\/note-[0-9]+$/.test(note.id)),
   ).toBe(true);
   // Restoring alpha's project export in beta puts the notes in beta's project.
   expect(
@@ -551,7 +551,7 @@ test("integration: on a host that serves no project, a person's note goes to the
         "human",
       ),
     ) as { id: string };
-    expect(person.id).toMatch(/^device\//);
+    expect(person.id).toMatch(/^general\/note-[0-9]+$/);
     expect(
       failed(await call({ text: "x", level: "project" }, "memory.add", "agent"))
         .code,
