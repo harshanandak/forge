@@ -10,6 +10,7 @@ import {
   renameSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -25,13 +26,21 @@ export type RunOptions = {
   readOnly?: boolean;
   started?: (pid: number) => void;
 };
-export async function runCodex(
+const defaultTiming = {
+  replyGraceMs: 90_000,
+  pollMs: 1_000,
+  retryDelayMs: 60_000,
+};
+export function runCodex(options: RunOptions, timing = defaultTiming) {
+  return runHarness("codex", options, timing);
+}
+export function runClaude(options: RunOptions, timing = defaultTiming) {
+  return runHarness("claude", options, timing);
+}
+async function runHarness(
+  harness: "codex" | "claude",
   options: RunOptions,
-  timing = {
-    replyGraceMs: 90_000,
-    pollMs: 1_000,
-    retryDelayMs: 60_000,
-  },
+  timing: typeof defaultTiming,
 ) {
   const { worktree, folder, model, effort } = options;
   mkdirSync(folder, { recursive: true });
@@ -68,11 +77,36 @@ export async function runCodex(
         "-o",
         reply,
       ];
-      if (options.readOnly) args.push("-c", 'sandbox_mode="read-only"');
-      else args.push("--dangerously-bypass-approvals-and-sandbox");
-      if (session) args.push("resume", session);
-      args.push("-");
-      let command = "codex";
+      if (harness === "claude") {
+        args.splice(
+          0,
+          args.length,
+          "-p",
+          "--model",
+          model,
+          "--effort",
+          effort,
+          "--output-format",
+          "stream-json",
+          "--verbose",
+        );
+        if (options.readOnly)
+          args.push(
+            "--permission-mode",
+            "plan",
+            "--tools",
+            "Read,Glob,Grep",
+            "--strict-mcp-config",
+          );
+        else args.push("--dangerously-skip-permissions");
+        if (session) args.push("--resume", session);
+      } else {
+        if (options.readOnly) args.push("-c", 'sandbox_mode="read-only"');
+        else args.push("--dangerously-bypass-approvals-and-sandbox");
+        if (session) args.push("resume", session);
+        args.push("-");
+      }
+      let command: string = harness;
       if (process.platform === "win32") {
         const path =
           Object.entries(process.env).find(
@@ -80,14 +114,22 @@ export async function runCodex(
           )?.[1] ?? "";
         const shim = path
           .split(delimiter)
-          .map((part) => join(part.replace(/^"|"$/g, ""), "codex"))
+          .flatMap((part) => {
+            const candidate = join(part.replace(/^"|"$/g, ""), harness);
+            return harness === "claude"
+              ? [candidate + ".exe", candidate]
+              : [candidate];
+          })
           .find(existsSync);
         if (!shim)
           throw new Error(
-            "codex shell shim not found on PATH; install Codex CLI",
+            `${harness} shell shim not found on PATH; install ${harness === "codex" ? "Codex" : "Claude"} CLI`,
           );
-        args.unshift(shim);
-        command = "sh";
+        if (harness === "claude" && shim.endsWith(".exe")) command = shim;
+        else {
+          args.unshift(shim);
+          command = "sh";
+        }
       }
       const output = openSync(log, retries ? "a" : "w");
       const promptPath = join(folder, retries ? "continue.txt" : "brief.md");
@@ -100,14 +142,52 @@ export async function runCodex(
       const promptFile = openSync(promptPath, "r");
       let seen: number | undefined;
       let timer: ReturnType<typeof setInterval> | undefined;
+      let pending = "",
+        capacity = false;
+      const event = (line: string) => {
+        let value: unknown;
+        try {
+          value = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (!object(value)) return;
+        if (typeof value.session_id === "string") session = value.session_id;
+        if (value.is_error === true || value.error || value.type === "error")
+          capacity ||= /rate.limit|overload/i.test(line);
+        if (
+          value.type === "rate_limit_event" &&
+          object(value.rate_limit_info) &&
+          value.rate_limit_info.status === "rejected"
+        )
+          capacity = true;
+        if (
+          value.type === "result" &&
+          !value.is_error &&
+          typeof value.result === "string"
+        )
+          writeFileSync(reply, value.result);
+      };
       try {
         exit = await new Promise<number | null>((done, fail) => {
           const child = spawn(command, args, {
             cwd: worktree,
-            stdio: [promptFile, output, output],
+            stdio: [promptFile, harness === "claude" ? "pipe" : output, output],
             windowsHide: true,
             detached: true,
           });
+          if (harness === "claude") {
+            child.stdout!.setEncoding("utf8");
+            child.stdout!.on("data", (chunk: string) => {
+              writeSync(output, chunk);
+              pending += chunk;
+              let newline: number;
+              while ((newline = pending.indexOf("\n")) >= 0) {
+                event(pending.slice(0, newline));
+                pending = pending.slice(newline + 1);
+              }
+            });
+          }
           stop = () => {
             if (child.exitCode !== null || child.signalCode !== null) return;
             if (process.platform === "win32")
@@ -143,6 +223,7 @@ export async function runCodex(
         closeSync(promptFile);
         closeSync(output);
       }
+      if (harness === "claude" && pending) event(pending);
       if (controller.signal.aborted) throw new Error("lane run interrupted");
       const text = readFileSync(log, "utf8").slice(offset);
       session ??=
@@ -153,7 +234,9 @@ export async function runCodex(
         null;
       if (
         existsSync(reply) ||
-        !text.slice(-4000).includes("Selected model is at capacity") ||
+        !(harness === "claude"
+          ? capacity
+          : text.slice(-4000).includes("Selected model is at capacity")) ||
         !session ||
         retries >= 3
       )
@@ -174,6 +257,7 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 type RunRecord = {
+  harness?: string;
   head?: string;
   completionHead?: string;
   tier?: ReviewTier;
@@ -429,8 +513,10 @@ export async function laneRun(
     harness = String(entry.harness);
     model = String(entry.model);
     effort = String(entry.effort);
-    if (harness !== "codex")
-      throw new Error(`unsupported harness: ${harness}; configure codex`);
+    if (harness !== "codex" && harness !== "claude")
+      throw new Error(
+        `unsupported harness: ${harness}; configure codex or claude`,
+      );
     const lane = context.lanes.find((item) => item.issue === id);
     if (!lane) throw new Error(`no active lane for ${id}; use start first`);
     const classification = laneTier(lane.worktree);
@@ -495,6 +581,7 @@ export async function laneRun(
     folder = join(context.common, "forge-lane-runs", id, randomUUID());
     mkdirSync(folder, { recursive: true });
     record = {
+      harness,
       role,
       tier: classification.tier,
       round,
@@ -508,7 +595,7 @@ export async function laneRun(
       head: git(lane.worktree, ["rev-parse", "HEAD"]),
     };
     save();
-    const result = await runCodex({
+    const result = await (harness === "claude" ? runClaude : runCodex)({
       worktree: lane.worktree,
       folder,
       model,
