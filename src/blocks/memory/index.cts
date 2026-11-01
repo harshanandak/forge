@@ -420,6 +420,34 @@ function noteOf(
     record,
   };
 }
+function movedPointer(to: string) {
+  const project = parseRef(to)?.project;
+  return {
+    status: "moved" as const,
+    to,
+    next: `Run forge memory show ${to} from a host ${project ? `inside project ${project}` : "on this device"}.`,
+  };
+}
+/** Follow only into this host's project, and never resolve a second tombstone. */
+function followMoved(source: Source, record: StateRecord, project?: Source) {
+  const original = noteOf(source, record);
+  const to = original.value.movedTo;
+  if (!original.value.deleted || to === undefined)
+    return { source, ...original };
+  const ref = parseRef(to);
+  if (
+    !project ||
+    ref?.level !== "project" ||
+    project.prefix !== `project/${ref.project}`
+  )
+    return movedPointer(to);
+  const destination = project.state.get(noteKey(ref.number));
+  if (!destination) return movedPointer(to);
+  const note = noteOf(project, destination);
+  if (note.value.deleted && note.value.movedTo !== undefined)
+    return movedPointer(note.value.movedTo);
+  return { source: project, ...note, movedFrom: original.id };
+}
 /**
  * One page of note records (tombstones included) from a range of note numbers. At most `limit`
  * records are read from the store, whatever the store holds.
@@ -476,6 +504,7 @@ function present(
   value: NoteValue,
   text: string,
   versions = shown(source.state, record, value),
+  movedFrom?: string,
 ) {
   return {
     id,
@@ -485,6 +514,7 @@ function present(
     tags: [...value.tags],
     links: qualifiedLinks(value.links),
     ...(value.from === undefined ? {} : { from: value.from }),
+    ...(movedFrom === undefined ? {} : { movedFrom }),
     ...(value.proposedForget === true ? { proposedForget: true as const } : {}),
     text: fence(text, `memory:${id}`, record.updatedAt),
     updatedAt: record.updatedAt,
@@ -670,8 +700,12 @@ module.exports = {
             value.scope ??
             (source.level === "project" ? scope : undefined) ??
             "general";
-          const count = counts.get(noteScope);
-          if (count !== undefined) counts.set(noteScope, count + 1);
+          const countScope =
+            source.level === "project" && !counts.has(noteScope)
+              ? scope
+              : noteScope;
+          const count = counts.get(countScope);
+          if (count !== undefined) counts.set(countScope, count + 1);
           if (
             count !== undefined &&
             input.notes &&
@@ -836,6 +870,7 @@ module.exports = {
     const scope = resolvedScope(config, services);
     type Selection = {
       id: string;
+      movedFrom?: string;
       revision: number;
       scope: string;
       reasons: string[];
@@ -845,6 +880,8 @@ module.exports = {
       number: number;
       source: number;
     })[] = [];
+    const byId = new Map<string, Selection>();
+    const moved: (ReturnType<typeof movedPointer> & { id: string })[] = [];
     for (const [sourceIndex, source] of sources.entries()) {
       let after = 0;
       for (;;) {
@@ -853,7 +890,26 @@ module.exports = {
           limit: LIST_LIMIT,
           descending: false,
         });
-        for (const note of records) {
+        for (const original of records) {
+          const resolved =
+            original.value?.deleted && ids.has(original.id)
+              ? followMoved(source, original.record, project)
+              : { source, ...original };
+          if ("status" in resolved) {
+            moved.push({ id: original.id, ...resolved });
+            continue;
+          }
+          const note = resolved;
+          const noteSource = resolved.source;
+          const movedFrom =
+            "movedFrom" in resolved && typeof resolved.movedFrom === "string"
+              ? resolved.movedFrom
+              : undefined;
+          if (movedFrom !== undefined)
+            ids.set(
+              note.id,
+              Math.min(ids.get(note.id) ?? Infinity, ids.get(movedFrom)!),
+            );
           const value = note.value as Partial<NoteValue> | null;
           if (
             !value ||
@@ -862,8 +918,13 @@ module.exports = {
           )
             continue;
           const noteScope =
-            value.scope ?? (source.level === "project" ? scope : "general");
-          if (noteScope !== "general" && noteScope !== scope) continue;
+            value.scope ?? (noteSource.level === "project" ? scope : "general");
+          if (
+            noteSource.level === "device" &&
+            noteScope !== "general" &&
+            noteScope !== scope
+          )
+            continue;
           const reasons = [
             ...(ids.has(note.id) ? ["asked"] : []),
             ...(value.tags ?? []).filter(
@@ -873,25 +934,37 @@ module.exports = {
             ),
           ];
           if (!reasons.length) continue;
-          const at = dates(source.state, note.record, note.value).createdAt;
-          const updated = contentTime(source.state, note.record, note.value);
+          const existing = byId.get(note.id);
+          if (existing) {
+            if (movedFrom !== undefined) existing.movedFrom = movedFrom;
+            continue;
+          }
+          const at = dates(noteSource.state, note.record, note.value).createdAt;
+          const updated = contentTime(
+            noteSource.state,
+            note.record,
+            note.value,
+          );
           const text = value.text.replace(/[\s\u0085]+/gu, " ").trim();
           const line = `- [${noteScope}] ${note.id} (created ${at.slice(0, 10)}${updated === at ? "" : `, updated ${updated.slice(0, 10)}`}) ${text}`;
           candidates.push({
             id: note.id,
+            ...(movedFrom === undefined ? {} : { movedFrom }),
             revision: note.record.revision,
             scope: noteScope,
             reasons,
             line,
             number: note.number,
-            source: sourceIndex,
+            source: noteSource.level === "project" ? 1 : sourceIndex,
           });
+          byId.set(note.id, candidates.at(-1)!);
         }
         const last = records.at(-1);
         if (records.length < LIST_LIMIT || !last) break;
         after = last.number;
       }
     }
+    moved.sort((a, b) => ids.get(a.id)! - ids.get(b.id)!);
     candidates.sort(
       (a, b) =>
         (ids.get(a.id) ?? Infinity) - (ids.get(b.id) ?? Infinity) ||
@@ -912,6 +985,9 @@ module.exports = {
       if (omitted.length < 50)
         omitted.push({
           id: note.id,
+          ...(note.movedFrom === undefined
+            ? {}
+            : { movedFrom: note.movedFrom }),
           revision: note.revision,
           scope: note.scope,
           reason,
@@ -932,6 +1008,7 @@ module.exports = {
     for (const note of candidates) {
       const identity = {
         id: note.id,
+        ...(note.movedFrom === undefined ? {} : { movedFrom: note.movedFrom }),
         revision: note.revision,
         scope: note.scope,
       };
@@ -985,6 +1062,7 @@ module.exports = {
       text: packet,
       receipt: {
         selected,
+        ...(moved.length ? { moved } : {}),
         omitted,
         omittedCount,
         packet: {
@@ -1375,17 +1453,26 @@ module.exports = {
       if (found.status === "not_found") return { status: "not_found" as const };
       return { status: "unavailable" as const, project: found.ref };
     }
-    const { source, number } = found;
-    const record = source.state.get(noteKey(number));
-    if (!record) return { status: "not_found" as const };
-    const value = record.value as NoteValue;
+    const initial = found.source.state.get(noteKey(found.number));
+    if (!initial) return { status: "not_found" as const };
+    const resolved = followMoved(
+      found.source,
+      initial,
+      (initial.value as NoteValue).movedTo !== undefined &&
+        services.levels.inProject
+        ? await ownProject(services)
+        : undefined,
+    );
+    if ("status" in resolved) return resolved;
+    const { source, record, value, id } = resolved;
+    const movedFrom = "movedFrom" in resolved ? resolved.movedFrom : undefined;
     if (value.deleted === true)
       return value.movedTo === undefined
         ? {
             status: "forgotten" as const,
             ...audit(value.approval, `memory:${qualified(input.id)}`),
           }
-        : { status: "moved" as const, to: value.movedTo };
+        : movedPointer(value.movedTo);
     if (
       input.revision === undefined ||
       (input.revision === record.revision &&
@@ -1396,11 +1483,12 @@ module.exports = {
         status: "found" as const,
         note: present(
           source,
-          qualified(input.id),
+          id,
           record,
           value,
           value.text,
           shown(source.state, record, value),
+          movedFrom,
         ),
       };
     const older = value.previous.find(
@@ -1411,11 +1499,12 @@ module.exports = {
       status: "found" as const,
       note: present(
         source,
-        qualified(input.id),
+        id,
         record,
         value,
         older.text,
         shown(source.state, record, value),
+        movedFrom,
       ),
     };
   },

@@ -12,6 +12,7 @@
         "type": "object",
         "properties": {
           "id": { "type": "string" },
+          "movedFrom": { "type": "string" },
           "revision": { "type": "integer", "minimum": 1 },
           "scope": { "type": "string" },
           "reasons": { "type": "array", "items": { "type": "string" } }

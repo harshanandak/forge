@@ -133,7 +133,8 @@
         },
         "approval": {
           "$ref": "defs.json#/$defs/ApprovalAudit"
-        }
+        },
+        "movedFrom": { "$ref": "defs.json#/$defs/NoteId" }
       },
       "additionalProperties": false,
       "required": [

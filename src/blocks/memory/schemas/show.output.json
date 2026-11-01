@@ -26,7 +26,8 @@
     },
     "approval": {
       "$ref": "defs.json#/$defs/ApprovalAudit"
-    }
+    },
+    "next": { "type": "string" }
   },
   "additionalProperties": false,
   "required": ["status"]
