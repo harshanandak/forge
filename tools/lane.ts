@@ -383,6 +383,7 @@ async function laneAuto(
         [id, "--role", step, "--round-cap", String(cap)],
         {
           ...context,
+          auto: true,
           ...(step === "fixer" ? { fixReport: last!.reply } : {}),
           report: (json) => {
             report = JSON.parse(json) as Record<string, unknown>;

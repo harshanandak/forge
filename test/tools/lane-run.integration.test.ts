@@ -976,15 +976,27 @@ test("auto treats an empty reviewer reply as ACT and verifies its report after r
 
 for (const role of ["tester", "reviewer"])
   for (const mode of ["empty", "no-reply"])
-    test(`successful ${role} with ${mode} reply completes for default verdict handling`, () => {
+    test(`manual ${role} with ${mode} reply fails without consuming a round`, () => {
       const f = roleFixture();
       writeFileSync(join(f.root, "mode"), mode);
       const result = f.runRole(role);
-      expect(result.code).toBe(0);
-      expect(result.output.verdict).toBe("completed");
+      expect(result.code).toBe(1);
+      expect(result.output.verdict).toBe("failed");
+      expect(JSON.stringify(result.output)).toContain("no reply was written");
+      const record = JSON.parse(
+        readFileSync(join(result.output.folder!, "run.json"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(record.verdict).toBe("failed");
       if (role === "tester") {
-        expect(f.runRole(role, ["--round-cap", "1"]).code).toBe(1);
-        expect(f.attempts()).toHaveLength(1);
+        writeFileSync(join(f.root, "mode"), "ok");
+        const retry = f.runRole(role, ["--round-cap", "1"]);
+        expect(retry.code).toBe(0);
+        expect(
+          JSON.parse(
+            readFileSync(join(retry.output.folder!, "run.json"), "utf8"),
+          ),
+        ).toMatchObject({ round: 1, verdict: "completed" });
+        expect(f.attempts()).toHaveLength(2);
       }
     });
 
@@ -1564,13 +1576,14 @@ test("builder and fixer assembly remains byte-identical while every launch recor
   expect(f.prompt()).toBe(expected);
 });
 
-test("failed tester and empty fixer records do not count, explicit prompts override templates", () => {
+test("failed and empty tester records do not count, explicit prompts override templates", () => {
   const f = roleFixture();
   const builder = f.seed("builder", null);
   const failedFix = f.seed("fixer", null, "failed");
   const emptyFix = f.seed("fixer", null, "completed", "  ");
   f.seed("tester", 1, "failed");
-  for (const mode of ["fail"]) {
+  f.seed("tester", 1, "completed", "  ");
+  for (const mode of ["empty", "fail"]) {
     writeFileSync(join(f.root, "mode"), mode);
     const failed = f.runRole("tester");
     expect(failed.output.verdict).toBe("failed");

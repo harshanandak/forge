@@ -235,11 +235,11 @@ export function laneHistory(
       ),
     );
 }
-function completed(record: RunRecord) {
+function completed(record: RunRecord, auto: boolean) {
   return (
     record.verdict === "completed" &&
     record.end !== null &&
-    (["tester", "reviewer"].includes(record.role) ||
+    ((auto && ["tester", "reviewer"].includes(record.role)) ||
       (existsSync(record.reply) &&
         readFileSync(record.reply, "utf8").trim().length > 0))
   );
@@ -336,6 +336,7 @@ export async function laneRun(
     lock: (id: string) => (pid?: number) => void;
     report?: (json: string) => void;
     fixReport?: string;
+    auto?: boolean;
   },
 ) {
   let role: string | null = null,
@@ -440,7 +441,7 @@ export async function laneRun(
     );
     const records = history
       .filter((item): item is KnownRun => item.role !== "unknown")
-      .filter(completed);
+      .filter((record) => completed(record, context.auto === true));
     const round =
       role === "tester"
         ? records.filter((record) => record.role === "tester").length +
@@ -520,11 +521,12 @@ export async function laneRun(
     try {
       hasReply = readFileSync(result.reply, "utf8").trim().length > 0;
     } catch {
-      /* Successful verdict roles default to FAIL/ACT without a readable reply. */
+      /* Missing or unreadable replies have no content. */
     }
     const success =
       (result.exit === 0 &&
-        (hasReply || ["tester", "reviewer"].includes(role))) ||
+        (hasReply ||
+          (context.auto === true && ["tester", "reviewer"].includes(role)))) ||
       (hasReply && result.stoppedAfterReply);
     Object.assign(record, {
       head: git(lane.worktree, ["rev-parse", "HEAD"]),
