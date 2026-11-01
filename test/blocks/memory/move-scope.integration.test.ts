@@ -59,6 +59,7 @@ test("integration: one built CLI call moves 100 notes in under 20 seconds in iso
     expect(checked.stdout.trim()).toBe(device);
     const under = relative(root, checked.stdout.trim());
     expect(isAbsolute(under) || under.startsWith("..")).toBe(false);
+    const seedStarted = performance.now();
     // Seed through the same API in one process; only the measured move launches a CLI.
     assembly = await createAssembly({ root: project, deviceRoot: device });
     let request = 0;
@@ -78,16 +79,28 @@ test("integration: one built CLI call moves 100 notes in under 20 seconds in iso
       if (!response.ok) throw new Error(JSON.stringify(response.error));
       return response.result;
     };
-    for (let n = 0; n < 100; n += 1)
-      await call("memory.add", {
-        level: "device",
-        scope: "alpha",
-        text: `note ${n}`,
-        tags: ["fact"],
-        links: ["device/note-1"],
-      });
+    const notes = Array.from({ length: 100 }, (_, n) => ({
+      id: `device/note-${n + 1}`,
+      scope: "alpha",
+      text: { kind: "untrusted", source: "scope-test", text: `note ${n}` },
+      tags: ["fact"],
+      links: ["device/note-1"],
+    }));
+    // Restore accepts at most 25 notes per call, committed as one batch.
+    for (let offset = 0; offset < notes.length; offset += 25)
+      expect(
+        await call("memory.restore", {
+          format: "forge.memory.export/2",
+          level: "device",
+          approval: { by: "owner", quote: "Restore the test fixture notes." },
+          notes: notes.slice(offset, offset + 25),
+        }),
+      ).toEqual({ added: 25, skipped: 0, conflicts: [] });
     await assembly.close();
     assembly = undefined;
+    console.log(
+      `100-note seed: ${Math.round(performance.now() - seedStarted)} ms`,
+    );
     const started = performance.now();
     const run = spawnSync(
       node,
@@ -115,20 +128,73 @@ test("integration: one built CLI call moves 100 notes in under 20 seconds in iso
     const result = envelope.result as { moved: { id: string; to: string }[] };
     expect(result).toMatchObject({ remaining: 0, complete: true });
     expect(result.moved).toHaveLength(100);
+    const readbackStarted = performance.now();
     assembly = await createAssembly({ root: project, deviceRoot: device });
-    for (const [n, moved] of result.moved.entries()) {
-      expect(await call("memory.show", { id: moved.id })).toMatchObject({
+    const movedByOldId = new Map(
+      result.moved.map((moved) => [moved.id, moved.to]),
+    );
+    expect(movedByOldId.size).toBe(100);
+    expect(new Set(movedByOldId.values()).size).toBe(100);
+    type ExportedNote = {
+      id: string;
+      scope?: string;
+      text: { text: string };
+      tags: string[];
+      links: string[];
+    };
+    const destinations = new Map<string, ExportedNote>();
+    let after = 0;
+    let more = true;
+    while (more) {
+      const page = (await call("memory.export", {
+        level: "project",
+        after,
+      })) as {
+        count: number;
+        truncated: boolean;
+        next?: number;
+        notes: ExportedNote[];
+      };
+      expect(page.count).toBe(page.notes.length);
+      for (const note of page.notes) {
+        expect(destinations.has(note.id)).toBe(false);
+        destinations.set(note.id, note);
+      }
+      more = page.truncated;
+      if (more) {
+        expect(page.next).toBeGreaterThan(after);
+        after = page.next!;
+      }
+    }
+    expect(destinations.size).toBe(100);
+    for (const note of notes) {
+      const destination = movedByOldId.get(note.id);
+      expect(destination).toBeDefined();
+      expect(destinations.get(destination!)).toMatchObject({
+        id: destination,
+        scope: note.scope,
+        text: { text: note.text.text },
+        tags: note.tags,
+        links: note.links,
+      });
+    }
+    for (const n of [0, 49, 99]) {
+      const note = notes[n]!;
+      expect(await call("memory.show", { id: note.id })).toMatchObject({
         status: "found",
         note: {
-          id: moved.to,
-          movedFrom: moved.id,
-          scope: "alpha",
-          text: { text: `note ${n}` },
-          tags: ["fact"],
-          links: ["device/note-1"],
+          id: movedByOldId.get(note.id),
+          movedFrom: note.id,
+          scope: note.scope,
+          text: { text: note.text.text },
+          tags: note.tags,
+          links: note.links,
         },
       });
     }
+    console.log(
+      `100-note readback: ${Math.round(performance.now() - readbackStarted)} ms`,
+    );
   } finally {
     await assembly?.close();
     rmSync(root, { recursive: true, force: true });
