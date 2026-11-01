@@ -174,6 +174,8 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 type RunRecord = {
+  head?: string;
+  completionHead?: string;
   tier?: ReviewTier;
   role: string;
   round: number | null;
@@ -234,12 +236,13 @@ export function laneHistory(
       ),
     );
 }
-function completed(record: RunRecord) {
+function completed(record: RunRecord, auto: boolean) {
   return (
     record.verdict === "completed" &&
     record.end !== null &&
-    existsSync(record.reply) &&
-    readFileSync(record.reply, "utf8").trim().length > 0
+    ((auto && ["tester", "reviewer"].includes(record.role)) ||
+      (existsSync(record.reply) &&
+        readFileSync(record.reply, "utf8").trim().length > 0))
   );
 }
 function git(worktree: string, args: string[]) {
@@ -262,8 +265,9 @@ function roleBrief(
   records: RunRecord[],
   classification: LaneTier,
   pr?: string,
+  report?: string,
 ) {
-  if (role !== "tester" && role !== "reviewer")
+  if (role !== "tester" && role !== "reviewer" && !report)
     return readFileSync(join(import.meta.dirname, "lane-brief.md"), "utf8");
   const base = git(worktree, ["merge-base", "origin/main", "HEAD"]);
   let roundText = "";
@@ -275,13 +279,22 @@ function roleBrief(
       .filter(
         (record) =>
           ["builder", "fixer"].includes(record.role) &&
-          (!previous || record.start > previous.end!),
+          (!previous || record.start >= previous.end!),
       )
       .at(-1);
     const path = (record: RunRecord) => record.reply.replaceAll("\\", "/");
     roundText = !previous
       ? `This is test round ${round}.${fix ? ` The builder's reply is ${path(fix)}: treat every claim in it as unverified until you run it.` : " No completed builder or fixer reply is available; treat every implementation claim as unverified until you run it."}${round !== 1 ? " No classified previous tester report is available." : ""}`
       : `This is test round ${round}. The previous report is ${path(previous)}${fix ? ` and the builder's fix reply is ${path(fix)}` : ""}. First re-run every earlier repro and say for each finding whether it is fixed. Then re-run the checks and look for regressions the fixes introduced. New findings are welcome.${!fix ? " No completed builder or fixer reply is available; treat every implementation claim as unverified until you run it." : ""}`;
+    const review = records
+      .filter(
+        (record) =>
+          record.role === "reviewer" &&
+          (!previous || record.start >= previous.end!),
+      )
+      .at(-1);
+    if (review)
+      roundText += ` The reviewer report is ${path(review)}. Read it and verify every P0/P1 finding by re-running its repro, even if the fixer reply omits it. Only return Verdict: PASS after verifying each is fixed; an unreadable report or an unresolved finding requires Verdict: FAIL.`;
   }
   const values = {
     WT: worktree.replaceAll("\\", "/"),
@@ -296,15 +309,20 @@ function roleBrief(
       classification.tier === "security"
         ? "First write a three-line threat model (threat, cause, out of scope). Review against that threat model."
         : "",
+    REPORT: report?.replaceAll("\\", "/") ?? "",
   };
   return readFileSync(
     join(
       import.meta.dirname,
-      role === "tester" ? "lane-test.md" : "lane-review.md",
+      role === "tester"
+        ? "lane-test.md"
+        : role === "fixer"
+          ? "lane-fix.md"
+          : "lane-review.md",
     ),
     "utf8",
   ).replace(
-    /\{\{(WT|BRANCH|BASE|HEAD|ID|ROUND|PR|TIER|THREAT)\}\}/g,
+    /\{\{(WT|BRANCH|BASE|HEAD|ID|ROUND|PR|TIER|THREAT|REPORT)\}\}/g,
     (_, key: keyof typeof values) => values[key],
   );
 }
@@ -317,6 +335,9 @@ export async function laneRun(
     lanes: { issue: string; worktree: string; branch: string; brief: string }[];
     issue: (id: string) => string;
     lock: (id: string) => (pid?: number) => void;
+    report?: (json: string) => void;
+    fixReport?: string;
+    auto?: boolean;
   },
 ) {
   let role: string | null = null,
@@ -339,7 +360,7 @@ export async function laneRun(
     }
   };
   const report = (data: Record<string, unknown>) =>
-    console.log(
+    (context.report ?? console.log)(
       JSON.stringify({
         verdict: "refused",
         role,
@@ -421,7 +442,7 @@ export async function laneRun(
     );
     const records = history
       .filter((item): item is KnownRun => item.role !== "unknown")
-      .filter(completed);
+      .filter((record) => completed(record, context.auto === true));
     const round =
       role === "tester"
         ? records.filter((record) => record.role === "tester").length +
@@ -464,6 +485,7 @@ export async function laneRun(
             records,
             classification,
             pr,
+            role === "fixer" ? context.fixReport : undefined,
           ),
           "\nIssue:\n",
           JSON.stringify(issue),
@@ -483,6 +505,7 @@ export async function laneRun(
       verdict: "started",
       session: resume ?? null,
       reply: join(folder, "reply.md"),
+      head: git(lane.worktree, ["rev-parse", "HEAD"]),
     };
     save();
     const result = await runCodex({
@@ -495,11 +518,19 @@ export async function laneRun(
       readOnly: role === "reviewer",
       ...(resume ? { resume } : {}),
     });
-    const hasReply =
-      existsSync(result.reply) &&
-      readFileSync(result.reply, "utf8").trim().length > 0;
-    const success = hasReply && (result.exit === 0 || result.stoppedAfterReply);
+    let hasReply = false;
+    try {
+      hasReply = readFileSync(result.reply, "utf8").trim().length > 0;
+    } catch {
+      /* Missing or unreadable replies have no content. */
+    }
+    const success =
+      (result.exit === 0 &&
+        (hasReply ||
+          (context.auto === true && ["tester", "reviewer"].includes(role)))) ||
+      (hasReply && result.stoppedAfterReply);
     Object.assign(record, {
+      completionHead: git(lane.worktree, ["rev-parse", "HEAD"]),
       end: new Date().toISOString(),
       verdict: success ? "completed" : "failed",
       session: result.session,
@@ -508,7 +539,7 @@ export async function laneRun(
     report({
       ...result,
       verdict: success ? "completed" : "failed",
-      ...(!hasReply ? { reasons: ["no reply was written"] } : {}),
+      ...(!hasReply && !success ? { reasons: ["no reply was written"] } : {}),
       next: success
         ? "read the reply and follow the contract stop point"
         : "inspect the log and retry with --resume when a session is available",
