@@ -843,6 +843,14 @@ test("auto chains builder, failed tester, fixer and passing tester to ready", ()
     String(firstTest.reply).replaceAll("\\", "/"),
   );
   expect(f.attempts()[2]!.prompt).toContain("fix every P1");
+  expect(f.attempts()[2]!.prompt).toContain(
+    "Re-run the tester's applicable targeted checks and repros, including existing tests covering the changed code.",
+  );
+  expect(f.attempts()[2]!.prompt).toContain(
+    "every regression lane in `.forge/config.yaml` whose files the diff touches",
+  );
+  expect(f.attempts()[2]!.prompt).toContain("acceptance tests");
+  expect(f.attempts()[2]!.prompt).toContain("bun run test:changed");
   const list = f.run(["list"]).lines[0] as {
     lanes: { state: string; since: string; runs: { end: string }[] }[];
   };
@@ -1584,6 +1592,14 @@ test("tester round one uses its template, issue, contract, builder reply and dur
   expect(f.prompt()).toContain(readFileSync(f.brief, "utf8"));
   expect(f.prompt()).toContain("FORGE_CANARY_BUN_DIR");
   expect(f.prompt()).toContain("FORGE_GH_USER");
+  expect(f.prompt()).toContain("bun run test:changed");
+  expect(f.prompt()).toContain(
+    "every regression lane in .forge/config.yaml whose files the diff touches",
+  );
+  expect(f.prompt()).toContain("0 selected tests is not evidence");
+  expect(f.prompt()).toContain("never replaces");
+  expect(f.prompt()).toContain("acceptance tests");
+  expect(f.prompt()).not.toContain("Run what CI runs");
   expect(f.prompt()).not.toMatch(
     /Personal-Projects|harshanandak|\{\{[A-Z]+\}\}/,
   );

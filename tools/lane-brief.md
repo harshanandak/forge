@@ -22,12 +22,19 @@ How:
    device root. Exercise branch builds in disposable temp projects with
    FORGE_DEVICE_ROOT pointing to a temp folder. Never close this issue; release
    your claim before stopping so the lead can close it.
-5. Run lint, format check, typecheck, structure and every test file covering the
-   changed code, including existing tests. Run commands serially, each with a hard
+5. Run lint, format check, typecheck, structure, every
+   regression lane in `.forge/config.yaml` whose files the diff touches, and the
+   acceptance tests. Run applicable targeted tests covering the changed code,
+   including existing tests. Also run `bun run test:changed` as an extra check.
+   Bun's import graph misses runtime-loaded and spawned code, so it never replaces
+   the regression lanes; 0 selected tests is not evidence of anything.
+   Do not run `test:unit`, `test:integration` or whole test folders;
+   full suites stay in CI. Run commands serially, each with a hard
    15-minute timeout; record a timeout and move on without retrying. If Bun lacks
    the linter, prepend FORGE_CANARY_BUN_DIR to PATH for that command. Never run
    `bun upgrade`. Do not run broad assembly or packed journeys unless packaging
-   changes. Adding, renaming or removing a template skill counts as packaging:
+   changes. A change to a packed journey or its helpers requires `bun run test:pack`.
+   Adding, renaming or removing a template skill counts as packaging:
    run `test/templates/delivery/packed.integration.test.ts`. Changing delivery
    skill text requires every test file under `test/templates/delivery/`.
 6. For GitHub, obtain the configured account's token inside the command using
