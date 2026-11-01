@@ -22,8 +22,10 @@ How:
    device root. Exercise branch builds in disposable temp projects with
    FORGE_DEVICE_ROOT pointing to a temp folder. Never close this issue; release
    your claim before stopping so the lead can close it.
-5. Run lint, format check, typecheck, structure and every test file covering the
-   changed code, including existing tests. Run commands serially, each with a hard
+5. Run lint, format check, typecheck, structure, `bun run test:changed`, every
+   regression lane in `.forge/config.yaml` whose files the diff touches, and the
+   acceptance tests. Do not run `test:unit`, `test:integration` or whole test folders;
+   CI runs those. Run commands serially, each with a hard
    15-minute timeout; record a timeout and move on without retrying. If Bun lacks
    the linter, prepend FORGE_CANARY_BUN_DIR to PATH for that command. Never run
    `bun upgrade`. Do not run broad assembly or packed journeys unless packaging

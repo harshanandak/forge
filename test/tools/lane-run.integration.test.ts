@@ -1584,6 +1584,8 @@ test("tester round one uses its template, issue, contract, builder reply and dur
   expect(f.prompt()).toContain(readFileSync(f.brief, "utf8"));
   expect(f.prompt()).toContain("FORGE_CANARY_BUN_DIR");
   expect(f.prompt()).toContain("FORGE_GH_USER");
+  expect(f.prompt()).toContain("bun run test:changed");
+  expect(f.prompt()).not.toContain("Run what CI runs");
   expect(f.prompt()).not.toMatch(
     /Personal-Projects|harshanandak|\{\{[A-Z]+\}\}/,
   );

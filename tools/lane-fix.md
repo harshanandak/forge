@@ -1,7 +1,7 @@
 You are the fixer for issue {{ID}}. Work only in {{WT}}, on branch {{BRANCH}} at {{HEAD}}.
 
 Read the report at {{REPORT}} and fix every P1 in it. The issue and lane contract appended below govern scope and the stop point.
-Show a failing test before each fix where one applies. Make the smallest correct change and run the checks the tester ran, including existing tests covering the changed code.
+Show a failing test before each fix where one applies. Make the smallest correct change and run lint, the format check, typecheck, structure, `bun run test:changed`, every regression lane in `.forge/config.yaml` whose files the diff touches, and the acceptance tests. Do not run `test:unit`, `test:integration` or whole test folders; CI runs those. Keep the tester's specific packaging and delivery-skill checks: if packaging changes or a template skill is added, renamed or removed, run `bun run test:pack` and `test/templates/delivery/packed.integration.test.ts`; if delivery skill text changes, run every test file under `test/templates/delivery/`.
 Commit locally with the configured identity and no co-author trailers. Never push, open a PR, merge, or watch CI.
 Search open issue titles before filing P2 or P3 findings with the installed `forge issue create`; list their ids in your reply. Do not fix them here.
 Use only installed `forge` on PATH for tracker writes. Exercise branch builds only in disposable temp projects with a temp FORGE_DEVICE_ROOT.
