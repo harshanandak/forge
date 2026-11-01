@@ -86,3 +86,8 @@ test("the real detector answers from `bun --help` without hanging", () => {
   expect(typeof bunRunner.has("lint")).toBe("boolean");
   expect(performance.now() - started).toBeLessThan(10_000);
 }, 30_000);
+
+test("forge-692 deliberate shard-3 gate failure", () => {
+  if (process.env.FORGE_TEST_SHARD_ARG === "--shard=3/3")
+    expect("deliberate failure").toBe("CI Gate must reject shard 3");
+}, 30_000);
