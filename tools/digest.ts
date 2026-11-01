@@ -23,7 +23,13 @@ type Lane = {
   issue: string;
   state?: string;
   since?: string;
-  runs: { start: string; end: string | null; role: string; verdict: string }[];
+  runs: {
+    start: string;
+    end: string | null;
+    role: string;
+    verdict: string;
+    reply?: string;
+  }[];
 };
 type Issue = { id: string; title: string; createdAt: string };
 const query = `query($owner:String!,$repo:String!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequests(states:OPEN,first:100,after:$endCursor){nodes{number title url mergeable mergeStateStatus reviewDecision reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}}} pageInfo{hasNextPage endCursor}}}}`;
@@ -37,8 +43,11 @@ function command(program: string, args: string[]): string {
     windowsHide: true,
   });
   const checks = args[1] === "checks";
-  if (checks && r.status === 1 && /no required checks/i.test(r.stderr))
-    return "[]";
+  if (checks && !r.error && r.status === 1) {
+    if (/^no required checks\b/i.test(r.stderr.trim())) return "[]";
+    if (/^no checks reported\b/i.test(r.stderr.trim()))
+      return '[{"name":"checks","bucket":"pending"}]';
+  }
   const accepted = checks ? [0, 1, 8] : [0];
   if (r.error || !accepted.includes(r.status ?? -1))
     throw new Error("Read failed");
@@ -46,6 +55,9 @@ function command(program: string, args: string[]): string {
 }
 const gh = <T>(words: string, ...args: string[]): T =>
   JSON.parse(command("gh", [...words.split(" "), ...args])) as T;
+const usage =
+  "Usage: bun tools/digest.ts [--since <iso>] [--stall-hours <finite nonnegative number>] [--peek] [--json]";
+let invalidThreshold = false;
 try {
   const startedAt = new Date().toISOString();
   const { values: flags } = parseArgs({
@@ -56,18 +68,20 @@ try {
       json: { type: "boolean" },
     },
   });
+  const hours = Number(flags["stall-hours"]);
+  invalidThreshold =
+    !flags["stall-hours"]?.trim() || !Number.isFinite(hours) || hours < 0;
+  if (invalidThreshold) throw new Error("Invalid threshold");
   const common = resolve(command("git", ["rev-parse", "--git-common-dir"]));
   const marker = join(common, "forge-digest.json");
   const saved =
     !flags.since && existsSync(marker) ? readFileSync(marker, "utf8") : "{}";
   const previous = (JSON.parse(saved) as { lastSeen?: string }).lastSeen;
   const since =
-      flags.since ??
-      previous ??
-      new Date(Date.parse(startedAt) - 86400_000).toISOString(),
-    hours = Number(flags["stall-hours"]);
-  if (isNaN(Date.parse(since) + hours) || hours < 0)
-    throw new Error("Invalid window");
+    flags.since ??
+    previous ??
+    new Date(Date.parse(startedAt) - 86400_000).toISOString();
+  if (isNaN(Date.parse(since))) throw new Error("Invalid window");
   const errors: { source: string; next: string }[] = [];
   function source<T>(name: string, read: () => T[]): T[] {
     try {
@@ -112,26 +126,28 @@ try {
     );
     return pages.flatMap((page) => {
       if (page.errors?.length) throw new Error("Incomplete PRs");
-      return page.data.repository.pullRequests.nodes.flatMap((pr) => {
-        if (pr.reviewThreads.pageInfo.hasNextPage)
-          throw new Error("Incomplete threads");
-        const checks = gh<{ name: string; bucket: string }[]>(
-          "pr checks --required --json=name,bucket,link",
-          String(pr.number),
-        );
-        const reasons = checks
-          .filter((c) => ["fail", "pending", "cancel"].includes(c.bucket))
-          .map((c) => `${c.name} ${c.bucket}`);
-        if (pr.mergeable === "CONFLICTING") reasons.push("merge conflicts");
-        if (pr.reviewThreads.nodes.some((t) => !t.isResolved))
-          reasons.push("unresolved review threads");
-        if (pr.reviewDecision === "CHANGES_REQUESTED")
-          reasons.push("changes requested");
-        if (pr.mergeStateStatus === "BEHIND")
-          reasons.push("stale head: CI on an old base");
-        if (pr.mergeable === "UNKNOWN") reasons.push("mergeability pending");
-        return reasons.length ? [{ ...pr, reasons }] : [];
-      });
+      return page.data.repository.pullRequests.nodes.flatMap((pr) =>
+        source(`gh PR #${pr.number}`, () => {
+          if (pr.reviewThreads.pageInfo.hasNextPage)
+            throw new Error("Incomplete threads");
+          const checks = gh<{ name: string; bucket: string }[]>(
+            "pr checks --required --json=name,bucket,link",
+            String(pr.number),
+          );
+          const reasons = checks
+            .filter((c) => ["fail", "pending", "cancel"].includes(c.bucket))
+            .map((c) => `${c.name} ${c.bucket}`);
+          if (pr.mergeable === "CONFLICTING") reasons.push("merge conflicts");
+          if (pr.reviewThreads.nodes.some((t) => !t.isResolved))
+            reasons.push("unresolved review threads");
+          if (pr.reviewDecision === "CHANGES_REQUESTED")
+            reasons.push("changes requested");
+          if (pr.mergeStateStatus === "BEHIND")
+            reasons.push("stale head: CI on an old base");
+          if (pr.mergeable === "UNKNOWN") reasons.push("mergeability pending");
+          return reasons.length ? [{ ...pr, reasons }] : [];
+        }),
+      );
     });
   });
   const issues = source("forge issue list", () => {
@@ -165,7 +181,13 @@ try {
         end = lane.state && lane.since ? lane.since : last?.end;
       const idleHours =
         (Date.parse(startedAt) - Date.parse(end ?? "")) / 3600_000;
-      const reason = `idle ${Math.floor(idleHours)} h${last ? ` after ${last.role} ${last.verdict}` : ""}`;
+      const verdict =
+        last?.reply && existsSync(last.reply)
+          ? (readFileSync(last.reply, "utf8")
+              .match(/^Verdict: .+$/m)?.[0]
+              .trimEnd() ?? last.verdict)
+          : last?.verdict;
+      const reason = `idle ${Math.floor(idleHours)} h${last ? ` after ${last.role} ${verdict}` : ""}`;
       return idleHours > hours
         ? [{ issue: lane.issue, idleHours, reason }]
         : [];
@@ -178,7 +200,7 @@ try {
     ),
     ...stalled.map(
       (l) =>
-        `lane ${l.issue} ${l.reason}: (a) run lane auto [default] (b) park`,
+        `lane ${l.issue} ${l.reason}: (a) run the fixer [default] (b) park`,
     ),
   ];
   if (!errors.length && !flags.peek)
@@ -203,12 +225,23 @@ ${list(errors.map((e) => `Source failed: ${e.source}; next: ${e.next}`))}`;
     : text.replaceAll("—", ":");
   console.log(token ? output.replaceAll(token, "[redacted]") : output);
   process.exitCode = errors.length ? 1 : 0;
-} catch {
-  const next = "check arguments and git common dir marker";
+} catch (error) {
+  const invalidArguments =
+    invalidThreshold ||
+    (error instanceof Error &&
+      "code" in error &&
+      typeof error.code === "string" &&
+      error.code.startsWith("ERR_PARSE_ARGS_") &&
+      error.message.includes("--stall-hours"));
+  const next = invalidArguments
+    ? usage
+    : "check arguments and git common dir marker";
   console.log(
     process.argv.includes("--json")
       ? JSON.stringify({ errors: [{ source: "configuration", next }] })
-      : `Decisions needed: none\nSource failed: configuration; next: ${next}`,
+      : invalidArguments
+        ? `Decisions needed: none\n${usage}`
+        : `Decisions needed: none\nSource failed: configuration; next: ${next}`,
   );
-  process.exitCode = 1;
+  process.exitCode = invalidArguments ? 2 : 1;
 }

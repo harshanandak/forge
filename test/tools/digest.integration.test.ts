@@ -35,6 +35,11 @@ function fixture(
     prs?: unknown[];
     lanes?: unknown[];
     truncated?: boolean;
+    checks?: Record<
+      string,
+      { status: number; stderr?: string; rows?: unknown[] }
+    >;
+    replies?: Record<string, string>;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "forge-digest-"));
@@ -59,6 +64,8 @@ function fixture(
   git("remote", "add", "origin", "https://github.com/owner/repo.git");
   const marker = join(root, ".git/forge-digest.json");
   writeFileSync(marker, JSON.stringify({ lastSeen: since }));
+  for (const [name, reply] of Object.entries(options.replies ?? {}))
+    writeFileSync(join(root, name), reply);
   writeFileSync(
     join(root, "responses.json"),
     JSON.stringify({
@@ -103,7 +110,7 @@ else if(a[0]==='auth'){console.log('fake-digest-credential')}
 else if(process.env.GH_TOKEN!=='fake-digest-credential'){process.exit(2)}
 else if(a[0]==='repo'){out({nameWithOwner:'owner/repo'})}
 else if(a[0]==='api'){out([{data:{repository:{pullRequests:{nodes:r.prs,pageInfo:{hasNextPage:false}}}}}])}
-else if(a[1]==='checks'&&a.includes('--required')){out([{name:'Required build',bucket:'fail',link:'https://example.test/check'}]);process.exit(1)}
+else if(a[1]==='checks'&&a.includes('--required')){const check=r.checks?.[a.at(-1)];if(check){if(check.stderr)console.error(check.stderr);if(check.rows)out(check.rows);process.exit(check.status)}out([{name:'Required build',bucket:'fail',link:'https://example.test/check'}]);process.exit(1)}
 else if(a[1]==='list'){const window=a[a.indexOf('--search')+1].slice('merged:>='.length);out(r.merged.filter(p=>p.mergedAt>=window))}
 else {process.exit(3)}
 `,
@@ -263,4 +270,140 @@ test("all blocker reasons, running lanes, state fields and incomplete sources", 
     r = truncated.run();
   expect(r.status).toBe(1);
   expect(truncated.seen()).toBe(since);
+});
+
+test("no reported checks are pending while no required checks is a successful empty result", () => {
+  const f = fixture({
+    checks: {
+      "3": { status: 1, stderr: "no checks reported on the feature branch" },
+    },
+  });
+  const r = f.run("--json");
+  expect(r.status).toBe(0);
+  const data = JSON.parse(r.stdout) as {
+    errors: unknown[];
+    blocked: [{ number: number; reasons: string[] }];
+  };
+  expect(data.errors).toEqual([]);
+  expect(data.blocked[0].number).toBe(3);
+  expect(data.blocked[0].reasons).toContain("checks pending");
+  expect(f.seen()).not.toBe(since);
+  const noRequired = fixture({
+    checks: {
+      "3": {
+        status: 1,
+        stderr: "no required checks reported on the feature branch",
+      },
+    },
+    lanes: [],
+  });
+  expect(text(noRequired)).toContain("Decisions needed: none");
+});
+
+test("stalled lanes show the first tester or reviewer reply verdict with process fallback", () => {
+  const lanes = ["tester", "reviewer", "no-verdict", "missing-reply"].map(
+    (name) => ({
+      issue: name === "tester" ? "forge-600" : name,
+      runs: [
+        {
+          start: new Date(Date.now() - 4 * 3600_000).toISOString(),
+          end: new Date(Date.now() - 3 * 3600_000).toISOString(),
+          role: name === "reviewer" ? "reviewer" : "tester",
+          verdict: "completed",
+          reply: `${name}.md`,
+        },
+      ],
+    }),
+  );
+  const f = fixture({
+    lanes,
+    replies: {
+      "tester.md": "Report\r\nVerdict: FAIL\r\nVerdict: PASS\r\n",
+      "reviewer.md": "Verdict: FAIL: checks are red\nVerdict: PASS\n",
+      "no-verdict.md": "The process finished without a verdict.\n",
+    },
+  });
+  const out = text(f, "--peek");
+  expect(out).toContain(
+    "lane forge-600 idle 3 h after tester Verdict: FAIL: (a) run the fixer [default] (b) park",
+  );
+  expect(out).toContain("after reviewer Verdict: FAIL: checks are red");
+  expect(out).not.toContain("Verdict: PASS");
+  expect(out).toContain("lane no-verdict idle 3 h after tester completed");
+  expect(out).toContain("lane missing-reply idle 3 h after tester completed");
+  const r = f.run("--peek", "--json"),
+    data = JSON.parse(r.stdout) as {
+      errors: unknown[];
+      stalled: { reason: string }[];
+    };
+  expect(r.status).toBe(0);
+  expect(data.errors).toEqual([]);
+  expect(data.stalled).toHaveLength(4);
+  for (const lane of data.stalled) expect(out).toContain(lane.reason);
+});
+
+test("one PR check read failure keeps blockers before and after it and names the failed PR", () => {
+  const f = fixture({
+    prs: [3, 4, 5].map((number) => ({
+      number,
+      title: `Open ${number}`,
+      url: `https://example.test/pr/${number}`,
+      mergeable: "MERGEABLE",
+      reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
+    })),
+    checks: { "4": { status: 1, stderr: "HTTP 502: could not read checks" } },
+  });
+  const r = f.run("--json"),
+    data = JSON.parse(r.stdout) as {
+      blocked: { number: number }[];
+      errors: [{ source: string; next: string }];
+      merged: unknown[];
+      issues: unknown[];
+    };
+  expect(r.status).toBe(1);
+  expect(data.blocked.map((pr: { number: number }) => pr.number)).toEqual([
+    3, 5,
+  ]);
+  expect(data.errors).toHaveLength(1);
+  expect(data.errors[0].source).toBe("gh PR #4");
+  expect(data.errors[0].next).toContain("--peek");
+  expect(data.merged).toHaveLength(2);
+  expect(data.issues).toHaveLength(1);
+  expect(f.seen()).toBe(since);
+});
+
+test("stall threshold accepts finite nonnegative values and rejects invalid values with usage exit 2", () => {
+  const f = fixture({ prs: [] });
+  for (const value of [
+    "",
+    " ",
+    "Infinity",
+    "-Infinity",
+    "NaN",
+    "-1",
+    "invalid",
+  ])
+    for (const format of [[], ["--json"]]) {
+      const r = f.run("--stall-hours", value, ...format);
+      expect(r.status).toBe(2);
+      expect(r.stdout).toContain("Usage: bun tools/digest.ts");
+      expect(r.stdout).toContain("--stall-hours");
+      if (format.length) {
+        const data = JSON.parse(r.stdout) as {
+          errors: [{ source: string }];
+        };
+        expect(data.errors[0].source).toBe("configuration");
+      }
+      expect(f.seen()).toBe(since);
+    }
+  const missing = f.run("--stall-hours");
+  expect(missing.status).toBe(2);
+  expect(missing.stdout).toContain("Usage: bun tools/digest.ts");
+  for (const args of [["--unknown"], ["--since"], ["--since", "invalid"]])
+    expect(f.run(...args).status).toBe(1);
+  expect(f.seen()).toBe(since);
+  expect(text(f, "--stall-hours", "0", "--peek")).toContain("lane forge-600");
+  expect(text(f, "--stall-hours", "3.5", "--peek")).not.toContain(
+    "lane forge-600",
+  );
 });
