@@ -1588,6 +1588,10 @@ test("tester round one uses its template, issue, contract, builder reply and dur
   expect(f.prompt()).toContain("FORGE_CANARY_BUN_DIR");
   expect(f.prompt()).toContain("FORGE_GH_USER");
   expect(f.prompt()).toContain("bun run test:changed");
+  expect(f.prompt()).toContain(
+    "every regression lane in .forge/config.yaml whose files the diff touches",
+  );
+  expect(f.prompt()).toContain("0 selected tests is not evidence");
   expect(f.prompt()).not.toContain("Run what CI runs");
   expect(f.prompt()).not.toMatch(
     /Personal-Projects|harshanandak|\{\{[A-Z]+\}\}/,
