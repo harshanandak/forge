@@ -112,9 +112,12 @@ function briefProblems(text: string): string[] {
     )
     .map((name) => `brief requires non-empty section: ${name}`);
 }
-function options(argv: string[]): Options | "list" | "run" | "tier" | "close" {
+function options(
+  argv: string[],
+): Options | "list" | "run" | "auto" | "tier" | "close" {
   if (argv[0] === "close") return "close";
   if (argv[0] === "run") return "run";
+  if (argv[0] === "auto") return "auto";
   if (
     argv[0] === "tier" &&
     argv.length === 2 &&
@@ -255,8 +258,181 @@ function acquireLaneLock(common: string, id: string, owner: string) {
     current = next;
   };
 }
+
+type HistoryRun = ReturnType<typeof laneHistory>[number];
+function stepVerdict(record: HistoryRun): string {
+  if (record.role === "unknown") return "unknown";
+  if (record.verdict !== "completed") return record.verdict;
+  if (!["tester", "reviewer"].includes(record.role)) return record.verdict;
+  let first = "";
+  try {
+    first = readFileSync(record.reply, "utf8").split(/\r?\n/)[0] ?? "";
+  } catch {
+    /* Missing reports fail closed. */
+  }
+  const pass = record.role === "tester" ? "PASS" : "CLEAN";
+  return first === `Verdict: ${pass}`
+    ? pass
+    : record.role === "tester"
+      ? "FAIL"
+      : "ACT";
+}
+async function laneAuto(
+  argv: string[],
+  context: Parameters<typeof laneRun>[1],
+) {
+  let step = "builder";
+  const emit = (value: object) => console.log(JSON.stringify(value));
+  const blocked = (reason: string, next: string) => {
+    emit({ outcome: "blocked", reason, step, next });
+    return 1;
+  };
+  try {
+    const [id, flag, capText = "2", ...extra] = argv;
+    if (
+      !id ||
+      extra.length ||
+      (flag && (flag !== "--round-cap" || argv.length !== 3)) ||
+      !/^(?:[1-9]|10)$/.test(capText)
+    )
+      return blocked("refused", "usage: auto <issue-id> [--round-cap 1..10]");
+    const cap = Number(capText),
+      lane = context.lanes.find((item) => item.issue === id);
+    if (!lane)
+      return blocked("refused", `no active lane for ${id}; use start first`);
+    for (;;) {
+      const history = laneHistory(context.common, id);
+      if (history.some((record) => record.role === "unknown"))
+        throw new Error("inspect unknown lane history before resuming");
+      const records = history.filter((record) => record.role !== "unknown");
+      const last = records.at(-1),
+        head = run("git", ["rev-parse", "HEAD"], lane.worktree);
+      if (last && last.verdict !== "completed") {
+        step = last.role;
+        return blocked(
+          "failed",
+          "inspect the failed/unfinished run; use run --resume if possible",
+        );
+      }
+      const rounds = records.filter(
+        (record) => record.role === "tester" && record.verdict === "completed",
+      ).length;
+      const previous = records.at(-2),
+        reviewer = records.at(-3);
+      const repair =
+        previous?.role === "fixer" &&
+        (previous.completionHead ?? previous.head) === head &&
+        reviewer?.role === "reviewer" &&
+        stepVerdict(reviewer) === "ACT";
+      const changed = run(
+        "git",
+        ["rev-list", "--count", "origin/main..HEAD"],
+        lane.worktree,
+      );
+      const built = changed !== "0";
+      const completedBuild = records.findLast(
+        (record) =>
+          record.verdict === "completed" &&
+          ["builder", "fixer"].includes(record.role),
+      );
+      if (!built && completedBuild) {
+        step = completedBuild.role;
+        return blocked("no-commit", "commit the lane changes, then retry");
+      }
+      step = built ? "tester" : "builder";
+      if (
+        built &&
+        last?.head === head &&
+        last.role === "reviewer" &&
+        previous?.head === head &&
+        previous.role === "tester" &&
+        stepVerdict(previous) === "PASS"
+      ) {
+        if (stepVerdict(last) === "CLEAN") step = "ready";
+        else step = "fixer";
+      } else if (built && last?.head === head && last.role === "tester") {
+        if (stepVerdict(last) === "PASS")
+          step =
+            repair || !laneTier(lane.worktree).reviews.includes("reviewer")
+              ? "ready"
+              : "reviewer";
+        else {
+          if (repair)
+            return blocked(
+              "failed",
+              "review repair failed; inspect the report and simplify or park",
+            );
+          step = "fixer";
+        }
+      }
+      if (step === "ready") {
+        if (laneTier(lane.worktree).reviews.includes("security-reviewer"))
+          return blocked(
+            "security-review",
+            "run the security review, then push",
+          );
+        if (run("git", ["status", "--porcelain"], lane.worktree))
+          return blocked(
+            "dirty-worktree",
+            "commit or remove the worktree changes, then retry",
+          );
+        emit({ outcome: "ready", head, next: "push and open the PR" });
+        return 0;
+      }
+      if (
+        (step === "tester" || (step === "fixer" && last?.role === "tester")) &&
+        rounds >= cap
+      ) {
+        step = "tester";
+        return blocked(
+          "round-cap",
+          `Test round ${rounds + 1} exceeds the cap (${cap}). Write a three-line threat model, then choose ship, simplify or park.`,
+        );
+      }
+      let report: Record<string, unknown> = {};
+      const start = Date.now();
+      const code = await laneRun(
+        [id, "--role", step, "--round-cap", String(cap)],
+        {
+          ...context,
+          auto: true,
+          ...(step === "fixer" ? { fixReport: last!.reply } : {}),
+          report: (json) => {
+            report = JSON.parse(json) as Record<string, unknown>;
+          },
+        },
+      );
+      const finished = laneHistory(context.common, id)
+        .filter((record) => record.role !== "unknown")
+        .at(-1);
+      emit({
+        step,
+        round: step === "tester" ? rounds + 1 : null,
+        verdict:
+          code === 0 && finished ? stepVerdict(finished) : report.verdict,
+        reply: report.reply ?? null,
+        minutes: (Date.now() - start) / 60_000,
+      });
+      if (code !== 0)
+        return blocked(
+          report.exit === 124 ||
+            /timeout|timed out/i.test(JSON.stringify(report))
+            ? "timeout"
+            : report.verdict === "refused"
+              ? "refused"
+              : "failed",
+          typeof report.next === "string" ? report.next : "inspect the run log",
+        );
+    }
+  } catch (error) {
+    return blocked(
+      "refused",
+      error instanceof Error ? error.message : "inspect lane history and retry",
+    );
+  }
+}
 async function main(): Promise<number> {
-  let parsed: Options | "list" | "run" | "tier" | "close";
+  let parsed: Options | "list" | "run" | "auto" | "tier" | "close";
   let target: string | null = null;
   const reply = (
     reason: string | string[],
@@ -314,8 +490,9 @@ async function main(): Promise<number> {
       console.log(JSON.stringify(laneTier(lane.worktree)));
       return 0;
     }
-    if (parsed === "run")
-      return await laneRun(process.argv.slice(3), {
+    if (parsed === "run" || parsed === "auto") {
+      const execute = parsed === "auto" ? laneAuto : laneRun;
+      return await execute(process.argv.slice(3), {
         common,
         configRoot: resolve(run("git", ["rev-parse", "--show-toplevel"])),
         lanes: active(registry, root),
@@ -323,13 +500,20 @@ async function main(): Promise<number> {
           run("forge", ["issue", "show", "--input", JSON.stringify({ id })]),
         lock: lockLane,
       });
+    }
     if (parsed === "list") {
       console.log(
         JSON.stringify({
-          lanes: active(registry, root).map((lane) => ({
-            ...lane,
-            runs: laneHistory(common, lane.issue),
-          })),
+          lanes: active(registry, root).map((lane) => {
+            const runs = laneHistory(common, lane.issue),
+              last = runs.at(-1);
+            return {
+              ...lane,
+              runs,
+              state: last ? `${last.role} ${stepVerdict(last)}` : null,
+              since: last && last.role !== "unknown" ? last.end : null,
+            };
+          }),
         }),
       );
       return 0;

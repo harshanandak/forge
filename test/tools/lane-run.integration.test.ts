@@ -101,7 +101,7 @@ function fixture(trustedPolicy = `values:\n  lanes:\n${tiers}`) {
   writeFileSync(
     codex,
     // The test polls this log while the child writes; publish complete JSON lines.
-    String.raw`import {existsSync,readFileSync,renameSync,writeFileSync} from 'node:fs';import {join} from 'node:path';
+    String.raw`import {existsSync,readFileSync,renameSync,writeFileSync} from 'node:fs';import {join} from 'node:path';import {spawnSync} from 'node:child_process';
 const root=process.env.LANE_FIXTURE,args=process.argv.slice(2),file=join(root,'attempts.jsonl');
 const prompt=readFileSync(0,'utf8');const count=existsSync(file)?readFileSync(file,'utf8').trim().split('\n').length:0;
 const pending=file+'.'+process.pid+'.tmp';writeFileSync(pending,(existsSync(file)?readFileSync(file,'utf8'):'')+JSON.stringify({args,cwd:process.cwd(),prompt})+'\n');renameSync(pending,file);
@@ -110,9 +110,26 @@ writeFileSync(join(root,'harness-pid'),String(process.pid));
 if(mode==='capacity'||mode==='limit')console.log('session id: fake-session');else console.log(JSON.stringify({type:'thread.started',thread_id:'fake-session'}));
 if(mode==='limit'||(mode==='capacity'&&count===0)){console.log('Selected model is at capacity');process.exit(1)}
 const flag=args.findIndex(a=>a==='--output-last-message'||a==='-o');if(flag<0)process.exit(8);
+if(mode.startsWith('auto')){
+ const role=args[args.indexOf('-m')+1],prior=readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+ if((role==='builder'&&mode!=='auto-no-commit')||role==='fixer'||(mode==='auto-move-'+role&&prior.filter(a=>a.args[a.args.indexOf('-m')+1]===role).length===1)||mode==='auto-move-always-'+role){
+  writeFileSync('lane-change.md',String(count));
+  for(const a of [['add','lane-change.md'],['-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','-m','fixture lane change']]){if(spawnSync('git',a).status!==0)process.exit(9)}
+ }
+ const round=prior.filter(a=>a.args[a.args.indexOf('-m')+1]==='tester').length;
+ const verdict=role==='tester'?(mode==='auto-missing'?'No verdict.':mode==='auto-fail'||(mode==='auto-chain'&&round===1)?'Verdict: FAIL':'Verdict: PASS'):role==='reviewer'?((mode==='auto-act'||mode==='auto-handoff')?'Verdict: ACT':mode==='auto-review-missing'?'No verdict.':'Verdict: CLEAN'):'Committed.';
+ let reply=verdict+'\nFixture reply.';
+ if(mode==='auto-empty-'+role)reply='';
+ if(mode==='auto-handoff'&&role==='tester'&&round>1){
+  const review=prior.find(a=>a.args[a.args.indexOf('-m')+1]==='reviewer');
+  if(prompt.includes(review.args[review.args.indexOf('-o')+1].replaceAll('\\','/')))reply='Verdict: FAIL\nReviewer P1 remains unfixed.';
+ }
+ writeFileSync(args[flag+1],reply);process.exit(0);
+}
+if(mode==='no-reply')process.exit(0);
 writeFileSync(args[flag+1],mode==='empty'?'':'Fixture final reply.');
 if(mode==='hold'){setInterval(()=>{if(existsSync(join(root,'finish')))process.exit(0)},10)}
-else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='fail'?1:0);`,
+else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='timeout'?124:mode==='fail'?1:0);`,
   );
   writeFileSync(join(root, "mode"), "ok");
   for (const [name, file] of [
@@ -187,9 +204,15 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='fail'?
       windowsHide: true,
     });
     expect(result.error).toBeUndefined();
+    const lines = result.stdout
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    if (args[0] !== "auto") expect(lines).toHaveLength(1);
     return {
       code: result.status,
-      output: JSON.parse(result.stdout) as Verdict,
+      output: lines.at(-1) as unknown as Verdict,
+      lines,
       stderr: result.stderr,
     };
   }
@@ -783,6 +806,453 @@ function change(
     lane,
   );
 }
+
+function autoFixture(mode = "auto-chain") {
+  const f = roleFixture();
+  let config = readFileSync(f.config, "utf8");
+  for (const role of ["builder", "fixer", "tester", "reviewer"])
+    config = config.replace("model: fixture-model", `model: ${role}`);
+  writeFileSync(f.config, config);
+  writeFileSync(join(f.root, "mode"), mode);
+  const auto = (extra: string[] = []) => f.run(["auto", "one", ...extra]);
+  const roles = () => f.attempts().map((a) => a.args[a.args.indexOf("-m") + 1]);
+  const head = () =>
+    f.git(["rev-parse", "HEAD"], join(f.main, ".worktrees", "one"));
+  return { ...f, auto, roles, head };
+}
+
+test("auto chains builder, failed tester, fixer and passing tester to ready", () => {
+  const f = autoFixture();
+  const result = f.auto();
+  expect(result.code).toBe(0);
+  expect(f.roles()).toEqual(["builder", "tester", "fixer", "tester"]);
+  expect(result.lines.at(-1)).toEqual({
+    outcome: "ready",
+    head: f.head(),
+    next: "push and open the PR",
+  });
+  expect(result.lines.slice(0, -1).map((row) => row.step)).toEqual(f.roles());
+  const firstTest = result.lines[1]!;
+  expect(firstTest).toMatchObject({
+    step: "tester",
+    round: 1,
+    verdict: "FAIL",
+  });
+  expect(typeof firstTest.minutes).toBe("number");
+  expect(f.attempts()[2]!.prompt).toContain(
+    String(firstTest.reply).replaceAll("\\", "/"),
+  );
+  expect(f.attempts()[2]!.prompt).toContain("fix every P1");
+  const list = f.run(["list"]).lines[0] as {
+    lanes: { state: string; since: string; runs: { end: string }[] }[];
+  };
+  expect(list.lanes[0]!.state).toBe("tester PASS");
+  expect(list.lanes[0]!.since).toBe(list.lanes[0]!.runs.at(-1)!.end);
+  expect(f.auto().lines.at(-1)?.outcome).toBe("ready");
+  expect(f.roles()).toHaveLength(4);
+});
+
+test("auto blocks a builder reply without a commit and preserves the block on resume", () => {
+  const f = autoFixture("auto-no-commit");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = f.auto();
+    expect(result.code).toBe(1);
+    expect(result.lines.at(-1)).toMatchObject({
+      outcome: "blocked",
+      reason: "no-commit",
+      step: "builder",
+    });
+    expect(f.roles()).toEqual(["builder"]);
+  }
+});
+
+test("auto rejects resumed builder and PASS history without a lane commit", () => {
+  const f = autoFixture("auto-pass");
+  for (const record of [
+    f.seed("builder", null),
+    f.seed("tester", 1, "completed", "Verdict: PASS"),
+  ])
+    writeFileSync(
+      join(record.reply, "..", "run.json"),
+      JSON.stringify({ ...record, head: f.head() }),
+    );
+  const result = f.auto();
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "no-commit",
+  });
+  expect(f.roles()).toEqual([]);
+});
+
+for (const mode of ["auto-clean", "auto-act"])
+  test(`auto requires the security review before ready after ${mode}`, () => {
+    const f = autoFixture(mode);
+    change(f, ["src/core/trust/access.ts"]);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = f.auto();
+      expect(result.code).toBe(1);
+      expect(result.lines.at(-1)).toMatchObject({
+        outcome: "blocked",
+        reason: "security-review",
+        next: "run the security review, then push",
+      });
+      expect(f.roles()).toEqual(
+        mode === "auto-clean"
+          ? ["tester", "reviewer"]
+          : ["tester", "reviewer", "fixer", "tester"],
+      );
+    }
+  });
+
+for (const state of ["tracked", "staged", "untracked"])
+  test(`auto blocks ready with ${state} worktree changes after local reviews`, () => {
+    const f = autoFixture("auto-clean");
+    change(f, ["tools/changed.ts"]);
+    const lane = join(f.main, ".worktrees", "one");
+    for (const [role, round, reply] of [
+      ["tester", 1, "Verdict: PASS"],
+      ["reviewer", null, "Verdict: CLEAN"],
+    ] as const) {
+      const record = f.seed(role, round, "completed", reply);
+      writeFileSync(
+        join(record.reply, "..", "run.json"),
+        JSON.stringify({ ...record, head: f.head() }),
+      );
+    }
+    const file = state === "untracked" ? "untracked.md" : "tools/changed.ts";
+    writeFileSync(join(lane, file), "Uncommitted change.\n");
+    if (state === "staged") f.git(["add", "--", file], lane);
+    const result = f.auto();
+    expect(result.code).toBe(1);
+    expect(result.lines.at(-1)).toMatchObject({
+      outcome: "blocked",
+      reason: "dirty-worktree",
+    });
+    expect(f.roles()).toEqual([]);
+  });
+
+test("auto bounds failing tester rounds and resumes the blocked cap", () => {
+  const f = autoFixture("auto-fail");
+  const result = f.auto(["--round-cap", "2"]);
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "round-cap",
+    step: "tester",
+  });
+  expect(result.lines.at(-1)?.next).toContain("three-line threat model");
+  expect(f.roles()).toEqual(["builder", "tester", "fixer", "tester"]);
+  expect(f.auto().code).toBe(1);
+  expect(f.roles()).toHaveLength(4);
+});
+
+for (const verdict of ["FAIL", "PASS"])
+  test(`auto resumes a completed builder and tester ${verdict} from history`, () => {
+    const f = autoFixture("auto-pass");
+    change(f, ["docs/guide.md"]);
+    const head = f.head();
+    for (const record of [
+      f.seed("builder", null),
+      f.seed("tester", 1, "completed", `Verdict: ${verdict}\nFinding.`),
+    ])
+      writeFileSync(
+        join(record.reply, "..", "run.json"),
+        JSON.stringify({ ...record, head }),
+      );
+    const result = f.auto();
+    expect(result.code).toBe(0);
+    expect(f.roles()).toEqual(verdict === "FAIL" ? ["fixer", "tester"] : []);
+  });
+
+for (const mode of ["auto-act", "auto-clean", "auto-review-missing"])
+  test(`auto code review ${mode} runs at most one review repair`, () => {
+    const f = autoFixture(mode);
+    change(f, ["tools/changed.ts"]);
+    const result = f.auto();
+    expect(result.code).toBe(0);
+    expect(result.lines.at(-1)?.outcome).toBe("ready");
+    expect(f.roles()).toEqual(
+      mode === "auto-clean"
+        ? ["tester", "reviewer"]
+        : ["tester", "reviewer", "fixer", "tester"],
+    );
+    expect(f.auto().code).toBe(0);
+    expect(f.roles()).toHaveLength(mode === "auto-clean" ? 2 : 4);
+  });
+
+test("auto hands reviewer findings to the final tester before accepting PASS", () => {
+  const f = autoFixture("auto-handoff");
+  change(f, ["tools/changed.ts"]);
+  const result = f.auto();
+  expect(f.roles()).toEqual(["tester", "reviewer", "fixer", "tester"]);
+  const review = String(result.lines[1]!.reply).replaceAll("\\", "/");
+  const finalPrompt = f.attempts()[3]!.prompt;
+  expect(finalPrompt).toContain(review);
+  expect(finalPrompt).toContain("verify every P0/P1 finding");
+  expect(finalPrompt).toContain("Only return Verdict: PASS");
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "failed",
+  });
+});
+
+test("auto resumes review repair with the reviewer report in the tester prompt", () => {
+  const f = autoFixture("auto-pass");
+  change(f, ["tools/changed.ts"]);
+  f.seed("tester", 1, "completed", "Verdict: PASS");
+  const review = f.seed(
+    "reviewer",
+    null,
+    "completed",
+    "Verdict: ACT\nP1: missed finding.",
+  );
+  const fix = f.seed("fixer", null, "completed", "Committed.");
+  writeFileSync(
+    join(fix.reply, "..", "run.json"),
+    JSON.stringify({ ...fix, head: f.head() }),
+  );
+  const result = f.auto();
+  expect(result.code).toBe(0);
+  expect(f.roles()).toEqual(["tester"]);
+  expect(f.prompt()).toContain(review.reply.replaceAll("\\", "/"));
+  expect(f.prompt()).toContain("verify every P0/P1 finding");
+});
+
+test("auto treats empty tester replies as FAIL, consumes rounds and resumes at the cap", () => {
+  const f = autoFixture("auto-empty-tester");
+  const result = f.auto();
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "round-cap",
+  });
+  expect(f.roles()).toEqual(["builder", "tester", "fixer", "tester"]);
+  expect(
+    result.lines
+      .filter((row) => row.step === "tester" && !row.outcome)
+      .map((row) => [row.round, row.verdict]),
+  ).toEqual([
+    [1, "FAIL"],
+    [2, "FAIL"],
+  ]);
+  expect(f.auto().code).toBe(1);
+  expect(f.roles()).toHaveLength(4);
+});
+
+test("auto treats an empty reviewer reply as ACT and verifies its report after repair", () => {
+  const f = autoFixture("auto-empty-reviewer");
+  change(f, ["tools/changed.ts"]);
+  const result = f.auto();
+  expect(result.code).toBe(0);
+  expect(f.roles()).toEqual(["tester", "reviewer", "fixer", "tester"]);
+  expect(result.lines[1]).toMatchObject({ step: "reviewer", verdict: "ACT" });
+  expect(f.attempts()[3]!.prompt).toContain(
+    String(result.lines[1]!.reply).replaceAll("\\", "/"),
+  );
+  expect(f.auto().code).toBe(0);
+  expect(f.roles()).toHaveLength(4);
+});
+
+for (const role of ["tester", "reviewer"])
+  for (const mode of ["empty", "no-reply"])
+    test(`manual ${role} with ${mode} reply fails without consuming a round`, () => {
+      const f = roleFixture();
+      writeFileSync(join(f.root, "mode"), mode);
+      const result = f.runRole(role);
+      expect(result.code).toBe(1);
+      expect(result.output.verdict).toBe("failed");
+      expect(JSON.stringify(result.output)).toContain("no reply was written");
+      const record = JSON.parse(
+        readFileSync(join(result.output.folder!, "run.json"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(record.verdict).toBe("failed");
+      if (role === "tester") {
+        writeFileSync(join(f.root, "mode"), "ok");
+        const retry = f.runRole(role, ["--round-cap", "1"]);
+        expect(retry.code).toBe(0);
+        expect(
+          JSON.parse(
+            readFileSync(join(retry.output.folder!, "run.json"), "utf8"),
+          ),
+        ).toMatchObject({ round: 1, verdict: "completed" });
+        expect(f.attempts()).toHaveLength(2);
+      }
+    });
+
+test("auto treats a missing tester verdict as failure", () => {
+  const f = autoFixture("auto-missing");
+  const result = f.auto(["--round-cap", "1"]);
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "round-cap",
+  });
+  expect(result.lines[1]).toMatchObject({ step: "tester", verdict: "FAIL" });
+  expect(f.roles()).toEqual(["builder", "tester"]);
+});
+
+test("auto does not trust tester or reviewer reports from another head", () => {
+  const f = autoFixture("auto-clean");
+  const head = f.head();
+  for (const [role, round, text] of [
+    ["tester", 1, "Verdict: PASS"],
+    ["reviewer", null, "Verdict: CLEAN"],
+  ] as const) {
+    const record = f.seed(role, round, "completed", text);
+    writeFileSync(
+      join(record.reply, "..", "run.json"),
+      JSON.stringify({ ...record, head }),
+    );
+  }
+  change(f, ["tools/changed.ts"]);
+  expect(f.auto().code).toBe(0);
+  expect(f.roles()).toEqual(["tester", "reviewer"]);
+});
+
+for (const role of ["tester", "reviewer"])
+  test(`auto retests when HEAD moves during the ${role} run`, () => {
+    const f = autoFixture(`auto-move-${role}`);
+    change(f, role === "reviewer" ? ["tools/changed.ts"] : ["docs/guide.md"]);
+    const startHead = f.head();
+    const result = f.auto();
+    const runs = (
+      f.run(["list"]).lines[0] as {
+        lanes: { runs: { role: string; head: string }[] }[];
+      }
+    ).lanes[0]!.runs;
+    expect(runs.find((run) => run.role === role)!.head).toBe(startHead);
+    expect(f.head()).not.toBe(startHead);
+    expect(f.roles()).toEqual(
+      role === "tester"
+        ? ["tester", "tester"]
+        : ["tester", "reviewer", "tester", "reviewer"],
+    );
+    expect(result.code).toBe(0);
+    expect(result.lines.at(-1)).toMatchObject({
+      outcome: "ready",
+      head: f.head(),
+    });
+  });
+
+test("auto counts stale tester results against the round cap", () => {
+  const f = autoFixture("auto-move-always-tester");
+  change(f, ["docs/guide.md"]);
+  const result = f.auto();
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "round-cap",
+    step: "tester",
+  });
+  expect(f.roles()).toEqual(["tester", "tester"]);
+});
+
+test("auto includes a reviewer report starting at the preceding tester end", () => {
+  const f = autoFixture("auto-pass");
+  change(f, ["tools/changed.ts"]);
+  const tester = f.seed("tester", 1, "completed", "Verdict: PASS");
+  const review = f.seed(
+    "reviewer",
+    null,
+    "completed",
+    "Verdict: ACT\nP1: missed finding.",
+  );
+  writeFileSync(
+    join(review.reply, "..", "run.json"),
+    JSON.stringify({ ...review, start: tester.end }),
+  );
+  const fix = f.seed("fixer", null, "completed", "Committed.");
+  writeFileSync(
+    join(fix.reply, "..", "run.json"),
+    JSON.stringify({ ...fix, head: f.head() }),
+  );
+  expect(f.auto().code).toBe(0);
+  expect(f.roles()).toEqual(["tester"]);
+  expect(f.prompt()).toContain(review.reply.replaceAll("\\", "/"));
+  expect(f.prompt()).toContain("verify every P0/P1 finding");
+});
+
+test("auto requires a passing tester before accepting a standalone clean reviewer", () => {
+  const f = autoFixture("auto-clean");
+  change(f, ["tools/changed.ts"]);
+  const record = f.seed("reviewer", null, "completed", "Verdict: CLEAN");
+  writeFileSync(
+    join(record.reply, "..", "run.json"),
+    JSON.stringify({ ...record, head: f.head() }),
+  );
+  expect(f.auto().code).toBe(0);
+  expect(f.roles()).toEqual(["tester", "reviewer"]);
+});
+
+test("auto review repair respects the tester cap", () => {
+  const f = autoFixture("auto-act");
+  change(f, ["tools/changed.ts"]);
+  const result = f.auto(["--round-cap", "1"]);
+  expect(result.code).toBe(1);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "blocked",
+    reason: "round-cap",
+    step: "tester",
+  });
+  expect(f.roles()).toEqual(["tester", "reviewer", "fixer"]);
+});
+
+test("auto re-reviews when new commits follow the review fixer", () => {
+  const f = autoFixture("auto-clean");
+  for (const role of ["reviewer", "fixer"]) {
+    const record = f.seed(role, null, "completed", "Verdict: ACT");
+    writeFileSync(
+      join(record.reply, "..", "run.json"),
+      JSON.stringify({ ...record, head: f.head() }),
+    );
+  }
+  change(f, ["tools/another-change.ts"]);
+  expect(f.auto().code).toBe(0);
+  expect(f.roles()).toEqual(["tester", "reviewer"]);
+});
+
+for (const kind of ["refused", "failed", "timeout"])
+  test(`auto stops on ${kind} rather than advancing the chain`, () => {
+    const f = autoFixture(
+      kind === "failed" ? "fail" : kind === "timeout" ? "timeout" : "auto-pass",
+    );
+    if (kind === "refused")
+      writeFileSync(
+        f.config,
+        readFileSync(f.config, "utf8").replace(
+          "harness: codex",
+          "harness: unavailable",
+        ),
+      );
+    const result = f.auto();
+    expect(result.code).toBe(1);
+    expect(result.lines.at(-1)).toMatchObject({
+      outcome: "blocked",
+      reason: kind,
+      step: "builder",
+    });
+    expect(f.roles()).toHaveLength(kind === "refused" ? 0 : 1);
+  });
+
+for (const flags of [
+  ["--round-cap", "0"],
+  ["--round-cap"],
+  ["--round-cap", "11"],
+  ["--bad", "2"],
+  ["--round-cap", "2", "--round-cap", "2"],
+])
+  test(`auto refuses invalid flags ${flags.join(" ")}`, () => {
+    const f = autoFixture();
+    const result = f.auto(flags);
+    expect(result.code).toBe(1);
+    expect(result.lines.at(-1)).toMatchObject({
+      outcome: "blocked",
+      reason: "refused",
+    });
+    expect(f.roles()).toEqual([]);
+  });
 
 for (const [files, tier, because, reviews] of [
   [[], "light", "no changes", ["tester", "github-codex"]],
