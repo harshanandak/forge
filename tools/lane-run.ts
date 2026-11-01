@@ -174,6 +174,7 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 type RunRecord = {
+  head?: string;
   tier?: ReviewTier;
   role: string;
   round: number | null;
@@ -262,8 +263,9 @@ function roleBrief(
   records: RunRecord[],
   classification: LaneTier,
   pr?: string,
+  report?: string,
 ) {
-  if (role !== "tester" && role !== "reviewer")
+  if (role !== "tester" && role !== "reviewer" && !report)
     return readFileSync(join(import.meta.dirname, "lane-brief.md"), "utf8");
   const base = git(worktree, ["merge-base", "origin/main", "HEAD"]);
   let roundText = "";
@@ -296,15 +298,20 @@ function roleBrief(
       classification.tier === "security"
         ? "First write a three-line threat model (threat, cause, out of scope). Review against that threat model."
         : "",
+    REPORT: report?.replaceAll("\\", "/") ?? "",
   };
   return readFileSync(
     join(
       import.meta.dirname,
-      role === "tester" ? "lane-test.md" : "lane-review.md",
+      role === "tester"
+        ? "lane-test.md"
+        : role === "fixer"
+          ? "lane-fix.md"
+          : "lane-review.md",
     ),
     "utf8",
   ).replace(
-    /\{\{(WT|BRANCH|BASE|HEAD|ID|ROUND|PR|TIER|THREAT)\}\}/g,
+    /\{\{(WT|BRANCH|BASE|HEAD|ID|ROUND|PR|TIER|THREAT|REPORT)\}\}/g,
     (_, key: keyof typeof values) => values[key],
   );
 }
@@ -317,6 +324,8 @@ export async function laneRun(
     lanes: { issue: string; worktree: string; branch: string; brief: string }[];
     issue: (id: string) => string;
     lock: (id: string) => (pid?: number) => void;
+    report?: (json: string) => void;
+    fixReport?: string;
   },
 ) {
   let role: string | null = null,
@@ -339,7 +348,7 @@ export async function laneRun(
     }
   };
   const report = (data: Record<string, unknown>) =>
-    console.log(
+    (context.report ?? console.log)(
       JSON.stringify({
         verdict: "refused",
         role,
@@ -464,6 +473,7 @@ export async function laneRun(
             records,
             classification,
             pr,
+            role === "fixer" ? context.fixReport : undefined,
           ),
           "\nIssue:\n",
           JSON.stringify(issue),
@@ -483,6 +493,7 @@ export async function laneRun(
       verdict: "started",
       session: resume ?? null,
       reply: join(folder, "reply.md"),
+      head: git(lane.worktree, ["rev-parse", "HEAD"]),
     };
     save();
     const result = await runCodex({
@@ -500,6 +511,7 @@ export async function laneRun(
       readFileSync(result.reply, "utf8").trim().length > 0;
     const success = hasReply && (result.exit === 0 || result.stoppedAfterReply);
     Object.assign(record, {
+      head: git(lane.worktree, ["rev-parse", "HEAD"]),
       end: new Date().toISOString(),
       verdict: success ? "completed" : "failed",
       session: result.session,
