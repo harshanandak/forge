@@ -33,7 +33,8 @@ How:
    15-minute timeout; record a timeout and move on without retrying. If Bun lacks
    the linter, prepend FORGE_CANARY_BUN_DIR to PATH for that command. Never run
    `bun upgrade`. Do not run broad assembly or packed journeys unless packaging
-   changes. Adding, renaming or removing a template skill counts as packaging:
+   changes. A change to a packed journey or its helpers requires `bun run test:pack`.
+   Adding, renaming or removing a template skill counts as packaging:
    run `test/templates/delivery/packed.integration.test.ts`. Changing delivery
    skill text requires every test file under `test/templates/delivery/`.
 6. For GitHub, obtain the configured account's token inside the command using
