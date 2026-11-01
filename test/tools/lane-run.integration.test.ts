@@ -132,9 +132,33 @@ if(mode==='hold'){setInterval(()=>{if(existsSync(join(root,'finish')))process.ex
 else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='timeout'?124:mode==='fail'?1:0);`,
   );
   writeFileSync(join(root, "mode"), "ok");
+  const claude = join(root, "fake-claude.mjs");
+  writeFileSync(
+    claude,
+    String.raw`import {existsSync,readFileSync,appendFileSync,writeFileSync} from 'node:fs';import {join} from 'node:path';
+const root=process.env.LANE_FIXTURE,args=process.argv.slice(2),file=join(root,'attempts.jsonl'),prompt=readFileSync(0,'utf8');
+const count=existsSync(file)?readFileSync(file,'utf8').trim().split('\n').length:0;
+appendFileSync(file,JSON.stringify({args,cwd:process.cwd(),prompt})+'\n');
+const mode=readFileSync(join(root,'mode'),'utf8');
+writeFileSync(join(root,'harness-pid'),String(process.pid));
+console.log(JSON.stringify({type:'system',subtype:'init',session_id:'claude-session'}));
+console.error('fixture stderr');
+if(mode==='rate-event'&&count===0){console.log(JSON.stringify({type:'rate_limit_event',rate_limit_info:{status:'rejected'}}));process.exit(1)}
+if(mode==='limit'||((mode==='capacity'||mode==='rate-limit')&&count===0)){
+ console.log(JSON.stringify({type:'result',is_error:true,session_id:'claude-session',errors:[mode==='rate-limit'?'rate_limit_error':'overloaded_error']}));process.exit(1);
+}
+if(mode==='no-reply')process.exit(0);
+if(mode==='error-result'){console.log(JSON.stringify({type:'result',is_error:true,result:'Failed'}));process.exit(1)}
+console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text:'Not the final reply'}]}}));
+const result=JSON.stringify({type:'result',subtype:'success',is_error:false,session_id:'claude-session',result:'Verdict: PASS\nClaude final reply.'});
+process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(result.slice(20)+'\n');
+ if(mode==='hang')setInterval(()=>{},1000);else process.exit(0);
+},10);`,
+  );
   for (const [name, file] of [
     ["forge", forge],
     ["codex", codex],
+    ["claude", claude],
   ]) {
     const shim = join(bin, name!);
     writeFileSync(
@@ -292,14 +316,19 @@ else if(mode==='hang'){setInterval(()=>{},1000)}else process.exit(mode==='timeou
           .split("\n")
           .map((line) => JSON.parse(line) as Attempt)
       : [];
-  function direct(worktree: string, mode: string, resume?: string) {
+  function direct(
+    worktree: string,
+    mode: string,
+    resume?: string,
+    harness = "codex",
+  ) {
     writeFileSync(join(root, "mode"), mode);
     const folder = join(root, "direct-output");
     mkdirSync(folder);
     const helper = join(root, "direct.ts");
     writeFileSync(
       helper,
-      `import {runCodex} from ${JSON.stringify(runner)};const result=await runCodex(${JSON.stringify({ worktree, folder, model: "gpt-6.1-sol", effort: "high", prompt: "Direct fixture prompt", ...(resume ? { resume } : {}) })},{replyGraceMs:100,pollMs:10,retryDelayMs:1});console.log(JSON.stringify(result));`,
+      `import {${harness === "claude" ? "runClaude" : "runCodex"} as run} from ${JSON.stringify(runner)};const result=await run(${JSON.stringify({ worktree, folder, model: harness === "claude" ? "claude-sonnet-5-5" : "gpt-6.1-sol", effort: "high", prompt: "Direct fixture prompt", ...(resume ? { resume } : {}) })},{replyGraceMs:100,pollMs:10,retryDelayMs:1});console.log(JSON.stringify(result));`,
     );
     const result = spawnSync(process.execPath, [helper], {
       cwd: caller,
@@ -339,6 +368,202 @@ function expectModel(attempt: Attempt, model: string) {
   expect(attempt.args[modelFlag + 1]).toBe(model);
   expect(attempt.args.join(" ")).toMatch(/model_reasoning_effort[^ ]*high/);
 }
+
+function claudeRole(f: ReturnType<typeof fixture>, role: string) {
+  writeFileSync(
+    f.config,
+    `values:\n  lanes:\n${tiers}    roles:\n      ${role}: {harness: claude, model: claude-sonnet-5-5, effort: high}\n`,
+  );
+}
+
+test("claude tester runs end to end with the same verdict, record and list shape", () => {
+  const f = fixture(),
+    lane = f.start();
+  claudeRole(f, "tester");
+  const result = f.run(["run", "one", "--role", "tester"]);
+  expect(result.code).toBe(0);
+  expect(result.output).toMatchObject({
+    verdict: "completed",
+    role: "tester",
+    harness: "claude",
+    model: "claude-sonnet-5-5",
+    effort: "high",
+    session: "claude-session",
+    retries: 0,
+    stoppedAfterReply: false,
+    exit: 0,
+  });
+  const attempt = f.attempts()[0]!;
+  expect(attempt.cwd).toBe(lane);
+  expect(attempt.args).toEqual([
+    "-p",
+    "--model",
+    "claude-sonnet-5-5",
+    "--effort",
+    "high",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--dangerously-skip-permissions",
+  ]);
+  expect(attempt.prompt).toBe(
+    readFileSync(join(result.output.folder!, "brief.md"), "utf8"),
+  );
+  expect(readFileSync(result.output.reply!, "utf8")).toBe(
+    "Verdict: PASS\nClaude final reply.",
+  );
+  expect(readFileSync(result.output.log!, "utf8")).toContain("fixture stderr");
+  for (const name of ["start.txt", "end.txt"])
+    expect(existsSync(join(result.output.folder!, name))).toBe(true);
+  const record: unknown = JSON.parse(
+    readFileSync(join(result.output.folder!, "run.json"), "utf8"),
+  );
+  expect(record).toMatchObject({
+    harness: "claude",
+    verdict: "completed",
+    session: "claude-session",
+    round: 1,
+  });
+  const list = f.run(["list"]).output as unknown as {
+    lanes: { runs: unknown[] }[];
+  };
+  expect(list.lanes[0]!.runs).toEqual([record]);
+});
+
+test("claude reviewer has only read tools and no MCP; builder skips permissions", () => {
+  const f = fixture();
+  f.start();
+  claudeRole(f, "reviewer");
+  expect(f.run(["run", "one", "--role", "reviewer"]).code).toBe(0);
+  claudeRole(f, "builder");
+  expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
+  const [review, build] = f.attempts();
+  expect(review!.args).toContain("--permission-mode");
+  expect(review!.args[review!.args.indexOf("--permission-mode") + 1]).toBe(
+    "plan",
+  );
+  expect(review!.args[review!.args.indexOf("--tools") + 1]).toBe(
+    "Read,Glob,Grep",
+  );
+  expect(review!.args).toContain("--strict-mcp-config");
+  expect(review!.args).not.toContain("--dangerously-skip-permissions");
+  expect(build!.args).toContain("--dangerously-skip-permissions");
+  expect(build!.args).not.toContain("--permission-mode");
+  expect(build!.args).not.toContain("--tools");
+});
+
+for (const mode of ["capacity", "rate-limit", "rate-event"])
+  test(`claude ${mode} retries once and resumes the stream session`, () => {
+    const f = fixture(),
+      lane = f.start();
+    const result = f.direct(lane, mode, undefined, "claude");
+    expect(result.retries).toBe(1);
+    expect(result.session).toBe("claude-session");
+    expect(result.exit).toBe(0);
+    expect(f.attempts()).toHaveLength(2);
+    const retry = f.attempts()[1]!;
+    expect(retry.args[retry.args.indexOf("--resume") + 1]).toBe(
+      "claude-session",
+    );
+    expect(readFileSync(result.reply!, "utf8")).toContain("Verdict: PASS");
+    expect(readFileSync(result.log!, "utf8")).toContain(
+      mode === "rate-event" ? "rate_limit_event" : "is_error",
+    );
+  });
+
+test.skipIf(process.platform !== "win32")(
+  "claude resolves a native Windows executable before the shell shim",
+  () => {
+    const f = fixture();
+    f.start();
+    const compile = spawnSync(
+      process.execPath,
+      [
+        "build",
+        "--compile",
+        join(f.root, "fake-claude.mjs"),
+        "--outfile",
+        join(f.root, "bin", "claude.exe"),
+      ],
+      { encoding: "utf8", timeout: 30_000, windowsHide: true },
+    );
+    expect(compile.error).toBeUndefined();
+    expect(compile.status).toBe(0);
+    // A trap shim prevents any fallthrough to a real CLI during the red run.
+    writeFileSync(join(f.root, "bin", "claude"), "#!/bin/sh\nexit 17\n");
+    claudeRole(f, "tester");
+    const result = f.run(["run", "one", "--role", "tester"]);
+    expect(result.code).toBe(0);
+    expect(result.output.session).toBe("claude-session");
+    expect(readFileSync(result.output.reply!, "utf8")).toContain(
+      "Verdict: PASS",
+    );
+  },
+);
+
+test("claude reply grace stops a hanging process after the result event", () => {
+  const f = fixture(),
+    lane = f.start();
+  const result = f.direct(lane, "hang", undefined, "claude");
+  expect(result.stoppedAfterReply).toBe(true);
+  expect(result.retries).toBe(0);
+  expect(readFileSync(result.reply!, "utf8")).toBe(
+    "Verdict: PASS\nClaude final reply.",
+  );
+  expect(alive(Number(readFileSync(join(f.root, "harness-pid"), "utf8")))).toBe(
+    false,
+  );
+});
+
+test("claude capacity stops at three retries and keeps the session and error log", () => {
+  const f = fixture(),
+    lane = f.start();
+  const result = f.direct(lane, "limit", undefined, "claude");
+  expect(result).toMatchObject({
+    retries: 3,
+    exit: 1,
+    session: "claude-session",
+    stoppedAfterReply: false,
+  });
+  expect(f.attempts()).toHaveLength(4);
+  for (const attempt of f.attempts().slice(1))
+    expect(attempt.args[attempt.args.indexOf("--resume") + 1]).toBe(
+      "claude-session",
+    );
+  expect(existsSync(result.reply!)).toBe(false);
+  expect(
+    readFileSync(result.log!, "utf8").match(/overloaded_error/g),
+  ).toHaveLength(4);
+});
+
+for (const mode of ["no-reply", "error-result"])
+  test(`claude ${mode} never writes a successful reply`, () => {
+    const f = fixture();
+    f.start();
+    claudeRole(f, "tester");
+    writeFileSync(join(f.root, "mode"), mode);
+    const result = f.run(["run", "one", "--role", "tester"]);
+    expect(result.code).toBe(1);
+    expect(result.output.verdict).toBe("failed");
+    expect(result.output.retries).toBe(0);
+    expect(existsSync(result.output.reply!)).toBe(false);
+    expect(f.attempts()).toHaveLength(1);
+  });
+
+test("claude support still refuses gemini before writing any run folder", () => {
+  const f = fixture();
+  f.start();
+  f.roles("gemini", "gemini");
+  const result = f.run(["run", "one", "--role", "builder"]);
+  expect(result.code).toBe(1);
+  expect(result.output.verdict).toBe("refused");
+  expect(result.output.next).toBe(
+    "unsupported harness: gemini; configure codex or claude",
+  );
+  expect(result.output.folder).toBeNull();
+  expect(existsSync(join(f.main, ".git", "forge-lane-runs"))).toBe(false);
+  expect(f.attempts()).toEqual([]);
+});
 
 test("run uses the caller role table, lane cwd, complete prompt, and typed verdict", () => {
   const f = fixture(),
@@ -820,6 +1045,30 @@ function autoFixture(mode = "auto-chain") {
     f.git(["rev-parse", "HEAD"], join(f.main, ".worktrees", "one"));
   return { ...f, auto, roles, head };
 }
+
+test("auto reads the Claude tester verdict through the same parser as Codex", () => {
+  const f = autoFixture("auto-pass");
+  writeFileSync(
+    f.config,
+    readFileSync(f.config, "utf8").replace(
+      /tester:\s*\n\s*harness: codex\s*\n\s*model: tester/,
+      "tester:\n        harness: claude\n        model: claude-sonnet-5-5",
+    ),
+  );
+  const result = f.auto();
+  expect(result.code).toBe(0);
+  expect(result.lines.at(-1)).toMatchObject({
+    outcome: "ready",
+    head: f.head(),
+  });
+  expect(result.lines[1]).toMatchObject({
+    step: "tester",
+    verdict: "PASS",
+    round: 1,
+  });
+  expect(f.attempts()[1]!.args).toContain("--model");
+  expect(f.attempts()[1]!.args).toContain("claude-sonnet-5-5");
+});
 
 test("auto chains builder, failed tester, fixer and passing tester to ready", () => {
   const f = autoFixture();
