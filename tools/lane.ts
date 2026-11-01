@@ -136,7 +136,7 @@ function options(
     issue === ".."
   )
     throw new Error(
-      "usage: start <issue-id> --branch <name> --brief <file> [--max N], tier <issue-id>, or list",
+      "usage: start <issue-id> --branch <name> --brief <file> [--max N], tier <issue-id>, list, or close <issue-id> --pr N (--receipt <id> [--keep-open] | --dropped <reason>) [--discard-ignored]",
     );
   const values = new Map<string, string>();
   for (let i = 0; i < flags.length; i += 2) {
@@ -461,24 +461,33 @@ async function main(): Promise<number> {
   const owner = `owner-${process.pid}-${randomUUID()}`;
   let held = false;
   try {
-    const common = resolve(
-      run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-    );
-    const root = resolve(
-      run("git", ["--git-dir", common, "worktree", "list", "--porcelain", "-z"])
-        .split("\0")[0]!
-        .slice(9),
-    );
-    const registry = join(common, "forge-lanes.json");
-    const lockLane = (id: string) => acquireLaneLock(common, id, owner);
-    if (parsed === "close")
-      return laneClose(process.argv.slice(3), {
+    const context = () => {
+      const common = resolve(
+        run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+      );
+      const root = resolve(
+        run("git", [
+          "--git-dir",
+          common,
+          "worktree",
+          "list",
+          "--porcelain",
+          "-z",
+        ])
+          .split("\0")[0]!
+          .slice(9),
+      );
+      return {
         common,
         root,
-        load: () => load(registry),
+        load: () => load(join(common, "forge-lanes.json")),
         run,
-        lock: lockLane,
-      });
+        lock: (id: string) => acquireLaneLock(common, id, owner),
+      };
+    };
+    if (parsed === "close") return laneClose(process.argv.slice(3), context);
+    const { common, root, lock: lockLane } = context();
+    const registry = join(common, "forge-lanes.json");
     if (parsed === "tier") {
       const lane = active(registry, root).find(
         (item) => item.issue === process.argv[3],
