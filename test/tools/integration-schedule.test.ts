@@ -12,7 +12,10 @@ test("spawn-heavy integration files run once, after the parallel group", () => {
   expect(groups[1]).toContain("--parallel --timeout 30000");
   expect(groups[1]).toContain("--path-ignore-patterns '");
   const ignore = new Bun.Glob(groups[1]!.split("'")[1]!);
-  const serial = groups[2]!;
+  const serial = groups[2]!.replaceAll(
+    / \$FORGE_TEST_(?:SHARD|TIMINGS|UPDATE)_ARG/g,
+    "",
+  );
   expect(serial).toStartWith("bun test --timeout 30000 ");
   expect(serial).not.toContain("--parallel");
   for (const [folder, name] of [
