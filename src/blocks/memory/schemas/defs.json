@@ -28,7 +28,7 @@
       "type": "string",
       "pattern": "^(?:[a-z0-9][a-z0-9._:/-]{0,63}|project/[0-9a-f]{16})/note-[0-9]{1,9}$",
       "maxLength": 80,
-      "description": "A note's level and origin are part of its id: device/note-3 lives on this device, project/<project id>/note-3 in that project."
+      "description": "Device notes use their fixed creation scope and per-scope number, such as forge/note-3. Project ids remain project/<project id>/note-3; legacy device/note-N aliases still resolve."
     },
     "ScopeNumber": {
       "type": "object",

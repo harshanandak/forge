@@ -102,10 +102,10 @@ test("integration: rendered memory command reads fresh rules from the installed 
     add("untagged private text", "project", []);
     const packet = execute();
     expect(packet).toMatch(
-      /- \[general\] device\/note-1 \(created \d{4}-\d{2}-\d{2}\) fresh general rule\n/,
+      /- \[general\] general\/note-1 \(created \d{4}-\d{2}-\d{2}\) fresh general rule\n/,
     );
     expect(packet).toMatch(
-      /- \[project\] device\/note-2 \(created \d{4}-\d{2}-\d{2}\) fresh project rule\n/,
+      /- \[project\] project\/note-1 \(created \d{4}-\d{2}-\d{2}\) fresh project rule\n/,
     );
     expect(packet).toContain("Forge memory notes: general 1, project 2.");
     expect(packet).not.toContain("untagged private text");
@@ -119,7 +119,7 @@ test("integration: rendered memory command reads fresh rules from the installed 
     expect(t3.instruction).toMatch(/underlying harness/i);
     expect(t3.instruction.split("\n")).toHaveLength(1);
     env.FORGE_DEVICE_ROOT = join(root, "cap-device");
-    const prefixLength = "- [general] device/note-1 (created YYYY-MM-DD) "
+    const prefixLength = "- [general] general/note-1 (created YYYY-MM-DD) "
       .length;
     for (const text of [
       "a".repeat(3000),
