@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { loadEntry, memoryState } from "./lib.ts";
+import { blockSchema, loadEntry, memoryState } from "./lib.ts";
 
 const projectId = "0123456789abcdef";
 const destination = `project/${projectId}/note-1`;
@@ -71,6 +71,52 @@ for (const input of [
   }, 30_000);
 }
 
+test("attach accepts its unchanged moved selection as seen and suppresses the note", async () => {
+  const { call } = await setup();
+  const attached = JSON.parse(
+    JSON.stringify(await call("memory.attach", { ids: ["device/note-1"] })),
+  ) as {
+    receipt: {
+      selected: {
+        id: string;
+        movedFrom?: string;
+        revision: number;
+        scope: string;
+        reasons: string[];
+      }[];
+    };
+  };
+  expect(attached.receipt.selected).toEqual([
+    {
+      id: destination,
+      movedFrom: "device/note-1",
+      revision: 1,
+      scope: "forge",
+      reasons: ["asked"],
+    },
+  ]);
+  const input = {
+    ids: ["device/note-1"],
+    seen: attached.receipt.selected,
+  };
+  expect(blockSchema("memory", "attach.input.json")(input)).toEqual([]);
+  const replay = (await call("memory.attach", input)) as {
+    text: { text: string };
+    receipt: { selected: unknown[]; omitted: unknown[] };
+  };
+  expect(replay.receipt.selected).toEqual([]);
+  expect(replay.receipt.omitted).toEqual([
+    {
+      id: destination,
+      movedFrom: "device/note-1",
+      revision: 1,
+      scope: "forge",
+      reason: "seen",
+    },
+  ]);
+  expect(replay.text.text).not.toContain("moved rule");
+}, 30_000);
+
 test("show follows one moved hop with exactly one extra record read", async () => {
   const { call, device, project } = await setup();
   const before = device.counts.get + project.counts.get;
@@ -135,6 +181,48 @@ test("outside the destination project show and attach keep a pointer with a next
       to: destination,
       next: pointer.next,
     });
+  }
+}, 30_000);
+
+test("attach returns unresolved moved pointers once in requested id order", async () => {
+  const { call, entry, device } = await setup();
+  await call("memory.add", {
+    level: "device",
+    scope: "general",
+    text: "live note",
+  });
+  for (const number of [3, 4]) {
+    await call("memory.add", { level: "device", text: `moved note ${number}` });
+    await call("memory.move", {
+      id: `device/note-${number}`,
+      to: "project",
+      expectRevision: 1,
+    });
+  }
+  const services = {
+    state: device,
+    levels: memoryState(undefined, { inProject: false }),
+  };
+  for (const [requested, moved, selected] of [
+    [[4, 3, 1], [4, 3, 1], []],
+    [[4, 99, 3, 2, 4, 1], [4, 3, 1], [2]],
+    [[3, 1, 3, 99], [3, 1], []],
+  ] as const) {
+    const attached = (await entry["memory.attach"]!({
+      input: { ids: requested.map((number) => `device/note-${number}`) },
+      services,
+    })) as {
+      receipt: {
+        moved: { id: string }[];
+        selected: { id: string }[];
+      };
+    };
+    expect(attached.receipt.moved.map((note) => note.id)).toEqual(
+      moved.map((number) => `device/note-${number}`),
+    );
+    expect(attached.receipt.selected.map((note) => note.id)).toEqual(
+      selected.map((number) => `device/note-${number}`),
+    );
   }
 }, 30_000);
 

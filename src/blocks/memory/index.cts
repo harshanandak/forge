@@ -964,6 +964,7 @@ module.exports = {
         after = last.number;
       }
     }
+    moved.sort((a, b) => ids.get(a.id)! - ids.get(b.id)!);
     candidates.sort(
       (a, b) =>
         (ids.get(a.id) ?? Infinity) - (ids.get(b.id) ?? Infinity) ||

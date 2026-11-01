@@ -96,6 +96,14 @@ test("integration: built CLI loads moved project notes and resolves old ids once
       expect(attached.receipt.selected[0]!.id).toBe(moved.to);
       if (ids.includes(old.id))
         expect(attached.receipt.selected[0]!.movedFrom).toBe(old.id);
+      expect(
+        cli("attach", { ids, seen: attached.receipt.selected }),
+      ).toMatchObject({
+        receipt: {
+          selected: [],
+          omitted: [{ id: moved.to, reason: "seen" }],
+        },
+      });
     }
     const shown = cli("show", { id: old.id });
     expect(shown).toMatchObject({
@@ -110,6 +118,19 @@ test("integration: built CLI loads moved project notes and resolves old ids once
     const pointer = cli("show", { id: old.id }, outside) as { next: string };
     expect(pointer).toMatchObject({ status: "moved", to: moved.to });
     expect(pointer.next).toContain(moved.to.split("/")[1]!);
+    const second = cli("add", { level: "device", text: "second moved" }) as {
+      id: string;
+    };
+    cli("move", { id: second.id, to: "project", expectRevision: 1 });
+    const unresolved = cli(
+      "attach",
+      { ids: [second.id, old.id, second.id] },
+      outside,
+    ) as { receipt: { moved: { id: string }[] } };
+    expect(unresolved.receipt.moved.map((note) => note.id)).toEqual([
+      second.id,
+      old.id,
+    ]);
     const linker = cli("add", {
       level: "device",
       text: "linker",
