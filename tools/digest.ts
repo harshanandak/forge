@@ -107,7 +107,11 @@ try {
       `merged:>=${new Date(since).toISOString()}`,
       "--json=number,title,mergeCommit,url,mergedAt",
     );
-    if (rows.length >= 1000) throw new Error("Incomplete merges");
+    if (rows.length >= 1000)
+      errors.push({
+        source: "gh merged PRs",
+        next: "merged PR source is incomplete; narrow the window with --since and rerun with --peek",
+      });
     return rows.filter((row) => Date.parse(row.mergedAt!) >= Date.parse(since));
   });
   const blocked = source("gh open PRs", () => {
@@ -155,14 +159,18 @@ try {
       "issue",
       "list",
       "--input",
-      '{"limit":1000}',
+      JSON.stringify({ limit: 1000, createdSince: since }),
     ]);
     const r = JSON.parse(raw) as {
       ok: boolean;
-      result: { items: Issue[]; truncated?: boolean };
+      result: { items: Issue[]; truncated: boolean };
     };
-    const incomplete = r.result.truncated || r.result.items.length >= 1000;
-    if (!r.ok || incomplete) throw new Error("Incomplete issues");
+    if (!r.ok) throw new Error("Issue read failed");
+    if (r.result.truncated)
+      errors.push({
+        source: "forge issue list",
+        next: "issue source is incomplete; narrow the window with --since and rerun with --peek",
+      });
     return r.result.items.filter(
       (issue) => Date.parse(issue.createdAt) >= Date.parse(since),
     );
