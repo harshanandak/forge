@@ -8,6 +8,16 @@
   "files": ["schemas/defs.json"],
   "configSchema": "schemas/config.json",
   "operations": {
+    "memory.renumber": {
+      "input": "schemas/scope.input.json",
+      "output": "schemas/renumber.output.json",
+      "context": "device",
+      "effects": ["memory:write"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "stable",
+      "timeoutMs": 15000
+    },
     "memory.scope": {
       "input": "schemas/scope.input.json",
       "output": "schemas/scope.output.json",

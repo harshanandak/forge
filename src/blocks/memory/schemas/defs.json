@@ -34,6 +34,7 @@
       "type": "object",
       "properties": {
         "scope": { "$ref": "defs.json#/$defs/Scope" },
+        "backfill": { "type": "integer", "minimum": 1 },
         "number": { "type": "integer", "minimum": 1, "maximum": 999999999 }
       },
       "required": ["scope", "number"],

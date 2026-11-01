@@ -83,7 +83,12 @@ test("current-main fixture backfills in bounded resumable chunks without changin
     expect((await show(state, `note-${i}`)).note.id).toBe(id);
     expect((await show(state, id)).note.id).toBe(id);
   }
-  expect(state.list("note/")).toEqual(before);
+  for (const [i, record] of state.list("note/").entries()) {
+    const { scopeNumber, ...kept } = record.value as Record<string, unknown>;
+    expect(kept).toEqual(before[i]!.value as Record<string, unknown>);
+    expect(record.revision).toBe(before[i]!.revision + 1);
+    expect(scopeNumber).toMatchObject({ backfill: before[i]!.revision });
+  }
   const all = state.list();
   await backfill(state);
   expect(state.list()).toEqual(all);
@@ -222,4 +227,74 @@ test("legacy attachment needs no point reads and scoped attachment has a bounded
     expect(state.counts.get - gets).toBe(ids[0] === "note-1" ? 0 : 2);
     expect(state.counts.list - lists).toBe(1);
   }
+});
+
+test("restored backfilled notes retain distinct readable text versions after editing", async () => {
+  const state = fixture();
+  const key = "note/000000001";
+  const old = state.get(key)!;
+  state.put(
+    key,
+    { ...(old.value as object), text: "before restore" },
+    { expectRevision: old.revision },
+  );
+  await backfill(state);
+  const exported = await entry["memory.export"]!({
+    input: { level: "device" },
+    services: services(state),
+  });
+  const target = memoryState();
+  await entry["memory.restore"]!({
+    input: { ...(exported as object), approval: ownerApproval },
+    services: services(target),
+  });
+  await entry["memory.add"]!({
+    input: { id: "forge/note-1", text: "after restore" },
+    services: services(target),
+  });
+  const shown = (await entry["memory.show"]!({
+    input: { id: "forge/note-1" },
+    services: services(target),
+  })) as { note: { versions: { revision: number }[] } };
+  const revisions = shown.note.versions.map(({ revision }) => revision);
+  expect(new Set(revisions).size).toBe(revisions.length);
+  const texts = [];
+  for (const revision of revisions) {
+    const version = (await entry["memory.show"]!({
+      input: { id: "forge/note-1", revision },
+      services: services(target),
+    })) as { note: { text: { text: string } } };
+    texts.push(version.note.text.text);
+  }
+  expect(texts).toEqual(["before restore", "after restore"]);
+});
+
+test("export restore preserves legacy link targets when omitted notes leave physical-number gaps", async () => {
+  const state = fixture();
+  const key = "note/000000003";
+  const old = state.get(key)!;
+  state.put(
+    key,
+    { ...(old.value as object), links: ["device/note-2"] },
+    { expectRevision: old.revision },
+  );
+  await entry["memory.forget"]!({
+    input: { id: "note-1", approval: ownerApproval },
+    services: services(state),
+  });
+  await backfill(state);
+  const exported = await entry["memory.export"]!({
+    input: { level: "device" },
+    services: services(state),
+  });
+  const target = memoryState();
+  await entry["memory.restore"]!({
+    input: { ...(exported as object), approval: ownerApproval },
+    services: services(target),
+  });
+  const linked = await show(target, (await show(state, "note-3")).note.id);
+  expect(linked.note.links).toEqual(["device/note-2"]);
+  expect((await show(target, linked.note.links[0]!)).note.id).toBe(
+    "curapod/note-1",
+  );
 });

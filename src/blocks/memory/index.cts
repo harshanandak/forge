@@ -47,7 +47,11 @@ interface NoteValue {
   readonly textAt?: string;
   readonly versionApproval?: Approval & { readonly at: string };
   readonly scope?: string;
-  readonly scopeNumber?: { readonly scope: string; readonly number: number };
+  readonly scopeNumber?: {
+    readonly scope: string;
+    readonly number: number;
+    readonly backfill?: number;
+  };
   readonly tags: readonly string[];
   readonly links: readonly string[];
   readonly previous: readonly Version[];
@@ -150,7 +154,8 @@ const MAX_RETRIES = 8;
 const DEFAULT_LIMIT = 10;
 const SNIPPET_LENGTH = 200;
 // A bare note-N is a note written before notes had levels: every one of those is a device note.
-const NOTE_REF = /^(?:(device|project\/([0-9a-f]{16}))\/)?note-([0-9]{1,9})$/;
+const NOTE_REF =
+  /^(?:(device|project\/([0-9a-f]{16})|[a-z0-9][a-z0-9._:/-]{0,63})\/)?note-([0-9]{1,9})$/;
 const LEGACY_REF = /^note-[0-9]{1,9}$/;
 const STOPWORDS = new Set(
   "a an and are as at be but by do does for from how i if in is it its my of on or our so that the their then there these they this to was we were what when where which who why will with you your".split(
@@ -267,6 +272,10 @@ function idIn(source: Source, number: number, value?: NoteValue): string {
     ? `${identity.scope}/note-${identity.number}`
     : `${source.prefix}/note-${number}`;
 }
+function numberFor(state: StateClient, id: string) {
+  const record = state.get(`${NOTE_ID}${id}`);
+  return (record?.value as { number: number } | undefined)?.number;
+}
 /** Assign immutable identity and queue its index and scope counter with the note write. */
 function indexNote(
   source: Source,
@@ -275,22 +284,21 @@ function indexNote(
   entries: BatchEntry[],
 ) {
   if (source.level !== "device") return;
-  const scope = value.scopeNumber?.scope ?? value.scope ?? "general";
+  const scope =
+    value.scopeNumber?.scope ??
+    value.scope ??
+    value.forgotten?.scope ??
+    "general";
   const key = `${SCOPE_COUNTER}${scope}`;
   const counter = readCounter(source.state, key);
-  const queued = entries.findIndex((entry) => entry.key === key);
-  const last =
-    queued < 0
-      ? counter.last
-      : (entries[queued]!.value as { last: number }).last;
-  const identity = value.scopeNumber ?? { scope, number: last + 1 };
-  const update = {
-    key,
-    value: { last: Math.max(last, identity.number) },
-    expectRevision: counter.revision,
-  };
-  if (queued < 0) entries.push(update);
-  else entries[queued] = update;
+  const queued = entries.find((entry) => entry.key === key);
+  const issued = queued
+    ? (queued.value as { last: number })
+    : { last: counter.last };
+  const identity = value.scopeNumber ?? { scope, number: issued.last + 1 };
+  issued.last = Math.max(issued.last, identity.number);
+  if (!queued)
+    entries.push({ key, value: issued, expectRevision: counter.revision });
   Object.assign(value, { scopeNumber: identity });
   entries.push({
     key: `${NOTE_ID}${idIn(source, number, value)}`,
@@ -315,16 +323,13 @@ function parseRef(
   | { level: Level; project?: string; scope?: string; number: number }
   | undefined {
   const match = NOTE_REF.exec(id);
-  if (!match) {
-    const scoped = /^([a-z0-9][a-z0-9._:/-]{0,63})\/note-([0-9]{1,9})$/.exec(
-      id,
-    );
-    return scoped
-      ? { level: "device", scope: scoped[1]!, number: Number(scoped[2]) }
-      : undefined;
-  }
+  if (!match) return undefined;
   return match[2] === undefined
-    ? { level: "device", number: Number(match[3]) }
+    ? {
+        level: "device",
+        number: Number(match[3]),
+        ...(match[1] && match[1] !== "device" ? { scope: match[1] } : {}),
+      }
     : { level: "project", project: match[2], number: Number(match[3]) };
 }
 
@@ -410,12 +415,7 @@ async function sourceFor(
   if (!ref) return { ref: id, status: "not_found" };
   if (ref.level === "device") {
     const number =
-      ref.scope === undefined
-        ? ref.number
-        : (
-            services.state.get(`${NOTE_ID}${id}`)?.value as
-              { number: number } | undefined
-          )?.number;
+      ref.scope === undefined ? ref.number : numberFor(services.state, id);
     return number === undefined
       ? { ref: id, status: "not_found" }
       : { source: deviceSource(services.state), number };
@@ -510,6 +510,9 @@ function label(source: Source) {
  * The versions a reader can ask for: the current one and each earlier text still kept, from the
  * note's own record, so a response never waits on the event log.
  */
+function textVersion(record: StateRecord, value: NoteValue) {
+  return value.textRevision ?? value.scopeNumber?.backfill ?? record.revision;
+}
 function versionsOf(
   record: StateRecord,
   value: NoteValue,
@@ -517,10 +520,13 @@ function versionsOf(
   return [
     ...value.previous,
     {
-      revision: value.textRevision ?? record.revision,
+      revision: textVersion(record, value),
       at:
         value.textAt ??
-        (value.textRevision === undefined ? record.updatedAt : undefined),
+        (value.textRevision === undefined &&
+        value.scopeNumber?.backfill === undefined
+          ? record.updatedAt
+          : undefined),
       ...(value.versionApproval ? { approval: value.versionApproval } : {}),
     },
   ];
@@ -534,6 +540,7 @@ function present(
   versions = shown(source.state, record, value),
 ) {
   id = idIn(source, numberOf(record), value);
+  const at = contentTime(source.state, record, value);
   return {
     id,
     ...label(source),
@@ -543,8 +550,8 @@ function present(
     links: qualifiedLinks(value.links),
     ...(value.from === undefined ? {} : { from: value.from }),
     ...(value.proposedForget === true ? { proposedForget: true as const } : {}),
-    text: fence(text, `memory:${id}`, record.updatedAt),
-    updatedAt: record.updatedAt,
+    text: fence(text, `memory:${id}`, at),
+    updatedAt: at,
     ...dates(source.state, record, value),
     versions,
     ...audit(value.approval, `memory:${id}`),
@@ -671,6 +678,33 @@ function resolvedScope(config: MemoryConfig, services: Services): string {
 }
 
 module.exports = {
+  "memory.renumber": ({ services }: { services: Services }) =>
+    committed(() => {
+      const source = deviceSource(services.state);
+      const key = "meta/renumber-cursor";
+      const cursor = readCounter(source.state, key);
+      const notes = notePage(source, {
+        after: cursor.last,
+        limit: CHUNK_NOTES,
+        descending: false,
+      });
+      const entries: BatchEntry[] = [];
+      for (const { value: old, record: row, number } of notes) {
+        if (old.scopeNumber) continue;
+        const value = { ...old };
+        indexNote(source, number, value, entries);
+        Object.assign(value.scopeNumber!, { backfill: row.revision });
+        entries.push({ key: row.key, value, expectRevision: row.revision });
+      }
+      const last = notes.at(-1)?.number ?? cursor.last;
+      if (last > cursor.last)
+        entries.push({ key, value: { last }, expectRevision: cursor.revision });
+      if (entries.length) source.state.putMany(entries);
+      return {
+        indexed: notes.length,
+        complete: notes.length < CHUNK_NOTES,
+      };
+    }),
   "memory.scope": ({
     config = {},
     services,
@@ -1126,7 +1160,12 @@ module.exports = {
         ...(kept?.from === undefined ? {} : { from: kept.from }),
         ...(kept?.scopeNumber === undefined
           ? {}
-          : { scopeNumber: kept.scopeNumber }),
+          : {
+              scopeNumber: {
+                scope: kept.scopeNumber.scope,
+                number: kept.scopeNumber.number,
+              },
+            }),
         ...(kept?.proposedForget === true
           ? { proposedForget: true as const }
           : {}),
@@ -1176,8 +1215,8 @@ module.exports = {
       if (removed !== undefined)
         Object.assign(value, { versionApproval: approval });
       // Moves keep text version numbers while the destination store starts at revision one.
-      if ((old.textRevision ?? 0) > existing.revision)
-        Object.assign(value, { textRevision: old.textRevision! + 1 });
+      if (textVersion(existing, old) > existing.revision)
+        Object.assign(value, { textRevision: textVersion(existing, old) + 1 });
       const expected = canonical(value);
       const record = source.state.put(key, value, {
         expectRevision: input.expectRevision ?? existing.revision,
@@ -1427,6 +1466,7 @@ module.exports = {
     return {
       hits: scored.slice(skip, skip + limit).map(({ document, score }) => {
         const { note, source } = document;
+        const at = contentTime(source.state, note.record, note.value);
         return {
           id: note.id,
           ...label(source),
@@ -1442,9 +1482,9 @@ module.exports = {
           snippet: fence(
             snippet(note.value.text, wanted),
             `memory:${note.id}`,
-            note.record.updatedAt,
+            at,
           ),
-          updatedAt: note.record.updatedAt,
+          updatedAt: at,
           ...dates(source.state, note.record, note.value),
         };
       }),
@@ -1483,7 +1523,7 @@ module.exports = {
       input.revision === undefined ||
       (input.revision === record.revision &&
         !value.previous.some((entry) => entry.revision === input.revision)) ||
-      input.revision === value.textRevision
+      input.revision === textVersion(record, value)
     )
       return {
         status: "found" as const,
@@ -1544,7 +1584,7 @@ module.exports = {
     const { proposedForget: _proposal, ...kept } = old;
     const value: NoteValue = {
       ...kept,
-      textRevision: old.textRevision ?? existing.revision,
+      textRevision: textVersion(existing, old),
       ...(withdraw ? {} : { proposedForget: true as const }),
     };
     const record = source.state.put(key, value, {
@@ -1634,7 +1674,7 @@ module.exports = {
         ...(old.scopeNumber ? { scopeNumber: old.scopeNumber } : {}),
         forgotten: {
           ...old,
-          textRevision: old.textRevision ?? existing.revision,
+          textRevision: textVersion(existing, old),
         },
         approval,
       },
@@ -1692,7 +1732,7 @@ module.exports = {
       ...dates(source.state, existing, value),
       changedAt: contentTime(source.state, existing, value),
       textAt: stamps.at(-1)!.at,
-      textRevision: value.textRevision ?? existing.revision,
+      textRevision: textVersion(existing, value),
       ...(value.approval ? { approval: value.approval } : {}),
       ...(value.versionApproval
         ? { versionApproval: value.versionApproval }
@@ -1871,6 +1911,7 @@ module.exports = {
       ...(more && examined !== undefined ? { next: examined } : {}),
       notes: chosen.map((note) => ({
         id: note.id,
+        number: note.number,
         revision: note.record.revision,
         ...(note.value.scope === undefined ? {} : { scope: note.value.scope }),
         ...(note.value.scopeNumber
@@ -1899,6 +1940,7 @@ module.exports = {
       approval?: Approval;
       notes: readonly {
         id: string;
+        number?: number;
         scope?: string;
         scopeNumber?: NoteValue["scopeNumber"];
         tags: readonly string[];
@@ -1961,10 +2003,7 @@ module.exports = {
         const number =
           ref.scope === undefined
             ? ref.number
-            : ((
-                state.get(`${NOTE_ID}${note.id}`)?.value as
-                  { number: number } | undefined
-              )?.number ?? highest + 1);
+            : (note.number ?? numberFor(state, note.id) ?? highest + 1);
         const key = noteKey(number);
         const id = ref.scope === undefined ? idIn(target, number) : note.id;
         highest = Math.max(highest, number);
