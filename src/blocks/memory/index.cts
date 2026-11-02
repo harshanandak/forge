@@ -1628,6 +1628,7 @@ module.exports = {
   "memory.move": async function move({
     input,
     services,
+    deadline,
   }: {
     input:
       | {
@@ -1642,6 +1643,7 @@ module.exports = {
           limit?: number;
         };
     services: Services;
+    deadline?: number;
   }): Promise<object> {
     if ("scope" in input) {
       const limit = input.limit ?? 25;
@@ -1667,7 +1669,15 @@ module.exports = {
       };
       const moved: { id: string; to: string }[] = [];
       let stopped: { id: string; code: string } | undefined;
+      let slowestMoveMs = 0;
       for (const note of scan()) {
+        const started = Date.now();
+        // Leave time for the remaining-count scan and response after a complete note.
+        if (
+          deadline !== undefined &&
+          deadline - started <= slowestMoveMs + 1_000
+        )
+          break;
         try {
           const result = await move({
             input: {
@@ -1703,6 +1713,7 @@ module.exports = {
             break;
           }
           moved.push({ id: note.id, to });
+          slowestMoveMs = Math.max(slowestMoveMs, Date.now() - started);
           if (moved.length === limit) break;
         } catch (error) {
           const code = (error as { error?: { code?: string } } | null)?.error

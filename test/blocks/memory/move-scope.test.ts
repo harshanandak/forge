@@ -19,7 +19,7 @@ type Batch = {
   next?: string;
 };
 
-async function setup(count = 3) {
+async function setup(count = 3, globals: Record<string, unknown> = {}) {
   const project = memoryState();
   const device = memoryState(undefined, {
     inProject: true,
@@ -29,7 +29,7 @@ async function setup(count = 3) {
         state: project,
       }),
   });
-  const entry = loadEntry("memory");
+  const entry = loadEntry("memory", undefined, globals);
   const services = { state: device, levels: device };
   const call = (op: string, value: object) =>
     entry[op]!({ input: value, services });
@@ -53,8 +53,12 @@ async function setup(count = 3) {
     entry,
     services,
     call,
-    move: (value: object = input) =>
-      call("memory.move", value) as Promise<Batch>,
+    move: (value: object = input, deadline?: number) =>
+      entry["memory.move"]!({
+        input: value,
+        services,
+        ...(deadline === undefined ? {} : { deadline }),
+      }) as Promise<Batch>,
   };
 }
 
@@ -143,6 +147,91 @@ test("scope scan passes pages of tombstones and other scopes and uses stored sco
       .list("note/")
       .filter((r) => (r.value as { deleted?: boolean }).deleted !== true),
   ).toHaveLength(205);
+}, 30_000);
+
+test("scope deadline keeps the slowest note estimate and resumes the remaining notes", async () => {
+  let now = 1_000;
+  const { move, device, project } = await setup(4, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  const put = device.put.bind(device);
+  const durations = [3_000, 1_000, 4_000, 1_000];
+  device.put = (...args) => {
+    now += durations.shift()!;
+    return put(...args);
+  };
+  const first = await move(input, 8_500);
+  expect(now).toBe(5_000);
+  expect(first).toMatchObject({
+    moved: [{ id: "device/note-1" }, { id: "device/note-2" }],
+    remaining: 2,
+    complete: false,
+    next: "forge memory move --scope alpha --to project --limit 25",
+  });
+  expect(first.stopped).toBeUndefined();
+  expect(project.list("note/")).toHaveLength(2);
+  expect(device.get("note/000000003")?.revision).toBe(2);
+  expect(await move(input, 20_000)).toMatchObject({
+    moved: [{ id: "device/note-3" }, { id: "device/note-4" }],
+    remaining: 0,
+    complete: true,
+  });
+  expect(project.list("note/")).toHaveLength(4);
+}, 30_000);
+
+for (const budget of [0, 999, 1_000]) {
+  test(`scope deadline starts no note with ${budget} ms remaining`, async () => {
+    const { move, device, project } = await setup(2, {
+      Date: class extends Date {
+        static override now() {
+          return 1_000;
+        }
+      },
+    });
+    const before = device.counts.puttedRecords + project.counts.puttedRecords;
+    expect(await move(input, 1_000 + budget)).toMatchObject({
+      moved: [],
+      remaining: 2,
+      complete: false,
+      next: "forge memory move --scope alpha --to project --limit 25",
+    });
+    expect(device.counts.puttedRecords + project.counts.puttedRecords).toBe(
+      before,
+    );
+  }, 30_000);
+}
+
+test("scope deadline lets a started note finish and verify before returning", async () => {
+  let now = 1_000;
+  const { move, device, project } = await setup(2, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  const put = device.put.bind(device);
+  device.put = (...args) => {
+    now += 2_000;
+    return put(...args);
+  };
+  const first = await move(input, 2_500);
+  expect(first).toMatchObject({
+    moved: [{ id: "device/note-1" }],
+    remaining: 1,
+    complete: false,
+  });
+  expect(first.stopped).toBeUndefined();
+  expect(project.list("note/")).toHaveLength(1);
+  expect(device.get("note/000000001")?.value).toMatchObject({
+    deleted: true,
+    movedTo: first.moved[0]!.to,
+  });
+  expect(device.get("note/000000002")?.revision).toBe(2);
 }, 30_000);
 
 test("interrupted scope batch resumes the committed copy without duplication", async () => {

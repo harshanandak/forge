@@ -58,6 +58,7 @@ type Handler = (args: {
   input: unknown;
   config?: unknown;
   services: unknown;
+  deadline?: number;
 }) => unknown;
 /** A handler that may return a Promise; tests await every call. */
 export type Entry = Record<string, Handler>;
