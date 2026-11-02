@@ -153,5 +153,11 @@ jobs:
       - run: npm install --global npm@11.21.0
       - name: Promote only after readback and second owner approval
         run: |
-          npm dist-tag add "forge-workflow@$VERSION" latest
-          test "$(npm view forge-workflow dist-tags.latest)" = "$VERSION"
+          if [[ "$VERSION" == *-* ]]; then
+            TAG=beta
+          else
+            TAG=latest
+          fi
+          echo "Promoting $VERSION to $TAG"
+          npm dist-tag add "forge-workflow@$VERSION" "$TAG"
+          test "$(npm view forge-workflow "dist-tags.$TAG")" = "$VERSION"

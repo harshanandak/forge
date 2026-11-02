@@ -62,3 +62,16 @@ test("cold installs use runner-scoped caches and an isolated Forge store in step
     FORGE_DEVICE_ROOT: "${{ runner.temp }}/release-forge",
   });
 }, 1000);
+
+test("promotion derives beta for prereleases and latest for stable versions", () => {
+  const promote = workflow().jobs.promote?.steps.find((step) =>
+    step.run?.includes("npm dist-tag add"),
+  );
+  const run = promote?.run ?? "";
+  expect(run).toMatch(
+    /if \[\[ "\$VERSION" == \*-\* \]\]; then\s+TAG=beta\s+else\s+TAG=latest\s+fi/,
+  );
+  expect(run).toContain('npm dist-tag add "forge-workflow@$VERSION" "$TAG"');
+  expect(run).toContain('npm view forge-workflow "dist-tags.$TAG"');
+  expect(run).not.toMatch(/npm dist-tag add[^\n]*\blatest\b/);
+}, 1000);
