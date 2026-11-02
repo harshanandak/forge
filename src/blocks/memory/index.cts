@@ -1641,27 +1641,23 @@ module.exports = {
           scope: string;
           to: "project";
           limit?: number;
+          after?: number;
         };
     services: Services;
     deadline?: number;
   }): Promise<object> {
     if ("scope" in input) {
-      const setupStarted = Date.now();
       const limit = input.limit ?? 25;
       const target = await writeTarget(services, "project");
       const source = deviceSource(services.state);
-      const pages =
-        deadline === undefined
-          ? 0
-          : Math.floor(
-              readCounter(source.state, NOTE_COUNTER).last / LIST_LIMIT,
-            ) + 1;
-      const setupMs = Date.now() - setupStarted;
       let slowestPageMs = 0;
       const scope = input.scope;
+      let after = input.after ?? 0;
+      let exhausted = false;
+      const canScan = () =>
+        deadline === undefined || deadline - Date.now() > slowestPageMs + 1_000;
       const scan = function* () {
-        let after = 0;
-        for (;;) {
+        while (canScan()) {
           const pageStarted = Date.now();
           const records = notePage(source, {
             after,
@@ -1672,24 +1668,33 @@ module.exports = {
           for (const note of records) {
             if (note.value.deleted !== true && note.value.scope === scope)
               yield note;
+            after = note.number;
           }
-          const last = records.at(-1);
-          if (records.length < LIST_LIMIT || !last) break;
-          after = last.number;
+          if (records.length < LIST_LIMIT) {
+            exhausted = true;
+            return;
+          }
         }
       };
       const moved: { id: string; to: string }[] = [];
       let stopped: { id: string; code: string } | undefined;
       let slowestMoveMs = 0;
-      for (const note of scan()) {
+      let complete = false;
+      const notes = scan();
+      while (canScan()) {
+        const step = notes.next();
+        if (step.done) {
+          complete = exhausted;
+          break;
+        }
+        const note = step.value;
         const started = Date.now();
-        // The final count revisits every page, including tombstones and other scopes.
-        // Setup also estimates reopening the target inside the first move.
+        // Leave a pending match before the cursor so the next call can move it.
+        if (moved.length === limit) break;
         if (
-          (moved.length > 0 || setupMs > 0 || slowestPageMs > 0) &&
           deadline !== undefined &&
           deadline - started <=
-            Math.max(slowestMoveMs, setupMs) + slowestPageMs * pages + 1_000
+            (moved.length === 0 ? 1_000 : slowestMoveMs + slowestPageMs + 1_000)
         )
           break;
         try {
@@ -1727,8 +1732,8 @@ module.exports = {
             break;
           }
           moved.push({ id: note.id, to });
+          after = note.number;
           slowestMoveMs = Math.max(slowestMoveMs, Date.now() - started);
-          if (moved.length === limit) break;
         } catch (error) {
           const code = (error as { error?: { code?: string } } | null)?.error
             ?.code;
@@ -1738,17 +1743,14 @@ module.exports = {
           break;
         }
       }
-      let remaining = 0;
-      for (const _note of scan()) remaining += 1;
       return {
         status: "moved" as const,
         moved,
-        remaining,
-        complete: remaining === 0,
+        complete,
         ...(stopped ? { stopped } : {}),
-        ...(remaining
+        ...(!complete
           ? {
-              next: `forge memory move --scope ${input.scope} --to project --limit ${limit}`,
+              next: `forge memory move --scope ${input.scope} --to project --limit ${limit} --after ${after}`,
             }
           : {}),
       };

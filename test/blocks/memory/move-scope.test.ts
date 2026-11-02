@@ -13,11 +13,17 @@ const input = { scope: "alpha", to: "project" };
 type Batch = {
   status: string;
   moved: { id: string; to: string }[];
-  remaining: number;
   complete: boolean;
   stopped?: { id: string; code: string };
   next?: string;
 };
+
+function continuation(batch: Batch) {
+  expect(batch.next).toBeDefined();
+  const after = Number(batch.next!.split("--after ")[1]);
+  expect(Number.isSafeInteger(after)).toBe(true);
+  return { ...input, after };
+}
 
 async function setup(count = 3, globals: Record<string, unknown> = {}) {
   const project = memoryState();
@@ -65,6 +71,9 @@ async function setup(count = 3, globals: Record<string, unknown> = {}) {
 test("scope input and batch output are admitted alongside unchanged single moves", async () => {
   expect(blockSchema("memory", "move.input.json")(input)).toEqual([]);
   expect(
+    blockSchema("memory", "move.input.json")({ ...input, after: 123 }),
+  ).toEqual([]);
+  expect(
     blockSchema(
       "memory",
       "move.input.json",
@@ -87,22 +96,20 @@ test("scope batches move 25, then 5, then zero, preserving every record and old-
   const first = await move();
   expect(first).toMatchObject({
     status: "moved",
-    remaining: 5,
     complete: false,
   });
   expect(first.moved.map((n) => n.id)).toEqual(
     Array.from({ length: 25 }, (_, i) => `device/note-${i + 1}`),
   );
   expect(first.next).toBe(
-    "forge memory move --scope alpha --to project --limit 25",
+    "forge memory move --scope alpha --to project --limit 25 --after 25",
   );
-  const second = await move();
-  expect(second).toMatchObject({ remaining: 0, complete: true });
+  const second = await move(continuation(first));
+  expect(second).toMatchObject({ complete: true });
   expect(second.moved).toHaveLength(5);
   expect(second.next).toBeUndefined();
   expect(await move()).toMatchObject({
     moved: [],
-    remaining: 0,
     complete: true,
   });
   for (const { id, to } of [...first.moved, ...second.moved]) {
@@ -138,7 +145,6 @@ test("scope scan passes pages of tombstones and other scopes and uses stored sco
   await call("memory.add", { level: "device", scope: "alpha", text: "last" });
   expect(await move({ ...input, limit: 1 })).toMatchObject({
     moved: [{ id: "device/note-206" }],
-    remaining: 0,
     complete: true,
   });
   expect(await move()).toMatchObject({ moved: [], complete: true });
@@ -168,64 +174,47 @@ test("scope deadline keeps the slowest note estimate and resumes the remaining n
   expect(now).toBe(5_000);
   expect(first).toMatchObject({
     moved: [{ id: "device/note-1" }, { id: "device/note-2" }],
-    remaining: 2,
     complete: false,
-    next: "forge memory move --scope alpha --to project --limit 25",
+    next: "forge memory move --scope alpha --to project --limit 25 --after 2",
   });
   expect(first.stopped).toBeUndefined();
   expect(project.list("note/")).toHaveLength(2);
   expect(device.get("note/000000003")?.revision).toBe(2);
-  expect(await move(input, 20_000)).toMatchObject({
+  expect(await move(continuation(first), 20_000)).toMatchObject({
     moved: [{ id: "device/note-3" }, { id: "device/note-4" }],
-    remaining: 0,
     complete: true,
   });
   expect(project.list("note/")).toHaveLength(4);
 }, 30_000);
 
-for (const budget of [0, 999, 1_000]) {
-  test(`scope deadline makes progress on every call with ${budget} ms remaining`, async () => {
-    const { move, call, device, project } = await setup(2, {
+for (const budget of [0, 999, 1_000, 2_000]) {
+  test(`scope short budget of ${budget} ms respects the first-move floor`, async () => {
+    let now = 1_000;
+    const { move, services, project } = await setup(2, {
       Date: class extends Date {
         static override now() {
-          return 1_000;
+          return now;
         }
       },
     });
+    const open = services.levels.project.bind(services.levels);
+    services.levels.project = (...args) => {
+      now += 100;
+      return open(...args);
+    };
     const first = await move(input, 1_000 + budget);
-    expect(first).toMatchObject({
-      moved: [{ id: "device/note-1" }],
-      remaining: 1,
-      complete: false,
-      next: "forge memory move --scope alpha --to project --limit 25",
-    });
-    expect(first.stopped).toBeUndefined();
-    expect(project.list("note/")).toHaveLength(1);
-    expect(device.get("note/000000002")?.revision).toBe(2);
-    const second = await move(input, 1_000 + budget);
-    expect(second).toMatchObject({
-      moved: [{ id: "device/note-2" }],
-      remaining: 0,
-      complete: true,
-    });
-    expect(second.next).toBeUndefined();
-    expect(second.stopped).toBeUndefined();
-    expect(project.list("note/")).toHaveLength(2);
-    for (const { id, to } of [...first.moved, ...second.moved]) {
-      expect(await call("memory.show", { id })).toMatchObject({
-        status: "found",
-        note: { id: to, movedFrom: id },
-      });
-      expect(
-        device.get(`note/${id.split("-").at(-1)!.padStart(9, "0")}`)?.value,
-      ).toMatchObject({
-        deleted: true,
-        movedTo: to,
-      });
-    }
+    expect(first.moved.length).toBe(budget <= 1_000 ? 0 : 2);
+    expect(project.list("note/")).toHaveLength(first.moved.length);
+    if (budget <= 1_000) {
+      expect(first.complete).toBe(false);
+      expect(first.next).toBe(
+        "forge memory move --scope alpha --to project --limit 25 --after 0",
+      );
+    } else expect(first.complete).toBe(true);
   }, 30_000);
 }
 
+// An atomic note move may itself exceed the budget; it still finishes and verifies.
 test("scope deadline lets a started note finish and verify before returning", async () => {
   let now = 1_000;
   const { move, device, project } = await setup(2, {
@@ -243,7 +232,6 @@ test("scope deadline lets a started note finish and verify before returning", as
   const first = await move(input, 2_500);
   expect(first).toMatchObject({
     moved: [{ id: "device/note-1" }],
-    remaining: 1,
     complete: false,
   });
   expect(first.stopped).toBeUndefined();
@@ -284,9 +272,13 @@ for (const scenario of [
     });
     const times = { setup: 0, scan: 0, move: 0, verify: 0 };
     const open = services.levels.project.bind(services.levels);
+    let opened = false;
     services.levels.project = (...args) => {
-      times.setup += scenario.setupMs;
-      now += scenario.setupMs;
+      if (!opened) {
+        times.setup += scenario.setupMs;
+        now += scenario.setupMs;
+        opened = true;
+      }
       return open(...args);
     };
     const page = device.listRange.bind(device);
@@ -323,15 +315,153 @@ for (const scenario of [
     );
     expect(now).toBeLessThan(deadline);
     expect(result.complete).toBe(false);
-    expect(result.remaining).toBe(100 - result.moved.length);
     expect(result.stopped).toBeUndefined();
     expect(result.next).toBe(
-      "forge memory move --scope alpha --to project --limit 100",
+      `forge memory move --scope alpha --to project --limit 100 --after ${result.moved.length}`,
     );
-    if (scenario.name !== "setup")
-      expect(result.moved.length).toBeGreaterThan(0);
+    expect(result.moved.length).toBeGreaterThan(0);
   }, 30_000);
 }
+
+test("large scope move resumes to completion without a full-store reserve", async () => {
+  let now = 1_000;
+  const { move, call, device, project } = await setup(0, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  for (let n = 1; n <= 20_000; n += 1)
+    await call("memory.add", {
+      level: "device",
+      scope: n % 200 === 0 ? "alpha" : "beta",
+      text: `note ${n}`,
+    });
+  const page = device.listRange.bind(device);
+  device.listRange = (...args) => {
+    now += 140;
+    return page(...args);
+  };
+  const put = device.put.bind(device);
+  device.put = (...args) => {
+    now += 1;
+    return put(...args);
+  };
+  let value: object = input;
+  let total = 0;
+  for (let batch = 0; batch < 100; batch += 1) {
+    const deadline = now + 15_001;
+    const result = await move(value, deadline);
+    expect(result.moved.length).toBeGreaterThan(0);
+    expect(now).toBeLessThan(deadline);
+    total += result.moved.length;
+    if (result.complete) {
+      expect(total).toBe(100);
+      expect(project.list("note/")).toHaveLength(100);
+      expect(result.next).toBeUndefined();
+      return;
+    }
+    value = continuation(result);
+  }
+  throw new Error("scope move did not complete");
+}, 30_000);
+
+test("slow first project open is cached and resumed calls finish", async () => {
+  let now = 1_000;
+  const { move, services, device, project } = await setup(12, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  let opens = 0;
+  const open = services.levels.project.bind(services.levels);
+  services.levels.project = (...args) => {
+    if (opens++ === 0) now += 7_000;
+    return open(...args);
+  };
+  const page = device.listRange.bind(device);
+  device.listRange = (...args) => {
+    now += 500;
+    return page(...args);
+  };
+  const put = device.put.bind(device);
+  device.put = (...args) => {
+    now += 2_000;
+    return put(...args);
+  };
+  let value: object = input;
+  let total = 0;
+  for (let batch = 0; batch < 12; batch += 1) {
+    const deadline = now + 15_001;
+    const result = await move(value, deadline);
+    expect(result.moved.length).toBeGreaterThan(0);
+    expect(now).toBeLessThan(deadline);
+    total += result.moved.length;
+    if (result.complete) {
+      expect(total).toBe(12);
+      expect(project.list("note/")).toHaveLength(12);
+      return;
+    }
+    value = continuation(result);
+  }
+  throw new Error("cached project move did not complete");
+}, 30_000);
+
+test("scope continuation never rereads pages before its cursor", async () => {
+  const { move, device } = await setup(500);
+  const pages: Parameters<typeof device.listRange>[0][] = [];
+  const page = device.listRange.bind(device);
+  device.listRange = (options) => {
+    pages.push(options);
+    return page(options);
+  };
+  const first = await move({ ...input, after: 199, limit: 1 });
+  expect(first.moved.map((note) => note.id)).toEqual(["device/note-200"]);
+  expect(first.next).toBe(
+    "forge memory move --scope alpha --to project --limit 1 --after 200",
+  );
+  expect(pages).toHaveLength(1);
+  pages.length = 0;
+  const second = await move({ ...continuation(first), limit: 1 });
+  expect(second.moved.map((note) => note.id)).toEqual(["device/note-201"]);
+  expect(pages).toHaveLength(1);
+  expect(pages[0]!.from).toBe("note/000000201");
+}, 30_000);
+
+test("scope scan bounds nonmatching lookahead by its deadline and resumes", async () => {
+  let now = 1_000;
+  const { move, call, device } = await setup(1, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  for (let n = 0; n < 2_000; n += 1)
+    await call("memory.add", { level: "device", scope: "beta", text: "other" });
+  await call("memory.add", { level: "device", scope: "alpha", text: "last" });
+  let reads = 0;
+  const page = device.listRange.bind(device);
+  device.listRange = (...args) => {
+    reads += 1;
+    now += 3_000;
+    return page(...args);
+  };
+  const first = await move({ ...input, limit: 1 }, 16_001);
+  expect(now).toBeLessThan(16_001);
+  expect(reads).toBe(4);
+  expect(first.moved).toHaveLength(1);
+  expect(first.complete).toBe(false);
+  expect(first.next).toBe(
+    "forge memory move --scope alpha --to project --limit 1 --after 800",
+  );
+  const second = await move(continuation(first), now + 30_000);
+  expect(second.moved.map((note) => note.id)).toEqual(["device/note-2002"]);
+  expect(second.complete).toBe(true);
+}, 30_000);
 
 test("interrupted scope batch resumes the committed copy without duplication", async () => {
   const { move, device, project } = await setup();
@@ -347,11 +477,11 @@ test("interrupted scope batch resumes the committed copy without duplication", a
   const failure: unknown = await move().catch((error: unknown) => error);
   expect(String(failure)).toContain("crash before tombstone");
   expect(project.list("note/")).toHaveLength(1);
-  expect(await move()).toMatchObject({ remaining: 0, complete: true });
+  expect(await move()).toMatchObject({ complete: true });
   expect(project.list("note/")).toHaveLength(3);
 }, 30_000);
 
-test("scope batch reads only its selection pages and one paged remaining count", async () => {
+test("scope batch looks ahead only to the next matching note", async () => {
   const { move, call, device } = await setup(1);
   for (let n = 0; n < 999; n += 1)
     await call("memory.add", { level: "device", scope: "beta", text: "other" });
@@ -365,11 +495,10 @@ test("scope batch reads only its selection pages and one paged remaining count",
   const before = device.counts.listedRecords;
   expect(await move({ ...input, limit: 1 })).toMatchObject({
     moved: [{ id: "device/note-1" }],
-    remaining: 1,
     complete: false,
   });
-  expect(device.counts.listedRecords - before).toBeLessThanOrEqual(1201);
-  expect(pages.length).toBe(7);
+  expect(device.counts.listedRecords - before).toBeLessThanOrEqual(1001);
+  expect(pages.length).toBe(6);
   expect(pages.every((page) => page.limit <= 200 && !page.descending)).toBe(
     true,
   );
@@ -380,7 +509,7 @@ test("scope continuation flags parse back to the same CLI input", async () => {
   const value = { ...input, limit: 1 };
   const batch = await move(value);
   expect(batch.next).toBe(
-    "forge memory move --scope alpha --to project --limit 1",
+    "forge memory move --scope alpha --to project --limit 1 --after 1",
   );
   const h = await openHarness(["memory"]);
   try {
@@ -396,7 +525,7 @@ test("scope continuation flags parse back to the same CLI input", async () => {
       batch.next!.split(" ").slice(1),
     );
     expect(response.exitCode).toBe(0);
-    expect(parsed).toEqual(value);
+    expect(parsed).toEqual({ ...value, after: 1 });
   } finally {
     await h.close();
   }
@@ -425,7 +554,6 @@ for (const code of ["REVISION_CONFLICT", "TRANSFER_CONFLICT"]) {
     expect(await move()).toMatchObject({
       moved: [{ id: "device/note-1" }],
       stopped: { id: "device/note-2", code },
-      remaining: 2,
       complete: false,
     });
     expect(project.list("note/")).toHaveLength(1);
@@ -462,7 +590,6 @@ for (const to of ["project/fedcba9876543210/note-2", "device/note-2"]) {
     expect(await move()).toMatchObject({
       moved: [{ id: "device/note-1" }],
       stopped: { id: "device/note-2", code: "VERIFY_FAILED" },
-      remaining: 1,
       complete: false,
     });
     expect(raced).toBe(true);
@@ -495,7 +622,6 @@ for (const field of ["text", "tags", "links", "scope", "movedTo"]) {
     };
     expect(await move()).toMatchObject({
       stopped: { id: "device/note-1", code: "VERIFY_FAILED" },
-      remaining: 2,
       complete: false,
     });
     expect(device.get("note/000000002")?.revision).toBe(2);
@@ -508,6 +634,9 @@ for (const value of [
   { ...input, keep: false },
   { ...input, limit: 0 },
   { ...input, limit: 101 },
+  { ...input, after: -1 },
+  { ...input, after: 1.5 },
+  { id: "device/note-1", to: "project", expectRevision: 2, after: 0 },
   { ...input, id: "device/note-1", expectRevision: 2 },
 ]) {
   test(`scope refuses invalid input without writes: ${JSON.stringify(value)}`, async () => {
