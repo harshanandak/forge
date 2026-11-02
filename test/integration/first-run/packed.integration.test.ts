@@ -73,6 +73,23 @@ test("a new user's first run works end to end from the packed package", () => {
       "first-run commands changed fixture files",
     );
     expect(injected.stderr).toContain("unexpected.txt");
+    const homeInjected = spawnSync(
+      node,
+      [defaultOff, installed, "--write-home"],
+      {
+        cwd: mkdtempSync(join(work, "negative-home-")),
+        env,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 120000,
+      },
+    );
+    expect(homeInjected.error).toBeUndefined();
+    expect(homeInjected.status).toBe(1);
+    expect(homeInjected.stderr).toContain(
+      "first-run commands changed sandbox files",
+    );
+    expect(homeInjected.stderr).toContain("unexpected-home");
     console.log(
       run(node, [defaultOff, installed], projects, 120000, env).trim(),
     );

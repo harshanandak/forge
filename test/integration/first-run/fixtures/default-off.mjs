@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -14,30 +15,58 @@ import { pathToFileURL } from "node:url";
 
 const installed = process.argv[2];
 const bin = join(installed, "dist/bin/forge.js");
-// config.detect omits the value and file of ignored facts; read those from the packed detector.
+// Supplemental: public config detect omits ignored values and source files; public assertions are separate.
 const { detectProject, createFolderFiles } = await import(
   pathToFileURL(join(installed, "dist/src/blocks/project/index.js"))
 );
 function snapshot(root) {
   if (!existsSync(root)) return {};
   return Object.fromEntries(
-    readdirSync(root, { recursive: true })
-      .filter((file) => statSync(join(root, file)).isFile())
-      .map((file) => [
+    readdirSync(root, { recursive: true }).map((file) => {
+      const path = join(root, file);
+      const stat = statSync(path);
+      return [
         file,
-        createHash("sha256")
-          .update(readFileSync(join(root, file)))
-          .digest("hex"),
-      ]),
+        {
+          ...(stat.isDirectory()
+            ? { directory: true }
+            : {
+                hash: createHash("sha256")
+                  .update(readFileSync(path))
+                  .digest("hex"),
+              }),
+          ...(process.platform === "win32" ? {} : { mode: stat.mode }),
+        },
+      ];
+    }),
   );
 }
 
 for (const ecosystem of ["pnpm", "python", "npm"]) {
   const started = performance.now();
   const root = join(process.cwd(), ecosystem);
-  const device = join(process.cwd(), `${ecosystem}-device`);
+  const sandbox = join(process.cwd(), `${ecosystem}-sandbox`);
+  const device = join(sandbox, "device");
   mkdirSync(root);
-  const env = { ...process.env, FORGE_DEVICE_ROOT: device };
+  mkdirSync(sandbox);
+  const env = { ...process.env };
+  for (const key of [
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+  ]) {
+    env[key] = join(sandbox, key.toLowerCase());
+    mkdirSync(env[key]);
+  }
+  env.FORGE_DEVICE_ROOT = device;
   const run = (executable, args) => {
     const result = spawnSync(executable, args, {
       cwd: root,
@@ -85,9 +114,12 @@ for (const ecosystem of ["pnpm", "python", "npm"]) {
     );
     if (pnpm) write("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
   }
-  if (ecosystem !== "npm") write(hook, hookBytes);
+  if (ecosystem !== "npm") {
+    write(hook, hookBytes);
+    if (process.platform !== "win32") chmodSync(join(root, hook), 0o755);
+  }
   const before = snapshot(root);
-  const deviceBefore = snapshot(device);
+  const sandboxBefore = snapshot(sandbox);
   assert.ok(before[join(".git", "config")]);
   const cli = (args) =>
     JSON.parse(run(process.execPath, [bin, ...args])).result;
@@ -151,15 +183,17 @@ for (const ecosystem of ["pnpm", "python", "npm"]) {
   // The test seam must fail at the same assertion that checks the real commands.
   if (process.argv.includes("--write-fixture"))
     write("unexpected.txt", "injected write\n");
+  if (process.argv.includes("--write-home"))
+    mkdirSync(join(env.HOME, "unexpected-home"));
   assert.deepEqual(
     snapshot(root),
     before,
     "first-run commands changed fixture files",
   );
   assert.deepEqual(
-    snapshot(device),
-    deviceBefore,
-    "first-run commands changed device files",
+    snapshot(sandbox),
+    sandboxBefore,
+    "first-run commands changed sandbox files",
   );
   assert.equal(existsSync(device), false, "no device directory is created");
   if (ecosystem !== "npm")
