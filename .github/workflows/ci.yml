@@ -149,37 +149,58 @@ jobs:
       - name: Unit tests
         if: matrix.suite != 'pack'
         run: bun run test:unit
-      - name: Integration tests
-        if: matrix.suite != 'pack'
+      # TEMPORARY forge-465 probe: remove before merge
+      - name: Windows integration timing probe
+        if: matrix.suite != 'pack' && runner.os == 'Windows'
         run: |
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            bun run test:integration
-            exit
-          fi
-          # Temporary forge-465 probe: compare an idle start with a start under integration load.
-          powershell_probe() {
-            node --input-type=commonjs - "$1" <<'NODE'
-          const { spawnSync } = require('node:child_process');
+          node --input-type=commonjs <<'NODE'
+          const { spawn, spawnSync } = require('node:child_process');
           const { performance } = require('node:perf_hooks');
-          const started = performance.now();
-          const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'exit'], {
-            encoding: 'utf8', timeout: 15000,
-          });
-          console.log('PowerShell cold start: ' + JSON.stringify({
-            phase: process.argv[2], elapsedMs: Math.round(performance.now() - started),
-            status: result.status, signal: result.signal, error: result.error?.message,
-          }));
-          NODE
+          function probe(phase) {
+            const started = performance.now();
+            const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'exit'], {
+              encoding: 'utf8', timeout: 15000,
+            });
+            console.log('PowerShell cold start: ' + JSON.stringify({
+              phase, elapsedMs: Math.round(performance.now() - started),
+              status: result.status, signal: result.signal, error: result.error?.message,
+            }));
           }
-          powershell_probe alone
-          bun run build
-          # ACL repair tests keep their real PowerShell assertions, away from parallel spawn load.
-          bun test --parallel --timeout 30000 --path-ignore-patterns '**/{packed,private-files,private-repair,state-acl-cli,help-examples,vcs-git,shared-store,lane-run,lane,lane-close}.integration.test.ts' .integration.test $FORGE_TEST_SHARD_ARG $FORGE_TEST_TIMINGS_ARG $FORGE_TEST_UPDATE_ARG &
-          integration_pid=$!
-          powershell_probe parallel-integration
-          wait "$integration_pid"
-          powershell_probe before-serial-integration
-          bun test --timeout 30000 test/adapters/l5-state/private-files.integration.test.ts test/adapters/l5-state/private-repair.integration.test.ts test/assembly/state-acl-cli.integration.test.ts test/surface/help-examples.integration.test.ts test/adapters/vcs-git/vcs-git.integration.test.ts test/assembly/shared-store/shared-store.integration.test.ts test/tools/lane-run.integration.test.ts test/tools/lane.integration.test.ts test/tools/lane-close.integration.test.ts $FORGE_TEST_SHARD_ARG $FORGE_TEST_TIMINGS_ARG $FORGE_TEST_UPDATE_ARG
+          probe('alone');
+          const integration = spawn('bun', ['run', 'test:integration'], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          let parallelStarted = false;
+          for (const [source, target] of [[integration.stdout, process.stdout], [integration.stderr, process.stderr]]) {
+            let pending = '';
+            source.on('data', (chunk) => {
+              target.write(chunk);
+              pending += chunk.toString();
+              const lines = pending.split(/\r?\n/);
+              pending = lines.pop();
+              // The script builds first; its echoed command is not evidence the tests started.
+              if (!parallelStarted && lines.some((line) => /^bun test v.* PARALLEL$/.test(line))) {
+                parallelStarted = true;
+                probe('parallel-integration');
+              }
+            });
+          }
+          integration.on('error', (error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          integration.on('close', (code) => {
+            if (code === 0 && !parallelStarted) {
+              console.error('Parallel integration start was not observed');
+              process.exitCode = 1;
+            } else {
+              process.exitCode = code ?? 1;
+            }
+          });
+          NODE
+      - name: Integration tests
+        if: matrix.suite != 'pack' && runner.os != 'Windows'
+        run: bun run test:integration
       # Pack once: every packed journey runs against the smoke's one npm install.
       - name: Pack smoke
         if: matrix.suite != 'tests'
