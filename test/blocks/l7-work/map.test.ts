@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   type SchemaObject,
+  SchemaRegistry,
   validateWithSchema,
 } from "../../../src/contract/schema.ts";
+import { SCHEMA_DOCUMENTS } from "../../../src/generated/schemas.ts";
 import { validateUpdateItemInput } from "../../../src/generated/validators.ts";
 import type { StateRecord, TrackerItem } from "../../../src/generated/types.ts";
 
@@ -104,6 +106,65 @@ test("parent can be set after creation", () => {
   expect(
     call("update", { id: two.id, parent: epic.id, expectRevision: 1 }).parent,
   ).toBe(epic.id);
+});
+test("kind update schema accepts promotion and tree exposes the new epic root", () => {
+  const { call } = project();
+  const task = call("create", { title: "new root", kind: "task" });
+  const input = { id: task.id, kind: "epic", expectRevision: 1 };
+  const schema = JSON.parse(
+    readFileSync(resolve(root, "schemas/UpdateItemInput.json"), "utf8"),
+  ) as SchemaObject;
+  const registry = new SchemaRegistry([
+    ...SCHEMA_DOCUMENTS,
+    { ...schema, $id: "urn:forge:test:update-kind" },
+  ]);
+  expect(registry.validate("urn:forge:test:update-kind", input)).toEqual([]);
+  expect(call("tree").items.map((node) => node.item.id)).not.toContain(task.id);
+  expect(call("update", input)).toMatchObject({ kind: "epic", revision: 2 });
+  expect(call("tree").items.map((node) => node.item.id)).toContain(task.id);
+  expect(() => call("update", { ...input, kind: "bug" })).toThrow(
+    "REVISION_CONFLICT",
+  );
+  expect(call("show", { id: task.id })).toMatchObject({
+    kind: "epic",
+    revision: 2,
+  });
+});
+test("unknown kind refuses the whole update without changing the record", () => {
+  const { call, two } = project();
+  const before = call("show", { id: two.id });
+  expect(() =>
+    call("update", {
+      id: two.id,
+      title: "changed",
+      kind: "unknown",
+      expectRevision: 1,
+    }),
+  ).toThrow("Unknown issue kind unknown");
+  expect(call("show", { id: two.id })).toEqual(before);
+});
+test("demoting an open epic with open children names their count and changes nothing", () => {
+  const { call, epic } = project();
+  call("create", { title: "another child", parent: epic.id });
+  const before = call("show", { id: epic.id });
+  expect(() =>
+    call("update", { id: epic.id, kind: "task", expectRevision: 1 }),
+  ).toThrow("Cannot demote open epic forge-1 with 2 open children");
+  expect(call("show", { id: epic.id })).toEqual(before);
+  expect(call("tree").items[0]!.openChildren).toBe(2);
+});
+test("epic edits and demotion with only closed children remain allowed", () => {
+  const { call, epic, one } = project();
+  expect(
+    call("update", { id: epic.id, kind: "epic", expectRevision: 1 }).kind,
+  ).toBe("epic");
+  expect(
+    call("update", { id: epic.id, title: "renamed", expectRevision: 2 }).kind,
+  ).toBe("epic");
+  call("update", { id: one.id, status: "closed", expectRevision: 1 });
+  expect(
+    call("update", { id: epic.id, kind: "task", expectRevision: 3 }),
+  ).toMatchObject({ kind: "task", revision: 4 });
 });
 test("parent null removes the parent property", () => {
   const { call, one } = project();

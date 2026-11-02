@@ -141,6 +141,7 @@
         },
         "title": { "type": "string", "minLength": 1, "maxLength": 500 },
         "body": { "type": "string", "maxLength": 65536 },
+        "kind": { "$ref": "common.json#/$defs/Segment" },
         "labels": {
           "type": "array",
           "maxItems": 64,

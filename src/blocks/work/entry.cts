@@ -474,6 +474,26 @@ function update(
   given: string,
 ): TrackerItem {
   const value = stored(get(state, input.id, given));
+  checkKind(input.kind);
+  if (
+    value.kind === "epic" &&
+    value.status === "open" &&
+    input.kind !== undefined &&
+    input.kind !== "epic"
+  ) {
+    const children = state
+      .list("issue:")
+      .filter(
+        (record) =>
+          stored(record).parent === input.id &&
+          stored(record).status === "open",
+      ).length;
+    if (children)
+      fail(
+        "INPUT_CONFLICT",
+        `Cannot demote open epic ${given} with ${children} open children; close or reparent them first`,
+      );
+  }
   const readSet = input.dependsOn
     ? [...validateDependencies(state, input.id, input.dependsOn, ids)]
     : [];
