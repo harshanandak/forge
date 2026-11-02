@@ -110,7 +110,7 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
     ];
     const moved: { id: string; to: string }[] = [];
     let complete = false;
-    for (let batch = 1; batch <= notes.length; batch += 1) {
+    for (let batch = 1; batch <= notes.length + 1; batch += 1) {
       const batchStarted = performance.now();
       const run = spawnSync(
         node,
@@ -131,16 +131,16 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
       expect(envelope.ok).toBe(true);
       const result = envelope.result as {
         moved: { id: string; to: string }[];
-        remaining: number;
         complete: boolean;
         next?: string;
         stopped?: unknown;
       };
       expect(result.stopped).toBeUndefined();
-      expect(result.moved.length).toBeGreaterThan(0);
+      if (moved.length === notes.length) expect(result.moved).toEqual([]);
+      else expect(result.moved.length).toBeGreaterThan(0);
       moved.push(...result.moved);
-      expect(result.remaining).toBe(notes.length - moved.length);
-      expect(result.complete).toBe(result.remaining === 0);
+      expect(result).not.toHaveProperty("remaining");
+      expect(result.complete).toBe(result.moved.length === 0);
       complete = result.complete;
       if (complete) {
         expect(result.next).toBeUndefined();
