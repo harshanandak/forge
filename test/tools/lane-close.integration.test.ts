@@ -374,7 +374,10 @@ function fixture(ignored: string[] = [], trace = false) {
   const main = join(root, "main"),
     caller = join(root, "caller"),
     bin = join(root, "bin");
-  const cached = repositories.restore(JSON.stringify(ignored), root);
+  // The trace test needs a fresh seed so the commits, push and fetch run under trace.
+  const cached = trace
+    ? undefined
+    : repositories.restore(JSON.stringify(ignored), root);
   if (!cached) {
     mkdirSync(main);
     writeFileSync(join(main, "package.json"), '{"name":"lane-close-fixture"}');
@@ -588,7 +591,8 @@ switch(op){
     merge = git(["rev-parse", "HEAD"]);
     git(["push", "origin", "main"]);
     git(["fetch", "origin", "main"]);
-    repositories.save(JSON.stringify(ignored), root, { head, merge });
+    if (!trace)
+      repositories.save(JSON.stringify(ignored), root, { head, merge });
   }
   const state: State = {
     issue: { id: "one", title: "Fixture", status: "open" },
@@ -779,6 +783,9 @@ test("lane close fixture never starts automatic maintenance or gc", () => {
     .map((line) => JSON.parse(line) as { event: string; argv?: string[] })
     .filter((event) => event.event === "child_start");
   expect(children.length).toBeGreaterThan(0);
+  const argv = children.map(({ argv }) => (argv ?? []).join(" "));
+  expect(argv.some((line) => line.includes("receive-pack"))).toBe(true);
+  expect(argv.some((line) => line.includes("fetch"))).toBe(true);
   expect(
     children.filter(
       ({ argv }) => argv?.includes("maintenance") && argv.includes("run"),
