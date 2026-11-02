@@ -109,6 +109,8 @@ const mode=readFileSync(join(root,'mode'),'utf8');
 writeFileSync(join(root,'harness-pid'),String(process.pid));
 if(mode==='capacity'||mode==='limit')console.log('session id: fake-session');else console.log(JSON.stringify({type:'thread.started',thread_id:'fake-session'}));
 if(mode==='limit'||(mode==='capacity'&&count===0)){console.log('Selected model is at capacity');process.exit(1)}
+if(mode==='auto-slow')await new Promise(done=>setTimeout(done,3000));
+if(mode==='auto-hold'&&args[args.indexOf('-m')+1]==='tester')await new Promise(()=>setInterval(()=>{},1000));
 const flag=args.findIndex(a=>a==='--output-last-message'||a==='-o');if(flag<0)process.exit(8);
 if(mode.startsWith('auto')){
  const role=args[args.indexOf('-m')+1],prior=readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line));
@@ -273,17 +275,18 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
     git(["push", "origin", "main"]);
     git(["fetch", "origin", "main"]);
   }
-  function launch(entry = script, allowEmpty = false) {
-    const child = spawn(
-      process.execPath,
-      [entry, "run", "one", "--role", "builder"],
-      {
-        cwd: caller,
-        env,
-        windowsHide: true,
-        timeout: 20_000,
-      },
-    );
+  function launch(
+    entry = script,
+    allowEmpty = false,
+    args = ["run", "one", "--role", "builder"],
+  ) {
+    const child = spawn(process.execPath, [entry, ...args], {
+      cwd: caller,
+      env,
+      windowsHide: true,
+      timeout: 20_000,
+      detached: args.includes("--detach"),
+    });
     return Object.assign(
       new Promise<{ code: number | null; output: Verdict }>((done, fail) => {
         let stdout = "";
@@ -428,6 +431,35 @@ test("claude tester runs end to end with the same verdict, record and list shape
     lanes: { runs: unknown[] }[];
   };
   expect(list.lanes[0]!.runs).toEqual([record]);
+});
+
+test("interrupted Claude tester recovers its stream session before resuming", () => {
+  const f = roleFixture();
+  claudeRole(f, "tester");
+  const record = f.seed("tester", 1, "started"),
+    file = join(record.reply, "..", "run.json");
+  writeFileSync(
+    file,
+    JSON.stringify({ ...record, harness: "claude", end: null, session: null }),
+  );
+  writeFileSync(
+    join(file, "..", "log.txt"),
+    `${JSON.stringify({
+      type: "system",
+      subtype: "init",
+      session_id: "interrupted-claude-session",
+    })}\n`,
+  );
+  const result = f.runRole("tester", ["--round-cap", "1"]);
+  expect(result.code).toBe(0);
+  expect(JSON.parse(readFileSync(file, "utf8")) as unknown).toMatchObject({
+    verdict: "interrupted",
+    session: "interrupted-claude-session",
+  });
+  const args = f.attempts()[0]!.args;
+  expect(
+    args.slice(args.indexOf("--resume"), args.indexOf("--resume") + 2),
+  ).toEqual(["--resume", "interrupted-claude-session"]);
 });
 
 test("claude reviewer has only read tools and no MCP; builder skips permissions", () => {
@@ -711,6 +743,11 @@ test("hard-killed runner retains the harness lock until the harness exits", asyn
     expect(first.child.kill("SIGKILL")).toBe(true);
     await first;
     expect(alive(pid)).toBe(true);
+    const runs = join(f.main, ".git", "forge-lane-runs", "one");
+    const record = join(runs, readdirSync(runs)[0]!, "run.json");
+    const before = readFileSync(record, "utf8");
+    f.run(["list"]);
+    expect(readFileSync(record, "utf8")).toBe(before);
     writeFileSync(join(f.root, "mode"), "ok");
     second = f.run(["run", "one", "--role", "builder"]);
   } finally {
@@ -1069,6 +1106,217 @@ test("auto reads the Claude tester verdict through the same parser as Codex", ()
   expect(f.attempts()[1]!.args).toContain("--model");
   expect(f.attempts()[1]!.args).toContain("claude-sonnet-5-5");
 });
+
+function killFixture(pid: number, group = false) {
+  if (process.platform === "win32")
+    spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], {
+      windowsHide: true,
+      stdio: "ignore",
+      timeout: 10_000,
+    });
+  else {
+    try {
+      process.kill(group ? -pid : pid, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  }
+}
+
+test("detached auto survives parent exit and refuses a second chain", async () => {
+  const f = autoFixture("auto-slow"),
+    start = Date.now();
+  const launched = f.launch(script, false, [
+    "auto",
+    "one",
+    "--round-cap",
+    "1",
+    "--detach",
+  ]);
+  const first = await launched;
+  expect(first.code).toBe(0);
+  expect(Object.keys(first.output).sort()).toEqual([
+    "log",
+    "next",
+    "outcome",
+    "pid",
+    "validated",
+  ]);
+  expect(first.output).toMatchObject({
+    outcome: "detached",
+    next: "bun tools/lane.ts list",
+  });
+  const { pid, log } = first.output as unknown as { pid: number; log: string };
+  try {
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(pid).toBeGreaterThan(0);
+    expect(log).toStartWith(f.runs);
+    killFixture(launched.child.pid!, true);
+    await waitForProcess("detached harness", () => f.attempts().length === 1);
+    const folders = readdirSync(f.runs);
+    const second = f.auto(["--detach"]);
+    expect(second.code).toBe(1);
+    expect(second.lines[0]?.next).toContain("already running");
+    expect(readdirSync(f.runs)).toEqual(folders);
+    const record = join(
+      f.runs,
+      folders.find((name) => existsSync(join(f.runs, name, "run.json")))!,
+      "run.json",
+    );
+    const before = readFileSync(record, "utf8");
+    expect(JSON.parse(before) as unknown).toMatchObject({ verdict: "started" });
+    f.run(["list"]);
+    expect(readFileSync(record, "utf8")).toBe(before);
+    const deadline = Date.now() + 20_000;
+    while (
+      !readFileSync(log, "utf8").includes('"outcome":"ready"') &&
+      Date.now() < deadline
+    )
+      await new Promise((done) => setTimeout(done, 50));
+    expect(
+      JSON.parse(readFileSync(log, "utf8").trim().split(/\r?\n/).at(-1)!),
+    ).toMatchObject({ outcome: "ready" });
+    expect(f.roles()).toEqual(["builder", "tester"]);
+  } finally {
+    killFixture(pid, true);
+    if (existsSync(join(f.root, "harness-pid")))
+      killFixture(Number(readFileSync(join(f.root, "harness-pid"), "utf8")));
+  }
+});
+
+for (const detect of ["list", "auto", "run"])
+  test(`interrupted tester recovers through ${detect} and resumes its session without consuming the cap`, async () => {
+    const f = autoFixture("auto-hold");
+    change(f, ["docs/guide.md"]);
+    const first = f.launch(script, true, [
+      "run",
+      "one",
+      "--role",
+      "tester",
+      "--round-cap",
+      "1",
+    ]);
+    let pid = 0;
+    try {
+      await waitForProcess("held tester", () =>
+        existsSync(join(f.root, "harness-pid")),
+      );
+      pid = Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
+      const record = join(f.runs, readdirSync(f.runs)[0]!, "run.json");
+      await waitForProcess("session log", () =>
+        readFileSync(join(record, "..", "log.txt"), "utf8").includes(
+          "fake-session",
+        ),
+      );
+      const lock = join(f.main, ".git", "forge-lane-one.lock");
+      const child = Number(readdirSync(lock)[0]!.split("-").at(-1));
+      expect(first.child.kill("SIGKILL")).toBe(true);
+      await first;
+      killFixture(child, true);
+      killFixture(pid);
+      await waitForProcess(
+        "killed harness",
+        () => !alive(pid) && !alive(child),
+      );
+      writeFileSync(join(f.root, "mode"), "auto-clean");
+      if (detect === "list") {
+        const listed = f.run(["list"]);
+        expect(JSON.stringify(listed.lines)).toContain("tester interrupted");
+      }
+      const result =
+        detect === "run"
+          ? f.runRole("tester", ["--round-cap", "1"])
+          : f.auto(["--round-cap", "1"]);
+      expect(result.code).toBe(0);
+      const interrupted = JSON.parse(readFileSync(record, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      expect(interrupted).toMatchObject({
+        verdict: "interrupted",
+        role: "tester",
+        round: 1,
+        session: "fake-session",
+      });
+      expect(interrupted.end).toMatch(/^\d{4}-/);
+      expect(f.attempts()[1]!.args).toContain("resume");
+      expect(f.attempts()[1]!.args).toContain("fake-session");
+      const history = readdirSync(f.runs).map(
+        (name) =>
+          JSON.parse(
+            readFileSync(join(f.runs, name, "run.json"), "utf8"),
+          ) as Record<string, unknown>,
+      );
+      expect(
+        history.filter((row) => row.role === "tester").map((row) => row.round),
+      ).toEqual([1, 1]);
+      expect(f.roles()).toEqual(["tester", "tester"]);
+    } finally {
+      killFixture(first.child.pid!);
+      if (pid) killFixture(pid);
+      await first;
+    }
+  });
+
+for (const session of ["fixture-session", null])
+  test(`interrupted history starts a fresh folder with session ${session}`, () => {
+    const f = autoFixture("auto-clean");
+    const record = f.seed("builder", null, "started");
+    const file = join(record.reply, "..", "run.json");
+    writeFileSync(file, JSON.stringify({ ...record, end: null, session }));
+    expect(f.auto().code).toBe(0);
+    const args = f.attempts()[0]!.args;
+    if (session)
+      expect(
+        args.slice(args.indexOf("resume"), args.indexOf("resume") + 2),
+      ).toEqual(["resume", session]);
+    else expect(args).not.toContain("resume");
+    expect(JSON.parse(readFileSync(file, "utf8")) as unknown).toMatchObject({
+      verdict: "interrupted",
+    });
+    expect(readdirSync(f.runs)).toHaveLength(3);
+  });
+
+for (const [role, cap] of [
+  ["fixer", "1"],
+  ["fixer", "2"],
+  ["reviewer", "2"],
+] as const)
+  test(`interrupted ${role} reruns before accepting prior tester history at cap ${cap}`, () => {
+    const f = autoFixture("auto-clean");
+    change(f, ["docs/guide.md"]);
+    const prior = f.seed(
+      "tester",
+      1,
+      "completed",
+      role === "fixer" ? "Verdict: FAIL" : "Verdict: PASS",
+    );
+    writeFileSync(
+      join(prior.reply, "..", "run.json"),
+      JSON.stringify({ ...prior, head: f.head() }),
+    );
+    const record = f.seed(role, null, "started");
+    const file = join(record.reply, "..", "run.json");
+    writeFileSync(file, JSON.stringify({ ...record, end: null }));
+    const result = f.auto(["--round-cap", cap]);
+    expect(result.code).toBe(cap === "1" ? 1 : 0);
+    if (cap === "1") {
+      expect(f.roles()).toEqual(["fixer"]);
+      expect(result.lines.at(-1)).toMatchObject({
+        outcome: "blocked",
+        reason: "round-cap",
+      });
+    }
+    expect(f.roles()[0]).toBe(role);
+    expect(f.attempts()[0]!.args).toContain("fixture-session");
+    if (role === "fixer")
+      expect(f.attempts()[0]!.prompt).toContain(
+        prior.reply.replaceAll("\\", "/"),
+      );
+    expect(JSON.parse(readFileSync(file, "utf8")) as unknown).toMatchObject({
+      verdict: "interrupted",
+    });
+  });
 
 test("auto chains builder, failed tester, fixer and passing tester to ready", () => {
   const f = autoFixture();
@@ -2206,3 +2454,275 @@ test("run records retain the old complete JSON when atomic publication is interr
     ) as Record<string, unknown>,
   ).toMatchObject({ verdict: "failed" });
 });
+
+function detachProbe(f: ReturnType<typeof autoFixture>, handoff = "") {
+  const helper = join(f.root, "detach-probe.ts"),
+    pidFile = join(f.root, "detached-pid");
+  writeFileSync(
+    helper,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const match=String(to).match(/owner-.*-(\\d+)$/);if(match){native.writeFileSync(${JSON.stringify(pidFile)},match[1]);${handoff}}return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
+  );
+  return { helper, pid: () => Number(readFileSync(pidFile, "utf8")) };
+}
+
+test("detach validates child issue lookup taking longer than five seconds", async () => {
+  const f = autoFixture("auto-clean"),
+    probe = detachProbe(f),
+    forge = join(f.root, "fake-forge.mjs"),
+    started = Date.now();
+  writeFileSync(
+    forge,
+    `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(f.root, "startup-pid"))},String(process.pid));await new Promise(done=>setTimeout(done,5500));${readFileSync(forge, "utf8")}`,
+  );
+  try {
+    const result = await f.launch(probe.helper, false, [
+      "auto",
+      "one",
+      "--detach",
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.output).toMatchObject({
+      outcome: "detached",
+      validated: true,
+    });
+    expect(Date.now() - started).toBeGreaterThan(5_000);
+  } finally {
+    killFixture(probe.pid(), true);
+    const startupPid = join(f.root, "startup-pid");
+    if (existsSync(startupPid))
+      killFixture(Number(readFileSync(startupPid, "utf8")));
+    await waitForProcess("slow child cleanup", () => !alive(probe.pid()));
+  }
+});
+
+test("detach reclaims the lock when the parent dies before handoff", async () => {
+  const f = autoFixture("auto-clean"),
+    probe = detachProbe(f, "process.exit(73);");
+  const result = await f.launch(probe.helper, true, [
+    "auto",
+    "one",
+    "--detach",
+  ]);
+  try {
+    expect(result.code).toBe(73);
+    await waitForProcess(
+      "orphaned child completion",
+      () => !alive(probe.pid()),
+    );
+    const log = readdirSync(f.runs).find((name) => name.endsWith(".log"))!;
+    expect(readFileSync(join(f.runs, log), "utf8")).toContain(
+      '"outcome":"ready"',
+    );
+    expect(f.roles()).toEqual(["builder", "tester"]);
+    expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
+  } finally {
+    killFixture(probe.pid(), true);
+  }
+});
+
+test("detach reclaims after parent death even when its polled PID stays alive", async () => {
+  const f = autoFixture("auto-clean"),
+    probe = detachProbe(f, "process.exit(73);"),
+    inherited = join(f.root, "inherited-owner");
+  // Keep the old liveness probe alive without changing the dead lock owner.
+  writeFileSync(
+    probe.helper,
+    `import childProcess from 'node:child_process';const nativeChild={...childProcess};mock.module('node:child_process',()=>({...nativeChild,spawn:(command,args,options)=>{if(options?.env?.FORGE_LANE_LOCK_OWNER){options={...options,env:{...options.env,FORGE_LANE_LOCK_OWNER:options.env.FORGE_LANE_LOCK_OWNER.replace(/^owner-\\d+-/,'owner-${process.pid}-')}};fs.writeFileSync(${JSON.stringify(inherited)},options.env.FORGE_LANE_LOCK_OWNER);}return nativeChild.spawn(command,args,options);}}));${readFileSync(probe.helper, "utf8")}`,
+  );
+  const result = await f.launch(probe.helper, true, [
+    "auto",
+    "one",
+    "--detach",
+  ]);
+  try {
+    expect(result.code).toBe(73);
+    expect(readFileSync(inherited, "utf8")).toStartWith(
+      `owner-${process.pid}-`,
+    );
+    await waitForProcess(
+      "orphan reclaim despite a live recycled parent PID",
+      () => !alive(probe.pid()),
+    );
+    const log = readdirSync(f.runs).find((name) => name.endsWith(".log"))!;
+    expect(readFileSync(join(f.runs, log), "utf8")).toContain(
+      '"outcome":"ready"',
+    );
+    expect(f.roles()).toEqual(["builder", "tester"]);
+    expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
+  } finally {
+    killFixture(probe.pid(), true);
+  }
+});
+
+test("detach reports a configured readiness stall and leaves the child alive", async () => {
+  const f = autoFixture("auto-clean"),
+    probe = detachProbe(f),
+    marker = join(f.root, "issue-started"),
+    finish = join(f.root, "finish-startup"),
+    forge = join(f.root, "fake-forge.mjs");
+  writeFileSync(
+    f.config,
+    readFileSync(f.config, "utf8").replace(
+      "  lanes:\n",
+      "  lanes:\n    stallMinutes: 1\n",
+    ),
+  );
+  writeFileSync(
+    forge,
+    `import {existsSync,writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(f.root, "startup-pid"))},String(process.pid));writeFileSync(${JSON.stringify(marker)},'started');while(!existsSync(${JSON.stringify(finish)}))await new Promise(done=>setTimeout(done,20));${readFileSync(forge, "utf8")}`,
+  );
+  writeFileSync(
+    probe.helper,
+    `import {existsSync} from 'node:fs';const now=Date.now;Date.now=()=>now()+(existsSync(${JSON.stringify(marker)})?60000:0);${readFileSync(probe.helper, "utf8")}`,
+  );
+  try {
+    const result = await f.launch(probe.helper, false, [
+      "auto",
+      "one",
+      "--detach",
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.output).toMatchObject({
+      outcome: "detached",
+      validated: false,
+      stalled: true,
+      pid: probe.pid(),
+    });
+    expect(alive(probe.pid())).toBe(true);
+    expect(f.attempts()).toHaveLength(0);
+    writeFileSync(finish, "continue");
+    await waitForProcess("stalled child completion", () => !alive(probe.pid()));
+    expect(readFileSync(result.output.log!, "utf8")).toContain(
+      '"outcome":"ready"',
+    );
+  } finally {
+    killFixture(probe.pid(), true);
+    const startupPid = join(f.root, "startup-pid");
+    if (existsSync(startupPid))
+      killFixture(Number(readFileSync(startupPid, "utf8")));
+    await waitForProcess("stalled child cleanup", () => !alive(probe.pid()));
+  }
+});
+
+test("detach waits for a deliberately delayed parent lock handoff", async () => {
+  const f = autoFixture("auto-clean");
+  const helper = join(f.root, "delayed-handoff.ts");
+  writeFileSync(
+    helper,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{if(/owner-.*-\\d+$/.test(String(to)))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5500);return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
+  );
+  const result = await f.launch(helper, false, ["auto", "one", "--detach"]);
+  const { pid, log } = result.output as unknown as { pid: number; log: string };
+  try {
+    expect(result.code).toBe(0);
+    await waitForProcess("detached decision", () =>
+      /"outcome":"(ready|blocked)"/.test(readFileSync(log, "utf8")),
+    );
+    expect(readFileSync(log, "utf8")).not.toContain('"outcome":"blocked"');
+    await waitForProcess("detached exit", () => !alive(pid));
+  } finally {
+    if (pid) killFixture(pid, true);
+  }
+});
+
+for (const reason of [
+  "round-cap",
+  "unknown-history",
+  "no-commit",
+  "invalid-role",
+])
+  test(`detach returns the child's ${reason} refusal before reporting success`, () => {
+    const f = autoFixture("auto-clean");
+    if (reason === "round-cap") {
+      change(f, ["docs/guide.md"]);
+      f.seed("tester", 1, "completed", "Verdict: FAIL");
+    } else if (reason === "unknown-history") unknownRun(f, "unclassified");
+    else if (reason === "invalid-role") writeFileSync(f.config, "{}");
+    else f.seed("builder", null);
+    const result = f.auto(["--round-cap", "1", "--detach"]);
+    try {
+      expect(result.code).toBe(1);
+      expect(result.lines[0]).toMatchObject({
+        outcome: "blocked",
+        reason: ["unknown-history", "invalid-role"].includes(reason)
+          ? "refused"
+          : reason,
+      });
+      expect(f.attempts()).toHaveLength(0);
+    } finally {
+      const pid = (result.output as unknown as { pid?: number }).pid;
+      if (pid) killFixture(pid, true);
+    }
+  });
+
+test("list never locks idle history during 25 concurrent detached autos", async () => {
+  const f = autoFixture("auto-clean");
+  expect(f.auto().code).toBe(0);
+  const helper = join(f.root, "slow-list-lock.ts"),
+    marker = join(f.root, "list-lock-attempt");
+  writeFileSync(
+    helper,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const result=native.renameSync(from,to);if(String(to).endsWith('forge-lane-one.lock')){native.writeFileSync(${JSON.stringify(marker)},'locked');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,500);}return result;}}));await import(${JSON.stringify(script)});`,
+  );
+  let refusals = 0;
+  for (let i = 0; i < 25; i++) {
+    const listing = f.launch(helper, false, ["list"]);
+    // The old list implementation holds its lock here; the fixed list finishes.
+    await Promise.race([
+      listing,
+      waitForProcess(
+        "list lock or exit",
+        () => existsSync(marker) || listing.child.exitCode !== null,
+      ),
+    ]);
+    const result = await f.launch(script, false, ["auto", "one", "--detach"]);
+    await listing;
+    if (result.code !== 0) refusals++;
+    else {
+      const { pid } = result.output as unknown as { pid: number };
+      await waitForProcess("auto exit", () => !alive(pid));
+    }
+    rmSync(marker, { force: true });
+  }
+  expect(refusals).toBe(0);
+  expect(existsSync(marker)).toBe(false);
+});
+
+for (const operation of ["reclaim", "rename"])
+  test(`list exposes ${operation} lock failures on the stale lane entry`, () => {
+    const f = roleFixture();
+    const record = f.seed("builder", null, "started");
+    writeFileSync(
+      join(record.reply, "..", "run.json"),
+      JSON.stringify({ ...record, end: null }),
+    );
+    const lock = join(f.main, ".git", "forge-lane-one.lock");
+    mkdirSync(lock);
+    const dead = spawnSync(process.execPath, ["-e", ""], {
+      timeout: 5_000,
+      windowsHide: true,
+    });
+    expect(dead.status).toBe(0);
+    const owner = join(lock, `owner-${dead.pid}-${randomUUID()}`);
+    writeFileSync(owner, "");
+    const helper = join(f.root, "lock-error.ts");
+    writeFileSync(
+      helper,
+      `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,${operation === "reclaim" ? "unlinkSync" : "renameSync"}:(from,...args)=>{if(${operation === "reclaim" ? `String(from)===${JSON.stringify(owner)}` : `String(args[0])===${JSON.stringify(lock)}`})throw Object.assign(new Error('injected ${operation} denied'),{code:'EACCES'});return native.${operation === "reclaim" ? "unlinkSync" : "renameSync"}(from,...args);}}));await import(${JSON.stringify(script)});`,
+    );
+    const result = f.run(["list"], f.caller, helper);
+    expect(result.code).toBe(0);
+    expect(result.lines[0]).toMatchObject({
+      lanes: [{ issue: "one", error: `injected ${operation} denied` }],
+    });
+    expect(
+      JSON.parse(
+        readFileSync(join(record.reply, "..", "run.json"), "utf8"),
+      ) as unknown,
+    ).toMatchObject({ verdict: "started" });
+    expect(
+      readdirSync(join(f.main, ".git")).filter((name) =>
+        name.startsWith("forge-lane-one.lock."),
+      ),
+    ).toEqual([]);
+  });
