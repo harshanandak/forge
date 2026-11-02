@@ -1625,13 +1625,105 @@ module.exports = {
     return { status: "forgotten" as const, id: qualified(input.id) };
   },
 
-  "memory.move": async ({
+  "memory.move": async function move({
     input,
     services,
   }: {
-    input: { id: string; to: Level; expectRevision: number; keep?: boolean };
+    input:
+      | {
+          id: string;
+          to: Level;
+          expectRevision: number;
+          keep?: boolean;
+        }
+      | {
+          scope: string;
+          to: "project";
+          limit?: number;
+        };
     services: Services;
-  }) => {
+  }): Promise<object> {
+    if ("scope" in input) {
+      const limit = input.limit ?? 25;
+      const target = await writeTarget(services, "project");
+      const source = deviceSource(services.state);
+      const scope = input.scope;
+      const scan = function* () {
+        let after = 0;
+        for (;;) {
+          const records = notePage(source, {
+            after,
+            limit: LIST_LIMIT,
+            descending: false,
+          });
+          for (const note of records) {
+            if (note.value.deleted !== true && note.value.scope === scope)
+              yield note;
+          }
+          const last = records.at(-1);
+          if (records.length < LIST_LIMIT || !last) break;
+          after = last.number;
+        }
+      };
+      const moved: { id: string; to: string }[] = [];
+      let stopped: { id: string; code: string } | undefined;
+      for (const note of scan()) {
+        try {
+          const result = await move({
+            input: {
+              id: note.id,
+              to: "project",
+              expectRevision: note.record.revision,
+            },
+            services,
+          });
+          const to = (result as { to?: string }).to;
+          const ref = to === undefined ? undefined : parseRef(to);
+          const destination = ref && target.state.get(noteKey(ref.number));
+          const tombstone = source.state.get(note.record.key)?.value as
+            NoteValue | undefined;
+          const value = destination?.value as NoteValue | undefined;
+          if (
+            !to ||
+            !value ||
+            value.deleted === true ||
+            value.scope !== input.scope ||
+            value.text !== note.value.text ||
+            canonical(value.tags) !== canonical(note.value.tags) ||
+            canonical(value.links) !==
+              canonical(qualifiedLinks(note.value.links)) ||
+            tombstone?.deleted !== true ||
+            tombstone.movedTo !== to
+          ) {
+            stopped = { id: note.id, code: "VERIFY_FAILED" };
+            break;
+          }
+          moved.push({ id: note.id, to });
+          if (moved.length === limit) break;
+        } catch (error) {
+          const code = (error as { error?: { code?: string } } | null)?.error
+            ?.code;
+          if (code !== "REVISION_CONFLICT" && code !== "TRANSFER_CONFLICT")
+            throw error;
+          stopped = { id: note.id, code };
+          break;
+        }
+      }
+      let remaining = 0;
+      for (const _note of scan()) remaining += 1;
+      return {
+        status: "moved" as const,
+        moved,
+        remaining,
+        complete: remaining === 0,
+        ...(stopped ? { stopped } : {}),
+        ...(remaining
+          ? {
+              next: `forge memory move --scope ${input.scope} --to project --limit ${limit}`,
+            }
+          : {}),
+      };
+    }
     const found = await sourceFor(services, qualified(input.id));
     if (unreached(found))
       return { status: "not_found" as const, id: qualified(input.id) };
