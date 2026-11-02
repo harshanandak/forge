@@ -66,6 +66,7 @@
     "test:structure": "bun test --timeout 30000 test/structure",
     "test:pack": "node tools/pack-smoke/run.ts",
     "check:attw": "bunx @arethetypeswrong/cli@0.18.5 --profile node16 --ignore-rules cjs-resolves-to-esm --format table-flipped",
+    "release:dry-run": "bun tools/release/dry-run.ts",
     "gen": "bun tools/gen/types.ts",
     "precheck": "bun run gen",
     "prelint": "bun run gen",

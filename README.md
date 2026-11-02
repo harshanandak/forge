@@ -196,6 +196,8 @@ rules still apply to that fallback.
 
 ## Contributing
 
+[Releases](docs/release.md) use manual CI run IDs; tag triggers are out of scope.
+
 Install Bun 1.4.4+. From a clone of this repository:
 
 ```sh
