@@ -268,21 +268,34 @@ function laneLockLive(lock: string): boolean {
   }
   return false;
 }
-const signalWaitMs = 5_000;
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (!object(error) || error.code !== "ESRCH") throw error;
+    return false;
+  }
+}
 function acquireLaneLock(common: string, id: string, owner: string) {
   const lock = join(common, `forge-lane-${id}.lock`),
     staged = `${lock}.${randomUUID()}`,
     prior = join(lock, `${inheritedOwner}-${process.pid}`);
+  let handedOff = false;
   if (inheritedOwner) {
     // The spawned child can arrive before the parent publishes its PID.
-    const deadline = Date.now() + signalWaitMs;
+    const parent = inheritedOwner.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}$/);
+    if (!parent) throw new Error("invalid detach lock owner");
     while (!existsSync(prior)) {
-      if (Date.now() >= deadline)
-        throw new Error("detach lock handoff timed out");
+      if (!processAlive(Number(parent[1]))) break;
       Atomics.wait(pause, 0, 0, 20);
     }
-    renameSync(prior, join(lock, owner));
-  } else {
+    if (existsSync(prior)) {
+      renameSync(prior, join(lock, owner));
+      handedOff = true;
+    }
+  }
+  if (!handedOff) {
     mkdirSync(staged);
     writeFileSync(join(staged, owner), "", { flag: "wx" });
     try {
@@ -364,6 +377,17 @@ async function laneAuto(
       return blocked("refused", `no active lane for ${id}; use start first`);
     unlock = context.lock(id);
     if (detach) {
+      const config = Bun.YAML.parse(
+        readFileSync(join(context.configRoot, ".forge/config.yaml"), "utf8"),
+      );
+      const minutes: unknown =
+        object(config) && object(config.values) && object(config.values.lanes)
+          ? config.values.lanes.stallMinutes
+          : undefined;
+      const stallMs =
+        (typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0
+          ? minutes
+          : 10) * 60_000;
       const root = join(context.common, "forge-lane-runs", id),
         stamp = new Date().toISOString().replaceAll(":", "-");
       mkdirSync(root, { recursive: true });
@@ -382,7 +406,7 @@ async function laneAuto(
         unlock(child.pid);
         unlock = undefined;
         child.unref();
-        const deadline = Date.now() + signalWaitMs;
+        const deadline = Date.now() + stallMs;
         let decision: unknown;
         for (;;) {
           const first = readFileSync(log, "utf8").split("\n");
@@ -390,12 +414,21 @@ async function laneAuto(
             decision = JSON.parse(first[0]!);
             break;
           }
-          if (child.exitCode !== null || Date.now() >= deadline) {
-            child.kill();
+          if (child.exitCode !== null || child.signalCode !== null) {
             return blocked(
               "refused",
-              `detach readiness signal missing; inspect ${log}`,
+              `detach readiness signal missing; child exited ${child.signalCode ?? child.exitCode}; inspect ${log}`,
             );
+          }
+          if (Date.now() >= deadline) {
+            emit({
+              outcome: "detached",
+              validated: false,
+              stalled: true,
+              pid: child.pid,
+              log,
+            });
+            return 0;
           }
           await delay(20);
         }
@@ -413,6 +446,7 @@ async function laneAuto(
         }
         emit({
           outcome: "detached",
+          validated: true,
           pid: child.pid,
           log,
           next: "bun tools/lane.ts list",

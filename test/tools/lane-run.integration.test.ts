@@ -1140,6 +1140,7 @@ test("detached auto survives parent exit and refuses a second chain", async () =
     "next",
     "outcome",
     "pid",
+    "validated",
   ]);
   expect(first.output).toMatchObject({
     outcome: "detached",
@@ -2454,12 +2455,127 @@ test("run records retain the old complete JSON when atomic publication is interr
   ).toMatchObject({ verdict: "failed" });
 });
 
+function detachProbe(f: ReturnType<typeof autoFixture>, handoff = "") {
+  const helper = join(f.root, "detach-probe.ts"),
+    pidFile = join(f.root, "detached-pid");
+  writeFileSync(
+    helper,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const match=String(to).match(/owner-.*-(\\d+)$/);if(match){native.writeFileSync(${JSON.stringify(pidFile)},match[1]);${handoff}}return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
+  );
+  return { helper, pid: () => Number(readFileSync(pidFile, "utf8")) };
+}
+
+test("detach validates child issue lookup taking longer than five seconds", async () => {
+  const f = autoFixture("auto-clean"),
+    probe = detachProbe(f),
+    forge = join(f.root, "fake-forge.mjs"),
+    started = Date.now();
+  writeFileSync(
+    forge,
+    `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(f.root, "startup-pid"))},String(process.pid));await new Promise(done=>setTimeout(done,5500));${readFileSync(forge, "utf8")}`,
+  );
+  try {
+    const result = await f.launch(probe.helper, false, [
+      "auto",
+      "one",
+      "--detach",
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.output).toMatchObject({
+      outcome: "detached",
+      validated: true,
+    });
+    expect(Date.now() - started).toBeGreaterThan(5_000);
+  } finally {
+    killFixture(probe.pid(), true);
+    const startupPid = join(f.root, "startup-pid");
+    if (existsSync(startupPid))
+      killFixture(Number(readFileSync(startupPid, "utf8")));
+    await waitForProcess("slow child cleanup", () => !alive(probe.pid()));
+  }
+});
+
+test("detach reclaims the lock when the parent dies before handoff", async () => {
+  const f = autoFixture("auto-clean"),
+    probe = detachProbe(f, "process.exit(73);");
+  const result = await f.launch(probe.helper, true, [
+    "auto",
+    "one",
+    "--detach",
+  ]);
+  try {
+    expect(result.code).toBe(73);
+    await waitForProcess(
+      "orphaned child completion",
+      () => !alive(probe.pid()),
+    );
+    const log = readdirSync(f.runs).find((name) => name.endsWith(".log"))!;
+    expect(readFileSync(join(f.runs, log), "utf8")).toContain(
+      '"outcome":"ready"',
+    );
+    expect(f.roles()).toEqual(["builder", "tester"]);
+    expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
+  } finally {
+    killFixture(probe.pid(), true);
+  }
+});
+
+test("detach reports a configured readiness stall and leaves the child alive", async () => {
+  const f = autoFixture("auto-clean"),
+    probe = detachProbe(f),
+    marker = join(f.root, "issue-started"),
+    finish = join(f.root, "finish-startup"),
+    forge = join(f.root, "fake-forge.mjs");
+  writeFileSync(
+    f.config,
+    readFileSync(f.config, "utf8").replace(
+      "  lanes:\n",
+      "  lanes:\n    stallMinutes: 1\n",
+    ),
+  );
+  writeFileSync(
+    forge,
+    `import {existsSync,writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(f.root, "startup-pid"))},String(process.pid));writeFileSync(${JSON.stringify(marker)},'started');while(!existsSync(${JSON.stringify(finish)}))await new Promise(done=>setTimeout(done,20));${readFileSync(forge, "utf8")}`,
+  );
+  writeFileSync(
+    probe.helper,
+    `import {existsSync} from 'node:fs';const now=Date.now;Date.now=()=>now()+(existsSync(${JSON.stringify(marker)})?60000:0);${readFileSync(probe.helper, "utf8")}`,
+  );
+  try {
+    const result = await f.launch(probe.helper, false, [
+      "auto",
+      "one",
+      "--detach",
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.output).toMatchObject({
+      outcome: "detached",
+      validated: false,
+      stalled: true,
+      pid: probe.pid(),
+    });
+    expect(alive(probe.pid())).toBe(true);
+    expect(f.attempts()).toHaveLength(0);
+    writeFileSync(finish, "continue");
+    await waitForProcess("stalled child completion", () => !alive(probe.pid()));
+    expect(readFileSync(result.output.log!, "utf8")).toContain(
+      '"outcome":"ready"',
+    );
+  } finally {
+    killFixture(probe.pid(), true);
+    const startupPid = join(f.root, "startup-pid");
+    if (existsSync(startupPid))
+      killFixture(Number(readFileSync(startupPid, "utf8")));
+    await waitForProcess("stalled child cleanup", () => !alive(probe.pid()));
+  }
+});
+
 test("detach waits for a deliberately delayed parent lock handoff", async () => {
   const f = autoFixture("auto-clean");
   const helper = join(f.root, "delayed-handoff.ts");
   writeFileSync(
     helper,
-    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{if(/owner-.*-\\d+$/.test(String(to)))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,750);return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{if(/owner-.*-\\d+$/.test(String(to)))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5500);return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
   );
   const result = await f.launch(helper, false, ["auto", "one", "--detach"]);
   const { pid, log } = result.output as unknown as { pid: number; log: string };
