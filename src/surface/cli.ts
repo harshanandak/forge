@@ -160,6 +160,7 @@ export async function runCli(
   argv: readonly string[],
   options: CallOptions = { caller: "agent" },
 ): Promise<SurfaceResponse> {
+  if (argv[0] === "help") argv = [...argv.slice(1), "--help"];
   let text = false;
   let helpRequested = false;
   let jsonHelp = false;

@@ -197,3 +197,24 @@ test("examples use portable double quotes for scalar phrases and JSON for undecl
   expect(result.stdout).toContain("--input '");
   expect(result.stdout).not.toContain("--count 2");
 }, 30000);
+
+test("help alias preserves scoped text and JSON help without invoking commands", async () => {
+  const catalog = fakeCatalog([candidate()]);
+  for (const args of [
+    [],
+    ["sample"],
+    ["sample", "echo"],
+    ["sample.echo"],
+    ["missing"],
+    ["sample", "--json"],
+  ]) {
+    const expected = await runCli(catalog, [...args, "--help"]);
+    const actual = await runCli(catalog, ["help", ...args]);
+    expect(expected.exitCode).toBe(0);
+    expect(actual).toEqual(expected);
+  }
+  expect(catalog.calls).toHaveLength(0);
+  const literal = await runCli(catalog, ["sample", "echo", "--", "help"]);
+  expect(literal.exitCode).toBe(0);
+  expect(catalog.calls).toHaveLength(1);
+}, 30000);

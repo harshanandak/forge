@@ -135,6 +135,12 @@ async function main(): Promise<void> {
     if (stray.length > 0)
       fail(`tarball holds files outside the package: ${stray.join(", ")}`);
     console.log(`- packed ${entry.filename} (${files.length} files)`);
+    // Let CI check this exact tarball after the smoke cleans up its temporary install.
+    if (process.env.FORGE_PACK_TARBALL !== undefined)
+      copyFileSync(
+        join(packDir, entry.filename),
+        process.env.FORGE_PACK_TARBALL,
+      );
 
     writeFileSync(
       join(consumer, "package.json"),

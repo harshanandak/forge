@@ -3,6 +3,14 @@
 Forge provides commands, MCP tools and agent skills from the same block catalog.
 The npm package is `forge-workflow`; the command is `forge`.
 
+The public exports ship ESM JavaScript and TypeScript declarations for `node16`
+and `bundler` resolution. CommonJS consumers use dynamic `import()`; there is no
+CommonJS entry point. Legacy `node10` resolution is unsupported. The runtime
+Node versions below still apply; `node16` names TypeScript's resolution mode.
+CI checks its existing packed tarball once with `bun run check:attw <tarball>`:
+attw's `node16` profile excludes legacy resolution failures, and only
+`cjs-resolves-to-esm` is ignored for the documented dynamic-import contract.
+
 ## Quickstart
 
 Install Node 24.15 or later 24.x, or Node 26 and later (Node 25 is not supported)
@@ -58,7 +66,13 @@ create nothing.
 Detection requires the device registration: older stores become registered on
 their next write, and losing both stores removes the evidence of prior state.
 
-Help is short text. Operation results default to JSON. For full schemas:
+Help is short text. Operation results default to JSON.
+
+`forge help` is equivalent to `forge --help`; `forge help <noun> [verb]` is
+equivalent to `forge <noun> [verb] --help`. The leading name `help` is reserved
+for this alias.
+
+For full schemas:
 
 ```sh
 forge issue --help --json

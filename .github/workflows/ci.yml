@@ -159,7 +159,11 @@ jobs:
           # Node legs split counterfactuals; Bun keeps the full set on Node 24 only.
           # macOS has only the Node 24 leg, so its second half runs on Linux and Windows.
           STATE_NODE_LEG: ${{ matrix.node }}
+          FORGE_PACK_TARBALL: ${{ runner.temp }}/forge-workflow.tgz
         run: bun run test:pack
+      - name: Packed type resolutions
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '24'
+        run: bun run check:attw "$RUNNER_TEMP/forge-workflow.tgz"
 
   # The one required check. Skipped heavy legs pass only when the change is documentation-only.
   ci-gate:
