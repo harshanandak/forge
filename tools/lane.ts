@@ -26,6 +26,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -268,27 +269,20 @@ function laneLockLive(lock: string): boolean {
   }
   return false;
 }
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (!object(error) || error.code !== "ESRCH") throw error;
-    return false;
-  }
-}
 function acquireLaneLock(common: string, id: string, owner: string) {
   const lock = join(common, `forge-lane-${id}.lock`),
     staged = `${lock}.${randomUUID()}`,
     prior = join(lock, `${inheritedOwner}-${process.pid}`);
   let handedOff = false;
   if (inheritedOwner) {
-    // The spawned child can arrive before the parent publishes its PID.
-    const parent = inheritedOwner.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}$/);
-    if (!parent) throw new Error("invalid detach lock owner");
-    while (!existsSync(prior)) {
-      if (!processAlive(Number(parent[1]))) break;
-      Atomics.wait(pause, 0, 0, 20);
+    if (!/^owner-[1-9]\d*-[0-9a-f-]{36}$/.test(inheritedOwner))
+      throw new Error("invalid detach lock owner");
+    // A byte follows publication; EOF means the parent died, even if its PID is reused.
+    try {
+      readSync(0, Buffer.alloc(1), 0, 1, null);
+    } catch (error) {
+      if (!object(error) || !["EPIPE", "EOF"].includes(String(error.code)))
+        throw error;
     }
     if (existsSync(prior)) {
       renameSync(prior, join(lock, owner));
@@ -399,12 +393,16 @@ async function laneAuto(
           cwd: process.cwd(),
           detached: true,
           windowsHide: true,
-          stdio: ["ignore", output, output],
+          stdio: ["pipe", output, output],
           env: { ...process.env, FORGE_LANE_LOCK_OWNER: laneOwner },
         });
         await once(child, "spawn");
         unlock(child.pid);
         unlock = undefined;
+        const input = child.stdin!;
+        // Readiness below reports a child that exits before receiving the signal.
+        input.on("error", () => input.destroy());
+        input.end(Buffer.from([1]), () => input.destroy());
         child.unref();
         const deadline = Date.now() + stallMs;
         let decision: unknown;

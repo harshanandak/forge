@@ -2520,6 +2520,40 @@ test("detach reclaims the lock when the parent dies before handoff", async () =>
   }
 });
 
+test("detach reclaims after parent death even when its polled PID stays alive", async () => {
+  const f = autoFixture("auto-clean"),
+    probe = detachProbe(f, "process.exit(73);"),
+    inherited = join(f.root, "inherited-owner");
+  // Keep the old liveness probe alive without changing the dead lock owner.
+  writeFileSync(
+    probe.helper,
+    `import childProcess from 'node:child_process';const nativeChild={...childProcess};mock.module('node:child_process',()=>({...nativeChild,spawn:(command,args,options)=>{if(options?.env?.FORGE_LANE_LOCK_OWNER){options={...options,env:{...options.env,FORGE_LANE_LOCK_OWNER:options.env.FORGE_LANE_LOCK_OWNER.replace(/^owner-\\d+-/,'owner-${process.pid}-')}};fs.writeFileSync(${JSON.stringify(inherited)},options.env.FORGE_LANE_LOCK_OWNER);}return nativeChild.spawn(command,args,options);}}));${readFileSync(probe.helper, "utf8")}`,
+  );
+  const result = await f.launch(probe.helper, true, [
+    "auto",
+    "one",
+    "--detach",
+  ]);
+  try {
+    expect(result.code).toBe(73);
+    expect(readFileSync(inherited, "utf8")).toStartWith(
+      `owner-${process.pid}-`,
+    );
+    await waitForProcess(
+      "orphan reclaim despite a live recycled parent PID",
+      () => !alive(probe.pid()),
+    );
+    const log = readdirSync(f.runs).find((name) => name.endsWith(".log"))!;
+    expect(readFileSync(join(f.runs, log), "utf8")).toContain(
+      '"outcome":"ready"',
+    );
+    expect(f.roles()).toEqual(["builder", "tester"]);
+    expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
+  } finally {
+    killFixture(probe.pid(), true);
+  }
+});
+
 test("detach reports a configured readiness stall and leaves the child alive", async () => {
   const f = autoFixture("auto-clean"),
     probe = detachProbe(f),
