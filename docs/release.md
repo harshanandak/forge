@@ -3,7 +3,7 @@
 Owner setup:
 
 - Add npm's GitHub Actions trusted publisher for `forge-workflow`: user `harshanandak`, repo `forge`, workflow `release.yml`, environment `release`. Enable direct `npm publish` and **Allow npm dist-tag** separately; no stored token or token fallback.
-- Create GitHub's `release` environment with the owner as required reviewer, self-review disabled and main-only deployments. An environment name alone provides no approval gate.
+- Create GitHub's `release` environment with required reviewers, main-only deployments, and administrator bypass turned off so admins also wait for approval. An environment name alone provides no approval gate. With a single owner, leave "Prevent self-review" off, or the owner's own dispatch can never be approved; the gate is then a deliberate pause, not a second person. Turn it on once a second reviewer exists.
 
 [npm requirements](https://docs.npmjs.com/trusted-publishers/): hosted runners, npm >=11.5.1, Node >=22.14. OIDC dist-tags need npm >=11.21.0 (11.x) or >=12.2.0 (12.x) and separate permission. We pin npm 11.21.0 on Node 24; the owner must fix missing permission before promotion.
 Public repo/package OIDC generates provenance; we request it, require registry attestations and audit signatures.
