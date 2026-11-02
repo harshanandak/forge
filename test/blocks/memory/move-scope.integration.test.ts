@@ -112,6 +112,7 @@ for (const limit of [100, undefined]) {
       const moved: { id: string; to: string }[] = [];
       let complete = false;
       let continuations = 0;
+      let startedAfter = 0;
       for (let batch = 1; batch <= notes.length; batch += 1) {
         const batchStarted = performance.now();
         const run = spawnSync(
@@ -138,17 +139,24 @@ for (const limit of [100, undefined]) {
           stopped?: unknown;
         };
         expect(result.stopped).toBeUndefined();
-        expect(result.moved.length).toBeGreaterThan(0);
+        if (moved.length === notes.length) {
+          expect(startedAfter).toBe(0);
+          expect(result.moved).toEqual([]);
+          expect(result.complete).toBe(true);
+        } else expect(result.moved.length).toBeGreaterThan(0);
         moved.push(...result.moved);
-        expect(result.complete).toBe(moved.length === notes.length);
+        expect(result.complete).toBe(
+          moved.length === notes.length && startedAfter === 0,
+        );
         complete = result.complete;
         if (complete) {
           expect(result.next).toBeUndefined();
           break;
         }
         expect(result.next).toBe(
-          `forge memory move --scope alpha --to project --limit ${limit ?? 25} --after ${Number(moved.at(-1)!.id.split("-").at(-1))}`,
+          `forge memory move --scope alpha --to project --limit ${limit ?? 25} --after ${moved.length === notes.length ? 0 : Number(moved.at(-1)!.id.split("-").at(-1))}`,
         );
+        startedAfter = Number(result.next!.split("--after ")[1]);
         args = result.next!.split(" ").slice(1);
         continuations += 1;
       }

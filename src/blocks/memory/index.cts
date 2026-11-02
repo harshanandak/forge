@@ -1652,7 +1652,8 @@ module.exports = {
       const source = deviceSource(services.state);
       let slowestPageMs = 0;
       const scope = input.scope;
-      let after = input.after ?? 0;
+      const startedAfter = input.after ?? 0;
+      let after = startedAfter;
       let exhausted = false;
       const canScan = () =>
         deadline === undefined || deadline - Date.now() > slowestPageMs + 1_000;
@@ -1684,11 +1685,13 @@ module.exports = {
       while (canScan()) {
         const step = notes.next();
         if (step.done) {
-          complete = exhausted;
+          complete = exhausted && startedAfter === 0;
+          if (exhausted && startedAfter > 0) after = 0;
           break;
         }
         const note = step.value;
         const started = Date.now();
+        // A single atomic store read or move slower than the remaining budget may outlast it.
         // Leave a pending match before the cursor so the next call can move it.
         if (moved.length === limit) break;
         if (

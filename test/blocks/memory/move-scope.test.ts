@@ -105,10 +105,10 @@ test("scope batches move 25, then 5, then zero, preserving every record and old-
     "forge memory move --scope alpha --to project --limit 25 --after 25",
   );
   const second = await move(continuation(first));
-  expect(second).toMatchObject({ complete: true });
+  expect(second).toMatchObject({ complete: false });
   expect(second.moved).toHaveLength(5);
-  expect(second.next).toBeUndefined();
-  expect(await move()).toMatchObject({
+  expect(continuation(second).after).toBe(0);
+  expect(await move(continuation(second))).toMatchObject({
     moved: [],
     complete: true,
   });
@@ -136,6 +136,83 @@ test("scope batches move 25, then 5, then zero, preserving every record and old-
     });
   }
   expect(device.list("note/").slice(30)).toEqual(originals.slice(30));
+}, 30_000);
+
+for (const scenario of ["re-scope", "restore"]) {
+  test(`scope completion rechecks older notes after ${scenario}`, async () => {
+    const { move, call, device, project } = await setup(3);
+    const approval = { by: "owner", quote: "Restore the test fixture note." };
+    if (scenario === "re-scope")
+      await call("memory.add", {
+        id: "device/note-1",
+        expectRevision: 2,
+        scope: "beta",
+        text: "older",
+      });
+    else await call("memory.forget", { id: "device/note-1", approval });
+    const first = await move({ ...input, limit: 1 });
+    expect(first.moved.map((note) => note.id)).toEqual(["device/note-2"]);
+    expect(continuation(first).after).toBe(2);
+    if (scenario === "re-scope")
+      await call("memory.add", {
+        id: "device/note-1",
+        expectRevision: 3,
+        scope: "alpha",
+        text: "older",
+      });
+    else
+      await call("memory.forget", {
+        id: "device/note-1",
+        undo: true,
+        approval,
+      });
+    const suffix = await move({ ...continuation(first), limit: 1 });
+    expect(suffix.moved.map((note) => note.id)).toEqual(["device/note-3"]);
+    expect(suffix.complete).toBe(false);
+    expect(continuation(suffix).after).toBe(0);
+    expect(device.get("note/000000001")?.value).toMatchObject({
+      scope: "alpha",
+    });
+    const verified = await move({ ...continuation(suffix), limit: 1 });
+    expect(verified.moved.map((note) => note.id)).toEqual(["device/note-1"]);
+    expect(verified.complete).toBe(true);
+    expect(verified.next).toBeUndefined();
+    expect(device.get("note/000000001")?.value).toMatchObject({
+      deleted: true,
+    });
+    expect(project.list("note/")).toHaveLength(3);
+    expect(await move()).toMatchObject({ moved: [], complete: true });
+  }, 30_000);
+}
+
+test("scope slow first page keeps its cursor when the read outlasts the budget", async () => {
+  let now = 1_000;
+  const { move, device, project } = await setup(3, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  const page = device.listRange.bind(device);
+  const reads: Parameters<typeof device.listRange>[0][] = [];
+  device.listRange = (options) => {
+    reads.push(options);
+    now += 3_000;
+    return page(options);
+  };
+  const result = await move({ ...input, after: 1 }, 3_000);
+  expect(now).toBe(4_000);
+  expect(reads).toHaveLength(1);
+  expect(reads[0]!.from).toBe("note/000000002");
+  expect(result).toEqual({
+    status: "moved",
+    moved: [],
+    complete: false,
+    next: "forge memory move --scope alpha --to project --limit 25 --after 1",
+  });
+  expect(project.list("note/")).toHaveLength(0);
+  expect(device.get("note/000000002")?.revision).toBe(2);
 }, 30_000);
 
 test("scope scan passes pages of tombstones and other scopes and uses stored scope exactly", async () => {
@@ -182,6 +259,11 @@ test("scope deadline keeps the slowest note estimate and resumes the remaining n
   expect(device.get("note/000000003")?.revision).toBe(2);
   expect(await move(continuation(first), 20_000)).toMatchObject({
     moved: [{ id: "device/note-3" }, { id: "device/note-4" }],
+    complete: false,
+    next: "forge memory move --scope alpha --to project --limit 25 --after 0",
+  });
+  expect(await move({ ...input, after: 0 }, 20_000)).toMatchObject({
+    moved: [],
     complete: true,
   });
   expect(project.list("note/")).toHaveLength(4);
@@ -353,10 +435,15 @@ test("large scope move resumes to completion without a full-store reserve", asyn
   for (let batch = 0; batch < 100; batch += 1) {
     const deadline = now + 15_001;
     const result = await move(value, deadline);
-    expect(result.moved.length).toBeGreaterThan(0);
+    if (total === 100) {
+      expect(value).toEqual({ ...input, after: 0 });
+      expect(result).toMatchObject({ moved: [], complete: true });
+    } else expect(result.moved.length).toBeGreaterThan(0);
     expect(now).toBeLessThan(deadline);
     total += result.moved.length;
     if (result.complete) {
+      console.log(`large scope move calls: ${batch + 1} (baseline 4)`);
+      expect(batch + 1).toBe(5);
       expect(total).toBe(100);
       expect(project.list("note/")).toHaveLength(100);
       expect(result.next).toBeUndefined();
@@ -397,7 +484,10 @@ test("slow first project open is cached and resumed calls finish", async () => {
   for (let batch = 0; batch < 12; batch += 1) {
     const deadline = now + 15_001;
     const result = await move(value, deadline);
-    expect(result.moved.length).toBeGreaterThan(0);
+    if (total === 12) {
+      expect(value).toEqual({ ...input, after: 0 });
+      expect(result).toMatchObject({ moved: [], complete: true });
+    } else expect(result.moved.length).toBeGreaterThan(0);
     expect(now).toBeLessThan(deadline);
     total += result.moved.length;
     if (result.complete) {
@@ -460,7 +550,12 @@ test("scope scan bounds nonmatching lookahead by its deadline and resumes", asyn
   );
   const second = await move(continuation(first), now + 30_000);
   expect(second.moved.map((note) => note.id)).toEqual(["device/note-2002"]);
-  expect(second.complete).toBe(true);
+  expect(second.complete).toBe(false);
+  expect(continuation(second).after).toBe(0);
+  expect(await move(continuation(second))).toMatchObject({
+    moved: [],
+    complete: true,
+  });
 }, 30_000);
 
 test("interrupted scope batch resumes the committed copy without duplication", async () => {

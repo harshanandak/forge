@@ -23,7 +23,7 @@
     "after": {
       "type": "integer",
       "minimum": 0,
-      "description": "Continue a scope move after this note number, as returned in next."
+      "description": "Continue a scope move after this note number, as returned in next. Suffix exhaustion returns after=0 for a verification pass before completion. A single atomic store read or move slower than the remaining budget may outlast it; a slow first page returns moved 0 with the same cursor."
     }
   },
   "additionalProperties": false,
