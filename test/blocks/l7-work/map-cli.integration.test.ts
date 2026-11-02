@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { LocalState } from "../../../src/assembly/state.ts";
 import type { TrackerItem } from "../../../src/generated/types.ts";
 const cli =
   process.env.FORGE_MAP_CLI ??
@@ -43,12 +44,14 @@ function project() {
           : ""),
     );
   configure();
+  let spawnCount = 0;
   function call<Op extends string>(
     op: Op,
     input: Record<string, unknown> = {},
     expected = 0,
     flags?: string[],
   ) {
+    spawnCount++;
     const result = spawnSync(
       Bun.which("node")!,
       [cli, "issue", op, ...(flags ?? ["--input", JSON.stringify(input)])],
@@ -74,6 +77,17 @@ function project() {
       error: { code: string };
     };
   }
+  return {
+    root,
+    call,
+    configure,
+    get spawnCount() {
+      return spawnCount;
+    },
+  };
+}
+function projectWithIssues() {
+  const { root, call, configure } = project();
   const epic = call("create", {
     title: "epic",
     kind: "epic",
@@ -93,7 +107,7 @@ function project() {
   return { root, call, configure, epic, one, two };
 }
 test("built CLI updates parent with lease, revision, null, cycle and unknown-parent checks", () => {
-  const { call, epic, one, two } = project();
+  const { call, epic, one, two } = projectWithIssues();
   call("claim", { id: two.id });
   expect(
     call("update", { id: two.id, parent: epic.id, expectRevision: 1 }).result
@@ -122,7 +136,7 @@ test("built CLI updates parent with lease, revision, null, cycle and unknown-par
   ).toBe(false);
 });
 test("built CLI list returns exact ids for each filter and their AND combination", () => {
-  const { call, epic, one, two } = project();
+  const { call, epic, one, two } = projectWithIssues();
   for (const [input, ids] of [
     [{ parent: epic.id }, [one.id]],
     [{ parent: "none" }, [epic.id, two.id]],
@@ -156,7 +170,7 @@ test("built CLI list returns exact ids for each filter and their AND combination
   ).toEqual([one.id]);
 });
 test("built CLI tree shows counts, nesting, parentless and closed-parent issues", () => {
-  const { call, epic, one, two } = project();
+  const { call, epic, one, two } = projectWithIssues();
   const closed = call("create", { title: "closed", parent: epic.id }).result;
   call("claim", { id: closed.id });
   call("close", {
@@ -189,8 +203,35 @@ test("built CLI tree shows counts, nesting, parentless and closed-parent issues"
   expect(result.closedParents).toEqual({ count: 1, ids: [orphan.id] });
   expect(call("tree", {}, 0, [epic.id]).result.items[0]!.item.id).toBe(epic.id);
 });
-test("built CLI lint reads required groups and default config stays silent", () => {
-  const { call, configure, one, two } = project();
+test("built CLI lint reads required groups and default config stays silent", async () => {
+  const fixture = project();
+  const { root, call, configure } = fixture;
+  const one = { id: "demo-1" };
+  const two = { id: "demo-2" };
+  const state = new LocalState(join(root, ".forge/state.sqlite"));
+  try {
+    const owner = (await state.open(true))!;
+    for (const [id, labels] of [
+      ["work-1", ["p1"]],
+      ["work-2", ["area:tracker", "p1", "p2"]],
+    ] as const)
+      owner.put(
+        "forge/work",
+        `issue:${id}`,
+        {
+          id,
+          title: id,
+          status: "open",
+          labels,
+          dependsOn: [],
+          createdAt: new Date(1000).toISOString(),
+        },
+        { kind: "agent", id: "test" },
+        { expectRevision: 0 },
+      );
+  } finally {
+    await state.close();
+  }
   expect(call("lint").result.problems).toEqual([]);
   configure(true);
   const problems = call("lint").result.problems;
@@ -207,4 +248,5 @@ test("built CLI lint reads required groups and default config stays silent", () 
   ).toBe(true);
   configure();
   expect(call("lint").result.problems).toEqual([]);
+  expect(fixture.spawnCount).toBe(3);
 });
