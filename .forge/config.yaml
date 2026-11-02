@@ -40,6 +40,10 @@ blocks:
         - p2
         - p3
         - p4
+      labels:
+        required:
+          - prefix: "area:"
+          - oneOf: [p0, p1, p2, p3]
   memory:
     source:
       builtin: forge/memory
