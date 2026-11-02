@@ -1,6 +1,6 @@
 {
   "name": "forge-workflow",
-  "version": "0.1.0-dev.0",
+  "version": "0.1.0-beta.9",
   "description": "An open building-block platform for AI coding agents.",
   "license": "MIT",
   "type": "module",
