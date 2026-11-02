@@ -184,13 +184,7 @@ type CleanupReport = {
     holderReason?: string;
   };
 };
-async function cleanupReport(
-  root: string,
-  code: string,
-  path?: string,
-  delayMs = 0,
-) {
-  if (delayMs) await Bun.sleep(delayMs);
+function cleanupReport(root: string, code: string, path?: string) {
   const original = Object.assign(new Error("injected cleanup failure"), {
     code,
     ...(path ? { path } : {}),
@@ -283,8 +277,8 @@ try { [Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); [Console]::In.R
 
 if (process.platform === "win32") {
   test("cleanup diagnostic never reports a holder's argument marker", async () => {
-    await withFileHolder(true, async (root, path, _pid, marker) => {
-      const report = await cleanupReport(root, "EBUSY", path, 12_000);
+    await withFileHolder(true, (root, path, _pid, marker) => {
+      const report = cleanupReport(root, "EBUSY", path);
       expect(report.includes(marker)).toBe(false);
       expect(
         /commandline|executablepath|parentprocessid|systemstderr/i.test(report),
@@ -293,9 +287,9 @@ if (process.platform === "win32") {
   });
 
   test("cleanup diagnostic names the Restart Manager file holder", async () => {
-    await withFileHolder(false, async (root, path, pid) => {
+    await withFileHolder(false, (root, path, pid) => {
       const report = JSON.parse(
-        await cleanupReport(root, "EBUSY", path),
+        cleanupReport(root, "EBUSY", path),
       ) as CleanupReport;
       expect(
         report.host?.holders?.some(
@@ -311,25 +305,23 @@ if (process.platform === "win32") {
     });
   });
 
-  test("cleanup diagnostic handles EPERM and rethrows the original error", async () => {
+  test("cleanup diagnostic handles EPERM and rethrows the original error", () => {
     const root = mkdtempSync(join(tmpdir(), "holder-717-"));
     roots.push(root);
-    const report = JSON.parse(
-      await cleanupReport(root, "EPERM"),
-    ) as CleanupReport;
+    const report = JSON.parse(cleanupReport(root, "EPERM")) as CleanupReport;
     expect(report.root).toBe(root);
     expect(report.host.holders).toEqual([]);
     expect(report.host.holderUnknown).toBe(true);
     expect(report.host.holderReason).toBe("Restart Manager query failed");
   });
 
-  test("cleanup diagnostic handles forced EBUSY and rethrows the original error", async () => {
+  test("cleanup diagnostic handles forced EBUSY and rethrows the original error", () => {
     const root = mkdtempSync(join(tmpdir(), "holder-717-"));
     roots.push(root);
     const path = join(root, "unlocked.txt");
     writeFileSync(path, "unlocked fixture");
     const report = JSON.parse(
-      await cleanupReport(root, "EBUSY", path),
+      cleanupReport(root, "EBUSY", path),
     ) as CleanupReport;
     expect(report.root).toBe(root);
     expect(report.elapsedMs).toBeGreaterThanOrEqual(0);
