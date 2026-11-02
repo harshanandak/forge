@@ -51,6 +51,31 @@ test("a new user's first run works end to end from the packed package", () => {
       spawnSync("bun", ["--version"], { env, windowsHide: true }).error,
     ).toBeDefined();
     const projects = mkdtempSync(join(work, "projects-"));
+    const defaultOff = join(
+      root,
+      "test/integration/first-run/fixtures/default-off.mjs",
+    );
+    const installed = join(consumer, "node_modules/forge-workflow");
+    const injected = spawnSync(
+      node,
+      [defaultOff, installed, "--write-fixture"],
+      {
+        cwd: mkdtempSync(join(work, "negative-")),
+        env,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 120000,
+      },
+    );
+    expect(injected.error).toBeUndefined();
+    expect(injected.status).toBe(1);
+    expect(injected.stderr).toContain(
+      "first-run commands changed fixture files",
+    );
+    expect(injected.stderr).toContain("unexpected.txt");
+    console.log(
+      run(node, [defaultOff, installed], projects, 120000, env).trim(),
+    );
     const report = run(
       node,
       [
