@@ -1,6 +1,14 @@
 {
   "type": "object",
   "properties": {
+    "parent": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "kind": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "label": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+    },
     "status": {
       "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemStatus"
     },

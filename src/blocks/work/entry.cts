@@ -40,6 +40,12 @@ type WorkConfig = {
   readonly labelOrder?: readonly string[];
   readonly idPrefix?: string;
   readonly claimTtlSeconds?: number;
+  readonly labels?: {
+    readonly required?: readonly (
+      | { readonly prefix: string; readonly oneOf?: never }
+      | { readonly oneOf: readonly string[]; readonly prefix?: never }
+    )[];
+  };
 };
 type Checkpoint = {
   readonly step:
@@ -127,10 +133,25 @@ type WorkOperations = TrackerOperations<"issue"> & {
     ItemRef,
     { records: readonly StateRecord[] },
   ];
+  readonly "issue.tree": readonly [
+    { readonly id?: string; readonly limit?: number },
+    {
+      items: readonly TreeNode[];
+      parentless: { count: number; ids: readonly string[] };
+      closedParents: { count: number; ids: readonly string[] };
+      truncated: boolean;
+    },
+  ];
   readonly "issue.lint": readonly [
     ListItemsInput,
     { problems: readonly string[] },
   ];
+};
+type TreeNode = {
+  readonly item: TrackerItem;
+  readonly openChildren: number;
+  readonly closedChildren: number;
+  readonly children: readonly TreeNode[];
 };
 const kinds: readonly string[] = ["task", "bug", "feature", "epic"];
 /**
@@ -284,6 +305,7 @@ function checkKind(kind: string | undefined): void {
 function dependencyGraph(
   state: LeaseStateClient,
   initial: readonly StateRecord[] = [],
+  edges = (value: Stored): readonly string[] => value.dependsOn,
 ) {
   const records = new Map<string, StateRecord | undefined>(
     initial.map((record) => [stored(record).id, record]),
@@ -303,7 +325,7 @@ function dependencyGraph(
   };
   const check = (id: string, dependencies?: readonly string[]): boolean => {
     if (complete.has(id)) return complete.get(id)!;
-    const root = dependencies ?? stored(read(id)!).dependsOn;
+    const root = dependencies ?? edges(stored(read(id)!));
     const active = new Set([id]);
     const stack = [{ id, dependencies: root, index: 0, valid: true }];
     while (stack.length) {
@@ -334,7 +356,7 @@ function dependencyGraph(
       active.add(next);
       stack.push({
         id: next,
-        dependencies: stored(record).dependsOn,
+        dependencies: edges(stored(record)),
         index: 0,
         valid: true,
       });
@@ -348,13 +370,25 @@ function validateDependencies(
   id: string,
   dependencies: readonly string[],
   ids: Ids,
+  parent = false,
 ): readonly { readonly key: string; readonly expectRevision: number }[] {
-  const graph = dependencyGraph(state);
+  const graph = dependencyGraph(
+    state,
+    [],
+    parent
+      ? (value) => (value.parent === undefined ? [] : [value.parent])
+      : undefined,
+  );
   if (!graph.check(id, dependencies)) {
     const [missing] = graph.missing;
     if (missing !== undefined)
       fail("NOT_FOUND", `Issue ${ids.shown(missing)} was not found`);
-    fail("INPUT_CONFLICT", "Dependencies must not contain a cycle");
+    fail(
+      "INPUT_CONFLICT",
+      parent
+        ? "Parents must not contain a cycle"
+        : "Dependencies must not contain a cycle",
+    );
   }
   return graph.readSet;
 }
@@ -380,7 +414,16 @@ function list(
 ): { items: readonly TrackerItem[]; truncated: boolean } {
   let records = state.list("issue:");
   const graph = dependencyGraph(state, records);
-  const wanted = input.labels;
+  const ids = idsFor(state, config);
+  const parent =
+    input.parent === undefined || input.parent === "none"
+      ? undefined
+      : ids.stored(input.parent);
+  if (input.parent !== undefined)
+    records = records.filter((record) => stored(record).parent === parent);
+  if (input.kind !== undefined)
+    records = records.filter((record) => stored(record).kind === input.kind);
+  const wanted = [...(input.labels ?? []), ...(input.label ?? [])];
   if (wanted?.length)
     records = records.filter((record) =>
       wanted.every((label) => stored(record).labels.includes(label)),
@@ -416,7 +459,6 @@ function list(
     records = records.toSorted(
       (a, b) => rank(order, stored(a)) - rank(order, stored(b)),
     );
-  const ids = idsFor(state, config);
   return {
     truncated: records.length > (input.limit ?? 1000),
     items: records
@@ -433,19 +475,19 @@ function update(
 ): TrackerItem {
   const value = stored(get(state, input.id, given));
   const readSet = input.dependsOn
-    ? validateDependencies(state, input.id, input.dependsOn, ids)
-    : undefined;
-  const { id, expectRevision, ...patch } = input;
+    ? [...validateDependencies(state, input.id, input.dependsOn, ids)]
+    : [];
+  const { id, expectRevision, parent, ...patch } = input;
+  const next = { ...value, ...patch };
+  if (parent === null) delete next.parent;
+  else if (parent !== undefined) {
+    const target = ids.stored(parent);
+    readSet.push(...validateDependencies(state, id, [target], ids, true));
+    Object.assign(next, { parent: target });
+  }
   return item(
     state,
-    persist(
-      state,
-      key(id),
-      { ...value, ...patch },
-      expectRevision,
-      undefined,
-      readSet,
-    ),
+    persist(state, key(id), next, expectRevision, undefined, readSet),
     ids,
   );
 }
@@ -568,6 +610,83 @@ const operations: Operations<WorkOperations> = {
   },
   "issue.list": ({ input, services, config }) =>
     list(client(services), input, undefined, config as WorkConfig | undefined),
+  "issue.tree": ({ input, services, config }) => {
+    const state = client(services);
+    const ids = idsFor(state, config);
+    const records = state.list("issue:");
+    const byId = new Map(records.map((record) => [stored(record).id, record]));
+    const children = new Map<string, StateRecord[]>();
+    for (const record of records) {
+      const parent = stored(record).parent;
+      if (parent !== undefined) {
+        const rows = children.get(parent) ?? [];
+        rows.push(record);
+        children.set(parent, rows);
+      }
+    }
+    let left = input.limit ?? 1000;
+    let truncated = false;
+    const take = () => {
+      if (left > 0) {
+        left--;
+        return true;
+      }
+      truncated = true;
+      return false;
+    };
+    const emitted = new Set<string>();
+    const nodes = (rows: readonly StateRecord[], depth: number): TreeNode[] => {
+      const result: TreeNode[] = [];
+      for (const record of rows) {
+        const id = stored(record).id;
+        if (emitted.has(id)) continue;
+        if (!take()) break;
+        emitted.add(id);
+        const all = children.get(id) ?? [];
+        const open = all.filter((row) => stored(row).status === "open");
+        if (depth === 3 && open.length) truncated = true;
+        result.push({
+          item: item(state, record, ids),
+          openChildren: open.length,
+          closedChildren: all.length - open.length,
+          children: depth === 3 ? [] : nodes(open, depth + 1),
+        });
+      }
+      return result;
+    };
+    const epics = records.filter(
+      (record) =>
+        stored(record).kind === "epic" && stored(record).status === "open",
+    );
+    const roots = epics.filter((record) => {
+      const parent = byId.get(stored(record).parent ?? "");
+      return parent === undefined || stored(parent).status !== "open";
+    });
+    const items =
+      input.id === undefined
+        ? [...nodes(roots, 0), ...nodes(epics, 0)]
+        : nodes([get(state, ids.stored(input.id), input.id)], 0);
+    const summary = (rows: readonly StateRecord[]) => ({
+      count: rows.length,
+      ids: rows
+        .filter(() => take())
+        .map((record) => ids.shown(stored(record).id)),
+    });
+    const open = records.filter((record) => stored(record).status === "open");
+    return {
+      items,
+      parentless: summary(
+        open.filter((record) => stored(record).parent === undefined),
+      ),
+      closedParents: summary(
+        open.filter((record) => {
+          const parent = byId.get(stored(record).parent ?? "");
+          return parent !== undefined && stored(parent).status === "closed";
+        }),
+      ),
+      truncated,
+    };
+  },
   "issue.ready": ({ input, services, config }) =>
     list(client(services), input, "ready", config as WorkConfig | undefined),
   "issue.blocked": ({ input, services, config }) =>
@@ -977,8 +1096,27 @@ const operations: Operations<WorkOperations> = {
         problems.push(`${id}: unknown kind`);
       if (!graph.check(value.id))
         problems.push(`${id}: missing or cyclic dependency`);
-      if (value.parent !== undefined && !graph.read(value.parent))
+      const parent =
+        value.parent === undefined ? undefined : graph.read(value.parent);
+      if (value.parent !== undefined && !parent)
         problems.push(`${id}: missing parent`);
+      if (value.status !== "open") continue;
+      if (parent && stored(parent).status === "closed")
+        problems.push(
+          `${id}: parent ${ids.shown(stored(parent).id)} is closed`,
+        );
+      for (const group of (config as WorkConfig | undefined)?.labels
+        ?.required ?? []) {
+        const count = value.labels.filter((label) =>
+          group.prefix !== undefined
+            ? label.startsWith(group.prefix)
+            : group.oneOf.includes(label),
+        ).length;
+        if (count !== 1)
+          problems.push(
+            `${id}: expected exactly one label from ${group.prefix ?? group.oneOf.join(", ")}; found ${count}`,
+          );
+      }
     }
     return { problems };
   },

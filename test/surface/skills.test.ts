@@ -212,8 +212,12 @@ test("the generated issue skill explains the inclusive timestamp cutoff within i
     expect(lintSkill(text, catalog)).toEqual([]);
     for (const entry of catalog.filter((entry) =>
       entry.op.startsWith("issue."),
-    ))
+    )) {
       expect(text).toContain(`## \`${entry.op}\``);
+      expect(text.split(`## \`${entry.op}\``)[1]?.split("\n## ")[0]).toContain(
+        entry.docs.summary,
+      );
+    }
   });
 }, 30_000);
 
