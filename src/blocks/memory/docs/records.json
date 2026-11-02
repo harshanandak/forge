@@ -59,7 +59,7 @@
     },
     "memory.move": {
       "title": "Move a note to another level",
-      "summary": "Move one note, copy with keep, or move a device scope to this project; batches return moved.length and next, with complete only when the scan reaches the end and moves 0 notes.",
+      "summary": "Move one note, copy with keep, or move a device scope to this project; scope batches return moved.length and next until complete, with complete only when the scan reaches the end and moves 0 notes.",
       "examples": [
         {
           "input": {

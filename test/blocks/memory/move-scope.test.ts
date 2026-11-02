@@ -617,11 +617,13 @@ for (const code of ["REVISION_CONFLICT", "TRANSFER_CONFLICT"]) {
         { expectRevision: 0 },
       );
     }
-    expect(await move()).toMatchObject({
+    const stoppedResult = await move();
+    expect(stoppedResult).toMatchObject({
       moved: [{ id: "device/note-1" }],
       stopped: { id: "device/note-2", code },
       complete: false,
     });
+    expect(stoppedResult.next).toContain("forge memory move --scope");
     expect(project.list("note/")).toHaveLength(1);
     expect(device.get("note/000000003")?.revision).toBe(2);
   }, 30_000);
@@ -653,11 +655,13 @@ for (const to of ["project/fedcba9876543210/note-2", "device/note-2"]) {
       if (readKey === key) wrongDestinationReads += 1;
       return projectGet(readKey);
     };
-    expect(await move()).toMatchObject({
+    const stoppedResult = await move();
+    expect(stoppedResult).toMatchObject({
       moved: [{ id: "device/note-1" }],
       stopped: { id: "device/note-2", code: "VERIFY_FAILED" },
       complete: false,
     });
+    expect(stoppedResult.next).toContain("forge memory move --scope");
     expect(raced).toBe(true);
     expect(wrongDestinationReads).toBe(0);
     expect(device.get("note/000000003")).toEqual(later);
