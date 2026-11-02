@@ -184,7 +184,13 @@ type CleanupReport = {
     holderReason?: string;
   };
 };
-function cleanupReport(root: string, code: string, path?: string) {
+async function cleanupReport(
+  root: string,
+  code: string,
+  path?: string,
+  delayMs = 0,
+) {
+  if (delayMs) await Bun.sleep(delayMs);
   const original = Object.assign(new Error("injected cleanup failure"), {
     code,
     ...(path ? { path } : {}),
@@ -212,7 +218,12 @@ function cleanupReport(root: string, code: string, path?: string) {
 
 async function withFileHolder(
   exposeMarker: boolean,
-  check: (root: string, path: string, pid: number, marker: string) => void,
+  check: (
+    root: string,
+    path: string,
+    pid: number,
+    marker: string,
+  ) => void | Promise<void>,
 ) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "holder-717-")));
   roots.push(root);
@@ -237,9 +248,23 @@ try { [Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); [Console]::In.R
       stdout: "pipe",
       stderr: "pipe",
       windowsHide: true,
-      timeout: 10_000,
     },
   );
+  const running = () => child.exitCode === null && child.signalCode === null;
+  async function release() {
+    try {
+      if (running()) {
+        await child.stdin.write("release\n");
+        await child.stdin.end();
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EPIPE" || running())
+        throw error;
+    } finally {
+      if (running()) child.kill();
+      await child.exited;
+    }
+  }
   try {
     const reader = child.stdout.getReader();
     try {
@@ -248,21 +273,18 @@ try { [Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); [Console]::In.R
     } finally {
       reader.releaseLock();
     }
-    check(root, path, child.pid, marker);
+    await check(root, path, child.pid, marker);
+    expect(child.exitCode).toBeNull();
+    expect(child.signalCode).toBeNull();
   } finally {
-    try {
-      await child.stdin.write("release\n");
-      await child.stdin.end();
-    } finally {
-      await child.exited;
-    }
+    await release();
   }
 }
 
 if (process.platform === "win32") {
   test("cleanup diagnostic never reports a holder's argument marker", async () => {
-    await withFileHolder(true, (root, path, _pid, marker) => {
-      const report = cleanupReport(root, "EBUSY", path);
+    await withFileHolder(true, async (root, path, _pid, marker) => {
+      const report = await cleanupReport(root, "EBUSY", path, 12_000);
       expect(report.includes(marker)).toBe(false);
       expect(
         /commandline|executablepath|parentprocessid|systemstderr/i.test(report),
@@ -271,9 +293,9 @@ if (process.platform === "win32") {
   });
 
   test("cleanup diagnostic names the Restart Manager file holder", async () => {
-    await withFileHolder(false, (root, path, pid) => {
+    await withFileHolder(false, async (root, path, pid) => {
       const report = JSON.parse(
-        cleanupReport(root, "EBUSY", path),
+        await cleanupReport(root, "EBUSY", path),
       ) as CleanupReport;
       expect(
         report.host?.holders?.some(
@@ -289,23 +311,25 @@ if (process.platform === "win32") {
     });
   });
 
-  test("cleanup diagnostic handles EPERM and rethrows the original error", () => {
+  test("cleanup diagnostic handles EPERM and rethrows the original error", async () => {
     const root = mkdtempSync(join(tmpdir(), "holder-717-"));
     roots.push(root);
-    const report = JSON.parse(cleanupReport(root, "EPERM")) as CleanupReport;
+    const report = JSON.parse(
+      await cleanupReport(root, "EPERM"),
+    ) as CleanupReport;
     expect(report.root).toBe(root);
     expect(report.host.holders).toEqual([]);
     expect(report.host.holderUnknown).toBe(true);
     expect(report.host.holderReason).toBe("Restart Manager query failed");
   });
 
-  test("cleanup diagnostic handles forced EBUSY and rethrows the original error", () => {
+  test("cleanup diagnostic handles forced EBUSY and rethrows the original error", async () => {
     const root = mkdtempSync(join(tmpdir(), "holder-717-"));
     roots.push(root);
     const path = join(root, "unlocked.txt");
     writeFileSync(path, "unlocked fixture");
     const report = JSON.parse(
-      cleanupReport(root, "EBUSY", path),
+      await cleanupReport(root, "EBUSY", path),
     ) as CleanupReport;
     expect(report.root).toBe(root);
     expect(report.elapsedMs).toBeGreaterThanOrEqual(0);
