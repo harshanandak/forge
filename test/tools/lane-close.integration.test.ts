@@ -1,15 +1,24 @@
 // [integration] Real local git repositories; Forge, GitHub and cleanup failures are PATH fixtures.
-import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -22,9 +31,76 @@ setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<{ head: string; merge: string }>();
 const script = resolve(import.meta.dirname, "../../tools/lane.ts");
 const roots: string[] = [];
+let testStartedAt = Date.now();
+beforeEach(() => {
+  testStartedAt = Date.now();
+});
+function diagnoseCleanup(
+  root: string,
+  start: number,
+  original: unknown,
+): never {
+  const failures: { path: string; code: string | undefined }[] = [];
+  const report: Record<string, unknown> = { root, start, failures };
+  report.failedAtMs = Date.now() - start;
+  try {
+    try {
+      const options = { recursive: true, withFileTypes: true } as const;
+      for (const entry of readdirSync(root, options)) {
+        const path = join(entry.parentPath, entry.name);
+        try {
+          if (entry.isDirectory()) renameSync(path, path);
+          else closeSync(openSync(path, "r+"));
+        } catch (error) {
+          failures.push({ path, code: (error as NodeJS.ErrnoException).code });
+        }
+      }
+    } catch (error) {
+      report.scanError = String(error);
+    }
+    const command = String.raw`
+$root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT
+$data = @{}
+try { $data.processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { ($_.CommandLine -and ($_.CommandLine.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.CommandLine -match 'forge-lane-close')) -or ($_.ExecutablePath -and ($_.ExecutablePath.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.ExecutablePath -match 'forge-lane-close')) } | Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath) } catch { $data.processError = $_.Exception.Message }
+try { $data.defender = Get-MpComputerStatus -ErrorAction Stop | Select-Object RealTimeProtectionEnabled } catch { $data.defenderError = $_.Exception.Message }
+try {
+  $exclusions = @((Get-MpPreference -ErrorAction Stop).ExclusionPath)
+  $data.defenderExclusions = @($exclusions | Where-Object { if ($_) { $excluded = [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\'); $root -like $excluded -or $root -like ($excluded + '\*') } })
+  $data.underDefenderExclusion = $data.defenderExclusions.Count -gt 0
+} catch { $data.exclusionError = $_.Exception.Message }
+$data | ConvertTo-Json -Depth 5 -Compress
+`;
+    const args = ["-NoProfile", "-NonInteractive", "-Command", command];
+    const result = spawnSync("powershell.exe", args, {
+      encoding: "utf8",
+      timeout: 10_000,
+      windowsHide: true,
+      env: { ...process.env, FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT: root },
+    });
+    report.systemExitCode = result.status;
+    report.systemStderr = result.stderr;
+    report.host =
+      result.error?.message ?? (JSON.parse(result.stdout) as unknown);
+  } catch (error) {
+    report.diagnosticError = String(error);
+  }
+  report.elapsedMs = Date.now() - start;
+  console.error(JSON.stringify(report));
+  throw original;
+}
 afterEach(() => {
-  for (const root of roots.splice(0))
-    rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      if (
+        process.platform === "win32" &&
+        (error as NodeJS.ErrnoException).code === "EBUSY"
+      )
+        diagnoseCleanup(root, testStartedAt, error);
+      throw error;
+    }
+  }
 });
 type Call = {
   command: string;
