@@ -76,7 +76,11 @@ type CallBudget = ItemRef & {
   readonly left: number;
   readonly stopBy: string;
 };
-type WorkOperations = TrackerOperations<"issue"> & {
+type WorkOperations = Omit<TrackerOperations<"issue">, "issue.update"> & {
+  readonly "issue.update": readonly [
+    UpdateItemInput & { readonly kind?: string },
+    TrackerItem,
+  ];
   readonly "issue.checkpoint": readonly [
     ItemRef & Checkpoint,
     ItemRef & { readonly commentId: string },
@@ -469,11 +473,31 @@ function list(
 /** `id` and `dependsOn` are stored ids; `given` is the id as the caller wrote it. */
 function update(
   state: LeaseStateClient,
-  input: UpdateItemInput,
+  input: UpdateItemInput & { readonly kind?: string },
   ids: Ids,
   given: string,
 ): TrackerItem {
   const value = stored(get(state, input.id, given));
+  checkKind(input.kind);
+  if (
+    value.kind === "epic" &&
+    value.status === "open" &&
+    input.kind !== undefined &&
+    input.kind !== "epic"
+  ) {
+    const children = state
+      .list("issue:")
+      .filter(
+        (record) =>
+          stored(record).parent === input.id &&
+          stored(record).status === "open",
+      ).length;
+    if (children)
+      fail(
+        "INPUT_CONFLICT",
+        `Cannot demote open epic ${given} with ${children} open children; close or reparent them first`,
+      );
+  }
   const readSet = input.dependsOn
     ? [...validateDependencies(state, input.id, input.dependsOn, ids)]
     : [];

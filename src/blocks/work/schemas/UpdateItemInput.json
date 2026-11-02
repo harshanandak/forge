@@ -1,4 +1,29 @@
 {
   "type": "object",
-  "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/UpdateItemInput"
+  "required": ["id", "expectRevision"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "expectRevision": { "type": "integer", "minimum": 1 },
+    "parent": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/UpdateItemInput/properties/parent"
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "body": { "type": "string", "maxLength": 65536 },
+    "kind": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/common.json#/$defs/Segment"
+    },
+    "labels": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+    },
+    "dependsOn": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+    }
+  },
+  "additionalProperties": false
 }

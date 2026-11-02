@@ -16,7 +16,7 @@
     },
     "issue.update": {
       "title": "Update",
-      "summary": "Update at show revision with held lease. parent: existing id/null to clear; no cycles.",
+      "summary": "Update at show revision with held lease. kind: task/bug/feature/epic; open epics with open children cannot be demoted. parent: existing id/null to clear; no cycles.",
       "examples": [
         {
           "command": "POSIX: forge issue update demo-1 --title \"Updated task\" --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
