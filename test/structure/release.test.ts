@@ -32,6 +32,15 @@ test("release approvals, dependency chain and OIDC cannot be bypassed", () => {
   expect(w.jobs.publish?.needs).toEqual(["verify"]);
   expect(w.jobs.readback?.needs).toEqual(["verify", "publish"]);
   expect(w.jobs.promote?.needs).toEqual(["verify", "readback"]);
+  const publish = w.jobs.publish?.steps.find((step) =>
+    step.run?.includes("npm publish"),
+  );
+  expect(publish?.env?.EXPECTED).toBe("${{ needs.verify.outputs.sha256 }}");
+  const run = publish?.run ?? "";
+  expect(run.indexOf("process.env.EXPECTED")).toBeGreaterThan(-1);
+  expect(run.indexOf("process.env.EXPECTED")).toBeLessThan(
+    run.indexOf("npm publish"),
+  );
 }, 1000);
 test("release actions are immutable and no npm token is configured", () => {
   const w = workflow();

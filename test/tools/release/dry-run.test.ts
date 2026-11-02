@@ -13,13 +13,16 @@ function fixture(mismatch = false) {
     hash("sha256", mismatch ? "other" : "tested bytes"),
   );
   const calls: string[][] = [];
-  const run = (args: string[]) => {
+  const stdin: Uint8Array[] = [];
+  const run = (args: string[], input?: Uint8Array) => {
     calls.push(args);
+    if (input) stdin.push(input);
     return JSON.stringify({ name: "forge-workflow", version: "0.1.0-dev.0" });
   };
   return {
     tarball,
     calls,
+    stdin,
     run,
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
@@ -35,6 +38,7 @@ test("matching sidecar dry-runs only the verified tarball", async () => {
         fetch: () => Promise.resolve(new Response(null, { status: 404 })),
       }),
     ).toBe("0.1.0-dev.0");
+    expect(Buffer.concat(f.stdin).toString()).toBe("tested bytes");
     expect(f.calls).toEqual([
       ["tar", "-xzOf", "-", "package/package.json"],
       [

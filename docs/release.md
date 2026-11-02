@@ -9,7 +9,7 @@ Owner setup:
 Public repo/package OIDC generates provenance; we request it, require registry attestations and audit signatures.
 
 Run: merge the intended version, await successful main CI, dispatch Release on main with its numeric `run_id` at that same commit. Review verify's version/hash, approve publish to `next`, inspect all three readbacks, then approve `latest`.
-Failures before promotion leave `latest` unchanged. Versions are immutable: redispatch rejects existing versions; investigate before recovery.
+Failures before promotion leave `latest` unchanged. Versions are immutable: redispatch rejects existing versions. If readback fails after publish, fix the cause, then use "Re-run failed jobs" on the same run: it reruns readback and promote with the earlier verify and publish outputs, and promote still waits for `release` approval. "Re-run all jobs" and a new dispatch both fail in verify because the version exists.
 Locally build, `npm pack --ignore-scripts`, create the `.sha256` sidecar, then `bun run release:dry-run <tarball>`. Offline checks skip explicitly locally; CI fails closed.
 
 Manual IDs cost a lookup but bind tested bytes; tag triggers are out of scope. Second approval costs time but separates promotion. Windows/macOS coverage warrants runner capacity (public minutes are free). No job rebuilds/repacks; this lane performs no owner setup or publication.
