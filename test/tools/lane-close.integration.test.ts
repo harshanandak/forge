@@ -366,7 +366,7 @@ type State = {
   observeLock?: boolean;
   observeHead?: boolean;
 };
-function fixture(ignored: string[] = []) {
+function fixture(ignored: string[] = [], trace = false) {
   const root = realpathSync.native(
     mkdtempSync(join(tmpdir(), "forge-lane-close-")),
   );
@@ -401,6 +401,30 @@ function fixture(ignored: string[] = []) {
   const realGit = Bun.which("git");
   if (!realGit) throw new Error("git executable not found");
   env[pathKey] = bin + delimiter + (env[pathKey] ?? "");
+  const gitConfig = [
+    ["maintenance.auto", "false"],
+    ["gc.auto", "0"],
+    ["gc.autoDetach", "false"],
+    ["core.fsmonitor", "false"],
+  ] as const;
+  for (const [key, value] of gitConfig) {
+    const index = Number(env.GIT_CONFIG_COUNT ?? "0");
+    env[`GIT_CONFIG_KEY_${index}`] = key;
+    env[`GIT_CONFIG_VALUE_${index}`] = value;
+    env.GIT_CONFIG_COUNT = String(index + 1);
+  }
+  // Local pushes strip GIT_CONFIG_COUNT before starting receive-pack.
+  env.GIT_CONFIG_GLOBAL = join(root, "gitconfig");
+  writeFileSync(
+    env.GIT_CONFIG_GLOBAL,
+    gitConfig
+      .map(([key, value]) => {
+        const [section, name] = key.split(".");
+        return `[${section}]\n${name}=${value}\n`;
+      })
+      .join(""),
+  );
+  if (trace) env.GIT_TRACE2_EVENT = join(root, "git-trace.jsonl");
   env.FORGE_DEVICE_ROOT = join(root, "device");
   env.FORGE_GH_USER = "fixture-owner";
   env.LANE_CLOSE_FIXTURE = root;
@@ -744,6 +768,28 @@ function updateBranch(f: ReturnType<typeof fixture>) {
   });
   return head;
 }
+
+test("lane close fixture never starts automatic maintenance or gc", () => {
+  const f = fixture([], true);
+  expect(f.close().code).toBe(0);
+  f.cleaned();
+  const children = readFileSync(join(f.root, "git-trace.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { event: string; argv?: string[] })
+    .filter((event) => event.event === "child_start");
+  expect(children.length).toBeGreaterThan(0);
+  expect(
+    children.filter(
+      ({ argv }) => argv?.includes("maintenance") && argv.includes("run"),
+    ),
+  ).toHaveLength(0);
+  expect(
+    children.filter(
+      ({ argv }) => argv?.includes("gc") && argv.includes("--auto"),
+    ),
+  ).toHaveLength(0);
+});
 
 test("update-branch head closes in one call after the remote branch is deleted", () => {
   const f = fixture();
