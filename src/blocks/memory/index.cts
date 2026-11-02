@@ -1646,18 +1646,29 @@ module.exports = {
     deadline?: number;
   }): Promise<object> {
     if ("scope" in input) {
+      const setupStarted = Date.now();
       const limit = input.limit ?? 25;
       const target = await writeTarget(services, "project");
       const source = deviceSource(services.state);
+      const pages =
+        deadline === undefined
+          ? 0
+          : Math.floor(
+              readCounter(source.state, NOTE_COUNTER).last / LIST_LIMIT,
+            ) + 1;
+      const setupMs = Date.now() - setupStarted;
+      let slowestPageMs = 0;
       const scope = input.scope;
       const scan = function* () {
         let after = 0;
         for (;;) {
+          const pageStarted = Date.now();
           const records = notePage(source, {
             after,
             limit: LIST_LIMIT,
             descending: false,
           });
+          slowestPageMs = Math.max(slowestPageMs, Date.now() - pageStarted);
           for (const note of records) {
             if (note.value.deleted !== true && note.value.scope === scope)
               yield note;
@@ -1672,11 +1683,13 @@ module.exports = {
       let slowestMoveMs = 0;
       for (const note of scan()) {
         const started = Date.now();
-        // Make progress first, then reserve time for the remaining scan and response.
+        // The final count revisits every page, including tombstones and other scopes.
+        // Setup also estimates reopening the target inside the first move.
         if (
-          moved.length > 0 &&
+          (moved.length > 0 || setupMs > 0 || slowestPageMs > 0) &&
           deadline !== undefined &&
-          deadline - started <= slowestMoveMs + 1_000
+          deadline - started <=
+            Math.max(slowestMoveMs, setupMs) + slowestPageMs * pages + 1_000
         )
           break;
         try {

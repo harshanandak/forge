@@ -255,6 +255,84 @@ test("scope deadline lets a started note finish and verify before returning", as
   expect(device.get("note/000000002")?.revision).toBe(2);
 }, 30_000);
 
+for (const scenario of [
+  { name: "setup", setupMs: 7_000, moveMs: 2_000, verifyMs: 0, scanMs: 500 },
+  {
+    name: "per-note move",
+    setupMs: 0,
+    moveMs: 4_000,
+    verifyMs: 0,
+    scanMs: 2_000,
+  },
+  { name: "verify", setupMs: 0, moveMs: 0, verifyMs: 4_000, scanMs: 2_000 },
+  {
+    name: "post-loop scan",
+    setupMs: 0,
+    moveMs: 1_000,
+    verifyMs: 0,
+    scanMs: 3_000,
+  },
+]) {
+  test(`scope deadline reserves measured work with slow ${scenario.name}`, async () => {
+    let now = 1_000;
+    const { move, services, device, project } = await setup(100, {
+      Date: class extends Date {
+        static override now() {
+          return now;
+        }
+      },
+    });
+    const times = { setup: 0, scan: 0, move: 0, verify: 0 };
+    const open = services.levels.project.bind(services.levels);
+    services.levels.project = (...args) => {
+      times.setup += scenario.setupMs;
+      now += scenario.setupMs;
+      return open(...args);
+    };
+    const page = device.listRange.bind(device);
+    device.listRange = (...args) => {
+      times.scan += scenario.scanMs;
+      now += scenario.scanMs;
+      return page(...args);
+    };
+    const put = device.put.bind(device);
+    device.put = (...args) => {
+      times.move += scenario.moveMs;
+      now += scenario.moveMs;
+      return put(...args);
+    };
+    const get = project.get.bind(project);
+    project.get = (key) => {
+      const record = get(key);
+      if (key.startsWith("note/") && record) {
+        times.verify += scenario.verifyMs;
+        now += scenario.verifyMs;
+      }
+      return record;
+    };
+    const deadline = 16_001;
+    const result = await move({ ...input, limit: 100 }, deadline);
+    console.log(
+      JSON.stringify({
+        scenario: scenario.name,
+        ...times,
+        elapsed: now - 1_000,
+        budget: 15_001,
+        moved: result.moved.length,
+      }),
+    );
+    expect(now).toBeLessThan(deadline);
+    expect(result.complete).toBe(false);
+    expect(result.remaining).toBe(100 - result.moved.length);
+    expect(result.stopped).toBeUndefined();
+    expect(result.next).toBe(
+      "forge memory move --scope alpha --to project --limit 100",
+    );
+    if (scenario.name !== "setup")
+      expect(result.moved.length).toBeGreaterThan(0);
+  }, 30_000);
+}
+
 test("interrupted scope batch resumes the committed copy without duplication", async () => {
   const { move, device, project } = await setup();
   const put = device.put.bind(device);
