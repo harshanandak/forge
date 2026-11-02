@@ -184,24 +184,45 @@ test("scope deadline keeps the slowest note estimate and resumes the remaining n
 }, 30_000);
 
 for (const budget of [0, 999, 1_000]) {
-  test(`scope deadline starts no note with ${budget} ms remaining`, async () => {
-    const { move, device, project } = await setup(2, {
+  test(`scope deadline makes progress on every call with ${budget} ms remaining`, async () => {
+    const { move, call, device, project } = await setup(2, {
       Date: class extends Date {
         static override now() {
           return 1_000;
         }
       },
     });
-    const before = device.counts.puttedRecords + project.counts.puttedRecords;
-    expect(await move(input, 1_000 + budget)).toMatchObject({
-      moved: [],
-      remaining: 2,
+    const first = await move(input, 1_000 + budget);
+    expect(first).toMatchObject({
+      moved: [{ id: "device/note-1" }],
+      remaining: 1,
       complete: false,
       next: "forge memory move --scope alpha --to project --limit 25",
     });
-    expect(device.counts.puttedRecords + project.counts.puttedRecords).toBe(
-      before,
-    );
+    expect(first.stopped).toBeUndefined();
+    expect(project.list("note/")).toHaveLength(1);
+    expect(device.get("note/000000002")?.revision).toBe(2);
+    const second = await move(input, 1_000 + budget);
+    expect(second).toMatchObject({
+      moved: [{ id: "device/note-2" }],
+      remaining: 0,
+      complete: true,
+    });
+    expect(second.next).toBeUndefined();
+    expect(second.stopped).toBeUndefined();
+    expect(project.list("note/")).toHaveLength(2);
+    for (const { id, to } of [...first.moved, ...second.moved]) {
+      expect(await call("memory.show", { id })).toMatchObject({
+        status: "found",
+        note: { id: to, movedFrom: id },
+      });
+      expect(
+        device.get(`note/${id.split("-").at(-1)!.padStart(9, "0")}`)?.value,
+      ).toMatchObject({
+        deleted: true,
+        movedTo: to,
+      });
+    }
   }, 30_000);
 }
 

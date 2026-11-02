@@ -225,4 +225,4 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
     await assembly?.close();
     rmSync(root, { recursive: true, force: true });
   }
-}, 300_000);
+}, 60_000);

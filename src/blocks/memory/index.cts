@@ -1672,8 +1672,9 @@ module.exports = {
       let slowestMoveMs = 0;
       for (const note of scan()) {
         const started = Date.now();
-        // Leave time for the remaining-count scan and response after a complete note.
+        // Make progress first, then reserve time for the remaining scan and response.
         if (
+          moved.length > 0 &&
           deadline !== undefined &&
           deadline - started <= slowestMoveMs + 1_000
         )
