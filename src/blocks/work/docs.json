@@ -12,11 +12,11 @@
     },
     "issue.list": {
       "title": "Issue list",
-      "summary": "List issues. ready: open, deps closed, no live lease. labels: match all. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches."
+      "summary": "List issues. ready: open, deps closed, no live lease. labels: match all. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches. parent: id or none; kind; label: all-of. Filters combine with AND."
     },
     "issue.update": {
       "title": "Issue update",
-      "summary": "Update an issue while holding its lease at the revision read from show.",
+      "summary": "Update an issue while holding its lease at the revision read from show. Set parent to an existing id or clear with null; cycles are refused.",
       "examples": [
         {
           "command": "POSIX: forge issue update demo-1 --title \"Updated task\" --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
@@ -130,9 +130,13 @@
       "summary": "Read issue links.",
       "examples": [{ "input": { "id": "demo-1" } }]
     },
+    "issue.tree": {
+      "title": "Issue tree",
+      "summary": "Open epics or a named root, open and closed child counts, open descendants through depth 3, and parent anomalies. limit bounds all emitted nodes and ids; truncated includes deeper children."
+    },
     "issue.lint": {
       "title": "Issue lint",
-      "summary": "Report invalid kinds, missing references and dependency cycles."
+      "summary": "Report invalid kinds, missing references and dependency cycles. Open issues must have exactly one label per configured labels.required group and no closed parent; default groups are empty."
     }
   }
 }
