@@ -8,15 +8,18 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { runWithin } from "./bounded.ts";
 import { environmentWithoutBun, resolveBun } from "./environment.ts";
+import { packInput } from "./input.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 // One command that hangs fails with its name instead of stalling the job.
@@ -59,16 +62,21 @@ function ok(result: SpawnSyncReturns<string>): string {
 
 async function main(): Promise<void> {
   if (process.versions.bun !== undefined) fail("run this with Node, not Bun");
+  let tarball = packInput(process.env.FORGE_PACK_INPUT);
+  const bun = resolveBun();
+  if (tarball === undefined) ok(run(bun, ["run", "build"], root, process.env));
   const expected = (
     JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
       version?: unknown;
     }
   ).version;
   if (typeof expected !== "string") fail("package.json has no version");
-  if (!existsSync(join(root, "dist", "bin", "forge.js")))
+  if (
+    tarball === undefined &&
+    !existsSync(join(root, "dist", "bin", "forge.js"))
+  )
     fail("dist/ is missing; run `bun run build` first");
 
-  const bun = resolveBun();
   const work = mkdtempSync(join(tmpdir(), "forge-pack-smoke-"));
   try {
     const env = environmentWithoutBun(join(work, "bin"), process.execPath);
@@ -96,17 +104,38 @@ async function main(): Promise<void> {
     mkdirSync(packDir);
     mkdirSync(consumer);
 
-    const packed: unknown = JSON.parse(
-      npm(
-        ["pack", "--json", "--ignore-scripts", "--pack-destination", packDir],
-        root,
-      ),
+    if (tarball === undefined) {
+      const packed: unknown = JSON.parse(
+        npm(
+          ["pack", "--json", "--ignore-scripts", "--pack-destination", packDir],
+          root,
+        ),
+      );
+      const entry = (Array.isArray(packed) ? packed[0] : undefined) as
+        { filename?: string; files?: { path: string }[] } | undefined;
+      if (entry?.filename === undefined || entry.files === undefined)
+        fail("npm pack gave no tarball");
+      tarball = join(packDir, entry.filename);
+    }
+    if (process.env.FORGE_PACK_TARBALL !== undefined)
+      copyFileSync(tarball, process.env.FORGE_PACK_TARBALL);
+    writeFileSync(
+      join(consumer, "package.json"),
+      JSON.stringify({ name: "consumer", version: "0.0.0", private: true }),
     );
-    const entry = (Array.isArray(packed) ? packed[0] : undefined) as
-      { filename?: string; files?: { path: string }[] } | undefined;
-    if (entry?.filename === undefined || entry.files === undefined)
-      fail("npm pack gave no tarball");
-    const files = entry.files.map((file) => file.path);
+    npm(
+      ["install", tarball, "--no-audit", "--no-fund", "--prefer-offline"],
+      consumer,
+    );
+    console.log("- installed the tarball with npm");
+
+    const installedDir = join(consumer, "node_modules", "forge-workflow");
+    const files = readdirSync(installedDir, {
+      recursive: true,
+      encoding: "utf8",
+    })
+      .filter((file) => !statSync(join(installedDir, file)).isDirectory())
+      .map((file) => file.replaceAll("\\", "/"));
     for (const needed of [
       "package.json",
       "LICENSE",
@@ -134,31 +163,7 @@ async function main(): Promise<void> {
     );
     if (stray.length > 0)
       fail(`tarball holds files outside the package: ${stray.join(", ")}`);
-    console.log(`- packed ${entry.filename} (${files.length} files)`);
-    // Let CI check this exact tarball after the smoke cleans up its temporary install.
-    if (process.env.FORGE_PACK_TARBALL !== undefined)
-      copyFileSync(
-        join(packDir, entry.filename),
-        process.env.FORGE_PACK_TARBALL,
-      );
-
-    writeFileSync(
-      join(consumer, "package.json"),
-      JSON.stringify({ name: "consumer", version: "0.0.0", private: true }),
-    );
-    npm(
-      [
-        "install",
-        join(packDir, entry.filename),
-        "--no-audit",
-        "--no-fund",
-        "--prefer-offline",
-      ],
-      consumer,
-    );
-    console.log("- installed the tarball with npm");
-
-    const installedDir = join(consumer, "node_modules", "forge-workflow");
+    console.log(`- checked ${tarball} (${files.length} files)`);
     const binTarget = (
       JSON.parse(readFileSync(join(installedDir, "package.json"), "utf8")) as {
         bin?: { forge?: unknown };
