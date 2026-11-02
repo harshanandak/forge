@@ -1,0 +1,157 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful main CI run containing packed-package (at this dispatch commit)
+        required: true
+        type: string
+permissions: { contents: read, actions: read }
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+defaults: { run: { shell: bash } }
+env:
+  TARBALL: ${{ github.workspace }}/packed/forge-workflow.tgz
+  NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha256: ${{ steps.check.outputs.sha256 }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require successful main CI at the dispatch commit
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          curl --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" |
+            jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" \
+              '.repository.full_name == $repo and .head_repository.full_name == $repo and .path == ".github/workflows/ci.yml" and .event == "push" and .head_branch == "main" and .head_sha == $sha and .status == "completed" and .conclusion == "success"'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          {
+            name: packed-package,
+            path: packed,
+            run-id: "${{ inputs.run_id }}",
+            github-token: "${{ github.token }}",
+          }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "24" }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with: { bun-version: "1.4.4" }
+      - run: npm install --global npm@11.21.0
+      - id: check
+        run: bun run release:dry-run "$TARBALL"
+  publish:
+    needs: [verify]
+    environment: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: { id-token: write, contents: read, actions: read }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "24" }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with: { bun-version: "1.4.4" }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          {
+            name: packed-package,
+            path: packed,
+            run-id: "${{ inputs.run_id }}",
+            github-token: "${{ github.token }}",
+          }
+      - run: npm install --global npm@11.21.0
+      - name: Verify approved bytes and publish to next
+        env:
+          EXPECTED: ${{ needs.verify.outputs.sha256 }}
+        run: |
+          bun -e 'import {packInput} from "./tools/pack-smoke/input.ts"; import {hash} from "node:crypto"; import {readFileSync} from "node:fs"; if(hash("sha256",readFileSync(packInput(process.env.TARBALL)))!==process.env.EXPECTED) throw Error("approved sha256 mismatch")'
+          npm publish "$TARBALL" --provenance --tag next --access public --ignore-scripts
+  readback:
+    needs: [verify, publish]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "24" }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with: { bun-version: "1.4.4" }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          {
+            name: packed-package,
+            path: packed,
+            run-id: "${{ inputs.run_id }}",
+            github-token: "${{ github.token }}",
+          }
+      - run: npm install --global npm@11.21.0
+      - name: Bounded registry readback of integrity, next and provenance
+        run: |
+          node --input-type=module <<'JS'
+          import {hash} from 'node:crypto';
+          import {readFileSync} from 'node:fs';
+          const start = Date.now(), version = process.env.VERSION;
+          const integrity = 'sha512-' + hash('sha512', readFileSync(process.env.TARBALL), 'base64');
+          for (let attempt = 0; attempt < 12; attempt++) {
+            const r = await fetch('https://registry.npmjs.org/forge-workflow', {signal: AbortSignal.timeout(10000)});
+            if (!r.ok && r.status !== 404) throw Error(`registry HTTP ${r.status}`);
+            const p = r.ok ? await r.json() : {}, v = p.versions?.[version];
+            console.log(`registry readback: ${Date.now()-start}ms, attempt ${attempt+1}/12`);
+            if (v && p['dist-tags']?.next === version) {
+              if (v.dist.integrity !== integrity) throw Error('registry integrity mismatch');
+              if (!v.dist.attestations?.provenance?.predicateType) throw Error('registry provenance missing');
+              break;
+            }
+            if (attempt === 11) throw Error(`registry version/next unavailable after ${Date.now()-start}ms`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+          JS
+      - name: Cold npm and Bun registry installs and signature verification
+        env:
+          npm_config_cache: ${{ runner.temp }}/release-npm-cache
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/release-bun-cache
+          FORGE_DEVICE_ROOT: ${{ runner.temp }}/release-forge
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-smoke" "$RUNNER_TEMP/bun-smoke"
+          cd "$RUNNER_TEMP/npm-smoke"
+          npx --yes "forge-workflow@$VERSION" --version
+          npx --yes "forge-workflow@$VERSION" help
+          npm init -y
+          npm install --ignore-scripts "forge-workflow@$VERSION"
+          npm audit signatures
+          cd "$RUNNER_TEMP/bun-smoke"
+          bun init -y
+          bun add --ignore-scripts "forge-workflow@$VERSION"
+          bun run forge --version
+          bun run forge help
+  promote:
+    needs: [verify, readback]
+    environment: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: { id-token: write, contents: read }
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "24" }
+      - run: npm install --global npm@11.21.0
+      - name: Promote only after readback and second owner approval
+        run: |
+          npm dist-tag add "forge-workflow@$VERSION" latest
+          test "$(npm view forge-workflow dist-tags.latest)" = "$VERSION"
