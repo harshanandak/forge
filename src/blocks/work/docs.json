@@ -2,21 +2,21 @@
   "operations": {
     "issue.create": {
       "title": "Issue create",
-      "summary": "Create an issue with a title and kind.",
+      "summary": "Create with title and kind.",
       "examples": [{ "input": { "title": "First task", "kind": "task" } }]
     },
     "issue.show": {
       "title": "Issue show",
-      "summary": "Read the issue and only its live lease.",
+      "summary": "Read issue and live lease only.",
       "examples": [{ "input": { "id": "demo-1" } }]
     },
     "issue.list": {
-      "title": "Issue list",
-      "summary": "List issues. ready: open, deps closed, no live lease. labels: match all. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches."
+      "title": "List",
+      "summary": "List: ready=open, deps closed, no live lease; labels/label=all-of; parent=id/none; kind. Filters AND. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches."
     },
     "issue.update": {
-      "title": "Issue update",
-      "summary": "Update an issue while holding its lease at the revision read from show.",
+      "title": "Update",
+      "summary": "Update at show revision with held lease. parent: existing id/null to clear; no cycles.",
       "examples": [
         {
           "command": "POSIX: forge issue update demo-1 --title \"Updated task\" --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
@@ -27,47 +27,47 @@
       ]
     },
     "issue.comment": {
-      "title": "Issue comment",
-      "summary": "Append a plain comment. Read it back with issue.comments.",
+      "title": "Comment",
+      "summary": "Append plain comment; read via issue.comments.",
       "examples": [
         { "input": { "id": "demo-1", "body": "Implementation started." } }
       ]
     },
     "issue.claim": {
-      "title": "Issue claim",
-      "summary": "Acquire an open issue lease for this session. ttlSeconds overrides claimTtlSeconds (default 3600 seconds).",
+      "title": "Claim",
+      "summary": "Lease an open issue for this session. ttlSeconds overrides claimTtlSeconds (default 3600s).",
       "examples": [{ "input": { "id": "demo-1", "ttlSeconds": 7200 } }]
     },
     "issue.renew": {
-      "title": "Issue renew",
-      "summary": "Renew a live lease at its current generation; reacquire expired leases. ttlSeconds overrides claimTtlSeconds (default 3600 seconds).",
+      "title": "Renew",
+      "summary": "Renew live generation/reacquire expired lease. ttlSeconds overrides claimTtlSeconds (default 3600s).",
       "examples": [{ "input": { "id": "demo-1", "ttlSeconds": 7200 } }]
     },
     "issue.release": {
-      "title": "Issue release",
-      "summary": "Release the issue lease held by this session.",
+      "title": "Release",
+      "summary": "Release this session's lease.",
       "examples": [{ "input": { "id": "demo-1" } }]
     },
     "issue.close": {
-      "title": "Issue close",
-      "summary": "Close holding the lease: verified PASS receipt bound to delivered PR or written withoutReceipt reason.",
+      "title": "Close",
+      "summary": "Close with held lease and verified PASS receipt bound to delivered PR, or written withoutReceipt reason.",
       "examples": [{ "input": { "id": "demo-1", "receipt": "<id>" } }]
     },
     "issue.ready": {
-      "title": "Issue ready",
-      "summary": "Open issues with closed dependencies and no live lease (expired or released allowed). Match all supplied labels. With /blocks/work/config/labelOrder, sort by first listed label carried, then stored order."
+      "title": "Ready",
+      "summary": "Open, deps closed, no live lease (expired/released OK). All labels match. /blocks/work/config/labelOrder: first listed label carried, then stored order."
     },
     "issue.blocked": {
-      "title": "Issue blocked",
-      "summary": "Open issues with dependencies that are missing or not closed."
+      "title": "Blocked",
+      "summary": "Open issues with missing/open dependencies."
     },
     "issue.stale": {
-      "title": "Issue stale",
-      "summary": "Open issues with an expired, unreleased lease."
+      "title": "Stale",
+      "summary": "Open issues with expired, unreleased leases."
     },
     "issue.call": {
-      "title": "Issue call",
-      "summary": "Count a call on the root intent; refuse after 60 calls or 30 hours and return its bounded timebox.",
+      "title": "Call",
+      "summary": "Count root intent call; refuse after 60 calls/30 hours; return bounded timebox.",
       "examples": [{ "input": { "id": "demo-1", "role": "build" } }]
     },
     "issue.checkpoint": {
@@ -96,13 +96,13 @@
       "examples": [{ "input": { "id": "demo-1" } }]
     },
     "issue.events": {
-      "title": "Issue events",
+      "title": "Events",
       "summary": "Read accepted issue and lease history.",
       "examples": [{ "input": { "id": "demo-1" } }]
     },
     "issue.dep": {
-      "title": "Issue dep",
-      "summary": "Add or remove a dependency at an expected revision while holding the issue lease.",
+      "title": "Dep",
+      "summary": "Add/remove dependency with held lease and expected revision.",
       "examples": [
         {
           "command": "POSIX: forge issue dep --id demo-1 --target demo-2 --action add --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
@@ -113,8 +113,8 @@
       ]
     },
     "issue.link": {
-      "title": "Issue link",
-      "summary": "Attach a typed external link while holding the issue lease.",
+      "title": "Link",
+      "summary": "Attach typed external link with held lease.",
       "examples": [
         {
           "input": {
@@ -126,13 +126,17 @@
       ]
     },
     "issue.links": {
-      "title": "Issue links",
+      "title": "Links",
       "summary": "Read issue links.",
       "examples": [{ "input": { "id": "demo-1" } }]
     },
+    "issue.tree": {
+      "title": "Tree",
+      "summary": "Open epics or root id; open/closed child counts, open descendants to depth 3, parent anomalies. limit bounds nodes/ids; truncated includes deeper children."
+    },
     "issue.lint": {
-      "title": "Issue lint",
-      "summary": "Report invalid kinds, missing references and dependency cycles."
+      "title": "Lint",
+      "summary": "Check kinds, references, dep cycles, open issues with closed parents (always). labels.required: exactly one match/group; default empty."
     }
   }
 }
