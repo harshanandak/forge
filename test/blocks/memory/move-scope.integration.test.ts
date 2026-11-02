@@ -131,7 +131,6 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
       expect(envelope.ok).toBe(true);
       const result = envelope.result as {
         moved: { id: string; to: string }[];
-        remaining: number;
         complete: boolean;
         next?: string;
         stopped?: unknown;
@@ -139,8 +138,8 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
       expect(result.stopped).toBeUndefined();
       expect(result.moved.length).toBeGreaterThan(0);
       moved.push(...result.moved);
-      expect(result.remaining).toBe(notes.length - moved.length);
-      expect(result.complete).toBe(result.remaining === 0);
+      expect(result).not.toHaveProperty("remaining");
+      expect(result.complete).toBe(moved.length === notes.length);
       complete = result.complete;
       if (complete) {
         expect(result.next).toBeUndefined();

@@ -36,7 +36,6 @@
         "additionalProperties": false
       }
     },
-    "remaining": { "type": "integer", "minimum": 0 },
     "complete": { "type": "boolean" },
     "next": { "type": "string", "maxLength": 1000 },
     "stopped": {
@@ -56,7 +55,7 @@
   "oneOf": [
     { "required": ["id"], "not": { "required": ["moved"] } },
     {
-      "required": ["moved", "remaining", "complete"],
+      "required": ["moved", "complete"],
       "properties": { "status": { "const": "moved" } },
       "not": { "required": ["id"] }
     }

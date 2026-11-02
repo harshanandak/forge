@@ -1650,14 +1650,24 @@ module.exports = {
       const target = await writeTarget(services, "project");
       const source = deviceSource(services.state);
       const scope = input.scope;
+      let complete = false;
+      let slowestPageMs = 0;
       const scan = function* () {
         let after = 0;
         for (;;) {
+          const started = Date.now();
+          // See memory.move docs for the atomic-operation exception and full-scan limit.
+          if (
+            deadline !== undefined &&
+            deadline - started <= slowestPageMs + 1_000
+          )
+            return;
           const records = notePage(source, {
             after,
             limit: LIST_LIMIT,
             descending: false,
           });
+          slowestPageMs = Math.max(slowestPageMs, Date.now() - started);
           for (const note of records) {
             if (note.value.deleted !== true && note.value.scope === scope)
               yield note;
@@ -1666,17 +1676,19 @@ module.exports = {
           if (records.length < LIST_LIMIT || !last) break;
           after = last.number;
         }
+        complete = true;
       };
       const moved: { id: string; to: string }[] = [];
       let stopped: { id: string; code: string } | undefined;
       let slowestMoveMs = 0;
       for (const note of scan()) {
         const started = Date.now();
-        // Make progress first, then reserve time for the remaining scan and response.
         if (
-          moved.length > 0 &&
-          deadline !== undefined &&
-          deadline - started <= slowestMoveMs + 1_000
+          moved.length === limit ||
+          (deadline !== undefined &&
+            (moved.length === 0
+              ? deadline - started < 1_000
+              : deadline - started <= slowestMoveMs + slowestPageMs + 1_000))
         )
           break;
         try {
@@ -1715,7 +1727,6 @@ module.exports = {
           }
           moved.push({ id: note.id, to });
           slowestMoveMs = Math.max(slowestMoveMs, Date.now() - started);
-          if (moved.length === limit) break;
         } catch (error) {
           const code = (error as { error?: { code?: string } } | null)?.error
             ?.code;
@@ -1725,15 +1736,12 @@ module.exports = {
           break;
         }
       }
-      let remaining = 0;
-      for (const _note of scan()) remaining += 1;
       return {
         status: "moved" as const,
         moved,
-        remaining,
-        complete: remaining === 0,
+        complete,
         ...(stopped ? { stopped } : {}),
-        ...(remaining
+        ...(!complete
           ? {
               next: `forge memory move --scope ${input.scope} --to project --limit ${limit}`,
             }
