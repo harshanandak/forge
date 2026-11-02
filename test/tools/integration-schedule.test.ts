@@ -24,7 +24,13 @@ test.each(["test:integration", "test:changed"])(
       expect(groups[1]).toContain("--changed=origin/main");
       expect(serial).toContain("--changed=origin/main");
     }
-    for (const [folder, name] of [
+    const files = [
+      ...(script === "test:integration"
+        ? [
+            ["adapters/l5-state", "private-repair"],
+            ["assembly", "state-acl-cli"],
+          ]
+        : []),
       ["adapters/l5-state", "private-files"],
       ["surface", "help-examples"],
       ["adapters/vcs-git", "vcs-git"],
@@ -32,7 +38,8 @@ test.each(["test:integration", "test:changed"])(
       ["tools", "lane-run"],
       ["tools", "lane"],
       ["tools", "lane-close"],
-    ]) {
+    ];
+    for (const [folder, name] of files) {
       const path = `test/${folder}/${name}.integration.test.ts`;
       expect(serial.split(" ").filter((arg) => arg === path)).toHaveLength(1);
       expect(ignore.match(path), `${path} excluded from bulk`).toBe(true);
@@ -40,7 +47,7 @@ test.each(["test:integration", "test:changed"])(
     const serialPaths = serial
       .split(" ")
       .filter((arg) => arg.endsWith(".test.ts"));
-    expect(serialPaths).toHaveLength(7);
+    expect(serialPaths).toHaveLength(files.length);
     const integrationPaths = [
       ...new Bun.Glob("test/**/*.integration.test.ts").scanSync("."),
     ]
