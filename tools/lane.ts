@@ -34,6 +34,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { interruptLaneRuns, laneHistory, laneRun } from "./lane-run.ts";
 import { laneTier } from "./lane-tier.ts";
 import { laneClose } from "./lane-close.ts";
@@ -242,21 +243,68 @@ function reclaim(lock: string): void {
     if (!object(error) || error.code !== "ENOENT") throw error;
   }
 }
+class LaneRunningError extends Error {}
+function laneLockLive(lock: string): boolean {
+  let owners: string[];
+  try {
+    owners = readdirSync(lock);
+  } catch (error) {
+    if (object(error) && error.code === "ENOENT") return false;
+    throw error;
+  }
+  if (!owners.length) return false;
+  const match =
+    owners.length === 1 &&
+    owners[0]?.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}(?:-([1-9]\d*))?$/);
+  if (!match) throw new Error(`unrecognized lane lock owner: ${lock}`);
+  for (const pid of [match[1], match[2]]) {
+    if (!pid) continue;
+    try {
+      process.kill(Number(pid), 0);
+      return true;
+    } catch (error) {
+      if (!object(error) || error.code !== "ESRCH") throw error;
+    }
+  }
+  return false;
+}
+const signalWaitMs = 5_000;
 function acquireLaneLock(common: string, id: string, owner: string) {
   const lock = join(common, `forge-lane-${id}.lock`),
     staged = `${lock}.${randomUUID()}`,
     prior = join(lock, `${inheritedOwner}-${process.pid}`);
-  if (inheritedOwner && existsSync(prior)) {
+  if (inheritedOwner) {
+    // The spawned child can arrive before the parent publishes its PID.
+    const deadline = Date.now() + signalWaitMs;
+    while (!existsSync(prior)) {
+      if (Date.now() >= deadline)
+        throw new Error("detach lock handoff timed out");
+      Atomics.wait(pause, 0, 0, 20);
+    }
     renameSync(prior, join(lock, owner));
   } else {
     mkdirSync(staged);
     writeFileSync(join(staged, owner), "", { flag: "wx" });
     try {
       reclaim(lock);
+      if (laneLockLive(lock))
+        throw new LaneRunningError(
+          "lane already running; wait for it to finish and retry",
+        );
       renameSync(staged, lock);
-    } catch {
+    } catch (error) {
       release(staged, owner);
-      throw new Error("lane already running; wait for it to finish and retry");
+      if (
+        object(error) &&
+        ["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(
+          String(error.code),
+        ) &&
+        laneLockLive(lock)
+      )
+        throw new LaneRunningError(
+          "lane already running; wait for it to finish and retry",
+        );
+      throw error;
     }
   }
   let current = owner;
@@ -291,6 +339,7 @@ async function laneAuto(
   context: Parameters<typeof laneRun>[1],
 ) {
   let step = "builder";
+  let firstStep = true;
   let unlock: ((pid?: number) => void) | undefined;
   const emit = (value: object) => console.log(JSON.stringify(value));
   const blocked = (reason: string, next: string) => {
@@ -333,6 +382,35 @@ async function laneAuto(
         unlock(child.pid);
         unlock = undefined;
         child.unref();
+        const deadline = Date.now() + signalWaitMs;
+        let decision: unknown;
+        for (;;) {
+          const first = readFileSync(log, "utf8").split("\n");
+          if (first.length > 1) {
+            decision = JSON.parse(first[0]!);
+            break;
+          }
+          if (child.exitCode !== null || Date.now() >= deadline) {
+            child.kill();
+            return blocked(
+              "refused",
+              `detach readiness signal missing; inspect ${log}`,
+            );
+          }
+          await delay(20);
+        }
+        if (
+          !object(decision) ||
+          !["running", "ready"].includes(String(decision.outcome))
+        ) {
+          if (object(decision)) emit(decision);
+          else
+            return blocked(
+              "refused",
+              `invalid detach readiness signal; inspect ${log}`,
+            );
+          return 1;
+        }
         emit({
           outcome: "detached",
           pid: child.pid,
@@ -446,7 +524,12 @@ async function laneAuto(
         {
           ...context,
           lock: () => (pid) => {
-            if (pid) unlock!(pid);
+            if (pid) {
+              unlock!(pid);
+              if (inheritedOwner && firstStep)
+                emit({ outcome: "running", step });
+              firstStep = false;
+            }
           },
           auto: true,
           ...(step === "fixer" && last ? { fixReport: last.reply } : {}),
@@ -458,14 +541,15 @@ async function laneAuto(
       const finished = laneHistory(context.common, id)
         .filter((record) => record.role !== "unknown")
         .at(-1);
-      emit({
-        step,
-        round: step === "tester" ? rounds + 1 : null,
-        verdict:
-          code === 0 && finished ? stepVerdict(finished) : report.verdict,
-        reply: report.reply ?? null,
-        minutes: (Date.now() - start) / 60_000,
-      });
+      if (!inheritedOwner || !firstStep)
+        emit({
+          step,
+          round: step === "tester" ? rounds + 1 : null,
+          verdict:
+            code === 0 && finished ? stepVerdict(finished) : report.verdict,
+          reply: report.reply ?? null,
+          minutes: (Date.now() - start) / 60_000,
+        });
       if (code !== 0)
         return blocked(
           report.exit === 124 ||
@@ -572,21 +656,33 @@ async function main(): Promise<number> {
       console.log(
         JSON.stringify({
           lanes: active(registry, root).map((lane) => {
-            let unlock: (() => void) | undefined;
+            let error: string | undefined;
+            let runs = laneHistory(common, lane.issue);
             try {
-              unlock = lockLane(lane.issue);
-            } catch {
-              /* A live lane stays untouched. */
+              if (
+                runs.some(
+                  (record) =>
+                    record.role !== "unknown" && record.verdict === "started",
+                ) &&
+                !laneLockLive(join(common, `forge-lane-${lane.issue}.lock`))
+              ) {
+                const unlock = lockLane(lane.issue);
+                try {
+                  interruptLaneRuns(common, lane.issue);
+                } finally {
+                  unlock();
+                }
+                runs = laneHistory(common, lane.issue);
+              }
+            } catch (failure) {
+              if (!(failure instanceof LaneRunningError))
+                error =
+                  failure instanceof Error ? failure.message : String(failure);
             }
-            try {
-              if (unlock) interruptLaneRuns(common, lane.issue);
-            } finally {
-              unlock?.();
-            }
-            const runs = laneHistory(common, lane.issue),
-              last = runs.at(-1);
+            const last = runs.at(-1);
             return {
               ...lane,
+              ...(error ? { error } : {}),
               runs,
               state: last ? `${last.role} ${stepVerdict(last)}` : null,
               since: last && last.role !== "unknown" ? last.end : null,

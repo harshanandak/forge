@@ -339,6 +339,7 @@ export function interruptLaneRuns(common: string, id: string) {
         /"type"\s*:\s*"thread.started"[^\n]*?"thread_id"\s*:\s*"([^"]+)"/,
       )?.[1] ??
       log.match(/session id: (\S+)/)?.[1] ??
+      log.match(/"session_id"\s*:\s*"([^"]+)"/)?.[1] ??
       null;
     record.verdict = "interrupted";
     record.end = new Date().toISOString();

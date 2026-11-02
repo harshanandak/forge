@@ -433,6 +433,35 @@ test("claude tester runs end to end with the same verdict, record and list shape
   expect(list.lanes[0]!.runs).toEqual([record]);
 });
 
+test("interrupted Claude tester recovers its stream session before resuming", () => {
+  const f = roleFixture();
+  claudeRole(f, "tester");
+  const record = f.seed("tester", 1, "started"),
+    file = join(record.reply, "..", "run.json");
+  writeFileSync(
+    file,
+    JSON.stringify({ ...record, harness: "claude", end: null, session: null }),
+  );
+  writeFileSync(
+    join(file, "..", "log.txt"),
+    `${JSON.stringify({
+      type: "system",
+      subtype: "init",
+      session_id: "interrupted-claude-session",
+    })}\n`,
+  );
+  const result = f.runRole("tester", ["--round-cap", "1"]);
+  expect(result.code).toBe(0);
+  expect(JSON.parse(readFileSync(file, "utf8")) as unknown).toMatchObject({
+    verdict: "interrupted",
+    session: "interrupted-claude-session",
+  });
+  const args = f.attempts()[0]!.args;
+  expect(
+    args.slice(args.indexOf("--resume"), args.indexOf("--resume") + 2),
+  ).toEqual(["--resume", "interrupted-claude-session"]);
+});
+
 test("claude reviewer has only read tools and no MCP; builder skips permissions", () => {
   const f = fixture();
   f.start();
@@ -2424,3 +2453,126 @@ test("run records retain the old complete JSON when atomic publication is interr
     ) as Record<string, unknown>,
   ).toMatchObject({ verdict: "failed" });
 });
+
+test("detach waits for a deliberately delayed parent lock handoff", async () => {
+  const f = autoFixture("auto-clean");
+  const helper = join(f.root, "delayed-handoff.ts");
+  writeFileSync(
+    helper,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{if(/owner-.*-\\d+$/.test(String(to)))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,750);return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
+  );
+  const result = await f.launch(helper, false, ["auto", "one", "--detach"]);
+  const { pid, log } = result.output as unknown as { pid: number; log: string };
+  try {
+    expect(result.code).toBe(0);
+    await waitForProcess("detached decision", () =>
+      /"outcome":"(ready|blocked)"/.test(readFileSync(log, "utf8")),
+    );
+    expect(readFileSync(log, "utf8")).not.toContain('"outcome":"blocked"');
+    await waitForProcess("detached exit", () => !alive(pid));
+  } finally {
+    if (pid) killFixture(pid, true);
+  }
+});
+
+for (const reason of [
+  "round-cap",
+  "unknown-history",
+  "no-commit",
+  "invalid-role",
+])
+  test(`detach returns the child's ${reason} refusal before reporting success`, () => {
+    const f = autoFixture("auto-clean");
+    if (reason === "round-cap") {
+      change(f, ["docs/guide.md"]);
+      f.seed("tester", 1, "completed", "Verdict: FAIL");
+    } else if (reason === "unknown-history") unknownRun(f, "unclassified");
+    else if (reason === "invalid-role") writeFileSync(f.config, "{}");
+    else f.seed("builder", null);
+    const result = f.auto(["--round-cap", "1", "--detach"]);
+    try {
+      expect(result.code).toBe(1);
+      expect(result.lines[0]).toMatchObject({
+        outcome: "blocked",
+        reason: ["unknown-history", "invalid-role"].includes(reason)
+          ? "refused"
+          : reason,
+      });
+      expect(f.attempts()).toHaveLength(0);
+    } finally {
+      const pid = (result.output as unknown as { pid?: number }).pid;
+      if (pid) killFixture(pid, true);
+    }
+  });
+
+test("list never locks idle history during 25 concurrent detached autos", async () => {
+  const f = autoFixture("auto-clean");
+  expect(f.auto().code).toBe(0);
+  const helper = join(f.root, "slow-list-lock.ts"),
+    marker = join(f.root, "list-lock-attempt");
+  writeFileSync(
+    helper,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const result=native.renameSync(from,to);if(String(to).endsWith('forge-lane-one.lock')){native.writeFileSync(${JSON.stringify(marker)},'locked');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,500);}return result;}}));await import(${JSON.stringify(script)});`,
+  );
+  let refusals = 0;
+  for (let i = 0; i < 25; i++) {
+    const listing = f.launch(helper, false, ["list"]);
+    // The old list implementation holds its lock here; the fixed list finishes.
+    await Promise.race([
+      listing,
+      waitForProcess(
+        "list lock or exit",
+        () => existsSync(marker) || listing.child.exitCode !== null,
+      ),
+    ]);
+    const result = await f.launch(script, false, ["auto", "one", "--detach"]);
+    await listing;
+    if (result.code !== 0) refusals++;
+    else {
+      const { pid } = result.output as unknown as { pid: number };
+      await waitForProcess("auto exit", () => !alive(pid));
+    }
+    rmSync(marker, { force: true });
+  }
+  expect(refusals).toBe(0);
+  expect(existsSync(marker)).toBe(false);
+});
+
+for (const operation of ["reclaim", "rename"])
+  test(`list exposes ${operation} lock failures on the stale lane entry`, () => {
+    const f = roleFixture();
+    const record = f.seed("builder", null, "started");
+    writeFileSync(
+      join(record.reply, "..", "run.json"),
+      JSON.stringify({ ...record, end: null }),
+    );
+    const lock = join(f.main, ".git", "forge-lane-one.lock");
+    mkdirSync(lock);
+    const dead = spawnSync(process.execPath, ["-e", ""], {
+      timeout: 5_000,
+      windowsHide: true,
+    });
+    expect(dead.status).toBe(0);
+    const owner = join(lock, `owner-${dead.pid}-${randomUUID()}`);
+    writeFileSync(owner, "");
+    const helper = join(f.root, "lock-error.ts");
+    writeFileSync(
+      helper,
+      `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,${operation === "reclaim" ? "unlinkSync" : "renameSync"}:(from,...args)=>{if(${operation === "reclaim" ? `String(from)===${JSON.stringify(owner)}` : `String(args[0])===${JSON.stringify(lock)}`})throw Object.assign(new Error('injected ${operation} denied'),{code:'EACCES'});return native.${operation === "reclaim" ? "unlinkSync" : "renameSync"}(from,...args);}}));await import(${JSON.stringify(script)});`,
+    );
+    const result = f.run(["list"], f.caller, helper);
+    expect(result.code).toBe(0);
+    expect(result.lines[0]).toMatchObject({
+      lanes: [{ issue: "one", error: `injected ${operation} denied` }],
+    });
+    expect(
+      JSON.parse(
+        readFileSync(join(record.reply, "..", "run.json"), "utf8"),
+      ) as unknown,
+    ).toMatchObject({ verdict: "started" });
+    expect(
+      readdirSync(join(f.main, ".git")).filter((name) =>
+        name.startsWith("forge-lane-one.lock."),
+      ),
+    ).toEqual([]);
+  });
