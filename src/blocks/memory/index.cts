@@ -1676,7 +1676,7 @@ module.exports = {
           if (records.length < LIST_LIMIT || !last) break;
           after = last.number;
         }
-        complete = true;
+        complete = moved.length === 0;
       };
       const moved: { id: string; to: string }[] = [];
       let stopped: { id: string; code: string } | undefined;

@@ -110,7 +110,7 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
     ];
     const moved: { id: string; to: string }[] = [];
     let complete = false;
-    for (let batch = 1; batch <= notes.length; batch += 1) {
+    for (let batch = 1; batch <= notes.length + 1; batch += 1) {
       const batchStarted = performance.now();
       const run = spawnSync(
         node,
@@ -136,10 +136,11 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
         stopped?: unknown;
       };
       expect(result.stopped).toBeUndefined();
-      expect(result.moved.length).toBeGreaterThan(0);
+      if (moved.length === notes.length) expect(result.moved).toEqual([]);
+      else expect(result.moved.length).toBeGreaterThan(0);
       moved.push(...result.moved);
       expect(result).not.toHaveProperty("remaining");
-      expect(result.complete).toBe(moved.length === notes.length);
+      expect(result.complete).toBe(result.moved.length === 0);
       complete = result.complete;
       if (complete) {
         expect(result.next).toBeUndefined();

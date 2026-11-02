@@ -92,12 +92,18 @@ test("scope move docs and generated skill describe bounded completion within the
     const docs = catalog.find((entry) => entry.op === "memory.move")!.docs;
     expect(docs.description).toContain("single atomic store read or move");
     expect(docs.description).toContain("full scan exceeds the call budget");
+    expect(docs.description).toContain(
+      "complete only when the scan reaches the end and moves 0 notes",
+    );
+    expect(docs.description).toContain("one zero-move confirmation call");
     expect(docs.description).not.toContain("remaining live device notes");
     const skill = renderSkills(catalog).find(
       (file) => file.noun === "memory",
     )!.text;
     expect(skill).toContain("moved.length");
-    expect(skill).toContain("complete");
+    expect(skill).toContain(
+      "complete only when the scan reaches the end and moves 0 notes",
+    );
     expect(Buffer.byteLength(skill)).toBeLessThanOrEqual(SKILL_MAX_BYTES);
     expect(lintSkill(skill, catalog)).toEqual([]);
   } finally {
@@ -122,13 +128,14 @@ test("scope batches move 25, then 5, then zero, preserving every record and old-
     "forge memory move --scope alpha --to project --limit 25",
   );
   const second = await move();
-  expect(second).toMatchObject({ complete: true });
+  expect(second).toMatchObject({ complete: false });
   expect(second.moved).toHaveLength(5);
-  expect(second.next).toBeUndefined();
-  expect(await move()).toMatchObject({
-    moved: [],
-    complete: true,
-  });
+  expect(second.next).toBe(
+    "forge memory move --scope alpha --to project --limit 25",
+  );
+  const confirmation = await move();
+  expect(confirmation).toMatchObject({ moved: [], complete: true });
+  expect(confirmation.next).toBeUndefined();
   for (const { id, to } of [...first.moved, ...second.moved]) {
     const n = Number(id.split("-").at(-1));
     const source = originals.find(
@@ -162,9 +169,12 @@ test("scope scan passes pages of tombstones and other scopes and uses stored sco
   await call("memory.add", { level: "device", scope: "alpha", text: "last" });
   expect(await move({ ...input, limit: 1 })).toMatchObject({
     moved: [{ id: "device/note-206" }],
-    complete: true,
+    complete: false,
+    next: "forge memory move --scope alpha --to project --limit 1",
   });
-  expect(await move()).toMatchObject({ moved: [], complete: true });
+  const confirmation = await move();
+  expect(confirmation).toMatchObject({ moved: [], complete: true });
+  expect(confirmation.next).toBeUndefined();
   expect(
     device
       .list("note/")
@@ -199,8 +209,12 @@ test("scope deadline keeps the slowest note estimate and resumes the remaining n
   expect(device.get("note/000000003")?.revision).toBe(2);
   expect(await move(input, 20_000)).toMatchObject({
     moved: [{ id: "device/note-3" }, { id: "device/note-4" }],
-    complete: true,
+    complete: false,
+    next: "forge memory move --scope alpha --to project --limit 25",
   });
+  const confirmation = await move(input, 20_000);
+  expect(confirmation).toMatchObject({ moved: [], complete: true });
+  expect(confirmation.next).toBeUndefined();
   expect(project.list("note/")).toHaveLength(4);
 }, 30_000);
 
@@ -336,11 +350,79 @@ for (const change of ["re-scope", "restore"]) {
     const third = await move({ ...input, limit: 1 });
     expect(third).toMatchObject({
       moved: [{ id: "device/note-3" }],
-      complete: true,
+      complete: false,
+      next: "forge memory move --scope alpha --to project --limit 1",
     });
-    expect(third.next).toBeUndefined();
+    const confirmation = await move({ ...input, limit: 1 });
+    expect(confirmation).toMatchObject({ moved: [], complete: true });
+    expect(confirmation.next).toBeUndefined();
     expect(project.list("note/")).toHaveLength(3);
     for (const moved of [...first.moved, ...second.moved, ...third.moved])
+      expect(await call("memory.show", { id: moved.id })).toMatchObject({
+        note: { id: moved.to },
+      });
+  }, 30_000);
+}
+
+for (const change of ["re-scope", "restore"]) {
+  test(`scope confirms completion after an older note joins by ${change} with two notes`, async () => {
+    const { move, call, device, project } = await setup(2);
+    if (change === "re-scope")
+      await call("memory.add", {
+        id: "device/note-1",
+        expectRevision: 2,
+        text: "new 1",
+        scope: "beta",
+      });
+    else
+      await call("memory.forget", {
+        id: "device/note-1",
+        approval: { by: "owner", quote: "Forget the fixture" },
+      });
+    const open = device.project.bind(device);
+    let opens = 0;
+    let changed = false;
+    device.project = async (...args) => {
+      if (++opens === 2) {
+        if (change === "re-scope")
+          await call("memory.add", {
+            id: "device/note-1",
+            expectRevision: 3,
+            text: "new 1",
+            scope: "alpha",
+          });
+        else
+          await call("memory.forget", {
+            id: "device/note-1",
+            undo: true,
+            approval: { by: "owner", quote: "Restore the fixture" },
+          });
+        changed = true;
+      }
+      return open(...args);
+    };
+    const first = await move({ ...input, limit: 1 });
+    expect(changed).toBe(true);
+    expect(first).toMatchObject({
+      moved: [{ id: "device/note-2" }],
+      complete: false,
+    });
+    expect(first.next).toBe(
+      "forge memory move --scope alpha --to project --limit 1",
+    );
+    const second = await move({ ...input, limit: 1 });
+    expect(second).toMatchObject({
+      moved: [{ id: "device/note-1" }],
+      complete: false,
+    });
+    expect(second.next).toBe(
+      "forge memory move --scope alpha --to project --limit 1",
+    );
+    const confirmation = await move({ ...input, limit: 1 });
+    expect(confirmation).toMatchObject({ moved: [], complete: true });
+    expect(confirmation.next).toBeUndefined();
+    expect(project.list("note/")).toHaveLength(2);
+    for (const moved of [...first.moved, ...second.moved])
       expect(await call("memory.show", { id: moved.id })).toMatchObject({
         note: { id: moved.to },
       });
@@ -379,8 +461,12 @@ test("scope documents the large-store scan limit and bounds every call", async (
   // Removing the deadline can reach the last note; bounded calls cannot scan this store fully.
   expect(await move()).toMatchObject({
     moved: [{ id: "device/note-802" }],
-    complete: true,
+    complete: false,
+    next: "forge memory move --scope alpha --to project --limit 25",
   });
+  const confirmation = await move();
+  expect(confirmation).toMatchObject({ moved: [], complete: true });
+  expect(confirmation.next).toBeUndefined();
 }, 30_000);
 
 test("scope accepts one atomic page read slower than the available budget", async () => {
@@ -446,7 +532,18 @@ test("interrupted scope batch resumes the committed copy without duplication", a
   const failure: unknown = await move().catch((error: unknown) => error);
   expect(String(failure)).toContain("crash before tombstone");
   expect(project.list("note/")).toHaveLength(1);
-  expect(await move()).toMatchObject({ complete: true });
+  expect(await move()).toMatchObject({
+    complete: false,
+    moved: [
+      { id: "device/note-1" },
+      { id: "device/note-2" },
+      { id: "device/note-3" },
+    ],
+    next: "forge memory move --scope alpha --to project --limit 25",
+  });
+  const confirmation = await move();
+  expect(confirmation).toMatchObject({ moved: [], complete: true });
+  expect(confirmation.next).toBeUndefined();
   expect(project.list("note/")).toHaveLength(3);
 }, 30_000);
 
