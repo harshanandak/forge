@@ -1679,7 +1679,11 @@ module.exports = {
           });
           const to = (result as { to?: string }).to;
           const ref = to === undefined ? undefined : parseRef(to);
-          const destination = ref && target.state.get(noteKey(ref.number));
+          const destination =
+            ref?.level === "project" &&
+            target.prefix === `project/${ref.project}`
+              ? target.state.get(noteKey(ref.number))
+              : undefined;
           const tombstone = source.state.get(note.record.key)?.value as
             NoteValue | undefined;
           const value = destination?.value as NoteValue | undefined;

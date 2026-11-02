@@ -80,7 +80,7 @@ test("scope batches move 25, then 5, then zero, preserving every record and old-
   for (const scope of ["beta", "beta", "beta", "general", "general"])
     await call("memory.add", { level: "device", scope, text: scope });
   const originals = device.list("note/");
-  const first = await move({ ...input, limit: 25 });
+  const first = await move();
   expect(first).toMatchObject({
     status: "moved",
     remaining: 5,
@@ -242,6 +242,45 @@ for (const code of ["REVISION_CONFLICT", "TRANSFER_CONFLICT"]) {
     });
     expect(project.list("note/")).toHaveLength(1);
     expect(device.get("note/000000003")?.revision).toBe(2);
+  }, 30_000);
+}
+
+for (const to of ["project/fedcba9876543210/note-2", "device/note-2"]) {
+  test(`scope verification rejects a concurrent move to ${to}`, async () => {
+    const { move, device, project } = await setup();
+    const key = "note/000000002";
+    const original = device.get(key)!;
+    project.put(key, original.value, { expectRevision: 0 });
+    const later = device.get("note/000000003");
+    const get = device.get.bind(device);
+    let raced = false;
+    device.get = (readKey) => {
+      if (readKey === key && !raced) {
+        raced = true;
+        device.put(
+          key,
+          { ...(original.value as object), deleted: true, movedTo: to },
+          { expectRevision: original.revision },
+        );
+      }
+      return get(readKey);
+    };
+    const projectGet = project.get.bind(project);
+    let wrongDestinationReads = 0;
+    project.get = (readKey) => {
+      if (readKey === key) wrongDestinationReads += 1;
+      return projectGet(readKey);
+    };
+    expect(await move()).toMatchObject({
+      moved: [{ id: "device/note-1" }],
+      stopped: { id: "device/note-2", code: "VERIFY_FAILED" },
+      remaining: 1,
+      complete: false,
+    });
+    expect(raced).toBe(true);
+    expect(wrongDestinationReads).toBe(0);
+    expect(device.get("note/000000003")).toEqual(later);
+    expect(projectGet("note/000000003")).toBeUndefined();
   }, 30_000);
 }
 
