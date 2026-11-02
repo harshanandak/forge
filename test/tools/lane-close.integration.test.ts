@@ -212,7 +212,12 @@ function cleanupReport(root: string, code: string, path?: string) {
 
 async function withFileHolder(
   exposeMarker: boolean,
-  check: (root: string, path: string, pid: number, marker: string) => void,
+  check: (
+    root: string,
+    path: string,
+    pid: number,
+    marker: string,
+  ) => void | Promise<void>,
 ) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "holder-717-")));
   roots.push(root);
@@ -237,9 +242,23 @@ try { [Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); [Console]::In.R
       stdout: "pipe",
       stderr: "pipe",
       windowsHide: true,
-      timeout: 10_000,
     },
   );
+  const running = () => child.exitCode === null && child.signalCode === null;
+  async function release() {
+    try {
+      if (running()) {
+        await child.stdin.write("release\n");
+        await child.stdin.end();
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EPIPE" || running())
+        throw error;
+    } finally {
+      if (running()) child.kill();
+      await child.exited;
+    }
+  }
   try {
     const reader = child.stdout.getReader();
     try {
@@ -248,14 +267,11 @@ try { [Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); [Console]::In.R
     } finally {
       reader.releaseLock();
     }
-    check(root, path, child.pid, marker);
+    await check(root, path, child.pid, marker);
+    expect(child.exitCode).toBeNull();
+    expect(child.signalCode).toBeNull();
   } finally {
-    try {
-      await child.stdin.write("release\n");
-      await child.stdin.end();
-    } finally {
-      await child.exited;
-    }
+    await release();
   }
 }
 
