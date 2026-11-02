@@ -1628,6 +1628,7 @@ module.exports = {
   "memory.move": async function move({
     input,
     services,
+    deadline,
   }: {
     input:
       | {
@@ -1642,6 +1643,7 @@ module.exports = {
           limit?: number;
         };
     services: Services;
+    deadline?: number;
   }): Promise<object> {
     if ("scope" in input) {
       const limit = input.limit ?? 25;
@@ -1667,7 +1669,16 @@ module.exports = {
       };
       const moved: { id: string; to: string }[] = [];
       let stopped: { id: string; code: string } | undefined;
+      let slowestMoveMs = 0;
       for (const note of scan()) {
+        const started = Date.now();
+        // Make progress first, then reserve time for the remaining scan and response.
+        if (
+          moved.length > 0 &&
+          deadline !== undefined &&
+          deadline - started <= slowestMoveMs + 1_000
+        )
+          break;
         try {
           const result = await move({
             input: {
@@ -1679,7 +1690,11 @@ module.exports = {
           });
           const to = (result as { to?: string }).to;
           const ref = to === undefined ? undefined : parseRef(to);
-          const destination = ref && target.state.get(noteKey(ref.number));
+          const destination =
+            ref?.level === "project" &&
+            target.prefix === `project/${ref.project}`
+              ? target.state.get(noteKey(ref.number))
+              : undefined;
           const tombstone = source.state.get(note.record.key)?.value as
             NoteValue | undefined;
           const value = destination?.value as NoteValue | undefined;
@@ -1699,6 +1714,7 @@ module.exports = {
             break;
           }
           moved.push({ id: note.id, to });
+          slowestMoveMs = Math.max(slowestMoveMs, Date.now() - started);
           if (moved.length === limit) break;
         } catch (error) {
           const code = (error as { error?: { code?: string } } | null)?.error

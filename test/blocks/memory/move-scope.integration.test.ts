@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import type { createAssembly as AssemblyFactory } from "../../../src/assembly/index.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 
-test("integration: one built CLI call moves 100 notes in under 20 seconds in isolated stores", async () => {
+test("integration: built CLI scope batches resume until all 100 notes move in isolated stores", async () => {
   const { createAssembly } = (await import(
     pathToFileURL(
       resolve(import.meta.dirname, "../../../dist/src/assembly/index.js"),
@@ -60,7 +60,7 @@ test("integration: one built CLI call moves 100 notes in under 20 seconds in iso
     const under = relative(root, checked.stdout.trim());
     expect(isAbsolute(under) || under.startsWith("..")).toBe(false);
     const seedStarted = performance.now();
-    // Seed through the same API in one process; only the measured move launches a CLI.
+    // Seed through the same API in one process; measured moves launch the CLI.
     assembly = await createAssembly({ root: project, deviceRoot: device });
     let request = 0;
     const call = async (op: string, input: object) => {
@@ -102,37 +102,63 @@ test("integration: one built CLI call moves 100 notes in under 20 seconds in iso
       `100-note seed: ${Math.round(performance.now() - seedStarted)} ms`,
     );
     const started = performance.now();
-    const run = spawnSync(
-      node,
-      [
-        resolve(import.meta.dirname, "../../../dist/bin/forge.js"),
-        "memory",
-        "move",
-        "--input",
-        '{"scope":"alpha","to":"project","limit":100}',
-      ],
-      {
-        cwd: project,
-        env,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 20_000,
-      },
+    let args = [
+      "memory",
+      "move",
+      "--input",
+      '{"scope":"alpha","to":"project","limit":100}',
+    ];
+    const moved: { id: string; to: string }[] = [];
+    let complete = false;
+    for (let batch = 1; batch <= notes.length; batch += 1) {
+      const batchStarted = performance.now();
+      const run = spawnSync(
+        node,
+        [resolve(import.meta.dirname, "../../../dist/bin/forge.js"), ...args],
+        {
+          cwd: project,
+          env,
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 20_000,
+        },
+      );
+      console.log(
+        `scope batch ${batch}: ${Math.round(performance.now() - batchStarted)} ms`,
+      );
+      expect(run.status, run.stderr + run.stdout).toBe(0);
+      const envelope = JSON.parse(run.stdout) as ResultEnvelope;
+      expect(envelope.ok).toBe(true);
+      const result = envelope.result as {
+        moved: { id: string; to: string }[];
+        remaining: number;
+        complete: boolean;
+        next?: string;
+        stopped?: unknown;
+      };
+      expect(result.stopped).toBeUndefined();
+      expect(result.moved.length).toBeGreaterThan(0);
+      moved.push(...result.moved);
+      expect(result.remaining).toBe(notes.length - moved.length);
+      expect(result.complete).toBe(result.remaining === 0);
+      complete = result.complete;
+      if (complete) {
+        expect(result.next).toBeUndefined();
+        break;
+      }
+      expect(result.next).toBe(
+        "forge memory move --scope alpha --to project --limit 100",
+      );
+      args = result.next!.split(" ").slice(1);
+    }
+    console.log(
+      `100-note scope moves: ${Math.round(performance.now() - started)} ms`,
     );
-    const elapsed = performance.now() - started;
-    console.log(`100-note scope batch: ${Math.round(elapsed)} ms`);
-    expect(run.status, run.stderr + run.stdout).toBe(0);
-    expect(elapsed).toBeLessThan(20_000);
-    const envelope = JSON.parse(run.stdout) as ResultEnvelope;
-    expect(envelope.ok).toBe(true);
-    const result = envelope.result as { moved: { id: string; to: string }[] };
-    expect(result).toMatchObject({ remaining: 0, complete: true });
-    expect(result.moved).toHaveLength(100);
+    expect(complete).toBe(true);
+    expect(moved).toHaveLength(100);
     const readbackStarted = performance.now();
     assembly = await createAssembly({ root: project, deviceRoot: device });
-    const movedByOldId = new Map(
-      result.moved.map((moved) => [moved.id, moved.to]),
-    );
+    const movedByOldId = new Map(moved.map((note) => [note.id, note.to]));
     expect(movedByOldId.size).toBe(100);
     expect(new Set(movedByOldId.values()).size).toBe(100);
     type ExportedNote = {

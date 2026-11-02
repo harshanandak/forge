@@ -19,7 +19,7 @@ type Batch = {
   next?: string;
 };
 
-async function setup(count = 3) {
+async function setup(count = 3, globals: Record<string, unknown> = {}) {
   const project = memoryState();
   const device = memoryState(undefined, {
     inProject: true,
@@ -29,7 +29,7 @@ async function setup(count = 3) {
         state: project,
       }),
   });
-  const entry = loadEntry("memory");
+  const entry = loadEntry("memory", undefined, globals);
   const services = { state: device, levels: device };
   const call = (op: string, value: object) =>
     entry[op]!({ input: value, services });
@@ -53,8 +53,12 @@ async function setup(count = 3) {
     entry,
     services,
     call,
-    move: (value: object = input) =>
-      call("memory.move", value) as Promise<Batch>,
+    move: (value: object = input, deadline?: number) =>
+      entry["memory.move"]!({
+        input: value,
+        services,
+        ...(deadline === undefined ? {} : { deadline }),
+      }) as Promise<Batch>,
   };
 }
 
@@ -80,7 +84,7 @@ test("scope batches move 25, then 5, then zero, preserving every record and old-
   for (const scope of ["beta", "beta", "beta", "general", "general"])
     await call("memory.add", { level: "device", scope, text: scope });
   const originals = device.list("note/");
-  const first = await move({ ...input, limit: 25 });
+  const first = await move();
   expect(first).toMatchObject({
     status: "moved",
     remaining: 5,
@@ -143,6 +147,112 @@ test("scope scan passes pages of tombstones and other scopes and uses stored sco
       .list("note/")
       .filter((r) => (r.value as { deleted?: boolean }).deleted !== true),
   ).toHaveLength(205);
+}, 30_000);
+
+test("scope deadline keeps the slowest note estimate and resumes the remaining notes", async () => {
+  let now = 1_000;
+  const { move, device, project } = await setup(4, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  const put = device.put.bind(device);
+  const durations = [3_000, 1_000, 4_000, 1_000];
+  device.put = (...args) => {
+    now += durations.shift()!;
+    return put(...args);
+  };
+  const first = await move(input, 8_500);
+  expect(now).toBe(5_000);
+  expect(first).toMatchObject({
+    moved: [{ id: "device/note-1" }, { id: "device/note-2" }],
+    remaining: 2,
+    complete: false,
+    next: "forge memory move --scope alpha --to project --limit 25",
+  });
+  expect(first.stopped).toBeUndefined();
+  expect(project.list("note/")).toHaveLength(2);
+  expect(device.get("note/000000003")?.revision).toBe(2);
+  expect(await move(input, 20_000)).toMatchObject({
+    moved: [{ id: "device/note-3" }, { id: "device/note-4" }],
+    remaining: 0,
+    complete: true,
+  });
+  expect(project.list("note/")).toHaveLength(4);
+}, 30_000);
+
+for (const budget of [0, 999, 1_000]) {
+  test(`scope deadline makes progress on every call with ${budget} ms remaining`, async () => {
+    const { move, call, device, project } = await setup(2, {
+      Date: class extends Date {
+        static override now() {
+          return 1_000;
+        }
+      },
+    });
+    const first = await move(input, 1_000 + budget);
+    expect(first).toMatchObject({
+      moved: [{ id: "device/note-1" }],
+      remaining: 1,
+      complete: false,
+      next: "forge memory move --scope alpha --to project --limit 25",
+    });
+    expect(first.stopped).toBeUndefined();
+    expect(project.list("note/")).toHaveLength(1);
+    expect(device.get("note/000000002")?.revision).toBe(2);
+    const second = await move(input, 1_000 + budget);
+    expect(second).toMatchObject({
+      moved: [{ id: "device/note-2" }],
+      remaining: 0,
+      complete: true,
+    });
+    expect(second.next).toBeUndefined();
+    expect(second.stopped).toBeUndefined();
+    expect(project.list("note/")).toHaveLength(2);
+    for (const { id, to } of [...first.moved, ...second.moved]) {
+      expect(await call("memory.show", { id })).toMatchObject({
+        status: "found",
+        note: { id: to, movedFrom: id },
+      });
+      expect(
+        device.get(`note/${id.split("-").at(-1)!.padStart(9, "0")}`)?.value,
+      ).toMatchObject({
+        deleted: true,
+        movedTo: to,
+      });
+    }
+  }, 30_000);
+}
+
+test("scope deadline lets a started note finish and verify before returning", async () => {
+  let now = 1_000;
+  const { move, device, project } = await setup(2, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  const put = device.put.bind(device);
+  device.put = (...args) => {
+    now += 2_000;
+    return put(...args);
+  };
+  const first = await move(input, 2_500);
+  expect(first).toMatchObject({
+    moved: [{ id: "device/note-1" }],
+    remaining: 1,
+    complete: false,
+  });
+  expect(first.stopped).toBeUndefined();
+  expect(project.list("note/")).toHaveLength(1);
+  expect(device.get("note/000000001")?.value).toMatchObject({
+    deleted: true,
+    movedTo: first.moved[0]!.to,
+  });
+  expect(device.get("note/000000002")?.revision).toBe(2);
 }, 30_000);
 
 test("interrupted scope batch resumes the committed copy without duplication", async () => {
@@ -242,6 +352,45 @@ for (const code of ["REVISION_CONFLICT", "TRANSFER_CONFLICT"]) {
     });
     expect(project.list("note/")).toHaveLength(1);
     expect(device.get("note/000000003")?.revision).toBe(2);
+  }, 30_000);
+}
+
+for (const to of ["project/fedcba9876543210/note-2", "device/note-2"]) {
+  test(`scope verification rejects a concurrent move to ${to}`, async () => {
+    const { move, device, project } = await setup();
+    const key = "note/000000002";
+    const original = device.get(key)!;
+    project.put(key, original.value, { expectRevision: 0 });
+    const later = device.get("note/000000003");
+    const get = device.get.bind(device);
+    let raced = false;
+    device.get = (readKey) => {
+      if (readKey === key && !raced) {
+        raced = true;
+        device.put(
+          key,
+          { ...(original.value as object), deleted: true, movedTo: to },
+          { expectRevision: original.revision },
+        );
+      }
+      return get(readKey);
+    };
+    const projectGet = project.get.bind(project);
+    let wrongDestinationReads = 0;
+    project.get = (readKey) => {
+      if (readKey === key) wrongDestinationReads += 1;
+      return projectGet(readKey);
+    };
+    expect(await move()).toMatchObject({
+      moved: [{ id: "device/note-1" }],
+      stopped: { id: "device/note-2", code: "VERIFY_FAILED" },
+      remaining: 1,
+      complete: false,
+    });
+    expect(raced).toBe(true);
+    expect(wrongDestinationReads).toBe(0);
+    expect(device.get("note/000000003")).toEqual(later);
+    expect(projectGet("note/000000003")).toBeUndefined();
   }, 30_000);
 }
 
