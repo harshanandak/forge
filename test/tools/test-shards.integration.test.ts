@@ -22,6 +22,8 @@ test("three shards cover every original suite file exactly once, including unkno
     .split(/\r?\n/);
   const serial = [
     "private-files",
+    "private-repair",
+    "state-acl-cli",
     "help-examples",
     "vcs-git",
     "shared-store",

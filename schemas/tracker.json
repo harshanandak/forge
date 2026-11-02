@@ -93,6 +93,14 @@
     "ListItemsInput": {
       "type": "object",
       "properties": {
+        "parent": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "kind": { "$ref": "common.json#/$defs/Segment" },
+        "label": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        },
         "status": { "$ref": "#/$defs/ItemStatus" },
         "ready": {
           "description": "Only open items whose dependencies are closed and that no live lease holds.",
@@ -128,6 +136,9 @@
       "properties": {
         "id": { "$ref": "#/$defs/ItemId" },
         "expectRevision": { "type": "integer", "minimum": 1 },
+        "parent": {
+          "anyOf": [{ "$ref": "#/$defs/ItemId" }, { "type": "null" }]
+        },
         "title": { "type": "string", "minLength": 1, "maxLength": 500 },
         "body": { "type": "string", "maxLength": 65536 },
         "labels": {

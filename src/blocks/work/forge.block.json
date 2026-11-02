@@ -27,7 +27,11 @@
       "interface": "forge.receipts@1",
       "optional": true
     },
-    { "slot": "process", "interface": "forge.process@1", "optional": true },
+    {
+      "slot": "process",
+      "interface": "forge.process@1",
+      "optional": true
+    },
     {
       "slot": "environment",
       "interface": "forge.environment@1",
@@ -271,6 +275,17 @@
       "idempotent": true,
       "callers": ["agent", "human"],
       "stability": "experimental"
+    },
+    "issue.tree": {
+      "input": "schemas/TreeInput.json",
+      "output": "schemas/TreeOutput.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
     }
   },
   "docs": "docs.json"
