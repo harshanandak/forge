@@ -634,11 +634,15 @@ const operations: Operations<WorkOperations> = {
       truncated = true;
       return false;
     };
+    const emitted = new Set<string>();
     const nodes = (rows: readonly StateRecord[], depth: number): TreeNode[] => {
       const result: TreeNode[] = [];
       for (const record of rows) {
+        const id = stored(record).id;
+        if (emitted.has(id)) continue;
         if (!take()) break;
-        const all = children.get(stored(record).id) ?? [];
+        emitted.add(id);
+        const all = children.get(id) ?? [];
         const open = all.filter((row) => stored(row).status === "open");
         if (depth === 3 && open.length) truncated = true;
         result.push({
@@ -650,15 +654,18 @@ const operations: Operations<WorkOperations> = {
       }
       return result;
     };
-    const roots =
+    const epics = records.filter(
+      (record) =>
+        stored(record).kind === "epic" && stored(record).status === "open",
+    );
+    const roots = epics.filter((record) => {
+      const parent = byId.get(stored(record).parent ?? "");
+      return parent === undefined || stored(parent).status !== "open";
+    });
+    const items =
       input.id === undefined
-        ? records.filter(
-            (record) =>
-              stored(record).kind === "epic" &&
-              stored(record).status === "open",
-          )
-        : [get(state, ids.stored(input.id), input.id)];
-    const items = nodes(roots, 0);
+        ? [...nodes(roots, 0), ...nodes(epics, 0)]
+        : nodes([get(state, ids.stored(input.id), input.id)], 0);
     const summary = (rows: readonly StateRecord[]) => ({
       count: rows.length,
       ids: rows

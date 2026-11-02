@@ -171,6 +171,40 @@ test("tree shows counts, parentless, and open children of closed parents", () =>
     call("tree", { id: epic.id }).items[0]!.children.map((i) => i.item.id),
   ).toEqual([one.id]);
 });
+test("default tree emits nested epics once, including beyond closed parents and depth", () => {
+  const { call, epic } = project();
+  const nested = call("create", {
+    title: "nested epic",
+    kind: "epic",
+    parent: epic.id,
+  });
+  const middle = call("create", {
+    title: "closed middle",
+    kind: "task",
+    parent: epic.id,
+  });
+  const detached = call("create", {
+    title: "epic below closed task",
+    kind: "epic",
+    parent: middle.id,
+  });
+  call("update", { id: middle.id, status: "closed", expectRevision: 1 });
+  let parent = nested.id;
+  for (let i = 0; i < 3; i++)
+    parent = call("create", { title: "deep epic", kind: "epic", parent }).id;
+  const tree = call("tree");
+  const flatten = (nodes: Node[]): string[] =>
+    nodes.flatMap((node) => [node.item.id, ...flatten(node.children)]);
+  const emitted = flatten(tree.items);
+  expect(new Set(emitted).size).toBe(emitted.length);
+  for (const id of [epic.id, nested.id, detached.id, parent])
+    expect(emitted.filter((value) => value === id)).toHaveLength(1);
+  expect(tree.items.map((node) => node.item.id)).toEqual([
+    epic.id,
+    detached.id,
+    parent,
+  ]);
+});
 test("tree bounds all emitted nodes and anomaly ids and stops at depth 3", () => {
   const { call, epic } = project();
   let parent = epic.id;

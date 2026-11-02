@@ -83,13 +83,7 @@ function section(candidate: McpCandidate, prefix: string | undefined): string {
 
 function describe(noun: string, agent: readonly McpCandidate[]): string {
   const verbs = agent.map((c) => parseOperationName(c.op)?.verb).join(", ");
-  let text = `Forge ${noun} operations (${verbs}), callable from the CLI or MCP.`;
-  for (const candidate of agent) {
-    const next = `${text} ${candidate.docs.summary}`;
-    if (next.length > SKILL_DESCRIPTION_MAX) break;
-    text = next;
-  }
-  return text.replace(/\s+/g, " ");
+  return `Forge ${noun}: ${verbs}. CLI or MCP.`;
 }
 
 function skill(
