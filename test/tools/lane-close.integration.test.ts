@@ -4,6 +4,7 @@ import {
   beforeEach,
   expect,
   setDefaultTimeout,
+  spyOn,
   test,
 } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -41,7 +42,17 @@ function diagnoseCleanup(
   original: unknown,
 ): never {
   const failures: { path: string; code: string | undefined }[] = [];
-  const report: Record<string, unknown> = { root, start, failures };
+  const fallback = {
+    holders: [],
+    holderUnknown: true,
+    holderReason: "PowerShell diagnostic did not complete",
+  };
+  const report: Record<string, unknown> = {
+    root,
+    start,
+    failures,
+    host: fallback,
+  };
   report.failedAtMs = Date.now() - start;
   try {
     try {
@@ -60,14 +71,66 @@ function diagnoseCleanup(
     }
     const command = String.raw`
 $root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT
-$data = @{}
-try { $data.processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { ($_.CommandLine -and ($_.CommandLine.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.CommandLine -match 'forge-lane-close')) -or ($_.ExecutablePath -and ($_.ExecutablePath.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.ExecutablePath -match 'forge-lane-close')) } | Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath) } catch { $data.processError = $_.Exception.Message }
-try { $data.defender = Get-MpComputerStatus -ErrorAction Stop | Select-Object RealTimeProtectionEnabled } catch { $data.defenderError = $_.Exception.Message }
+$data = @{ holders = @(); holderUnknown = $true; holderReason = 'Restart Manager returned no holders' }
+try {
+  Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class CleanupRestartManager {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct UniqueProcess {
+    public uint pid;
+    public System.Runtime.InteropServices.ComTypes.FILETIME started;
+  }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct ProcessInfo {
+    public UniqueProcess process;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string name;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string service;
+    public uint appType;
+    public uint status;
+    public uint session;
+    [MarshalAs(UnmanagedType.Bool)] public bool restartable;
+  }
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+  static extern uint RmStartSession(out uint session, uint flags, StringBuilder key);
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+  static extern uint RmRegisterResources(uint session, uint files, string[] paths, uint apps, IntPtr processes, uint services, IntPtr names);
+  [DllImport("rstrtmgr.dll")]
+  static extern uint RmGetList(uint session, out uint needed, ref uint count, [In, Out] ProcessInfo[] processes, out uint reasons);
+  [DllImport("rstrtmgr.dll")]
+  static extern uint RmEndSession(uint session);
+  static void Check(uint code) {
+    if (code != 0) throw new InvalidOperationException("Restart Manager error " + code);
+  }
+  public static ProcessInfo[] Query(string path) {
+    uint session;
+    Check(RmStartSession(out session, 0, new StringBuilder(33)));
+    try {
+      Check(RmRegisterResources(session, 1, new string[] { path }, 0, IntPtr.Zero, 0, IntPtr.Zero));
+      uint needed, count = 0, reasons;
+      uint code = RmGetList(session, out needed, ref count, null, out reasons);
+      if (code == 0) return new ProcessInfo[0];
+      if (code != 234) Check(code);
+      count = needed;
+      ProcessInfo[] holders = new ProcessInfo[count];
+      Check(RmGetList(session, out needed, ref count, holders, out reasons));
+      Array.Resize(ref holders, (int)count);
+      return holders;
+    } finally { Check(RmEndSession(session)); }
+  }
+}
+'@
+  $data.holders = @([CleanupRestartManager]::Query($env:FORGE_LANE_CLOSE_DIAGNOSTIC_PATH) | ForEach-Object { @{ pid = $_.process.pid; name = $_.name; appType = $_.appType } })
+  if ($data.holders.Count -gt 0) { $data.holderUnknown = $false; $data.Remove('holderReason') }
+} catch { $data.holders = @(); $data.holderUnknown = $true; $data.holderReason = 'Restart Manager query failed' }
+try { $data.defender = Get-MpComputerStatus -ErrorAction Stop | Select-Object RealTimeProtectionEnabled } catch { $data.defenderError = 'Defender state unavailable' }
 try {
   $exclusions = @((Get-MpPreference -ErrorAction Stop).ExclusionPath)
   $data.defenderExclusions = @($exclusions | Where-Object { if ($_) { $excluded = [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\'); $root -like $excluded -or $root -like ($excluded + '\*') } })
   $data.underDefenderExclusion = $data.defenderExclusions.Count -gt 0
-} catch { $data.exclusionError = $_.Exception.Message }
+} catch { $data.exclusionError = 'Defender exclusions unavailable' }
 $data | ConvertTo-Json -Depth 5 -Compress
 `;
     const args = ["-NoProfile", "-NonInteractive", "-Command", command];
@@ -75,33 +138,184 @@ $data | ConvertTo-Json -Depth 5 -Compress
       encoding: "utf8",
       timeout: 10_000,
       windowsHide: true,
-      env: { ...process.env, FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT: root },
+      env: {
+        ...process.env,
+        FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT: root,
+        FORGE_LANE_CLOSE_DIAGNOSTIC_PATH:
+          (original as NodeJS.ErrnoException).path ?? root,
+      },
     });
     report.systemExitCode = result.status;
-    report.systemStderr = result.stderr;
-    report.host =
-      result.error?.message ?? (JSON.parse(result.stdout) as unknown);
-  } catch (error) {
-    report.diagnosticError = String(error);
+    if (!result.error && result.status === 0)
+      report.host = JSON.parse(result.stdout) as unknown;
+  } catch {
+    report.diagnosticError = "Cleanup diagnostic failed";
   }
   report.elapsedMs = Date.now() - start;
   console.error(JSON.stringify(report));
   throw original;
 }
+function cleanupRoot(
+  root: string,
+  start: number,
+  remove = () => rmSync(root, { recursive: true, force: true }),
+) {
+  try {
+    remove();
+  } catch (error) {
+    if (
+      process.platform === "win32" &&
+      ["EBUSY", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")
+    )
+      diagnoseCleanup(root, start, error);
+    throw error;
+  }
+}
 afterEach(() => {
-  for (const root of roots.splice(0)) {
+  for (const root of roots.splice(0)) cleanupRoot(root, testStartedAt);
+});
+
+type CleanupReport = {
+  root: string;
+  elapsedMs: number;
+  host: {
+    holders: { pid: number; name: string; appType: number }[];
+    holderUnknown: boolean;
+    holderReason?: string;
+  };
+};
+function cleanupReport(root: string, code: string, path?: string) {
+  const original = Object.assign(new Error("injected cleanup failure"), {
+    code,
+    ...(path ? { path } : {}),
+  });
+  const messages: string[] = [];
+  const log = spyOn(console, "error").mockImplementation((message: string) => {
+    messages.push(message);
+  });
+  try {
+    let caught: unknown;
     try {
-      rmSync(root, { recursive: true, force: true });
+      cleanupRoot(root, Date.now(), () => {
+        throw original;
+      });
     } catch (error) {
-      if (
-        process.platform === "win32" &&
-        (error as NodeJS.ErrnoException).code === "EBUSY"
-      )
-        diagnoseCleanup(root, testStartedAt, error);
-      throw error;
+      caught = error;
+    }
+    expect(caught === original).toBe(true);
+  } finally {
+    log.mockRestore();
+  }
+  expect(messages.length).toBe(1);
+  return messages[0]!;
+}
+
+async function withFileHolder(
+  exposeMarker: boolean,
+  check: (root: string, path: string, pid: number, marker: string) => void,
+) {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "holder-717-")));
+  roots.push(root);
+  const path = join(root, "held.txt");
+  writeFileSync(path, "held fixture");
+  const marker = "SECRET-MARKER-717";
+  const command = String.raw`
+$stream = [IO.File]::Open($env:HOLDER_FILE, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+try { [Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); [Console]::In.ReadLine() | Out-Null } finally { $stream.Dispose() }
+`;
+  const child = Bun.spawn(
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      command + (exposeMarker ? `\n# ${marker} ${root}` : ""),
+    ],
+    {
+      env: { ...process.env, HOLDER_FILE: path },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      windowsHide: true,
+      timeout: 10_000,
+    },
+  );
+  try {
+    const reader = child.stdout.getReader();
+    try {
+      const ready = await reader.read();
+      expect(new TextDecoder().decode(ready.value).trim()).toBe("ready");
+    } finally {
+      reader.releaseLock();
+    }
+    check(root, path, child.pid, marker);
+  } finally {
+    try {
+      await child.stdin.write("release\n");
+      await child.stdin.end();
+    } finally {
+      await child.exited;
     }
   }
-});
+}
+
+if (process.platform === "win32") {
+  test("cleanup diagnostic never reports a holder's argument marker", async () => {
+    await withFileHolder(true, (root, path, _pid, marker) => {
+      const report = cleanupReport(root, "EBUSY", path);
+      expect(report.includes(marker)).toBe(false);
+      expect(
+        /commandline|executablepath|parentprocessid|systemstderr/i.test(report),
+      ).toBe(false);
+    });
+  });
+
+  test("cleanup diagnostic names the Restart Manager file holder", async () => {
+    await withFileHolder(false, (root, path, pid) => {
+      const report = JSON.parse(
+        cleanupReport(root, "EBUSY", path),
+      ) as CleanupReport;
+      expect(
+        report.host?.holders?.some(
+          (holder: { pid: number }) => holder.pid === pid,
+        ) ?? false,
+      ).toBe(true);
+      expect(report.host.holderUnknown).toBe(false);
+      for (const holder of report.host.holders) {
+        expect(Object.keys(holder).sort()).toEqual(["appType", "name", "pid"]);
+        expect(typeof holder.name).toBe("string");
+        expect(typeof holder.appType).toBe("number");
+      }
+    });
+  });
+
+  test("cleanup diagnostic handles EPERM and rethrows the original error", () => {
+    const root = mkdtempSync(join(tmpdir(), "holder-717-"));
+    roots.push(root);
+    const report = JSON.parse(cleanupReport(root, "EPERM")) as CleanupReport;
+    expect(report.root).toBe(root);
+    expect(report.host.holders).toEqual([]);
+    expect(report.host.holderUnknown).toBe(true);
+    expect(report.host.holderReason).toBe("Restart Manager query failed");
+  });
+
+  test("cleanup diagnostic handles forced EBUSY and rethrows the original error", () => {
+    const root = mkdtempSync(join(tmpdir(), "holder-717-"));
+    roots.push(root);
+    const path = join(root, "unlocked.txt");
+    writeFileSync(path, "unlocked fixture");
+    const report = JSON.parse(
+      cleanupReport(root, "EBUSY", path),
+    ) as CleanupReport;
+    expect(report.root).toBe(root);
+    expect(report.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(report.host.holders).toEqual([]);
+    expect(report.host.holderUnknown).toBe(true);
+    expect(report.host.holderReason).toBe(
+      "Restart Manager returned no holders",
+    );
+  });
+}
 type Call = {
   command: string;
   args: string[];
