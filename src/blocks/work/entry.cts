@@ -76,11 +76,7 @@ type CallBudget = ItemRef & {
   readonly left: number;
   readonly stopBy: string;
 };
-type WorkOperations = Omit<TrackerOperations<"issue">, "issue.update"> & {
-  readonly "issue.update": readonly [
-    UpdateItemInput & { readonly kind?: string },
-    TrackerItem,
-  ];
+type WorkOperations = TrackerOperations<"issue"> & {
   readonly "issue.checkpoint": readonly [
     ItemRef & Checkpoint,
     ItemRef & { readonly commentId: string },
@@ -473,7 +469,7 @@ function list(
 /** `id` and `dependsOn` are stored ids; `given` is the id as the caller wrote it. */
 function update(
   state: LeaseStateClient,
-  input: UpdateItemInput & { readonly kind?: string },
+  input: UpdateItemInput,
   ids: Ids,
   given: string,
 ): TrackerItem {
