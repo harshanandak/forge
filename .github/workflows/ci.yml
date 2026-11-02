@@ -151,7 +151,35 @@ jobs:
         run: bun run test:unit
       - name: Integration tests
         if: matrix.suite != 'pack'
-        run: bun run test:integration
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            bun run test:integration
+            exit
+          fi
+          # Temporary forge-465 probe: compare an idle start with a start under integration load.
+          powershell_probe() {
+            node --input-type=commonjs - "$1" <<'NODE'
+          const { spawnSync } = require('node:child_process');
+          const { performance } = require('node:perf_hooks');
+          const started = performance.now();
+          const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'exit'], {
+            encoding: 'utf8', timeout: 15000,
+          });
+          console.log('PowerShell cold start: ' + JSON.stringify({
+            phase: process.argv[2], elapsedMs: Math.round(performance.now() - started),
+            status: result.status, signal: result.signal, error: result.error?.message,
+          }));
+          NODE
+          }
+          powershell_probe alone
+          bun run build
+          # ACL repair tests keep their real PowerShell assertions, away from parallel spawn load.
+          bun test --parallel --timeout 30000 --path-ignore-patterns '**/{packed,private-files,private-repair,state-acl-cli,help-examples,vcs-git,shared-store,lane-run,lane,lane-close}.integration.test.ts' .integration.test $FORGE_TEST_SHARD_ARG $FORGE_TEST_TIMINGS_ARG $FORGE_TEST_UPDATE_ARG &
+          integration_pid=$!
+          powershell_probe parallel-integration
+          wait "$integration_pid"
+          powershell_probe before-serial-integration
+          bun test --timeout 30000 test/adapters/l5-state/private-files.integration.test.ts test/adapters/l5-state/private-repair.integration.test.ts test/assembly/state-acl-cli.integration.test.ts test/surface/help-examples.integration.test.ts test/adapters/vcs-git/vcs-git.integration.test.ts test/assembly/shared-store/shared-store.integration.test.ts test/tools/lane-run.integration.test.ts test/tools/lane.integration.test.ts test/tools/lane-close.integration.test.ts $FORGE_TEST_SHARD_ARG $FORGE_TEST_TIMINGS_ARG $FORGE_TEST_UPDATE_ARG
       # Pack once: every packed journey runs against the smoke's one npm install.
       - name: Pack smoke
         if: matrix.suite != 'tests'
