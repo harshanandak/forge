@@ -91,6 +91,14 @@ test("show refuses invocation removes at op while sets and patch removes still w
     expect(refused.error.message).toContain("invocation[0].op");
     expect(readFileSync(file, "utf8")).toBe(text);
 
+    expect(await call("show", { unexpected: true })).toMatchObject({
+      ok: false,
+      error: {
+        code: "INPUT_INVALID",
+        observed: { problems: [{ pointer: "/unexpected" }] },
+      },
+    });
+
     const shown = await call("show", {
       invocation: [{ op: "set", path: "/values/greeting", value: "temporary" }],
     });
