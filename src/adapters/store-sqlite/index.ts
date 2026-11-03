@@ -326,13 +326,11 @@ export function createSqliteStore(
         db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
         let closed = false;
         let active = false;
-        const assertOpen = (): void => {
+        const assertAvailable = (): void => {
           if (closed) throw new Error("Store is closed");
-          if (
-            restoring ||
-            (path !== ":memory:" && !ownsFence && existsSync(fencePath))
-          )
-            throw new StoreRestoringError();
+          if (restoring) throw new StoreRestoringError();
+        };
+        const assertIdentity = (): void => {
           if (identity) {
             hooks.step?.("store-probe");
             const current = statSync(path, { bigint: true });
@@ -340,6 +338,11 @@ export function createSqliteStore(
             if (identity.dev !== current.dev || identity.ino !== current.ino)
               throw new Error("Store identity changed; reopen required");
           }
+        };
+        const assertOpen = (): void => {
+          assertAvailable();
+          if (!ownsFence) assertUnfenced();
+          assertIdentity();
         };
         const storeError = (error: unknown): unknown => {
           let changed = false;
@@ -364,7 +367,8 @@ export function createSqliteStore(
           }
         };
         const transact = <T>(body: () => T): T => {
-          assertOpen();
+          assertAvailable();
+          if (!ownsFence) assertUnfenced();
           if (active) throw new Error("Nested transactions are refused");
           hooks.step?.("write-pre-lock");
           hooks.step?.("write-lock-attempt");
@@ -400,8 +404,10 @@ export function createSqliteStore(
         };
         const execute = <T>(body: () => T): T =>
           storeCall(() => {
-            assertOpen();
-            if (active || options.readOnly) return body();
+            if (active || options.readOnly) {
+              (active ? assertAvailable : assertOpen)();
+              return body();
+            }
             return transact(body);
           });
         const value: StateImageStore = {
@@ -435,8 +441,9 @@ export function createSqliteStore(
             }
           },
           // Restore creates the file fence before taking SQLite's exclusive lock.
-          // Every live SQL entry takes BEGIN IMMEDIATE and checks fence + identity
-          // under that lock; nested calls reuse it, so queued writers roll back.
+          // Writable top-level SQL entries take BEGIN IMMEDIATE. The fence is checked
+          // at every top-level entry, under the lock and before commit; nested calls
+          // reuse the lock, so queued writers roll back.
           // Final approval holds the exclusive lock and permits reads only.
           // Closing SQLite releases its lock, but the file fence stays through swap.
           // Capture the file change counter at approval and recheck just before
