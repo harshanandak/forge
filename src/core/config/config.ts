@@ -505,10 +505,11 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
       const derived = derive();
       const invocation: InvocationValue[] = (input.invocation ?? [])
         .filter((step) => step.op === "set")
-        .map((step) => ({
-          segments: segmentsOf(step.path),
-          value: step.value,
-        }));
+        .map((step) => {
+          const segments = segmentsOf(step.path);
+          refuseMetadata(step.path, segments);
+          return { segments, value: step.value };
+        });
       let patched = clone(current.document);
       for (const { segments, value } of invocation)
         setIn((patched ??= emptyDocument()), segments, clone(value));
@@ -516,6 +517,10 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
       const kept = invocation
         .flatMap(({ segments, value }) => leaves(value, undefined, segments))
         .filter(({ segments }) => hasIn(document, segments))
+        .filter(
+          ({ segments, value }) =>
+            !isObject(value) || leaves(getIn(document, segments)).length === 0,
+        )
         .map(({ segments }) => ({
           segments,
           value: getIn(document, segments),
