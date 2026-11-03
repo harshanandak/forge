@@ -3,6 +3,7 @@
 // Reads never write: show, explain and detect only read files.
 import { ForgeFailure } from "../../contract/failure.ts";
 import { operationTimeoutProblems } from "../../contract/operation-timeouts.ts";
+import { bindingProblems } from "../../contract/composition.ts";
 import { formatProblem as schemaDiagnostic } from "../../contract/input-error.ts";
 import type {
   BlockManifest,
@@ -371,7 +372,7 @@ export function planBytes(
     for (const [name, instance] of Object.entries(proposed.blocks)) {
       if (
         instance.enabled === false ||
-        Object.keys(instance.operationTimeouts ?? {}).length === 0
+        !(instance.operationTimeouts || instance.bind)
       )
         continue;
       try {
@@ -381,6 +382,7 @@ export function planBytes(
       }
     }
   const problems = operationTimeoutProblems(proposed, manifests);
+  problems.push(...bindingProblems(proposed, manifests));
   if (problems.length > 0) {
     const first = problems[0]!;
     throw new ForgeFailure({
