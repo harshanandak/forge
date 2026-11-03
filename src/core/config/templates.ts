@@ -378,13 +378,15 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
     },
 
     remove(input) {
-      const id = idOf(input.template);
+      const requestedId = idOf(input.template);
+      const id = env.templates.get(requestedId)?.id ?? requestedId;
+      const reference = id + input.template.slice(requestedId.length);
       let ref = id;
       const { detail, ...written } = editWith(
         "template.remove",
         input.expectRevision,
         (document) => {
-          ref = requireImported(document, input.template);
+          ref = requireImported(document, reference);
           const removed: string[] = [];
           const kept: KeptKey[] = [];
           const sources: string[] = [];
