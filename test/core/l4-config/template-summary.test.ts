@@ -1,5 +1,10 @@
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { shippedTemplates } from "../../../src/assembly/templates.ts";
+import {
+  createTemplates,
+  type ImportResult,
+  type RemoveResult,
+} from "../../../src/core/config/templates.ts";
 import { makeProject, readJsonAt, type Fixture } from "./lib/project.ts";
 
 setDefaultTimeout(30_000);
@@ -13,13 +18,19 @@ function delivery(): Fixture {
     value: { test: "node --version" },
     expectRevision: p.config.show().revision,
   });
-  return p;
+  return {
+    ...p,
+    templates: createTemplates({
+      ...p.env,
+      commandsFor: () => ["forge check run"],
+    }),
+  };
 }
 afterEach(() => {
   for (const p of projects.splice(0)) p.cleanup();
 });
 
-test("delivery summaries are small and verbose preserves the baseline changes", () => {
+test("delivery summaries are small and verbose preserves main's full results plus next", () => {
   const p = delivery();
   const imported = p.templates.importTemplate({
     template: "delivery",
@@ -36,9 +47,14 @@ test("delivery summaries are small and verbose preserves the baseline changes", 
     expectRevision: other.config.show().revision,
     verbose: true,
   });
-  expect(
-    readJsonAt("test/contract/fixtures/templates/delivery-import-changes.json"),
-  ).toEqual(verbose.changes);
+  // Captured with main's templates.ts at 24b6468 and this identical fixture/clock.
+  const baseline = readJsonAt(
+    "test/contract/fixtures/templates/delivery-main-results.json",
+  ) as {
+    imported: Omit<ImportResult, "next">;
+    removed: Omit<RemoveResult, "next">;
+  };
+  expect(verbose).toEqual({ ...baseline.imported, next: imported.next });
   const { changes: _changes, ...summary } = verbose;
   expect(summary).toEqual(imported);
   console.log(
@@ -58,7 +74,7 @@ test("delivery summaries are small and verbose preserves the baseline changes", 
     expectRevision: verbose.revision,
     verbose: true,
   });
-  expect(verboseRemoved.changes!.length).toBeGreaterThan(0);
+  expect(verboseRemoved).toEqual({ ...baseline.removed, next: removed.next });
   const { changes: _removedChanges, ...removedSummary } = verboseRemoved;
   expect(removedSummary).toEqual(removed);
 });

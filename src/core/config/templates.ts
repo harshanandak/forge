@@ -49,6 +49,7 @@ export interface TemplateSource {
 
 export interface TemplateEnvironment extends ConfigEnvironment {
   readonly templates: TemplateSource;
+  readonly commandsFor?: (declaredOp: string) => readonly string[];
 }
 
 export interface TemplateSummary {
@@ -59,10 +60,7 @@ export interface TemplateSummary {
   readonly imported: string | null;
 }
 
-interface TemplateWriteResult extends Omit<WriteResult, "changes"> {
-  readonly changes?: WriteResult["changes"];
-}
-
+type TemplateWriteResult = Omit<WriteResult, "changes"> & Partial<WriteResult>;
 export interface ImportResult extends TemplateWriteResult {
   readonly next: readonly string[];
   readonly template: string;
@@ -266,10 +264,10 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
 
   const editWith = <T>(
     op: string,
-    input: Parameters<TemplateApi["importTemplate"]>[0],
+    expectRevision: string | undefined,
     change: (document: JsonObject) => T,
+    verbose = false,
   ): TemplateWriteResult & { readonly detail: T } => {
-    const { expectRevision } = input;
     let detail: T | undefined;
     let changes: Change[] = [];
     const committed = commit(env, op, expectRevision, (current) => {
@@ -288,7 +286,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
       file: CONFIG_FILE,
       previousRevision: committed.from,
       revision: committed.to,
-      ...(input.verbose ? { changes: committed.changed ? changes : [] } : {}),
+      ...(verbose ? { changes: committed.changed ? changes : [] } : {}),
       fileRemoved: committed.fileRemoved,
       detail: detail as T,
     };
@@ -339,13 +337,10 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
     importTemplate(input) {
       const template = load(input.template);
       const ref = refOf(template);
-      const next = ["forge skills sync"];
       const check = template.config.blocks?.check?.source;
-      if (check && "builtin" in check && check.builtin === "forge/check")
-        next.push("forge check run");
       const { detail, ...written } = editWith(
         "template.import",
-        input,
+        input.expectRevision,
         (document) => {
           const already = importedRef(document, template.id);
           if (already !== undefined) {
@@ -393,10 +388,14 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
               importedAt: new Date(env.clock.now()).toISOString(),
             },
           ];
-          return { added: added.sort(), shared: shared.sort(), next };
+          return { added: added.sort(), shared: shared.sort() };
         },
+        input.verbose,
       );
-      return { ...written, template: ref, ...detail };
+      const next = ["forge skills sync"];
+      if (check && "builtin" in check && check.builtin === "forge/check")
+        next.push(...(env.commandsFor?.("check.run") ?? []));
+      return { ...written, template: ref, ...detail, next };
     },
 
     remove(input) {
@@ -404,7 +403,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
       let ref = requestedId;
       const { detail, ...written } = editWith(
         "template.remove",
-        input,
+        input.expectRevision,
         (document) => {
           // An imported id needs no catalog read; only an import alias resolves through it.
           const id = provenance(document).some(
@@ -457,6 +456,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
             kept: kept.sort((a, b) => a.pointer.localeCompare(b.pointer)),
           };
         },
+        input.verbose,
       );
       return { ...written, template: ref, ...detail };
     },
