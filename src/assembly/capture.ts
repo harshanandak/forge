@@ -37,7 +37,12 @@ export function resolveBlock(root: string, source: BlockSource): string {
         source.package,
       )
     )
-      refuse("INPUT_INVALID", "Expected an installed package name");
+      refuse(
+        "INPUT_INVALID",
+        /[\\/]/.test(source.package)
+          ? `"${source.package}" is not a package name. For a local block folder, write "./${source.package.replaceAll("\\", "/")}"`
+          : "Expected an installed package name",
+      );
     const require = createRequire(join(root, "package.json"));
     // Search Node's installed-package roots without requesting an exported subpath
     // or loading the package's entry point. Scoped packages use the same roots.
