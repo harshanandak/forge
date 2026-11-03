@@ -586,6 +586,50 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
 
 type Call = (op: string, input?: object) => Promise<Record<string, unknown>>;
 
+test("shipped delivery can be removed by its import alias or id", async () => {
+  for (const name of ["delivery", "harsha/delivery", "harsha/delivery@0.1.2"]) {
+    const root = mkdtempSync(join(tmpdir(), "forge-delivery-remove-"));
+    try {
+      mkdirSync(join(root, ".forge"));
+      const path = join(root, ".forge/config.yaml");
+      writeFileSync(
+        path,
+        JSON.stringify({ schemaVersion: "forge.config/1", blocks: {} }),
+      );
+      await open(root, async (call) => {
+        const before = await call("config.show");
+        const imported = await call("template.import", {
+          template: "delivery",
+          expectRevision: "",
+        });
+        expect(imported).toMatchObject({ ok: true });
+        expect(
+          await call("template.remove", {
+            template: "unknown",
+            expectRevision: "",
+          }),
+        ).toMatchObject({ ok: false, error: { code: "INPUT_INVALID" } });
+        const removed = await call("template.remove", {
+          template: name,
+          expectRevision: "",
+        });
+        expect(removed).toMatchObject({
+          ok: true,
+          removed: imported.added,
+          kept: [],
+        });
+        const values = (before.values as { pointer: string }[]).filter(
+          (value) => value.pointer !== "/blocks",
+        );
+        expect((await call("config.show")).values).toEqual(values);
+        expect((await call("config.show")).templates).toEqual(before.templates);
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+}, 30_000);
+
 /** Calls against a fresh assembly; the catalog is read once per assembly, as once per CLI call. */
 async function open<T>(
   root: string,
