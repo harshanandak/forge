@@ -218,8 +218,9 @@ export async function dispatch(
 
 /**
  * A held operation on an item that names no lease generation takes the generation of the item's
- * current lease, read through the noun's `show`. Only the number is filled in: the state owner still
- * fences the write to the lease's actor and session, so another session is refused as before.
+ * current lease, read internally through the noun's `show` regardless of exposure. Only the number
+ * is filled in: the state owner still fences the write to the lease's actor and session, so another
+ * session is refused as before.
  */
 async function heldContext(
   catalog: SurfaceCatalog,
@@ -236,18 +237,23 @@ async function heldContext(
     declaration.leaseMode === "acquire" ||
     context.session === undefined ||
     context.leaseGeneration !== undefined ||
-    typeof id !== "string" ||
-    !catalog.list().some((c) => c.op === show)
+    typeof id !== "string"
   )
     return context;
-  const shown = await catalog.invoke({
-    schemaVersion: "forge.invocation/1",
-    requestId: randomUUID(),
-    op: show,
-    input: { id },
-    caller: options.caller,
-    context,
-  });
+  // A failed hidden lookup (thrown or rejected) must not replace the write's own result or leak its diagnostics.
+  let shown: ResultEnvelope | undefined;
+  try {
+    shown = await catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: randomUUID(),
+      op: show,
+      input: { id },
+      caller: options.caller,
+      context,
+    });
+  } catch {
+    return context;
+  }
   const generation = shown.ok
     ? record(record(shown.result)?.lease)?.generation
     : undefined;
