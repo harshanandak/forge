@@ -109,6 +109,59 @@ try {
 } catch { $data.exclusionError = 'Defender exclusions unavailable' }
 $data | ConvertTo-Json -Depth 5 -Compress
 `;
+const cleanupEvidenceCommand = String.raw`
+$root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT
+$bin = Join-Path $root 'bin'
+$data = @{ processes = @(); files = @(); gitExists = $null }
+try {
+  $data.processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+    ($_.ExecutablePath -and $_.ExecutablePath.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+    ($_.CommandLine -and $_.CommandLine.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+  } | ForEach-Object {
+    @{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; ExecutablePath = $_.ExecutablePath;
+       CommandLine = if ($null -ne $_.CommandLine) { $_.CommandLine.Substring(0, [Math]::Min(300, $_.CommandLine.Length)) } else { $null };
+       CreationDate = if ($_.CreationDate) { $_.CreationDate.ToString('o') } else { $null } }
+  })
+} catch { $data.processQueryError = 'Win32_Process query failed' }
+try {
+  $data.gitExists = Test-Path -LiteralPath (Join-Path $bin 'git.exe') -PathType Leaf -ErrorAction Stop
+  if ([IO.Directory]::Exists($bin)) {
+    Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class CleanupDeleteProbe {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+  static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+  public static bool CanOpenForDelete(string path) {
+    // DELETE access, all sharing, OPEN_EXISTING, directory support; never delete-on-close.
+    using (SafeFileHandle handle = CreateFileW(path, 0x00010000, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+      return !handle.IsInvalid;
+    }
+  }
+}
+'@
+    $data.files = @(Get-ChildItem -LiteralPath $bin -Force -ErrorAction Stop | ForEach-Object {
+      @{ name = $_.Name; deleteOpenSucceeded = [CleanupDeleteProbe]::CanOpenForDelete($_.FullName) }
+    })
+  }
+} catch { $data.filesQueryError = 'Bin delete-access query failed' }
+$data | ConvertTo-Json -Depth 5 -Compress
+`;
+type CleanupEvidence = {
+  processes: {
+    ProcessId: number;
+    ParentProcessId: number;
+    Name: string;
+    ExecutablePath: string | null;
+    CommandLine: string | null;
+    CreationDate: string | null;
+  }[];
+  files: { name: string; deleteOpenSucceeded: boolean }[];
+  gitExists: boolean | null;
+  processQueryError?: string;
+  filesQueryError?: string;
+};
 function diagnoseCleanup(
   root: string,
   start: number,
@@ -126,8 +179,36 @@ function diagnoseCleanup(
     start,
     failures,
     host: fallback,
+    processes: [],
+    files: [],
+    gitExists: null,
   };
   report.failedAtMs = Date.now() - start;
+  try {
+    const result = run(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", cleanupEvidenceCommand],
+      {
+        encoding: "utf8",
+        timeout: 10_000,
+        windowsHide: true,
+        env: { ...process.env, FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT: root },
+      },
+    );
+    if (result.error || result.status !== 0)
+      throw new Error("Cleanup evidence query did not complete");
+    const evidence = JSON.parse(result.stdout) as CleanupEvidence;
+    report.processes = evidence.processes ?? [];
+    report.files = evidence.files ?? [];
+    report.gitExists = evidence.gitExists ?? null;
+    if (evidence.processQueryError)
+      report.processQueryError = evidence.processQueryError;
+    if (evidence.filesQueryError)
+      report.filesQueryError = evidence.filesQueryError;
+  } catch {
+    report.processQueryError = "Cleanup evidence query did not complete";
+    report.filesQueryError = "Cleanup evidence query did not complete";
+  }
   try {
     try {
       const options = { recursive: true, withFileTypes: true } as const;
@@ -196,7 +277,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) cleanupRoot(root, testStartedAt);
 });
 
-type CleanupReport = {
+type CleanupReport = CleanupEvidence & {
   root: string;
   elapsedMs: number;
   failures: { path: string; code: string }[];
@@ -352,7 +433,123 @@ if (process.platform === "win32") {
     });
   }
 
-  test("cleanup diagnostic never reports a holder's argument marker", () => {
+  test("cleanup diagnostic records matching processes and bin delete-access probes", () => {
+    const root = diagnosticRoot();
+    const evidence: CleanupEvidence = {
+      processes: [
+        {
+          ProcessId: 813,
+          ParentProcessId: 717,
+          Name: "git.exe",
+          ExecutablePath: join(root, "bin", "git.exe"),
+          CommandLine: "x".repeat(300),
+          CreationDate: "2026-11-04T00:00:00.0000000Z",
+        },
+      ],
+      files: [
+        { name: "git.exe", deleteOpenSucceeded: false },
+        { name: "gh", deleteOpenSucceeded: true },
+      ],
+      gitExists: true,
+    };
+    let queried = false;
+    const report = JSON.parse(
+      cleanupReport(root, "EPERM", (command, args, options) => {
+        if (args[3] !== cleanupEvidenceCommand)
+          return diagnosticResult({ holders: [], holderUnknown: true });
+        queried = true;
+        expect(command).toBe("powershell.exe");
+        expect(args.slice(0, 3)).toEqual([
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+        ]);
+        expect(options.timeout).toBe(10_000);
+        expect(options.windowsHide).toBe(true);
+        expect(options.encoding).toBe("utf8");
+        expect(options.env?.FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT).toBe(root);
+        for (const fragment of [
+          "Get-CimInstance Win32_Process -ErrorAction Stop",
+          "$_.ExecutablePath.IndexOf($root, [StringComparison]::OrdinalIgnoreCase)",
+          "$_.CommandLine.IndexOf($root, [StringComparison]::OrdinalIgnoreCase)",
+          "$_.CommandLine.Substring(0, [Math]::Min(300, $_.CommandLine.Length))",
+          "catch { $data.processQueryError = 'Win32_Process query failed' }",
+          "Get-ChildItem -LiteralPath $bin -Force -ErrorAction Stop",
+          "CreateFileW(path, 0x00010000, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)",
+          "using (SafeFileHandle handle",
+        ])
+          expect(args[3]).toContain(fragment);
+        return { status: 0, stdout: JSON.stringify(evidence) };
+      }),
+    ) as CleanupReport;
+    expect(queried).toBe(true);
+    expect(report.processes).toEqual(evidence.processes);
+    expect(report.files).toEqual(evidence.files);
+    expect(report.gitExists).toBe(true);
+    expect(report.processQueryError).toBeUndefined();
+  });
+
+  test("cleanup diagnostic preserves bin evidence when the process query fails", () => {
+    const root = diagnosticRoot();
+    const report = JSON.parse(
+      cleanupReport(root, "EBUSY", (_command, args) => {
+        if (args[3] !== cleanupEvidenceCommand)
+          return diagnosticResult({ holders: [], holderUnknown: true });
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            processes: [],
+            processQueryError: "Win32_Process query failed",
+            files: [{ name: "gh", deleteOpenSucceeded: true }],
+            gitExists: false,
+          }),
+        };
+      }),
+    ) as CleanupReport;
+    expect(report.processes).toEqual([]);
+    expect(report.processQueryError).toBe("Win32_Process query failed");
+    expect(report.files).toEqual([{ name: "gh", deleteOpenSucceeded: true }]);
+    expect(report.gitExists).toBe(false);
+    expect(report.host).toEqual({ holders: [], holderUnknown: true });
+  });
+
+  for (const failure of [
+    "exit",
+    "timeout",
+    "malformed JSON",
+    "exception",
+  ] as const) {
+    test(`cleanup diagnostic records evidence-query ${failure} without replacing the cleanup error`, () => {
+      const root = diagnosticRoot();
+      const report = JSON.parse(
+        cleanupReport(root, "EBUSY", (_command, args) => {
+          if (args[3] !== cleanupEvidenceCommand)
+            return diagnosticResult({ holders: [], holderUnknown: true });
+          if (failure === "exception")
+            throw new Error("injected query exception");
+          if (failure === "timeout")
+            return {
+              status: null,
+              stdout: "",
+              error: new Error("injected timeout"),
+            };
+          return { status: failure === "exit" ? 1 : 0, stdout: "{" };
+        }),
+      ) as CleanupReport;
+      expect(report.processQueryError).toBe(
+        "Cleanup evidence query did not complete",
+      );
+      expect(report.filesQueryError).toBe(
+        "Cleanup evidence query did not complete",
+      );
+      expect(report.processes).toEqual([]);
+      expect(report.files).toEqual([]);
+      expect(report.gitExists).toBeNull();
+      expect(report.host).toEqual({ holders: [], holderUnknown: true });
+    });
+  }
+
+  test("cleanup diagnostic never reports diagnostic stderr", () => {
     const root = diagnosticRoot();
     const marker = "SECRET-MARKER-717";
     let called = false;
@@ -365,6 +562,16 @@ if (process.platform === "win32") {
         "-Command",
       ]);
       const script = args[3]!;
+      if (script === cleanupEvidenceCommand)
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            processes: [],
+            files: [],
+            gitExists: false,
+          }),
+          stderr: marker,
+        };
       expect(script).toContain(
         "@{ pid = $_.process.pid; name = $_.name; appType = $_.appType }",
       );
@@ -389,9 +596,7 @@ if (process.platform === "win32") {
       holderUnknown: false,
     });
     expect(report.includes(marker)).toBe(false);
-    expect(
-      /commandline|executablepath|parentprocessid|systemstderr/i.test(report),
-    ).toBe(false);
+    expect(/systemstderr/i.test(report)).toBe(false);
   });
 
   test("cleanup diagnostic reports the holder returned by the runner", () => {
