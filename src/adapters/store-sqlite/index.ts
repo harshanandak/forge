@@ -363,6 +363,7 @@ export function createSqliteStore(
           try {
             return body();
           } catch (error) {
+            assertOpen();
             throw storeError(error);
           }
         };

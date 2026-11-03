@@ -129,3 +129,87 @@ test.each(["fence", "hard link"])(
   },
   30000,
 );
+
+test.each(["lock", "statement"])(
+  "%s failure after a hard link is added reports the typed refusal",
+  async (at) => {
+    const work = realpathSync(
+      mkdtempSync(join(tmpdir(), "forge-store-failure-")),
+    );
+    const path = join(work, "state.db");
+    const alias = join(work, "alias.db");
+    try {
+      const created = await createSqliteStore(work).open({
+        path,
+        readOnly: false,
+      });
+      if (!created.ok) throw new Error(created.unavailable.reason);
+      try {
+        created.handle.value.exec("CREATE TABLE marker(value TEXT)");
+      } finally {
+        await created.handle.close();
+      }
+      const opened = await createSqliteStore(work).open({
+        path,
+        readOnly: at === "lock",
+      });
+      if (!opened.ok) throw new Error(opened.unavailable.reason);
+      try {
+        const db = opened.handle.value;
+        if (at === "lock") {
+          // A read-only handle makes BEGIN IMMEDIATE fail on every platform.
+          expect(() => db.transaction(() => db.get("SELECT 1"))).toThrow(
+            /readonly/i,
+          );
+          linkSync(path, alias);
+        }
+        let bodyRan = false;
+        let failure: unknown;
+        let statementFailure: unknown;
+        try {
+          db.transaction(() => {
+            bodyRan = true;
+            db.run("INSERT INTO marker VALUES (?)", ["pending"]);
+            linkSync(path, alias);
+            try {
+              db.run("INSERT INTO missing_table VALUES (?)", ["pending"]);
+            } catch (error) {
+              // Capture the statement's refusal before the transaction unwinds;
+              // an outer transaction check alone must not satisfy this case.
+              statementFailure = error;
+              throw error;
+            }
+          });
+        } catch (error) {
+          failure = error;
+        }
+        expect(bodyRan).toBe(at === "statement");
+        expect(failure).toBeInstanceOf(StoreRestoringError);
+        expect(failure).toMatchObject({ code: "restoring" });
+        if (at === "statement") {
+          expect(statementFailure).toBeInstanceOf(StoreRestoringError);
+          expect(statementFailure).toMatchObject({ code: "restoring" });
+        }
+        await opened.handle.close();
+        unlinkSync(alias);
+        const reopened = await createSqliteStore(work).open({
+          path,
+          readOnly: true,
+        });
+        if (!reopened.ok) throw new Error(reopened.unavailable.reason);
+        try {
+          expect(reopened.handle.value.all("SELECT value FROM marker")).toEqual(
+            [],
+          );
+        } finally {
+          await reopened.handle.close();
+        }
+      } finally {
+        await opened.handle.close();
+      }
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  },
+  30000,
+);
