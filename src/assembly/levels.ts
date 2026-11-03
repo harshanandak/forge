@@ -230,9 +230,16 @@ export function openLevels(options: {
     const known = registered(current?.value);
     const where = canonicalRoot(options.stateRoot);
     if (known?.name === name && relative(known.root, where) === "") return;
-    device.put(REGISTRY_NAMESPACE, key, { name, root: where }, actor, {
-      expectRevision: current?.revision ?? 0,
-    });
+    try {
+      device.put(REGISTRY_NAMESPACE, key, { name, root: where }, actor, {
+        expectRevision: current?.revision ?? 0,
+      });
+    } catch (error) {
+      if (!conflict(error)) throw error;
+      const winner = registered(device.get(REGISTRY_NAMESPACE, key)?.value);
+      if (winner?.name !== name || relative(winner.root, where) !== "")
+        throw error;
+    }
     if (options.replaceRegistration) {
       let from = REGISTRY_PREFIX;
       for (;;) {
