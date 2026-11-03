@@ -9,6 +9,8 @@
     "PatchStep": {
       "type": "object",
       "required": ["op", "path"],
+      "if": { "properties": { "op": { "const": "set" } } },
+      "then": { "required": ["value"] },
       "properties": {
         "op": {
           "enum": ["set", "remove"]
