@@ -1685,6 +1685,7 @@ module.exports = {
       const scope = input.scope;
       let complete = false;
       let slowestPageMs = 0;
+      let bufferedMoveMs = 0;
       const scan = function* () {
         let after = 0;
         for (;;) {
@@ -1692,7 +1693,7 @@ module.exports = {
           // See memory.move docs for the atomic-operation exception and full-scan limit.
           if (
             deadline !== undefined &&
-            deadline - started <= slowestPageMs + reserveMs
+            deadline - started <= slowestPageMs + reserveMs + bufferedMoveMs
           )
             return;
           const records = notePage(source, {
@@ -1714,6 +1715,18 @@ module.exports = {
       const moved: { id: string; to: string }[] = [];
       let stopped: { id: string; code: string } | undefined;
       let slowestMoveMs = 0;
+      // Replaying transfer markers does not measure the cost of a fresh destination write.
+      let probed = false;
+      const affordable = (overhead = slowestPageMs + reserveMs) => {
+        if (deadline === undefined) return 25;
+        const left = deadline - Date.now();
+        return moved.length === 0
+          ? Number(left >= Math.max(1_000, slowestMoveMs))
+          : Math.max(
+              0,
+              Math.floor((left - overhead) / Math.max(1, slowestMoveMs)),
+            );
+      };
       const notes = scan();
       let next = notes.next();
       while (!next.done) {
@@ -1727,22 +1740,11 @@ module.exports = {
                 slowestMoveMs + slowestPageMs + reserveMs))
         )
           break;
-        const size =
-          moved.length === 0
-            ? 1
-            : Math.min(
-                25,
-                limit - moved.length,
-                deadline === undefined
-                  ? 25
-                  : Math.max(
-                      1,
-                      Math.floor(
-                        (deadline - started - slowestPageMs - reserveMs) /
-                          Math.max(1, slowestMoveMs),
-                      ),
-                    ),
-              );
+        const size = Math.min(
+          probed ? 25 : 1,
+          limit - moved.length,
+          affordable(),
+        );
         const first = next.value;
         const group: ReturnType<typeof notePage> = [];
         let irregular = false;
@@ -1759,12 +1761,24 @@ module.exports = {
             break;
           }
           group.push(note);
+          bufferedMoveMs = group.length * slowestMoveMs;
           if (group.length < size) next = notes.next();
         }
+        bufferedMoveMs = 0;
+        const fresh = group.length > 0;
         if (group.length === 0) {
           group.push(first);
           irregular = false;
         }
+        let deferred = false;
+        const trim = (count: number) => {
+          if (count >= group.length) return;
+          group.length = count;
+          // The next call scans from zero and finds every deferred live source again.
+          deferred = true;
+        };
+        trim(affordable());
+        if (group.length === 0) break;
         let failedNote = first;
         try {
           const placed =
@@ -1779,13 +1793,7 @@ module.exports = {
                   )
                     return undefined;
                   const counter = readCounter(target.state, NOTE_COUNTER);
-                  const entries: BatchEntry[] = [
-                    {
-                      key: NOTE_COUNTER,
-                      value: { last: counter.last + group.length },
-                      expectRevision: counter.revision,
-                    },
-                  ];
+                  const entries: BatchEntry[] = [];
                   const destinations = group.map((note, i) => {
                     const at = counter.last + i + 1;
                     entries.push(
@@ -1811,39 +1819,54 @@ module.exports = {
                     );
                     return idIn(target, at);
                   });
-                  target.state.putMany(entries);
-                  return destinations;
+                  trim(affordable());
+                  if (group.length === 0) return [];
+                  target.state.putMany([
+                    {
+                      key: NOTE_COUNTER,
+                      value: { last: counter.last + group.length },
+                      expectRevision: counter.revision,
+                    },
+                    ...entries.slice(0, group.length * 2),
+                  ]);
+                  return destinations.slice(0, group.length);
                 });
-          let retired = group.length;
+          let fallback = false;
           if (placed) {
+            // Retired sources cannot be deferred: reserve their read-back before committing them.
+            trim(affordable(reserveMs));
             const tombstones = group.map((note, i) => ({
               key: note.record.key,
               value: { ...TOMBSTONE, movedTo: placed[i]! },
               expectRevision: note.record.revision,
             }));
             try {
-              source.state.putMany(tombstones);
+              if (tombstones.length === 1) {
+                const tombstone = tombstones[0]!;
+                source.state.put(tombstone.key, tombstone.value, {
+                  expectRevision: tombstone.expectRevision,
+                });
+              } else if (tombstones.length > 1)
+                source.state.putMany(tombstones);
             } catch (error) {
               if (!conflict(error)) throw error;
               // The failed transaction retired nothing; preserve first-conflict ordering.
-              retired = 0;
-              for (const [i, tombstone] of tombstones.entries()) {
-                try {
-                  source.state.put(tombstone.key, tombstone.value, {
-                    expectRevision: tombstone.expectRevision,
-                  });
-                  retired += 1;
-                } catch (error) {
-                  if (!conflict(error)) throw error;
-                  stopped = { id: group[i]!.id, code: "REVISION_CONFLICT" };
-                  break;
-                }
-              }
+              fallback = true;
             }
           }
           for (const [i, note] of group.entries()) {
-            if (i === retired) break;
             failedNote = note;
+            const noteStarted = Date.now();
+            if ((!placed || fallback) && affordable(reserveMs) === 0) {
+              deferred = true;
+              break;
+            }
+            if (fallback)
+              source.state.put(
+                note.record.key,
+                { ...TOMBSTONE, movedTo: placed![i]! },
+                { expectRevision: note.record.revision },
+              );
             const to =
               placed?.[i] ??
               (
@@ -1881,10 +1904,12 @@ module.exports = {
               break;
             }
             moved.push({ id: note.id, to });
+            if (fresh) probed = true;
+            slowestMoveMs = Math.max(slowestMoveMs, Date.now() - noteStarted);
           }
           slowestMoveMs = Math.max(
             slowestMoveMs,
-            (Date.now() - started) / group.length,
+            (Date.now() - started) / Math.max(1, group.length),
           );
         } catch (error) {
           const code = (error as { error?: { code?: string } } | null)?.error
@@ -1893,7 +1918,7 @@ module.exports = {
             throw error;
           stopped = { id: failedNote.id, code };
         }
-        if (stopped) break;
+        if (stopped || deferred) break;
         if (!irregular && !next.done) next = notes.next();
       }
       if (!complete && moved.length === 0)
