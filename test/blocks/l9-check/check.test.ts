@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   createCheck,
   verifyReceipt,
@@ -334,6 +335,133 @@ test("recognized zero tests fail; unknown output uses the exit code and unknown 
   expect((await fixture({ exitCode: 7 }).check.run({}, config)).status).toBe(
     "FAIL",
   );
+}, 1000);
+
+const nodeSummaries = JSON.parse(
+  readFileSync(new URL("./fixtures/node-test.json", import.meta.url), "utf8"),
+) as {
+  version: string;
+  scenario: string;
+  reporter: string;
+  stdout: string;
+  stderr: string;
+}[];
+for (const sample of nodeSummaries) {
+  test(`node:test ${sample.version} ${sample.reporter} ${sample.scenario} receipt on exit zero`, async () => {
+    const receipt = await fixture({ ...sample, exitCode: 0 }).check.run(
+      {},
+      config,
+    );
+    expect(receipt.status).toBe(sample.scenario === "pass" ? "PASS" : "FAIL");
+    expect(receipt.runs[0]?.testCount).toBeNull();
+  }, 1000);
+}
+
+const nodeBlock = (scenario: string) =>
+  nodeSummaries.find(
+    (sample) => sample.scenario === scenario && sample.reporter === "tap",
+  )!.stdout;
+const passingNode = nodeBlock("pass");
+const failingNode = nodeBlock("fail");
+const zeroNode = nodeBlock("zero");
+const cancelledNode = passingNode
+  .replace("# pass 1", "# pass 0")
+  .replace("# cancelled 0", "# cancelled 1");
+for (const [name, summary, extra, status, total] of [
+  ["pytest log", "1 passed in 0.12s", "# tests 123", "PASS", 1],
+  [
+    "pytest partial",
+    "1 passed in 0.12s",
+    "# tests 999\n# pass 999\n# fail 0",
+    "PASS",
+    1,
+  ],
+  [
+    "pytest interrupted",
+    "1 passed in 0.12s",
+    "# tests 999\nunrelated log\n# pass 999\n# fail 0",
+    "PASS",
+    1,
+  ],
+  ["Jest fragment", "Tests: 1 passed, 1 total", "# fail 1", "PASS", 1],
+  ["Vitest fragment", "Tests 1 passed (1)", "# fail 1", "PASS", 1],
+  [
+    "Jest partial",
+    "Tests: 1 passed, 1 total",
+    "# tests 1\n# pass 0\n# fail 1",
+    "PASS",
+    1,
+  ],
+  [
+    "Vitest partial",
+    "Tests 1 passed (1)",
+    "# tests 1\n# pass 0\n# fail 1",
+    "PASS",
+    1,
+  ],
+  ["zero marker", "no tests found", passingNode, "FAIL", 0],
+  ["Jest incomplete", "Tests: 1 failed", passingNode, "INCOMPLETE", null],
+  ["Vitest incomplete", "Tests 1 failed (", passingNode, "INCOMPLETE", null],
+  ["pytest passing Node", "1 passed in 0.12s", passingNode, "PASS", 1],
+  ["Jest passing Node", "Tests: 1 passed, 1 total", passingNode, "PASS", 1],
+  ["Vitest passing Node", "Tests 1 passed (1)", passingNode, "PASS", 1],
+  ["failed then passed", failingNode, passingNode, "FAIL", null],
+  ["zero then passed", zeroNode, passingNode, "FAIL", null],
+  ["cancelled then passed", cancelledNode, passingNode, "FAIL", null],
+  ["pytest failing Node", "1 passed in 0.12s", failingNode, "FAIL", 1],
+  ["Jest failing Node", "Tests: 1 passed, 1 total", failingNode, "FAIL", 1],
+  ["Vitest failing Node", "Tests 1 passed (1)", failingNode, "FAIL", 1],
+  [
+    "Jest failures with failing Node",
+    "Tests: 3 failed, 7 passed, 10 total",
+    failingNode,
+    "FAIL",
+    10,
+  ],
+  ["zero marker with failing Node", "no tests found", failingNode, "FAIL", 0],
+  [
+    "Bun failing Node",
+    "1 pass\n0 fail\nRan 1 test across 1 file.",
+    failingNode,
+    "FAIL",
+    1,
+  ],
+  ["pytest zero Node", "1 passed in 0.12s", zeroNode, "FAIL", 1],
+] as const) {
+  for (const stream of ["stdout", "stderr"] as const) {
+    for (const first of [false, true]) {
+      test(`${name} preserves failure evidence ${first ? "before" : "after"} on ${stream}`, async () => {
+        const text = first
+          ? `${extra}\n${summary}\n`
+          : `${summary}\n${extra}\n`;
+        for (const result of [
+          { [stream]: text },
+          {
+            [stream]: extra,
+            [stream === "stdout" ? "stderr" : "stdout"]: summary,
+          },
+        ]) {
+          const receipt = await fixture({ ...result, exitCode: 0 }).check.run(
+            {},
+            config,
+          );
+          expect(receipt.status).toBe(status);
+          expect(receipt.runs[0]?.testCount).toBe(total);
+        }
+      }, 1000);
+    }
+  }
+}
+
+test("cancelled node:test output alone fails on exit zero", async () => {
+  for (const stream of ["stdout", "stderr"] as const) {
+    const receipt = await fixture({
+      [stream]: cancelledNode,
+      exitCode: 0,
+    }).check.run({}, config);
+    expect(receipt.status).toBe("FAIL");
+    expect(receipt.runs[0]?.testCount).toBeNull();
+  }
 }, 1000);
 
 test("Bun summaries give receipts a count and reject failures even on exit zero", async () => {

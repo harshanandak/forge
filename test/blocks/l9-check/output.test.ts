@@ -1,7 +1,133 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts";
 import { commandArguments } from "../../../src/blocks/check/command.ts";
 const output = createRunnerOutput();
+const nodeSummaries = JSON.parse(
+  readFileSync(new URL("./fixtures/node-test.json", import.meta.url), "utf8"),
+) as {
+  version: string;
+  scenario: string;
+  reporter: string;
+  stdout: string;
+  stderr: string;
+}[];
+
+for (const sample of nodeSummaries) {
+  test(`node:test ${sample.version} ${sample.reporter} ${sample.scenario} only adds failure evidence`, () => {
+    const expected =
+      sample.scenario === "pass"
+        ? output.parse("", "", "auto")
+        : { kind: "recognized", testCount: null, failed: 1 };
+    expect(output.parse(sample.stdout, sample.stderr, "auto")).toMatchObject(
+      expected,
+    );
+    for (const stream of ["stdout", "stderr"] as const) {
+      const recognizer = output.recognize("auto");
+      for (const byte of Buffer.from(sample.stdout + sample.stderr))
+        recognizer.push(stream, Uint8Array.of(byte));
+      expect(recognizer.report()).toMatchObject(expected);
+      expect(recognizer.report()).toMatchObject(expected);
+    }
+    expect(output.parse(sample.stdout, sample.stderr, "exit-code")).toEqual(
+      output.parse("", "", "exit-code"),
+    );
+  }, 1000);
+}
+
+test("node:test failure evidence preserves the selected runner report counts", () => {
+  const failingNode = nodeSummaries.find(
+    (sample) => sample.scenario === "fail" && sample.reporter === "tap",
+  )!.stdout;
+  for (const [summary, failed] of [
+    ["1 passed in 0.12s", 1],
+    ["Tests: 3 failed, 7 passed, 10 total", 3],
+    ["no tests found", 0],
+  ] as const) {
+    for (const stream of ["stdout", "stderr"] as const) {
+      const baseline = output.parse(
+        stream === "stdout" ? summary : "",
+        stream === "stderr" ? summary : "",
+        "auto",
+      );
+      for (const first of [false, true]) {
+        const text = first
+          ? `${failingNode}\n${summary}\n`
+          : `${summary}\n${failingNode}\n`;
+        for (const [stdout, stderr] of [
+          [stream === "stdout" ? text : "", stream === "stderr" ? text : ""],
+          [
+            stream === "stdout" ? summary : failingNode,
+            stream === "stderr" ? summary : failingNode,
+          ],
+        ])
+          expect(output.parse(stdout!, stderr!, "auto")).toEqual({
+            ...baseline,
+            failed,
+          });
+      }
+    }
+  }
+}, 1000);
+
+test("node:test failure evidence requires eight consecutive ordered lines sharing a prefix", () => {
+  const lines = [
+    "# tests 0",
+    "# suites 0",
+    "# pass 0",
+    "# fail 0",
+    "# cancelled 0",
+    "# skipped 0",
+    "# todo 0",
+    "# duration_ms 1.25",
+  ];
+  const invalid = [
+    "# tests 0",
+    "# fail 1",
+    "# tests 0\n# pass 0\n# fail 1",
+    [...lines].reverse().join("\n"),
+  ];
+  for (let i = 0; i < lines.length; i++) {
+    invalid.push(lines.filter((_, index) => index !== i).join("\n"));
+    invalid.push(
+      lines
+        .map((line, index) => (index === i ? line.replace("#", "ℹ") : line))
+        .join("\n"),
+    );
+    if (i > 0)
+      for (const gap of ["", "unrelated log", "x".repeat(65_537)])
+        invalid.push([...lines.slice(0, i), gap, ...lines.slice(i)].join("\n"));
+    for (const value of ["-1", "NaN", "Infinity", ...(i < 7 ? ["1.5"] : [])])
+      invalid.push(
+        lines
+          .map((line, index) =>
+            index === i ? line.replace(/[\d.]+$/, value) : line,
+          )
+          .join("\n"),
+      );
+  }
+  for (const text of invalid)
+    for (const stream of ["stdout", "stderr"] as const)
+      expect(
+        output.parse(
+          stream === "stdout" ? text : "",
+          stream === "stderr" ? text : "",
+          "auto",
+        ),
+      ).toEqual(output.parse("", "", "auto"));
+  for (let i = 1; i < lines.length; i++)
+    expect(
+      output.parse(
+        lines.slice(0, i).join("\n"),
+        lines.slice(i).join("\n"),
+        "auto",
+      ),
+    ).toEqual(output.parse("", "", "auto"));
+  for (const prefix of ["#", "ℹ"])
+    expect(
+      output.parse(lines.join("\r\n").replaceAll("#", prefix), "", "auto"),
+    ).toMatchObject({ kind: "recognized", testCount: null, failed: 1 });
+}, 1000);
 
 test("Bun footers snapshot counters and preserve failures across summaries", () => {
   const failing = "1 pass\n1 fail\nRan 2 tests across 1 file.\n";
