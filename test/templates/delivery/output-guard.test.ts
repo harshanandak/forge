@@ -1,4 +1,4 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -10,7 +10,7 @@ const path = resolve(
 async function scanner() {
   return (
     (await import(pathToFileURL(path).href)) as {
-      scan: (text: string, key?: string, deadline?: number) => boolean;
+      scan: (text: string, key?: string) => boolean;
     }
   ).scan;
 }
@@ -68,16 +68,45 @@ test("scanner excludes UUIDs under credential keys while retaining generic detec
   expect(scan("a9c4".repeat(9), "primaryKey")).toBe(true);
 });
 
-test("scanner handles near-limit noncredential text within the existing budget", async () => {
+test("scanner handles near-limit noncredential text independently of clock speed", async () => {
   const scan = await scanner();
-  const started = performance.now();
-  expect(scan("z".repeat(1_048_000))).toBe(false);
-  expect(performance.now() - started < 1000).toBe(true);
+  let now = 0;
+  const clock = spyOn(performance, "now").mockImplementation(
+    () => (now += 1000),
+  );
+  try {
+    expect(scan("z".repeat(1_048_000))).toBe(false);
+  } finally {
+    clock.mockRestore();
+  }
 });
 
-test("scanner checks the deadline and stops at the first match", async () => {
+test("scanner enforces the input bound even when a credential comes first", async () => {
   const scan = await scanner();
-  expect(() => scan("safe", undefined, -1)).toThrow();
+  expect(scan("z".repeat(1_048_576))).toBe(false);
+  expect(() => scan("z".repeat(1_048_577))).toThrow();
   const secret = ["ghp", "Ab7Cd9".repeat(6)].join("_");
-  expect(scan((secret + "\n").repeat(10_000))).toBe(true);
+  expect(() => scan(secret + "z".repeat(1_048_576))).toThrow();
+});
+
+test("scanner stops iterating at the first match", async () => {
+  const scan = await scanner();
+  const secret = ["ghp", "Ab7Cd9".repeat(6)].join("_");
+  const text = (secret + "\n").repeat(10_000);
+  const matchAll = String.prototype.matchAll.bind(text);
+  let matches = 0;
+  const iterator = spyOn(String.prototype, "matchAll").mockImplementation(
+    function* (pattern: RegExp): Generator<RegExpExecArray, undefined> {
+      for (const match of matchAll(pattern)) {
+        matches++;
+        yield match;
+      }
+    },
+  );
+  try {
+    expect(scan(text)).toBe(true);
+    expect(matches).toBe(1);
+  } finally {
+    iterator.mockRestore();
+  }
 });
