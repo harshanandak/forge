@@ -45,41 +45,7 @@ type DiagnosticRunner = (
   args: string[],
   options: SpawnSyncOptionsWithStringEncoding,
 ) => { status: number | null; stdout: string; error?: Error };
-function diagnoseCleanup(
-  root: string,
-  start: number,
-  original: unknown,
-  run: DiagnosticRunner = spawnSync,
-): never {
-  const failures: { path: string; code: string | undefined }[] = [];
-  const fallback = {
-    holders: [],
-    holderUnknown: true,
-    holderReason: "PowerShell diagnostic did not complete",
-  };
-  const report: Record<string, unknown> = {
-    root,
-    start,
-    failures,
-    host: fallback,
-  };
-  report.failedAtMs = Date.now() - start;
-  try {
-    try {
-      const options = { recursive: true, withFileTypes: true } as const;
-      for (const entry of readdirSync(root, options)) {
-        const path = join(entry.parentPath, entry.name);
-        try {
-          if (entry.isDirectory()) renameSync(path, path);
-          else closeSync(openSync(path, "r"));
-        } catch (error) {
-          failures.push({ path, code: (error as NodeJS.ErrnoException).code });
-        }
-      }
-    } catch (error) {
-      report.scanError = String(error);
-    }
-    const command = String.raw`
+const cleanupDiagnosticCommand = String.raw`
 $root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT
 $data = @{ holders = @(); holderUnknown = $true; holderReason = 'Restart Manager returned no holders' }
 try {
@@ -143,7 +109,47 @@ try {
 } catch { $data.exclusionError = 'Defender exclusions unavailable' }
 $data | ConvertTo-Json -Depth 5 -Compress
 `;
-    const args = ["-NoProfile", "-NonInteractive", "-Command", command];
+function diagnoseCleanup(
+  root: string,
+  start: number,
+  original: unknown,
+  run: DiagnosticRunner = spawnSync,
+): never {
+  const failures: { path: string; code: string | undefined }[] = [];
+  const fallback = {
+    holders: [],
+    holderUnknown: true,
+    holderReason: "PowerShell diagnostic did not complete",
+  };
+  const report: Record<string, unknown> = {
+    root,
+    start,
+    failures,
+    host: fallback,
+  };
+  report.failedAtMs = Date.now() - start;
+  try {
+    try {
+      const options = { recursive: true, withFileTypes: true } as const;
+      for (const entry of readdirSync(root, options)) {
+        const path = join(entry.parentPath, entry.name);
+        try {
+          if (entry.isDirectory()) renameSync(path, path);
+          else closeSync(openSync(path, "r"));
+        } catch (error) {
+          failures.push({ path, code: (error as NodeJS.ErrnoException).code });
+        }
+      }
+    } catch (error) {
+      report.scanError = String(error);
+    }
+
+    const args = [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      cleanupDiagnosticCommand,
+    ];
     const result = run("powershell.exe", args, {
       encoding: "utf8",
       timeout: 10_000,
@@ -201,6 +207,11 @@ type CleanupReport = {
     holders: { pid: number; name: string; appType: number }[];
     holderUnknown: boolean;
     holderReason?: string;
+    defender?: { RealTimeProtectionEnabled: boolean };
+    defenderExclusions?: string[];
+    underDefenderExclusion?: boolean;
+    defenderError?: string;
+    exclusionError?: string;
   };
 };
 function cleanupReport(
@@ -248,7 +259,99 @@ function diagnosticResult(host: CleanupReport["host"]) {
   return { status: 0, stdout: JSON.stringify(host) };
 }
 
+test("cleanup diagnostic command registers the failing path and maps Restart Manager holders", () => {
+  const command = cleanupDiagnosticCommand.replace(/\s+/g, " ");
+  for (const fragment of [
+    'DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)',
+    "public UniqueProcess process;",
+    "public uint pid;",
+    "public string name;",
+    "public uint appType;",
+    "Check(RmStartSession(out session, 0, new StringBuilder(33)));",
+    "Check(RmRegisterResources(session, 1, new string[] { path }, 0, IntPtr.Zero, 0, IntPtr.Zero));",
+    "uint code = RmGetList(session, out needed, ref count, null, out reasons);",
+    "if (code == 0) return new ProcessInfo[0]; if (code != 234) Check(code); count = needed;",
+    "ProcessInfo[] holders = new ProcessInfo[count]; Check(RmGetList(session, out needed, ref count, holders, out reasons));",
+    "Array.Resize(ref holders, (int)count); return holders;",
+    "finally { Check(RmEndSession(session)); }",
+    "$data.holders = @([CleanupRestartManager]::Query($env:FORGE_LANE_CLOSE_DIAGNOSTIC_PATH) | ForEach-Object { @{ pid = $_.process.pid; name = $_.name; appType = $_.appType } })",
+    "if ($data.holders.Count -gt 0) { $data.holderUnknown = $false; $data.Remove('holderReason') }",
+    "catch { $data.holders = @(); $data.holderUnknown = $true; $data.holderReason = 'Restart Manager query failed' }",
+  ])
+    expect(command).toContain(fragment);
+});
+
+test("cleanup diagnostic command collects Defender protection state with an error fallback", () => {
+  const command = cleanupDiagnosticCommand.replace(/\s+/g, " ");
+  expect(command).toContain(
+    "$data.defender = Get-MpComputerStatus -ErrorAction Stop | Select-Object RealTimeProtectionEnabled",
+  );
+  expect(command).toContain(
+    "catch { $data.defenderError = 'Defender state unavailable' }",
+  );
+});
+
+test("cleanup diagnostic command collects matching Defender exclusions with an error fallback", () => {
+  const command = cleanupDiagnosticCommand.replace(/\s+/g, " ");
+  for (const fragment of [
+    "$root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT",
+    "$exclusions = @((Get-MpPreference -ErrorAction Stop).ExclusionPath)",
+    String.raw`$data.defenderExclusions = @($exclusions | Where-Object { if ($_) { $excluded = [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\'); $root -like $excluded -or $root -like ($excluded + '\*') } })`,
+    "$data.underDefenderExclusion = $data.defenderExclusions.Count -gt 0",
+    "catch { $data.exclusionError = 'Defender exclusions unavailable' }",
+    "$data | ConvertTo-Json -Depth 5 -Compress",
+  ])
+    expect(command).toContain(fragment);
+});
+
 if (process.platform === "win32") {
+  test("cleanup diagnostic preserves holders and every Defender report field", () => {
+    const root = diagnosticRoot();
+    const host: CleanupReport["host"] = {
+      holders: [{ pid: 717, name: "fixture holder", appType: 1 }],
+      holderUnknown: false,
+      defender: { RealTimeProtectionEnabled: true },
+      defenderExclusions: [root],
+      underDefenderExclusion: true,
+      defenderError: "Defender state unavailable",
+      exclusionError: "Defender exclusions unavailable",
+    };
+    const report = JSON.parse(
+      cleanupReport(root, "EPERM", () => diagnosticResult(host)),
+    ) as CleanupReport;
+    expect(report.host).toEqual(host);
+  });
+
+  for (const hasPath of [true, false]) {
+    test(`cleanup diagnostic wires the default spawn command and environment ${hasPath ? "with a failing path" : "with the root fallback"}`, () => {
+      const root = diagnosticRoot();
+      const path = hasPath ? join(root, "failing file.txt") : undefined;
+      let invocation: Parameters<DiagnosticRunner> | undefined;
+      cleanupReport(
+        root,
+        "EBUSY",
+        (...args) => {
+          invocation = args;
+          return diagnosticResult({ holders: [], holderUnknown: true });
+        },
+        path,
+      );
+      expect(invocation).toBeDefined();
+      const [command, args, options] = invocation!;
+      expect(command).toBe("powershell.exe");
+      expect(args).toEqual([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        cleanupDiagnosticCommand,
+      ]);
+      expect(options.encoding).toBe("utf8");
+      expect(options.windowsHide).toBe(true);
+      expect(options.env?.FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT).toBe(root);
+      expect(options.env?.FORGE_LANE_CLOSE_DIAGNOSTIC_PATH).toBe(path ?? root);
+    });
+  }
+
   test("cleanup diagnostic never reports a holder's argument marker", () => {
     const root = diagnosticRoot();
     const marker = "SECRET-MARKER-717";
