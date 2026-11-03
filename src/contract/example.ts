@@ -48,11 +48,13 @@ export function renderExample(
       .join("\n    ");
   }
   const input = docs.examples?.[0]?.input;
-  if (input !== undefined && Object.keys(record(input) ?? {}).length > 0) {
+  const nonObject = input !== undefined && record(input) === undefined;
+  if (nonObject || Object.keys(record(input) ?? {}).length > 0) {
     const properties = record(schema.properties) ?? {};
-    const values = Object.entries(record(input) ?? {});
+    const values = Object.entries(record(input) ?? { input });
     const args = values.every(
       ([key, value]) =>
+        !nonObject &&
         Object.hasOwn(properties, key) &&
         !RESERVED_FLAGS.includes(flagName(key) ?? "") &&
         (typeof value === "string" ||
@@ -73,20 +75,20 @@ export function renderExample(
       `forge ${words} ${ordered
         .map(([key, value]) => {
           const type = record(properties[key])?.type;
+          const scalar = typeof value === "string" && !nonObject;
           const raw =
-            typeof value === "string" &&
-            (type === "string" || type === undefined)
+            scalar && (type === "string" || type === undefined)
               ? value
               : JSON.stringify(value);
           const nativeRaw =
-            shell === "PowerShell 5.1" && typeof value !== "string"
+            shell === "PowerShell 5.1" && !scalar
               ? raw.replace(
                   /\s/g,
                   (character) =>
                     `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
                 )
               : raw;
-          const quoted = quote(nativeRaw, shell, typeof value === "string");
+          const quoted = quote(nativeRaw, shell, scalar);
           return positional.includes(key)
             ? quoted
             : `--${flagName(key)} ${quoted}`;
