@@ -1,4 +1,5 @@
-﻿import { dirname, join } from "node:path";
+import { measured, measuredAsync, span, count } from "../contract/measure.ts";
+import { dirname, join } from "node:path";
 import { closeSync, existsSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
 import { createSqliteStore } from "../adapters/store-sqlite/index.ts";
@@ -135,44 +136,52 @@ export class LocalState {
     }
   }
   async #entry(write: boolean): Promise<Entry | undefined> {
-    if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
-    const current =
-      this.#entries.get(true) ??
-      (!write ? this.#entries.get(false) : undefined);
-    if (current) return current;
-    if (!existsSync(this.#path)) {
-      await this.#missing?.(write);
-      if (!write) return undefined;
-    }
-    if (write) ensurePrivateDirectory(dirname(this.#path), this.#directories);
-    const result = await this.#store.open({
-      path: this.#path,
-      readOnly: !write,
-    });
-    if (!result.ok) throw new StateUnavailable(result.unavailable);
+    const endMeasurement = span("stores.acquire");
     try {
-      const owner = new StateOwner(result.handle.value, {
-        now: () => Date.now(),
-      });
-      if (write) owner.initialize();
-      let finish!: () => void;
-      const drained = new Promise<void>((resolve) => {
-        finish = resolve;
-      });
-      const entry: Entry = {
-        handle: result.handle,
-        owner,
-        write,
-        drained,
-        finish,
-        refs: 0,
-        pinned: false,
-      };
-      this.#entries.set(write, entry);
-      return entry;
-    } catch (error) {
-      await result.handle.close();
-      throw error;
+      if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
+      const current =
+        this.#entries.get(true) ??
+        (!write ? this.#entries.get(false) : undefined);
+      if (current) return current;
+      if (!existsSync(this.#path)) {
+        await this.#missing?.(write);
+        if (!write) return undefined;
+      }
+      if (write) ensurePrivateDirectory(dirname(this.#path), this.#directories);
+      const result = await measuredAsync("stores.open", () =>
+        this.#store.open({
+          path: this.#path,
+          readOnly: !write,
+        }),
+      );
+      if (result.ok) count("stores.opened");
+      if (!result.ok) throw new StateUnavailable(result.unavailable);
+      try {
+        const owner = new StateOwner(result.handle.value, {
+          now: () => Date.now(),
+        });
+        if (write) measured("stores.initialize", () => owner.initialize());
+        let finish!: () => void;
+        const drained = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        const entry: Entry = {
+          handle: result.handle,
+          owner,
+          write,
+          drained,
+          finish,
+          refs: 0,
+          pinned: false,
+        };
+        this.#entries.set(write, entry);
+        return entry;
+      } catch (error) {
+        await measuredAsync("stores.close", () => result.handle.close());
+        throw error;
+      }
+    } finally {
+      endMeasurement();
     }
   }
   /** Trust retains a pinned reader/writer for its synchronous admission checks. */
@@ -207,7 +216,7 @@ export class LocalState {
     if (--entry.refs !== 0) return;
     this.#entries.delete(entry.write);
     try {
-      await entry.handle.close();
+      await measuredAsync("stores.close", () => entry.handle.close());
     } finally {
       entry.finish();
     }

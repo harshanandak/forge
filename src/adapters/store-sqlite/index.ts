@@ -1,3 +1,4 @@
+import { measured, measuredAsync } from "../../contract/measure.ts";
 import {
   realpathSync,
   lstatSync,
@@ -161,26 +162,30 @@ export function createSqliteStore(
         const path =
           options.path === ":memory:"
             ? options.path
-            : realStorePath(resolve(basePath, options.path));
-        assertFilesystem(
-          {
-            path,
-            platform: process.platform,
-            ...(path === ":memory:"
-              ? {}
-              : probeFilesystem(dirname(path), hooks.filesystem)),
-            cloudRoots: [
-              process.env.OneDrive,
-              process.env.OneDriveConsumer,
-              process.env.OneDriveCommercial,
-              process.env.Dropbox,
-            ]
-              .filter((value): value is string => Boolean(value))
-              .map((root) => realStorePath(resolve(basePath, root))),
-          },
-          (message) => {
-            process.stderr.write(message);
-          },
+            : measured("stores.resolve_path", () =>
+                realStorePath(resolve(basePath, options.path)),
+              );
+        measured("stores.filesystem_check", () =>
+          assertFilesystem(
+            {
+              path,
+              platform: process.platform,
+              ...(path === ":memory:"
+                ? {}
+                : probeFilesystem(dirname(path), hooks.filesystem)),
+              cloudRoots: [
+                process.env.OneDrive,
+                process.env.OneDriveConsumer,
+                process.env.OneDriveCommercial,
+                process.env.Dropbox,
+              ]
+                .filter((value): value is string => Boolean(value))
+                .map((root) => realStorePath(resolve(basePath, root))),
+            },
+            (message) => {
+              process.stderr.write(message);
+            },
+          ),
         );
         const fencePath = `${path}.restore-lock`;
         const assertUnfenced = (): void => {
@@ -197,13 +202,18 @@ export function createSqliteStore(
         // Keep the opened inode pinned across SQLite's open; reject either side
         // of a pathname replacement rather than adopting its newer identity.
         if (path !== ":memory:")
-          pinned = openStoreFile(path, options.readOnly, hooks.fs);
+          pinned = measured("stores.private_file_open", () =>
+            openStoreFile(path, options.readOnly, hooks.fs),
+          );
         hooks.step?.("opening");
         let connect: (path: string, readOnly: boolean) => Binding;
         if ("Bun" in globalThis) {
           // A variable specifier keeps the Node-only declaration build independent of Bun types.
           const specifier = "bun:sqlite";
-          const runtime = (await import(specifier)) as {
+          const runtime = (await measuredAsync(
+            "stores.driver_import",
+            () => import(specifier),
+          )) as {
             Database: new (
               path: string,
               options: {
@@ -219,11 +229,18 @@ export function createSqliteStore(
               create: !readOnly,
               safeIntegers: true,
             });
-          binding = connect(path, options.readOnly);
+          binding = measured("stores.connect", () =>
+            connect(path, options.readOnly),
+          );
         } else {
-          const { DatabaseSync } = await import("node:sqlite");
+          const { DatabaseSync } = await measuredAsync(
+            "stores.driver_import",
+            () => import("node:sqlite"),
+          );
           connect = (name, readOnly) => new DatabaseSync(name, { readOnly });
-          binding = connect(path, options.readOnly);
+          binding = measured("stores.connect", () =>
+            connect(path, options.readOnly),
+          );
         }
         let db = binding;
         hooks.step?.("connected");
@@ -323,7 +340,9 @@ export function createSqliteStore(
           statement.setReadBigInts?.(true);
           return statement;
         };
-        db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
+        measured("stores.pragmas", () =>
+          db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;"),
+        );
         let closed = false;
         let active = false;
         const assertOpen = (): void => {
@@ -367,7 +386,7 @@ export function createSqliteStore(
           if (active) throw new Error("Nested transactions are refused");
           hooks.step?.("write-pre-lock");
           hooks.step?.("write-lock-attempt");
-          db.exec("BEGIN IMMEDIATE");
+          measured("stores.begin", () => db.exec("BEGIN IMMEDIATE"));
           active = true;
           try {
             hooks.step?.("write-locked");
@@ -380,7 +399,7 @@ export function createSqliteStore(
             )
               throw new Error("Transaction body must be synchronous");
             assertOpen();
-            db.exec("COMMIT");
+            measured("stores.commit", () => db.exec("COMMIT"));
             return result;
           } catch (error) {
             try {
@@ -511,7 +530,7 @@ export function createSqliteStore(
                 active = false;
                 db.exec("PRAGMA query_only=OFF");
               }
-              db.exec("COMMIT");
+              measured("stores.commit", () => db.exec("COMMIT"));
               restoring = true;
               if (memory) {
                 candidate = connect(candidatePath, false);

@@ -1,3 +1,4 @@
+import { measured } from "../contract/measure.ts";
 import { Readable, Writable } from "node:stream";
 import type { McpExposure } from "../generated/types.ts";
 import type { McpTransportPort } from "../ports/mcp-transport.ts";
@@ -71,6 +72,6 @@ export async function runCommand(
         ? await runHook(options.catalog, argv[1], input, options.call)
         : respond(failure("INPUT_INVALID", "Expected --hook <noun.verb>."))
       : await runCli(options.catalog, argv, options.call);
-  output.write(response.stdout);
+  measured("result.write", () => output.write(response.stdout));
   return response.exitCode;
 }

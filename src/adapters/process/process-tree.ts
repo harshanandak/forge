@@ -1,3 +1,4 @@
+import { count } from "../../contract/measure.ts";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ProcessResult, SpawnOptions } from "../../ports/process.ts";
@@ -109,6 +110,7 @@ export function runProcessTree(
   started: number,
 ): Promise<ProcessResult> {
   return new Promise((resolveRun, rejectRun) => {
+    count("process.commands_spawn_attempts");
     const child = spawn(plan.file, [...plan.args], {
       cwd: options.cwd,
       env: { ...options.env },

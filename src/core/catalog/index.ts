@@ -1,3 +1,4 @@
+import { span, measured, count } from "../../contract/measure.ts";
 import type { BorrowedHandle } from "../../ports/lifetime.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { inputError } from "../../contract/input-error.ts";
@@ -282,64 +283,72 @@ export function captureBlock(
   limits: CaptureLimits = DEFAULT_CAPTURE_LIMITS,
   shipped = false,
 ): CapturedBlock {
-  const source = capture.open(rootPath).value;
-  let bytes = 0;
-  const files = new Map<string, string>();
-  const hashes = new Map<string, string>();
-  const read = (name: string): string => {
-    const cached = files.get(name);
-    if (cached !== undefined) return cached;
-    const data = source.read(name, limits.maxBytes - bytes);
-    bytes += data.byteLength;
-    if (bytes > limits.maxBytes)
-      refuse("LIMIT_EXCEEDED", "capture exceeds maxBytes");
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(data);
-    files.set(name, text);
-    hashes.set(name, digest(data));
-    return text;
-  };
-  const parsed = parseUntrustedJson(read("block.json"), limits.parse);
-  if (!parsed.ok) refuse(parsed.error.code, parsed.error.message);
-  const checked = validateBlockManifest(parsed.value);
-  if (!checked.ok)
-    throw new ForgeFailure(
-      inputError(
-        `block manifest ${rootPath.replaceAll("\\", "/").replace(/\/$/, "")}/${source.manifestPath ?? "block.json"}`,
-        new SchemaRegistry(SCHEMA_DOCUMENTS, SCHEMA_BASE).validate(
-          "block.json",
-          parsed.value,
-          true,
+  const endMeasurement = span("blocks.capture");
+  try {
+    const source = capture.open(rootPath).value;
+    let bytes = 0;
+    const files = new Map<string, string>();
+    const hashes = new Map<string, string>();
+    const read = (name: string): string => {
+      const cached = files.get(name);
+      if (cached !== undefined) return cached;
+      const data = measured("blocks.file_read", () =>
+        source.read(name, limits.maxBytes - bytes),
+      );
+      count("blocks.bytes_read", data.byteLength);
+      bytes += data.byteLength;
+      if (bytes > limits.maxBytes)
+        refuse("LIMIT_EXCEEDED", "capture exceeds maxBytes");
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(data);
+      files.set(name, text);
+      hashes.set(name, digest(data));
+      return text;
+    };
+    const parsed = parseUntrustedJson(read("block.json"), limits.parse);
+    if (!parsed.ok) refuse(parsed.error.code, parsed.error.message);
+    const checked = validateBlockManifest(parsed.value);
+    if (!checked.ok)
+      throw new ForgeFailure(
+        inputError(
+          `block manifest ${rootPath.replaceAll("\\", "/").replace(/\/$/, "")}/${source.manifestPath ?? "block.json"}`,
+          new SchemaRegistry(SCHEMA_DOCUMENTS, SCHEMA_BASE).validate(
+            "block.json",
+            parsed.value,
+            true,
+          ),
+        ),
+      );
+    const manifest = checked.value;
+    const paths = new Set([
+      manifest.entry,
+      manifest.docs,
+      ...(manifest.files ?? []),
+      ...Object.values(manifest.operations).flatMap((op) => [
+        op.input,
+        op.output,
+      ]),
+    ]);
+    if (manifest.configSchema !== undefined) paths.add(manifest.configSchema);
+    for (const path of paths) {
+      const text = read(path);
+      if (path !== manifest.entry && path.endsWith(".json")) {
+        const result = parseUntrustedJson(text, limits.parse);
+        if (!result.ok) refuse(result.error.code, result.error.message);
+      }
+    }
+    return new CapturedBlock(
+      files,
+      manifest,
+      digest(
+        JSON.stringify(
+          [...hashes].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
         ),
       ),
+      shipped,
     );
-  const manifest = checked.value;
-  const paths = new Set([
-    manifest.entry,
-    manifest.docs,
-    ...(manifest.files ?? []),
-    ...Object.values(manifest.operations).flatMap((op) => [
-      op.input,
-      op.output,
-    ]),
-  ]);
-  if (manifest.configSchema !== undefined) paths.add(manifest.configSchema);
-  for (const path of paths) {
-    const text = read(path);
-    if (path !== manifest.entry && path.endsWith(".json")) {
-      const result = parseUntrustedJson(text, limits.parse);
-      if (!result.ok) refuse(result.error.code, result.error.message);
-    }
+  } finally {
+    endMeasurement();
   }
-  return new CapturedBlock(
-    files,
-    manifest,
-    digest(
-      JSON.stringify(
-        [...hashes].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-      ),
-    ),
-    shipped,
-  );
 }
 
 type HostInterfaces = readonly string[];

@@ -1,3 +1,4 @@
+import { span, measuredAsync } from "../../contract/measure.ts";
 import {
   invocationDeadline,
   validateTimeout,
@@ -261,7 +262,12 @@ export class Runtime {
 
   /** Shipped blocks are trusted by installing the package; other bytes need human admission and grants. */
   #checkTrust(block: CapturedBlock, effects: readonly string[]): void {
-    if (!block.shipped) this.#trust.check(block.digest, effects);
+    const endMeasurement = span("admission.check");
+    try {
+      if (!block.shipped) this.#trust.check(block.digest, effects);
+    } finally {
+      endMeasurement();
+    }
   }
 
   async invokeText(
@@ -279,321 +285,348 @@ export class Runtime {
     value: unknown,
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<ResultEnvelope> {
-    let invocation: InvocationServices | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let cancel: (() => void) | undefined;
-    let handle: ServiceHandle | undefined;
-    let request: InvocationRequest | undefined;
-    let started = false;
-    let timeoutMessage: (() => string) | undefined;
-    let result: ResultEnvelope;
-    const clock = this.#options.clock ?? { now: () => Date.now() };
+    const endRuntime = span("runtime.invoke");
     try {
-      const checked = validateInvocationRequest(value);
-      if (!checked.ok) refuse("INPUT_INVALID", "invalid invocation request");
-      request = checked.value;
-      const { block, operation } = this.#catalog.resolve(request.op);
-      const declaration = operation.declaration;
-      if (!declaration.callers.includes(request.caller))
-        refuse("GRANT_REQUIRED", "caller is not permitted");
-      if (request.dryRun === true)
-        refuse("UNAVAILABLE", "this profile has no dry-run execution contract");
-      const bound = bindContext(declaration, request.context);
-      if (!bound.ok) throw new ForgeFailure(bound.error);
-      const problems = block.problems(declaration.input, request.input, true);
-      if (problems.length > 0) {
-        const docs = JSON.parse(block.text(block.manifest.docs)) as DocsRecords;
-        throw new ForgeFailure(
-          inputError(
-            request.op,
-            problems,
-            docs.operations?.[operation.declaredOp],
-            block.resolvedSchema(declaration.input) as Record<string, unknown>,
-            declaration.args,
-          ),
-        );
-      }
-      const config =
-        this.#catalog.config.blocks[operation.instance]?.config ?? {};
-      if (
-        block.manifest.configSchema !== undefined &&
-        !block.validate(block.manifest.configSchema, config)
-      )
-        refuse("INPUT_INVALID", "config does not match block schema");
-      this.#checkTrust(block, declaration.effects);
-      if (
-        this.#catalog.bindings(operation.instance).length > 0 &&
-        this.#options.services === undefined
-      )
-        refuse("PROVIDER_MISSING", "bound clients need a service provider");
-      const budget = invocationDeadline(
-        {
-          declared: declaration.timeoutMs,
-          configured:
-            this.#catalog.config.blocks[operation.instance]
-              ?.operationTimeouts?.[operation.declaredOp],
-          host: this.#catalog.config.runtime?.timeoutMs,
-          embedding: this.#limits.timeoutMs,
-        },
-        clock,
-      );
-      const preparationTimeoutMs = Math.min(
-        this.#catalog.config.runtime?.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
-        this.#limits.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
-      );
-      timeoutMessage = () => {
-        const host = this.#catalog.config.runtime?.timeoutMs;
-        const embedding = this.#limits.timeoutMs;
-        const value = started ? budget.timeoutMs : preparationTimeoutMs;
-        if (!started && host !== value && embedding !== value)
-          return formatConfigProblem(
-            `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`,
-            "Invocation host preparation deadline expired: configured operation and command timeouts add up to more than Node's largest supported timer (2147483647 ms, about 24.8 days)",
-            `lower blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] or blocks.${operation.instance}.config.timeoutMs`,
+      let invocation: InvocationServices | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let cancel: (() => void) | undefined;
+      let handle: ServiceHandle | undefined;
+      let request: InvocationRequest | undefined;
+      let started = false;
+      let timeoutMessage: (() => string) | undefined;
+      let result: ResultEnvelope;
+      const clock = this.#options.clock ?? { now: () => Date.now() };
+      try {
+        const checked = validateInvocationRequest(value);
+        if (!checked.ok) refuse("INPUT_INVALID", "invalid invocation request");
+        request = checked.value;
+        const { block, operation } = this.#catalog.resolve(request.op);
+        const declaration = operation.declaration;
+        if (!declaration.callers.includes(request.caller))
+          refuse("GRANT_REQUIRED", "caller is not permitted");
+        if (request.dryRun === true)
+          refuse(
+            "UNAVAILABLE",
+            "this profile has no dry-run execution contract",
           );
-        const key =
-          host === value
-            ? "runtime.timeoutMs"
-            : embedding === value
-              ? "RuntimeOptions.limits.timeoutMs"
-              : `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`;
-        return formatConfigProblem(
-          key,
-          `Invocation ${started ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s)`,
-          `increase ${key} to more than ${value / 1000} s`,
-          embedding === value ? "embedding host" : ".forge/config.yaml",
+        const bound = bindContext(declaration, request.context);
+        if (!bound.ok) throw new ForgeFailure(bound.error);
+        const problems = block.problems(declaration.input, request.input, true);
+        if (problems.length > 0) {
+          const docs = JSON.parse(
+            block.text(block.manifest.docs),
+          ) as DocsRecords;
+          throw new ForgeFailure(
+            inputError(
+              request.op,
+              problems,
+              docs.operations?.[operation.declaredOp],
+              block.resolvedSchema(declaration.input) as Record<
+                string,
+                unknown
+              >,
+              declaration.args,
+            ),
+          );
+        }
+        const config =
+          this.#catalog.config.blocks[operation.instance]?.config ?? {};
+        if (
+          block.manifest.configSchema !== undefined &&
+          !block.validate(block.manifest.configSchema, config)
+        )
+          refuse("INPUT_INVALID", "config does not match block schema");
+        this.#checkTrust(block, declaration.effects);
+        if (
+          this.#catalog.bindings(operation.instance).length > 0 &&
+          this.#options.services === undefined
+        )
+          refuse("PROVIDER_MISSING", "bound clients need a service provider");
+        const budget = invocationDeadline(
+          {
+            declared: declaration.timeoutMs,
+            configured:
+              this.#catalog.config.blocks[operation.instance]
+                ?.operationTimeouts?.[operation.declaredOp],
+            host: this.#catalog.config.runtime?.timeoutMs,
+            embedding: this.#limits.timeoutMs,
+          },
+          clock,
         );
-      };
-      invocation = new InvocationServices(
-        clock.now() + preparationTimeoutMs,
-        () => {
-          this.#checkTrust(block, declaration.effects);
-        },
-        declaration.processContainment === "strict",
-        clock,
-        this.#limits.parse,
-      );
-      const scope = invocation;
-      cancel = () =>
-        scope.controller.abort(
-          new ForgeFailure({
-            code: "INVOCATION_CANCELLED",
-            message: "Invocation cancelled",
-            retry: "reconcile_first",
-          }),
+        const preparationTimeoutMs = Math.min(
+          this.#catalog.config.runtime?.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
+          this.#limits.timeoutMs ?? TIMEOUT_BOUNDS.maximum,
         );
-      options.signal?.addEventListener("abort", cancel, { once: true });
-      if (options.signal?.aborted) cancel();
-      const armDeadline = (timeoutMs: number): void => {
-        if (timer !== undefined) clearTimeout(timer);
-        timer = setTimeout(
-          () =>
-            scope.controller.abort(
-              new ForgeFailure({
-                code: "INVOCATION_TIMEOUT",
-                message: "Invocation deadline exceeded",
-                retry: "reconcile_first",
+        timeoutMessage = () => {
+          const host = this.#catalog.config.runtime?.timeoutMs;
+          const embedding = this.#limits.timeoutMs;
+          const value = started ? budget.timeoutMs : preparationTimeoutMs;
+          if (!started && host !== value && embedding !== value)
+            return formatConfigProblem(
+              `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`,
+              "Invocation host preparation deadline expired: configured operation and command timeouts add up to more than Node's largest supported timer (2147483647 ms, about 24.8 days)",
+              `lower blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] or blocks.${operation.instance}.config.timeoutMs`,
+            );
+          const key =
+            host === value
+              ? "runtime.timeoutMs"
+              : embedding === value
+                ? "RuntimeOptions.limits.timeoutMs"
+                : `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`;
+          return formatConfigProblem(
+            key,
+            `Invocation ${started ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s)`,
+            `increase ${key} to more than ${value / 1000} s`,
+            embedding === value ? "embedding host" : ".forge/config.yaml",
+          );
+        };
+        invocation = new InvocationServices(
+          clock.now() + preparationTimeoutMs,
+          () => {
+            this.#checkTrust(block, declaration.effects);
+          },
+          declaration.processContainment === "strict",
+          clock,
+          this.#limits.parse,
+        );
+        const scope = invocation;
+        cancel = () =>
+          scope.controller.abort(
+            new ForgeFailure({
+              code: "INVOCATION_CANCELLED",
+              message: "Invocation cancelled",
+              retry: "reconcile_first",
+            }),
+          );
+        options.signal?.addEventListener("abort", cancel, { once: true });
+        if (options.signal?.aborted) cancel();
+        const armDeadline = (timeoutMs: number): void => {
+          if (timer !== undefined) clearTimeout(timer);
+          timer = setTimeout(
+            () =>
+              scope.controller.abort(
+                new ForgeFailure({
+                  code: "INVOCATION_TIMEOUT",
+                  message: "Invocation deadline exceeded",
+                  retry: "reconcile_first",
+                }),
+              ),
+            timeoutMs,
+          );
+        };
+        armDeadline(preparationTimeoutMs);
+        scope.check();
+        const endServices = span("runtime.services_prepare");
+        handle = await scope.wait(
+          Promise.resolve(
+            this.#options.services?.(
+              operation.instance,
+              bound.context,
+              Object.freeze({
+                op: request.op,
+                effects: Object.freeze([...declaration.effects]),
+                signal: scope.controller.signal,
+                get deadline() {
+                  return scope.deadline;
+                },
+                processContainment:
+                  declaration.processContainment ?? "supervised",
               }),
             ),
-          timeoutMs,
-        );
-      };
-      armDeadline(preparationTimeoutMs);
-      scope.check();
-      handle = await scope.wait(
-        Promise.resolve(
-          this.#options.services?.(
-            operation.instance,
-            bound.context,
-            Object.freeze({
-              op: request.op,
-              effects: Object.freeze([...declaration.effects]),
-              signal: scope.controller.signal,
-              get deadline() {
-                return scope.deadline;
-              },
-              processContainment:
-                declaration.processContainment ?? "supervised",
-            }),
           ),
-        ),
-        async (late) => {
-          if (late?.ownership === "owned") await late.close();
-        },
-      );
-      await scope.prepare(handle?.value);
-      scope.check();
-      // Opening clients may yield; trust must still hold immediately before execution.
-      this.#checkTrust(block, declaration.effects);
-      if (this.#options.isolation === undefined)
-        refuse("PROVIDER_MISSING", "execution needs an isolation provider");
-      const opened = await scope.wait(
-        this.#options.isolation.open(),
-        async (late) => {
-          if (late.ok) await late.handle.close();
-        },
-      );
-      if (!opened.ok) refuse("PROVIDER_MISSING", opened.unavailable.reason);
-      let encoded: unknown;
-      try {
-        // Host preparation has its own ceiling; the handler receives its whole declared budget.
-        const handlerStartedAt = clock.now();
-        scope.startHandler(handlerStartedAt + budget.remaining());
-        armDeadline(
-          Math.max(TIMEOUT_BOUNDS.minimum, scope.deadline - clock.now()),
-        );
-        // Opening the evaluator may yield too; admission must still be current.
-        this.#checkTrust(block, declaration.effects);
-        scope.check();
-        started = true;
-        encoded = await scope.wait(
-          Promise.resolve(
-            opened.handle.value.run({
-              source: block.text(block.manifest.entry),
-              filename: block.manifest.entry,
-              operation: operation.declaredOp,
-              args: Object.freeze({
-                input: freezeData(structuredClone(request.input)),
-                config: freezeData(structuredClone(config)),
-                services: scope.wrap(handle?.value ?? Object.freeze({})),
-                signal: scope.controller.signal,
-                deadline: scope.deadline,
-              }),
-              encode: (output: unknown) => encodeOutput(output, this.#limits),
-              fail: refuse,
-              timeoutMs: Math.max(1, scope.deadline - clock.now()),
-              deadline: scope.deadline,
-              signal: scope.controller.signal,
-              settled: () => scope.expire(),
-            }),
-          ),
-        );
-        budget.remaining();
-      } finally {
-        scope.stop();
-        await opened.handle.close();
-      }
-      if (typeof encoded !== "string")
-        refuse("OUTPUT_INVALID", "missing JSON output");
-      const parsed = parseUntrustedJson(encoded, {
-        ...this.#limits.parse,
-        maxBytes: this.#limits.maxOutputBytes,
-      });
-      if (!parsed.ok) throw new ForgeFailure(parsed.error);
-      if (!block.validate(declaration.output, parsed.value))
-        refuse("OUTPUT_INVALID", "output does not match operation schema");
-      this.#checkTrust(block, declaration.effects);
-      result = {
-        ok: true,
-        op: request.op,
-        status: "OK",
-        result: parsed.value,
-        warnings: [],
-      };
-    } catch (error) {
-      const failure =
-        error instanceof ForgeFailure
-          ? error.error
-          : {
-              code: "BLOCK_EXECUTION_FAILED",
-              message: "block execution failed",
-              retry: "never" as const,
-              observed: { cause: errorCause(error) },
-            };
-      result = {
-        ok: false,
-        ...(request === undefined ? {} : { op: request.op }),
-        status:
-          failure.code === "ADMISSION_REQUIRED" ||
-          failure.code === "GRANT_REQUIRED" ||
-          failure.code === "LIMIT_EXCEEDED" ||
-          failure.code === "CONTAINMENT_UNAVAILABLE" ||
-          failure.code === "PROCESS_LIMIT_EXCEEDED" ||
-          failure.code === "PROVIDER_MISSING"
-            ? "INCOMPLETE"
-            : "FAIL",
-        error: {
-          ...failure,
-          ...(failure.code === "INVOCATION_TIMEOUT" &&
-          timeoutMessage &&
-          invocation !== undefined &&
-          clock.now() >= invocation.deadline
-            ? { message: timeoutMessage() }
-            : {}),
-          retry: started
-            ? "reconcile_first"
-            : failure.code === "INVOCATION_TIMEOUT"
-              ? "never"
-              : failure.retry,
-        },
-        warnings: [],
-      };
-    }
-    if (timer !== undefined) clearTimeout(timer);
-    if (cancel) options.signal?.removeEventListener("abort", cancel);
-    invocation?.stop();
-    let processCleanupFailed = false;
-    try {
-      await invocation?.drain();
-    } catch {
-      processCleanupFailed = true;
-    }
-    let serviceCleanupFailed = false;
-    try {
-      if (handle?.ownership === "owned") await handle.close();
-    } catch {
-      serviceCleanupFailed = true;
-      result = {
-        ok: false,
-        ...(request === undefined ? {} : { op: request.op }),
-        status: "INCOMPLETE",
-        error: {
-          code: "INTERNAL",
-          message: "owned service cleanup failed",
-          retry: "reconcile_first",
-        },
-        warnings: [],
-      };
-    }
-    if (processCleanupFailed && !serviceCleanupFailed)
-      result = {
-        ok: false,
-        ...(request === undefined ? {} : { op: request.op }),
-        status: "INCOMPLETE",
-        error: {
-          code: "PROCESS_CLEANUP_FAILED",
-          message: "The process tree could not be confirmed stopped",
-          retry: "reconcile_first",
-        },
-        warnings: [],
-      };
-    result = {
-      ...result,
-      warnings: [...result.warnings, ...(invocation?.warnings() ?? [])],
-    };
-    const processes = result.ok ? undefined : invocation?.diagnostics();
-    if (processes && !result.ok) {
-      const candidate = {
-        ...result,
-        error: {
-          ...result.error,
-          observed: {
-            ...(result.error.observed === undefined
-              ? {}
-              : { previous: result.error.observed }),
-            processes,
+          async (late) => {
+            if (late?.ownership === "owned") await late.close();
           },
-        },
-      };
-      try {
-        // Include the whole envelope, escaping and pre-existing diagnostics in the budget.
-        const encoded = encodeOutput(candidate, this.#limits);
-        const parsed = parseUntrustedJson(encoded, this.#limits.parse);
-        if (parsed.ok) return freezeData(parsed.value) as ResultEnvelope;
-      } catch {
-        // No room for optional evidence: preserve the original failure unchanged.
+        );
+        await scope.prepare(handle?.value);
+        endServices();
+        scope.check();
+        // Opening clients may yield; trust must still hold immediately before execution.
+        this.#checkTrust(block, declaration.effects);
+        if (this.#options.isolation === undefined)
+          refuse("PROVIDER_MISSING", "execution needs an isolation provider");
+        const endPreparation = span("runtime.isolation_open");
+        const opened = await scope.wait(
+          this.#options.isolation.open(),
+          async (late) => {
+            if (late.ok) await late.handle.close();
+          },
+        );
+        endPreparation();
+        if (!opened.ok) refuse("PROVIDER_MISSING", opened.unavailable.reason);
+        let encoded: unknown;
+        const endHandler = span("handler.execute");
+        try {
+          // Host preparation has its own ceiling; the handler receives its whole declared budget.
+          const handlerStartedAt = clock.now();
+          scope.startHandler(handlerStartedAt + budget.remaining());
+          armDeadline(
+            Math.max(TIMEOUT_BOUNDS.minimum, scope.deadline - clock.now()),
+          );
+          // Opening the evaluator may yield too; admission must still be current.
+          this.#checkTrust(block, declaration.effects);
+          scope.check();
+          started = true;
+          encoded = await scope.wait(
+            Promise.resolve(
+              opened.handle.value.run({
+                source: block.text(block.manifest.entry),
+                filename: block.manifest.entry,
+                operation: operation.declaredOp,
+                args: Object.freeze({
+                  input: freezeData(structuredClone(request.input)),
+                  config: freezeData(structuredClone(config)),
+                  services: scope.wrap(handle?.value ?? Object.freeze({})),
+                  signal: scope.controller.signal,
+                  deadline: scope.deadline,
+                }),
+                encode: (output: unknown) => encodeOutput(output, this.#limits),
+                fail: refuse,
+                timeoutMs: Math.max(1, scope.deadline - clock.now()),
+                deadline: scope.deadline,
+                signal: scope.controller.signal,
+                settled: () => scope.expire(),
+              }),
+            ),
+          );
+          budget.remaining();
+        } finally {
+          endHandler();
+          const endClose = span("runtime.isolation_close");
+          scope.stop();
+          try {
+            await opened.handle.close();
+          } finally {
+            endClose();
+          }
+        }
+        if (typeof encoded !== "string")
+          refuse("OUTPUT_INVALID", "missing JSON output");
+        const parsed = parseUntrustedJson(encoded, {
+          ...this.#limits.parse,
+          maxBytes: this.#limits.maxOutputBytes,
+        });
+        if (!parsed.ok) throw new ForgeFailure(parsed.error);
+        if (!block.validate(declaration.output, parsed.value))
+          refuse("OUTPUT_INVALID", "output does not match operation schema");
+        this.#checkTrust(block, declaration.effects);
+        result = {
+          ok: true,
+          op: request.op,
+          status: "OK",
+          result: parsed.value,
+          warnings: [],
+        };
+      } catch (error) {
+        const failure =
+          error instanceof ForgeFailure
+            ? error.error
+            : {
+                code: "BLOCK_EXECUTION_FAILED",
+                message: "block execution failed",
+                retry: "never" as const,
+                observed: { cause: errorCause(error) },
+              };
+        result = {
+          ok: false,
+          ...(request === undefined ? {} : { op: request.op }),
+          status:
+            failure.code === "ADMISSION_REQUIRED" ||
+            failure.code === "GRANT_REQUIRED" ||
+            failure.code === "LIMIT_EXCEEDED" ||
+            failure.code === "CONTAINMENT_UNAVAILABLE" ||
+            failure.code === "PROCESS_LIMIT_EXCEEDED" ||
+            failure.code === "PROVIDER_MISSING"
+              ? "INCOMPLETE"
+              : "FAIL",
+          error: {
+            ...failure,
+            ...(failure.code === "INVOCATION_TIMEOUT" &&
+            timeoutMessage &&
+            invocation !== undefined &&
+            clock.now() >= invocation.deadline
+              ? { message: timeoutMessage() }
+              : {}),
+            retry: started
+              ? "reconcile_first"
+              : failure.code === "INVOCATION_TIMEOUT"
+                ? "never"
+                : failure.retry,
+          },
+          warnings: [],
+        };
       }
+      if (timer !== undefined) clearTimeout(timer);
+      if (cancel) options.signal?.removeEventListener("abort", cancel);
+      invocation?.stop();
+      let processCleanupFailed = false;
+      try {
+        await measuredAsync("runtime.process_drain", async () => {
+          await invocation?.drain();
+        });
+      } catch {
+        processCleanupFailed = true;
+      }
+      let serviceCleanupFailed = false;
+      try {
+        if (handle?.ownership === "owned")
+          await measuredAsync("runtime.services_close", () => handle.close());
+      } catch {
+        serviceCleanupFailed = true;
+        result = {
+          ok: false,
+          ...(request === undefined ? {} : { op: request.op }),
+          status: "INCOMPLETE",
+          error: {
+            code: "INTERNAL",
+            message: "owned service cleanup failed",
+            retry: "reconcile_first",
+          },
+          warnings: [],
+        };
+      }
+      if (processCleanupFailed && !serviceCleanupFailed)
+        result = {
+          ok: false,
+          ...(request === undefined ? {} : { op: request.op }),
+          status: "INCOMPLETE",
+          error: {
+            code: "PROCESS_CLEANUP_FAILED",
+            message: "The process tree could not be confirmed stopped",
+            retry: "reconcile_first",
+          },
+          warnings: [],
+        };
+      result = {
+        ...result,
+        warnings: [...result.warnings, ...(invocation?.warnings() ?? [])],
+      };
+      const processes = result.ok ? undefined : invocation?.diagnostics();
+      if (processes && !result.ok) {
+        const candidate = {
+          ...result,
+          error: {
+            ...result.error,
+            observed: {
+              ...(result.error.observed === undefined
+                ? {}
+                : { previous: result.error.observed }),
+              processes,
+            },
+          },
+        };
+        try {
+          // Include the whole envelope, escaping and pre-existing diagnostics in the budget.
+          const encoded = encodeOutput(candidate, this.#limits);
+          const parsed = parseUntrustedJson(encoded, this.#limits.parse);
+          if (parsed.ok) return freezeData(parsed.value) as ResultEnvelope;
+        } catch {
+          // No room for optional evidence: preserve the original failure unchanged.
+        }
+      }
+      return result;
+    } finally {
+      endRuntime();
     }
-    return result;
   }
 }

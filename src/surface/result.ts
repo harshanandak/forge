@@ -1,3 +1,4 @@
+import { span } from "../contract/measure.ts";
 import type { FailureEnvelope, ResultEnvelope } from "../generated/types.ts";
 
 export function failure(
@@ -62,9 +63,14 @@ export function respond(
   envelope: ResultEnvelope,
   text = false,
 ): SurfaceResponse {
-  return {
-    envelope,
-    stdout: `${text ? renderText(envelope) : JSON.stringify(envelope)}\n`,
-    exitCode: exitCode(envelope),
-  };
+  const endMeasurement = span("result.render");
+  try {
+    return {
+      envelope,
+      stdout: `${text ? renderText(envelope) : JSON.stringify(envelope)}\n`,
+      exitCode: exitCode(envelope),
+    };
+  } finally {
+    endMeasurement();
+  }
 }

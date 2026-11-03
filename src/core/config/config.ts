@@ -1,3 +1,4 @@
+import { span } from "../../contract/measure.ts";
 // config.* operations: the three ways in. Do nothing and the derived layer mirrors the project;
 // change one thing at a time with compare-and-set edits; or import a template (templates.ts).
 // Reads never write: show, explain and detect only read files.
@@ -501,62 +502,68 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
 
   return {
     show(input = {}) {
-      const current = readProject(env);
-      const derived = derive();
-      const invocation: InvocationValue[] = (input.invocation ?? [])
-        .filter((step) => step.op === "set")
-        .map((step) => {
-          const segments = segmentsOf(step.path);
-          refuseMetadata(step.path, segments);
-          return { segments, value: step.value };
-        });
-      let patched = clone(current.document);
-      for (const { segments, value } of invocation)
-        setIn((patched ??= emptyDocument()), segments, clone(value));
-      const { document, excluded, implied } = usable(patched, env);
-      const kept = invocation
-        .flatMap(({ segments, value }) => leaves(value, undefined, segments))
-        .filter(({ segments }) => hasIn(document, segments))
-        .filter(
-          ({ segments, value }) =>
-            !isObject(value) || leaves(getIn(document, segments)).length === 0,
-        )
-        .map(({ segments }) => ({
-          segments,
-          value: getIn(document, segments),
-        }));
-      const layers = resolve(env, document, implied, derived, kept);
-      const blocks = isObject(document?.blocks) ? document.blocks : {};
-      const instances: Instance[] = [];
-      for (const [name, instance] of Object.entries(blocks)) {
-        if (!isObject(instance) || !isObject(instance.source)) continue;
-        instances.push({
-          name,
-          source: instance.source as unknown as BlockSource,
-          enabled: instance.enabled !== false,
-        });
+      const endMeasurement = span("config.resolve");
+      try {
+        const current = readProject(env);
+        const derived = derive();
+        const invocation: InvocationValue[] = (input.invocation ?? [])
+          .filter((step) => step.op === "set")
+          .map((step) => {
+            const segments = segmentsOf(step.path);
+            refuseMetadata(step.path, segments);
+            return { segments, value: step.value };
+          });
+        let patched = clone(current.document);
+        for (const { segments, value } of invocation)
+          setIn((patched ??= emptyDocument()), segments, clone(value));
+        const { document, excluded, implied } = usable(patched, env);
+        const kept = invocation
+          .flatMap(({ segments, value }) => leaves(value, undefined, segments))
+          .filter(({ segments }) => hasIn(document, segments))
+          .filter(
+            ({ segments, value }) =>
+              !isObject(value) ||
+              leaves(getIn(document, segments)).length === 0,
+          )
+          .map(({ segments }) => ({
+            segments,
+            value: getIn(document, segments),
+          }));
+        const layers = resolve(env, document, implied, derived, kept);
+        const blocks = isObject(document?.blocks) ? document.blocks : {};
+        const instances: Instance[] = [];
+        for (const [name, instance] of Object.entries(blocks)) {
+          if (!isObject(instance) || !isObject(instance.source)) continue;
+          instances.push({
+            name,
+            source: instance.source as unknown as BlockSource,
+            enabled: instance.enabled !== false,
+          });
+        }
+        return {
+          valid: current.unreadable === undefined && excluded.length === 0,
+          file: CONFIG_FILE,
+          revision: current.revision,
+          configured:
+            current.document !== undefined || current.unreadable !== undefined,
+          instances,
+          templates: Array.isArray(document?.templates)
+            ? (document.templates as TemplateProvenance[])
+            : [],
+          values: layers.entries,
+          ignored: derived.ignored,
+          problems: [
+            ...(current.unreadable === undefined
+              ? []
+              : [current.unreadable.message]),
+            ...excluded.flatMap((e) => e.problems),
+          ],
+          excluded,
+          effective: layers.effective,
+        };
+      } finally {
+        endMeasurement();
       }
-      return {
-        valid: current.unreadable === undefined && excluded.length === 0,
-        file: CONFIG_FILE,
-        revision: current.revision,
-        configured:
-          current.document !== undefined || current.unreadable !== undefined,
-        instances,
-        templates: Array.isArray(document?.templates)
-          ? (document.templates as TemplateProvenance[])
-          : [],
-        values: layers.entries,
-        ignored: derived.ignored,
-        problems: [
-          ...(current.unreadable === undefined
-            ? []
-            : [current.unreadable.message]),
-          ...excluded.flatMap((e) => e.problems),
-        ],
-        excluded,
-        effective: layers.effective,
-      };
     },
 
     explain(input) {

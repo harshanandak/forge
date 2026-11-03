@@ -1,3 +1,4 @@
+import { measuredAsync, count } from "../../contract/measure.ts";
 import type { Unavailable } from "../../generated/types.ts";
 import type {
   ProcessPort,
@@ -42,7 +43,10 @@ export function createProcessPort(
       args: readonly string[],
       spawnOptions: SpawnOptions,
     ): Promise<ProcessResult> {
-      return runProcess(executable.path, args, spawnOptions, platform, options);
+      count("process.calls");
+      return measuredAsync("process.run", () =>
+        runProcess(executable.path, args, spawnOptions, platform, options),
+      );
     },
   };
 }

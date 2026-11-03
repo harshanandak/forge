@@ -1,3 +1,4 @@
+import { measuredAsync, span } from "../contract/measure.ts";
 import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -221,8 +222,12 @@ export async function createAssembly(
   const providers = createAssemblyProviders(root, options.providers);
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   // Every git worktree of one repository shares one store; config and files stay at `root`.
-  const stateRoot = await projectStateRoot(root, options.providers);
-  const scopeRoot = await checkoutScopeRoot(root, options.providers);
+  const stateRoot = await measuredAsync("assembly.project_identity", () =>
+    projectStateRoot(root, options.providers),
+  );
+  const scopeRoot = await measuredAsync("assembly.checkout_identity", () =>
+    checkoutScopeRoot(root, options.providers),
+  );
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
@@ -493,217 +498,232 @@ export async function createAssembly(
     unavailable: readonly UnavailableBlock[];
     problems: readonly string[];
   } {
-    let configured: ShowResult;
-    let fallback = false;
+    const endMeasurement = span("catalog.snapshot");
     try {
-      if (invalidMemoryConfig) refuse("INPUT_INVALID", "Invalid memory config");
-      configured = configuredShow ?? call.config.show();
-      if (deviceMemory && !configured.valid)
-        refuse("INPUT_INVALID", "Invalid project config");
-    } catch (error) {
-      if (!deviceMemory) throw error;
-      fallback = true;
-      call.inProject = false;
-      const kind =
-        error instanceof ForgeFailure &&
-        ["INPUT_INVALID", "LIMIT_EXCEEDED"].includes(error.error.code)
-          ? error.error.code
-          : "UNAVAILABLE";
-      if (
-        !call.warnings.some(
-          (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
-        )
-      )
-        call.warnings.push({
-          code: "PROJECT_CONFIG_UNAVAILABLE",
-          message: `.forge/config.yaml could not be loaded or validated (${kind}). Device memory is available; the repo override and project-level memory are unavailable until .forge/config.yaml is repaired.`,
-        });
-      configured = {
-        valid: true,
-        file: ".forge/config.yaml",
-        revision: "",
-        configured: false,
-        instances: [],
-        templates: [],
-        values: [],
-        ignored: [],
-        problems: [],
-        excluded: [],
-        effective: {},
-      };
-    }
-    // A device-only host needs no project file to select the shipped memory block.
-    const show: ShowResult =
-      !call.inProject && !configured.configured
-        ? {
-            ...configured,
-            instances: [
-              { name: "memory", source: DEVICE_MEMORY.source, enabled: true },
-            ],
-            effective: {
-              ...configured.effective,
-              blocks: { memory: DEVICE_MEMORY },
-            },
-          }
-        : configured;
-    const document = composition(show);
-    const blocks = new Map<string, CapturedBlock>();
-    const candidates: McpCandidate[] = [];
-    const unavailable: UnavailableBlock[] = [];
-    let active = new Catalog(
-      { schemaVersion: "forge.config/1", blocks: {} },
-      new Map(),
-      version,
-    );
-    const nounOwners = new Map<string, string[]>();
-    for (const [name, instance] of Object.entries(document.blocks)) {
-      if (instance.enabled === false) continue;
+      let configured: ShowResult;
+      let fallback = false;
       try {
-        const block = call.captured(instance.source);
-        for (const op of Object.keys(block.manifest.operations)) {
-          const noun = parseOperationName(op)?.noun;
-          if (noun === undefined) continue;
-          const exposed = instance.rename?.[noun] ?? noun;
-          const names = nounOwners.get(exposed) ?? [];
-          if (!names.includes(name))
-            nounOwners.set(exposed, [...names, name].sort());
-        }
-      } catch {
-        // The registration loop reports capture failures through its existing path.
-      }
-    }
-    const collisions = new Map(
-      nounCollisions(
-        [...nounOwners].flatMap(([noun, names]) => names.map(() => noun)),
-      ).map(
-        (pair) =>
-          [
-            JSON.stringify(pair),
-            [...new Set(pair.flatMap((noun) => nounOwners.get(noun)!))].sort(),
-          ] as const,
-      ),
-    );
-    for (const [name, instance] of Object.entries(document.blocks)) {
-      if (instance.enabled === false) continue;
-      try {
-        const collision = [...collisions]
-          .filter(([, names]) => names.includes(name))
-          .map(
-            ([pair, names]) =>
-              `nouns ${pair} collide between blocks ${JSON.stringify(names)}`,
-          )
-          .join("; ");
-        if (collision) refuse("INPUT_INVALID", collision);
-        if ("builtin" in instance.source) {
-          const builtin = instance.source.builtin;
-          const problems = validateWithSchema(
-            { type: "string", enum: Object.keys(firstPartyBlocks) },
-            builtin,
-          );
-          if (problems.length)
-            refuse(
-              "INPUT_INVALID",
-              problems
-                .map((p) =>
-                  schemaDiagnostic(p, builtin, `blocks.${name}.source.builtin`),
-                )
-                .join("\n"),
-            );
-        }
-        const block = call.captured(instance.source);
+        if (invalidMemoryConfig)
+          refuse("INPUT_INVALID", "Invalid memory config");
+        configured = configuredShow ?? call.config.show();
+        if (deviceMemory && !configured.valid)
+          refuse("INPUT_INVALID", "Invalid project config");
+      } catch (error) {
+        if (!deviceMemory) throw error;
+        fallback = true;
+        call.inProject = false;
+        const kind =
+          error instanceof ForgeFailure &&
+          ["INPUT_INVALID", "LIMIT_EXCEEDED"].includes(error.error.code)
+            ? error.error.code
+            : "UNAVAILABLE";
         if (
-          deviceMemory &&
-          !fallback &&
-          "builtin" in instance.source &&
-          instance.source.builtin === "forge/memory" &&
-          block.manifest.configSchema !== undefined &&
-          block.problems(block.manifest.configSchema, instance.config ?? {})
-            .length > 0
-        )
-          return snapshot(call, true, true);
-        const docs = ready(block, instance, name);
-        const proposed = new Map(blocks);
-        proposed.set(name, block);
-        const checked = new Catalog(
-          availableComposition(document, proposed),
-          proposed,
-          version,
-          ASSEMBLY_PROVIDES,
-        );
-        let admitted = false;
-        try {
-          if (!block.shipped) trust.check(block.digest, []);
-          admitted = true;
-        } catch (error) {
-          if (
-            !(error instanceof ForgeFailure) ||
-            error.error.code !== "ADMISSION_REQUIRED"
+          !call.warnings.some(
+            (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
           )
-            throw error;
-        }
-        const entries = checked
-          .list()
-          .filter((op) => checked.resolve(op).operation.instance === name)
-          .map((op) => {
-            const described = checked.describe(op);
-            const { block: captured, operation } = checked.resolve(op);
-            return {
-              ...described,
-              declaredOp: operation.declaredOp,
-              admitted,
-              docs: docs.operations[operation.declaredOp]!,
-              inputSchema: described.inputSchema as McpCandidate["inputSchema"],
-              argumentSchema: captured.resolvedSchema(
-                operation.declaration.input,
-              ) as McpCandidate["inputSchema"],
-              outputSchema:
-                described.outputSchema as McpCandidate["inputSchema"],
-            };
+        )
+          call.warnings.push({
+            code: "PROJECT_CONFIG_UNAVAILABLE",
+            message: `.forge/config.yaml could not be loaded or validated (${kind}). Device memory is available; the repo override and project-level memory are unavailable until .forge/config.yaml is repaired.`,
           });
-        blocks.set(name, block);
-        candidates.push(...entries);
-        active = checked;
-      } catch (error) {
-        unavailable.push(unavailableBlock(name, instance, error));
+        configured = {
+          valid: true,
+          file: ".forge/config.yaml",
+          revision: "",
+          configured: false,
+          instances: [],
+          templates: [],
+          values: [],
+          ignored: [],
+          problems: [],
+          excluded: [],
+          effective: {},
+        };
       }
-    }
-    // Adding a provider can implicitly bind a previously optional slot. Check
-    // the completed composition, including consumers captured before providers.
-    for (const name of blocks.keys()) {
-      try {
-        readyBindings(active, name);
-      } catch (error) {
-        unavailable.push(unavailableBlock(name, document.blocks[name]!, error));
-        blocks.delete(name);
+      // A device-only host needs no project file to select the shipped memory block.
+      const show: ShowResult =
+        !call.inProject && !configured.configured
+          ? {
+              ...configured,
+              instances: [
+                { name: "memory", source: DEVICE_MEMORY.source, enabled: true },
+              ],
+              effective: {
+                ...configured.effective,
+                blocks: { memory: DEVICE_MEMORY },
+              },
+            }
+          : configured;
+      const document = composition(show);
+      const blocks = new Map<string, CapturedBlock>();
+      const candidates: McpCandidate[] = [];
+      const unavailable: UnavailableBlock[] = [];
+      let active = new Catalog(
+        { schemaVersion: "forge.config/1", blocks: {} },
+        new Map(),
+        version,
+      );
+      const nounOwners = new Map<string, string[]>();
+      for (const [name, instance] of Object.entries(document.blocks)) {
+        if (instance.enabled === false) continue;
+        try {
+          const block = call.captured(instance.source);
+          for (const op of Object.keys(block.manifest.operations)) {
+            const noun = parseOperationName(op)?.noun;
+            if (noun === undefined) continue;
+            const exposed = instance.rename?.[noun] ?? noun;
+            const names = nounOwners.get(exposed) ?? [];
+            if (!names.includes(name))
+              nounOwners.set(exposed, [...names, name].sort());
+          }
+        } catch {
+          // The registration loop reports capture failures through its existing path.
+        }
       }
-    }
-    active = new Catalog(
-      availableComposition(document, blocks),
-      blocks,
-      version,
-      ASSEMBLY_PROVIDES,
-    );
-    const executable = new Set(active.list());
-    return {
-      show,
-      document,
-      catalog: active,
-      blocks,
-      candidates: candidates.filter(
-        (entry) =>
-          executable.has(entry.op) &&
-          (!fallback || DEVICE_MEMORY_OPS.has(entry.op)),
-      ),
-      unavailable,
-      problems: [
-        ...show.problems,
-        ...unavailable.map((block) =>
-          block.error.code === "INPUT_INVALID"
-            ? block.reason
-            : `.forge/config.yaml: blocks.${block.name}.source: ${block.reason}. ${block.remedy}`,
+      const collisions = new Map(
+        nounCollisions(
+          [...nounOwners].flatMap(([noun, names]) => names.map(() => noun)),
+        ).map(
+          (pair) =>
+            [
+              JSON.stringify(pair),
+              [
+                ...new Set(pair.flatMap((noun) => nounOwners.get(noun)!)),
+              ].sort(),
+            ] as const,
         ),
-      ],
-    };
+      );
+      for (const [name, instance] of Object.entries(document.blocks)) {
+        if (instance.enabled === false) continue;
+        try {
+          const collision = [...collisions]
+            .filter(([, names]) => names.includes(name))
+            .map(
+              ([pair, names]) =>
+                `nouns ${pair} collide between blocks ${JSON.stringify(names)}`,
+            )
+            .join("; ");
+          if (collision) refuse("INPUT_INVALID", collision);
+          if ("builtin" in instance.source) {
+            const builtin = instance.source.builtin;
+            const problems = validateWithSchema(
+              { type: "string", enum: Object.keys(firstPartyBlocks) },
+              builtin,
+            );
+            if (problems.length)
+              refuse(
+                "INPUT_INVALID",
+                problems
+                  .map((p) =>
+                    schemaDiagnostic(
+                      p,
+                      builtin,
+                      `blocks.${name}.source.builtin`,
+                    ),
+                  )
+                  .join("\n"),
+              );
+          }
+          const block = call.captured(instance.source);
+          if (
+            deviceMemory &&
+            !fallback &&
+            "builtin" in instance.source &&
+            instance.source.builtin === "forge/memory" &&
+            block.manifest.configSchema !== undefined &&
+            block.problems(block.manifest.configSchema, instance.config ?? {})
+              .length > 0
+          )
+            return snapshot(call, true, true);
+          const docs = ready(block, instance, name);
+          const proposed = new Map(blocks);
+          proposed.set(name, block);
+          const checked = new Catalog(
+            availableComposition(document, proposed),
+            proposed,
+            version,
+            ASSEMBLY_PROVIDES,
+          );
+          let admitted = false;
+          try {
+            if (!block.shipped) trust.check(block.digest, []);
+            admitted = true;
+          } catch (error) {
+            if (
+              !(error instanceof ForgeFailure) ||
+              error.error.code !== "ADMISSION_REQUIRED"
+            )
+              throw error;
+          }
+          const entries = checked
+            .list()
+            .filter((op) => checked.resolve(op).operation.instance === name)
+            .map((op) => {
+              const described = checked.describe(op);
+              const { block: captured, operation } = checked.resolve(op);
+              return {
+                ...described,
+                declaredOp: operation.declaredOp,
+                admitted,
+                docs: docs.operations[operation.declaredOp]!,
+                inputSchema:
+                  described.inputSchema as McpCandidate["inputSchema"],
+                argumentSchema: captured.resolvedSchema(
+                  operation.declaration.input,
+                ) as McpCandidate["inputSchema"],
+                outputSchema:
+                  described.outputSchema as McpCandidate["inputSchema"],
+              };
+            });
+          blocks.set(name, block);
+          candidates.push(...entries);
+          active = checked;
+        } catch (error) {
+          unavailable.push(unavailableBlock(name, instance, error));
+        }
+      }
+      // Adding a provider can implicitly bind a previously optional slot. Check
+      // the completed composition, including consumers captured before providers.
+      for (const name of blocks.keys()) {
+        try {
+          readyBindings(active, name);
+        } catch (error) {
+          unavailable.push(
+            unavailableBlock(name, document.blocks[name]!, error),
+          );
+          blocks.delete(name);
+        }
+      }
+      active = new Catalog(
+        availableComposition(document, blocks),
+        blocks,
+        version,
+        ASSEMBLY_PROVIDES,
+      );
+      const executable = new Set(active.list());
+      return {
+        show,
+        document,
+        catalog: active,
+        blocks,
+        candidates: candidates.filter(
+          (entry) =>
+            executable.has(entry.op) &&
+            (!fallback || DEVICE_MEMORY_OPS.has(entry.op)),
+        ),
+        unavailable,
+        problems: [
+          ...show.problems,
+          ...unavailable.map((block) =>
+            block.error.code === "INPUT_INVALID"
+              ? block.reason
+              : `.forge/config.yaml: blocks.${block.name}.source: ${block.reason}. ${block.remedy}`,
+          ),
+        ],
+      };
+    } finally {
+      endMeasurement();
+    }
   }
   const catalog: Assembly["catalog"] = {
     unavailable: () => snapshot(callScope()).unavailable,

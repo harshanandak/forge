@@ -1,3 +1,4 @@
+import { measured, measuredAsync } from "../contract/measure.ts";
 import { version } from "../version.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { runCommand } from "../surface/command.ts";
@@ -11,19 +12,23 @@ export async function runLocalCommand(
 ): Promise<number> {
   try {
     if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
-      process.stdout.write(`${version}\n`);
+      measured("result.write", () => process.stdout.write(`${version}\n`));
       return 0;
     }
-    const assembly = await createLocalAssembly();
+    const assembly = await measuredAsync("assembly.create", () =>
+      createLocalAssembly(),
+    );
     try {
-      return await runCommand(argv, {
-        catalog: assembly.catalog,
-        version,
-        call: localCall(assembly),
-        mcp: assemblyMcp(assembly),
-      });
+      return await measuredAsync("cli.dispatch", () =>
+        runCommand(argv, {
+          catalog: assembly.catalog,
+          version,
+          call: localCall(assembly),
+          mcp: assemblyMcp(assembly),
+        }),
+      );
     } finally {
-      await assembly.close();
+      await measuredAsync("assembly.close", () => assembly.close());
     }
   } catch (error) {
     const response = respond(

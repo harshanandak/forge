@@ -1,3 +1,9 @@
+import {
+  measured,
+  measuredAsync,
+  span,
+  count,
+} from "../../contract/measure.ts";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { constants } from "node:os";
@@ -108,10 +114,12 @@ export async function runProcess(
         started,
       );
     // Capability setup is complete before even the waiting supervisor is spawned.
-    scope = await openContainment(
-      platform,
-      options.containment === "strict",
-      containmentOptions,
+    scope = await measuredAsync("process.containment_open", () =>
+      openContainment(
+        platform,
+        options.containment === "strict",
+        containmentOptions,
+      ),
     );
     if (options.signal?.aborted)
       throw new ProcessSpawnError(
@@ -146,6 +154,8 @@ export async function runProcess(
           ),
         ),
       );
+      count("process.supervisors_spawned");
+      const endSupervisor = span("process.supervisor_lifetime");
       const child = spawn(process.execPath, helperArgs, {
         cwd: options.cwd,
         env:
@@ -198,6 +208,7 @@ export async function runProcess(
           );
       });
       child.once("close", () => {
+        endSupervisor();
         pipesClosed = true;
         finishPipes();
       });
@@ -368,9 +379,10 @@ export async function runProcess(
         } else if (
           message.kind === "started" &&
           typeof message.pid === "number"
-        )
+        ) {
           commandPid = message.pid;
-        else if (message.kind === "exited") {
+          count("process.commands_spawned");
+        } else if (message.kind === "exited") {
           exitCode = typeof message.code === "number" ? message.code : null;
           exitSignal =
             typeof message.signal === "string" ? message.signal : null;
@@ -381,7 +393,7 @@ export async function runProcess(
     });
   } finally {
     try {
-      scope?.close();
+      measured("process.containment_close", () => scope?.close());
     } finally {
       activeSupervisors--;
     }
