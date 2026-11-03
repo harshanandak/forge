@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { packedConsumer } from "../../integration/packed-consumer.ts";
+import { packedConsumer } from "../../../integration/packed-consumer.ts";
 
 test("a fresh Node project imports delivery after following the missing-value repair", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-fresh-import-"));
