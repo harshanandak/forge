@@ -13,7 +13,7 @@ import {
   Catalog,
   captureBlock,
   DEFAULT_CAPTURE_LIMITS,
-  type CapturedBlock,
+  CapturedBlock,
 } from "../core/catalog/index.ts";
 import { Runtime } from "../core/runtime/index.ts";
 import { nodeRunIsolation } from "../adapters/node-runtime/isolation.ts";
@@ -545,6 +545,21 @@ export async function createAssembly(
     const blocks = new Map<string, CapturedBlock>();
     const candidates: McpCandidate[] = [];
     const unavailable: UnavailableBlock[] = [];
+    const owners = new Map<string, string[]>();
+    const assembled = structuredClone(document);
+    for (const [name, instance] of Object.entries(document.blocks).sort()) {
+      if (instance.enabled === false) continue;
+      try {
+        for (const noun of new Set(
+          Object.keys(call.captured(instance.source).manifest.operations).map(
+            (op) => instance.rename?.[op.split(".")[0]!] ?? op.split(".")[0]!,
+          ),
+        ))
+          owners.set(noun, [...(owners.get(noun) ?? []), name]);
+      } catch {
+        /* The preparation loop reports capture failures. */
+      }
+    }
     let active = new Catalog(
       { schemaVersion: "forge.config/1", blocks: {} },
       new Map(),
@@ -569,7 +584,7 @@ export async function createAssembly(
                 .join("\n"),
             );
         }
-        const block = call.captured(instance.source);
+        let block = call.captured(instance.source);
         if (
           deviceMemory &&
           !fallback &&
@@ -581,10 +596,44 @@ export async function createAssembly(
         )
           return snapshot(call, true, true);
         const docs = ready(block, instance, name);
+        const manifest = block.manifest;
+        const collisions = [...owners].filter(
+          ([, names]) => names.length > 1 && names.includes(name),
+        );
+        if (collisions.length) {
+          const error = new ForgeFailure({
+            code: "INPUT_INVALID",
+            message: `Nouns declared by multiple instances: ${JSON.stringify(Object.fromEntries(collisions))}`,
+            retry: "never",
+          });
+          unavailable.push(unavailableBlock(name, instance, error));
+          const projected = assembled.blocks[name]!;
+          const operations = Object.fromEntries(
+            Object.entries(manifest.operations).filter(([op]) => {
+              const noun = op.split(".")[0]!;
+              if (owners.get(instance.rename?.[noun] ?? noun)!.length < 2)
+                return true;
+              Reflect.deleteProperty(projected.rename ?? {}, noun);
+              Reflect.deleteProperty(projected.operationTimeouts ?? {}, op);
+              return false;
+            }),
+          );
+          const paths = Object.values(manifest.operations).flatMap(
+            ({ input, output }) => [input, output],
+          );
+          paths.push(manifest.entry, manifest.docs, ...(manifest.files ?? []));
+          if (manifest.configSchema) paths.push(manifest.configSchema);
+          block = new CapturedBlock(
+            new Map(paths.map((path) => [path, block.text(path)])),
+            { ...manifest, operations },
+            block.digest,
+            block.shipped,
+          );
+        }
         const proposed = new Map(blocks);
         proposed.set(name, block);
         const checked = new Catalog(
-          availableComposition(document, proposed),
+          availableComposition(assembled, proposed),
           proposed,
           version,
           ASSEMBLY_PROVIDES,
@@ -637,7 +686,7 @@ export async function createAssembly(
       }
     }
     active = new Catalog(
-      availableComposition(document, blocks),
+      availableComposition(assembled, blocks),
       blocks,
       version,
       ASSEMBLY_PROVIDES,
@@ -653,7 +702,7 @@ export async function createAssembly(
           executable.has(entry.op) &&
           (!fallback || DEVICE_MEMORY_OPS.has(entry.op)),
       ),
-      unavailable,
+      unavailable: unavailable.sort((a, b) => a.name.localeCompare(b.name)),
       problems: [
         ...show.problems,
         ...unavailable.map((block) =>
