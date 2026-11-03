@@ -43,13 +43,14 @@ export function decideRerun(
     run.jobs.every(
       (job) =>
         job.conclusion === "success" ||
+        job.conclusion === "skipped" ||
         unacquired(job) ||
         job.name === "CI Gate",
     );
   return {
     rerun,
     reason: rerun
-      ? "Only never-acquired jobs and CI Gate are non-success; rerun failed jobs"
+      ? "Only skipped, never-acquired jobs and CI Gate are non-success; rerun failed jobs"
       : "Real failure or no never-acquired job; keep CI failed",
   };
 }
