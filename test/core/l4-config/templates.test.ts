@@ -298,6 +298,72 @@ describe("template lifecycle", () => {
     });
   });
 
+  test("short-form template imports like long form and removes cleanly", () => {
+    const short = project();
+    const long = project();
+    const template = {
+      schemaVersion: "forge.template/1",
+      id: "fixture/short",
+      version: "1.0.0",
+      summary: "fixture",
+      config: { schemaVersion: "forge.config/1", blocks: { work: {} } },
+    };
+    writeFileSync(join(short.root, "short.json"), JSON.stringify(template));
+    template.config.blocks.work = {
+      source: { builtin: "forge/work" },
+    };
+    writeFileSync(join(long.root, "long.json"), JSON.stringify(template));
+    const before = short.read();
+    const a = short.templates.importTemplate({
+      template: "short.json",
+      expectRevision: short.config.show().revision,
+    });
+    const b = long.templates.importTemplate({
+      template: "long.json",
+      expectRevision: long.config.show().revision,
+    });
+    expect(a.added).toEqual(b.added);
+    expect(short.config.explain({ path: "/blocks/work/source" }).value).toEqual(
+      long.config.explain({ path: "/blocks/work/source" }).value,
+    );
+    expect(
+      short.templates.show({ template: "fixture/short" }).imported?.digest,
+    ).toBe(long.templates.show({ template: "fixture/short" }).imported?.digest);
+    expect(short.templates.show({ template: "fixture/short" }).owned).toEqual(
+      long.templates.show({ template: "fixture/short" }).owned,
+    );
+    const removed = short.templates.remove({
+      template: "fixture/short",
+      expectRevision: a.revision,
+    });
+    expect(removed.removed).toEqual(a.added);
+    expect(short.read()).toBe(before);
+  });
+
+  test("unexpandable short form is refused at its pointer", () => {
+    const p = project();
+    writeFileSync(
+      join(p.root, "invalid.json"),
+      JSON.stringify({
+        schemaVersion: "forge.template/1",
+        id: "fixture/invalid",
+        version: "1.0.0",
+        summary: "fixture",
+        config: {
+          blocks: { work: { source: { builtin: "forge/work" }, use: "other" } },
+        },
+      }),
+    );
+    const failure = failureOf(() =>
+      p.templates.importTemplate({
+        template: "invalid.json",
+        expectRevision: p.config.show().revision,
+      }),
+    );
+    expect(failure?.code).toBe("INPUT_INVALID");
+    expect(failure?.message).toContain("/config/blocks/work/use");
+  });
+
   test("a template file in the project imports like an installed one", () => {
     const p = project();
     writeFileSync(
