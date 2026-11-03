@@ -25,17 +25,17 @@ On checkpoint REVISION_CONFLICT: `forge issue resume <slice>`, `forge issue comm
 Fill PR template: plain opening; bold takeaways; What review found; Verification.
 
 - **Opening**: user-visible problem, then addition. Short, plain sentences; no internal codes.
-- **Before / after**: observations before and after X; real numbers if available; how measured. Performance only: name workload; separate component and end-to-end timings.
+- **Before / after**: observations before and after X; real numbers if available; how measured. Performance only: name the workload; separate component and end-to-end timings.
 - **What review found**: each blocker: bold user-visible failure and one-line fix. Empty on first push.
 - **Verification**: `forge check run` receipt ids; test that fails without the change; CI for this head if available. User-visible PRs with `.forge/verify.md`: name the guide scenario and list saved evidence paths. Performance only: pin the saving with a work, process or call count or size bound.
 - **Not verified**: what you did not check. Always present. Performance only: what the measurement does not establish.
 - **Models**: for each of planned, implemented and reviewed, give display name, model id, reasoning level and harness: `Implemented: <display name> (<model id>, reasoning <effort>) via <harness>`. Use `not yet reviewed` when unreviewed. Roles alone are not allowed. No tool-branding footer.
 - `Tracking: <issue id>`.
 
-No machine-local data (paths, usernames, local links).
+No local data (paths, usernames, local links).
 
 ## Link, release, stop
 
 1. **PR to issue (Forge)**, holding claim: `forge issue link --input '{"id":"<slice>","relation":"delivers","url":"<pr url>"}'`.
 2. Release: `forge issue release --input '{"id":"<slice>"}'`. Never merge. Orchestrator: `forge-review`, then `forge-land`.
-3. Last action: owning session runs `forge agent wait <n>` once; do each step and `then`, including re-wait per push/head. Workers hand it the PR. Use `--fallback` only if a link or watch step fails. Forge stores neither.
+3. Last action: the owning session runs `forge agent wait <n>` once; do each step and `then`, including re-wait per push/head. Workers hand it the PR. Use `--fallback` only if a link or watch step fails. Forge stores neither.
