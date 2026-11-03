@@ -17,9 +17,31 @@ setDefaultTimeout(30_000);
 
 const example = resolve(import.meta.dirname, "../../examples/hello-block");
 
-for (const spec of ["blocks/foo", "blocks\\foo"]) {
+for (const [spec, displayed, suggestion] of [
+  ["blocks/foo", '"blocks/foo"', '"./blocks/foo"'],
+  ["blocks\\foo", '"blocks\\\\foo"', '"./blocks/foo"'],
+  [
+    "blocks/foo\nINJECTED",
+    '"blocks/foo\\nINJECTED"',
+    '"./blocks/foo\\nINJECTED"',
+  ],
+  [
+    "blocks/foo\rINJECTED",
+    '"blocks/foo\\rINJECTED"',
+    '"./blocks/foo\\rINJECTED"',
+  ],
+  ["blocks/\u001b[2Jfoo", '"blocks/\\u001b[2Jfoo"', '"./blocks/\\u001b[2Jfoo"'],
+  ["blocks/\u2028foo", '"blocks/\\u2028foo"', '"./blocks/\\u2028foo"'],
+  ["blocks/\u2029foo", '"blocks/\\u2029foo"', '"./blocks/\\u2029foo"'],
+  ['blocks/"foo', '"blocks/\\"foo"', '"./blocks/\\"foo"'],
+  [
+    "x".repeat(3000) + "/foo",
+    '"' + "x".repeat(200) + '..."',
+    '"./' + "x".repeat(198) + '..."',
+  ],
+] as const) {
   for (const verb of ["check", "add"]) {
-    test(`${verb} refuses ${spec} with an explicit local path hint and unchanged config`, async () => {
+    test(`${verb} refuses ${displayed} with an explicit local path hint and unchanged config`, async () => {
       const root = mkdtempSync(join(tmpdir(), "forge-block-source-"));
       let assembly: Awaited<ReturnType<typeof createAssembly>> | undefined;
       try {
@@ -48,10 +70,23 @@ for (const spec of ["blocks/foo", "blocks\\foo"]) {
         });
         expect(readFileSync(config)).toEqual(before);
         if (reply.envelope.ok) throw new Error("expected invalid package name");
-        expect(reply.envelope.error.message).toContain(spec);
+        expect(reply.envelope.error.message).toContain(displayed);
         expect(reply.envelope.error.message).toContain("not a package name");
         expect(reply.envelope.error.message).toContain("local block folder");
-        expect(reply.envelope.error.message).toContain("./blocks/foo");
+        expect(reply.envelope.error.message).toContain(suggestion);
+        expect(reply.envelope.error.message).toContain("./");
+        expect(
+          Array.from(reply.envelope.error.message, (c) =>
+            c.charCodeAt(0),
+          ).filter(
+            (code) =>
+              code < 32 ||
+              (code >= 0x7f && code <= 0x9f) ||
+              code === 0x2028 ||
+              code === 0x2029,
+          ),
+        ).toEqual([]);
+        expect(reply.envelope.error.message.length).toBeLessThanOrEqual(4000);
       } finally {
         await assembly?.close();
         rmSync(root, { recursive: true, force: true });

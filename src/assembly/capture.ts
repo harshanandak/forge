@@ -32,6 +32,11 @@ export const blockCapture: FileCapturePort = {
 export function resolveBlock(root: string, source: BlockSource): string {
   if ("path" in source) return resolve(root, source.path);
   if ("package" in source) {
+    const shown = (s: string) =>
+      JSON.stringify(s.length > 200 ? s.slice(0, 200) + "..." : s).replace(
+        /[\u2028\u2029]/g,
+        (c) => `\\u${c.charCodeAt(0).toString(16)}`,
+      );
     if (
       !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(
         source.package,
@@ -40,7 +45,7 @@ export function resolveBlock(root: string, source: BlockSource): string {
       refuse(
         "INPUT_INVALID",
         /[\\/]/.test(source.package)
-          ? `"${source.package}" is not a package name. For a local block folder, write "./${source.package.replaceAll("\\", "/")}"`
+          ? `${shown(source.package)} is not a package name. For a local block folder, write ${shown("./" + source.package.replaceAll("\\", "/"))}`
           : "Expected an installed package name",
       );
     const require = createRequire(join(root, "package.json"));
