@@ -22,7 +22,7 @@ const entry = {
 };
 const result = await runCli(
   {
-    list: () => [entry],
+    list: () => [entry, { ...entry, op: "sample.run", inputSchema: {} }],
     invoke: async (request) => ({
       ok: true,
       op: request.op,
