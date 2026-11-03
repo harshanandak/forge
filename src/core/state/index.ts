@@ -659,6 +659,7 @@ export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
   #migrations: readonly Migration[] = stateMigrations;
+  #domains: readonly ReviewedDomain[] = [];
   constructor(db: SqlDatabase, clock: ClockPort) {
     this.#db = db;
     this.#clock = clock;
@@ -698,10 +699,10 @@ export class StateOwner {
             invalid(`Unregistered user table: ${table}`);
       },
     );
-    this.#migrations = [
-      ...stateMigrations,
-      ...domains.flatMap((domain) => domain.migrations),
-    ];
+    this.#migrations = stateMigrations.concat(
+      domains.flatMap((domain) => domain.migrations),
+    );
+    this.#domains = domains;
   }
 
   client(namespace: string, actor: Actor): DeletableStateClient {
@@ -1287,21 +1288,26 @@ export class StateOwner {
     imageStore.restoreImage(
       image,
       (candidate) => {
-        if (migrated && signature(candidate) !== expected)
-          invalid(
-            "Snapshot needs the same schema, baseline version and reviewed table registration",
-          );
         const known = new Set(this.#migrations.map(({ id }) => id));
-        const unknown = candidate
-          .all("SELECT id FROM state_migrations ORDER BY id")
-          .map((row) => String(row.id))
-          .find((id) => !known.has(id));
+        const refuseVersion = (found: string): never =>
+          invalid(
+            `Snapshot version ${found}; binary newest known ${[...known].sort().at(-1) ?? "none"}`,
+          );
         const version = Number(
           candidate.get("PRAGMA user_version")?.user_version,
         );
-        if (version !== 0 || unknown !== undefined)
+        if (version !== 0) refuseVersion(`schema:${version}`);
+        const ledger =
+          "SELECT sql FROM sqlite_master WHERE type='table' AND name='state_migrations'";
+        if (candidate.get(ledger)?.sql !== this.#db.get(ledger)?.sql)
+          invalid("Unsupported snapshot migration ledger");
+        const unknown = candidate
+          .all("SELECT id FROM state_migrations ORDER BY id")
+          .find((row) => !known.has(String(row.id)));
+        if (unknown !== undefined) refuseVersion(String(unknown.id));
+        if (migrated && signature(candidate) !== expected)
           invalid(
-            `Snapshot version ${version !== 0 ? `schema:${version}` : unknown}; binary newest known ${[...known].sort().at(-1) ?? "none"}`,
+            "Snapshot needs the same schema, baseline version and reviewed table registration",
           );
         if (
           !candidate.get("SELECT id FROM state_migrations WHERE id=?", [
@@ -1312,7 +1318,18 @@ export class StateOwner {
         verifyEventDerivedState(candidate, eventHighWaterMark);
       },
       (candidate) => {
-        migrate(candidate, this.#migrations);
+        migrate(candidate, this.#migrations, () =>
+          registerTables(
+            candidate,
+            this.#domains.flatMap((domain) =>
+              domain.tables.map((table) => ({
+                namespace: domain.namespace,
+                reviewedDigest: domain.reviewedDigest,
+                table,
+              })),
+            ),
+          ),
+        );
         if (signature(candidate) !== expected)
           invalid(
             "Snapshot needs the same schema and reviewed table registration after migration",
@@ -1355,6 +1372,7 @@ export class StateOwner {
             eventHighWaterMark++;
           }
         });
+        verifyEventDerivedState(candidate, eventHighWaterMark);
       },
       () => {
         empty();
