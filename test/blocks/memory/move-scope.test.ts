@@ -394,6 +394,38 @@ test("scope moves after a slow first page and confirms completion on the next ca
   });
 }, 30_000);
 
+test("scope refuses the first move below its one-second floor without destination writes", async () => {
+  let now = 1_000;
+  const { move, device, project } = await setup(1, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  const sourceWrites = device.counts.puttedRecords;
+  const page = device.listRange.bind(device);
+  device.listRange = (...args) => {
+    now += 14_600;
+    return page(...args);
+  };
+  const putMany = project.putMany.bind(project);
+  project.putMany = (...args) => {
+    now += 800;
+    return putMany(...args);
+  };
+  const started = now;
+  await expect(move(input, now + 15_000)).rejects.toMatchObject({
+    error: { code: "INSUFFICIENT_BUDGET" },
+  });
+  expect(now - started).toBe(14_600);
+  expect(project.counts.putMany).toBe(0);
+  expect(project.counts.puttedRecords).toBe(0);
+  expect(project.list("note/")).toHaveLength(0);
+  expect(device.get("note/000000001")?.revision).toBe(2);
+  expect(device.counts.puttedRecords).toBe(sourceWrites);
+}, 30_000);
+
 for (const budget of [0, 999, 1_000, 2_000]) {
   test(`scope deadline respects a ${budget} ms budget before the first page`, async () => {
     let now = 1_000;

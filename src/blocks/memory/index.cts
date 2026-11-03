@@ -1691,7 +1691,7 @@ module.exports = {
           moved.length === limit ||
           (deadline !== undefined &&
             (moved.length === 0
-              ? deadline - started <= slowestMoveMs
+              ? deadline - started < Math.max(1_000, slowestMoveMs)
               : deadline - started <=
                 slowestMoveMs + slowestPageMs + reserveMs))
         )
