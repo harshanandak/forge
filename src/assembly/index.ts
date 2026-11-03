@@ -550,9 +550,37 @@ export async function createAssembly(
       new Map(),
       version,
     );
+    const nounOwners = new Map<string, string[]>();
     for (const [name, instance] of Object.entries(document.blocks)) {
       if (instance.enabled === false) continue;
       try {
+        const block = call.captured(instance.source);
+        for (const op of Object.keys(block.manifest.operations)) {
+          const noun = parseOperationName(op)?.noun;
+          if (noun === undefined) continue;
+          const exposed = instance.rename?.[noun] ?? noun;
+          const names = nounOwners.get(exposed) ?? [];
+          if (!names.includes(name))
+            nounOwners.set(exposed, [...names, name].sort());
+        }
+      } catch {
+        // The registration loop reports capture failures through its existing path.
+      }
+    }
+    const collisions = [...nounOwners]
+      .filter(([, names]) => names.length > 1)
+      .sort(([a], [b]) => a.localeCompare(b));
+    for (const [name, instance] of Object.entries(document.blocks)) {
+      if (instance.enabled === false) continue;
+      try {
+        const collision = collisions
+          .filter(([, names]) => names.includes(name))
+          .map(
+            ([noun, names]) =>
+              `noun "${noun}" is declared by ${JSON.stringify(names)}`,
+          )
+          .join("; ");
+        if (collision) refuse("INPUT_INVALID", collision);
         if ("builtin" in instance.source) {
           const builtin = instance.source.builtin;
           const problems = validateWithSchema(
