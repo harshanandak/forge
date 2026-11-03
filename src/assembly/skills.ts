@@ -154,7 +154,16 @@ function templateSkills(templates: TemplateSkills): Copy[] {
     const parent = source.file.split("/").slice(0, -1).join("/");
     const dir = parent === "" ? "skills" : `${parent}/skills`;
     for (const name of files.list(dir)) {
-      const bytes = readFile(files, `${dir}/${name}/SKILL.md`);
+      const path = `${dir}/${name}/SKILL.md`;
+      let bytes: Uint8Array | undefined;
+      try {
+        bytes = files.read(path);
+      } catch (error) {
+        refuse(
+          "INPUT_INVALID",
+          `Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       if (bytes === undefined) continue;
       const rendered = renderTemplateSkill(
         name,
