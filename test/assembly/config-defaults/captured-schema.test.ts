@@ -1,5 +1,6 @@
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -360,20 +361,26 @@ for (const repairingRuntime of [false, true]) {
 }
 
 async function inspectInvocation(
-  document: Record<string, unknown>,
+  document: Record<string, unknown> | undefined,
   invocation: readonly PatchStep[],
   inspect: (
     shown: { ok: boolean; result: ShowResult },
     baseline: { ok: boolean; result: ShowResult },
   ) => void,
 ): Promise<void> {
-  const root = project(files);
+  const root =
+    document === undefined
+      ? mkdtempSync(join(tmpdir(), "forge-config-defaults-"))
+      : project(files);
   const file = join(root, ".forge/config.yaml");
-  writeFileSync(file, JSON.stringify(document));
-  const before = readFileSync(file, "utf8");
+  if (document !== undefined) writeFileSync(file, JSON.stringify(document));
+  const read = () =>
+    existsSync(file) ? readFileSync(file, "utf8") : undefined;
+  const before = read();
   const assembly = await createAssembly({
     root,
     deviceRoot: join(root, "device"),
+    ...(document === undefined ? { project: false } : {}),
   });
   const { caller, context } = localCall(assembly);
   const show = async (input: unknown = {}) =>
@@ -390,15 +397,38 @@ async function inspectInvocation(
     const shown = await show({ invocation });
     inspect(shown, baseline);
     expect(shown.result.revision).toBe(baseline.result.revision);
-    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(read()).toBe(before);
     const unpatched = await show();
     expect(unpatched.ok).toBe(baseline.ok);
     expect(unpatched.result).toEqual(baseline.result);
+    if (document === undefined)
+      expect(existsSync(join(root, ".forge"))).toBe(false);
   } finally {
     await assembly.close();
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+test("config show keeps invocation blocks on a device-only host", async () => {
+  const commands = { test: "node --test" };
+  await inspectInvocation(
+    undefined,
+    [{ op: "set", path: "/blocks/check/config/commands", value: commands }],
+    (shown) => {
+      expect(shown.ok, JSON.stringify(shown)).toBe(true);
+      expect(shown.result.instances).toContainEqual({
+        name: "check",
+        source: { builtin: "forge/check" },
+        enabled: true,
+      });
+      const blocks = shown.result.effective.blocks as Record<
+        string,
+        { config?: { commands?: unknown } }
+      >;
+      expect(blocks.check?.config?.commands).toEqual(commands);
+    },
+  );
+});
 
 test("config show repairs an unavailable source and resolves the replacement source's defaults", async () => {
   await inspectInvocation(
