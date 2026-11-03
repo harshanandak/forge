@@ -19,10 +19,9 @@ function finish(output) {
 }
 const object = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
-let deadline;
 function inspect(value, key, depth = 0) {
-  if (depth > 64 || performance.now() > deadline) throw new Error();
-  if (typeof value === "string") return scan(value, key, deadline);
+  if (depth > 64) throw new Error();
+  if (typeof value === "string") return scan(value, key);
   if (Array.isArray(value))
     return value.some((item) => inspect(item, undefined, depth + 1));
   if (object(value))
@@ -47,7 +46,6 @@ function handle() {
       !("tool_response" in input || (failure && "error" in input))
     )
       return finish();
-    deadline = performance.now() + 100;
     if (!inspect(input.tool_response) && !(failure && inspect(input.error)))
       return finish();
     finish(

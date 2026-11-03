@@ -27,13 +27,10 @@ function adjacent(text, start) {
     );
   return match && !(offset && match.index === 0) ? safeName(match[1]) : null;
 }
-export function scan(text, key, deadline = performance.now() + 100) {
-  const budget = () => {
-    if (performance.now() > deadline) throw new Error();
-  };
-  budget();
+export function scan(text, key) {
+  // Bound regex work by input size, including callers outside the payload guard.
+  if (text.length > 1_048_576) throw new Error();
   for (const match of text.matchAll(provider)) {
-    budget();
     const value = match[0],
       name = adjacent(text, match.index) ?? safeName(key);
     if (
@@ -54,19 +51,15 @@ export function scan(text, key, deadline = performance.now() + 100) {
   const assignments =
     /(?<![A-Za-z0-9_.-])["']?([A-Za-z_][A-Za-z0-9_]{0,63})["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9+/_-]{24,}={0,2})(?![A-Za-z0-9+/_=-])/g;
   for (const match of text.matchAll(assignments)) {
-    budget();
     const name = safeName(match[1]),
       value = match[2];
     if (name && credential.test(name) && generic(value)) return true;
   }
-  budget();
   if (safeName(key) && credential.test(key) && generic(text)) return true;
   const uris =
     /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s/?:#@"<>]+:([^\s/?#@"<>]+)@[^\s/?#@"<>]+/g;
   for (const _match of text.matchAll(uris)) {
-    budget();
     return true;
   }
-  budget();
   return false;
 }

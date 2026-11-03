@@ -24,12 +24,20 @@ const env = Object.fromEntries(
 );
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 let sequence = 0;
-function invoke(harness: string, input: unknown, raw = false) {
+function invoke(
+  harness: string,
+  input: unknown,
+  raw = false,
+  preload?: string,
+) {
   const path = join(root, `${sequence++}.json`);
   writeFileSync(path, raw ? String(input) : JSON.stringify(input));
   const fd = openSync(path, "r");
   try {
-    return spawnSync(node, [script, harness], {
+    const args = preload
+      ? ["--import", preload, script, harness]
+      : [script, harness];
+    return spawnSync(node, args, {
       cwd: root,
       env,
       stdio: [fd, "pipe", "pipe"],
@@ -82,6 +90,21 @@ const providers = [
   ["AK", "IA", "ABCD2345EFGH6789"].join(""),
   ["AI", "za", material(35)].join(""),
 ];
+test("near-limit output still warns across fields with an advancing clock", () => {
+  const clock = `data:text/javascript,${encodeURIComponent(
+    "let now = 0; performance.now = () => (now += 1000);",
+  )}`;
+  for (const harness of ["claude", "codex"]) {
+    const result = invoke(
+      harness,
+      payload({ stdout: "z".repeat(1_048_000), stderr: providers[2] }),
+      false,
+      clock,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toBe(expected(harness));
+  }
+});
 const uri = (password: string) => `postgres://user:${password}@host/db`;
 const positives: unknown[] = [];
 for (const secret of providers) {
