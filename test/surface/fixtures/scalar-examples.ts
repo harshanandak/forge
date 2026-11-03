@@ -4,8 +4,8 @@ export const scalarExamples = [
     value: 'a "b c" C:\\tmp\\',
     quoted: [
       String.raw`'a "b c" C:\tmp\'`,
-      String.raw`'"a \"b c\" C:\tmp\\"'`,
-      String.raw`^"a \^"b c\^" C:\tmp\\^"`,
+      String.raw`'"a ""b c"" C:\tmp\\"'`,
+      String.raw`^"a ^"^"b c^"^" C:\tmp\\^"`,
     ],
   },
   {
@@ -25,7 +25,7 @@ export const scalarExamples = [
   {
     name: "double quote",
     value: 'a"b',
-    quoted: [String.raw`'a"b'`, String.raw`'"a\"b"'`, String.raw`^"a\^"b^"`],
+    quoted: [String.raw`'a"b'`, String.raw`'"a""b"'`, String.raw`^"a^"^"b^"`],
   },
   {
     name: "single quote",
@@ -47,8 +47,8 @@ export const scalarExamples = [
     value: "a\"&^|<>%PATH%' b",
     quoted: [
       String.raw`'a"&^|<>%PATH%'\'' b'`,
-      String.raw`'"a\"&^|<>%PATH%'' b"'`,
-      String.raw`^"a\^"^&^^^|^<^>^%PATH^%' b^"`,
+      String.raw`'"a""&^|<>%PATH%'' b"'`,
+      String.raw`^"a^"^"^&^^^|^<^>^%PATH^%' b^"`,
     ],
   },
 ] as const;
