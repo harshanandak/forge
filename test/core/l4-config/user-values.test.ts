@@ -104,7 +104,7 @@ describe("saving derived values", () => {
       expectRevision: revision(),
     });
     const saved = call("config.save", { expectRevision: revision() });
-    expect(saved.saved).toEqual(["/blocks/check/config/commands"]);
+    expect(saved.saved).toEqual(["/blocks/check/config/commands/lint"]);
     expect(file()).toContain("test: pnpm test");
     expect(file()).toContain("lint: npm run lint");
     expect(file()).not.toContain("test: npm test");
