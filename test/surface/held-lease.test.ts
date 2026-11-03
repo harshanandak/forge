@@ -222,40 +222,47 @@ for (const [label, rejection] of [
   ],
   ["Error", () => new Error("hidden-show-diagnostic")],
 ] as const)
-  test(`a rejected hidden lease read (${label}) keeps the write's own result private`, async () => {
-    const id = await created();
-    const catalog: SurfaceCatalog = {
-      list: () => assembly.catalog.list(),
-      invoke: (request) =>
-        request.op === "issue.show"
-          ? Promise.reject(rejection())
-          : assembly.catalog.invoke(request),
-    };
-    const handlers = createMcpHandlers(
-      catalog,
-      { expose: ["issue.claim", "issue.link"] },
-      {
-        context: localContext(assembly, { kind: "agent", id: "mcp" }, "one"),
-        resolveContext: localIdentityResolver(
-          assembly.deviceRoot,
-          { FORGE_SESSION: "one" },
-          false,
-        ),
-      },
-    );
-    expect(await handlers.callTool("issue_claim", { id })).toMatchObject({
-      ok: true,
-    });
-    const result = await handlers.callTool("catalog_call", {
-      op: "issue.link",
-      input: { id, relation: "relates", url: "https://example.com/r" },
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      error: { code: "CONTEXT_MISSING" },
-    });
-    expect(JSON.stringify(result)).not.toContain("hidden-show-diagnostic");
-  }, 30_000);
+  for (const thrown of [false, true])
+    test(`a ${thrown ? "thrown" : "rejected"} hidden lease read (${label}) keeps the write's own result private`, async () => {
+      const id = await created();
+      const ops: string[] = [];
+      const catalog: SurfaceCatalog = {
+        list: () => assembly.catalog.list(),
+        invoke: (request) => {
+          ops.push(request.op);
+          if (request.op !== "issue.show")
+            return assembly.catalog.invoke(request);
+          if (thrown) throw rejection();
+          return Promise.reject(rejection());
+        },
+      };
+      const handlers = createMcpHandlers(
+        catalog,
+        { expose: ["issue.claim", "issue.link"] },
+        {
+          context: localContext(assembly, { kind: "agent", id: "mcp" }, "one"),
+          resolveContext: localIdentityResolver(
+            assembly.deviceRoot,
+            { FORGE_SESSION: "one" },
+            false,
+          ),
+        },
+      );
+      expect(await handlers.callTool("issue_claim", { id })).toMatchObject({
+        ok: true,
+      });
+      const result = await handlers.callTool("catalog_call", {
+        op: "issue.link",
+        input: { id, relation: "relates", url: "https://example.com/r" },
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "CONTEXT_MISSING" },
+      });
+      expect(JSON.stringify(result)).not.toContain("hidden-show-diagnostic");
+      // The write itself ran and produced that result.
+      expect(ops.at(-1)).toBe("issue.link");
+    }, 30_000);
 
 test("a terminal claim refuses every unsourced non-TTY leased write and supports explicit script recovery", async () => {
   const id = await created();
