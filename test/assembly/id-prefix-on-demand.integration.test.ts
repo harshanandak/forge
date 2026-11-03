@@ -127,11 +127,23 @@ async function fixture(workEnabled: boolean) {
 test("memory-only searches skip origin queries while config inspection keeps the derived prefix", async () => {
   const project = await fixture(false);
   try {
-    const added = (await project.call(["memory", "add", "prefix heron"])) as {
+    const added = (await project.call([
+      "memory",
+      "add",
+      "prefix heron",
+      "--level",
+      "device",
+    ])) as {
       id: string;
     };
     project.resetTrace();
-    const found = (await project.call(["memory", "search", "heron"])) as {
+    const found = (await project.call([
+      "memory",
+      "search",
+      "heron",
+      "--level",
+      "device",
+    ])) as {
       hits: { id: string }[];
     };
     expect(found.hits.map((hit) => hit.id)).toContain(added.id);
