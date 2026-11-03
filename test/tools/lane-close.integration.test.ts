@@ -7,8 +7,12 @@ import {
   spyOn,
   test,
 } from "bun:test";
-import { spawnSync } from "node:child_process";
+import {
+  spawnSync,
+  type SpawnSyncOptionsWithStringEncoding,
+} from "node:child_process";
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
 import {
   chmodSync,
   closeSync,
@@ -36,40 +40,12 @@ let testStartedAt = Date.now();
 beforeEach(() => {
   testStartedAt = Date.now();
 });
-function diagnoseCleanup(
-  root: string,
-  start: number,
-  original: unknown,
-): never {
-  const failures: { path: string; code: string | undefined }[] = [];
-  const fallback = {
-    holders: [],
-    holderUnknown: true,
-    holderReason: "PowerShell diagnostic did not complete",
-  };
-  const report: Record<string, unknown> = {
-    root,
-    start,
-    failures,
-    host: fallback,
-  };
-  report.failedAtMs = Date.now() - start;
-  try {
-    try {
-      const options = { recursive: true, withFileTypes: true } as const;
-      for (const entry of readdirSync(root, options)) {
-        const path = join(entry.parentPath, entry.name);
-        try {
-          if (entry.isDirectory()) renameSync(path, path);
-          else closeSync(openSync(path, "r+"));
-        } catch (error) {
-          failures.push({ path, code: (error as NodeJS.ErrnoException).code });
-        }
-      }
-    } catch (error) {
-      report.scanError = String(error);
-    }
-    const command = String.raw`
+type DiagnosticRunner = (
+  command: string,
+  args: string[],
+  options: SpawnSyncOptionsWithStringEncoding,
+) => { status: number | null; stdout: string; error?: Error };
+const cleanupDiagnosticCommand = String.raw`
 $root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT
 $data = @{ holders = @(); holderUnknown = $true; holderReason = 'Restart Manager returned no holders' }
 try {
@@ -133,8 +109,48 @@ try {
 } catch { $data.exclusionError = 'Defender exclusions unavailable' }
 $data | ConvertTo-Json -Depth 5 -Compress
 `;
-    const args = ["-NoProfile", "-NonInteractive", "-Command", command];
-    const result = spawnSync("powershell.exe", args, {
+function diagnoseCleanup(
+  root: string,
+  start: number,
+  original: unknown,
+  run: DiagnosticRunner = spawnSync,
+): never {
+  const failures: { path: string; code: string | undefined }[] = [];
+  const fallback = {
+    holders: [],
+    holderUnknown: true,
+    holderReason: "PowerShell diagnostic did not complete",
+  };
+  const report: Record<string, unknown> = {
+    root,
+    start,
+    failures,
+    host: fallback,
+  };
+  report.failedAtMs = Date.now() - start;
+  try {
+    try {
+      const options = { recursive: true, withFileTypes: true } as const;
+      for (const entry of readdirSync(root, options)) {
+        const path = join(entry.parentPath, entry.name);
+        try {
+          if (entry.isDirectory()) renameSync(path, path);
+          else closeSync(openSync(path, "r"));
+        } catch (error) {
+          failures.push({ path, code: (error as NodeJS.ErrnoException).code });
+        }
+      }
+    } catch (error) {
+      report.scanError = String(error);
+    }
+
+    const args = [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      cleanupDiagnosticCommand,
+    ];
+    const result = run("powershell.exe", args, {
       encoding: "utf8",
       timeout: 10_000,
       windowsHide: true,
@@ -152,13 +168,18 @@ $data | ConvertTo-Json -Depth 5 -Compress
     report.diagnosticError = "Cleanup diagnostic failed";
   }
   report.elapsedMs = Date.now() - start;
-  console.error(JSON.stringify(report));
+  try {
+    console.error(JSON.stringify(report));
+  } catch {
+    // Reporting must not replace the cleanup error, even if stderr is unavailable.
+  }
   throw original;
 }
 function cleanupRoot(
   root: string,
   start: number,
   remove = () => rmSync(root, { recursive: true, force: true }),
+  run: DiagnosticRunner = spawnSync,
 ) {
   try {
     remove();
@@ -167,7 +188,7 @@ function cleanupRoot(
       process.platform === "win32" &&
       ["EBUSY", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")
     )
-      diagnoseCleanup(root, start, error);
+      diagnoseCleanup(root, start, error, run);
     throw error;
   }
 }
@@ -178,13 +199,27 @@ afterEach(() => {
 type CleanupReport = {
   root: string;
   elapsedMs: number;
+  failures: { path: string; code: string }[];
+  scanError?: string;
+  diagnosticError?: string;
+  systemExitCode?: number | null;
   host: {
     holders: { pid: number; name: string; appType: number }[];
     holderUnknown: boolean;
     holderReason?: string;
+    defender?: { RealTimeProtectionEnabled: boolean };
+    defenderExclusions?: string[];
+    underDefenderExclusion?: boolean;
+    defenderError?: string;
+    exclusionError?: string;
   };
 };
-function cleanupReport(root: string, code: string, path?: string) {
+function cleanupReport(
+  root: string,
+  code: string,
+  run: DiagnosticRunner,
+  path?: string,
+) {
   const original = Object.assign(new Error("injected cleanup failure"), {
     code,
     ...(path ? { path } : {}),
@@ -196,9 +231,14 @@ function cleanupReport(root: string, code: string, path?: string) {
   try {
     let caught: unknown;
     try {
-      cleanupRoot(root, Date.now(), () => {
-        throw original;
-      });
+      cleanupRoot(
+        root,
+        Date.now(),
+        () => {
+          throw original;
+        },
+        run,
+      );
     } catch (error) {
       caught = error;
     }
@@ -210,105 +250,193 @@ function cleanupReport(root: string, code: string, path?: string) {
   return messages[0]!;
 }
 
-async function withFileHolder(
-  exposeMarker: boolean,
-  check: (
-    root: string,
-    path: string,
-    pid: number,
-    marker: string,
-  ) => void | Promise<void>,
-) {
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "holder-717-")));
+function diagnosticRoot() {
+  const root = mkdtempSync(join(tmpdir(), "holder-717-"));
   roots.push(root);
-  const path = join(root, "held.txt");
-  writeFileSync(path, "held fixture");
-  const marker = "SECRET-MARKER-717";
-  const command = String.raw`
-$stream = [IO.File]::Open($env:HOLDER_FILE, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
-try { [Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); [Console]::In.ReadLine() | Out-Null } finally { $stream.Dispose() }
-`;
-  const child = Bun.spawn(
-    [
-      "powershell.exe",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      command + (exposeMarker ? `\n# ${marker} ${root}` : ""),
-    ],
-    {
-      env: { ...process.env, HOLDER_FILE: path },
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      windowsHide: true,
-    },
-  );
-  const running = () => child.exitCode === null && child.signalCode === null;
-  async function release() {
-    try {
-      if (running()) {
-        await child.stdin.write("release\n");
-        await child.stdin.end();
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EPIPE" || running())
-        throw error;
-    } finally {
-      if (running()) child.kill();
-      await child.exited;
-    }
-  }
-  try {
-    const reader = child.stdout.getReader();
-    try {
-      const ready = await reader.read();
-      expect(new TextDecoder().decode(ready.value).trim()).toBe("ready");
-    } finally {
-      reader.releaseLock();
-    }
-    await check(root, path, child.pid, marker);
-    expect(child.exitCode).toBeNull();
-    expect(child.signalCode).toBeNull();
-  } finally {
-    await release();
-  }
+  return root;
+}
+function diagnosticResult(host: CleanupReport["host"]) {
+  return { status: 0, stdout: JSON.stringify(host) };
 }
 
+test("cleanup diagnostic command registers the failing path and maps Restart Manager holders", () => {
+  const command = cleanupDiagnosticCommand.replace(/\s+/g, " ");
+  for (const fragment of [
+    'DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)',
+    "public UniqueProcess process;",
+    "public uint pid;",
+    "public string name;",
+    "public uint appType;",
+    "Check(RmStartSession(out session, 0, new StringBuilder(33)));",
+    "Check(RmRegisterResources(session, 1, new string[] { path }, 0, IntPtr.Zero, 0, IntPtr.Zero));",
+    "uint code = RmGetList(session, out needed, ref count, null, out reasons);",
+    "if (code == 0) return new ProcessInfo[0]; if (code != 234) Check(code); count = needed;",
+    "ProcessInfo[] holders = new ProcessInfo[count]; Check(RmGetList(session, out needed, ref count, holders, out reasons));",
+    "Array.Resize(ref holders, (int)count); return holders;",
+    "finally { Check(RmEndSession(session)); }",
+    "$data.holders = @([CleanupRestartManager]::Query($env:FORGE_LANE_CLOSE_DIAGNOSTIC_PATH) | ForEach-Object { @{ pid = $_.process.pid; name = $_.name; appType = $_.appType } })",
+    "if ($data.holders.Count -gt 0) { $data.holderUnknown = $false; $data.Remove('holderReason') }",
+    "catch { $data.holders = @(); $data.holderUnknown = $true; $data.holderReason = 'Restart Manager query failed' }",
+  ])
+    expect(command).toContain(fragment);
+});
+
+test("cleanup diagnostic command collects Defender protection state with an error fallback", () => {
+  const command = cleanupDiagnosticCommand.replace(/\s+/g, " ");
+  expect(command).toContain(
+    "$data.defender = Get-MpComputerStatus -ErrorAction Stop | Select-Object RealTimeProtectionEnabled",
+  );
+  expect(command).toContain(
+    "catch { $data.defenderError = 'Defender state unavailable' }",
+  );
+});
+
+test("cleanup diagnostic command collects matching Defender exclusions with an error fallback", () => {
+  const command = cleanupDiagnosticCommand.replace(/\s+/g, " ");
+  for (const fragment of [
+    "$root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT",
+    "$exclusions = @((Get-MpPreference -ErrorAction Stop).ExclusionPath)",
+    String.raw`$data.defenderExclusions = @($exclusions | Where-Object { if ($_) { $excluded = [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\'); $root -like $excluded -or $root -like ($excluded + '\*') } })`,
+    "$data.underDefenderExclusion = $data.defenderExclusions.Count -gt 0",
+    "catch { $data.exclusionError = 'Defender exclusions unavailable' }",
+    "$data | ConvertTo-Json -Depth 5 -Compress",
+  ])
+    expect(command).toContain(fragment);
+});
+
 if (process.platform === "win32") {
-  test("cleanup diagnostic never reports a holder's argument marker", async () => {
-    await withFileHolder(true, (root, path, _pid, marker) => {
-      const report = cleanupReport(root, "EBUSY", path);
-      expect(report.includes(marker)).toBe(false);
-      expect(
-        /commandline|executablepath|parentprocessid|systemstderr/i.test(report),
-      ).toBe(false);
-    });
+  test("cleanup diagnostic preserves holders and every Defender report field", () => {
+    const root = diagnosticRoot();
+    const host: CleanupReport["host"] = {
+      holders: [{ pid: 717, name: "fixture holder", appType: 1 }],
+      holderUnknown: false,
+      defender: { RealTimeProtectionEnabled: true },
+      defenderExclusions: [root],
+      underDefenderExclusion: true,
+      defenderError: "Defender state unavailable",
+      exclusionError: "Defender exclusions unavailable",
+    };
+    const report = JSON.parse(
+      cleanupReport(root, "EPERM", () => diagnosticResult(host)),
+    ) as CleanupReport;
+    expect(report.host).toEqual(host);
   });
 
-  test("cleanup diagnostic names the Restart Manager file holder", async () => {
-    await withFileHolder(false, (root, path, pid) => {
-      const report = JSON.parse(
-        cleanupReport(root, "EBUSY", path),
-      ) as CleanupReport;
-      expect(
-        report.host?.holders?.some(
-          (holder: { pid: number }) => holder.pid === pid,
-        ) ?? false,
-      ).toBe(true);
-      expect(report.host.holderUnknown).toBe(false);
-      for (const holder of report.host.holders) {
-        expect(Object.keys(holder).sort()).toEqual(["appType", "name", "pid"]);
-        expect(typeof holder.name).toBe("string");
-        expect(typeof holder.appType).toBe("number");
-      }
+  for (const hasPath of [true, false]) {
+    test(`cleanup diagnostic wires the default spawn command and environment ${hasPath ? "with a failing path" : "with the root fallback"}`, () => {
+      const root = diagnosticRoot();
+      const path = hasPath ? join(root, "failing file.txt") : undefined;
+      let invocation: Parameters<DiagnosticRunner> | undefined;
+      cleanupReport(
+        root,
+        "EBUSY",
+        (...args) => {
+          invocation = args;
+          return diagnosticResult({ holders: [], holderUnknown: true });
+        },
+        path,
+      );
+      expect(invocation).toBeDefined();
+      const [command, args, options] = invocation!;
+      expect(command).toBe("powershell.exe");
+      expect(args).toEqual([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        cleanupDiagnosticCommand,
+      ]);
+      expect(options.encoding).toBe("utf8");
+      expect(options.windowsHide).toBe(true);
+      expect(options.env?.FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT).toBe(root);
+      expect(options.env?.FORGE_LANE_CLOSE_DIAGNOSTIC_PATH).toBe(path ?? root);
     });
+  }
+
+  test("cleanup diagnostic never reports a holder's argument marker", () => {
+    const root = diagnosticRoot();
+    const marker = "SECRET-MARKER-717";
+    let called = false;
+    const report = cleanupReport(root, "EBUSY", (command, args, options) => {
+      called = true;
+      expect(command).toBe("powershell.exe");
+      expect(args.slice(0, 3)).toEqual([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+      ]);
+      const script = args[3]!;
+      expect(script).toContain(
+        "@{ pid = $_.process.pid; name = $_.name; appType = $_.appType }",
+      );
+      expect(
+        /commandline|executablepath|parentprocessid|Get-CimInstance|Get-WmiObject/i.test(
+          script,
+        ),
+      ).toBe(false);
+      expect(options.env?.FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT).toBe(root);
+      expect(options.env?.FORGE_LANE_CLOSE_DIAGNOSTIC_PATH).toBe(root);
+      return {
+        ...diagnosticResult({
+          holders: [{ pid: 717, name: "fixture holder", appType: 1 }],
+          holderUnknown: false,
+        }),
+        stderr: marker,
+      };
+    });
+    expect(called).toBe(true);
+    expect((JSON.parse(report) as CleanupReport).host).toEqual({
+      holders: [{ pid: 717, name: "fixture holder", appType: 1 }],
+      holderUnknown: false,
+    });
+    expect(report.includes(marker)).toBe(false);
+    expect(
+      /commandline|executablepath|parentprocessid|systemstderr/i.test(report),
+    ).toBe(false);
+  });
+
+  test("cleanup diagnostic reports the holder returned by the runner", () => {
+    const root = diagnosticRoot();
+    const path = join(root, "held.txt");
+    writeFileSync(path, "held fixture");
+    const pid = 717;
+    const host = {
+      holders: [{ pid, name: "fixture holder", appType: 1 }],
+      holderUnknown: false,
+    };
+    let called = false;
+    const report = JSON.parse(
+      cleanupReport(
+        root,
+        "EBUSY",
+        (_command, _args, options) => {
+          called = true;
+          expect(options.env?.FORGE_LANE_CLOSE_DIAGNOSTIC_PATH).toBe(path);
+          return diagnosticResult(host);
+        },
+        path,
+      ),
+    ) as CleanupReport;
+    expect(called).toBe(true);
+    expect(report.host.holders.some((holder) => holder.pid === pid)).toBe(true);
+    expect(report.host.holderUnknown).toBe(false);
+    for (const holder of report.host.holders) {
+      expect(Object.keys(holder).sort()).toEqual(["appType", "name", "pid"]);
+      expect(typeof holder.name).toBe("string");
+      expect(typeof holder.appType).toBe("number");
+    }
   });
 
   test("cleanup diagnostic handles EPERM and rethrows the original error", () => {
-    const root = mkdtempSync(join(tmpdir(), "holder-717-"));
-    roots.push(root);
-    const report = JSON.parse(cleanupReport(root, "EPERM")) as CleanupReport;
+    const root = diagnosticRoot();
+    const report = JSON.parse(
+      cleanupReport(root, "EPERM", () =>
+        diagnosticResult({
+          holders: [],
+          holderUnknown: true,
+          holderReason: "Restart Manager query failed",
+        }),
+      ),
+    ) as CleanupReport;
     expect(report.root).toBe(root);
     expect(report.host.holders).toEqual([]);
     expect(report.host.holderUnknown).toBe(true);
@@ -316,12 +444,21 @@ if (process.platform === "win32") {
   });
 
   test("cleanup diagnostic handles forced EBUSY and rethrows the original error", () => {
-    const root = mkdtempSync(join(tmpdir(), "holder-717-"));
-    roots.push(root);
+    const root = diagnosticRoot();
     const path = join(root, "unlocked.txt");
     writeFileSync(path, "unlocked fixture");
     const report = JSON.parse(
-      cleanupReport(root, "EBUSY", path),
+      cleanupReport(
+        root,
+        "EBUSY",
+        () =>
+          diagnosticResult({
+            holders: [],
+            holderUnknown: true,
+            holderReason: "Restart Manager returned no holders",
+          }),
+        path,
+      ),
     ) as CleanupReport;
     expect(report.root).toBe(root);
     expect(report.elapsedMs).toBeGreaterThanOrEqual(0);
@@ -331,7 +468,136 @@ if (process.platform === "win32") {
       "Restart Manager returned no holders",
     );
   });
+
+  for (const [name, run] of [
+    [
+      "timeout",
+      () => ({
+        status: null,
+        stdout: "",
+        error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }),
+      }),
+    ],
+    [
+      "nonzero exit",
+      () => ({ status: 1, stdout: '{"holders":[{"pid":717}]}' }),
+    ],
+    ["malformed JSON", () => ({ status: 0, stdout: "not JSON" })],
+    [
+      "runner exception",
+      () => {
+        throw new Error("runner failed");
+      },
+    ],
+  ] satisfies [string, DiagnosticRunner][]) {
+    test(`cleanup diagnostic falls back on ${name} and rethrows the original error`, () => {
+      const root = diagnosticRoot();
+      let called = false;
+      const report = JSON.parse(
+        cleanupReport(root, "EBUSY", () => {
+          called = true;
+          return run();
+        }),
+      ) as CleanupReport;
+      expect(called).toBe(true);
+      expect(report.host).toEqual({
+        holders: [],
+        holderUnknown: true,
+        holderReason: "PowerShell diagnostic did not complete",
+      });
+      if (name === "malformed JSON" || name === "runner exception")
+        expect(report.diagnosticError).toBe("Cleanup diagnostic failed");
+    });
+  }
+
+  test("cleanup diagnostic probes read-only files without reporting a write-access failure", () => {
+    const root = diagnosticRoot();
+    const path = join(root, "read-only.txt");
+    writeFileSync(path, "read-only fixture");
+    chmodSync(path, 0o444);
+    try {
+      const report = JSON.parse(
+        cleanupReport(root, "EPERM", () =>
+          diagnosticResult({ holders: [], holderUnknown: true }),
+        ),
+      ) as CleanupReport;
+      expect(report.failures).toEqual([]);
+    } finally {
+      chmodSync(path, 0o666);
+    }
+  });
+
+  test("cleanup diagnostic lists failed file probes", () => {
+    const root = diagnosticRoot();
+    const path = join(root, "missing-target");
+    writeFileSync(path, "unreadable fixture");
+    const open = spyOn(fs, "openSync").mockImplementation(() => {
+      throw Object.assign(new Error("injected probe failure"), {
+        code: "EACCES",
+      });
+    });
+    try {
+      const report = JSON.parse(
+        cleanupReport(root, "EPERM", () =>
+          diagnosticResult({ holders: [], holderUnknown: true }),
+        ),
+      ) as CleanupReport;
+      expect(report.failures).toEqual([{ path, code: "EACCES" }]);
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  test("cleanup diagnostic reports a scan failure and rethrows the original error", () => {
+    const root = join(diagnosticRoot(), "absent");
+    const report = JSON.parse(
+      cleanupReport(root, "EPERM", () =>
+        diagnosticResult({ holders: [], holderUnknown: true }),
+      ),
+    ) as CleanupReport;
+    expect(report.scanError).toContain("ENOENT");
+    expect(report.failures).toEqual([]);
+  });
+
+  test("cleanup diagnostic rethrows the original error even if logging fails", () => {
+    const root = diagnosticRoot();
+    const original = Object.assign(new Error("original cleanup failure"), {
+      code: "EBUSY",
+    });
+    const log = spyOn(console, "error").mockImplementation(() => {
+      throw new Error("logging failed");
+    });
+    try {
+      let caught: unknown;
+      try {
+        diagnoseCleanup(root, Date.now(), original, () =>
+          diagnosticResult({ holders: [], holderUnknown: true }),
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught === original).toBe(true);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("successful cleanup never runs the diagnostic", () => {
+    const root = diagnosticRoot();
+    let called = false;
+    cleanupRoot(
+      root,
+      Date.now(),
+      () => {},
+      () => {
+        called = true;
+        throw new Error("unexpected diagnostic");
+      },
+    );
+    expect(called).toBe(false);
+  });
 }
+
 type Call = {
   command: string;
   args: string[];
