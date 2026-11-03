@@ -149,6 +149,7 @@ export function checkDocument(document: JsonObject): void {
 export function checkInstanceConfig(
   name: string,
   problems: readonly SchemaProblem[],
+  repair?: (pointer: string) => string,
 ): void {
   // A required key with no default that nothing sets: say so plainly, with where it can come from.
   const missing = problems.find(
@@ -162,7 +163,7 @@ export function checkInstanceConfig(
       message: `blocks.${name} needs ${key}, and nothing sets it: ${CONFIG_FILE} has no value and nothing was detected in this project`,
       pointer,
       retry: "never",
-      repair: `run forge config show, then forge config set ${pointer} '<value-as-json>' --expect-revision <revision>; use result.revision and a value matching the block's config schema, then retry the original command at the new revision`,
+      repair: repair?.(pointer) ?? `set ${pointer} in the same edit`,
     });
   }
   if (problems.length > 0) {

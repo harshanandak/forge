@@ -6,6 +6,7 @@
 // A template file's skills are not copied: the record keeps the file's path, and skills sync
 // renders `skills/<name>/SKILL.md` next to it on each run.
 import { jsonEqual } from "../../contract/schema.ts";
+import { renderExample } from "../../contract/example.ts";
 import { DEFAULT_PARSE_LIMITS } from "../../contract/untrusted.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import type {
@@ -271,7 +272,29 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
         Object.keys(document.owners).length === 0
       )
         delete document.owners;
-      const planned = planBytes(env, current, document);
+      const planned = planBytes(env, current, document, (pointer) => {
+        const example = renderExample(
+          "config.set",
+          {
+            title: "Set a missing value",
+            summary: "Supply the required configuration value.",
+            examples: [
+              {
+                input: {
+                  path: pointer,
+                  value:
+                    pointer === "/blocks/check/config/commands"
+                      ? { test: "node --test" }
+                      : "<required value>",
+                  expectRevision: current.revision,
+                },
+              },
+            ],
+          },
+          {},
+        );
+        return `Example (replace the value with your project's setting):\n    ${example}\nThen retry template ${op.slice("template.".length)} at the new revision returned by config set.`;
+      });
       changes = planned.changes;
       return { bytes: planned.bytes };
     });
