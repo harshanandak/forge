@@ -697,6 +697,81 @@ test("scope batch retires notes in order up to a concurrent source edit and resu
   }
 }, 30_000);
 
+for (const sourceConflict of [true, false]) {
+  test(`scope preserves a source whose copy was forgotten before ${sourceConflict ? "conflicting" : "conflict-free"} grouped retirement`, async () => {
+    const { move, call, device, project } = await setup(6);
+    const copyKey = "note/000000003";
+    let forgotten = false;
+    const forgetCopy = () => {
+      const copy = project.get(copyKey)!;
+      project.put(
+        copyKey,
+        { deleted: true, text: "", tags: [], links: [], previous: [] },
+        { expectRevision: copy.revision },
+      );
+      forgotten = true;
+    };
+    if (sourceConflict) {
+      const putMany = device.putMany.bind(device);
+      device.putMany = (entries) => {
+        if (
+          !forgotten &&
+          entries.some((entry) => entry.key === "note/000000004")
+        ) {
+          const source = device.get("note/000000004")!;
+          device.put(
+            source.key,
+            { ...(source.value as object), text: "concurrent 4" },
+            { expectRevision: source.revision },
+          );
+          forgetCopy();
+        }
+        return putMany(entries);
+      };
+    } else {
+      const putMany = project.putMany.bind(project);
+      project.putMany = (entries) => {
+        const result = putMany(entries);
+        if (
+          !forgotten &&
+          entries.some((entry) => entry.key === "transfer/device/note-3")
+        )
+          forgetCopy();
+        return result;
+      };
+    }
+    const result = await move();
+    expect(forgotten).toBe(true);
+    expect(result).toMatchObject({
+      moved: [{ id: "device/note-1" }, { id: "device/note-2" }],
+      stopped: { id: "device/note-3", code: "TRANSFER_CONFLICT" },
+      complete: false,
+    });
+    expect(result.moved).toHaveLength(2);
+    expect(device.get(copyKey)).toMatchObject({
+      revision: 2,
+      value: { text: "new 3" },
+    });
+    expect(project.get(copyKey)?.value).toMatchObject({ deleted: true });
+    expect(await call("memory.show", { id: "device/note-3" })).toMatchObject({
+      status: "found",
+      note: { id: "device/note-3", text: { text: "new 3" } },
+    });
+    expect(device.get("note/000000004")).toMatchObject({
+      revision: sourceConflict ? 3 : 2,
+      value: { text: sourceConflict ? "concurrent 4" : "new 4" },
+    });
+    expect(project.list("note/")).toHaveLength(6);
+    for (let n = 1; n <= 6; n += 1) {
+      const key = `note/${String(n).padStart(9, "0")}`;
+      const source = device.get(key)!.value as { deleted?: boolean };
+      const copy = project.get(key)!.value as { deleted?: boolean };
+      expect(source.deleted !== true || copy.deleted !== true).toBe(true);
+      if (n > 3) expect(source.deleted).toBeUndefined();
+    }
+  }, 30_000);
+}
+
 test("scope batch recovers all committed copies after a fault before grouped source retirement", async () => {
   const { move, call, device, project } = await setup(6);
   const putMany = device.putMany.bind(device);

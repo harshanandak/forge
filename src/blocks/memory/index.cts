@@ -268,6 +268,38 @@ function moveCopy(
   };
 }
 
+function settledTransfer(
+  target: Source,
+  id: string,
+  sourceRevision: number,
+  recorded: Transfer | undefined,
+  current: StateRecord | undefined,
+  keep = false,
+):
+  | { readonly at: number; readonly settled: true }
+  | { readonly conflict: string }
+  | undefined {
+  if (!recorded) return undefined;
+  const at = recorded.number;
+  // A transfer of another source revision is a different transfer, never a retry.
+  if (recorded.sourceRevision !== sourceRevision)
+    return {
+      conflict: `${qualified(id)} was copied to ${idIn(target, at)} from revision ${recorded.sourceRevision}, not ${sourceRevision}; nothing was written`,
+    };
+  // The same transfer again. Someone edited or forgot the copy since: it is never redone,
+  // and a move retires its source only while the copy still holds the note.
+  if (current && current.revision !== recorded.revision) {
+    const live = (current.value as NoteValue).deleted !== true;
+    return keep || live
+      ? { at, settled: true }
+      : {
+          conflict: `${idIn(target, at)} was forgotten after ${qualified(id)} was copied there; nothing was written`,
+        };
+  }
+  if (current) return { at, settled: true };
+  return undefined;
+}
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (typeof value === "object" && value !== null)
@@ -1695,6 +1727,7 @@ module.exports = {
       let slowestMoveMs = 0;
       // Replaying transfer markers does not measure the cost of a fresh destination write.
       let probed = false;
+      // Buffered notes need both the marker re-check and the pre-retirement destination read pass.
       const affordable = (overhead = slowestPageMs + reserveMs) => {
         if (deadline === undefined) return 25;
         const left = deadline - Date.now();
@@ -1703,7 +1736,8 @@ module.exports = {
           : Math.max(
               0,
               Math.floor(
-                (left - overhead) / Math.max(1, slowestMoveMs + slowestReadMs),
+                (left - overhead) /
+                  Math.max(1, slowestMoveMs + 2 * slowestReadMs),
               ),
             );
       };
@@ -1730,7 +1764,7 @@ module.exports = {
           const first = !readPage && moved.length === 0;
           const needed =
             (readPage ? slowestPageMs : slowestReadMs) +
-            group.length * (slowestMoveMs + slowestReadMs) +
+            group.length * (slowestMoveMs + 2 * slowestReadMs) +
             (first ? 1_000 : reserveMs);
           const collected = Date.now();
           const left = deadline === undefined ? Infinity : deadline - collected;
@@ -1832,15 +1866,39 @@ module.exports = {
                   ]);
                   return destinations.slice(0, group.length);
                 });
-          let fallback = false;
+          let retired = 0;
           if (placed) {
+            const tombstones: BatchEntry[] = [];
+            for (const [i, note] of group.entries()) {
+              const checked = Date.now();
+              const recorded = target.state.get(`${TRANSFER_PREFIX}${note.id}`)
+                ?.value as Transfer | undefined;
+              const current = recorded
+                ? target.state.get(noteKey(recorded.number))
+                : undefined;
+              const settled = settledTransfer(
+                target,
+                note.id,
+                note.record.revision,
+                recorded,
+                current,
+              );
+              slowestReadMs = Math.max(slowestReadMs, Date.now() - checked);
+              if (
+                !settled ||
+                !("at" in settled) ||
+                idIn(target, settled.at) !== placed[i]
+              )
+                break;
+              tombstones.push({
+                key: note.record.key,
+                value: { ...TOMBSTONE, movedTo: placed[i] },
+                expectRevision: note.record.revision,
+              });
+            }
             // Retired sources cannot be deferred: reserve their read-back before committing them.
             trim(affordable(reserveMs));
-            const tombstones = group.map((note, i) => ({
-              key: note.record.key,
-              value: { ...TOMBSTONE, movedTo: placed[i]! },
-              expectRevision: note.record.revision,
-            }));
+            tombstones.length = Math.min(tombstones.length, group.length);
             try {
               if (tombstones.length === 1) {
                 const tombstone = tombstones[0]!;
@@ -1849,37 +1907,32 @@ module.exports = {
                 });
               } else if (tombstones.length > 1)
                 source.state.putMany(tombstones);
+              retired = tombstones.length;
             } catch (error) {
               if (!conflict(error)) throw error;
-              // The failed transaction retired nothing; preserve first-conflict ordering.
-              fallback = true;
+              // Reconcile every destination again through single-note moves after a failed batch.
             }
           }
           for (const [i, note] of group.entries()) {
             failedNote = note;
             const noteStarted = Date.now();
-            if ((!placed || fallback) && affordable(reserveMs) === 0) {
+            const single = !placed || i >= retired;
+            if (single && affordable(reserveMs) === 0) {
               deferred = true;
               break;
             }
-            if (fallback)
-              source.state.put(
-                note.record.key,
-                { ...TOMBSTONE, movedTo: placed![i]! },
-                { expectRevision: note.record.revision },
-              );
-            const to =
-              placed?.[i] ??
-              (
-                (await move({
-                  input: {
-                    id: note.id,
-                    to: "project",
-                    expectRevision: note.record.revision,
-                  },
-                  services,
-                })) as { to?: string }
-              ).to;
+            const to = single
+              ? (
+                  (await move({
+                    input: {
+                      id: note.id,
+                      to: "project",
+                      expectRevision: note.record.revision,
+                    },
+                    services,
+                  })) as { to?: string }
+                ).to
+              : placed[i];
             const ref = to === undefined ? undefined : parseRef(to);
             const destination =
               ref?.level === "project" &&
@@ -1986,24 +2039,15 @@ module.exports = {
         const counter = readCounter(target.state, NOTE_COUNTER);
         const at = recorded?.number ?? counter.last + 1;
         const current = target.state.get(noteKey(at));
-        if (made && recorded) {
-          // A transfer of another source revision is a different transfer, never a retry.
-          if (recorded.sourceRevision !== existing.revision)
-            return {
-              conflict: `${qualified(input.id)} was copied to ${idIn(target, at)} from revision ${recorded.sourceRevision}, not ${existing.revision}; nothing was written`,
-            };
-          // The same transfer again. Someone edited or forgot the copy since: it is never redone,
-          // and a move retires its source only while the copy still holds the note.
-          if (current && current.revision !== recorded.revision) {
-            const live = (current.value as NoteValue).deleted !== true;
-            return input.keep === true || live
-              ? { at, settled: true }
-              : {
-                  conflict: `${idIn(target, at)} was forgotten after ${qualified(input.id)} was copied there; nothing was written`,
-                };
-          }
-          if (current) return { at, settled: true };
-        }
+        const settled = settledTransfer(
+          target,
+          input.id,
+          existing.revision,
+          recorded,
+          current,
+          input.keep === true,
+        );
+        if (settled) return settled;
         // The first copy, or a transfer record whose copy never landed.
         const written = (current?.revision ?? 0) + 1;
         target.state.putMany([
