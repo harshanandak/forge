@@ -40,6 +40,52 @@ test("MCP and CLI names map both ways without loss", () => {
   expect(flagName("prREF")).toBeUndefined();
 }, 30_000);
 
+test("composition refuses a misspelled bind and preserves declared bindings", () => {
+  const manifests = firstPartyManifests();
+  const config: ConfigDocument = {
+    schemaVersion: "forge.config/1",
+    blocks: {
+      context: {
+        source: { builtin: "forge/context" },
+        bind: { tracker: "work" },
+      },
+      work: { source: { builtin: "forge/work" } },
+    },
+  };
+  const valid = resolveComposition(config, manifests);
+  expect(valid.ok).toBe(true);
+  if (!valid.ok) throw new Error("valid bindings must compose");
+  expect(valid.composition.bindings).toContainEqual({
+    instance: "context",
+    slot: "tracker",
+    interface: "forge.tracker@1",
+    provider: "work",
+  });
+  const invalid = resolveComposition(
+    {
+      ...config,
+      blocks: {
+        ...config.blocks,
+        context: {
+          ...config.blocks.context!,
+          bind: { tracker: "work", trackr: "work" },
+        },
+      },
+    },
+    manifests,
+  );
+  expect(invalid.ok).toBe(false);
+  if (invalid.ok) throw new Error("expected unknown slot refusal");
+  expect(invalid.errors).toHaveLength(1);
+  expect(invalid.errors[0]).toMatchObject({
+    code: "INPUT_INVALID",
+    pointer: "/blocks/context/bind/trackr",
+    retry: "never",
+  });
+  expect(invalid.errors[0]?.message).toContain("tracker");
+  expect(resolveComposition(config, manifests)).toEqual(valid);
+}, 30_000);
+
 test("permission keys follow the grammar and ignore renames", () => {
   const key = permissionKey(
     "io.github.alice/semver",

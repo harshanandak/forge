@@ -313,6 +313,22 @@ export function captureBlock(
       ),
     );
   const manifest = checked.value;
+  const duplicate = (manifest.requires ?? []).findIndex(
+    ({ slot }, index, slots) => slots.findIndex((s) => s.slot === slot) < index,
+  );
+  if (duplicate >= 0)
+    throw new ForgeFailure(
+      inputError(
+        `block manifest ${rootPath.replaceAll("\\", "/").replace(/\/$/, "")}/${source.manifestPath ?? "block.json"}`,
+        [
+          {
+            pointer: `/requires/${duplicate}/slot`,
+            keyword: "unique",
+            message: `duplicates slot "${manifest.requires![duplicate]!.slot}"`,
+          },
+        ],
+      ),
+    );
   const paths = new Set([
     manifest.entry,
     manifest.docs,
