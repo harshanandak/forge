@@ -58,7 +58,10 @@ test("show refuses invocation removes at op while sets and patch removes still w
   const root = mkdtempSync(join(tmpdir(), "forge-invocation-ops-"));
   mkdirSync(join(root, ".forge"));
   const file = join(root, ".forge/config.yaml");
-  const text = JSON.stringify({ blocks: {}, values: { greeting: "saved" } });
+  const text = JSON.stringify({
+    blocks: {},
+    values: { greeting: "saved", retained: "keep" },
+  });
   writeFileSync(file, text);
   const assembly = await createAssembly({
     root,
@@ -124,9 +127,14 @@ test("show refuses invocation removes at op while sets and patch removes still w
         patch,
         expectRevision: (set.result as { revision: string }).revision,
       }),
-    ).toMatchObject({ ok: true });
+    ).toMatchObject({ ok: true, result: { fileRemoved: false } });
     const after = await call("show", {});
     expect(after.ok).toBe(true);
+    expect(after.result).toMatchObject({
+      valid: true,
+      configured: true,
+      effective: { values: { retained: "keep" } },
+    });
     expect(after.result).not.toHaveProperty("effective.values.greeting");
   } finally {
     await assembly.close();
