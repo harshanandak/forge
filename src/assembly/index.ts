@@ -621,11 +621,22 @@ export async function createAssembly(
           const paths = Object.values(manifest.operations).flatMap(
             ({ input, output }) => [input, output],
           );
+          const nouns = new Set(
+            Object.keys(manifest.operations).map((op) => op.split(".")[0]),
+          );
+          const provides = (manifest.provides ?? []).filter((provided) => {
+            const noun =
+              provided.noun ?? (nouns.size === 1 ? [...nouns][0] : undefined);
+            return (
+              noun === undefined ||
+              Object.keys(operations).some((op) => op.split(".")[0] === noun)
+            );
+          });
           paths.push(manifest.entry, manifest.docs, ...(manifest.files ?? []));
           if (manifest.configSchema) paths.push(manifest.configSchema);
           block = new CapturedBlock(
             new Map(paths.map((path) => [path, block.text(path)])),
-            { ...manifest, operations },
+            { ...manifest, operations, provides },
             block.digest,
             block.shipped,
           );

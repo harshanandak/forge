@@ -3,35 +3,45 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssembly, localContext } from "../../src/assembly/index.ts";
+import { INTERFACE_DOCUMENTS } from "../../src/generated/schemas.ts";
+import type {
+  BlockManifest,
+  InterfaceDocument,
+} from "../../src/generated/types.ts";
 import { record } from "../../src/surface/dispatch.ts";
 
 setDefaultTimeout(30_000);
 
-async function fixture(names: string[]) {
+async function fixture(
+  names: string[],
+  overrides: Record<string, Partial<BlockManifest>> = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "forge-noun-collision-"));
   const file = join(root, ".forge/config.yaml");
   mkdirSync(join(root, ".forge"));
   for (const name of [...names, "healthy"]) {
     const directory = join(root, name);
     mkdirSync(directory);
-    const operations = Object.fromEntries(
-      (name === "healthy"
-        ? ["healthy.read"]
-        : ["shared.read", `${name}.read`]
-      ).map((op) => [
-        op,
-        {
-          input: "value.json",
-          output: "value.json",
-          context: "stateless",
-          timeoutMs: 1000,
-          effects: [],
-          idempotent: true,
-          callers: ["human"],
-          stability: "experimental",
-        },
-      ]),
-    );
+    const operations =
+      overrides[name]?.operations ??
+      Object.fromEntries(
+        (name === "healthy"
+          ? ["healthy.read"]
+          : ["shared.read", `${name}.read`]
+        ).map((op) => [
+          op,
+          {
+            input: "value.json",
+            output: "value.json",
+            context: "stateless",
+            timeoutMs: 1000,
+            effects: [],
+            idempotent: true,
+            callers: ["human"],
+            stability: "experimental",
+          },
+        ]),
+      );
     for (const [path, value] of Object.entries({
       "forge.block.json": {
         schemaVersion: "forge.block/1",
@@ -41,6 +51,7 @@ async function fixture(names: string[]) {
         profile: "trusted-action-sync/v1",
         entry: "entry.cjs",
         docs: "docs.json",
+        ...overrides[name],
         operations,
       },
       "docs.json": {
@@ -201,6 +212,137 @@ test("all three noun owners are reported in every order without disabling other 
       outcomes.push(await observe(f, names));
     }
     for (const outcome of outcomes) expect(outcome).toEqual(outcomes[0]!);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a suppressed provider cannot bind an unrelated optional consumer in either order", async () => {
+  const names = ["alpha", "bravo"];
+  const f = await fixture(names, {
+    bravo: { provides: [{ interface: "example.host@1.0.0", noun: "shared" }] },
+    healthy: {
+      requires: [{ slot: "host", interface: "example.host@1", optional: true }],
+    },
+  });
+  try {
+    f.configure(names);
+    const first = await observe(f, names);
+    f.configure([...names].reverse());
+    expect(await observe(f, names)).toEqual(first);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a suppressed known interface preserves independent nouns and one diagnostic per participant in either order", async () => {
+  const tracker = INTERFACE_DOCUMENTS.find(
+    (doc) => doc.id === "forge.tracker",
+  ) as unknown as InterfaceDocument;
+  const trackerOperations: BlockManifest["operations"] = Object.fromEntries(
+    Object.entries(tracker.operations).map(([verb, expected]) => [
+      `shared.${verb}`,
+      {
+        input: "value.json",
+        output: "value.json",
+        context: expected.context,
+        ...(expected.leaseMode === undefined
+          ? {}
+          : { leaseMode: expected.leaseMode }),
+        timeoutMs: 1000,
+        effects: expected.access === "write" ? ["shared:write"] : [],
+        idempotent: expected.idempotent,
+        callers: ["human"],
+        stability: "experimental",
+      },
+    ]),
+  );
+  const names = ["alpha", "bravo"];
+  const f = await fixture(names, {
+    bravo: {
+      provides: [{ interface: "forge.tracker@1.0.0", noun: "shared" }],
+      operations: {
+        ...trackerOperations,
+        "shared.read": {
+          input: "value.json",
+          output: "value.json",
+          context: "stateless",
+          timeoutMs: 1000,
+          effects: [],
+          idempotent: true,
+          callers: ["human"],
+          stability: "experimental",
+        },
+        "bravo.read": {
+          input: "value.json",
+          output: "value.json",
+          context: "stateless",
+          timeoutMs: 1000,
+          effects: [],
+          idempotent: true,
+          callers: ["human"],
+          stability: "experimental",
+        },
+      },
+    },
+  });
+  try {
+    f.configure(names);
+    const first = await observe(f, names);
+    f.configure([...names].reverse());
+    expect(await observe(f, names)).toEqual(first);
+    for (const verb of Object.keys(tracker.operations)) {
+      expect(
+        f.assembly.catalog
+          .list()
+          .some((entry) => entry.op === `shared.${verb}`),
+      ).toBe(false);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("provider projection resolves an omitted noun before filtering in either order", async () => {
+  const names = ["alpha", "bravo"];
+  const read = {
+    input: "value.json",
+    output: "value.json",
+    context: "stateless",
+    timeoutMs: 1000,
+    effects: [],
+    idempotent: true,
+    callers: ["human"],
+    stability: "experimental",
+  } as const;
+  const f = await fixture(names, {
+    bravo: {
+      operations: { "shared.read": read },
+      provides: [{ interface: "example.host@1.0.0" }],
+    },
+    healthy: {
+      requires: [{ slot: "host", interface: "example.host@1", optional: true }],
+    },
+  });
+  try {
+    for (const order of [names, [...names].reverse()]) {
+      f.configure(order);
+      expect(
+        f.assembly.catalog.unavailable().map((block) => block.name),
+      ).toEqual(names);
+      expect(await f.call("shared.read", "blocked")).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_INVALID" },
+      });
+      expect(await f.call("alpha.read", "alpha")).toMatchObject({
+        ok: true,
+        result: "alpha",
+      });
+      expect(await f.call("healthy.read", "healthy")).toMatchObject({
+        ok: true,
+        result: "healthy",
+      });
+    }
   } finally {
     await f.close();
   }
