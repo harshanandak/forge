@@ -12,4 +12,6 @@ The output guard is opt-in. Add `output: claude` to the Claude adapter's `guard`
 
 Measured on one machine, the guard adds 62 ms at p50 and 150 ms at p95 per tool call, including process startup.
 
-The boundary is the post-tool payload. It cannot hide terminal display, streamed chunks, telemetry or unhooked tools. Malformed, oversized or over-budget payloads fail open silently. Split, transformed and unsupported credential formats can escape detection. Keep the command guard and harness permission rules. Live harness delivery remains unverified; recorded payload tests do not establish model-context protection.
+Scan work is bounded by a 1 MiB payload limit and a nesting depth of 64, independently of machine speed. The standalone scanner also caps input at 1,048,576 UTF-16 code units. An open input stream is closed after one second.
+
+The boundary is the post-tool payload. It cannot hide terminal display, streamed chunks, telemetry or unhooked tools. Malformed, oversized or overly nested payloads fail open silently. Split, transformed and unsupported credential formats can escape detection. Keep the command guard and harness permission rules. Live harness delivery remains unverified; recorded payload tests do not establish model-context protection.
