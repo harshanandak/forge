@@ -9,6 +9,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type {
+  ImportResult,
+  ShowResult,
+  WriteResult,
+} from "../../../../src/core/config/index.ts";
+import { getIn } from "../../../../src/core/config/pointer.ts";
+import type {
+  OperationDeclaration,
+  ResultEnvelope,
+} from "../../../../src/generated/types.ts";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
 
 test("a fresh Node project imports delivery after following the missing-value repair", () => {
@@ -28,7 +38,7 @@ test("a fresh Node project imports delivery after following the missing-value re
     });
     expect(result.error).toBeUndefined();
     expect(result.status, result.stdout + result.stderr).toBe(status);
-    return JSON.parse(result.stdout);
+    return JSON.parse(result.stdout) as ResultEnvelope;
   };
   try {
     const git = spawnSync("git", ["init", "--quiet"], {
@@ -46,17 +56,20 @@ test("a fresh Node project imports delivery after following the missing-value re
       join(root, "package.json"),
       JSON.stringify({ scripts: { test: "node --test" } }),
     );
-    const revision = cli(["config", "show"]).result.revision;
+    const { revision } = cli(["config", "show"]).result as ShowResult;
     const refused = cli(
       ["template", "import", "delivery", "--expect-revision", revision],
       6,
     );
+    if (refused.ok) throw new Error("expected the missing-value refusal");
     expect(refused.error.code).toBe("INPUT_INVALID");
     expect(refused.error.pointer).toBe("/blocks/check/config/commands");
     expect(readFileSync(file, "utf8")).toBe(original);
     const repair = refused.error.repair;
     expect(repair).toContain("forge config set");
     expect(repair).not.toContain("in the same edit");
+    if (typeof repair !== "string")
+      throw new Error("expected a repair command");
     const command =
       /forge config set (\S+) '<value-as-json>' --expect-revision <revision>/.exec(
         repair,
@@ -64,7 +77,10 @@ test("a fresh Node project imports delivery after following the missing-value re
     expect(command).not.toBeNull();
     if (!command?.[1])
       throw new Error("repair must include the config set arguments");
-    const described = cli(["catalog", "describe", "config.set"]).result;
+    const described = cli(["catalog", "describe", "config.set"]).result as {
+      declaration: OperationDeclaration;
+      inputSchema: Record<string, unknown>;
+    };
     expect(described.declaration.args).toEqual(["path", "value"]);
     expect(described.inputSchema.required).toEqual([
       "path",
@@ -78,18 +94,18 @@ test("a fresh Node project imports delivery after following the missing-value re
       JSON.stringify({ test: "npm test" }),
       "--expect-revision",
       revision,
-    ]).result;
+    ]).result as WriteResult;
+    const imported = cli([
+      "template",
+      "import",
+      "delivery",
+      "--expect-revision",
+      written.revision,
+    ]).result as ImportResult;
+    expect(imported.template).toBe("harsha/delivery@0.1.2");
+    const shown = cli(["config", "show"]).result as ShowResult;
     expect(
-      cli([
-        "template",
-        "import",
-        "delivery",
-        "--expect-revision",
-        written.revision,
-      ]).result.template,
-    ).toBe("harsha/delivery@0.1.2");
-    expect(
-      cli(["config", "show"]).result.effective.blocks.check.config.commands,
+      getIn(shown.effective, ["blocks", "check", "config", "commands"]),
     ).toEqual({ test: "npm test" });
   } finally {
     rmSync(root, { recursive: true, force: true });
