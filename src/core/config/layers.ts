@@ -205,9 +205,10 @@ export function resolveLayers(
     })),
   ];
 
-  // An empty object is explicit at or inside a declared map, or when a lower layer sets that
-  // very key. Other empty containers leave lower-layer objects intact.
+  // An empty object is explicit in an invocation, at or inside a declared map, or when a lower
+  // layer sets that very key. Other empty containers leave lower-layer objects intact.
   const explicit = (entry: (typeof raw)[number]): boolean =>
+    entry.layer === "invocation" ||
     !emptyObject(entry.value) ||
     maps.some((map) => isPrefix(map, entry.segments)) ||
     raw.some(
