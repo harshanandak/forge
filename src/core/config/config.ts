@@ -44,6 +44,7 @@ import {
   getIn,
   hasIn,
   isObject,
+  leaves,
   type JsonObject,
   parsePointer,
   removeIn,
@@ -204,6 +205,8 @@ function resolve(
     defaults.push({ segments, value: getIn(document ?? {}, segments) });
     if (project !== undefined) removeIn(project, segments);
   }
+  for (const { segments } of invocation)
+    if (project !== undefined) removeIn(project, segments);
   for (const [name, { schema }] of blockSchemas(document, lookup))
     for (const { key, value } of schemaDefaults(schema))
       defaults.push({ segments: ["blocks", name, "config", key], value });
@@ -506,8 +509,18 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
           segments: segmentsOf(step.path),
           value: step.value,
         }));
-      const { document, excluded, implied } = usable(current.document, env);
-      const layers = resolve(env, document, implied, derived, invocation);
+      let patched = clone(current.document);
+      for (const { segments, value } of invocation)
+        setIn((patched ??= emptyDocument()), segments, clone(value));
+      const { document, excluded, implied } = usable(patched, env);
+      const kept = invocation
+        .flatMap(({ segments, value }) => leaves(value, undefined, segments))
+        .filter(({ segments }) => hasIn(document, segments))
+        .map(({ segments }) => ({
+          segments,
+          value: getIn(document, segments),
+        }));
+      const layers = resolve(env, document, implied, derived, kept);
       const blocks = isObject(document?.blocks) ? document.blocks : {};
       const instances: Instance[] = [];
       for (const [name, instance] of Object.entries(blocks)) {
