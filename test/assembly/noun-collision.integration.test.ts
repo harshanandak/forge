@@ -101,19 +101,7 @@ async function fixture(
       caller: "human",
       context: localContext(assembly, { kind: "human", id: "test" }),
     });
-  for (const name of [...names, "healthy"]) {
-    configure(
-      names,
-      names.filter((other) => other !== name),
-    );
-    const checked = await call("block.check", { path: `./${name}` });
-    expect(checked.ok).toBe(true);
-    const admitted = await call("block.admit", {
-      digest: record(checked.result)?.digest,
-    });
-    expect(admitted.ok).toBe(true);
-  }
-  return {
+  const result = {
     assembly,
     configure,
     call,
@@ -122,6 +110,24 @@ async function fixture(
       rmSync(root, { recursive: true, force: true });
     },
   };
+  try {
+    for (const name of [...names, "healthy"]) {
+      configure(
+        names,
+        names.filter((other) => other !== name),
+      );
+      const checked = await call("block.check", { path: `./${name}` });
+      expect(checked.ok).toBe(true);
+      const admitted = await call("block.admit", {
+        digest: record(checked.result)?.digest,
+      });
+      expect(admitted.ok).toBe(true);
+    }
+  } catch (error) {
+    await result.close();
+    throw error;
+  }
+  return result;
 }
 
 async function observe(
@@ -336,3 +342,76 @@ test("each participant reports every colliding noun in sorted order", async () =
     await f.close();
   }
 });
+
+for (const renamed of [false, true]) {
+  test(`suffix collision rejects both owners in either order${renamed ? " after a local noun rename" : ""}`, async () => {
+    const names = ["alpha", "bravo"];
+    const read = {
+      input: "value.json",
+      output: "value.json",
+      context: "stateless",
+      timeoutMs: 1000,
+      effects: [],
+      idempotent: true,
+      callers: ["human"],
+      stability: "experimental",
+    } as const;
+    const f = await fixture(names, {
+      alpha: { operations: { "topic.read": read } },
+      bravo: {
+        operations: { [renamed ? "other.read" : "topic-extra.read"]: read },
+      },
+    });
+    try {
+      const outcomes = [];
+      for (const order of [names, [...names].reverse()]) {
+        f.configure(order);
+        if (renamed) {
+          expect(f.assembly.catalog.unavailable()).toEqual([]);
+          const shown = await f.call("config.show");
+          expect(shown).toMatchObject({ ok: true, result: { valid: true } });
+          expect(
+            await f.call("config.set", {
+              path: "/blocks/bravo/rename",
+              value: { other: "topic-extra" },
+              expectRevision: record(shown.result)?.revision,
+            }),
+          ).toMatchObject({ ok: true });
+        }
+        const unavailable = f.assembly.catalog
+          .unavailable()
+          .toSorted((a, b) => a.name.localeCompare(b.name));
+        expect(unavailable.map((block) => block.name)).toEqual(names);
+        for (const block of unavailable) {
+          expect(block.error.code).toBe("INPUT_INVALID");
+          for (const noun of ["topic", "topic-extra"])
+            expect(block.reason).toContain(`"${noun}"`);
+          for (const name of names) expect(block.reason).toContain(`"${name}"`);
+          expect(block.reason.indexOf('"topic"')).toBeLessThan(
+            block.reason.indexOf('"topic-extra"'),
+          );
+          expect(block.reason.indexOf('"alpha"')).toBeLessThan(
+            block.reason.indexOf('"bravo"'),
+          );
+          expect(block.reason).toBe(unavailable[0]!.reason);
+        }
+        const operations = f.assembly.catalog.list().map((entry) => entry.op);
+        for (const op of ["topic.read", "topic-extra.read"]) {
+          expect(operations).not.toContain(op);
+          expect(await f.call(op, "blocked")).toMatchObject({
+            ok: false,
+            error: { code: "INPUT_INVALID" },
+          });
+        }
+        expect(await f.call("healthy.read", "healthy")).toMatchObject({
+          ok: true,
+          result: "healthy",
+        });
+        outcomes.push(unavailable);
+      }
+      expect(outcomes[1]).toEqual(outcomes[0]);
+    } finally {
+      await f.close();
+    }
+  });
+}

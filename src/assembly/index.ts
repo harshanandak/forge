@@ -27,7 +27,11 @@ import {
   inputError,
   formatProblem as schemaDiagnostic,
 } from "../contract/input-error.ts";
-import { cliWords, parseOperationName } from "../contract/naming.ts";
+import {
+  cliWords,
+  nounCollisions,
+  parseOperationName,
+} from "../contract/naming.ts";
 import { validateConfiguration } from "../blocks/check/budget.ts";
 import type { CheckConfig } from "../blocks/check/types.ts";
 import {
@@ -567,17 +571,25 @@ export async function createAssembly(
         // The registration loop reports capture failures through its existing path.
       }
     }
-    const collisions = [...nounOwners]
-      .filter(([, names]) => names.length > 1)
-      .sort(([a], [b]) => a.localeCompare(b));
+    const collisions = new Map(
+      nounCollisions(
+        [...nounOwners].flatMap(([noun, names]) => names.map(() => noun)),
+      ).map(
+        (pair) =>
+          [
+            JSON.stringify(pair),
+            [...new Set(pair.flatMap((noun) => nounOwners.get(noun)!))].sort(),
+          ] as const,
+      ),
+    );
     for (const [name, instance] of Object.entries(document.blocks)) {
       if (instance.enabled === false) continue;
       try {
-        const collision = collisions
+        const collision = [...collisions]
           .filter(([, names]) => names.includes(name))
           .map(
-            ([noun, names]) =>
-              `noun "${noun}" is declared by ${JSON.stringify(names)}`,
+            ([pair, names]) =>
+              `nouns ${pair} collide between blocks ${JSON.stringify(names)}`,
           )
           .join("; ");
         if (collision) refuse("INPUT_INVALID", collision);
