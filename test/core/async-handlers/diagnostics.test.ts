@@ -434,8 +434,8 @@ for (const [label, code, expected] of [
     const { cause } = result.error.observed as {
       cause: Record<string, string>;
     };
-    assert.equal(Object.hasOwn(cause, "message"), false);
-    assert.match(cause.frame!, /^index\.cjs:\d+:\d+$/);
+    // Exactly these fields: no message, stack or frame text.
+    assert.deepStrictEqual(cause, expected);
     for (const value of Object.values(cause))
       assert.ok(Buffer.byteLength(value) <= 200);
   }, 5000);

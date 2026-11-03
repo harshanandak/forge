@@ -183,7 +183,7 @@ function freezeData(value: unknown): unknown {
   return value;
 }
 
-function errorCause(error: unknown, entry: string): Record<string, string> {
+function errorCause(error: unknown): Record<string, string> {
   const read = (value: unknown, key: string, depth = 0): unknown => {
     if (
       depth > 3 ||
@@ -219,15 +219,6 @@ function errorCause(error: unknown, entry: string): Record<string, string> {
   const syscall = read(error, "syscall");
   if (typeof syscall === "string" && /^[a-z_]{1,40}$/.test(syscall))
     cause.syscall = syscall;
-  const stack = read(error, "stack");
-  const filename = entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const frame =
-    typeof stack === "string" && entry
-      ? stack.match(
-          new RegExp(`^\\s*at [^\\n]*?(${filename}:\\d+:\\d+)\\)?$`, "m"),
-        )?.[1]
-      : undefined;
-  if (frame) cause.frame = clip(frame);
   return cause;
 }
 
@@ -294,7 +285,6 @@ export class Runtime {
     let handle: ServiceHandle | undefined;
     let request: InvocationRequest | undefined;
     let started = false;
-    let entry = "";
     let timeoutMessage: (() => string) | undefined;
     let result: ResultEnvelope;
     const clock = this.#options.clock ?? { now: () => Date.now() };
@@ -303,7 +293,6 @@ export class Runtime {
       if (!checked.ok) refuse("INPUT_INVALID", "invalid invocation request");
       request = checked.value;
       const { block, operation } = this.#catalog.resolve(request.op);
-      entry = block.manifest.entry;
       const declaration = operation.declaration;
       if (!declaration.callers.includes(request.caller))
         refuse("GRANT_REQUIRED", "caller is not permitted");
@@ -509,7 +498,7 @@ export class Runtime {
               code: "BLOCK_EXECUTION_FAILED",
               message: "block execution failed",
               retry: "never" as const,
-              observed: { cause: errorCause(error, entry) },
+              observed: { cause: errorCause(error) },
             };
       result = {
         ok: false,
