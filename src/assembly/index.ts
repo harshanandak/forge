@@ -834,6 +834,12 @@ export async function createAssembly(
               preview.declaration.args,
             ),
           );
+        const prefix = () =>
+          idPrefixObservation(root, stateRoot, options.providers);
+        const core = configCandidates
+          .concat(grantCandidate, discoveryOperations)
+          .some((entry) => entry.op === request.op);
+        if (core) derived.push(...(await prefix()));
         let workEnabled = false;
         for (const instance of (deviceMemory
           ? snapshot(call, true).show
@@ -849,21 +855,13 @@ export async function createAssembly(
           )
             derived.push(...agentAdapterObservation(instance.name));
         }
-        const core = configCandidates.concat(
-          grantCandidate,
-          discoveryOperations,
-        );
-        const blockCatalog =
-          workEnabled || core.some((entry) => entry.op === request.op)
-            ? undefined
-            : snapshot(call, deviceMemory).catalog;
         if (
-          !blockCatalog?.list().includes(request.op) ||
-          blockCatalog.resolve(request.op).operation.instance === "work"
+          !core &&
+          (workEnabled ||
+            snapshot(call, deviceMemory).catalog.resolve(request.op).operation
+              .instance === "work")
         )
-          derived.push(
-            ...(await idPrefixObservation(root, stateRoot, options.providers)),
-          );
+          derived.push(...(await prefix()));
       } catch (error) {
         return failure(request.op, error);
       }
