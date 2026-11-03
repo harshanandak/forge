@@ -1080,7 +1080,7 @@ export async function createAssembly(
           if (request.op === "block.check" || request.op === "block.add") {
             await trustState.open(false);
             const spec = String(input.path);
-            const source = sourceFor(spec);
+            const source = sourceFor(spec, root);
             const block = captureBlock(
               resolveBlock(root, source),
               blockCapture,

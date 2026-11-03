@@ -1,4 +1,4 @@
-﻿import { existsSync } from "node:fs";
+﻿import { existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { nodeFileCapture } from "../adapters/node-runtime/capture.ts";
@@ -57,8 +57,11 @@ export function resolveBlock(root: string, source: BlockSource): string {
     `Built-in block ${source.builtin} is not registered`,
   );
 }
-export function sourceFor(spec: string): BlockSource {
-  return spec.startsWith(".") || /^[A-Za-z]:[\\/]|^\//.test(spec)
+export function sourceFor(spec: string, root: string): BlockSource {
+  return spec.startsWith(".") ||
+    /^[A-Za-z]:[\\/]|^\//.test(spec) ||
+    (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(spec) &&
+      statSync(resolve(root, spec), { throwIfNoEntry: false })?.isDirectory())
     ? { path: spec }
     : { package: spec };
 }
