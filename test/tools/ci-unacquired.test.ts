@@ -3,6 +3,7 @@ import {
   decideRerun,
   type CiJob,
   type CiRun,
+  type CurrentRun,
 } from "../../tools/ci-unacquired.ts";
 
 setDefaultTimeout(1000);
@@ -45,10 +46,18 @@ const run: CiRun = {
   run_attempt: 2,
   jobs: [success, unacquired, gate],
 };
+const current: CurrentRun = {
+  run_attempt: 2,
+  status: "completed",
+  conclusion: "failure",
+};
 
 test("reruns a never-acquired macOS job and failed gate on attempts 1 and 2", () => {
   for (const run_attempt of [1, 2]) {
-    const decision = decideRerun({ ...run, run_attempt });
+    const decision = decideRerun(
+      { ...run, run_attempt },
+      { ...current, run_attempt },
+    );
     expect(decision.rerun).toBe(true);
     expect(decision.reason).toContain("never-acquired");
   }
@@ -92,7 +101,35 @@ for (const [name, input] of [
   ["unfinished conclusion", { ...run, conclusion: null }],
 ] satisfies [string, CiRun][]) {
   test(`does not rerun: ${name}`, () => {
-    const decision = decideRerun(input);
+    const decision = decideRerun(input, {
+      ...current,
+      run_attempt: input.run_attempt,
+    });
+    expect(decision.rerun).toBe(false);
+    expect(decision.reason.length).toBeGreaterThan(0);
+  });
+}
+
+for (const [name, latest] of [
+  [
+    "stale eligible attempt does not rerun a newer real failure",
+    { ...current, run_attempt: 2 },
+  ],
+  [
+    "stale eligible attempt does not rerun current attempt 3",
+    { ...current, run_attempt: 3 },
+  ],
+  [
+    "current in-progress attempt does not rerun",
+    { ...current, run_attempt: 1, status: "in_progress", conclusion: null },
+  ],
+  [
+    "current cancelled attempt does not rerun",
+    { ...current, run_attempt: 1, conclusion: "cancelled" },
+  ],
+] satisfies [string, CurrentRun][]) {
+  test(name, () => {
+    const decision = decideRerun({ ...run, run_attempt: 1 }, latest);
     expect(decision.rerun).toBe(false);
     expect(decision.reason.length).toBeGreaterThan(0);
   });

@@ -9,7 +9,15 @@ export type CiRun = {
   run_attempt: number;
   jobs: readonly CiJob[];
 };
-export function decideRerun(run: CiRun): {
+export type CurrentRun = {
+  run_attempt: number;
+  status: string;
+  conclusion: string | null;
+};
+export function decideRerun(
+  run: CiRun,
+  current: CurrentRun,
+): {
   rerun: boolean;
   reason: string;
 } {
@@ -17,6 +25,15 @@ export function decideRerun(run: CiRun): {
     return { rerun: false, reason: "CI run did not fail" };
   if (!(run.run_attempt < 3))
     return { rerun: false, reason: "Runner-allocation attempt limit reached" };
+  if (
+    current.run_attempt !== run.run_attempt ||
+    current.status !== "completed" ||
+    current.conclusion !== "failure"
+  )
+    return {
+      rerun: false,
+      reason: "Current run is no longer the judged failed attempt",
+    };
   const unacquired = (job: CiJob) =>
     job.conclusion === "cancelled" &&
     job.steps.length === 0 &&
@@ -38,10 +55,16 @@ export function decideRerun(run: CiRun): {
 }
 if (import.meta.main) {
   const pages = (await Bun.stdin.json()) as { jobs: CiJob[] }[];
-  const decision = decideRerun({
-    conclusion: process.env.RUN_CONCLUSION ?? null,
-    run_attempt: Number(process.env.RUN_ATTEMPT),
-    jobs: pages.flatMap((page) => page.jobs),
-  });
+  const current = (await Bun.file(
+    `${process.env.RUNNER_TEMP}/ci-current.json`,
+  ).json()) as CurrentRun;
+  const decision = decideRerun(
+    {
+      conclusion: process.env.RUN_CONCLUSION ?? null,
+      run_attempt: Number(process.env.RUN_ATTEMPT),
+      jobs: pages.flatMap((page) => page.jobs),
+    },
+    current,
+  );
   console.log(`rerun=${decision.rerun}\nreason=${decision.reason}`);
 }
