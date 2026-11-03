@@ -468,6 +468,57 @@ test("config show resolves the built-in source of an invocation-only instance", 
   );
 });
 
+test("config show derives adapters from the replacement source's instances", async () => {
+  await inspectInvocation(
+    {
+      schemaVersion: "forge.config/1",
+      blocks: { hello: { source: { builtin: "forge/agent" } } },
+    },
+    [{ op: "set", path: "/blocks/hello/source", value: { path: "./hello" } }],
+    (shown) => {
+      expect(shown.ok, JSON.stringify(shown)).toBe(true);
+      expect(shown.result.problems).toEqual([]);
+      expect(shown.result.instances).toEqual([
+        { name: "hello", source: { path: "./hello" }, enabled: true },
+      ]);
+      expect(shown.result.effective.blocks).toMatchObject({
+        hello: { config: { greeting: "hi", style: { loud: true } } },
+      });
+      const hello = (
+        shown.result.effective.blocks as Record<string, { config: unknown }>
+      ).hello;
+      expect(hello?.config).toEqual({ greeting: "hi", style: { loud: true } });
+    },
+  );
+});
+
+test("config show keeps schema defaults under an invocation object set", async () => {
+  await inspectInvocation(
+    {
+      schemaVersion: "forge.config/1",
+      blocks: { hello: { source: { path: "./missing-block" } } },
+    },
+    [
+      {
+        op: "set",
+        path: "/blocks/hello",
+        value: { source: { path: "./hello" } },
+      },
+    ],
+    (shown) => {
+      expect(shown.ok, JSON.stringify(shown)).toBe(true);
+      expect(shown.result.problems).toEqual([]);
+      expect(shown.result.instances).toEqual([
+        { name: "hello", source: { path: "./hello" }, enabled: true },
+      ]);
+      const hello = (
+        shown.result.effective.blocks as Record<string, { config: unknown }>
+      ).hello;
+      expect(hello?.config).toEqual({ greeting: "hi", style: { loud: true } });
+    },
+  );
+});
+
 test("derived agent adapters target the configured instance name", () => {
   expect(agentAdapterObservation("router")).toMatchObject([
     {
