@@ -240,15 +240,18 @@ async function heldContext(
     typeof id !== "string"
   )
     return context;
-  const shown = await catalog.invoke({
-    schemaVersion: "forge.invocation/1",
-    requestId: randomUUID(),
-    op: show,
-    input: { id },
-    caller: options.caller,
-    context,
-  });
-  const generation = shown.ok
+  // A failed hidden lookup must not replace the write's own result or leak its diagnostics.
+  const shown = await catalog
+    .invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: randomUUID(),
+      op: show,
+      input: { id },
+      caller: options.caller,
+      context,
+    })
+    .catch(() => undefined);
+  const generation = shown?.ok
     ? record(record(shown.result)?.lease)?.generation
     : undefined;
   return typeof generation === "number"

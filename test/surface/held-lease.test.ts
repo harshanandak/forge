@@ -18,6 +18,8 @@ import {
 import { runCli } from "../../src/surface/cli.ts";
 import { localIdentityResolver } from "../../src/assembly/identity.ts";
 import { createMcpHandlers } from "../../src/surface/mcp.ts";
+import type { SurfaceCatalog } from "../../src/surface/catalog.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
 let work: string;
@@ -207,6 +209,53 @@ test("restricted MCP held writes find hidden lease reads without widening exposu
     },
   });
 }, 30_000);
+
+for (const [label, rejection] of [
+  [
+    "ForgeFailure",
+    () =>
+      new ForgeFailure({
+        code: "INTERNAL",
+        message: "hidden-show-diagnostic",
+        retry: "never",
+      }),
+  ],
+  ["Error", () => new Error("hidden-show-diagnostic")],
+] as const)
+  test(`a rejected hidden lease read (${label}) keeps the write's own result private`, async () => {
+    const id = await created();
+    const catalog: SurfaceCatalog = {
+      list: () => assembly.catalog.list(),
+      invoke: (request) =>
+        request.op === "issue.show"
+          ? Promise.reject(rejection())
+          : assembly.catalog.invoke(request),
+    };
+    const handlers = createMcpHandlers(
+      catalog,
+      { expose: ["issue.claim", "issue.link"] },
+      {
+        context: localContext(assembly, { kind: "agent", id: "mcp" }, "one"),
+        resolveContext: localIdentityResolver(
+          assembly.deviceRoot,
+          { FORGE_SESSION: "one" },
+          false,
+        ),
+      },
+    );
+    expect(await handlers.callTool("issue_claim", { id })).toMatchObject({
+      ok: true,
+    });
+    const result = await handlers.callTool("catalog_call", {
+      op: "issue.link",
+      input: { id, relation: "relates", url: "https://example.com/r" },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "CONTEXT_MISSING" },
+    });
+    expect(JSON.stringify(result)).not.toContain("hidden-show-diagnostic");
+  }, 30_000);
 
 test("a terminal claim refuses every unsourced non-TTY leased write and supports explicit script recovery", async () => {
   const id = await created();
