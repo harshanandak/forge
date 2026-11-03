@@ -43,6 +43,48 @@ function starterNext(): TemplateDocument {
 }
 
 describe("template lifecycle", () => {
+  test("show refuses an unavailable exact version instead of showing the installed content", () => {
+    const p = project();
+    p.installed.set("forge/starter", starterNext());
+    const before = p.read();
+    const failure = failureOf(() =>
+      p.templates.show({ template: "forge/starter@0.1.0" }),
+    );
+    expect(failure).toMatchObject({ code: "INPUT_INVALID" });
+    expect(failure?.message).toContain("forge/starter");
+    expect(failure?.message).toContain("0.1.0");
+    expect(failure?.message).toContain("0.2.0");
+    expect(p.read()).toBe(before);
+  });
+
+  test("show returns the installed content for its exact version or a bare id", () => {
+    const p = project();
+    const installed = starterNext();
+    p.installed.set("forge/starter", installed);
+    const before = p.read();
+    for (const template of ["forge/starter@0.2.0", "forge/starter"]) {
+      expect(p.templates.show({ template })).toEqual({
+        template: installed,
+        imported: null,
+        owned: [],
+      });
+    }
+    expect(p.read()).toBe(before);
+  });
+
+  test("show keeps a missing bare id empty and refuses a missing exact ref", () => {
+    const p = project();
+    p.installed.delete("forge/starter");
+    expect(p.templates.show({ template: "forge/starter" })).toEqual({
+      template: null,
+      imported: null,
+      owned: [],
+    });
+    expect(
+      failureOf(() => p.templates.show({ template: "forge/starter@0.1.0" })),
+    ).toMatchObject({ code: "INPUT_INVALID" });
+  });
+
   test("an oversized project template is refused before decoding", () => {
     const p = project();
     writeFileSync(
