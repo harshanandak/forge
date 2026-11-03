@@ -406,6 +406,55 @@ describe("template lifecycle", () => {
     expect(failure?.message).toContain("/config/blocks/work/use");
   });
 
+  test("inline and project-file imports record the template id for list and removal", () => {
+    const inline = project();
+    const fromFile = project();
+    const template = { ...starterNext(), id: "fixture/team" };
+    const ref = `${template.id}@${template.version}`;
+    inline.installed.set(template.id, template);
+    writeFileSync(
+      join(fromFile.root, "team-template.json"),
+      JSON.stringify(template),
+    );
+
+    const inlineImport = inline.templates.importTemplate({
+      template: template.id,
+      expectRevision: inline.config.show().revision,
+    });
+    const fileImport = fromFile.templates.importTemplate({
+      template: "./team-template.json",
+      expectRevision: fromFile.config.show().revision,
+    });
+    expect(inlineImport.template).toBe(ref);
+    expect(fileImport.template).toBe(ref);
+    expect(inline.config.show().templates).toEqual([
+      expect.objectContaining({ template: ref }),
+    ]);
+    expect(fromFile.config.show().templates).toEqual([
+      expect.objectContaining({ template: ref, source: "team-template.json" }),
+    ]);
+    expect(
+      fromFile.templates
+        .list()
+        .templates.filter((entry) => entry.imported)
+        .map(({ id, version, imported }) => ({ id, version, imported })),
+    ).toEqual([
+      {
+        id: template.id,
+        version: template.version,
+        imported: ref,
+      },
+    ]);
+
+    const removed = fromFile.templates.remove({
+      template: template.id,
+      expectRevision: fileImport.revision,
+    });
+    expect(removed.template).toBe(ref);
+    expect(removed.removed).toEqual(fileImport.added);
+    expect(fromFile.config.show().templates).toEqual([]);
+  });
+
   test("a template file in the project imports like an installed one", () => {
     const p = project();
     writeFileSync(
