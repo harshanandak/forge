@@ -162,7 +162,7 @@ export function checkInstanceConfig(
       message: `blocks.${name} needs ${key}, and nothing sets it: ${CONFIG_FILE} has no value and nothing was detected in this project`,
       pointer,
       retry: "never",
-      repair: `set ${pointer} in the same edit`,
+      repair: `run forge config show, then forge config set ${pointer} '<value-as-json>' --expect-revision <revision>; use result.revision and a value matching the block's config schema, then retry the original command at the new revision`,
     });
   }
   if (problems.length > 0) {
