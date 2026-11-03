@@ -1,7 +1,61 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts";
 import { commandArguments } from "../../../src/blocks/check/command.ts";
 const output = createRunnerOutput();
+
+const nodeSummaries = JSON.parse(
+  readFileSync(new URL("./fixtures/node-test.json", import.meta.url), "utf8"),
+) as {
+  version: string;
+  scenario: string;
+  reporter: string;
+  stdout: string;
+  stderr: string;
+}[];
+for (const fixture of nodeSummaries) {
+  test(`node:test ${fixture.version} ${fixture.reporter} ${fixture.scenario} summary`, () => {
+    const expected = {
+      kind: "recognized",
+      testCount: fixture.scenario === "zero" ? 0 : 1,
+      failed: fixture.scenario === "fail" ? 1 : 0,
+    };
+    expect(output.parse(fixture.stdout, fixture.stderr, "auto")).toMatchObject(
+      expected,
+    );
+    for (const stream of ["stdout", "stderr"] as const) {
+      const recognizer = output.recognize("auto");
+      for (const byte of Buffer.from(fixture.stdout + fixture.stderr))
+        recognizer.push(stream, Uint8Array.of(byte));
+      expect(recognizer.report()).toMatchObject(expected);
+      expect(recognizer.report()).toMatchObject(expected);
+    }
+    expect(output.parse(fixture.stdout, fixture.stderr, "exit-code").kind).toBe(
+      "unknown",
+    );
+  }, 1000);
+}
+
+test("node:test summaries require complete safe counters and preserve failures", () => {
+  for (const text of [
+    "# tests 1",
+    "# pass 1\n# fail 0",
+    "# tests 1\n# pass 1\n# fail 1",
+    "# tests 9007199254740992\n# pass 0\n# fail 0",
+  ])
+    expect(output.parse(text, "", "auto").kind).toBe("malformed");
+  const passing = "# tests 1\n# pass 1\n# fail 0\n";
+  const failing = "# tests 1\n# pass 0\n# fail 1\n";
+  for (const text of [passing + failing, failing + passing])
+    expect(output.parse(text, "", "auto")).toMatchObject({
+      kind: "recognized",
+      testCount: 1,
+      failed: 1,
+    });
+  expect(output.parse("# tests 1\n", "# pass 1\n# fail 0", "auto").kind).toBe(
+    "malformed",
+  );
+}, 1000);
 
 test("Bun footers snapshot counters and preserve failures across summaries", () => {
   const failing = "1 pass\n1 fail\nRan 2 tests across 1 file.\n";

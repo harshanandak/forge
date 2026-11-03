@@ -102,12 +102,15 @@ class SummaryLines {
   vitest: OutputReport | undefined;
   pytest: OutputReport | undefined;
   bun: OutputReport | undefined;
+  node: OutputReport | undefined;
   bunHint = false;
   zero = false;
   hint = false;
   private bunPassed: number | undefined;
   private bunFailed: number | undefined;
   private bunBailTotal: number | undefined;
+  private nodeTests: number | undefined;
+  private nodePassed: number | undefined;
   private pending: Buffer[] = [];
   private pendingBytes = 0;
   private overlong = false;
@@ -176,6 +179,31 @@ class SummaryLines {
     const vitest = /^\s*Tests\s+(.*?)\((\d+)\)\s*$/.exec(text)?.slice(1);
     if (vitest)
       this.vitest = retainFailure(this.vitest, summary("Vitest", vitest));
+    const node = /^\s*[ℹ#]\s+(tests|pass|fail)\s+(\d+)\s*$/.exec(text);
+    if (node) {
+      this.hint = true;
+      const n = Number(node[2]);
+      if (node[1] === "tests") {
+        this.nodeTests = n;
+        this.nodePassed = undefined;
+        this.node = retainFailure(this.node, malformed);
+      } else if (node[1] === "pass") this.nodePassed = n;
+      else {
+        const total = this.nodeTests,
+          passed = this.nodePassed;
+        const next: OutputReport =
+          count(total) && count(passed) && count(n) && passed <= total - n
+            ? {
+                kind: "recognized",
+                testCount: total,
+                failed: n,
+                detail: "Node test summary",
+              }
+            : malformed;
+        this.node = retainFailure(this.node, next);
+        this.nodeTests = this.nodePassed = undefined;
+      }
+    }
     const bunOutcome = /^\s*(\d+) (pass|fail)\s*$/.exec(text);
     if (bunOutcome) {
       this.bunHint = true;
@@ -291,6 +319,8 @@ function recognizer(format: ReportFormat): OutputRecognizer {
         stderr.vitest,
         stdout.bun,
         stderr.bun,
+        stdout.node,
+        stderr.node,
       ])
         if (report) reports.push(report);
       if (stdout.zero || stderr.zero)
