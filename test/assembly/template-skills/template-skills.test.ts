@@ -136,6 +136,36 @@ test("skills sync renders a template skill from the project's values, and re-ren
   });
 }, 30_000);
 
+test("plain files in a template skills folder do not prevent rendering or updating skills", async () => {
+  await withTemplate(async (root, call) => {
+    const readme = join(root, "tpl/skills/README.md");
+    const text = "Ordinary template documentation.\n";
+    writeFileSync(readme, text);
+    expect(await call("skills.sync")).toMatchObject({
+      ok: true,
+      written: [RENDERED],
+    });
+    expect(readFileSync(join(root, RENDERED), "utf8")).toContain(
+      "Stop after 2 rounds;",
+    );
+    expect(
+      await call("config.set", {
+        path: "/values/review/rounds",
+        value: 3,
+        expectRevision: "",
+      }),
+    ).toMatchObject({ ok: true });
+    expect(await call("skills.sync")).toMatchObject({
+      ok: true,
+      written: [RENDERED],
+    });
+    expect(readFileSync(join(root, RENDERED), "utf8")).toContain(
+      "Stop after 3 rounds;",
+    );
+    expect(readFileSync(readme, "utf8")).toBe(text);
+  });
+}, 30_000);
+
 test("marker ownership adopts main copies, preserves user files, restores missing skills and compares text once", async () => {
   await withTemplate(async (root, call) => {
     const folder = dirname(join(root, RENDERED));

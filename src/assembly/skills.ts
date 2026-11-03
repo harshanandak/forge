@@ -154,6 +154,7 @@ function templateSkills(templates: TemplateSkills): Copy[] {
     const parent = source.file.split("/").slice(0, -1).join("/");
     const dir = parent === "" ? "skills" : `${parent}/skills`;
     for (const name of files.list(dir)) {
+      if (entryKind(source.root, `${dir}/${name}`) !== "directory") continue;
       const path = `${dir}/${name}/SKILL.md`;
       let bytes: Uint8Array | undefined;
       try {
