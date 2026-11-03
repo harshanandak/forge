@@ -105,6 +105,52 @@ for (const command of commands) {
     assert.deepEqual(envelope.result, { message: "Hello, World!" });
   }
 }
+for (const spec of ["blocks/foo", "name/subpath"]) {
+  const envelope = JSON.parse(
+    run(process.execPath, [npx, "forge", "block", "check", spec], 6),
+  );
+  assert.equal(envelope.error.code, "INPUT_INVALID");
+  assert.equal(envelope.error.message, "Expected an installed package name");
+}
+for (const spec of ["block-path-fixture", "@fixture/block-path-fixture"]) {
+  cpSync(join(root, "hello-block"), join(root, "node_modules", spec), {
+    recursive: true,
+  });
+  const envelope = JSON.parse(
+    run(process.execPath, [npx, "forge", "block", "check", spec]),
+  );
+  assert.equal(envelope.ok, true);
+  assert.equal(envelope.result.digest, digest);
+}
+writeFileSync(join(root, "block-path-file"), "not a directory");
+const fileSource = JSON.parse(
+  run(process.execPath, [npx, "forge", "block", "check", "block-path-file"], 1),
+);
+assert.equal(fileSource.error.code, "PROVIDER_MISSING");
+cpSync(join(root, "hello-block"), join(root, "blocks/foo"), {
+  recursive: true,
+});
+for (const spec of ["blocks/foo", "./blocks/foo"]) {
+  for (const verb of ["check", "add"]) {
+    const envelope = JSON.parse(
+      run(process.execPath, [npx, "forge", "block", verb, spec]),
+    );
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.result.digest, digest);
+  }
+  const shown = JSON.parse(
+    run(process.execPath, [npx, "forge", "config", "show"]),
+  );
+  assert.deepEqual(shown.result.problems, []);
+  assert.deepEqual(
+    shown.result.instances.find((instance) => instance.name === "hello").source,
+    { path: spec },
+  );
+  const greeting = JSON.parse(
+    run(process.execPath, [npx, "forge", "hello", "say", "--name", "Path"]),
+  );
+  assert.deepEqual(greeting.result, { message: "Hello, Path!" });
+}
 const manifestPath = join(root, "hello-block/forge.block.json");
 const original = readFileSync(manifestPath, "utf8");
 for (const [label, mutate, sentences] of [
