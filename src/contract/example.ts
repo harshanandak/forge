@@ -8,6 +8,20 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function quote(raw: string, shell: string, scalar: boolean): string {
+  if (/^[a-zA-Z0-9_./:@=-]+$/.test(raw)) return raw;
+  if (scalar && !/["\\$`%!]/.test(raw)) return `"${raw}"`;
+  if (shell === "POSIX") return `'${raw.replaceAll("'", "'\\''")}'`;
+  // Scalar native quotes are doubled, with 2n backslashes before them or the closing quote.
+  // Quote pairs keep PowerShell 5.1's quote-count heuristic from re-wrapping scalar spaces.
+  const native = raw
+    .replace(/(\\*)"/g, scalar ? '$1$1""' : '$1$1\\"')
+    .replace(/(\\+)$/g, scalar || shell === "cmd" ? "$1$1" : "$1");
+  return shell === "cmd"
+    ? `"${native}"`.replace(/[%^"&|<>]/g, "^$&")
+    : `'${(scalar ? `"${native}"` : native).replaceAll("'", "''")}'`;
+}
+
 /** One shell-aware renderer for documented calls in help and diagnostics. */
 export function renderExample(
   op: string,
@@ -55,7 +69,7 @@ export function renderExample(
       ...args.filter(([key]) => !positional.includes(key)),
       ...positional.flatMap((key) => args.filter(([name]) => name === key)),
     ];
-    const render = (powershell: boolean): string =>
+    const render = (shell: string): string =>
       `forge ${words} ${ordered
         .map(([key, value]) => {
           const type = record(properties[key])?.type;
@@ -65,34 +79,27 @@ export function renderExample(
               ? value
               : JSON.stringify(value);
           const nativeRaw =
-            powershell && typeof value !== "string"
+            shell === "PowerShell 5.1" && typeof value !== "string"
               ? raw.replace(
                   /\s/g,
                   (character) =>
                     `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
                 )
               : raw;
-          const quoted = /^[a-zA-Z0-9_./:@=-]+$/.test(raw)
-            ? raw
-            : typeof value === "string" && !/["\\$`%!]/.test(raw)
-              ? `"${raw}"`
-              : powershell
-                ? `'${nativeRaw
-                    .replace(/(\\*)"/g, '$1$1\\"')
-                    .replace(/(\\+)$/g, "$1$1")
-                    .replaceAll("'", "''")}'`
-                : `'${raw.replaceAll("'", "'\\''")}'`;
+          const quoted = quote(nativeRaw, shell, typeof value === "string");
           return positional.includes(key)
             ? quoted
             : `--${flagName(key)} ${quoted}`;
         })
         .join(" ")}`;
-    const posix = render(false);
-    const powershell = render(true);
+    const shells = ["POSIX", "PowerShell 5.1", "cmd"];
+    const commands = shells.map(render);
     // PowerShell 5.1 splits whitespace inside escaped JSON quotes; JSON escapes preserve it.
-    return posix === powershell
-      ? posix
-      : `POSIX: ${posix}\n    PowerShell 5.1: ${powershell}`;
+    return commands.every((command) => command === commands[0])
+      ? commands[0]!
+      : commands
+          .map((command, index) => `${shells[index]}: ${command}`)
+          .join("\n    ");
   }
   if (!Array.isArray(schema.required) || schema.required.length === 0)
     return `forge ${words}`;
