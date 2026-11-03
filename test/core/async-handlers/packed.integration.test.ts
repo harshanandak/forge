@@ -13,7 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve, delimiter } from "node:path";
+import { join, resolve, delimiter, relative, isAbsolute, sep } from "node:path";
 import {
   packedCoverage,
   selectShard,
@@ -64,6 +64,13 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
     .join(delimiter);
   delete env.BUN_INSTALL;
   try {
+    const fromRoot = relative(root, work);
+    expect(
+      fromRoot === ".." ||
+        fromRoot.startsWith(`..${sep}`) ||
+        isAbsolute(fromRoot),
+      "packed async scratch must stay outside the repository",
+    ).toBe(true);
     const consumer = packedConsumer();
     const installed = join(consumer, "node_modules/forge-workflow");
     // Package self-references resolve here; dependency lookup borrows the install.
@@ -186,6 +193,9 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
       maxRetries: 10,
       retryDelay: 100,
     });
+    expect(existsSync(work), "packed async scratch must be removed").toBe(
+      false,
+    );
     phase("cleanup");
     console.log(
       `Packed async total: ${Math.round(performance.now() - started)} ms`,
