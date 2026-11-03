@@ -1647,6 +1647,10 @@ module.exports = {
   }): Promise<object> {
     if ("scope" in input) {
       const limit = input.limit ?? 25;
+      const reserveMs =
+        deadline === undefined
+          ? 1_000
+          : Math.max(1_000, (deadline - Date.now()) / 10);
       const target = await writeTarget(services, "project");
       const source = deviceSource(services.state);
       const scope = input.scope;
@@ -1659,7 +1663,7 @@ module.exports = {
           // See memory.move docs for the atomic-operation exception and full-scan limit.
           if (
             deadline !== undefined &&
-            deadline - started <= slowestPageMs + 1_000
+            deadline - started <= slowestPageMs + reserveMs
           )
             return;
           const records = notePage(source, {
@@ -1687,8 +1691,9 @@ module.exports = {
           moved.length === limit ||
           (deadline !== undefined &&
             (moved.length === 0
-              ? deadline - started < 1_000
-              : deadline - started <= slowestMoveMs + slowestPageMs + 1_000))
+              ? deadline - started < reserveMs
+              : deadline - started <=
+                slowestMoveMs + slowestPageMs + reserveMs))
         )
           break;
         try {
