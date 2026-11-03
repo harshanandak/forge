@@ -149,20 +149,20 @@ test.each(["lock", "statement"])(
       } finally {
         await created.handle.close();
       }
-      const opened = await createSqliteStore(work).open({
-        path,
-        readOnly: at === "lock",
-      });
+      const lockFailure = new Error("injected lock failure");
+      let lockFailed = false;
+      const opened = await createSqliteStore(work, {
+        step(name) {
+          if (at === "lock" && name === "write-lock-attempt") {
+            linkSync(path, alias);
+            lockFailed = true;
+            throw lockFailure;
+          }
+        },
+      }).open({ path, readOnly: false });
       if (!opened.ok) throw new Error(opened.unavailable.reason);
       try {
         const db = opened.handle.value;
-        if (at === "lock") {
-          // A read-only handle makes BEGIN IMMEDIATE fail on every platform.
-          expect(() => db.transaction(() => db.get("SELECT 1"))).toThrow(
-            /readonly/i,
-          );
-          linkSync(path, alias);
-        }
         let bodyRan = false;
         let failure: unknown;
         let statementFailure: unknown;
@@ -183,9 +183,11 @@ test.each(["lock", "statement"])(
         } catch (error) {
           failure = error;
         }
+        expect(lockFailed).toBe(at === "lock");
         expect(bodyRan).toBe(at === "statement");
         expect(failure).toBeInstanceOf(StoreRestoringError);
         expect(failure).toMatchObject({ code: "restoring" });
+        expect(failure).not.toBe(lockFailure);
         if (at === "statement") {
           expect(statementFailure).toBeInstanceOf(StoreRestoringError);
           expect(statementFailure).toMatchObject({ code: "restoring" });
