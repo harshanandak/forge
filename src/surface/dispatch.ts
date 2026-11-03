@@ -218,8 +218,9 @@ export async function dispatch(
 
 /**
  * A held operation on an item that names no lease generation takes the generation of the item's
- * current lease, read through the noun's `show`. Only the number is filled in: the state owner still
- * fences the write to the lease's actor and session, so another session is refused as before.
+ * current lease, read internally through the noun's `show` regardless of exposure. Only the number
+ * is filled in: the state owner still fences the write to the lease's actor and session, so another
+ * session is refused as before.
  */
 async function heldContext(
   catalog: SurfaceCatalog,
@@ -236,8 +237,7 @@ async function heldContext(
     declaration.leaseMode === "acquire" ||
     context.session === undefined ||
     context.leaseGeneration !== undefined ||
-    typeof id !== "string" ||
-    !catalog.list().some((c) => c.op === show)
+    typeof id !== "string"
   )
     return context;
   const shown = await catalog.invoke({
