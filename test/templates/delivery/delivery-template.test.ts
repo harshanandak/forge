@@ -31,6 +31,26 @@ const SKILLS = [
 ] as const;
 const rendered = (name: string): string => `.agents/skills/${name}/SKILL.md`;
 
+test("rendered build resolves and reuses the slice base", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const build = readFileSync(join(root, rendered("forge-build")), "utf8");
+    const setup = readFileSync(
+      join(root, ".agents/skills/forge-build/pull-request.md"),
+      "utf8",
+    );
+    expect(build + setup).not.toContain("origin/main");
+    expect(setup).toContain("git fetch origin");
+    expect(setup).toContain("slice's declared base");
+    expect(setup).toContain(
+      "git symbolic-ref --short refs/remotes/origin/HEAD",
+    );
+    expect(setup).toContain("git remote set-head origin --auto");
+    expect(setup).toContain("-b <branch> <base>");
+    expect(build).toContain("git diff --name-only <base>...HEAD");
+  });
+}, 30_000);
+
 test("rendered build follows the optional project verification guide", async () => {
   await withDelivery(async (root, call, lint) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
@@ -862,7 +882,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       /forge issue release[\s\S]*Last action: the owning session runs `forge agent wait <n>`/,
     );
     expect(text["forge-build"]).toContain(
-      "git worktree add <path> -b <branch> origin/main",
+      "git worktree add <path> -b <branch> <base>",
     );
     expect(text["forge-build"]).toContain("then the project's install");
     expect(text["forge-review"]).toContain(

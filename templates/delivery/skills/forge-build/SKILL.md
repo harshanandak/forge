@@ -46,7 +46,7 @@ Receipts are evidence, not "should pass" or "was passing". Unknown, truncated or
 ## Boundary and stuck checks
 
 - Unrelated findings: search open issues first, then file/comment with a priority label. Never fix them here.
-- Before push, compare `git diff --name-only origin/main...HEAD` with Owns. Outside Owns or a need missing from main: file a `contract-gap` issue, pin the gap with a failing test, and stop.
+- Before push, compare `git diff --name-only <base>...HEAD` with Owns. Outside Owns or a need missing from base: file a `contract-gap` issue, pin the gap with a failing test, and stop.
 - After 2 failed fixes on the same check, stop editing. Record as above; test directly; re-slice or escalate.
 - Long processes: background with timeout. Edit via editor or script file, never long inline shell strings. Checkpoint the issue; restart clean as needed.
 
