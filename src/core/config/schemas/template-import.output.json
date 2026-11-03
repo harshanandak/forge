@@ -4,17 +4,18 @@
   "description": "Keys copied in as plain config, each recorded with the digest of the value written; keys already set to the same value are left alone. A key set to a different value refuses the import.",
   "allOf": [
     {
-      "$ref": "defs.json#/$defs/WriteFields"
+      "$ref": "defs.json#/$defs/TemplateWriteFields"
     },
     {
       "type": "object",
-      "required": ["template", "added", "shared"],
+      "required": ["template", "added", "shared", "next"],
       "properties": {
         "file": {},
         "previousRevision": {},
         "revision": {},
         "changes": {},
         "fileRemoved": {},
+        "next": { "type": "array", "items": { "type": "string" } },
         "template": {
           "$ref": "../../../../schemas/common.json#/$defs/TemplateRef"
         },

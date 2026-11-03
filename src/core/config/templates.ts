@@ -49,6 +49,7 @@ export interface TemplateSource {
 
 export interface TemplateEnvironment extends ConfigEnvironment {
   readonly templates: TemplateSource;
+  readonly commandsFor?: (declaredOp: string) => readonly string[];
 }
 
 export interface TemplateSummary {
@@ -59,7 +60,9 @@ export interface TemplateSummary {
   readonly imported: string | null;
 }
 
-export interface ImportResult extends WriteResult {
+type TemplateWriteResult = Omit<WriteResult, "changes"> & Partial<WriteResult>;
+export interface ImportResult extends TemplateWriteResult {
+  readonly next: readonly string[];
   readonly template: string;
   readonly added: readonly string[];
   /** Keys the project already set to the same value; left as they were and not recorded. */
@@ -71,7 +74,8 @@ export interface KeptKey {
   readonly reason: string;
 }
 
-export interface RemoveResult extends WriteResult {
+export interface RemoveResult extends TemplateWriteResult {
+  readonly next: readonly string[];
   readonly template: string;
   readonly removed: readonly string[];
   /** Keys the template wrote that stay: edited since import, or still needed by their instance. */
@@ -91,10 +95,12 @@ export interface TemplateApi {
   /** Without expectRevision the edit expects no config file yet: a first import. */
   importTemplate(input: {
     readonly template: string;
+    readonly verbose?: boolean;
     readonly expectRevision?: string;
   }): ImportResult;
   remove(input: {
     readonly template: string;
+    readonly verbose?: boolean;
     readonly expectRevision?: string;
   }): RemoveResult;
 }
@@ -260,7 +266,8 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
     op: string,
     expectRevision: string | undefined,
     change: (document: JsonObject) => T,
-  ): WriteResult & { readonly detail: T } => {
+    verbose = false,
+  ): TemplateWriteResult & { readonly detail: T } => {
     let detail: T | undefined;
     let changes: Change[] = [];
     const committed = commit(env, op, expectRevision, (current) => {
@@ -279,7 +286,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
       file: CONFIG_FILE,
       previousRevision: committed.from,
       revision: committed.to,
-      changes: committed.changed ? changes : [],
+      ...(verbose ? { changes: committed.changed ? changes : [] } : {}),
       fileRemoved: committed.fileRemoved,
       detail: detail as T,
     };
@@ -330,6 +337,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
     importTemplate(input) {
       const template = load(input.template);
       const ref = refOf(template);
+      const check = template.config.blocks?.check?.source;
       const { detail, ...written } = editWith(
         "template.import",
         input.expectRevision,
@@ -382,8 +390,12 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           ];
           return { added: added.sort(), shared: shared.sort() };
         },
+        input.verbose,
       );
-      return { ...written, template: ref, ...detail };
+      const next = ["forge skills sync"];
+      if (check && "builtin" in check && check.builtin === "forge/check")
+        next.push(...(env.commandsFor?.("check.run") ?? []));
+      return { ...written, template: ref, ...detail, next };
     },
 
     remove(input) {
@@ -439,10 +451,12 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           if (rest.length === 0) delete document.templates;
           else document.templates = rest;
           return {
+            next: ["forge skills sync"],
             removed: removed.sort(),
             kept: kept.sort((a, b) => a.pointer.localeCompare(b.pointer)),
           };
         },
+        input.verbose,
       );
       return { ...written, template: ref, ...detail };
     },
