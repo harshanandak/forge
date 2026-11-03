@@ -654,11 +654,20 @@ function dataTables(db: SqlDatabase): readonly string[] {
         !name.toLowerCase().startsWith("sqlite_") && !metadataTables.has(name),
     );
 }
+function assertRegistered(db: SqlDatabase): void {
+  const registered = new Set(
+    db.all("SELECT table_name FROM state_domains").map((row) => row.table_name),
+  );
+  for (const table of dataTables(db))
+    if (!stateDataTables.has(table) && !registered.has(table))
+      invalid(`Unregistered user table: ${table}`);
+}
 
 export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
   #knownMigrations = new Set(stateMigrations.map((migration) => migration.id));
+  #domains: readonly ReviewedDomain[] = [];
   constructor(db: SqlDatabase, clock: ClockPort) {
     this.#db = db;
     this.#clock = clock;
@@ -688,14 +697,7 @@ export class StateOwner {
             })),
           ),
         );
-        const registered = new Set(
-          this.#db
-            .all("SELECT table_name FROM state_domains")
-            .map((row) => String(row.table_name)),
-        );
-        for (const table of dataTables(this.#db))
-          if (!stateDataTables.has(table) && !registered.has(table))
-            invalid(`Unregistered user table: ${table}`);
+        assertRegistered(this.#db);
       },
     );
     this.#knownMigrations = new Set([
@@ -704,6 +706,7 @@ export class StateOwner {
         domain.migrations.map((migration) => migration.id),
       ),
     ]);
+    this.#domains = domains;
   }
 
   client(namespace: string, actor: Actor): DeletableStateClient {
@@ -1276,6 +1279,10 @@ export class StateOwner {
         version: String(db.get("PRAGMA user_version")?.user_version),
       });
     const expected = signature(this.#db);
+    const ledger =
+      "SELECT sql FROM sqlite_master WHERE name='state_migrations'";
+    const expectedLedger = this.#db.get(ledger)?.sql;
+    let migrated = false;
     const empty = (): void => {
       for (const table of dataTables(this.#db))
         if (
@@ -1285,26 +1292,30 @@ export class StateOwner {
     };
     empty();
     let eventHighWaterMark = snapshot.eventHighWaterMark;
+    const validate = (candidate: SqlDatabase): void => {
+      const newest = [...this.#knownMigrations].sort().at(-1);
+      const version = candidate.get("PRAGMA user_version")?.user_version;
+      if (Number(version) !== 0)
+        invalid(`Snapshot schema:${String(version)}; newest known ${newest}`);
+      if (!expectedLedger || candidate.get(ledger)?.sql !== expectedLedger)
+        invalid("Unsupported snapshot migration ledger");
+      const applied = candidate.all("SELECT id FROM state_migrations");
+      for (const row of applied)
+        if (!this.#knownMigrations.has(String(row.id)))
+          invalid(`Snapshot version ${String(row.id)}; newest known ${newest}`);
+      if (!applied.some((row) => row.id === baseline.id))
+        invalid("Missing baseline");
+      assertRegistered(candidate);
+      if (migrated && signature(candidate) !== expected)
+        invalid("Snapshot schema or reviewed table registration differs");
+      verifyEventDerivedState(candidate, eventHighWaterMark);
+    };
     imageStore.restoreImage(
       image,
+      validate,
       (candidate) => {
-        if (signature(candidate) !== expected)
-          invalid(
-            "Snapshot needs the same schema, baseline version and reviewed table registration",
-          );
-        if (
-          !candidate.get("SELECT id FROM state_migrations WHERE id=?", [
-            baseline.id,
-          ]) ||
-          candidate
-            .all("SELECT id FROM state_migrations")
-            .some((row) => !this.#knownMigrations.has(String(row.id))) ||
-          Number(candidate.get("PRAGMA user_version")?.user_version) !== 0
-        )
-          invalid("Unsupported baseline or newer schema version");
-        verifyEventDerivedState(candidate, eventHighWaterMark);
-      },
-      (candidate) => {
+        new StateOwner(candidate, this.#clock).initialize(this.#domains);
+        migrated = true;
         // Preserve lease counters and receipts, but never revive authority from a backup.
         const at = new Date(this.#now()).toISOString();
         candidate.transaction(() => {
@@ -1342,6 +1353,7 @@ export class StateOwner {
             eventHighWaterMark++;
           }
         });
+        validate(candidate);
       },
       () => {
         empty();
