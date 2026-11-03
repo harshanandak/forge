@@ -8,7 +8,7 @@ test("lock release distinguishes adjacent 64-bit identities and matches identica
   const owned = 2n ** 60n;
   expect(Number(owned)).toBe(Number(owned + 1n));
   for (const difference of [0n, 1n]) {
-    const root = fs.realpathSync(
+    const root = fs.realpathSync.native(
       fs.mkdtempSync(join(tmpdir(), "forge-file-identity-")),
     );
     const path = join(root, "HEAD.lock");
