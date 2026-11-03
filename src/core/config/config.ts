@@ -506,8 +506,23 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
           segments: segmentsOf(step.path),
           value: step.value,
         }));
-      const { document, excluded, implied } = usable(current.document, env);
-      const layers = resolve(env, document, implied, derived, invocation);
+      const base = usable(current.document, env);
+      let { document, excluded } = base;
+      let layers = resolve(env, document, base.implied, derived, invocation);
+      if (invocation.length > 0) {
+        const patched = clone(current.document ?? emptyDocument());
+        const sources = fillSources(patched, env);
+        const proposed = resolveLayers(
+          { entries: [], ignored: [] },
+          patched,
+          invocation,
+        );
+        layers = resolve(env, patched, sources, derived, invocation);
+        ({ document, excluded } = usable(
+          { ...patched, ...proposed.effective },
+          env,
+        ));
+      }
       const blocks = isObject(document?.blocks) ? document.blocks : {};
       const instances: Instance[] = [];
       for (const [name, instance] of Object.entries(blocks)) {

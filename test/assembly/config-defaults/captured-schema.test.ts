@@ -272,6 +272,87 @@ for (const scenario of [
   }
 }
 
+for (const repairingRuntime of [false, true]) {
+  test(`config show ${repairingRuntime ? "repairs persisted runtime validation" : "validates an invocation-only block"} without changing persisted state`, async () => {
+    const root = project(files);
+    const file = join(root, ".forge/config.yaml");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        schemaVersion: "forge.config/1",
+        blocks: {},
+        ...(repairingRuntime ? { runtime: { timeoutMs: 0 } } : {}),
+      }),
+    );
+    const before = readFileSync(file, "utf8");
+    const assembly = await createAssembly({
+      root,
+      deviceRoot: join(root, "device"),
+    });
+    const { caller, context } = localCall(assembly);
+    const show = async (input: unknown = {}) =>
+      (await assembly.catalog.invoke({
+        schemaVersion: "forge.invocation/1",
+        requestId: "show",
+        op: "config.show",
+        input,
+        caller,
+        context: context ?? {},
+      })) as {
+        ok: boolean;
+        result: {
+          valid: boolean;
+          effective: { blocks: Record<string, unknown>; runtime?: unknown };
+          problems: string[];
+        };
+      };
+    try {
+      const baseline = await show();
+      expect(baseline.ok).toBe(!repairingRuntime);
+      expect(baseline.result.valid).toBe(!repairingRuntime);
+      expect(baseline.result.problems).toHaveLength(repairingRuntime ? 1 : 0);
+      expect(baseline.result.effective.blocks).toEqual({});
+      if (repairingRuntime) {
+        expect(baseline.result.problems[0]).toContain("runtime.timeoutMs");
+        expect(baseline.result.problems[0]).toContain("must be at least 1");
+        expect(baseline.result.effective.runtime).toBeUndefined();
+      }
+
+      const patched = await show({
+        invocation: [
+          repairingRuntime
+            ? { op: "set", path: "/runtime", value: { timeoutMs: 1000 } }
+            : {
+                op: "set",
+                path: "/blocks/extra",
+                value: { source: { path: "./missing-block" } },
+              },
+        ],
+      });
+      expect(patched.ok).toBe(repairingRuntime);
+      expect(patched.result.valid).toBe(repairingRuntime);
+      expect(patched.result.problems).toHaveLength(repairingRuntime ? 0 : 1);
+      if (repairingRuntime) {
+        expect(patched.result.effective.runtime).toEqual({ timeoutMs: 1000 });
+        expect(patched.result.effective.blocks).toEqual({});
+      } else {
+        expect(patched.result.effective.blocks).toEqual({
+          extra: { source: { path: "./missing-block" }, enabled: false },
+        });
+        expect(patched.result.problems[0]).toContain("blocks.extra.source");
+        expect(patched.result.problems[0]).toContain("missing-block");
+      }
+      expect(readFileSync(file, "utf8")).toBe(before);
+      const unpatched = await show();
+      expect(unpatched.ok).toBe(baseline.ok);
+      expect(unpatched.result).toEqual(baseline.result);
+    } finally {
+      await assembly.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("derived agent adapters target the configured instance name", () => {
   expect(agentAdapterObservation("router")).toMatchObject([
     {
