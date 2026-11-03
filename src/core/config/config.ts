@@ -44,6 +44,7 @@ import {
   getIn,
   hasIn,
   isObject,
+  leaves,
   type JsonObject,
   parsePointer,
   removeIn,
@@ -513,6 +514,7 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
         setIn((patched ??= emptyDocument()), segments, clone(value));
       const { document, excluded, implied } = usable(patched, env);
       const kept = invocation
+        .flatMap(({ segments, value }) => leaves(value, undefined, segments))
         .filter(({ segments }) => hasIn(document, segments))
         .map(({ segments }) => ({
           segments,

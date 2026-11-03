@@ -1,4 +1,4 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
@@ -7,8 +7,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createAssembly, localCall } from "../../../src/assembly/index.ts";
+import { blockCapture } from "../../../src/assembly/capture.ts";
 import { agentAdapterObservation } from "../../../src/assembly/providers.ts";
 import type { PatchStep, ShowResult } from "../../../src/core/config/config.ts";
 
@@ -276,6 +277,9 @@ for (const scenario of [
 for (const repairingRuntime of [false, true]) {
   test(`config show ${repairingRuntime ? "repairs persisted runtime validation" : "validates an invocation-only block"} without changing persisted state`, async () => {
     const root = project(files);
+    const derivedBlocks = {
+      work: { config: { idPrefix: basename(root).toLowerCase() } },
+    };
     const file = join(root, ".forge/config.yaml");
     writeFileSync(
       file,
@@ -312,7 +316,7 @@ for (const repairingRuntime of [false, true]) {
       expect(baseline.ok).toBe(!repairingRuntime);
       expect(baseline.result.valid).toBe(!repairingRuntime);
       expect(baseline.result.problems).toHaveLength(repairingRuntime ? 1 : 0);
-      expect(baseline.result.effective.blocks).toEqual({});
+      expect(baseline.result.effective.blocks).toEqual(derivedBlocks);
       if (repairingRuntime) {
         expect(baseline.result.problems[0]).toContain("runtime.timeoutMs");
         expect(baseline.result.problems[0]).toContain("must be at least 1");
@@ -335,9 +339,10 @@ for (const repairingRuntime of [false, true]) {
       expect(patched.result.problems).toHaveLength(repairingRuntime ? 0 : 1);
       if (repairingRuntime) {
         expect(patched.result.effective.runtime).toEqual({ timeoutMs: 1000 });
-        expect(patched.result.effective.blocks).toEqual({});
+        expect(patched.result.effective.blocks).toEqual(derivedBlocks);
       } else {
         expect(patched.result.effective.blocks).toEqual({
+          ...derivedBlocks,
           extra: { source: { path: "./missing-block" }, enabled: false },
         });
         expect(patched.result.problems[0]).toContain("blocks.extra.source");
@@ -411,6 +416,7 @@ test("config show repairs an unavailable source and resolves the replacement sou
       expect(shown.result.valid).toBe(true);
       expect(shown.result.problems).toEqual([]);
       expect(shown.result.effective.blocks).toEqual({
+        ...(baseline.result.effective.blocks as Record<string, unknown>),
         hello: {
           source: { path: "./hello" },
           config: { greeting: "hi", style: { loud: true } },
@@ -444,28 +450,56 @@ test("config show reports an invocation-introduced runtime schema problem", asyn
 test("config show resolves the built-in source of an invocation-only instance", async () => {
   const pointer = "/blocks/check/config/commands";
   const commands = { test: "node --test" };
-  await inspectInvocation(
-    { schemaVersion: "forge.config/1", blocks: {} },
-    [{ op: "set", path: pointer, value: commands }],
-    (shown) => {
-      expect(shown.ok).toBe(true);
-      expect(shown.result.valid).toBe(true);
-      expect(shown.result.problems).toEqual([]);
-      expect(shown.result.instances).toEqual([
-        { name: "check", source: { builtin: "forge/check" }, enabled: true },
-      ]);
-      expect(shown.result.effective.blocks).toMatchObject({
-        check: { source: { builtin: "forge/check" }, config: { commands } },
-      });
-      expect(
-        shown.result.values.filter((entry) =>
-          entry.pointer.startsWith(pointer),
-        ),
-      ).toEqual([
-        { pointer, value: commands, layer: "invocation", active: true },
-      ]);
-    },
-  );
+  const open = blockCapture.open.bind(blockCapture);
+  // Source-tree built-ins have entry.cts; config inspection captures but never executes the entry.
+  const capture = spyOn(blockCapture, "open").mockImplementation((path) => {
+    const handle = open(path);
+    return {
+      ...handle,
+      value: {
+        read: (name, budget) =>
+          name === "entry.cjs"
+            ? new TextEncoder().encode("module.exports={};")
+            : handle.value.read(name, budget),
+      },
+    };
+  });
+  try {
+    await inspectInvocation(
+      { schemaVersion: "forge.config/1", blocks: {} },
+      [{ op: "set", path: pointer, value: commands }],
+      (shown, baseline) => {
+        expect(shown.ok, JSON.stringify(shown)).toBe(true);
+        expect(shown.result.valid).toBe(true);
+        expect(shown.result.problems).toEqual([]);
+        expect(shown.result.instances).toEqual([
+          { name: "check", source: { builtin: "forge/check" }, enabled: true },
+        ]);
+        expect(shown.result.effective.blocks).toMatchObject({
+          check: { source: { builtin: "forge/check" }, config: { commands } },
+        });
+        expect(
+          (shown.result.effective.blocks as Record<string, unknown>).work,
+        ).toEqual(
+          (baseline.result.effective.blocks as Record<string, unknown>).work,
+        );
+        expect(
+          shown.result.values.filter((entry) =>
+            entry.pointer.startsWith(pointer),
+          ),
+        ).toEqual([
+          {
+            pointer: `${pointer}/test`,
+            value: commands.test,
+            layer: "invocation",
+            active: true,
+          },
+        ]);
+      },
+    );
+  } finally {
+    capture.mockRestore();
+  }
 });
 
 test("config show derives adapters from the replacement source's instances", async () => {

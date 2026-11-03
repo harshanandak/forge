@@ -778,12 +778,22 @@ export async function createAssembly(
       const deviceMemory = deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived);
       try {
+        const preview = configCandidates.find(
+          (entry) => entry.op === request.op && entry.op === "config.show",
+        );
+        if (
+          preview &&
+          !validateConfigValue(preview.declaration, "input", request.input)
+        )
+          refuse("INPUT_INVALID", "Invalid config input");
         derived.push(
           ...(await idPrefixObservation(root, stateRoot, options.providers)),
         );
         for (const instance of (deviceMemory
           ? snapshot(call, true).show
-          : call.config.show()
+          : preview
+            ? (call.configOperations[request.op]!(request.input) as ShowResult)
+            : call.config.show()
         ).instances)
           if (
             instance.enabled &&
