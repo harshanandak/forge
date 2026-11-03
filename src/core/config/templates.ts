@@ -379,14 +379,21 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
 
     remove(input) {
       const requestedId = idOf(input.template);
-      const id = env.templates.get(requestedId)?.id ?? requestedId;
-      const reference = id + input.template.slice(requestedId.length);
-      let ref = id;
+      let ref = requestedId;
       const { detail, ...written } = editWith(
         "template.remove",
         input.expectRevision,
         (document) => {
-          ref = requireImported(document, reference);
+          // An imported id needs no catalog read; only an import alias resolves through it.
+          const id = provenance(document).some(
+            (p) => idOf(p.template) === requestedId,
+          )
+            ? requestedId
+            : (env.templates.get(requestedId)?.id ?? requestedId);
+          ref = requireImported(
+            document,
+            id + input.template.slice(requestedId.length),
+          );
           const removed: string[] = [];
           const kept: KeptKey[] = [];
           const sources: string[] = [];

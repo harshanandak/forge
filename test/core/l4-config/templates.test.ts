@@ -250,6 +250,30 @@ describe("template lifecycle", () => {
     ).toBe(900);
   });
 
+  test("removing an imported template by its id or version does not read the installed catalog", () => {
+    for (const name of [
+      "forge/starter",
+      `forge/starter@${starter().version}`,
+    ]) {
+      const p = project();
+      const imported = p.templates.importTemplate({
+        template: "forge/starter",
+        expectRevision: p.config.show().revision,
+      });
+      Object.assign(p.env.templates, {
+        get: () => {
+          throw new Error("installed catalog unreadable");
+        },
+      });
+      const removed = p.templates.remove({
+        template: name,
+        expectRevision: imported.revision,
+      });
+      expect(removed.removed).toEqual(imported.added);
+      expect(p.config.show().templates).toEqual([]);
+    }
+  });
+
   test("removing a template keeps an edited source and removes its unchanged siblings", () => {
     const p = project();
     p.installed.set("forge/starter", starterNext());
