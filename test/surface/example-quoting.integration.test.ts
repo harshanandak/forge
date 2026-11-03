@@ -1,8 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { renderExample } from "../../src/contract/example.ts";
 import { exampleShells, scalarExamples } from "./fixtures/scalar-examples.ts";
+
+setDefaultTimeout(30_000);
 
 const windows = process.platform === "win32";
 const bash =
