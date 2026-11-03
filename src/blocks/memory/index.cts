@@ -1691,7 +1691,7 @@ module.exports = {
           moved.length === limit ||
           (deadline !== undefined &&
             (moved.length === 0
-              ? deadline - started < reserveMs
+              ? deadline - started <= slowestMoveMs
               : deadline - started <=
                 slowestMoveMs + slowestPageMs + reserveMs))
         )
@@ -1741,6 +1741,13 @@ module.exports = {
           break;
         }
       }
+      if (!complete && moved.length === 0)
+        fail(
+          stopped?.code ?? "INSUFFICIENT_BUDGET",
+          stopped
+            ? `Scope move stopped at ${stopped.id}; resolve ${stopped.code} before retrying`
+            : 'Scope move made no progress within its budget. Increase blocks.memory.operationTimeouts["memory.move"] in .forge/config.yaml and any lower runtime.timeoutMs or embedding timeout ceiling, then retry.',
+        );
       return {
         status: "moved" as const,
         moved,
