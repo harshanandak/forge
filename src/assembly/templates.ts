@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TemplateSource } from "../core/config/index.ts";
+import { expandTemplate } from "../core/config/templates.ts";
 import { refuse } from "../core/trust/index.ts";
 import type { TemplateDocument } from "../generated/types.ts";
 import { validateTemplateDocument } from "../generated/validators.ts";
-import { firstPartyTemplates } from "./first-party.ts";
+import { firstPartyBlocks, firstPartyTemplates } from "./first-party.ts";
 
 /** The file a shipped template directory holds; its skills sit next to it under skills/. */
 export const TEMPLATE_FILE = "forge.template.json";
@@ -30,8 +31,16 @@ export function shippedTemplates(): TemplateSource & {
       const dir = fileURLToPath(url);
       let checked: ReturnType<typeof validateTemplateDocument>;
       try {
+        const value: unknown = JSON.parse(
+          readFileSync(join(dir, TEMPLATE_FILE), "utf8"),
+        );
         checked = validateTemplateDocument(
-          JSON.parse(readFileSync(join(dir, TEMPLATE_FILE), "utf8")) as unknown,
+          expandTemplate(value, {
+            builtinSource: (name) =>
+              Object.hasOwn(firstPartyBlocks, `forge/${name}`)
+                ? { builtin: `forge/${name}` }
+                : undefined,
+          }),
         );
       } catch {
         refuse(

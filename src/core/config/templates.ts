@@ -22,7 +22,7 @@ import {
   type WriteResult,
   writable,
 } from "./config.ts";
-import type { Change } from "./document.ts";
+import { fillSources, type BlockLookup, type Change } from "./document.ts";
 import { MAX_TEMPLATE_FILE_BYTES, readProjectFile } from "./files.ts";
 import { atomicSource, METADATA_KEYS } from "./layers.ts";
 import {
@@ -38,6 +38,7 @@ import {
   removeIn,
   setIn,
 } from "./pointer.ts";
+import { expandShortForm } from "./short.ts";
 import { CONFIG_FILE, commit, readProject } from "./store.ts";
 
 /** Templates the installation can see: shipped ones, the user's own and community packages. */
@@ -172,6 +173,12 @@ function occupied(document: JsonObject, segments: readonly string[]): boolean {
   return hasIn(document, segments);
 }
 
+export function expandTemplate(value: unknown, lookup: BlockLookup): unknown {
+  if (isObject(value) && isObject(value.config))
+    fillSources(expandShortForm(value.config), lookup);
+  return value;
+}
+
 export function createTemplates(env: TemplateEnvironment): TemplateApi {
   const load = (reference: string): TemplateDocument => {
     if (TEMPLATE_FILE.test(reference)) {
@@ -190,7 +197,9 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           ...decoded.error,
           message: `${path}: ${decoded.error.message}`,
         });
-      const checked = validateTemplateDocument(decoded.value);
+      const checked = validateTemplateDocument(
+        expandTemplate(decoded.value, env),
+      );
       if (!checked.ok) {
         const [first] = checked.problems;
         throw refuse(
