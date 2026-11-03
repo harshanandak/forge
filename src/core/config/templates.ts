@@ -343,9 +343,10 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
 
     show(input) {
       const document = readProject(env).document;
-      const template = TEMPLATE_FILE.test(input.template)
-        ? load(input.template)
-        : (env.templates.get(idOf(input.template)) ?? null);
+      const template =
+        TEMPLATE_FILE.test(input.template) || input.template.includes("@")
+          ? load(input.template)
+          : (env.templates.get(idOf(input.template)) ?? null);
       const id = template?.id ?? idOf(input.template);
       return {
         template,
