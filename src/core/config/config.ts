@@ -352,6 +352,7 @@ export function planBytes(
   env: ConfigEnvironment,
   current: ProjectConfig,
   next: JsonObject,
+  repair?: (pointer: string) => string,
 ): { bytes: Uint8Array | null; changes: Change[] } {
   if (!Object.hasOwn(next, "blocks")) next.blocks = {};
   const explicit = clone(next);
@@ -390,6 +391,7 @@ export function planBytes(
     checkInstanceConfig(
       name,
       schema.check(getIn(effective, ["blocks", name, "config"]) ?? {}),
+      repair,
     );
   const bytes = encodeDocument(
     explicit,
