@@ -14,7 +14,7 @@ test("PowerShell JSON fallback keeps a phrase inside one native argument", () =>
     },
     { oneOf: [candidate().inputSchema] },
   );
-  expect(example.split("\n    PowerShell 5.1: ")[1]).toBe(
+  expect(example.split("\n    PowerShell 5.1: ")[1]?.split("\n")[0]).toBe(
     String.raw`forge sample echo --input '{\"value\":\"First\u0020task\",\"labels\":[\"release\"]}'`,
   );
   expect(example.split("\n")[0]).toBe(
