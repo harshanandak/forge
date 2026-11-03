@@ -1,3 +1,6 @@
+import assert from "node:assert/strict";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { expect, test, setDefaultTimeout } from "bun:test";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { DEFAULT_PARSE_LIMITS } from "../../../src/contract/untrusted.ts";
@@ -356,7 +359,7 @@ test("successful invocations do not gain process observations", async () => {
   });
 });
 
-test("a failed invocation with no settled process result has no invented observations", async () => {
+test("a failed invocation retains its cause without inventing process observations", async () => {
   const envelope = await invoke(() => {
     throw Error("handler failed");
   });
@@ -364,7 +367,10 @@ test("a failed invocation with no settled process result has no invented observa
     ok: false,
     error: { code: "BLOCK_EXECUTION_FAILED" },
   });
-  if (!envelope.ok) expect(envelope.error.observed).toBeUndefined();
+  if (!envelope.ok)
+    expect(envelope.error.observed).toEqual({
+      cause: { name: "Error" },
+    });
 });
 
 for (const serviceFails of [false, true]) {
@@ -399,3 +405,95 @@ for (const serviceFails of [false, true]) {
     });
   });
 }
+
+for (const [label, code, expected] of [
+  ["plain", 'throw new Error("boom")', { name: "Error" }],
+  ["typed", 'throw new TypeError("boom")', { name: "TypeError" }],
+  [
+    "coded",
+    'throw Object.assign(new Error("denied"), { code: "EPERM", syscall: "unlink" })',
+    { name: "Error", code: "EPERM", syscall: "unlink" },
+  ],
+  ["async", 'return Promise.reject(new Error("boom"))', { name: "Error" }],
+] as const)
+  test(`unexpected ${label} handler errors retain a bounded cause`, async () => {
+    const f = fixture(`() => { ${code} }`, { timeoutMs: 1000 });
+    const result = await f.runtime().invoke(f.request);
+    assert.partialDeepStrictEqual(result, {
+      ok: false,
+      status: "FAIL",
+      error: {
+        code: "BLOCK_EXECUTION_FAILED",
+        message: "block execution failed",
+        retry: "reconcile_first",
+        observed: { cause: expected },
+      },
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) throw new Error("expected failure");
+    const { cause } = result.error.observed as {
+      cause: Record<string, string>;
+    };
+    // Exactly these fields: no message, stack or frame text.
+    assert.deepStrictEqual(cause, expected);
+    for (const value of Object.values(cause))
+      assert.ok(Buffer.byteLength(value) <= 200);
+  }, 5000);
+
+test("unexpected causes omit free text containing tokens and private paths", async () => {
+  const privateValues = [
+    "synthetic-json-token",
+    "synthetic-bearer-token",
+    "C:\\Users\\Example User\\private.txt",
+    "\\Users\\Example\\private.txt",
+    "/home/Example User/private.txt",
+    join(homedir(), "private.txt"),
+  ];
+  const privateMessage = `{"token":"${privateValues[0]}"} Authorization: Bearer ${privateValues[1]} ${privateValues.slice(2).join(" ")}`;
+  const f = fixture(
+    `() => { throw Object.assign(new Error(${JSON.stringify(privateMessage)}), { name: ${JSON.stringify(privateMessage)} }) }`,
+    { timeoutMs: 1000 },
+  );
+  const result = await f.runtime().invoke(f.request);
+  assert.equal(result.ok, false);
+  if (result.ok) throw new Error("expected failure");
+  const { cause } = result.error.observed as {
+    cause: Record<string, string>;
+  };
+  assert.equal(cause.name, "Error");
+  assert.equal(Object.hasOwn(cause, "message"), false);
+  const serialized = JSON.stringify(result);
+  for (const value of [...privateValues, "Example", homedir()])
+    assert.ok(!serialized.includes(JSON.stringify(value).slice(1, -1)));
+}, 5000);
+
+for (const invalid of ["A".repeat(41), "eperm", "/home/Example", 13])
+  test(`unexpected causes omit invalid code and syscall ${JSON.stringify(invalid)}`, async () => {
+    const f = fixture(
+      `() => { throw Object.assign(new Error("denied"), { code: ${JSON.stringify(invalid)}, syscall: ${JSON.stringify(invalid === "eperm" ? "Unlink" : invalid)} }) }`,
+      { timeoutMs: 1000 },
+    );
+    const result = await f.runtime().invoke(f.request);
+    assert.equal(result.ok, false);
+    if (result.ok) throw new Error("expected failure");
+    const { cause } = result.error.observed as {
+      cause: Record<string, string>;
+    };
+    assert.equal(Object.hasOwn(cause, "code"), false);
+    assert.equal(Object.hasOwn(cause, "syscall"), false);
+  }, 5000);
+
+test("unexpected cause accessors cannot replace the failure envelope", async () => {
+  const f = fixture(
+    '() => { throw Object.defineProperty(new Error("boom"), "name", {get(){throw new Error("getter ran")}}) }',
+    { timeoutMs: 1000 },
+  );
+  const result = await f.runtime().invoke(f.request);
+  assert.partialDeepStrictEqual(result, {
+    ok: false,
+    error: {
+      code: "BLOCK_EXECUTION_FAILED",
+      observed: { cause: { name: "Error" } },
+    },
+  });
+}, 5000);
