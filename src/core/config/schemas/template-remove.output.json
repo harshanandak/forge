@@ -4,7 +4,7 @@
   "description": "Only keys the template still owns unchanged are removed; edited keys stay.",
   "allOf": [
     {
-      "$ref": "defs.json#/$defs/WriteFields"
+      "$ref": "defs.json#/$defs/TemplateWriteFields"
     },
     {
       "type": "object",
@@ -15,6 +15,7 @@
         "revision": {},
         "changes": {},
         "fileRemoved": {},
+        "next": { "type": "array", "items": { "type": "string" } },
         "template": {
           "$ref": "../../../../schemas/common.json#/$defs/TemplateRef"
         },

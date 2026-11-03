@@ -389,6 +389,7 @@ describe("template lifecycle", () => {
     const p = project();
     const imported = p.templates.importTemplate({
       template: "forge/starter",
+      verbose: true,
       expectRevision: p.config.show().revision,
     });
     expect(p.templates.list().templates).toEqual([
@@ -403,7 +404,7 @@ describe("template lifecycle", () => {
       id: "forge/starter",
       imported: "forge/starter@0.1.0",
     });
-    expect(imported.changes.length).toBeGreaterThan(0);
+    expect(imported.changes!.length).toBeGreaterThan(0);
   });
 
   test("removal by another exact ref is refused; the imported ref removes", () => {

@@ -4,6 +4,7 @@
   "type": "object",
   "required": ["template"],
   "properties": {
+    "verbose": { "type": "boolean", "description": "Include full changes." },
     "template": {
       "type": "string",
       "minLength": 1,
