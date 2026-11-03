@@ -128,8 +128,8 @@ test("without the transfer record the same retry leaves a duplicate", async () =
 
 /** A settled transfer, from the copy's own record: the copy was made and is not redone. */
 const SETTLED_FIX = {
-  from: "if (made && recorded) {",
-  to: "if (false) {",
+  from: "if (!recorded) return undefined;",
+  to: "return undefined;",
 };
 
 async function laterChange(

@@ -239,6 +239,67 @@ function committed<T>(attempt: () => T): T {
   throw last;
 }
 
+function moveCopy(
+  source: Source,
+  existing: StateRecord,
+  value: NoteValue,
+  id: string,
+): NoteValue {
+  const stamps = shown(source.state, existing, value);
+  return {
+    text: value.text,
+    ...dates(source.state, existing, value),
+    changedAt: contentTime(source.state, existing, value),
+    textAt: stamps.at(-1)!.at,
+    textRevision: value.textRevision ?? existing.revision,
+    ...(value.approval ? { approval: value.approval } : {}),
+    ...(value.versionApproval
+      ? { versionApproval: value.versionApproval }
+      : {}),
+    ...(value.scope === undefined ? {} : { scope: value.scope }),
+    tags: value.tags,
+    links: qualifiedLinks(value.links),
+    previous: value.previous.map((version, i) => ({
+      ...version,
+      at: stamps[i]!.at,
+    })),
+    from: qualified(id),
+    ...(value.proposedForget === true ? { proposedForget: true as const } : {}),
+  };
+}
+
+function settledTransfer(
+  target: Source,
+  id: string,
+  sourceRevision: number,
+  recorded: Transfer | undefined,
+  current: StateRecord | undefined,
+  keep = false,
+):
+  | { readonly at: number; readonly settled: true }
+  | { readonly conflict: string }
+  | undefined {
+  if (!recorded) return undefined;
+  const at = recorded.number;
+  // A transfer of another source revision is a different transfer, never a retry.
+  if (recorded.sourceRevision !== sourceRevision)
+    return {
+      conflict: `${qualified(id)} was copied to ${idIn(target, at)} from revision ${recorded.sourceRevision}, not ${sourceRevision}; nothing was written`,
+    };
+  // The same transfer again. Someone edited or forgot the copy since: it is never redone,
+  // and a move retires its source only while the copy still holds the note.
+  if (current && current.revision !== recorded.revision) {
+    const live = (current.value as NoteValue).deleted !== true;
+    return keep || live
+      ? { at, settled: true }
+      : {
+          conflict: `${idIn(target, at)} was forgotten after ${qualified(id)} was copied there; nothing was written`,
+        };
+  }
+  if (current) return { at, settled: true };
+  return undefined;
+}
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (typeof value === "object" && value !== null)
@@ -1656,90 +1717,262 @@ module.exports = {
       const scope = input.scope;
       let complete = false;
       let slowestPageMs = 0;
-      const scan = function* () {
-        let after = 0;
-        for (;;) {
-          const started = Date.now();
-          // See memory.move docs for the atomic-operation exception and full-scan limit.
-          if (
-            deadline !== undefined &&
-            deadline - started <= slowestPageMs + reserveMs
-          )
-            return;
-          const records = notePage(source, {
-            after,
-            limit: LIST_LIMIT,
-            descending: false,
-          });
-          slowestPageMs = Math.max(slowestPageMs, Date.now() - started);
-          for (const note of records) {
-            if (note.value.deleted !== true && note.value.scope === scope)
-              yield note;
-          }
-          const last = records.at(-1);
-          if (records.length < LIST_LIMIT || !last) break;
-          after = last.number;
-        }
-        complete = moved.length === 0;
-      };
+      let slowestReadMs = 0;
+      let records: ReturnType<typeof notePage> = [];
+      let index = 0;
+      let after = 0;
+      let end = false;
       const moved: { id: string; to: string }[] = [];
       let stopped: { id: string; code: string } | undefined;
       let slowestMoveMs = 0;
-      for (const note of scan()) {
-        const started = Date.now();
-        if (
-          moved.length === limit ||
-          (deadline !== undefined &&
-            (moved.length === 0
-              ? deadline - started < Math.max(1_000, slowestMoveMs)
-              : deadline - started <=
-                slowestMoveMs + slowestPageMs + reserveMs))
-        )
-          break;
-        try {
-          const result = await move({
-            input: {
-              id: note.id,
-              to: "project",
-              expectRevision: note.record.revision,
-            },
-            services,
-          });
-          const to = (result as { to?: string }).to;
-          const ref = to === undefined ? undefined : parseRef(to);
-          const destination =
-            ref?.level === "project" &&
-            target.prefix === `project/${ref.project}`
-              ? target.state.get(noteKey(ref.number))
-              : undefined;
-          const tombstone = source.state.get(note.record.key)?.value as
-            NoteValue | undefined;
-          const value = destination?.value as NoteValue | undefined;
-          if (
-            !to ||
-            !value ||
-            value.deleted === true ||
-            value.scope !== input.scope ||
-            value.text !== note.value.text ||
-            canonical(value.tags) !== canonical(note.value.tags) ||
-            canonical(value.links) !==
-              canonical(qualifiedLinks(note.value.links)) ||
-            tombstone?.deleted !== true ||
-            tombstone.movedTo !== to
-          ) {
-            stopped = { id: note.id, code: "VERIFY_FAILED" };
+      // Replaying transfer markers does not measure the cost of a fresh destination write.
+      let probed = false;
+      // Buffered notes need both the marker re-check and the pre-retirement destination read pass.
+      const affordable = (overhead = slowestPageMs + reserveMs) => {
+        if (deadline === undefined) return 25;
+        const left = deadline - Date.now();
+        return moved.length === 0
+          ? Number(left >= Math.max(1_000, slowestMoveMs))
+          : Math.max(
+              0,
+              Math.floor(
+                (left - overhead) /
+                  Math.max(1, slowestMoveMs + 2 * slowestReadMs),
+              ),
+            );
+      };
+      for (;;) {
+        const size = Math.min(probed ? 25 : 1, limit - moved.length);
+        const group: ReturnType<typeof notePage> = [];
+        let irregular: ReturnType<typeof notePage>[number] | undefined;
+        let deferred = false;
+        for (;;) {
+          const readPage = index === records.length;
+          if (readPage && end) {
+            complete = moved.length === 0;
             break;
           }
-          moved.push({ id: note.id, to });
-          slowestMoveMs = Math.max(slowestMoveMs, Date.now() - started);
+          const note = readPage ? undefined : records[index]!;
+          if (
+            note &&
+            (note.value.deleted === true || note.value.scope !== scope)
+          ) {
+            index += 1;
+            continue;
+          }
+          if (note && group.length === size) break;
+          const first = !readPage && moved.length === 0;
+          const needed =
+            (readPage ? slowestPageMs : slowestReadMs) +
+            group.length * (slowestMoveMs + 2 * slowestReadMs) +
+            (first ? 1_000 : reserveMs);
+          const collected = Date.now();
+          const left = deadline === undefined ? Infinity : deadline - collected;
+          if (first ? left < needed : left <= needed) {
+            deferred = true;
+            break;
+          }
+          if (readPage) {
+            records = notePage(source, {
+              after,
+              limit: LIST_LIMIT,
+              descending: false,
+            });
+            index = 0;
+            after = records.at(-1)?.number ?? after;
+            end = records.length < LIST_LIMIT;
+            slowestPageMs = Math.max(slowestPageMs, Date.now() - collected);
+          } else if (note) {
+            const current = source.state.get(note.record.key);
+            const regular =
+              current &&
+              current.revision === note.record.revision &&
+              (current.value as NoteValue).deleted !== true &&
+              !target.state.get(`${TRANSFER_PREFIX}${note.id}`);
+            slowestReadMs = Math.max(slowestReadMs, Date.now() - collected);
+            if (!regular) {
+              irregular = note;
+              break;
+            }
+            group.push(note);
+            index += 1;
+          }
+          if (group.length === size && size > 0) break;
+        }
+        const fresh = group.length > 0;
+        if (!fresh) {
+          if (!irregular) break;
+          group.push(irregular);
+          index += 1;
+        }
+        const trim = (count: number) => {
+          if (count >= group.length) return;
+          group.length = count;
+          // The next call scans from zero and finds every deferred live source again.
+          deferred = true;
+        };
+        trim(affordable());
+        if (group.length === 0) break;
+        const started = Date.now();
+        let failedNote = group[0]!;
+        try {
+          const placed =
+            group.length === 1
+              ? undefined
+              : committed(() => {
+                  // A competing transfer must be reconciled through the single-note path.
+                  if (
+                    group.some((note) =>
+                      target.state.get(`${TRANSFER_PREFIX}${note.id}`),
+                    )
+                  )
+                    return undefined;
+                  const counter = readCounter(target.state, NOTE_COUNTER);
+                  const entries: BatchEntry[] = [];
+                  const destinations = group.map((note, i) => {
+                    const at = counter.last + i + 1;
+                    entries.push(
+                      {
+                        key: noteKey(at),
+                        value: moveCopy(
+                          source,
+                          note.record,
+                          note.value,
+                          note.id,
+                        ),
+                        expectRevision: 0,
+                      },
+                      {
+                        key: `${TRANSFER_PREFIX}${note.id}`,
+                        value: {
+                          number: at,
+                          revision: 1,
+                          sourceRevision: note.record.revision,
+                        } satisfies Transfer,
+                        expectRevision: 0,
+                      },
+                    );
+                    return idIn(target, at);
+                  });
+                  trim(affordable());
+                  if (group.length === 0) return [];
+                  target.state.putMany([
+                    {
+                      key: NOTE_COUNTER,
+                      value: { last: counter.last + group.length },
+                      expectRevision: counter.revision,
+                    },
+                    ...entries.slice(0, group.length * 2),
+                  ]);
+                  return destinations.slice(0, group.length);
+                });
+          let retired = 0;
+          if (placed) {
+            const tombstones: BatchEntry[] = [];
+            for (const [i, note] of group.entries()) {
+              const checked = Date.now();
+              const recorded = target.state.get(`${TRANSFER_PREFIX}${note.id}`)
+                ?.value as Transfer | undefined;
+              const current = recorded
+                ? target.state.get(noteKey(recorded.number))
+                : undefined;
+              const settled = settledTransfer(
+                target,
+                note.id,
+                note.record.revision,
+                recorded,
+                current,
+              );
+              slowestReadMs = Math.max(slowestReadMs, Date.now() - checked);
+              if (
+                !settled ||
+                !("at" in settled) ||
+                idIn(target, settled.at) !== placed[i]
+              )
+                break;
+              tombstones.push({
+                key: note.record.key,
+                value: { ...TOMBSTONE, movedTo: placed[i] },
+                expectRevision: note.record.revision,
+              });
+            }
+            // Retired sources cannot be deferred: reserve their read-back before committing them.
+            trim(affordable(reserveMs));
+            tombstones.length = Math.min(tombstones.length, group.length);
+            try {
+              if (tombstones.length === 1) {
+                const tombstone = tombstones[0]!;
+                source.state.put(tombstone.key, tombstone.value, {
+                  expectRevision: tombstone.expectRevision,
+                });
+              } else if (tombstones.length > 1)
+                source.state.putMany(tombstones);
+              retired = tombstones.length;
+            } catch (error) {
+              if (!conflict(error)) throw error;
+              // Reconcile every destination again through single-note moves after a failed batch.
+            }
+          }
+          for (const [i, note] of group.entries()) {
+            failedNote = note;
+            const noteStarted = Date.now();
+            const single = !placed || i >= retired;
+            if (single && affordable(reserveMs) === 0) {
+              deferred = true;
+              break;
+            }
+            const to = single
+              ? (
+                  (await move({
+                    input: {
+                      id: note.id,
+                      to: "project",
+                      expectRevision: note.record.revision,
+                    },
+                    services,
+                  })) as { to?: string }
+                ).to
+              : placed[i];
+            const ref = to === undefined ? undefined : parseRef(to);
+            const destination =
+              ref?.level === "project" &&
+              target.prefix === `project/${ref.project}`
+                ? target.state.get(noteKey(ref.number))
+                : undefined;
+            const tombstone = source.state.get(note.record.key)?.value as
+              NoteValue | undefined;
+            const value = destination?.value as NoteValue | undefined;
+            if (
+              !to ||
+              !value ||
+              value.deleted === true ||
+              value.scope !== input.scope ||
+              value.text !== note.value.text ||
+              canonical(value.tags) !== canonical(note.value.tags) ||
+              canonical(value.links) !==
+                canonical(qualifiedLinks(note.value.links)) ||
+              tombstone?.deleted !== true ||
+              tombstone.movedTo !== to
+            ) {
+              stopped = { id: note.id, code: "VERIFY_FAILED" };
+              break;
+            }
+            moved.push({ id: note.id, to });
+            if (fresh) probed = true;
+            slowestMoveMs = Math.max(slowestMoveMs, Date.now() - noteStarted);
+          }
+          slowestMoveMs = Math.max(
+            slowestMoveMs,
+            (Date.now() - started) / Math.max(1, group.length),
+          );
         } catch (error) {
           const code = (error as { error?: { code?: string } } | null)?.error
             ?.code;
           if (code !== "REVISION_CONFLICT" && code !== "TRANSFER_CONFLICT")
             throw error;
-          stopped = { id: note.id, code };
-          break;
+          stopped = { id: failedNote.id, code };
         }
+        if (stopped || deferred) break;
       }
       if (!complete && moved.length === 0)
         fail(
@@ -1793,29 +2026,7 @@ module.exports = {
     // the same transaction, so a retry after a failure between the two stores finds the copy it
     // already made instead of making another.
     const marker = `${TRANSFER_PREFIX}${qualified(input.id)}`;
-    const stamps = shown(source.state, existing, value);
-    const copy: NoteValue = {
-      text: value.text,
-      ...dates(source.state, existing, value),
-      changedAt: contentTime(source.state, existing, value),
-      textAt: stamps.at(-1)!.at,
-      textRevision: value.textRevision ?? existing.revision,
-      ...(value.approval ? { approval: value.approval } : {}),
-      ...(value.versionApproval
-        ? { versionApproval: value.versionApproval }
-        : {}),
-      ...(value.scope === undefined ? {} : { scope: value.scope }),
-      tags: value.tags,
-      links: qualifiedLinks(value.links),
-      previous: value.previous.map((version, i) => ({
-        ...version,
-        at: stamps[i]!.at,
-      })),
-      from: qualified(input.id),
-      ...(value.proposedForget === true
-        ? { proposedForget: true as const }
-        : {}),
-    };
+    const copy = moveCopy(source, existing, value, input.id);
     // The transfer record names the copy and the revisions it was made at: the copy's own revision
     // and the source revision it was taken from. The copy and its record commit together, so a
     // destination at another revision was changed after the transfer, never left half-made.
@@ -1828,24 +2039,15 @@ module.exports = {
         const counter = readCounter(target.state, NOTE_COUNTER);
         const at = recorded?.number ?? counter.last + 1;
         const current = target.state.get(noteKey(at));
-        if (made && recorded) {
-          // A transfer of another source revision is a different transfer, never a retry.
-          if (recorded.sourceRevision !== existing.revision)
-            return {
-              conflict: `${qualified(input.id)} was copied to ${idIn(target, at)} from revision ${recorded.sourceRevision}, not ${existing.revision}; nothing was written`,
-            };
-          // The same transfer again. Someone edited or forgot the copy since: it is never redone,
-          // and a move retires its source only while the copy still holds the note.
-          if (current && current.revision !== recorded.revision) {
-            const live = (current.value as NoteValue).deleted !== true;
-            return input.keep === true || live
-              ? { at, settled: true }
-              : {
-                  conflict: `${idIn(target, at)} was forgotten after ${qualified(input.id)} was copied there; nothing was written`,
-                };
-          }
-          if (current) return { at, settled: true };
-        }
+        const settled = settledTransfer(
+          target,
+          input.id,
+          existing.revision,
+          recorded,
+          current,
+          input.keep === true,
+        );
+        if (settled) return settled;
         // The first copy, or a transfer record whose copy never landed.
         const written = (current?.revision ?? 0) + 1;
         target.state.putMany([
