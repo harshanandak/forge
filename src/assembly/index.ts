@@ -479,6 +479,7 @@ export async function createAssembly(
     call: CallScope,
     deviceMemory = false,
     invalidMemoryConfig = false,
+    configuredShow?: ShowResult,
   ): {
     show: ShowResult;
     document: ConfigDocument;
@@ -492,7 +493,7 @@ export async function createAssembly(
     let fallback = false;
     try {
       if (invalidMemoryConfig) refuse("INPUT_INVALID", "Invalid memory config");
-      configured = call.config.show();
+      configured = configuredShow ?? call.config.show();
       if (deviceMemory && !configured.valid)
         refuse("INPUT_INVALID", "Invalid project config");
     } catch (error) {
@@ -894,11 +895,15 @@ export async function createAssembly(
               refuse("INPUT_INVALID", "Invalid config input");
             if (request.op === "config.show") await trustState.open(false);
             const current =
-              request.op === "config.show" ? snapshot(call) : undefined;
-            const handled =
-              current && input.invocation === undefined
-                ? current.show
-                : configHandler(request.input);
+              request.op === "config.show"
+                ? snapshot(
+                    call,
+                    false,
+                    false,
+                    configHandler(request.input) as ShowResult,
+                  )
+                : undefined;
+            const handled = current?.show ?? configHandler(request.input);
             const unavailable = new Set(
               current?.unavailable.map((block) => block.name),
             );
