@@ -1,3 +1,6 @@
+import assert from "node:assert/strict";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { expect, test, setDefaultTimeout } from "bun:test";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { DEFAULT_PARSE_LIMITS } from "../../../src/contract/untrusted.ts";
@@ -356,7 +359,7 @@ test("successful invocations do not gain process observations", async () => {
   });
 });
 
-test("a failed invocation with no settled process result has no invented observations", async () => {
+test("a failed invocation retains its cause without inventing process observations", async () => {
   const envelope = await invoke(() => {
     throw Error("handler failed");
   });
@@ -364,7 +367,10 @@ test("a failed invocation with no settled process result has no invented observa
     ok: false,
     error: { code: "BLOCK_EXECUTION_FAILED" },
   });
-  if (!envelope.ok) expect(envelope.error.observed).toBeUndefined();
+  if (!envelope.ok)
+    expect(envelope.error.observed).toEqual({
+      cause: { name: "Error", message: "handler failed" },
+    });
 });
 
 for (const serviceFails of [false, true]) {
@@ -399,3 +405,79 @@ for (const serviceFails of [false, true]) {
     });
   });
 }
+
+for (const [label, code, expected] of [
+  ["plain", 'throw new Error("boom")', { name: "Error", message: "boom" }],
+  [
+    "coded",
+    'throw Object.assign(new Error("denied"), { code: "EPERM" })',
+    { name: "Error", code: "EPERM", message: "denied" },
+  ],
+  [
+    "async",
+    'return Promise.reject(new Error("boom"))',
+    { name: "Error", message: "boom" },
+  ],
+] as const)
+  test(`unexpected ${label} handler errors retain a bounded cause`, async () => {
+    const f = fixture(`() => { ${code} }`, { timeoutMs: 1000 });
+    const result = await f.runtime().invoke(f.request);
+    assert.partialDeepStrictEqual(result, {
+      ok: false,
+      status: "FAIL",
+      error: {
+        code: "BLOCK_EXECUTION_FAILED",
+        message: "block execution failed",
+        retry: "reconcile_first",
+        observed: { cause: expected },
+      },
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) throw new Error("expected failure");
+    const { cause } = result.error.observed as {
+      cause: Record<string, string>;
+    };
+    assert.match(cause.frame!, /^index\.cjs:\d+:\d+$/);
+    for (const value of Object.values(cause))
+      assert.ok(Buffer.byteLength(value) <= 200);
+  }, 5000);
+
+test("unexpected causes redact private paths and assignments before byte truncation", async () => {
+  const privateMessage = `failed /home/private-user/private.txt C:\\Users\\private-user\\private.txt /Users/private-user/private.txt TOKEN=synthetic-value ${join(homedir(), "private.txt")}`;
+  const f = fixture(
+    `() => { throw Object.assign(new Error(${JSON.stringify(privateMessage)} + "é".repeat(300)), { name: "é".repeat(300), code: "é".repeat(300) }) }`,
+    { timeoutMs: 1000 },
+  );
+  const result = await f.runtime().invoke(f.request);
+  assert.equal(result.ok, false);
+  if (result.ok) throw new Error("expected failure");
+  const { cause } = result.error.observed as {
+    cause: Record<string, string>;
+  };
+  assert.ok(
+    cause.message!.startsWith(
+      "failed [redacted] [redacted] [redacted] TOKEN=[redacted]",
+    ),
+  );
+  assert.doesNotMatch(JSON.stringify(result), /private-user|synthetic-value/);
+  assert.ok(!JSON.stringify(result).includes(homedir()));
+  for (const value of Object.values(cause)) {
+    assert.ok(Buffer.byteLength(value) <= 200);
+    assert.ok(!value.includes("\ufffd"));
+  }
+}, 5000);
+
+test("unexpected cause accessors cannot replace the failure envelope", async () => {
+  const f = fixture(
+    '() => { throw Object.defineProperty(new Error("boom"), "name", {get(){throw new Error("getter ran")}}) }',
+    { timeoutMs: 1000 },
+  );
+  const result = await f.runtime().invoke(f.request);
+  assert.partialDeepStrictEqual(result, {
+    ok: false,
+    error: {
+      code: "BLOCK_EXECUTION_FAILED",
+      observed: { cause: { name: "Error", message: "boom" } },
+    },
+  });
+}, 5000);

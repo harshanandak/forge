@@ -70,6 +70,9 @@ For optional fields and other contexts, see the canonical
 [manifest schema](https://github.com/harshanandak/forge/blob/main/schemas/block.json)
 and [operation schema](https://github.com/harshanandak/forge/blob/main/schemas/operation.json).
 
+Unexpected handler errors keep their public code, message and retry posture; `BLOCK_EXECUTION_FAILED` adds `error.observed.cause`: `name`, `message`, optional `code` and first block-relative stack `frame`, each limited to 200 UTF-8 bytes.
+Names, messages and codes redact absolute paths and assignment values.
+
 ## Check, add, admit, use
 
 Use Node 24.15+ in the 24.x line, or Node 26+, and Git. In a scratch Git project,
