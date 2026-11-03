@@ -583,6 +583,49 @@ test("config show keeps schema defaults under an invocation object set", async (
   );
 });
 
+test("config show keeps schema defaults after an empty instance gains a source", async () => {
+  await inspectInvocation(
+    { schemaVersion: "forge.config/1", blocks: {} },
+    [
+      { op: "set", path: "/blocks/hello", value: {} },
+      { op: "set", path: "/blocks/hello/source", value: { path: "./hello" } },
+    ],
+    (shown) => {
+      expect(shown.ok, JSON.stringify(shown)).toBe(true);
+      expect(shown.result.valid).toBe(true);
+      expect(shown.result.problems).toEqual([]);
+      const hello = (
+        shown.result.effective.blocks as Record<string, { config: unknown }>
+      ).hello;
+      expect(hello?.config).toEqual({ greeting: "hi", style: { loud: true } });
+    },
+  );
+});
+
+test("config show keeps an explicit empty config over schema defaults", async () => {
+  await inspectInvocation(
+    {
+      schemaVersion: "forge.config/1",
+      blocks: { hello: { source: { path: "./hello" } } },
+    },
+    [{ op: "set", path: "/blocks/hello/config", value: {} }],
+    (shown) => {
+      expect(shown.ok).toBe(false);
+      const explicit = shown.result.values.filter(
+        (entry) => entry.pointer === "/blocks/hello/config",
+      );
+      expect(explicit).toEqual([
+        {
+          pointer: "/blocks/hello/config",
+          value: {},
+          layer: "invocation",
+          active: false,
+        },
+      ]);
+    },
+  );
+});
+
 test("derived agent adapters target the configured instance name", () => {
   expect(agentAdapterObservation("router")).toMatchObject([
     {
