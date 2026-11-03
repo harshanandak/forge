@@ -334,6 +334,7 @@ export function createSqliteStore(
           )
             throw new StoreRestoringError();
           if (identity) {
+            hooks.step?.("store-probe");
             const current = statSync(path, { bigint: true });
             assertSingleLink(path, current);
             if (identity.dev !== current.dev || identity.ino !== current.ino)
