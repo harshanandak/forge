@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { ForgeFailure } from "../contract/failure.ts";
-import { isAgentCallable, type McpCandidate } from "../contract/mcp.ts";
-import { closestNames } from "../contract/schema.ts";
+import type { McpCandidate } from "../contract/mcp.ts";
+import { closestNames, SchemaRegistry } from "../contract/schema.ts";
+import { inputError } from "../contract/input-error.ts";
+import { SCHEMA_DOCUMENTS } from "../generated/schemas.ts";
 import type {
   AmbientContext,
   Caller,
@@ -53,7 +55,7 @@ export function visible(
   return [...discoveryOperations, ...catalog.list()].filter(
     (c) =>
       c.admitted &&
-      (caller !== "agent" || isAgentCallable(c.declaration)) &&
+      (c.declaration.callers?.includes(caller) ?? caller === "human") &&
       (!readOnly || c.declaration.effects.length === 0),
   );
 }
@@ -84,6 +86,42 @@ export async function dispatch(
     )
   )
     return failure("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
+  const builtin = discoveryOperations.find(
+    (entry) => entry.op === op && entry.op.startsWith("catalog."),
+  );
+  if (builtin !== undefined) {
+    const args = record(input);
+    const value =
+      op === "catalog.call" && args !== undefined
+        ? {
+            schemaVersion: "forge.invocation/1",
+            requestId: options.requestId ?? randomUUID(),
+            input: {},
+            context: options.context ?? {},
+            caller: options.caller,
+            ...args,
+          }
+        : input;
+    const id = "https://core.invalid/input";
+    const problems = new SchemaRegistry([
+      ...SCHEMA_DOCUMENTS,
+      { ...builtin.inputSchema, $id: id },
+    ]).validate(id, value, true);
+    if (problems.length > 0)
+      return {
+        ok: false,
+        op,
+        status: "FAIL",
+        error: inputError(
+          op,
+          problems,
+          builtin.docs,
+          builtin.inputSchema,
+          builtin.declaration.args,
+        ),
+        warnings: [],
+      };
+  }
   if (op === "catalog.list") return success(op, entries);
   if (op === "catalog.describe") {
     const name = record(input)?.op;
@@ -138,7 +176,8 @@ export async function dispatch(
     ![...discoveryOperations, ...catalog.list()].some(
       (c) =>
         c.op === op &&
-        (options.caller !== "agent" || isAgentCallable(c.declaration)) &&
+        (c.declaration.callers?.includes(options.caller) ??
+          options.caller === "human") &&
         (!options.readOnly || c.declaration.effects.length === 0),
     )
   ) {

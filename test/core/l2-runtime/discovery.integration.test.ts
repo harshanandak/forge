@@ -115,7 +115,9 @@ for (const name of ["catalog_list", "catalog_describe", "catalog_call"])
             caller: "agent",
             context: {},
           }
-        : { op: "sample.run" };
+        : name === "catalog_list"
+          ? {}
+          : { op: "sample.run" };
     const result = await handlers.callTool(name, input);
     assert.ok(result?.ok);
     assert.deepEqual(registry.validate(id, result), []);
