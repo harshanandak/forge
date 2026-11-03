@@ -283,13 +283,6 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       if (format === "exit-code") return unknown;
       stdout.end();
       stderr.end();
-      if (stdout.nodeFailure || stderr.nodeFailure)
-        return {
-          kind: "recognized",
-          testCount: null,
-          failed: 1,
-          detail: "Node test summary reports zero, failed or cancelled tests",
-        };
       const text = structured ? Buffer.concat(structured).toString("utf8") : "";
       const reports: OutputReport[] = [];
       // An overflowing object is never read whole, so its counts may lie past what was kept.
@@ -327,7 +320,21 @@ function recognizer(format: ReportFormat): OutputRecognizer {
         (report) => report.kind === "recognized" && report.failed! > 0,
       );
       if (failed) return failed;
-      if (reports.length) return reports[0]!;
+      if (reports.length) {
+        const report = reports[0]!;
+        return (stdout.nodeFailure || stderr.nodeFailure) &&
+          report.kind === "recognized" &&
+          report.testCount !== 0
+          ? { ...report, failed: 1 }
+          : report;
+      }
+      if (stdout.nodeFailure || stderr.nodeFailure)
+        return {
+          kind: "recognized",
+          testCount: null,
+          failed: 1,
+          detail: "Node test summary reports zero, failed or cancelled tests",
+        };
       if (stdout.hint || stderr.hint || stdout.bunHint || stderr.bunHint)
         return malformed;
       return unknown;

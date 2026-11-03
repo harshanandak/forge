@@ -35,6 +35,41 @@ for (const sample of nodeSummaries) {
   }, 1000);
 }
 
+test("node:test failure evidence preserves the selected runner report counts", () => {
+  const failingNode = nodeSummaries.find(
+    (sample) => sample.scenario === "fail" && sample.reporter === "tap",
+  )!.stdout;
+  for (const [summary, failed] of [
+    ["1 passed in 0.12s", 1],
+    ["Tests: 3 failed, 7 passed, 10 total", 3],
+    ["no tests found", 0],
+  ] as const) {
+    for (const stream of ["stdout", "stderr"] as const) {
+      const baseline = output.parse(
+        stream === "stdout" ? summary : "",
+        stream === "stderr" ? summary : "",
+        "auto",
+      );
+      for (const first of [false, true]) {
+        const text = first
+          ? `${failingNode}\n${summary}\n`
+          : `${summary}\n${failingNode}\n`;
+        for (const [stdout, stderr] of [
+          [stream === "stdout" ? text : "", stream === "stderr" ? text : ""],
+          [
+            stream === "stdout" ? summary : failingNode,
+            stream === "stderr" ? summary : failingNode,
+          ],
+        ])
+          expect(output.parse(stdout!, stderr!, "auto")).toEqual({
+            ...baseline,
+            failed,
+          });
+      }
+    }
+  }
+}, 1000);
+
 test("node:test failure evidence requires eight consecutive ordered lines sharing a prefix", () => {
   const lines = [
     "# tests 0",

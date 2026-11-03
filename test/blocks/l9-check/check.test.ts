@@ -408,17 +408,25 @@ for (const [name, summary, extra, status, total] of [
   ["failed then passed", failingNode, passingNode, "FAIL", null],
   ["zero then passed", zeroNode, passingNode, "FAIL", null],
   ["cancelled then passed", cancelledNode, passingNode, "FAIL", null],
-  ["pytest failing Node", "1 passed in 0.12s", failingNode, "FAIL", null],
-  ["Jest failing Node", "Tests: 1 passed, 1 total", failingNode, "FAIL", null],
-  ["Vitest failing Node", "Tests 1 passed (1)", failingNode, "FAIL", null],
+  ["pytest failing Node", "1 passed in 0.12s", failingNode, "FAIL", 1],
+  ["Jest failing Node", "Tests: 1 passed, 1 total", failingNode, "FAIL", 1],
+  ["Vitest failing Node", "Tests 1 passed (1)", failingNode, "FAIL", 1],
+  [
+    "Jest failures with failing Node",
+    "Tests: 3 failed, 7 passed, 10 total",
+    failingNode,
+    "FAIL",
+    10,
+  ],
+  ["zero marker with failing Node", "no tests found", failingNode, "FAIL", 0],
   [
     "Bun failing Node",
     "1 pass\n0 fail\nRan 1 test across 1 file.",
     failingNode,
     "FAIL",
-    null,
+    1,
   ],
-  ["pytest zero Node", "1 passed in 0.12s", zeroNode, "FAIL", null],
+  ["pytest zero Node", "1 passed in 0.12s", zeroNode, "FAIL", 1],
 ] as const) {
   for (const stream of ["stdout", "stderr"] as const) {
     for (const first of [false, true]) {
