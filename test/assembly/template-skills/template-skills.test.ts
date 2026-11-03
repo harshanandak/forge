@@ -676,6 +676,105 @@ test("R1 a former companion replaced by a user directory never grants ownership 
   });
 }, 30_000);
 
+test("an unreadable template skill is reported without deleting its rendered files", async () => {
+  await withTemplate(async (root, call) => {
+    const companion = "tpl/skills/review/data.txt";
+    writeFileSync(join(root, companion), "keep companion");
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const original = readFileSync(join(root, RENDERED));
+    rmSync(join(root, companion));
+    rmSync(join(root, SOURCE));
+    mkdirSync(join(root, SOURCE));
+
+    const failed = await call("skills.sync");
+    expect(existsSync(join(root, RENDERED))).toBe(true);
+    expect(readFileSync(join(root, RENDERED))).toEqual(original);
+    expect(
+      readFileSync(join(root, ".agents/skills/review/data.txt"), "utf8"),
+    ).toBe("keep companion");
+    expect(failed).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_INVALID" },
+    });
+    expect(JSON.stringify(failed)).toContain(SOURCE);
+  });
+}, 30_000);
+
+test.each(["EACCES", "EBUSY", "EPERM", "EISDIR", "ENOTDIR"])(
+  "a template source read failure %s names the source and preserves the rendered skill",
+  async (code) => {
+    await withTemplate(async (root, call) => {
+      expect(await call("skills.sync")).toMatchObject({ ok: true });
+      const original = readFileSync(join(root, RENDERED));
+      const real = fsAdapter.nodeConfigFiles;
+      const spy = spyOn(fsAdapter, "nodeConfigFiles").mockImplementation(
+        (folder) => {
+          const files = real(folder);
+          return {
+            ...files,
+            read(path, maxBytes) {
+              if (join(folder, path) === join(root, SOURCE))
+                throw Object.assign(new Error(`injected ${code}`), { code });
+              return files.read(path, maxBytes);
+            },
+          };
+        },
+      );
+      try {
+        const failed = await call("skills.sync");
+        expect(existsSync(join(root, RENDERED))).toBe(true);
+        expect(readFileSync(join(root, RENDERED))).toEqual(original);
+        expect(failed).toMatchObject({
+          ok: false,
+          error: { code: "INPUT_INVALID" },
+        });
+        expect(JSON.stringify(failed)).toContain(SOURCE);
+        expect(JSON.stringify(failed)).toContain(code);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  },
+  30_000,
+);
+
+test.each(["frontmatter", "placeholder"])(
+  "invalid template skill %s preserves the previously rendered skill",
+  async (kind) => {
+    await withTemplate(async (root, call) => {
+      expect(await call("skills.sync")).toMatchObject({ ok: true });
+      const original = readFileSync(join(root, RENDERED));
+      writeFileSync(
+        join(root, SOURCE),
+        kind === "frontmatter" ? "# incomplete" : `${REVIEW}{{values.unknown}}`,
+      );
+      const failed = await call("skills.sync");
+      expect(failed).toMatchObject({
+        ok: false,
+        error: {
+          code: kind === "frontmatter" ? "OUTPUT_INVALID" : "INPUT_INVALID",
+        },
+      });
+      expect(JSON.stringify(failed)).toContain("review/SKILL.md");
+      expect(readFileSync(join(root, RENDERED))).toEqual(original);
+    });
+  },
+  30_000,
+);
+
+test("a genuinely removed template skill source still retires its rendered skill", async () => {
+  await withTemplate(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    expect(existsSync(join(root, RENDERED))).toBe(true);
+    rmSync(join(root, SOURCE));
+    expect(await call("skills.sync")).toMatchObject({
+      ok: true,
+      removed: [RENDERED],
+    });
+    expect(existsSync(join(root, RENDERED))).toBe(false);
+  });
+}, 30_000);
+
 test("an unknown placeholder fails skills sync and names the placeholder", async () => {
   await withTemplate(async (root, call) => {
     writeFileSync(
