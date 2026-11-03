@@ -1685,33 +1685,11 @@ module.exports = {
       const scope = input.scope;
       let complete = false;
       let slowestPageMs = 0;
-      let bufferedMoveMs = 0;
-      const scan = function* () {
-        let after = 0;
-        for (;;) {
-          const started = Date.now();
-          // See memory.move docs for the atomic-operation exception and full-scan limit.
-          if (
-            deadline !== undefined &&
-            deadline - started <= slowestPageMs + reserveMs + bufferedMoveMs
-          )
-            return;
-          const records = notePage(source, {
-            after,
-            limit: LIST_LIMIT,
-            descending: false,
-          });
-          slowestPageMs = Math.max(slowestPageMs, Date.now() - started);
-          for (const note of records) {
-            if (note.value.deleted !== true && note.value.scope === scope)
-              yield note;
-          }
-          const last = records.at(-1);
-          if (records.length < LIST_LIMIT || !last) break;
-          after = last.number;
-        }
-        complete = moved.length === 0;
-      };
+      let slowestReadMs = 0;
+      let records: ReturnType<typeof notePage> = [];
+      let index = 0;
+      let after = 0;
+      let end = false;
       const moved: { id: string; to: string }[] = [];
       let stopped: { id: string; code: string } | undefined;
       let slowestMoveMs = 0;
@@ -1727,50 +1705,70 @@ module.exports = {
               Math.floor((left - overhead) / Math.max(1, slowestMoveMs)),
             );
       };
-      const notes = scan();
-      let next = notes.next();
-      while (!next.done) {
-        const started = Date.now();
-        if (
-          moved.length === limit ||
-          (deadline !== undefined &&
-            (moved.length === 0
-              ? deadline - started < Math.max(1_000, slowestMoveMs)
-              : deadline - started <=
-                slowestMoveMs + slowestPageMs + reserveMs))
-        )
-          break;
-        const size = Math.min(
-          probed ? 25 : 1,
-          limit - moved.length,
-          affordable(),
-        );
-        const first = next.value;
+      for (;;) {
+        const size = Math.min(probed ? 25 : 1, limit - moved.length);
         const group: ReturnType<typeof notePage> = [];
-        let irregular = false;
-        while (!next.done && group.length < size) {
-          const note = next.value;
-          const current = source.state.get(note.record.key);
-          if (
-            !current ||
-            current.revision !== note.record.revision ||
-            (current.value as NoteValue).deleted === true ||
-            target.state.get(`${TRANSFER_PREFIX}${note.id}`)
-          ) {
-            irregular = true;
+        let irregular: ReturnType<typeof notePage>[number] | undefined;
+        let deferred = false;
+        for (;;) {
+          const readPage = index === records.length;
+          if (readPage && end) {
+            complete = moved.length === 0;
             break;
           }
-          group.push(note);
-          bufferedMoveMs = group.length * slowestMoveMs;
-          if (group.length < size) next = notes.next();
+          const note = readPage ? undefined : records[index]!;
+          if (
+            note &&
+            (note.value.deleted === true || note.value.scope !== scope)
+          ) {
+            index += 1;
+            continue;
+          }
+          if (note && group.length === size) break;
+          const first = !readPage && moved.length === 0;
+          const needed =
+            (readPage ? slowestPageMs : slowestReadMs) +
+            group.length * slowestMoveMs +
+            (first ? 1_000 : reserveMs);
+          const collected = Date.now();
+          const left = deadline === undefined ? Infinity : deadline - collected;
+          if (first ? left < needed : left <= needed) {
+            deferred = true;
+            break;
+          }
+          if (readPage) {
+            records = notePage(source, {
+              after,
+              limit: LIST_LIMIT,
+              descending: false,
+            });
+            index = 0;
+            after = records.at(-1)?.number ?? after;
+            end = records.length < LIST_LIMIT;
+            slowestPageMs = Math.max(slowestPageMs, Date.now() - collected);
+          } else if (note) {
+            const current = source.state.get(note.record.key);
+            const regular =
+              current &&
+              current.revision === note.record.revision &&
+              (current.value as NoteValue).deleted !== true &&
+              !target.state.get(`${TRANSFER_PREFIX}${note.id}`);
+            slowestReadMs = Math.max(slowestReadMs, Date.now() - collected);
+            if (!regular) {
+              irregular = note;
+              break;
+            }
+            group.push(note);
+            index += 1;
+          }
+          if (group.length === size && size > 0) break;
         }
-        bufferedMoveMs = 0;
         const fresh = group.length > 0;
-        if (group.length === 0) {
-          group.push(first);
-          irregular = false;
+        if (!fresh) {
+          if (!irregular) break;
+          group.push(irregular);
+          index += 1;
         }
-        let deferred = false;
         const trim = (count: number) => {
           if (count >= group.length) return;
           group.length = count;
@@ -1779,7 +1777,8 @@ module.exports = {
         };
         trim(affordable());
         if (group.length === 0) break;
-        let failedNote = first;
+        const started = Date.now();
+        let failedNote = group[0]!;
         try {
           const placed =
             group.length === 1
@@ -1919,7 +1918,6 @@ module.exports = {
           stopped = { id: failedNote.id, code };
         }
         if (stopped || deferred) break;
-        if (!irregular && !next.done) next = notes.next();
       }
       if (!complete && moved.length === 0)
         fail(

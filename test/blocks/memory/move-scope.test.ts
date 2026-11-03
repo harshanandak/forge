@@ -385,6 +385,51 @@ test("scope rechecks the budget between conflict fallback retirements and verifi
   expect(await move()).toMatchObject({ moved: [], complete: true });
 }, 30_000);
 
+test("scope budgets each note's reads after sparse scanning reaches a page of matches", async () => {
+  let now = 1_000;
+  const { move, call, device, project } = await setup(2, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  for (let n = 0; n < 1_998; n += 1)
+    await call("memory.add", { level: "device", scope: "beta", text: "other" });
+  for (let n = 0; n < 16; n += 1)
+    await call("memory.add", {
+      level: "device",
+      scope: "alpha",
+      text: `last ${n}`,
+    });
+  const page = device.listRange.bind(device);
+  device.listRange = (...args) => {
+    now += 2_000;
+    return page(...args);
+  };
+  const get = project.get.bind(project);
+  project.get = (key) => {
+    if (key.startsWith("transfer/")) now += 600;
+    return get(key);
+  };
+  const first = await move({ ...input, limit: 100 }, 30_000);
+  expect(now).toBeLessThan(30_000);
+  expect(first.stopped).toBeUndefined();
+  expect(first.complete).toBe(false);
+  expect(first.moved.length).toBeGreaterThan(0);
+  expect(device.get("note/000002016")?.revision).toBe(1);
+  const resumed = await move({ ...input, limit: 100 });
+  const moved = [...first.moved, ...resumed.moved];
+  expect(moved.map((note) => note.id)).toEqual([
+    "device/note-1",
+    "device/note-2",
+    ...Array.from({ length: 16 }, (_, i) => `device/note-${i + 2_001}`),
+  ]);
+  expect(new Set(moved.map((note) => note.to)).size).toBe(18);
+  expect(project.list("note/")).toHaveLength(18);
+  expect(await move()).toMatchObject({ moved: [], complete: true });
+}, 30_000);
+
 test("scope input and batch output are admitted alongside unchanged single moves", async () => {
   expect(blockSchema("memory", "move.input.json")(input)).toEqual([]);
   expect(
