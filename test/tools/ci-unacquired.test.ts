@@ -63,6 +63,51 @@ test("reruns a never-acquired macOS job and failed gate on attempts 1 and 2", ()
   }
 });
 
+const skipped: CiJob = {
+  name: "PR title",
+  conclusion: "skipped",
+  runner_name: "",
+  steps: [],
+};
+for (const [name, jobs] of [
+  [
+    "push to main with PR title skipped",
+    [
+      skipped,
+      { ...success, name: "Changes" },
+      { ...success, name: "Structure guards" },
+      { ...success, name: "Pack artifact" },
+      unacquired,
+      gate,
+    ],
+  ],
+  [
+    "docs-only PR with pack and verify skipped",
+    [
+      success,
+      { ...success, name: "Changes" },
+      { ...success, name: "Structure guards" },
+      { ...skipped, name: "Pack artifact" },
+      { ...skipped, name: unacquired.name },
+      { ...unacquired, name: "Lint and format" },
+      gate,
+    ],
+  ],
+] satisfies [string, CiJob[]][]) {
+  test(`reruns a never-acquired job: ${name}`, () => {
+    expect(decideRerun({ ...run, jobs }, current).rerun).toBe(true);
+  });
+
+  test(`does not rerun a real failure: ${name}`, () => {
+    expect(
+      decideRerun(
+        { ...run, jobs: [...jobs, { ...realFailure, name: "Unit tests" }] },
+        current,
+      ).rerun,
+    ).toBe(false);
+  });
+}
+
 for (const [name, input] of [
   ["real test failure", { ...run, jobs: [success, realFailure, gate] }],
   [
@@ -84,8 +129,11 @@ for (const [name, input] of [
   ["gate failure alone", { ...run, jobs: [success, gate] }],
   ["no jobs", { ...run, jobs: [] }],
   [
-    "skipped job alongside allocation failure",
-    { ...run, jobs: [...run.jobs, { ...success, conclusion: "skipped" }] },
+    "only skipped non-success jobs without a never-acquired job",
+    {
+      ...run,
+      jobs: [success, skipped, { ...skipped, name: "Pack artifact" }],
+    },
   ],
   [
     "timed-out job alongside allocation failure",
