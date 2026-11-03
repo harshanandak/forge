@@ -1,9 +1,46 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { entriesAt, resolveLayers } from "../../../src/core/config/layers.ts";
 import { getIn } from "../../../src/core/config/pointer.ts";
-import { makeProject } from "./lib/project.ts";
+import { failureOf, makeProject } from "./lib/project.ts";
 
 setDefaultTimeout(5000);
+
+for (const [path, value] of [
+  ["/templates", []],
+  ["/owners", {}],
+  ["/schemaVersion", "forge.config/1"],
+] as const) {
+  test(`config show refuses managed metadata at ${path} just like config set`, () => {
+    const p = makeProject();
+    try {
+      p.templates.importTemplate({
+        template: "forge/starter",
+        expectRevision: p.config.show().revision,
+      });
+      const before = p.read();
+      const baseline = p.config.show();
+      expect(baseline.templates).toHaveLength(1);
+      const written = failureOf(() =>
+        p.config.set({ path, value, expectRevision: baseline.revision }),
+      );
+      expect(written).toMatchObject({
+        code: "INPUT_INVALID",
+        message: `${path} is managed by Forge and cannot be edited directly`,
+        repair:
+          "import or remove templates with template import and template remove",
+      });
+      expect(
+        failureOf(() =>
+          p.config.show({ invocation: [{ op: "set", path, value }] }),
+        ),
+      ).toEqual(written);
+      expect(p.read()).toBe(before);
+      expect(p.config.show()).toEqual(baseline);
+    } finally {
+      p.cleanup();
+    }
+  });
+}
 
 const commands = ["blocks", "check", "config", "commands"];
 const pointer = "/blocks/check/config/commands";
