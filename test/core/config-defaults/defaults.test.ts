@@ -132,6 +132,55 @@ test("explain names each value's source, including a short name's implied source
   expect(source("/blocks/work/source")).toBe("template");
 });
 
+test.each([
+  ["omitted", "", "default"],
+  ["explicit", "    source: { builtin: forge/check }\n", "project"],
+] as const)(
+  "explain agrees with show for an %s built-in source",
+  (_kind, source, layer) => {
+    const p = project(
+      `schemaVersion: forge.config/1\nblocks:\n  check:\n${source}    config:\n      timeoutMs: 9\n`,
+    );
+    const show = p.config.show();
+    expect(show.valid).toBe(true);
+    const values = show.values.filter(
+      (entry) => entry.active && entry.pointer.startsWith("/blocks/check/"),
+    );
+    for (const expected of [
+      {
+        pointer: "/blocks/check/source",
+        value: { builtin: "forge/check" },
+        layer,
+        active: true,
+      },
+      {
+        pointer: "/blocks/check/config/report",
+        value: "auto",
+        layer: "default",
+        active: true,
+      },
+      {
+        pointer: "/blocks/check/config/timeoutMs",
+        value: 9,
+        layer: "project",
+        active: true,
+      },
+    ] as const)
+      expect(values).toContainEqual(expected);
+    for (const entry of values) {
+      const explained = p.config.explain({ path: entry.pointer });
+      expect(explained).toMatchObject({
+        pointer: entry.pointer,
+        set: true,
+        value: entry.value,
+        layer: entry.layer,
+        source: entry.layer,
+      });
+      expect(explained.entries).toContainEqual(entry);
+    }
+  },
+);
+
 test("short form: use: is a relative path or a package, other keys are config, absolute paths are refused", () => {
   const p = project(
     "blocks:\n  hello:\n    use: ./blocks/hello\n    greeting: hi\n  lint:\n    use: '@acme/lint'\n  far:\n    use: /opt/far\n",
