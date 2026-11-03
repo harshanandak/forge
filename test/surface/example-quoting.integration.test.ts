@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { renderExample } from "../../src/contract/example.ts";
 import { exampleShells, scalarExamples } from "./fixtures/scalar-examples.ts";
@@ -22,10 +21,10 @@ const executables = [
 
 for (const [index, shell] of exampleShells.entries()) {
   const executable = executables[index];
-  const available = executable !== undefined && existsSync(executable);
-  (available ? test : test.skip)(
+  test.skipIf(shell !== "POSIX" && process.platform !== "win32")(
     `rendered scalars reach the CLI exactly in ${shell}`,
     () => {
+      if (!executable) throw new Error(`${shell} executable required`);
       const node = Bun.which("node");
       if (!node) throw new Error("Node runtime required");
       const fixture = resolve("test/surface/fixtures/echo-example.mjs");
@@ -57,7 +56,7 @@ for (const [index, shell] of exampleShells.entries()) {
           : shell === "cmd"
             ? ["/d", "/v:off", "/s", "/c", `"${script}"`]
             : ["-NoProfile", "-NonInteractive", "-Command", script];
-      const result = spawnSync(executable!, args, {
+      const result = spawnSync(executable, args, {
         encoding: "utf8",
         timeout: 20_000,
         ...(shell === "cmd" ? { windowsVerbatimArguments: true } : {}),
