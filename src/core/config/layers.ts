@@ -243,7 +243,15 @@ export function resolveLayers(
     setIn(effective, entry.segments, clone(entry.value));
   }
 
-  const entries = raw.map((entry): LayerEntry => {
+  const attributed = raw.flatMap((entry) =>
+    entry.layer === "derived"
+      ? leaves(entry.value, atomicSource, entry.segments).map((leaf) => ({
+          ...entry,
+          ...leaf,
+        }))
+      : [entry],
+  );
+  const entries = attributed.map((entry): LayerEntry => {
     const hider =
       raw.find(
         (other) =>
