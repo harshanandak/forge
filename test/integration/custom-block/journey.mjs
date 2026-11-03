@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -116,11 +117,30 @@ for (const spec of ["block-path-fixture", "@fixture/block-path-fixture"]) {
   cpSync(join(root, "hello-block"), join(root, "node_modules", spec), {
     recursive: true,
   });
-  const envelope = JSON.parse(
-    run(process.execPath, [npx, "forge", "block", "check", spec]),
+  cpSync(join(root, "hello-block"), join(root, spec), { recursive: true });
+  const localManifest = join(root, spec, "forge.block.json");
+  const manifest = JSON.parse(readFileSync(localManifest, "utf8"));
+  manifest.version = "2.0.0";
+  writeFileSync(localManifest, JSON.stringify(manifest));
+  const local = JSON.parse(
+    run(process.execPath, [npx, "forge", "block", "check", `./${spec}`]),
   );
-  assert.equal(envelope.ok, true);
-  assert.equal(envelope.result.digest, digest);
+  assert.notEqual(local.result.digest, digest);
+  for (const verb of ["check", "add"]) {
+    const envelope = JSON.parse(
+      run(process.execPath, [npx, "forge", "block", verb, spec]),
+    );
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.result.digest, digest);
+  }
+  const shown = JSON.parse(
+    run(process.execPath, [npx, "forge", "config", "show"]),
+  );
+  assert.deepEqual(shown.result.problems, []);
+  assert.deepEqual(
+    shown.result.instances.find((instance) => instance.name === "hello").source,
+    { package: spec },
+  );
 }
 writeFileSync(join(root, "block-path-file"), "not a directory");
 const fileSource = JSON.parse(
@@ -150,6 +170,30 @@ for (const spec of ["blocks/foo", "./blocks/foo"]) {
     run(process.execPath, [npx, "forge", "hello", "say", "--name", "Path"]),
   );
   assert.deepEqual(greeting.result, { message: "Hello, Path!" });
+}
+const outside = join(root, "../outside-block");
+cpSync(join(root, "hello-block"), outside, { recursive: true });
+symlinkSync(
+  outside,
+  join(root, "blocks/outward"),
+  process.platform === "win32" ? "junction" : "dir",
+);
+const configFile = join(root, ".forge/config.yaml");
+const configBeforeRefusals = readFileSync(configFile, "utf8");
+for (const spec of [
+  "blocks/../../outside-block",
+  "blocks\\..\\..\\outside-block",
+  "blocks/outward",
+  `${"x".repeat(300)}/child`,
+]) {
+  for (const verb of ["check", "add"]) {
+    const envelope = JSON.parse(
+      run(process.execPath, [npx, "forge", "block", verb, spec], 6),
+    );
+    assert.equal(envelope.error.code, "INPUT_INVALID");
+    assert.equal(envelope.error.message, "Expected an installed package name");
+    assert.equal(readFileSync(configFile, "utf8"), configBeforeRefusals);
+  }
 }
 const manifestPath = join(root, "hello-block/forge.block.json");
 const original = readFileSync(manifestPath, "utf8");

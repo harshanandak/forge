@@ -1,6 +1,6 @@
-﻿import { existsSync, statSync } from "node:fs";
+﻿import { existsSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { nodeFileCapture } from "../adapters/node-runtime/capture.ts";
 import type { FileCapturePort } from "../core/catalog/index.ts";
 import type { BlockSource } from "../generated/types.ts";
@@ -58,10 +58,21 @@ export function resolveBlock(root: string, source: BlockSource): string {
   );
 }
 export function sourceFor(spec: string, root: string): BlockSource {
-  return spec.startsWith(".") ||
-    /^[A-Za-z]:[\\/]|^\//.test(spec) ||
-    (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(spec) &&
-      statSync(resolve(root, spec), { throwIfNoEntry: false })?.isDirectory())
-    ? { path: spec }
-    : { package: spec };
+  if (spec.startsWith(".") || /^[A-Za-z]:[\\/]|^\//.test(spec))
+    return { path: spec };
+  if (
+    !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(spec) &&
+    !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(spec)
+  ) {
+    try {
+      const project = realpathSync(root);
+      const candidate = realpathSync(resolve(project, spec));
+      const under = relative(project, candidate);
+      const inside = !isAbsolute(under) && under.split(sep)[0] !== "..";
+      if (inside && statSync(candidate).isDirectory()) return { path: spec };
+    } catch {
+      // Failed inference keeps the original package validation error.
+    }
+  }
+  return { package: spec };
 }
