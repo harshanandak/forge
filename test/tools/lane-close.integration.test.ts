@@ -385,6 +385,43 @@ test("cleanup diagnostic command collects matching Defender exclusions with an e
     expect(command).toContain(fragment);
 });
 
+test.skipIf(process.platform !== "win32")(
+  "cleanup evidence script queries processes and probes bin files through PowerShell",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-cleanup-evidence-"));
+    try {
+      const bin = join(root, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "probe.txt"), "Cleanup evidence fixture.\n");
+      const names = readdirSync(bin).sort();
+      const result = spawnSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", cleanupEvidenceCommand],
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+          windowsHide: true,
+          env: { ...process.env, FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT: root },
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      const evidence = JSON.parse(result.stdout) as CleanupEvidence;
+      expect(Array.isArray(evidence.processes)).toBe(true);
+      expect(Array.isArray(evidence.files)).toBe(true);
+      expect(evidence.files.map((file) => file.name).sort()).toEqual(names);
+      for (const file of evidence.files)
+        expect(typeof file.deleteOpenSucceeded).toBe("boolean");
+      expect(evidence.gitExists).toBe(false);
+      expect(evidence.processQueryError).toBeUndefined();
+      expect(evidence.filesQueryError).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
 if (process.platform === "win32") {
   test("cleanup diagnostic preserves holders and every Defender report field", () => {
     const root = diagnosticRoot();
@@ -512,6 +549,41 @@ if (process.platform === "win32") {
     expect(report.gitExists).toBe(false);
     expect(report.host).toEqual({ holders: [], holderUnknown: true });
   });
+
+  test("cleanup diagnostic preserves process evidence when the bin query fails", () => {
+    const root = diagnosticRoot();
+    const processes: CleanupEvidence["processes"] = [
+      {
+        ProcessId: 813,
+        ParentProcessId: 717,
+        Name: "git.exe",
+        ExecutablePath: join(root, "bin", "git.exe"),
+        CommandLine: "git status",
+        CreationDate: "2026-11-04T00:00:00.0000000Z",
+      },
+    ];
+    const report = JSON.parse(
+      cleanupReport(root, "EBUSY", (_command, args) => {
+        if (args[3] !== cleanupEvidenceCommand)
+          return diagnosticResult({ holders: [], holderUnknown: true });
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            processes,
+            filesQueryError: "Bin delete-access query failed",
+            files: [],
+            gitExists: null,
+          }),
+        };
+      }),
+    ) as CleanupReport;
+    expect(report.processes).toEqual(processes);
+    expect(report.filesQueryError).toBe("Bin delete-access query failed");
+    expect(report.processQueryError).toBeUndefined();
+    expect(report.files).toEqual([]);
+    expect(report.gitExists).toBeNull();
+    expect(report.host).toEqual({ holders: [], holderUnknown: true });
+  }, 10_000);
 
   for (const failure of [
     "exit",
