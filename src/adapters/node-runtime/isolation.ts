@@ -1,3 +1,4 @@
+import { measure } from "../../core/state/measure.ts";
 import { Script, createContext } from "node:vm";
 import type {
   RunIsolation,
@@ -41,6 +42,7 @@ const evaluator: RunIsolation = {
       options.signal.addEventListener("abort", abort, { once: true });
       const context = createContext(
         {
+          measurePhase: measure,
           args: options.args,
           encode: options.encode,
           fail: options.fail,
@@ -57,9 +59,14 @@ const evaluator: RunIsolation = {
         (function(module, exports) { "use strict";\n${options.source}\n})(module, exports);
         const handler = module.exports[operation];
         if (typeof handler !== 'function') fail('BLOCK_EXECUTION_FAILED', 'declared handler is missing');
+        measurePhase("start", "handler");
         Promise.resolve(handler(args)).then(output => {
+          measurePhase("end", "handler");
           completed(encode(output));
-        }).catch(failed);
+        }).catch(error => {
+          measurePhase("end", "handler");
+          failed(error);
+        });
       `,
         { filename: options.filename },
       );

@@ -18,6 +18,11 @@ import type {
   StoreLevels,
 } from "../../assembly/levels.ts";
 
+declare const measurePhase:
+  ((action: "start" | "end" | "count", phase: string) => void) | undefined;
+const measure =
+  typeof measurePhase === "function" ? measurePhase : () => undefined;
+
 declare const fail: (code: string, message: string) => never;
 
 type Level = "device" | "project";
@@ -1651,7 +1656,9 @@ module.exports = {
         deadline === undefined
           ? 1_000
           : Math.max(1_000, (deadline - Date.now()) / 10);
+      measure("start", "destination.resolve");
       const target = await writeTarget(services, "project");
+      measure("end", "destination.resolve");
       const source = deviceSource(services.state);
       const scope = input.scope;
       let complete = false;
@@ -1666,11 +1673,13 @@ module.exports = {
             deadline - started <= slowestPageMs + reserveMs
           )
             return;
+          measure("start", "source.scan");
           const records = notePage(source, {
             after,
             limit: LIST_LIMIT,
             descending: false,
           });
+          measure("end", "source.scan");
           slowestPageMs = Math.max(slowestPageMs, Date.now() - started);
           for (const note of records) {
             if (note.value.deleted !== true && note.value.scope === scope)
@@ -1697,6 +1706,7 @@ module.exports = {
         )
           break;
         try {
+          measure("start", "note.move");
           const result = await move({
             input: {
               id: note.id,
@@ -1705,6 +1715,8 @@ module.exports = {
             },
             services,
           });
+          measure("end", "note.move");
+          measure("start", "verification.reads_and_compare");
           const to = (result as { to?: string }).to;
           const ref = to === undefined ? undefined : parseRef(to);
           const destination =
@@ -1730,7 +1742,9 @@ module.exports = {
             stopped = { id: note.id, code: "VERIFY_FAILED" };
             break;
           }
+          measure("end", "verification.reads_and_compare");
           moved.push({ id: note.id, to });
+          measure("count", "notes_moved");
           slowestMoveMs = Math.max(slowestMoveMs, Date.now() - started);
         } catch (error) {
           const code = (error as { error?: { code?: string } } | null)?.error
@@ -1760,6 +1774,7 @@ module.exports = {
           : {}),
       };
     }
+    measure("start", "note.source_resolve_and_read");
     const found = await sourceFor(services, qualified(input.id));
     if (unreached(found))
       return { status: "not_found" as const, id: qualified(input.id) };
@@ -1772,6 +1787,7 @@ module.exports = {
     const existing = source.state.get(key);
     if (!existing)
       return { status: "not_found" as const, id: qualified(input.id) };
+    measure("end", "note.source_resolve_and_read");
     const value = existing.value as NoteValue;
     // A finished move answers the same way every time it is repeated.
     if (value.deleted === true)
@@ -1788,7 +1804,10 @@ module.exports = {
         "REVISION_CONFLICT",
         `${qualified(input.id)} is at revision ${existing.revision}; read it again and move that revision`,
       );
+    measure("start", "note.destination_resolve");
     const target = await writeTarget(services, input.to);
+    measure("end", "note.destination_resolve");
+    measure("start", "note.copy_and_history_reads");
     // The source's id is the transfer's identity. The destination records it beside the copy in
     // the same transaction, so a retry after a failure between the two stores finds the copy it
     // already made instead of making another.
@@ -1819,6 +1838,8 @@ module.exports = {
     // The transfer record names the copy and the revisions it was made at: the copy's own revision
     // and the source revision it was taken from. The copy and its record commit together, so a
     // destination at another revision was changed after the transfer, never left half-made.
+    measure("end", "note.copy_and_history_reads");
+    measure("start", "destination.reads_write_and_commit");
     const placed = committed(
       ():
         | { readonly at: number; readonly settled: boolean }
@@ -1848,6 +1869,7 @@ module.exports = {
         }
         // The first copy, or a transfer record whose copy never landed.
         const written = (current?.revision ?? 0) + 1;
+        measure("start", "destination.write_and_commit");
         target.state.putMany([
           ...(recorded
             ? []
@@ -1873,9 +1895,11 @@ module.exports = {
             expectRevision: made?.revision ?? 0,
           },
         ]);
+        measure("end", "destination.write_and_commit");
         return { at, settled: false };
       },
     );
+    measure("end", "destination.reads_write_and_commit");
     if ("conflict" in placed) return fail("TRANSFER_CONFLICT", placed.conflict);
     const to = idIn(target, placed.at);
     if (input.keep === true)
@@ -1886,11 +1910,13 @@ module.exports = {
         transfer: qualified(input.id),
       };
     // Retiring the source comes last: until it commits, the source still holds the note.
+    measure("start", "source.tombstone_and_commit");
     source.state.put(
       key,
       { ...TOMBSTONE, movedTo: to },
       { expectRevision: existing.revision },
     );
+    measure("end", "source.tombstone_and_commit");
     return {
       status: "moved" as const,
       id: qualified(input.id),

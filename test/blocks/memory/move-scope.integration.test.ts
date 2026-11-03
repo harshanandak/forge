@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -101,6 +108,8 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
     console.log(
       `100-note seed: ${Math.round(performance.now() - seedStarted)} ms`,
     );
+    const timingFile = join(project, "move-phases.jsonl");
+    let timingOffset = 0;
     const started = performance.now();
     let args = [
       "memory",
@@ -117,7 +126,7 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
         [resolve(import.meta.dirname, "../../../dist/bin/forge.js"), ...args],
         {
           cwd: project,
-          env,
+          env: { ...env, FORGE_MOVE_TIMING_FILE: timingFile },
           encoding: "utf8",
           windowsHide: true,
           timeout: 20_000,
@@ -126,6 +135,12 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
       console.log(
         `scope batch ${batch}: ${Math.round(performance.now() - batchStarted)} ms`,
       );
+      if (existsSync(timingFile)) {
+        const lines = readFileSync(timingFile, "utf8");
+        for (const line of lines.slice(timingOffset).trim().split("\n"))
+          if (line) console.log(`scope batch ${batch} phases: ${line}`);
+        timingOffset = lines.length;
+      }
       expect(run.status, run.stderr + run.stdout).toBe(0);
       const envelope = JSON.parse(run.stdout) as ResultEnvelope;
       expect(envelope.ok).toBe(true);

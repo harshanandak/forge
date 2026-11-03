@@ -1,4 +1,5 @@
-﻿import { dirname, join } from "node:path";
+import { measure, measured } from "../core/state/measure.ts";
+import { dirname, join } from "node:path";
 import { closeSync, existsSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
 import { createSqliteStore } from "../adapters/store-sqlite/index.ts";
@@ -26,7 +27,9 @@ let security: PrivateFileGuard | undefined;
 const sqliteStore: StorePort = {
   open(options) {
     if (process.platform === "win32")
-      security ??= privateFileGuard(windowsPrivateFiles());
+      security ??= measured("state.windows_acl_binding", () =>
+        privateFileGuard(windowsPrivateFiles()),
+      );
     return createSqliteStore(process.cwd(), security ? { security } : {}).open(
       options,
     );
@@ -94,7 +97,9 @@ export class LocalState {
     const pending = await this.#serial(() => {
       if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
       if (process.platform === "win32")
-        security ??= privateFileGuard(windowsPrivateFiles());
+        security ??= measured("state.windows_acl_binding", () =>
+          privateFileGuard(windowsPrivateFiles()),
+        );
       const files = security ? securedFileOps(security) : undefined;
       ensurePrivateDirectory(dirname(this.#path), this.#directories);
       if (existsSync(this.#path)) existing();
@@ -144,17 +149,22 @@ export class LocalState {
       await this.#missing?.(write);
       if (!write) return undefined;
     }
-    if (write) ensurePrivateDirectory(dirname(this.#path), this.#directories);
+    if (write)
+      measured("state.ensure_private_directory", () =>
+        ensurePrivateDirectory(dirname(this.#path), this.#directories),
+      );
+    measure("start", "state.open");
     const result = await this.#store.open({
       path: this.#path,
       readOnly: !write,
     });
+    measure("end", "state.open");
     if (!result.ok) throw new StateUnavailable(result.unavailable);
     try {
       const owner = new StateOwner(result.handle.value, {
         now: () => Date.now(),
       });
-      if (write) owner.initialize();
+      if (write) measured("state.initialize", () => owner.initialize());
       let finish!: () => void;
       const drained = new Promise<void>((resolve) => {
         finish = resolve;

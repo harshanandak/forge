@@ -1,3 +1,4 @@
+import { measure, measured } from "../../core/state/measure.ts";
 import {
   realpathSync,
   lstatSync,
@@ -155,9 +156,18 @@ export function createSqliteStore(
     hooks = { ...hooks, fs: securedFileOps(hooks.security, hooks.fs) };
   return {
     async open(options) {
+      const store = options.path.endsWith("records.sqlite")
+        ? "source"
+        : options.path.endsWith("state.sqlite")
+          ? "destination"
+          : "other";
+      const phase = (name: string) =>
+        `${store}.${options.readOnly ? "readonly" : "writable"}.${name}`;
+      measure("start", phase("store_open"));
       let binding: Binding | undefined;
       let pinned: number | undefined;
       try {
+        measure("start", phase("path_and_filesystem_probe"));
         const path =
           options.path === ":memory:"
             ? options.path
@@ -182,6 +192,7 @@ export function createSqliteStore(
             process.stderr.write(message);
           },
         );
+        measure("end", phase("path_and_filesystem_probe"));
         const fencePath = `${path}.restore-lock`;
         const assertUnfenced = (): void => {
           if (path !== ":memory:" && existsSync(fencePath))
@@ -197,8 +208,11 @@ export function createSqliteStore(
         // Keep the opened inode pinned across SQLite's open; reject either side
         // of a pathname replacement rather than adopting its newer identity.
         if (path !== ":memory:")
-          pinned = openStoreFile(path, options.readOnly, hooks.fs);
+          pinned = measured(phase("private_file_open"), () =>
+            openStoreFile(path, options.readOnly, hooks.fs),
+          );
         hooks.step?.("opening");
+        measure("start", phase("sqlite_connect"));
         let connect: (path: string, readOnly: boolean) => Binding;
         if ("Bun" in globalThis) {
           // A variable specifier keeps the Node-only declaration build independent of Bun types.
@@ -225,6 +239,7 @@ export function createSqliteStore(
           connect = (name, readOnly) => new DatabaseSync(name, { readOnly });
           binding = connect(path, options.readOnly);
         }
+        measure("end", phase("sqlite_connect"));
         let db = binding;
         hooks.step?.("connected");
         let identity =
@@ -326,20 +341,21 @@ export function createSqliteStore(
         db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
         let closed = false;
         let active = false;
-        const assertOpen = (): void => {
-          if (closed) throw new Error("Store is closed");
-          if (
-            restoring ||
-            (path !== ":memory:" && !ownsFence && existsSync(fencePath))
-          )
-            throw new StoreRestoringError();
-          if (identity) {
-            const current = statSync(path, { bigint: true });
-            assertSingleLink(path, current);
-            if (identity.dev !== current.dev || identity.ino !== current.ino)
-              throw new Error("Store identity changed; reopen required");
-          }
-        };
+        const assertOpen = (): void =>
+          measured(phase("identity_and_fence"), () => {
+            if (closed) throw new Error("Store is closed");
+            if (
+              restoring ||
+              (path !== ":memory:" && !ownsFence && existsSync(fencePath))
+            )
+              throw new StoreRestoringError();
+            if (identity) {
+              const current = statSync(path, { bigint: true });
+              assertSingleLink(path, current);
+              if (identity.dev !== current.dev || identity.ino !== current.ino)
+                throw new Error("Store identity changed; reopen required");
+            }
+          });
         const storeError = (error: unknown): unknown => {
           let changed = false;
           if (identity) {
@@ -367,12 +383,12 @@ export function createSqliteStore(
           if (active) throw new Error("Nested transactions are refused");
           hooks.step?.("write-pre-lock");
           hooks.step?.("write-lock-attempt");
-          db.exec("BEGIN IMMEDIATE");
+          measured(phase("lock_acquisition"), () => db.exec("BEGIN IMMEDIATE"));
           active = true;
           try {
             hooks.step?.("write-locked");
             assertOpen();
-            const result = body();
+            const result = measured(phase("transaction_body"), body);
             if (
               result !== null &&
               (typeof result === "object" || typeof result === "function") &&
@@ -380,7 +396,7 @@ export function createSqliteStore(
             )
               throw new Error("Transaction body must be synchronous");
             assertOpen();
-            db.exec("COMMIT");
+            measured(phase("commit"), () => db.exec("COMMIT"));
             return result;
           } catch (error) {
             try {
@@ -632,39 +648,45 @@ export function createSqliteStore(
             execute(() => db.exec(sql));
           },
           run(sql, params = []) {
-            return execute(() => {
-              const statement = prepare(sql);
-              try {
-                const result = statement.run(...params);
-                return {
-                  changes: Number(result.changes),
-                  lastInsertRowid: result.lastInsertRowid,
-                };
-              } finally {
-                statement.finalize?.();
-              }
-            });
+            return measured(phase("sql_run"), () =>
+              execute(() => {
+                const statement = prepare(sql);
+                try {
+                  const result = statement.run(...params);
+                  return {
+                    changes: Number(result.changes),
+                    lastInsertRowid: result.lastInsertRowid,
+                  };
+                } finally {
+                  statement.finalize?.();
+                }
+              }),
+            );
           },
           get(sql, params = []) {
-            return execute(() => {
-              const statement = prepare(sql);
-              try {
-                return (statement.get(...params) ?? undefined) as
-                  SqlRow | undefined;
-              } finally {
-                statement.finalize?.();
-              }
-            });
+            return measured(phase("sql_read"), () =>
+              execute(() => {
+                const statement = prepare(sql);
+                try {
+                  return (statement.get(...params) ?? undefined) as
+                    SqlRow | undefined;
+                } finally {
+                  statement.finalize?.();
+                }
+              }),
+            );
           },
           all(sql, params = []) {
-            return execute(() => {
-              const statement = prepare(sql);
-              try {
-                return statement.all(...params) as SqlRow[];
-              } finally {
-                statement.finalize?.();
-              }
-            });
+            return measured(phase("sql_read"), () =>
+              execute(() => {
+                const statement = prepare(sql);
+                try {
+                  return statement.all(...params) as SqlRow[];
+                } finally {
+                  statement.finalize?.();
+                }
+              }),
+            );
           },
           transaction(body) {
             return storeCall(() => transact(body));
@@ -677,7 +699,7 @@ export function createSqliteStore(
             value,
             close() {
               if (!closed) {
-                db.close();
+                measured(phase("store_close"), () => db.close());
                 closed = true;
                 if (memoryDirectory)
                   removeDurable(
@@ -701,6 +723,8 @@ export function createSqliteStore(
             remedy: "Use a supported runtime and a readable local store path",
           },
         };
+      } finally {
+        measure("end", phase("store_open"));
       }
     },
   };
