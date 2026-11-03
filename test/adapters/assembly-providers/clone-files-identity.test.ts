@@ -59,3 +59,66 @@ test("lock release distinguishes adjacent 64-bit identities and matches identica
     }
   }
 }, 1000);
+
+for (const timestamp of ["mtimeNs", "ctimeNs"] as const) {
+  test(`reads reject a same-size rewrite within one millisecond detected by ${timestamp}`, () => {
+    const root = fs.realpathSync.native(
+      fs.mkdtempSync(join(tmpdir(), "forge-file-timestamps-")),
+    );
+    const path = join(root, "config");
+    fs.writeFileSync(path, "AAAA");
+    const lease = createCloneFilesLease({
+      projectRoot: root,
+      gitDirectory: root,
+      commonDirectory: root,
+      read: true,
+      write: false,
+      signal: new AbortController().signal,
+    });
+    const fstat = fs.fstatSync;
+    const read = fs.readSync;
+    let rewritten = false;
+    const chunks: string[] = [];
+    const descriptor = spyOn(fs, "fstatSync").mockImplementation(((
+      fd,
+      options,
+    ) => {
+      const info = fstat(fd, options);
+      Object.defineProperties(info, {
+        mtimeMs: { value: 1000n },
+        ctimeMs: { value: 1000n },
+        mtimeNs: { value: 1_000_100_000n },
+        ctimeNs: { value: 1_000_100_000n },
+        [timestamp]: {
+          value: rewritten ? 1_000_200_000n : 1_000_100_000n,
+        },
+      });
+      return info;
+    }) as typeof fs.fstatSync);
+    const reader = spyOn(fs, "readSync").mockImplementation(((
+      fd: number,
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number | null,
+    ) => {
+      const count = read(fd, buffer, offset, Math.min(2, length), position);
+      chunks.push(buffer.subarray(offset, offset + count).toString());
+      if (!rewritten) {
+        fs.writeFileSync(path, "BBBB");
+        rewritten = true;
+      }
+      return count;
+    }) as typeof fs.readSync);
+    try {
+      expect(() => lease.service.read("config", 4)).toThrow(/INPUT_CONFLICT/);
+      expect(chunks.join("")).toBe("AABB");
+      expect(fs.readFileSync(path, "utf8")).toBe("BBBB");
+    } finally {
+      reader.mockRestore();
+      descriptor.mockRestore();
+      lease.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 1000);
+}

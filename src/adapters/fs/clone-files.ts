@@ -197,7 +197,7 @@ function sameCapturedFile(
     claimed !== null &&
     sameFile(before, claimed) &&
     before.size === claimed.size &&
-    before.mtimeMs === claimed.mtimeMs &&
+    before.mtimeNs === claimed.mtimeNs &&
     beforeHash === claimedHash &&
     claimedText === expected
   );
@@ -345,8 +345,8 @@ function createCloneFilesAccess(
         current === null ||
         !sameFile(opened, current) ||
         opened.size !== after.size ||
-        opened.mtimeMs !== after.mtimeMs ||
-        opened.ctimeMs !== after.ctimeMs
+        opened.mtimeNs !== after.mtimeNs ||
+        opened.ctimeNs !== after.ctimeNs
       )
         failure("INPUT_CONFLICT", "Clone file changed during read");
       return buffer.subarray(0, count);
@@ -438,7 +438,7 @@ function createCloneFilesAccess(
           afterRead !== null &&
           (!sameFile(captured, afterRead) ||
             captured.size !== afterRead.size ||
-            captured.mtimeMs !== afterRead.mtimeMs))
+            captured.mtimeNs !== afterRead.mtimeNs))
       )
         failure(
           "INPUT_CONFLICT",
