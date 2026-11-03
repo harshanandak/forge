@@ -86,6 +86,18 @@ async function fixture(workEnabled: boolean) {
     });
     return {
       git,
+      blockPath: stages.get(memory)!,
+      invoke(op: string, input: unknown = {}) {
+        const { caller, context } = localCall(assembly);
+        return assembly.catalog.invoke({
+          schemaVersion: "forge.invocation/1",
+          requestId: `prefix-fixture-${op}`,
+          op,
+          input,
+          caller,
+          context: context ?? {},
+        });
+      },
       async call(args: string[]) {
         const result = await runCli(
           assembly.catalog,
@@ -165,6 +177,26 @@ test("memory-only searches skip origin queries while config inspection keeps the
       active: true,
     });
     expect(shown.effective.blocks.work.config.idPrefix).toBe("alpha");
+    expect(project.originQueries()).toBe(1);
+  } finally {
+    await project.close();
+  }
+});
+
+test("memory-only projects keep host operations and unknown names on main's path", async () => {
+  const project = await fixture(false);
+  try {
+    project.resetTrace();
+    expect(
+      await project.invoke("block.check", { path: project.blockPath }),
+    ).toMatchObject({ ok: true, result: { blockId: "forge/memory" } });
+    expect(project.originQueries()).toBe(1);
+
+    project.resetTrace();
+    expect(await project.invoke("memory.serach")).toMatchObject({
+      ok: false,
+      error: { code: "UNKNOWN_COMMAND" },
+    });
     expect(project.originQueries()).toBe(1);
   } finally {
     await project.close();

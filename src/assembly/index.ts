@@ -855,11 +855,15 @@ export async function createAssembly(
           )
             derived.push(...agentAdapterObservation(instance.name));
         }
+        const blockCatalog =
+          core || workEnabled
+            ? undefined
+            : snapshot(call, deviceMemory).catalog;
         if (
           !core &&
           (workEnabled ||
-            snapshot(call, deviceMemory).catalog.resolve(request.op).operation
-              .instance === "work")
+            !blockCatalog?.list().includes(request.op) ||
+            blockCatalog.resolve(request.op).operation.instance === "work")
         )
           derived.push(...(await prefix()));
       } catch (error) {
