@@ -335,7 +335,13 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
 
   return {
     list() {
-      const document = validated(writable(readProject(env)));
+      const document = readProject(env).document;
+      if (document !== undefined && Object.hasOwn(document, "templates"))
+        validated({
+          schemaVersion: "forge.config/1",
+          blocks: {},
+          templates: document.templates,
+        });
       const installed = env.templates.list().map((t) => ({
         id: t.id,
         version: t.version,
