@@ -13,7 +13,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve, delimiter } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve, delimiter, relative, isAbsolute, sep } from "node:path";
 import {
   packedCoverage,
   selectShard,
@@ -47,23 +48,30 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
     );
     phaseStarted = performance.now();
   }
-  const work = mkdtempSync(join(root, ".async-packed-"));
-  const node = Bun.which("node");
-  if (!node) throw Error("Node required");
-  const env = { ...process.env };
-  const path =
-    Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-  env[path] = (env[path] ?? "")
-    .split(delimiter)
-    .filter(
-      (dir) =>
-        !["bun", "bun.exe", "bunx", "bunx.exe"].some((name) =>
-          existsSync(join(dir, name)),
-        ),
-    )
-    .join(delimiter);
-  delete env.BUN_INSTALL;
+  const work = mkdtempSync(join(tmpdir(), "forge-async-packed-"));
   try {
+    const node = Bun.which("node");
+    if (!node) throw Error("Node required");
+    const env = { ...process.env };
+    const path =
+      Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+    env[path] = (env[path] ?? "")
+      .split(delimiter)
+      .filter(
+        (dir) =>
+          !["bun", "bun.exe", "bunx", "bunx.exe"].some((name) =>
+            existsSync(join(dir, name)),
+          ),
+      )
+      .join(delimiter);
+    delete env.BUN_INSTALL;
+    const fromRoot = relative(root, work);
+    expect(
+      fromRoot === ".." ||
+        fromRoot.startsWith(`..${sep}`) ||
+        isAbsolute(fromRoot),
+      "packed async scratch must stay outside the repository",
+    ).toBe(true);
     const consumer = packedConsumer();
     const installed = join(consumer, "node_modules/forge-workflow");
     // Package self-references resolve here; dependency lookup borrows the install.
@@ -186,6 +194,9 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
       maxRetries: 10,
       retryDelay: 100,
     });
+    expect(existsSync(work), "packed async scratch must be removed").toBe(
+      false,
+    );
     phase("cleanup");
     console.log(
       `Packed async total: ${Math.round(performance.now() - started)} ms`,
