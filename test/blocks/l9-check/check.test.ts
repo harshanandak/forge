@@ -17,6 +17,7 @@ import { hash } from "../../../src/blocks/check/receipt.ts";
 import { captured } from "./fakes.ts";
 import { exitCode } from "../../../src/surface/result.ts";
 import { finalizationTimeoutMs } from "../../../src/blocks/check/budget.ts";
+import { readFileSync } from "node:fs";
 
 function fixture(result: Partial<ProcessResult> = {}) {
   const records = new Map<string, StateRecord>();
@@ -335,6 +336,97 @@ test("recognized zero tests fail; unknown output uses the exit code and unknown 
     "FAIL",
   );
 }, 1000);
+
+const nodeSummaries = JSON.parse(
+  readFileSync(new URL("./fixtures/node-test.json", import.meta.url), "utf8"),
+) as {
+  version: string;
+  scenario: string;
+  reporter: string;
+  stdout: string;
+  stderr: string;
+}[];
+for (const sample of nodeSummaries) {
+  test(`node:test ${sample.version} ${sample.reporter} ${sample.scenario} check receipt`, async () => {
+    const receipt = await fixture({
+      stdout: sample.stdout,
+      stderr: sample.stderr,
+      exitCode: 0,
+    }).check.run({}, config);
+    expect(receipt.status).toBe(sample.scenario === "pass" ? "PASS" : "FAIL");
+    expect(receipt.runs[0]?.testCount).toBe(sample.scenario === "zero" ? 0 : 1);
+  }, 1000);
+}
+
+const passingNode = nodeSummaries.find(
+  (sample) => sample.scenario === "pass" && sample.reporter === "tap",
+)!.stdout;
+const failingNode = nodeSummaries.find(
+  (sample) => sample.scenario === "fail" && sample.reporter === "tap",
+)!.stdout;
+for (const [runner, summary, fragment, status, total] of [
+  ["pytest log", "1 passed in 0.12s", "# tests 123", "PASS", 1],
+  [
+    "pytest partial block",
+    "1 passed in 0.12s",
+    "# tests 999\n# pass 999\n# fail 0",
+    "PASS",
+    1,
+  ],
+  [
+    "pytest interrupted block",
+    "1 passed in 0.12s",
+    "# tests 999\nunrelated log\n# pass 999\n# fail 0",
+    "PASS",
+    1,
+  ],
+  [
+    "Jest fragment",
+    "Tests: 1 passed, 1 total",
+    "# tests 1\n# pass 0\n# fail 1",
+    "PASS",
+    1,
+  ],
+  [
+    "Vitest fragment",
+    "Tests 1 passed (1)",
+    "# tests 1\n# pass 0\n# fail 1",
+    "PASS",
+    1,
+  ],
+  ["zero tests", "no tests found", passingNode, "FAIL", 0],
+  ["pytest complete block", "1 passed in 0.12s", failingNode, "PASS", 1],
+  ["Jest complete block", "Tests: 1 passed, 1 total", failingNode, "PASS", 1],
+  ["Vitest complete block", "Tests 1 passed (1)", failingNode, "PASS", 1],
+  [
+    "Bun complete block",
+    "1 pass\n0 fail\nRan 1 test across 1 file.",
+    failingNode,
+    "PASS",
+    1,
+  ],
+] as const) {
+  for (const stream of ["stdout", "stderr"] as const) {
+    for (const first of [false, true]) {
+      test(`${runner} keeps its check outcome with Node output ${first ? "before" : "after"} on ${stream}`, async () => {
+        const text = first
+          ? `${fragment}\n${summary}\n`
+          : `${summary}\n${fragment}\n`;
+        for (const result of [
+          { [stream]: text },
+          {
+            [stream]: fragment,
+            [stream === "stdout" ? "stderr" : "stdout"]: summary,
+          },
+        ]) {
+          const receipt = await fixture(result).check.run({}, config);
+          expect(receipt.status).toBe(status);
+          expect(receipt.runs[0]?.testCount).toBe(total);
+        }
+      }, 1000);
+    }
+  }
+}
 
 test("Bun summaries give receipts a count and reject failures even on exit zero", async () => {
   for (const [total, failed, status] of [

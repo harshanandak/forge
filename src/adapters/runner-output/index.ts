@@ -23,6 +23,8 @@ const malformed: OutputReport = {
 const LINE_LIMIT = 65_536;
 // A structured report is read whole; a larger one is reported, never guessed at.
 const REPORT_LIMIT = 8_388_608;
+const NODE_FIELDS =
+  "tests suites pass fail cancelled skipped todo duration_ms".split(" ");
 const count = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 function jsonReport(text: string): OutputReport {
@@ -102,18 +104,22 @@ class SummaryLines {
   vitest: OutputReport | undefined;
   pytest: OutputReport | undefined;
   bun: OutputReport | undefined;
-  node: OutputReport | undefined;
   bunHint = false;
   zero = false;
   hint = false;
   private bunPassed: number | undefined;
   private bunFailed: number | undefined;
   private bunBailTotal: number | undefined;
-  private nodeTests: number | undefined;
-  private nodePassed: number | undefined;
+  private nodePrefix = "";
+  private nodeCounts: number[] = [];
   private pending: Buffer[] = [];
   private pendingBytes = 0;
   private overlong = false;
+  private readonly onNode: (report: OutputReport) => void;
+
+  constructor(onNode: (report: OutputReport) => void) {
+    this.onNode = onNode;
+  }
 
   push(chunk: Uint8Array): void {
     this.bytes += chunk.length;
@@ -173,37 +179,44 @@ class SummaryLines {
     this.pending = [];
     this.pendingBytes = 0;
     this.overlong = false;
+    const node = /^([ℹ#]) (\w+) (\d+(?:\.\d+)?)$/.exec(text);
+    if (node?.[2] === "tests") {
+      this.nodePrefix = node[1]!;
+      this.nodeCounts = [];
+    }
+    const n = Number(node?.[3]);
+    if (
+      !node ||
+      node[1] !== this.nodePrefix ||
+      node[2] !== NODE_FIELDS[this.nodeCounts.length] ||
+      !(node[2] === "duration_ms"
+        ? Number.isFinite(n)
+        : count(n) && !node[3]!.includes("."))
+    )
+      this.nodeCounts = [];
+    else {
+      this.nodeCounts.push(n);
+      if (this.nodeCounts.length === NODE_FIELDS.length) {
+        const [total, , passed, failed] = this.nodeCounts;
+        this.onNode(
+          passed! <= total! - failed!
+            ? {
+                kind: "recognized",
+                testCount: total!,
+                failed: failed!,
+                detail: "Node test summary",
+              }
+            : malformed,
+        );
+        this.nodeCounts = [];
+      }
+    }
     if (!text) return;
     const jest = /^\s*Tests:\s*(.*?)\s*(\d+)\s+total\s*$/.exec(text)?.slice(1);
     if (jest) this.jest = retainFailure(this.jest, summary("Jest", jest));
     const vitest = /^\s*Tests\s+(.*?)\((\d+)\)\s*$/.exec(text)?.slice(1);
     if (vitest)
       this.vitest = retainFailure(this.vitest, summary("Vitest", vitest));
-    const node = /^\s*[ℹ#]\s+(tests|pass|fail)\s+(\d+)\s*$/.exec(text);
-    if (node) {
-      this.hint = true;
-      const n = Number(node[2]);
-      if (node[1] === "tests") {
-        this.nodeTests = n;
-        this.nodePassed = undefined;
-        this.node = retainFailure(this.node, malformed);
-      } else if (node[1] === "pass") this.nodePassed = n;
-      else {
-        const total = this.nodeTests,
-          passed = this.nodePassed;
-        const next: OutputReport =
-          count(total) && count(passed) && count(n) && passed <= total - n
-            ? {
-                kind: "recognized",
-                testCount: total,
-                failed: n,
-                detail: "Node test summary",
-              }
-            : malformed;
-        this.node = retainFailure(this.node, next);
-        this.nodeTests = this.nodePassed = undefined;
-      }
-    }
     const bunOutcome = /^\s*(\d+) (pass|fail)\s*$/.exec(text);
     if (bunOutcome) {
       this.bunHint = true;
@@ -261,8 +274,12 @@ class SummaryLines {
 }
 
 function recognizer(format: ReportFormat): OutputRecognizer {
-  const stdout = new SummaryLines(),
-    stderr = new SummaryLines();
+  let node: OutputReport | undefined;
+  const onNode = (report: OutputReport) => {
+    node = report;
+  };
+  const stdout = new SummaryLines(onNode),
+    stderr = new SummaryLines(onNode);
   let structured: Buffer[] | undefined = format === "json" ? [] : undefined;
   let structuredBytes = 0,
     decided = format === "json",
@@ -319,8 +336,6 @@ function recognizer(format: ReportFormat): OutputRecognizer {
         stderr.vitest,
         stdout.bun,
         stderr.bun,
-        stdout.node,
-        stderr.node,
       ])
         if (report) reports.push(report);
       if (stdout.zero || stderr.zero)
@@ -337,6 +352,7 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       );
       if (failed) return failed;
       if (reports.length) return reports[0]!;
+      if (node) return node;
       if (stdout.hint || stderr.hint || stdout.bunHint || stderr.bunHint)
         return malformed;
       return unknown;
