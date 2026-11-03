@@ -394,7 +394,7 @@ if (process.platform === "win32") {
     ).toBe(false);
   });
 
-  test("cleanup diagnostic names the Restart Manager file holder", () => {
+  test("cleanup diagnostic reports the holder returned by the runner", () => {
     const root = diagnosticRoot();
     const path = join(root, "held.txt");
     writeFileSync(path, "held fixture");
