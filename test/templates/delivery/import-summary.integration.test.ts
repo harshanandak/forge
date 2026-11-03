@@ -11,6 +11,7 @@ test.each([
   { flags: [], instance: {}, checks: ["forge check run"] },
   { flags: ["--verbose"], instance: {}, checks: ["forge check run"] },
   { flags: ["--verbose=false"], instance: {}, checks: ["forge check run"] },
+  { flags: [], instance: {}, checks: ["forge check run"], noCheck: true },
   {
     flags: [],
     instance: { rename: { check: "quality" } },
@@ -51,17 +52,31 @@ test.each([
       }
     };
     try {
+      if ("noCheck" in scenario) {
+        writeFileSync(
+          join(root, "package.json"),
+          JSON.stringify({
+            name: "fixture",
+            scripts: { test: "node --version" },
+          }),
+        );
+        writeFileSync(join(root, "package-lock.json"), '{"lockfileVersion":3}');
+      }
       mkdirSync(join(root, ".forge"));
       writeFileSync(
         join(root, ".forge/config.yaml"),
         JSON.stringify({
           schemaVersion: "forge.config/1",
           blocks: {
-            check: {
-              source: { builtin: "forge/check" },
-              config: { commands: { test: "node --version" } },
-              ...instance,
-            },
+            ...("noCheck" in scenario
+              ? {}
+              : {
+                  check: {
+                    source: { builtin: "forge/check" },
+                    config: { commands: { test: "node --version" } },
+                    ...instance,
+                  },
+                }),
             ...("other" in scenario
               ? {
                   alternate: {
@@ -75,6 +90,10 @@ test.each([
         }),
       );
       const before = cli("config", "show").result as { revision: string };
+      if ("noCheck" in scenario) {
+        const operations = cli("catalog", "list").result as { op: string }[];
+        expect(operations.map((entry) => entry.op)).not.toContain("check.run");
+      }
       const imported = cli(
         "template",
         "import",
