@@ -7,10 +7,10 @@
       "type": "array",
       "maxItems": 256,
       "items": {
-        "$ref": "defs.json#/$defs/PatchStep",
-        "properties": {
-          "op": { "const": "set" }
-        }
+        "allOf": [
+          { "$ref": "defs.json#/$defs/PatchStep" },
+          { "properties": { "op": { "const": "set" } } }
+        ]
       },
       "description": "Values for this one call only (the invocation layer); set steps only."
     }
