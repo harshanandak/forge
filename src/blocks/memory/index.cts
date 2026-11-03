@@ -1702,7 +1702,9 @@ module.exports = {
           ? Number(left >= Math.max(1_000, slowestMoveMs))
           : Math.max(
               0,
-              Math.floor((left - overhead) / Math.max(1, slowestMoveMs)),
+              Math.floor(
+                (left - overhead) / Math.max(1, slowestMoveMs + slowestReadMs),
+              ),
             );
       };
       for (;;) {
@@ -1728,7 +1730,7 @@ module.exports = {
           const first = !readPage && moved.length === 0;
           const needed =
             (readPage ? slowestPageMs : slowestReadMs) +
-            group.length * slowestMoveMs +
+            group.length * (slowestMoveMs + slowestReadMs) +
             (first ? 1_000 : reserveMs);
           const collected = Date.now();
           const left = deadline === undefined ? Infinity : deadline - collected;

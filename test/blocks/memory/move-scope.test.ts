@@ -430,6 +430,56 @@ test("scope budgets each note's reads after sparse scanning reaches a page of ma
   expect(await move()).toMatchObject({ moved: [], complete: true });
 }, 30_000);
 
+test("scope budgets buffered marker re-checks and resumes all 100 notes without duplicates", async () => {
+  let now = 1_000;
+  const { move, call, device, project } = await setup(100, {
+    Date: class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  });
+  const get = project.get.bind(project);
+  project.get = (key) => {
+    if (key.startsWith("transfer/") && key !== "transfer/device/note-1")
+      now += 600;
+    return get(key);
+  };
+  const putMany = project.putMany.bind(project);
+  project.putMany = (entries) => {
+    now +=
+      entries.filter((entry) => entry.key.startsWith("note/")).length * 100;
+    return putMany(entries);
+  };
+  const deadline = now + 15_000;
+  const first = await move({ ...input, limit: 100 }, deadline);
+  expect(now).toBeLessThan(deadline);
+  expect(first.stopped).toBeUndefined();
+  expect(first.complete).toBe(false);
+  expect(first.moved.length).toBeGreaterThan(0);
+  expect(first.moved.length).toBeLessThan(100);
+  expect(first.next).toBe(
+    "forge memory move --scope alpha --to project --limit 100",
+  );
+  const resumed = await move({ ...input, limit: 100 });
+  expect(resumed.stopped).toBeUndefined();
+  const moved = [...first.moved, ...resumed.moved];
+  expect(moved.map((note) => note.id)).toEqual(
+    Array.from({ length: 100 }, (_, i) => `device/note-${i + 1}`),
+  );
+  expect(new Set(moved.map((note) => note.to)).size).toBe(100);
+  expect(project.list("note/")).toHaveLength(100);
+  for (const [i, { id, to }] of moved.entries()) {
+    expect(
+      device.get(`note/${String(i + 1).padStart(9, "0")}`)?.value,
+    ).toMatchObject({ deleted: true, movedTo: to });
+    expect(await call("memory.show", { id })).toMatchObject({
+      note: { id: to, text: { text: `new ${i + 1}` } },
+    });
+  }
+  expect(await move()).toMatchObject({ moved: [], complete: true });
+}, 30_000);
+
 test("scope input and batch output are admitted alongside unchanged single moves", async () => {
   expect(blockSchema("memory", "move.input.json")(input)).toEqual([]);
   expect(
