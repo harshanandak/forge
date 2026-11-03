@@ -825,7 +825,15 @@ export async function createAssembly(
           preview &&
           !validateConfigValue(preview.declaration, "input", request.input)
         )
-          refuse("INPUT_INVALID", "Invalid config input");
+          throw new ForgeFailure(
+            inputError(
+              request.op,
+              validateWithSchema(preview.inputSchema, request.input, true),
+              preview.docs,
+              preview.inputSchema,
+              preview.declaration.args,
+            ),
+          );
         derived.push(
           ...(await idPrefixObservation(root, stateRoot, options.providers)),
         );

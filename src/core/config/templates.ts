@@ -23,7 +23,12 @@ import {
   type WriteResult,
   writable,
 } from "./config.ts";
-import { fillSources, type BlockLookup, type Change } from "./document.ts";
+import {
+  checkDocument,
+  fillSources,
+  type BlockLookup,
+  type Change,
+} from "./document.ts";
 import { MAX_TEMPLATE_FILE_BYTES, readProjectFile } from "./files.ts";
 import { atomicSource, METADATA_KEYS } from "./layers.ts";
 import {
@@ -187,6 +192,17 @@ export function expandTemplate(value: unknown, lookup: BlockLookup): unknown {
 }
 
 export function createTemplates(env: TemplateEnvironment): TemplateApi {
+  const validated = (document: JsonObject): JsonObject => {
+    const metadata: JsonObject = {
+      schemaVersion: "forge.config/1",
+      blocks: {},
+    };
+    for (const key of ["templates", "owners"])
+      if (Object.hasOwn(document, key)) metadata[key] = document[key];
+    checkDocument(metadata);
+    return document;
+  };
+
   const load = (reference: string): TemplateDocument => {
     if (TEMPLATE_FILE.test(reference)) {
       const path = reference.replace(/^\.\//, "");
@@ -272,7 +288,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
     let detail: T | undefined;
     let changes: Change[] = [];
     const committed = commit(env, op, expectRevision, (current) => {
-      const document = writable(current);
+      const document = validated(writable(current));
       detail = change(document);
       if (
         isObject(document.owners) &&
@@ -323,7 +339,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
 
   return {
     list() {
-      const document = readProject(env).document;
+      const document = validated(readProject(env).document ?? {});
       const installed = env.templates.list().map((t) => ({
         id: t.id,
         version: t.version,
@@ -342,7 +358,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
     },
 
     show(input) {
-      const document = readProject(env).document;
+      const document = validated(writable(readProject(env)));
       const template =
         TEMPLATE_FILE.test(input.template) || input.template.includes("@")
           ? load(input.template)
