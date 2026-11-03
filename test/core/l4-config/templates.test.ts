@@ -260,11 +260,10 @@ describe("template lifecycle", () => {
         template: "forge/starter",
         expectRevision: p.config.show().revision,
       });
-      Object.assign(p.env.templates, {
-        get: () => {
-          throw new Error("installed catalog unreadable");
-        },
-      });
+      const unreadable = () => {
+        throw new Error("installed catalog unreadable");
+      };
+      Object.assign(p.env.templates, { get: unreadable, list: unreadable });
       const removed = p.templates.remove({
         template: name,
         expectRevision: imported.revision,
