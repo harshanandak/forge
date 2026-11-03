@@ -9,7 +9,9 @@ const authoredDocs = {
   title: "Echo the author's message",
   summary: "Return the exact message supplied by the block's caller.",
   description: "This operation keeps the block author's documentation intact.",
-  examples: [{ input: "hello-authored", output: "hello-authored" }],
+  examples: [
+    { input: { message: "hello-authored" }, output: "hello-authored" },
+  ],
 };
 
 function fixture(blocks: readonly { id: string; noun: string }[]) {
@@ -39,11 +41,16 @@ function fixture(blocks: readonly { id: string; noun: string }[]) {
               },
             },
           }),
-          "index.cjs": `module.exports = { '${noun}.run': ({input}) => input };`,
+          "index.cjs": `module.exports = { '${noun}.run': ({input}) => input.message };`,
           "docs.json": JSON.stringify({
             operations: { [`${noun}.run`]: authoredDocs },
           }),
-          "input.json": '{"type":"string"}',
+          "input.json": JSON.stringify({
+            type: "object",
+            properties: { message: { type: "string" } },
+            required: ["message"],
+            additionalProperties: false,
+          }),
           "output.json": '{"type":"string"}',
         }),
       ),
@@ -133,7 +140,14 @@ test("long block IDs get valid, distinct default instance keys stable across run
         f.catalog.list().find((entry) => entry.op === `${noun}.run`),
       ).toMatchObject({ blockId: id, admitted: true });
       expect(
-        (await f.cli([noun, "run", "--input", JSON.stringify(noun)])).envelope,
+        (
+          await f.cli([
+            noun,
+            "run",
+            "--input",
+            JSON.stringify({ message: noun }),
+          ])
+        ).envelope,
       ).toMatchObject({ ok: true, result: noun });
       const key = f.instances.get(`${noun}.run`);
       expect(key).toBeDefined();
