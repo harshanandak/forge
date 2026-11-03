@@ -86,6 +86,8 @@ if (["wal", "synchronous", "bigint"].includes(mode)) {
     }
     const db = await open(mode === "memory" ? ":memory:" : "live.db");
     if (mode === "restore") {
+      db.exec("CREATE TABLE entries(value TEXT)");
+      db.run("INSERT INTO entries VALUES ('live')");
       const source = await open(":memory:");
       source.exec("CREATE TABLE entries(value TEXT)");
       source.run("INSERT INTO entries VALUES ('snapshot')");
