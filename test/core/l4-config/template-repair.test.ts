@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { makeProject, starter } from "./lib/project.ts";
 
-test("removing a template that supplied required commands gets template-specific advice", () => {
+test("removing a template that supplied required commands keeps main's advice", () => {
   const project = makeProject({
     configSchema: (name) =>
       name === "check"
@@ -52,11 +52,9 @@ test("removing a template that supplied required commands gets template-specific
     if (!(failure instanceof ForgeFailure))
       throw new Error("expected a missing-value refusal");
     expect(failure.error.pointer).toBe("/blocks/check/config/commands");
-    expect(failure.error.repair).toContain("forge config set --input ");
-    expect(failure.error.repair).toContain(
-      "retry template remove at the new revision",
+    expect(failure.error.repair).toBe(
+      "set /blocks/check/config/commands in the same edit",
     );
-    expect(failure.error.repair).not.toContain("in the same edit");
     expect(project.read()).toBe(original);
   } finally {
     project.cleanup();

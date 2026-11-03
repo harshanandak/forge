@@ -279,7 +279,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
         Object.keys(document.owners).length === 0
       )
         delete document.owners;
-      const planned = planBytes(env, current, document, (pointer) => {
+      const repair = (pointer: string): string => {
         const example = renderExample(
           "config.set",
           {
@@ -301,7 +301,13 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           {},
         );
         return `Example (replace the value with your project's setting):\n    ${example}\nThen retry template ${op.slice("template.".length)} at the new revision returned by config set.`;
-      });
+      };
+      const planned = planBytes(
+        env,
+        current,
+        document,
+        op === "template.import" ? repair : undefined,
+      );
       changes = planned.changes;
       return { bytes: planned.bytes };
     });
