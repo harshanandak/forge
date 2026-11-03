@@ -11,7 +11,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import type { Stats } from "node:fs";
+import type { BigIntStats } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import {
   dirname,
@@ -116,9 +116,9 @@ function boundedLimit(value: number, ceiling: number): number {
     );
   return value;
 }
-function stat(path: string): Stats | null {
+function stat(path: string): BigIntStats | null {
   try {
-    return lstatSync(path);
+    return lstatSync(path, { bigint: true });
   } catch (error) {
     if (errorCode(error) === "ENOENT") return null;
     throw error;
@@ -174,19 +174,19 @@ function segmentsOf(path: string): readonly string[] {
     );
   return segments;
 }
-function regular(info: Stats): void {
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
+function regular(info: BigIntStats): void {
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n)
     failure(
       "INPUT_INVALID",
       "Clone files must be regular files without symlinks or hard links",
     );
 }
-function sameFile(left: Stats, right: Stats): boolean {
+function sameFile(left: BigIntStats, right: BigIntStats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 function sameCapturedFile(
-  before: Stats | null,
-  claimed: Stats | null,
+  before: BigIntStats | null,
+  claimed: BigIntStats | null,
   beforeHash: string | null,
   claimedHash: string | null,
   claimedText: string | undefined,
@@ -246,7 +246,7 @@ function createCloneFilesAccess(
     readonly area: CloneFileArea;
     readonly path: string;
     readonly fd: number;
-    readonly identity: Stats;
+    readonly identity: BigIntStats;
     readonly nonce: Buffer;
     written: number;
     released: boolean;
@@ -316,11 +316,11 @@ function createCloneFilesAccess(
       throw error;
     }
     try {
-      const opened = fstatSync(fd);
+      const opened = fstatSync(fd, { bigint: true });
       regular(opened);
       if (!sameFile(before, opened))
         failure("INPUT_CONFLICT", "Clone file changed while opening");
-      if (opened.size > max)
+      if (opened.size > BigInt(max))
         failure("LIMIT_EXCEEDED", "Clone file exceeds the declared byte limit");
       const buffer = Buffer.alloc(max + 1);
       let count = 0;
@@ -338,7 +338,7 @@ function createCloneFilesAccess(
       }
       if (count > max)
         failure("LIMIT_EXCEEDED", "Clone file exceeds the declared byte limit");
-      const after = fstatSync(fd);
+      const after = fstatSync(fd, { bigint: true });
       regular(after);
       const current = stat(targetFor(area, path));
       if (
@@ -409,7 +409,7 @@ function createCloneFilesAccess(
       throw error;
     }
     let promoted = false;
-    const identity = fstatSync(fd);
+    const identity = fstatSync(fd, { bigint: true });
     let quarantine: string | undefined;
     let claimed: string | undefined;
     function restoreClaim(): void {
@@ -459,7 +459,7 @@ function createCloneFilesAccess(
       if (
         lockNow === null ||
         !sameFile(identity, lockNow) ||
-        lockNow.nlink !== 1
+        lockNow.nlink !== 1n
       )
         failure("INPUT_CONFLICT", "Clone file lock changed before commit");
       if (condition.expected !== undefined) {
@@ -528,7 +528,7 @@ function createCloneFilesAccess(
       } else if (
         current !== text ||
         (process.platform !== "win32" &&
-          ((stat(target)?.mode ?? 0) & 0o111) !== (executable ? 0o100 : 0))
+          ((stat(target)?.mode ?? 0n) & 0o111n) !== (executable ? 0o100n : 0n))
       ) {
         closeSync(fd);
         fd = -1;
@@ -568,15 +568,15 @@ function createCloneFilesAccess(
         candidate === null ||
         !candidate.isFile() ||
         candidate.isSymbolicLink() ||
-        candidate.nlink !== 1 ||
+        candidate.nlink !== 1n ||
         !sameFile(candidate, lock.identity)
       )
         return;
-      const opened = fstatSync(lock.fd);
+      const opened = fstatSync(lock.fd, { bigint: true });
       if (
         !sameFile(opened, lock.identity) ||
-        opened.nlink !== 1 ||
-        opened.size !== lock.written
+        opened.nlink !== 1n ||
+        opened.size !== BigInt(lock.written)
       )
         return;
       const actual = Buffer.alloc(lock.written + 1);
@@ -598,7 +598,11 @@ function createCloneFilesAccess(
       )
         return;
       const final = stat(lock.target);
-      if (final !== null && sameFile(final, lock.identity) && final.nlink === 1)
+      if (
+        final !== null &&
+        sameFile(final, lock.identity) &&
+        final.nlink === 1n
+      )
         removeDurable(lock.target);
     } finally {
       closeSync(lock.fd);
@@ -685,7 +689,7 @@ function createCloneFilesAccess(
         const lock: OwnedLock = {
           ...plan,
           fd,
-          identity: fstatSync(fd),
+          identity: fstatSync(fd, { bigint: true }),
           nonce: Buffer.from(`${randomUUID()}\n`),
           written: 0,
           released: false,
@@ -769,13 +773,13 @@ function createCloneFilesAccess(
       checkActive();
       if (info === null) return undefined;
       const regularFile =
-        info.isFile() && !info.isSymbolicLink() && info.nlink === 1;
+        info.isFile() && !info.isSymbolicLink() && info.nlink === 1n;
       return {
         regular: regularFile,
         executable:
           regularFile &&
-          (process.platform === "win32" || (info.mode & 0o111) !== 0),
-        size: info.size,
+          (process.platform === "win32" || (info.mode & 0o111n) !== 0n),
+        size: Number(info.size),
       };
     },
     list(
