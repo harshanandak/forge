@@ -239,6 +239,35 @@ function committed<T>(attempt: () => T): T {
   throw last;
 }
 
+function moveCopy(
+  source: Source,
+  existing: StateRecord,
+  value: NoteValue,
+  id: string,
+): NoteValue {
+  const stamps = shown(source.state, existing, value);
+  return {
+    text: value.text,
+    ...dates(source.state, existing, value),
+    changedAt: contentTime(source.state, existing, value),
+    textAt: stamps.at(-1)!.at,
+    textRevision: value.textRevision ?? existing.revision,
+    ...(value.approval ? { approval: value.approval } : {}),
+    ...(value.versionApproval
+      ? { versionApproval: value.versionApproval }
+      : {}),
+    ...(value.scope === undefined ? {} : { scope: value.scope }),
+    tags: value.tags,
+    links: qualifiedLinks(value.links),
+    previous: value.previous.map((version, i) => ({
+      ...version,
+      at: stamps[i]!.at,
+    })),
+    from: qualified(id),
+    ...(value.proposedForget === true ? { proposedForget: true as const } : {}),
+  };
+}
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (typeof value === "object" && value !== null)
@@ -1685,7 +1714,9 @@ module.exports = {
       const moved: { id: string; to: string }[] = [];
       let stopped: { id: string; code: string } | undefined;
       let slowestMoveMs = 0;
-      for (const note of scan()) {
+      const notes = scan();
+      let next = notes.next();
+      while (!next.done) {
         const started = Date.now();
         if (
           moved.length === limit ||
@@ -1696,50 +1727,174 @@ module.exports = {
                 slowestMoveMs + slowestPageMs + reserveMs))
         )
           break;
-        try {
-          const result = await move({
-            input: {
-              id: note.id,
-              to: "project",
-              expectRevision: note.record.revision,
-            },
-            services,
-          });
-          const to = (result as { to?: string }).to;
-          const ref = to === undefined ? undefined : parseRef(to);
-          const destination =
-            ref?.level === "project" &&
-            target.prefix === `project/${ref.project}`
-              ? target.state.get(noteKey(ref.number))
-              : undefined;
-          const tombstone = source.state.get(note.record.key)?.value as
-            NoteValue | undefined;
-          const value = destination?.value as NoteValue | undefined;
+        const size =
+          moved.length === 0
+            ? 1
+            : Math.min(
+                25,
+                limit - moved.length,
+                deadline === undefined
+                  ? 25
+                  : Math.max(
+                      1,
+                      Math.floor(
+                        (deadline - started - slowestPageMs - reserveMs) /
+                          Math.max(1, slowestMoveMs),
+                      ),
+                    ),
+              );
+        const first = next.value;
+        const group: ReturnType<typeof notePage> = [];
+        let irregular = false;
+        while (!next.done && group.length < size) {
+          const note = next.value;
+          const current = source.state.get(note.record.key);
           if (
-            !to ||
-            !value ||
-            value.deleted === true ||
-            value.scope !== input.scope ||
-            value.text !== note.value.text ||
-            canonical(value.tags) !== canonical(note.value.tags) ||
-            canonical(value.links) !==
-              canonical(qualifiedLinks(note.value.links)) ||
-            tombstone?.deleted !== true ||
-            tombstone.movedTo !== to
+            !current ||
+            current.revision !== note.record.revision ||
+            (current.value as NoteValue).deleted === true ||
+            target.state.get(`${TRANSFER_PREFIX}${note.id}`)
           ) {
-            stopped = { id: note.id, code: "VERIFY_FAILED" };
+            irregular = true;
             break;
           }
-          moved.push({ id: note.id, to });
-          slowestMoveMs = Math.max(slowestMoveMs, Date.now() - started);
+          group.push(note);
+          if (group.length < size) next = notes.next();
+        }
+        if (group.length === 0) {
+          group.push(first);
+          irregular = false;
+        }
+        let failedNote = first;
+        try {
+          const placed =
+            group.length === 1
+              ? undefined
+              : committed(() => {
+                  // A competing transfer must be reconciled through the single-note path.
+                  if (
+                    group.some((note) =>
+                      target.state.get(`${TRANSFER_PREFIX}${note.id}`),
+                    )
+                  )
+                    return undefined;
+                  const counter = readCounter(target.state, NOTE_COUNTER);
+                  const entries: BatchEntry[] = [
+                    {
+                      key: NOTE_COUNTER,
+                      value: { last: counter.last + group.length },
+                      expectRevision: counter.revision,
+                    },
+                  ];
+                  const destinations = group.map((note, i) => {
+                    const at = counter.last + i + 1;
+                    entries.push(
+                      {
+                        key: noteKey(at),
+                        value: moveCopy(
+                          source,
+                          note.record,
+                          note.value,
+                          note.id,
+                        ),
+                        expectRevision: 0,
+                      },
+                      {
+                        key: `${TRANSFER_PREFIX}${note.id}`,
+                        value: {
+                          number: at,
+                          revision: 1,
+                          sourceRevision: note.record.revision,
+                        } satisfies Transfer,
+                        expectRevision: 0,
+                      },
+                    );
+                    return idIn(target, at);
+                  });
+                  target.state.putMany(entries);
+                  return destinations;
+                });
+          let retired = group.length;
+          if (placed) {
+            const tombstones = group.map((note, i) => ({
+              key: note.record.key,
+              value: { ...TOMBSTONE, movedTo: placed[i]! },
+              expectRevision: note.record.revision,
+            }));
+            try {
+              source.state.putMany(tombstones);
+            } catch (error) {
+              if (!conflict(error)) throw error;
+              // The failed transaction retired nothing; preserve first-conflict ordering.
+              retired = 0;
+              for (const [i, tombstone] of tombstones.entries()) {
+                try {
+                  source.state.put(tombstone.key, tombstone.value, {
+                    expectRevision: tombstone.expectRevision,
+                  });
+                  retired += 1;
+                } catch (error) {
+                  if (!conflict(error)) throw error;
+                  stopped = { id: group[i]!.id, code: "REVISION_CONFLICT" };
+                  break;
+                }
+              }
+            }
+          }
+          for (const [i, note] of group.entries()) {
+            if (i === retired) break;
+            failedNote = note;
+            const to =
+              placed?.[i] ??
+              (
+                (await move({
+                  input: {
+                    id: note.id,
+                    to: "project",
+                    expectRevision: note.record.revision,
+                  },
+                  services,
+                })) as { to?: string }
+              ).to;
+            const ref = to === undefined ? undefined : parseRef(to);
+            const destination =
+              ref?.level === "project" &&
+              target.prefix === `project/${ref.project}`
+                ? target.state.get(noteKey(ref.number))
+                : undefined;
+            const tombstone = source.state.get(note.record.key)?.value as
+              NoteValue | undefined;
+            const value = destination?.value as NoteValue | undefined;
+            if (
+              !to ||
+              !value ||
+              value.deleted === true ||
+              value.scope !== input.scope ||
+              value.text !== note.value.text ||
+              canonical(value.tags) !== canonical(note.value.tags) ||
+              canonical(value.links) !==
+                canonical(qualifiedLinks(note.value.links)) ||
+              tombstone?.deleted !== true ||
+              tombstone.movedTo !== to
+            ) {
+              stopped = { id: note.id, code: "VERIFY_FAILED" };
+              break;
+            }
+            moved.push({ id: note.id, to });
+          }
+          slowestMoveMs = Math.max(
+            slowestMoveMs,
+            (Date.now() - started) / group.length,
+          );
         } catch (error) {
           const code = (error as { error?: { code?: string } } | null)?.error
             ?.code;
           if (code !== "REVISION_CONFLICT" && code !== "TRANSFER_CONFLICT")
             throw error;
-          stopped = { id: note.id, code };
-          break;
+          stopped = { id: failedNote.id, code };
         }
+        if (stopped) break;
+        if (!irregular && !next.done) next = notes.next();
       }
       if (!complete && moved.length === 0)
         fail(
@@ -1793,29 +1948,7 @@ module.exports = {
     // the same transaction, so a retry after a failure between the two stores finds the copy it
     // already made instead of making another.
     const marker = `${TRANSFER_PREFIX}${qualified(input.id)}`;
-    const stamps = shown(source.state, existing, value);
-    const copy: NoteValue = {
-      text: value.text,
-      ...dates(source.state, existing, value),
-      changedAt: contentTime(source.state, existing, value),
-      textAt: stamps.at(-1)!.at,
-      textRevision: value.textRevision ?? existing.revision,
-      ...(value.approval ? { approval: value.approval } : {}),
-      ...(value.versionApproval
-        ? { versionApproval: value.versionApproval }
-        : {}),
-      ...(value.scope === undefined ? {} : { scope: value.scope }),
-      tags: value.tags,
-      links: qualifiedLinks(value.links),
-      previous: value.previous.map((version, i) => ({
-        ...version,
-        at: stamps[i]!.at,
-      })),
-      from: qualified(input.id),
-      ...(value.proposedForget === true
-        ? { proposedForget: true as const }
-        : {}),
-    };
+    const copy = moveCopy(source, existing, value, input.id);
     // The transfer record names the copy and the revisions it was made at: the copy's own revision
     // and the source revision it was taken from. The copy and its record commit together, so a
     // destination at another revision was changed after the transfer, never left half-made.
