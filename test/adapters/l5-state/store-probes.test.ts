@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import {
   copyFileSync,
   linkSync,
@@ -16,6 +16,8 @@ import {
   StoreRestoringError,
 } from "../../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
+
+setDefaultTimeout(30000);
 
 test.each(["get", "putMany"])(
   "%s probes only at transaction boundaries",
@@ -218,69 +220,74 @@ test.each(["lock", "statement"])(
   30000,
 );
 
-test("VNODE remains typed when the failed lock's identity recheck also fails", async () => {
-  const work = realpathSync(
-    mkdtempSync(join(tmpdir(), "forge-store-vnode-recheck-")),
-  );
-  const path = join(work, "state.db");
-  const replacement = join(work, "replacement.db");
-  try {
-    const created = await createSqliteStore(work).open({
-      path,
-      readOnly: false,
-    });
-    if (!created.ok) throw new Error(created.unavailable.reason);
+// Windows denies replacing the open SQLite file, so its pathname cannot change here.
+test.skipIf(process.platform === "win32")(
+  "VNODE remains typed when the failed lock's identity recheck also fails",
+  async () => {
+    const work = realpathSync(
+      mkdtempSync(join(tmpdir(), "forge-store-vnode-recheck-")),
+    );
+    const path = join(work, "state.db");
+    const replacement = join(work, "replacement.db");
     try {
-      created.handle.value.exec("CREATE TABLE marker(value INTEGER)");
-      created.handle.value.run("INSERT INTO marker VALUES (?)", [42]);
-    } finally {
-      await created.handle.close();
-    }
-    copyFileSync(path, replacement);
-    const native = Object.assign(new Error("disk I/O error"), {
-      code: "ERR_SQLITE_ERROR",
-      errcode: 6922,
-      errstr: "disk I/O error",
-    });
-    let injected = false;
-    const opened = await createSqliteStore(work, {
-      step(name) {
-        if (name === "write-lock-attempt") {
-          // On e0ab72b the plain identity error from assertOpen masks VNODE,
-          // so the restoring code and original SQLite cause below are lost.
-          renameSync(replacement, path);
-          injected = true;
-          throw native;
-        }
-      },
-    }).open({ path, readOnly: false });
-    if (!opened.ok) throw new Error(opened.unavailable.reason);
-    try {
-      let failure: unknown;
+      const created = await createSqliteStore(work).open({
+        path,
+        readOnly: false,
+      });
+      if (!created.ok) throw new Error(created.unavailable.reason);
       try {
-        opened.handle.value.run("INSERT INTO marker VALUES (?)", [99]);
-      } catch (error) {
-        failure = error;
+        created.handle.value.exec("CREATE TABLE marker(value INTEGER)");
+        created.handle.value.run("INSERT INTO marker VALUES (?)", [42]);
+      } finally {
+        await created.handle.close();
       }
-      expect(injected).toBe(true);
-      expect(failure).toBeInstanceOf(StoreRestoringError);
-      expect(failure).toMatchObject({ code: "restoring", cause: native });
+      copyFileSync(path, replacement);
+      const native = Object.assign(new Error("disk I/O error"), {
+        code: "ERR_SQLITE_ERROR",
+        errcode: 6922,
+        errstr: "disk I/O error",
+      });
+      let injected = false;
+      const opened = await createSqliteStore(work, {
+        step(name) {
+          if (name === "write-lock-attempt") {
+            // On e0ab72b the plain identity error from assertOpen masks VNODE,
+            // so the restoring code and original SQLite cause below are lost.
+            renameSync(replacement, path);
+            injected = true;
+            throw native;
+          }
+        },
+      }).open({ path, readOnly: false });
+      if (!opened.ok) throw new Error(opened.unavailable.reason);
+      try {
+        let failure: unknown;
+        try {
+          opened.handle.value.run("INSERT INTO marker VALUES (?)", [99]);
+        } catch (error) {
+          failure = error;
+        }
+        expect(injected).toBe(true);
+        expect(failure).toBeInstanceOf(StoreRestoringError);
+        expect(failure).toMatchObject({ code: "restoring", cause: native });
+      } finally {
+        await opened.handle.close();
+      }
+      const reopened = await createSqliteStore(work).open({
+        path,
+        readOnly: true,
+      });
+      if (!reopened.ok) throw new Error(reopened.unavailable.reason);
+      try {
+        expect(reopened.handle.value.all("SELECT value FROM marker")).toEqual([
+          { value: 42n },
+        ]);
+      } finally {
+        await reopened.handle.close();
+      }
     } finally {
-      await opened.handle.close();
+      rmSync(work, { recursive: true, force: true });
     }
-    const reopened = await createSqliteStore(work).open({
-      path,
-      readOnly: true,
-    });
-    if (!reopened.ok) throw new Error(reopened.unavailable.reason);
-    try {
-      expect(reopened.handle.value.all("SELECT value FROM marker")).toEqual([
-        { value: 42n },
-      ]);
-    } finally {
-      await reopened.handle.close();
-    }
-  } finally {
-    rmSync(work, { recursive: true, force: true });
-  }
-}, 30000);
+  },
+  30000,
+);
