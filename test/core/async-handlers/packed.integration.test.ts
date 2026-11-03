@@ -13,6 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve, delimiter, relative, isAbsolute, sep } from "node:path";
 import {
   packedCoverage,
@@ -47,23 +48,23 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
     );
     phaseStarted = performance.now();
   }
-  const work = mkdtempSync(join(root, ".async-packed-"));
-  const node = Bun.which("node");
-  if (!node) throw Error("Node required");
-  const env = { ...process.env };
-  const path =
-    Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-  env[path] = (env[path] ?? "")
-    .split(delimiter)
-    .filter(
-      (dir) =>
-        !["bun", "bun.exe", "bunx", "bunx.exe"].some((name) =>
-          existsSync(join(dir, name)),
-        ),
-    )
-    .join(delimiter);
-  delete env.BUN_INSTALL;
+  const work = mkdtempSync(join(tmpdir(), "forge-async-packed-"));
   try {
+    const node = Bun.which("node");
+    if (!node) throw Error("Node required");
+    const env = { ...process.env };
+    const path =
+      Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+    env[path] = (env[path] ?? "")
+      .split(delimiter)
+      .filter(
+        (dir) =>
+          !["bun", "bun.exe", "bunx", "bunx.exe"].some((name) =>
+            existsSync(join(dir, name)),
+          ),
+      )
+      .join(delimiter);
+    delete env.BUN_INSTALL;
     const fromRoot = relative(root, work);
     expect(
       fromRoot === ".." ||
