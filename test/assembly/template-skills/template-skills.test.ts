@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -703,6 +704,34 @@ test("R1 a former companion replaced by a user directory never grants ownership 
       skipped: [".agents/skills/review/data/info.txt"],
     });
     expect(readFileSync(join(target, "info.txt"), "utf8")).toBe("user file");
+  });
+}, 30_000);
+
+test("a linked template skill folder is refused without deleting its rendered files", async () => {
+  await withTemplate(async (root, call) => {
+    writeFileSync(join(root, "tpl/skills/review/data.txt"), "keep companion");
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const companion = join(root, ".agents/skills/review/data.txt");
+    const originalSkill = readFileSync(join(root, RENDERED));
+    const originalCompanion = readFileSync(companion);
+    const entry = "tpl/skills/review";
+    const moved = join(root, "tpl/review-source");
+    renameSync(join(root, entry), moved);
+    symlinkSync(
+      moved,
+      join(root, entry),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    const failed = await call("skills.sync");
+    expect(failed).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_INVALID" },
+    });
+    expect(JSON.stringify(failed)).toContain(entry);
+    expect(JSON.stringify(failed)).toContain("link");
+    expect(readFileSync(join(root, RENDERED))).toEqual(originalSkill);
+    expect(readFileSync(companion)).toEqual(originalCompanion);
   });
 }, 30_000);
 
