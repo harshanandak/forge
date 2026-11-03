@@ -162,6 +162,116 @@ function withGreeting(greeting: string): Record<string, unknown> {
   };
 }
 
+for (const scenario of [
+  {
+    name: "schema value",
+    path: "hello.greeting",
+    invalid: 5,
+    repaired: "hi",
+    problem: "blocks.hello.config.greeting",
+  },
+  {
+    name: "unavailable source",
+    path: "/blocks/hello/source/path",
+    invalid: "./missing-block",
+    repaired: "./hello",
+    problem: "blocks.hello.source",
+  },
+] as const) {
+  for (const repairing of [false, true]) {
+    test(`config show ${repairing ? "repairs" : "introduces"} a ${scenario.name} problem for one invocation only`, async () => {
+      const root = project(files);
+      const file = join(root, ".forge/config.yaml");
+      const broken = repairing;
+      writeFileSync(
+        file,
+        JSON.stringify({
+          schemaVersion: "forge.config/1",
+          blocks: {
+            hello: {
+              source: {
+                path:
+                  broken && scenario.name === "unavailable source"
+                    ? "./missing-block"
+                    : "./hello",
+              },
+              config: {
+                greeting: broken && scenario.name === "schema value" ? 5 : "hi",
+                style: { loud: true },
+              },
+            },
+          },
+        }),
+      );
+      const before = readFileSync(file, "utf8");
+      const assembly = await createAssembly({
+        root,
+        deviceRoot: join(root, "device"),
+      });
+      const { caller, context } = localCall(assembly);
+      const show = async (input: unknown = {}) =>
+        (await assembly.catalog.invoke({
+          schemaVersion: "forge.invocation/1",
+          requestId: "show",
+          op: "config.show",
+          input,
+          caller,
+          context: context ?? {},
+        })) as {
+          ok: boolean;
+          result: {
+            valid: boolean;
+            problems: string[];
+            effective: unknown;
+            revision: string;
+          };
+        };
+      try {
+        const baseline = await show();
+        expect(baseline.ok).toBe(!broken);
+        expect(baseline.result.valid).toBe(!broken);
+        expect(baseline.result.problems).toHaveLength(broken ? 1 : 0);
+        if (broken)
+          expect(baseline.result.problems[0]).toContain(scenario.problem);
+
+        const patched = await show({
+          invocation: [
+            {
+              op: "set",
+              path: scenario.path,
+              value: repairing ? scenario.repaired : scenario.invalid,
+            },
+          ],
+        });
+        expect(patched.ok).toBe(repairing);
+        expect(patched.result.valid).toBe(repairing);
+        expect(patched.result.problems).toHaveLength(repairing ? 0 : 1);
+        if (repairing) {
+          expect(patched.result.effective).toMatchObject({
+            blocks: {
+              hello: {
+                source: { path: "./hello" },
+                config: { greeting: "hi", style: { loud: true } },
+              },
+            },
+          });
+        } else {
+          expect(patched.result.problems[0]).toContain(scenario.problem);
+          expect(patched.result.effective).toMatchObject({
+            blocks: { hello: { enabled: false } },
+          });
+        }
+        expect(patched.result.revision).toBe(baseline.result.revision);
+        expect(readFileSync(file, "utf8")).toBe(before);
+        expect((await show()).result).toEqual(baseline.result);
+      } finally {
+        await assembly.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
 test("derived agent adapters target the configured instance name", () => {
   expect(agentAdapterObservation("router")).toMatchObject([
     {
