@@ -105,6 +105,8 @@ class SummaryLines {
   bunHint = false;
   zero = false;
   hint = false;
+  nodeFailure = false;
+  private nodeLines: string[] = [];
   private bunPassed: number | undefined;
   private bunFailed: number | undefined;
   private bunBailTotal: number | undefined;
@@ -170,6 +172,18 @@ class SummaryLines {
     this.pending = [];
     this.pendingBytes = 0;
     this.overlong = false;
+    this.nodeLines.push(/^(?:ℹ |# )\w+ \d+(?:\.\d+)?$/.test(text) ? text : "");
+    if (this.nodeLines.length > 8) this.nodeLines.shift();
+    const node =
+      /^(ℹ |# )tests (\d+)\n\1suites \d+\n\1pass \d+\n\1fail (\d+)\n\1cancelled (\d+)\n\1skipped \d+\n\1todo \d+\n\1duration_ms \d+(?:\.\d+)?$/.exec(
+        this.nodeLines.join("\n"),
+      );
+    // Complete Node summaries can only add failure evidence, never counts or a pass.
+    if (
+      node &&
+      (!Number(node[2]) || Number(node[3]) > 0 || Number(node[4]) > 0)
+    )
+      this.nodeFailure = true;
     if (!text) return;
     const jest = /^\s*Tests:\s*(.*?)\s*(\d+)\s+total\s*$/.exec(text)?.slice(1);
     if (jest) this.jest = retainFailure(this.jest, summary("Jest", jest));
@@ -306,7 +320,21 @@ function recognizer(format: ReportFormat): OutputRecognizer {
         (report) => report.kind === "recognized" && report.failed! > 0,
       );
       if (failed) return failed;
-      if (reports.length) return reports[0]!;
+      if (reports.length) {
+        const report = reports[0]!;
+        return (stdout.nodeFailure || stderr.nodeFailure) &&
+          report.kind === "recognized" &&
+          report.testCount !== 0
+          ? { ...report, failed: 1 }
+          : report;
+      }
+      if (stdout.nodeFailure || stderr.nodeFailure)
+        return {
+          kind: "recognized",
+          testCount: null,
+          failed: 1,
+          detail: "Node test summary reports zero, failed or cancelled tests",
+        };
       if (stdout.hint || stderr.hint || stdout.bunHint || stderr.bunHint)
         return malformed;
       return unknown;
