@@ -59,7 +59,12 @@ export interface TemplateSummary {
   readonly imported: string | null;
 }
 
-export interface ImportResult extends WriteResult {
+interface TemplateWriteResult extends Omit<WriteResult, "changes"> {
+  readonly changes?: WriteResult["changes"];
+}
+
+export interface ImportResult extends TemplateWriteResult {
+  readonly next: readonly string[];
   readonly template: string;
   readonly added: readonly string[];
   /** Keys the project already set to the same value; left as they were and not recorded. */
@@ -71,7 +76,8 @@ export interface KeptKey {
   readonly reason: string;
 }
 
-export interface RemoveResult extends WriteResult {
+export interface RemoveResult extends TemplateWriteResult {
+  readonly next: readonly string[];
   readonly template: string;
   readonly removed: readonly string[];
   /** Keys the template wrote that stay: edited since import, or still needed by their instance. */
@@ -91,10 +97,12 @@ export interface TemplateApi {
   /** Without expectRevision the edit expects no config file yet: a first import. */
   importTemplate(input: {
     readonly template: string;
+    readonly verbose?: boolean;
     readonly expectRevision?: string;
   }): ImportResult;
   remove(input: {
     readonly template: string;
+    readonly verbose?: boolean;
     readonly expectRevision?: string;
   }): RemoveResult;
 }
@@ -258,9 +266,10 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
 
   const editWith = <T>(
     op: string,
-    expectRevision: string | undefined,
+    input: Parameters<TemplateApi["importTemplate"]>[0],
     change: (document: JsonObject) => T,
-  ): WriteResult & { readonly detail: T } => {
+  ): TemplateWriteResult & { readonly detail: T } => {
+    const { expectRevision } = input;
     let detail: T | undefined;
     let changes: Change[] = [];
     const committed = commit(env, op, expectRevision, (current) => {
@@ -279,7 +288,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
       file: CONFIG_FILE,
       previousRevision: committed.from,
       revision: committed.to,
-      changes: committed.changed ? changes : [],
+      ...(input.verbose ? { changes: committed.changed ? changes : [] } : {}),
       fileRemoved: committed.fileRemoved,
       detail: detail as T,
     };
@@ -330,9 +339,13 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
     importTemplate(input) {
       const template = load(input.template);
       const ref = refOf(template);
+      const next = ["forge skills sync"];
+      const check = template.config.blocks?.check?.source;
+      if (check && "builtin" in check && check.builtin === "forge/check")
+        next.push("forge check run");
       const { detail, ...written } = editWith(
         "template.import",
-        input.expectRevision,
+        input,
         (document) => {
           const already = importedRef(document, template.id);
           if (already !== undefined) {
@@ -380,7 +393,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
               importedAt: new Date(env.clock.now()).toISOString(),
             },
           ];
-          return { added: added.sort(), shared: shared.sort() };
+          return { added: added.sort(), shared: shared.sort(), next };
         },
       );
       return { ...written, template: ref, ...detail };
@@ -391,7 +404,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
       let ref = requestedId;
       const { detail, ...written } = editWith(
         "template.remove",
-        input.expectRevision,
+        input,
         (document) => {
           // An imported id needs no catalog read; only an import alias resolves through it.
           const id = provenance(document).some(
@@ -439,6 +452,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           if (rest.length === 0) delete document.templates;
           else document.templates = rest;
           return {
+            next: ["forge skills sync"],
             removed: removed.sort(),
             kept: kept.sort((a, b) => a.pointer.localeCompare(b.pointer)),
           };

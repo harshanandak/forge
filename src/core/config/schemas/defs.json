@@ -122,14 +122,14 @@
       "additionalProperties": false
     },
     "WriteFields": {
+      "allOf": [
+        { "$ref": "defs.json#/$defs/TemplateWriteFields" },
+        { "required": ["changes"] }
+      ]
+    },
+    "TemplateWriteFields": {
       "type": "object",
-      "required": [
-        "file",
-        "previousRevision",
-        "revision",
-        "changes",
-        "fileRemoved"
-      ],
+      "required": ["file", "previousRevision", "revision", "fileRemoved"],
       "properties": {
         "file": {
           "$ref": "../../../../schemas/common.json#/$defs/RelativePath"
