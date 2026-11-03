@@ -88,7 +88,10 @@ for (const budget of [15_000, 30_000]) {
     let commits = 0;
     project.putMany = (...args) => {
       // A late disk stall outgrows the previous slowest note plus the fixed 1 s reserve.
-      now += (budget / 15_000) * (++commits === 17 ? 2_400 : 800);
+      for (const entry of args[0]) {
+        if (entry.key.startsWith("note/"))
+          now += (budget / 15_000) * (++commits === 17 ? 2_400 : 800);
+      }
       return putMany(...args);
     };
     const root = mkdtempSync(join(tmpdir(), "move-deadline-"));
@@ -294,6 +297,170 @@ test("scope batches move 25, then 5, then zero, preserving every record and old-
     });
   }
   expect(device.list("note/").slice(30)).toEqual(originals.slice(30));
+}, 30_000);
+
+test("scope moves 100 notes with at most five write commits per store", async () => {
+  const { move, call, device, project } = await setup(100);
+  const originals = device.list("note/");
+  const projectWrites = project.counts.putMany;
+  const deviceWrites = device.counts.put + device.counts.putMany;
+  const result = await move({ ...input, limit: 100 });
+  expect(result).toMatchObject({ complete: false });
+  expect(result.stopped).toBeUndefined();
+  expect(result.moved).toHaveLength(100);
+  expect(project.counts.putMany - projectWrites).toBeLessThanOrEqual(5);
+  expect(
+    device.counts.put + device.counts.putMany - deviceWrites,
+  ).toBeLessThanOrEqual(5);
+  expect(project.list("note/")).toHaveLength(100);
+  for (const [i, { id, to }] of result.moved.entries()) {
+    expect(id).toBe(`device/note-${i + 1}`);
+    const original = originals[i]!;
+    const destination = project.get(
+      `note/${to.split("-").at(-1)!.padStart(9, "0")}`,
+    )!;
+    expect(destination.value).toMatchObject(original.value as object);
+    expect(device.get(original.key)?.value).toMatchObject({
+      deleted: true,
+      movedTo: to,
+    });
+    expect(await call("memory.show", { id })).toMatchObject({
+      status: "found",
+      note: {
+        id: to,
+        movedFrom: id,
+        text: { text: `new ${i + 1}` },
+        tags: ["fact"],
+        links: ["device/note-1"],
+        versions: [{ revision: 1 }, { revision: 2 }],
+      },
+    });
+    expect(await call("memory.show", { id, revision: 1 })).toMatchObject({
+      note: { text: { text: `old ${i + 1}` } },
+    });
+  }
+  expect(await move({ ...input, limit: 100 })).toMatchObject({
+    moved: [],
+    complete: true,
+  });
+}, 30_000);
+
+test("scope batch retires notes in order up to a concurrent source edit and resumes without duplicates", async () => {
+  const { move, call, device, project } = await setup(6);
+  const key = "note/000000004";
+  const putMany = device.putMany.bind(device);
+  let raced = false;
+  device.putMany = (entries) => {
+    if (!raced && entries.some((entry) => entry.key === key)) {
+      raced = true;
+      const original = device.get(key)!;
+      device.put(
+        key,
+        { ...(original.value as object), text: "concurrent 4" },
+        { expectRevision: original.revision },
+      );
+    }
+    return putMany(entries);
+  };
+  const first = await move();
+  expect(raced).toBe(true);
+  expect(first).toMatchObject({
+    moved: [
+      { id: "device/note-1" },
+      { id: "device/note-2" },
+      { id: "device/note-3" },
+    ],
+    stopped: { id: "device/note-4", code: "REVISION_CONFLICT" },
+    complete: false,
+  });
+  expect(first.moved).toHaveLength(3);
+  expect(project.list("note/")).toHaveLength(6);
+  expect(device.get(key)).toMatchObject({
+    revision: 3,
+    value: { text: "concurrent 4" },
+  });
+  for (const n of [5, 6])
+    expect(device.get(`note/${String(n).padStart(9, "0")}`)?.revision).toBe(2);
+  await expect(move()).rejects.toMatchObject({
+    error: { code: "TRANSFER_CONFLICT" },
+  });
+  expect(project.list("note/")).toHaveLength(6);
+  // Reconcile the edited source into its existing copy before explicitly retiring that source.
+  const marker = project.get("transfer/device/note-4")!.value as {
+    number: number;
+  };
+  const to = `project/${projectId}/note-${marker.number}`;
+  await call("memory.add", { id: to, expectRevision: 1, text: "concurrent 4" });
+  device.put(key, { deleted: true, movedTo: to }, { expectRevision: 3 });
+  const resumed = await move();
+  expect(resumed).toMatchObject({
+    moved: [{ id: "device/note-5" }, { id: "device/note-6" }],
+    complete: false,
+  });
+  expect(resumed.moved).toHaveLength(2);
+  expect(resumed.stopped).toBeUndefined();
+  expect(await move()).toMatchObject({ moved: [], complete: true });
+  expect(project.list("note/")).toHaveLength(6);
+  expect(
+    new Set(
+      project
+        .list("note/")
+        .map((note) => (note.value as { from: string }).from),
+    ).size,
+  ).toBe(6);
+  for (let n = 1; n <= 6; n += 1) {
+    expect(
+      device.get(`note/${String(n).padStart(9, "0")}`)?.value,
+    ).toMatchObject({ deleted: true });
+    expect(await call("memory.show", { id: `device/note-${n}` })).toMatchObject(
+      {
+        note: { text: { text: n === 4 ? "concurrent 4" : `new ${n}` } },
+      },
+    );
+  }
+}, 30_000);
+
+test("scope batch recovers all committed copies after a fault before grouped source retirement", async () => {
+  const { move, call, device, project } = await setup(6);
+  const putMany = device.putMany.bind(device);
+  let crashed = false;
+  device.putMany = (entries) => {
+    if (!crashed && entries.length > 1) {
+      crashed = true;
+      throw new Error("crash before grouped tombstones");
+    }
+    return putMany(entries);
+  };
+  await expect(move()).rejects.toThrow("crash before grouped tombstones");
+  expect(crashed).toBe(true);
+  const copies = project.list("note/");
+  expect(copies).toHaveLength(6);
+  expect(device.get("note/000000001")?.value).toMatchObject({ deleted: true });
+  for (let n = 2; n <= 6; n += 1)
+    expect(device.get(`note/${String(n).padStart(9, "0")}`)?.revision).toBe(2);
+  const resumed = await move();
+  expect(resumed.moved.map((note) => note.id)).toEqual(
+    Array.from({ length: 5 }, (_, i) => `device/note-${i + 2}`),
+  );
+  expect(resumed.stopped).toBeUndefined();
+  expect(await move()).toMatchObject({ moved: [], complete: true });
+  expect(project.list("note/")).toEqual(copies);
+  for (let n = 1; n <= 6; n += 1) {
+    expect(
+      device.get(`note/${String(n).padStart(9, "0")}`)?.value,
+    ).toMatchObject({
+      deleted: true,
+      movedTo: `project/${projectId}/note-${n}`,
+    });
+    expect(await call("memory.show", { id: `device/note-${n}` })).toMatchObject(
+      {
+        note: {
+          text: { text: `new ${n}` },
+          versions: [{ revision: 1 }, { revision: 2 }],
+        },
+      },
+    );
+  }
 }, 30_000);
 
 test("scope scan passes pages of tombstones and other scopes and uses stored scope exactly", async () => {
