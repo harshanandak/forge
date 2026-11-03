@@ -183,6 +183,45 @@ function freezeData(value: unknown): unknown {
   return value;
 }
 
+function errorCause(error: unknown): Record<string, string> {
+  const read = (value: unknown, key: string, depth = 0): unknown => {
+    if (
+      depth > 3 ||
+      value === null ||
+      (typeof value !== "object" && typeof value !== "function")
+    )
+      return undefined;
+    try {
+      const property = Object.getOwnPropertyDescriptor(value, key);
+      if (property) return "value" in property ? property.value : undefined;
+      return read(Object.getPrototypeOf(value), key, depth + 1);
+    } catch {
+      /* Diagnostics must not replace the original failure. */
+    }
+    return undefined;
+  };
+  // The evaluator wraps errors from another realm in a host Error.
+  const message = read(error, "message");
+  if (message === "Block execution failed" || message === "Invocation failed")
+    error = read(error, "cause") ?? error;
+  const clip = (text: string): string =>
+    Buffer.from(text)
+      .subarray(0, 200)
+      .toString("utf8")
+      .replace(/\uFFFD$/, "");
+  const name = read(read(error, "constructor"), "name");
+  const cause: Record<string, string> = {
+    name: typeof name === "string" && name ? clip(name) : "Error",
+  };
+  const code = read(error, "code");
+  if (typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code))
+    cause.code = code;
+  const syscall = read(error, "syscall");
+  if (typeof syscall === "string" && /^[a-z_]{1,40}$/.test(syscall))
+    cause.syscall = syscall;
+  return cause;
+}
+
 /** One shared API for all transports. The trusted profile is trusted code, never a security sandbox. */
 export class Runtime {
   readonly #catalog: Catalog;
@@ -459,6 +498,7 @@ export class Runtime {
               code: "BLOCK_EXECUTION_FAILED",
               message: "block execution failed",
               retry: "never" as const,
+              observed: { cause: errorCause(error) },
             };
       result = {
         ok: false,
