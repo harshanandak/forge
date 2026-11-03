@@ -27,7 +27,11 @@ import {
   inputError,
   formatProblem as schemaDiagnostic,
 } from "../contract/input-error.ts";
-import { cliWords, parseOperationName } from "../contract/naming.ts";
+import {
+  cliWords,
+  nounCollisions,
+  parseOperationName,
+} from "../contract/naming.ts";
 import { validateConfiguration } from "../blocks/check/budget.ts";
 import type { CheckConfig } from "../blocks/check/types.ts";
 import {
@@ -550,9 +554,45 @@ export async function createAssembly(
       new Map(),
       version,
     );
+    const nounOwners = new Map<string, string[]>();
     for (const [name, instance] of Object.entries(document.blocks)) {
       if (instance.enabled === false) continue;
       try {
+        const block = call.captured(instance.source);
+        for (const op of Object.keys(block.manifest.operations)) {
+          const noun = parseOperationName(op)?.noun;
+          if (noun === undefined) continue;
+          const exposed = instance.rename?.[noun] ?? noun;
+          const names = nounOwners.get(exposed) ?? [];
+          if (!names.includes(name))
+            nounOwners.set(exposed, [...names, name].sort());
+        }
+      } catch {
+        // The registration loop reports capture failures through its existing path.
+      }
+    }
+    const collisions = new Map(
+      nounCollisions(
+        [...nounOwners].flatMap(([noun, names]) => names.map(() => noun)),
+      ).map(
+        (pair) =>
+          [
+            JSON.stringify(pair),
+            [...new Set(pair.flatMap((noun) => nounOwners.get(noun)!))].sort(),
+          ] as const,
+      ),
+    );
+    for (const [name, instance] of Object.entries(document.blocks)) {
+      if (instance.enabled === false) continue;
+      try {
+        const collision = [...collisions]
+          .filter(([, names]) => names.includes(name))
+          .map(
+            ([pair, names]) =>
+              `nouns ${pair} collide between blocks ${JSON.stringify(names)}`,
+          )
+          .join("; ");
+        if (collision) refuse("INPUT_INVALID", collision);
         if ("builtin" in instance.source) {
           const builtin = instance.source.builtin;
           const problems = validateWithSchema(
