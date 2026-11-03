@@ -10,6 +10,8 @@ import type {
 } from "../generated/types.ts";
 import { nounCollisions, parseOperationName } from "./naming.ts";
 import { operationTimeoutProblems } from "./operation-timeouts.ts";
+import { escapePointer } from "./schema.ts";
+import { formatConfigProblem } from "./input-error.ts";
 import { interfaceSatisfies, parseInterfaceVersionRef } from "./version.ts";
 
 /** Interfaces core itself provides to every block; `core` is their binding target. */
@@ -43,6 +45,29 @@ export type CompositionResult =
   | { readonly ok: true; readonly composition: Composition }
   | { readonly ok: false; readonly errors: readonly ForgeError[] };
 
+export function bindingProblems(
+  config: ConfigDocument,
+  manifests: ReadonlyMap<string, BlockManifest>,
+): ForgeError[] {
+  return Object.entries(config.blocks).flatMap(([name, instance]) => {
+    const manifest = manifests.get(name);
+    if (instance.enabled === false || manifest === undefined) return [];
+    const slots = (manifest.requires ?? []).map((required) => required.slot);
+    return Object.keys(instance.bind ?? {})
+      .filter((key) => !slots.includes(key))
+      .map((key) => ({
+        code: "INPUT_INVALID",
+        pointer: `/blocks/${escapePointer(name)}/bind/${escapePointer(key)}`,
+        message: formatConfigProblem(
+          `blocks.${name}.bind.${key}`,
+          `slot "${key}" is not declared by block "${manifest.id}"`,
+          `bind one of: ${slots.join(", ") || "none"}, or remove this binding`,
+        ),
+        retry: "never",
+      }));
+  });
+}
+
 /**
  * `manifests` maps each enabled instance name to its block's manifest. `coreProvides` lists what
  * core supplies; tests and embeddings may narrow it.
@@ -52,7 +77,8 @@ export function resolveComposition(
   manifests: ReadonlyMap<string, BlockManifest>,
   coreProvides: readonly string[] = CORE_PROVIDES,
 ): CompositionResult {
-  const errors: ForgeError[] = operationTimeoutProblems(config, manifests);
+  const errors = operationTimeoutProblems(config, manifests);
+  errors.push(...bindingProblems(config, manifests));
   if (errors.length > 0) return { ok: false, errors };
   const operations = new Map<string, ResolvedOperation>();
   const nounOwners = new Map<string, string>();
