@@ -2,7 +2,11 @@ import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { renderExample } from "../../src/contract/example.ts";
-import { exampleShells, scalarExamples } from "./fixtures/scalar-examples.ts";
+import {
+  authoredInputs,
+  exampleShells,
+  scalarExamples,
+} from "./fixtures/scalar-examples.ts";
 
 setDefaultTimeout(30_000);
 
@@ -21,10 +25,23 @@ const executables = [
   windows ? join(system, "System32/cmd.exe") : undefined,
 ];
 
+const examples = [
+  ...scalarExamples.map(({ value }) => ({
+    op: "sample.echo",
+    input: { value },
+    schema: { type: "object", properties: { value: { type: "string" } } },
+  })),
+  ...authoredInputs.map(({ input }) => ({
+    op: "sample.run",
+    input,
+    schema: {},
+  })),
+];
+
 for (const [index, shell] of exampleShells.entries()) {
   const executable = executables[index];
   test.skipIf(shell !== "POSIX" && process.platform !== "win32")(
-    `rendered scalars reach the CLI exactly in ${shell}`,
+    `rendered example inputs reach the CLI exactly in ${shell}`,
     () => {
       if (!executable) throw new Error(`${shell} executable required`);
       const node = Bun.which("node");
@@ -35,11 +52,11 @@ for (const [index, shell] of exampleShells.entries()) {
           ? `"${path}"`
           : `'${path.replaceAll("\\", "/").replaceAll("'", shell === "POSIX" ? "'\\''" : "''")}'`;
       const command = `${shell === "PowerShell 5.1" ? "& " : ""}${quotePath(node)} ${quotePath(fixture)}`;
-      const commands = scalarExamples.map(({ value }) => {
+      const commands = examples.map(({ op, input, schema }) => {
         const rendered = renderExample(
-          "sample.echo",
-          { title: "Echo", summary: "Echo.", examples: [{ input: { value } }] },
-          { type: "object", properties: { value: { type: "string" } } },
+          op,
+          { title: "Echo", summary: "Echo.", examples: [{ input }] },
+          schema,
         );
         const lines = rendered.split("\n    ");
         const line =
@@ -71,11 +88,11 @@ for (const [index, shell] of exampleShells.entries()) {
         .split(/\r?\n/)
         .map((line) => JSON.parse(line) as unknown);
       expect(outputs, diagnostic).toEqual(
-        scalarExamples.map(({ value }) => ({
+        examples.map(({ op, input }) => ({
           ok: true,
-          op: "sample.echo",
+          op,
           status: "OK",
-          result: { value },
+          result: input,
           warnings: [],
         })),
       );
