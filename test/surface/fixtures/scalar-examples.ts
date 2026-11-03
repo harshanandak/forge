@@ -54,3 +54,35 @@ export const scalarExamples = [
 ] as const;
 
 export const exampleShells = ["POSIX", "PowerShell 5.1", "cmd"] as const;
+
+export const authoredInputs = [
+  {
+    name: "string with a single quote and space",
+    input: "it's ready",
+    quoted: [
+      String.raw`'"it'\''s ready"'`,
+      String.raw`'\"it''s\u0020ready\"'`,
+      String.raw`^"\^"it's ready\^"^"`,
+    ],
+  },
+  {
+    name: "empty string",
+    input: "",
+    quoted: [String.raw`'""'`, String.raw`'\"\"'`, String.raw`^"\^"\^"^"`],
+  },
+  { name: "number", input: 42, quoted: ["42", "42", "42"] },
+  { name: "zero", input: 0, quoted: ["0", "0", "0"] },
+  { name: "boolean", input: true, quoted: ["true", "true", "true"] },
+  { name: "false", input: false, quoted: ["false", "false", "false"] },
+  {
+    name: "array",
+    input: ["one two", "it's", 3, false],
+    quoted: [
+      String.raw`'["one two","it'\''s",3,false]'`,
+      String.raw`'[\"one\u0020two\",\"it''s\",3,false]'`,
+      String.raw`^"[\^"one two\^",\^"it's\^",3,false]^"`,
+    ],
+  },
+  { name: "empty array", input: [], quoted: ["'[]'", "'[]'", '^"[]^"'] },
+  { name: "null", input: null, quoted: ["null", "null", "null"] },
+] as const;
