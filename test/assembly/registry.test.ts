@@ -15,6 +15,8 @@ import {
   requireRegisteredStore,
 } from "../../src/assembly/levels.ts";
 import { LocalState } from "../../src/assembly/state.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
+import { loadEntry, memoryState } from "../blocks/memory/lib.ts";
 
 const actor = { kind: "human" as const, id: "test" };
 const oldId = "0123456789abcdef";
@@ -46,7 +48,7 @@ async function fixture() {
   const device = memory();
   const owner = (await device.open(true))!;
   const project = memory();
-  const open = (stateRoot: string) =>
+  const open = (stateRoot: string, requestId = "test") =>
     openLevels({
       root: stateRoot,
       stateRoot,
@@ -57,7 +59,7 @@ async function fixture() {
       servesProject: true,
       caller: "human",
       write: true,
-      requestId: "test",
+      requestId,
     });
   return {
     root,
@@ -72,6 +74,88 @@ async function fixture() {
     },
   };
 }
+
+test("two first project writes with overlapping registry reads both succeed", async () => {
+  const f = await fixture();
+  const first = f.open(f.root, "first");
+  const second = f.open(f.root, "second");
+  const entry = loadEntry("memory");
+  const state = memoryState();
+  const add = (opened: typeof first, text: string) =>
+    entry["memory.add"]!({
+      input: { text, level: "project" },
+      services: { state, levels: opened.levels },
+    });
+  const get = f.owner.get.bind(f.owner);
+  // Hold the second writer's absent read across the first writer's commit.
+  const before = f.owner.list(registry);
+  expect(before).toEqual([]);
+  let reads: ReturnType<typeof spyOn<typeof f.owner, "get">> | undefined;
+  try {
+    const a = (await add(first, "first note")) as { id: string };
+    reads = spyOn(f.owner, "get")
+      .mockImplementation(get)
+      .mockImplementationOnce((namespace, key) => {
+        expect(namespace).toBe(registry);
+        expect(key).toStartWith("project/");
+        expect(get(namespace, key)?.revision).toBe(1);
+        return before.find((record) => record.key === key);
+      });
+    const b = (await add(second, "second note")) as { id: string };
+    reads.mockRestore();
+    expect(a.id).not.toBe(b.id);
+    expect(f.owner.list(registry)).toHaveLength(1);
+    expect(f.owner.list(registry)[0]?.revision).toBe(1);
+    const project = await first.levels.project();
+    expect(
+      project?.state
+        .list("note/")
+        .map((record) => (record.value as { text: string }).text),
+    ).toEqual(["first note", "second note"]);
+  } finally {
+    reads?.mockRestore();
+    await first.close();
+    await second.close();
+    await f.close();
+  }
+}, 30_000);
+
+test("registration preserves a different winner and propagates other store failures", async () => {
+  for (const kind of ["different winner", "store failure"] as const) {
+    const f = await fixture();
+    const opened = f.open(f.root);
+    const put = f.owner.put.bind(f.owner);
+    const failure = new ForgeFailure({
+      code: "UNAVAILABLE",
+      message: "injected store failure",
+      retry: "never",
+    });
+    const writes = spyOn(f.owner, "put")
+      .mockImplementation(put)
+      .mockImplementationOnce((namespace, key, value, actor, options) => {
+        if (kind === "store failure") throw failure;
+        put(namespace, key, { name: "other", root: f.root }, actor, options);
+        return put(namespace, key, value, actor, options);
+      });
+    try {
+      if (kind === "store failure")
+        await expect(opened.levels.project()).rejects.toBe(failure);
+      else {
+        await expect(opened.levels.project()).rejects.toMatchObject({
+          error: { code: "REVISION_CONFLICT" },
+        });
+        expect(f.owner.list(registry)[0]?.value).toEqual({
+          name: "other",
+          root: f.root,
+        });
+      }
+    } finally {
+      writes.mockRestore();
+      await opened.close();
+      await f.close();
+    }
+  }
+}, 30_000);
 
 test("a fresh database never adopts a stale location's identity after the old project moved", async () => {
   const f = await fixture();
