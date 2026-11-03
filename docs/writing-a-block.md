@@ -70,6 +70,9 @@ For optional fields and other contexts, see the canonical
 [manifest schema](https://github.com/harshanandak/forge/blob/main/schemas/block.json)
 and [operation schema](https://github.com/harshanandak/forge/blob/main/schemas/operation.json).
 
+Unexpected handler errors keep their public code, message and retry posture; `BLOCK_EXECUTION_FAILED` adds `error.observed.cause`: the constructor `name`, limited to 200 UTF-8 bytes, plus optional `code` matching `^[A-Z0-9_]{1,40}$` and `syscall` matching `^[a-z_]{1,40}$`. It never carries the message or stack, which can hold paths and secrets.
+Free-text error messages are omitted because they may contain credentials or private paths. Frames outside the block are omitted.
+
 ## Check, add, admit, use
 
 Use Node 24.15+ in the 24.x line, or Node 26+, and Git. In a scratch Git project,
