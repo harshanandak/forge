@@ -945,8 +945,9 @@ export async function createAssembly(
               refuse("INPUT_INVALID", "Invalid config input");
             if (request.op === "config.show") await trustState.open(false);
             const handled = configHandler(request.input);
+            const deviceOnly = !call.inProject && !record(handled)?.configured;
             const current =
-              request.op === "config.show"
+              request.op === "config.show" && !(input.invocation && deviceOnly)
                 ? snapshot(call, false, false, handled as ShowResult)
                 : undefined;
             const unavailable = new Set(
@@ -954,11 +955,11 @@ export async function createAssembly(
             );
             const shown = current?.show ?? (handled as ShowResult);
             const output =
-              request.op === "config.show"
+              request.op === "config.show" && current
                 ? {
                     ...shown,
-                    valid: current!.problems.length === 0,
-                    problems: current!.problems,
+                    valid: current.problems.length === 0,
+                    problems: current.problems,
                     instances: shown.instances.map((instance) =>
                       unavailable.has(instance.name)
                         ? { ...instance, enabled: false }
