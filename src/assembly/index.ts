@@ -483,6 +483,7 @@ export async function createAssembly(
     call: CallScope,
     deviceMemory = false,
     invalidMemoryConfig = false,
+    configuredShow?: ShowResult,
   ): {
     show: ShowResult;
     document: ConfigDocument;
@@ -496,7 +497,7 @@ export async function createAssembly(
     let fallback = false;
     try {
       if (invalidMemoryConfig) refuse("INPUT_INVALID", "Invalid memory config");
-      configured = call.config.show();
+      configured = configuredShow ?? call.config.show();
       if (deviceMemory && !configured.valid)
         refuse("INPUT_INVALID", "Invalid project config");
     } catch (error) {
@@ -817,12 +818,22 @@ export async function createAssembly(
       const deviceMemory = deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived);
       try {
+        const preview = configCandidates.find(
+          (entry) => entry.op === request.op && entry.op === "config.show",
+        );
+        if (
+          preview &&
+          !validateConfigValue(preview.declaration, "input", request.input)
+        )
+          refuse("INPUT_INVALID", "Invalid config input");
         derived.push(
           ...(await idPrefixObservation(root, stateRoot, options.providers)),
         );
         for (const instance of (deviceMemory
           ? snapshot(call, true).show
-          : call.config.show()
+          : preview
+            ? (call.configOperations[request.op]!(request.input) as ShowResult)
+            : call.config.show()
         ).instances)
           if (
             instance.enabled &&
@@ -933,22 +944,22 @@ export async function createAssembly(
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
             if (request.op === "config.show") await trustState.open(false);
+            const handled = configHandler(request.input);
+            const deviceOnly = !call.inProject && !record(handled)?.configured;
             const current =
-              request.op === "config.show" ? snapshot(call) : undefined;
-            const handled =
-              current && input.invocation === undefined
-                ? current.show
-                : configHandler(request.input);
+              request.op === "config.show" && !(input.invocation && deviceOnly)
+                ? snapshot(call, false, false, handled as ShowResult)
+                : undefined;
             const unavailable = new Set(
               current?.unavailable.map((block) => block.name),
             );
-            const shown = handled as ShowResult;
+            const shown = current?.show ?? (handled as ShowResult);
             const output =
-              request.op === "config.show"
+              request.op === "config.show" && current
                 ? {
                     ...shown,
-                    valid: current!.problems.length === 0,
-                    problems: current!.problems,
+                    valid: current.problems.length === 0,
+                    problems: current.problems,
                     instances: shown.instances.map((instance) =>
                       unavailable.has(instance.name)
                         ? { ...instance, enabled: false }
