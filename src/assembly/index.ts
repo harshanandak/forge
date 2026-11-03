@@ -27,7 +27,7 @@ import {
   inputError,
   formatProblem as schemaDiagnostic,
 } from "../contract/input-error.ts";
-import { parseOperationName } from "../contract/naming.ts";
+import { cliWords, parseOperationName } from "../contract/naming.ts";
 import { validateConfiguration } from "../blocks/check/budget.ts";
 import type { CheckConfig } from "../blocks/check/types.ts";
 import {
@@ -290,6 +290,10 @@ export async function createAssembly(
         ...derived,
       ],
       templates: shipped,
+      commandsFor: (declaredOp: string): readonly string[] =>
+        snapshot(callScope())
+          .candidates.filter((entry) => entry.declaredOp === declaredOp)
+          .map((entry) => `forge ${cliWords(entry.op)!.join(" ")}`),
       builtinSource: (name: string): BlockSource | undefined =>
         firstPartyBlocks[`forge/${name}`] === undefined
           ? undefined

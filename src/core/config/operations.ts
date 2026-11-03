@@ -61,11 +61,16 @@ export function createConfigOperations(
     "template.import": op((i) =>
       templates.importTemplate({
         template: text(i, "template"),
+        verbose: i.verbose === true,
         ...revision(i),
       }),
     ),
     "template.remove": op((i) =>
-      templates.remove({ template: text(i, "template"), ...revision(i) }),
+      templates.remove({
+        template: text(i, "template"),
+        verbose: i.verbose === true,
+        ...revision(i),
+      }),
     ),
   };
 }
