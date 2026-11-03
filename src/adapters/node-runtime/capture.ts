@@ -18,7 +18,7 @@ export function createNodeFileCapture(
   return {
     open(rootPath) {
       const root = realpathSync(rootPath);
-      const rootIdentity = statSync(root);
+      const rootIdentity = statSync(root, { bigint: true });
       if (!rootIdentity.isDirectory())
         refuse("INPUT_INVALID", "capture root must be a directory");
       return {
@@ -35,11 +35,11 @@ export function createNodeFileCapture(
               isAbsolute(rel)
             )
               refuse("INPUT_INVALID", "capture path leaves its root");
-            const stat = statSync(path);
+            const stat = statSync(path, { bigint: true });
             if (!stat.isFile())
               refuse("INPUT_INVALID", "capture requires regular files");
             const bytes = stat.size;
-            if (bytes > maxBytes)
+            if (bytes > BigInt(maxBytes))
               refuse("LIMIT_EXCEEDED", `capture exceeds maxBytes ${maxBytes}`);
             beforeOpen?.();
             const descriptor = openSync(
@@ -48,12 +48,12 @@ export function createNodeFileCapture(
             );
             let data: Buffer;
             try {
-              const opened = fstatSync(descriptor);
+              const opened = fstatSync(descriptor, { bigint: true });
               // Validate the opened identity before reading: textual containment alone races renames.
               const openedPath = realpathSync(path);
               const openedRelative = relative(root, openedPath);
-              const currentRoot = statSync(root);
-              const currentFile = statSync(openedPath);
+              const currentRoot = statSync(root, { bigint: true });
+              const currentFile = statSync(openedPath, { bigint: true });
               if (
                 realpathSync(root) !== root ||
                 currentRoot.dev !== rootIdentity.dev ||
@@ -75,7 +75,7 @@ export function createNodeFileCapture(
                 opened.size !== stat.size
               )
                 refuse("INPUT_CONFLICT", "file changed during capture");
-              data = Buffer.alloc(stat.size);
+              data = Buffer.alloc(Number(stat.size));
               let offset = 0;
               while (offset < data.length) {
                 const count = readSync(
