@@ -163,7 +163,9 @@ test("enabled work derives a fresh origin prefix on each issue create", async ()
   const project = await fixture(true);
   try {
     project.resetTrace();
-    expect(await project.call(["issue", "create", "First"])).toMatchObject({
+    expect(
+      await project.call(["issue", "create", "--title", "First"]),
+    ).toMatchObject({
       id: "alpha-1",
     });
     expect(project.originQueries()).toBe(1);
@@ -174,7 +176,9 @@ test("enabled work derives a fresh origin prefix on each issue create", async ()
       "https://example.invalid/team/Beta.git",
     );
     project.resetTrace();
-    expect(await project.call(["issue", "create", "Second"])).toMatchObject({
+    expect(
+      await project.call(["issue", "create", "--title", "Second"]),
+    ).toMatchObject({
       id: "beta-2",
     });
     expect(project.originQueries()).toBe(1);
