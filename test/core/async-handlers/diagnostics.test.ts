@@ -369,7 +369,7 @@ test("a failed invocation retains its cause without inventing process observatio
   });
   if (!envelope.ok)
     expect(envelope.error.observed).toEqual({
-      cause: { name: "Error", message: "handler failed" },
+      cause: { name: "Error" },
     });
 });
 
@@ -407,17 +407,14 @@ for (const serviceFails of [false, true]) {
 }
 
 for (const [label, code, expected] of [
-  ["plain", 'throw new Error("boom")', { name: "Error", message: "boom" }],
+  ["plain", 'throw new Error("boom")', { name: "Error" }],
+  ["typed", 'throw new TypeError("boom")', { name: "TypeError" }],
   [
     "coded",
-    'throw Object.assign(new Error("denied"), { code: "EPERM" })',
-    { name: "Error", code: "EPERM", message: "denied" },
+    'throw Object.assign(new Error("denied"), { code: "EPERM", syscall: "unlink" })',
+    { name: "Error", code: "EPERM", syscall: "unlink" },
   ],
-  [
-    "async",
-    'return Promise.reject(new Error("boom"))',
-    { name: "Error", message: "boom" },
-  ],
+  ["async", 'return Promise.reject(new Error("boom"))', { name: "Error" }],
 ] as const)
   test(`unexpected ${label} handler errors retain a bounded cause`, async () => {
     const f = fixture(`() => { ${code} }`, { timeoutMs: 1000 });
@@ -437,15 +434,24 @@ for (const [label, code, expected] of [
     const { cause } = result.error.observed as {
       cause: Record<string, string>;
     };
+    assert.equal(Object.hasOwn(cause, "message"), false);
     assert.match(cause.frame!, /^index\.cjs:\d+:\d+$/);
     for (const value of Object.values(cause))
       assert.ok(Buffer.byteLength(value) <= 200);
   }, 5000);
 
-test("unexpected causes redact private paths and assignments before byte truncation", async () => {
-  const privateMessage = `failed /home/private-user/private.txt C:\\Users\\private-user\\private.txt /Users/private-user/private.txt TOKEN=synthetic-value ${join(homedir(), "private.txt")}`;
+test("unexpected causes omit free text containing tokens and private paths", async () => {
+  const privateValues = [
+    "synthetic-json-token",
+    "synthetic-bearer-token",
+    "C:\\Users\\Example User\\private.txt",
+    "\\Users\\Example\\private.txt",
+    "/home/Example User/private.txt",
+    join(homedir(), "private.txt"),
+  ];
+  const privateMessage = `{"token":"${privateValues[0]}"} Authorization: Bearer ${privateValues[1]} ${privateValues.slice(2).join(" ")}`;
   const f = fixture(
-    `() => { throw Object.assign(new Error(${JSON.stringify(privateMessage)} + "é".repeat(300)), { name: "é".repeat(300), code: "é".repeat(300) }) }`,
+    `() => { throw Object.assign(new Error(${JSON.stringify(privateMessage)}), { name: ${JSON.stringify(privateMessage)} }) }`,
     { timeoutMs: 1000 },
   );
   const result = await f.runtime().invoke(f.request);
@@ -454,18 +460,28 @@ test("unexpected causes redact private paths and assignments before byte truncat
   const { cause } = result.error.observed as {
     cause: Record<string, string>;
   };
-  assert.ok(
-    cause.message!.startsWith(
-      "failed [redacted] [redacted] [redacted] TOKEN=[redacted]",
-    ),
-  );
-  assert.doesNotMatch(JSON.stringify(result), /private-user|synthetic-value/);
-  assert.ok(!JSON.stringify(result).includes(homedir()));
-  for (const value of Object.values(cause)) {
-    assert.ok(Buffer.byteLength(value) <= 200);
-    assert.ok(!value.includes("\ufffd"));
-  }
+  assert.equal(cause.name, "Error");
+  assert.equal(Object.hasOwn(cause, "message"), false);
+  const serialized = JSON.stringify(result);
+  for (const value of [...privateValues, "Example", homedir()])
+    assert.ok(!serialized.includes(JSON.stringify(value).slice(1, -1)));
 }, 5000);
+
+for (const invalid of ["A".repeat(41), "eperm", "/home/Example", 13])
+  test(`unexpected causes omit invalid code and syscall ${JSON.stringify(invalid)}`, async () => {
+    const f = fixture(
+      `() => { throw Object.assign(new Error("denied"), { code: ${JSON.stringify(invalid)}, syscall: ${JSON.stringify(invalid === "eperm" ? "Unlink" : invalid)} }) }`,
+      { timeoutMs: 1000 },
+    );
+    const result = await f.runtime().invoke(f.request);
+    assert.equal(result.ok, false);
+    if (result.ok) throw new Error("expected failure");
+    const { cause } = result.error.observed as {
+      cause: Record<string, string>;
+    };
+    assert.equal(Object.hasOwn(cause, "code"), false);
+    assert.equal(Object.hasOwn(cause, "syscall"), false);
+  }, 5000);
 
 test("unexpected cause accessors cannot replace the failure envelope", async () => {
   const f = fixture(
@@ -477,7 +493,7 @@ test("unexpected cause accessors cannot replace the failure envelope", async () 
     ok: false,
     error: {
       code: "BLOCK_EXECUTION_FAILED",
-      observed: { cause: { name: "Error", message: "boom" } },
+      observed: { cause: { name: "Error" } },
     },
   });
 }, 5000);

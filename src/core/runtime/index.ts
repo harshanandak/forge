@@ -185,7 +185,11 @@ function freezeData(value: unknown): unknown {
 
 function errorCause(error: unknown, entry: string): Record<string, string> {
   const read = (value: unknown, key: string, depth = 0): unknown => {
-    if (depth > 3 || value === null || typeof value !== "object")
+    if (
+      depth > 3 ||
+      value === null ||
+      (typeof value !== "object" && typeof value !== "function")
+    )
       return undefined;
     try {
       const property = Object.getOwnPropertyDescriptor(value, key);
@@ -205,24 +209,16 @@ function errorCause(error: unknown, entry: string): Record<string, string> {
       .subarray(0, 200)
       .toString("utf8")
       .replace(/\uFFFD$/, "");
-  const clean = (value: unknown): string =>
-    clip(
-      (typeof value === "string" || typeof value === "number"
-        ? String(value)
-        : ""
-      )
-        .replace(/(?:[a-z]:[\\/]|\\\\|\/)[^\s"'<>]*/gi, "[redacted]")
-        .replace(
-          /\b([A-Z_][A-Z0-9_]*\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
-          "$1[redacted]",
-        ),
-    );
+  const name = read(read(error, "constructor"), "name");
   const cause: Record<string, string> = {
-    name: clean(read(error, "name")) || "Error",
-    message: clean(read(error, "message")),
+    name: typeof name === "string" && name ? clip(name) : "Error",
   };
-  const code = clean(read(error, "code"));
-  if (code) cause.code = code;
+  const code = read(error, "code");
+  if (typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code))
+    cause.code = code;
+  const syscall = read(error, "syscall");
+  if (typeof syscall === "string" && /^[a-z_]{1,40}$/.test(syscall))
+    cause.syscall = syscall;
   const stack = read(error, "stack");
   const filename = entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const frame =

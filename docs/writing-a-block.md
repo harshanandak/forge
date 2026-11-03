@@ -70,8 +70,8 @@ For optional fields and other contexts, see the canonical
 [manifest schema](https://github.com/harshanandak/forge/blob/main/schemas/block.json)
 and [operation schema](https://github.com/harshanandak/forge/blob/main/schemas/operation.json).
 
-Unexpected handler errors keep their public code, message and retry posture; `BLOCK_EXECUTION_FAILED` adds `error.observed.cause`: `name`, `message`, optional `code` and first block-relative stack `frame`, each limited to 200 UTF-8 bytes.
-Names, messages and codes redact absolute paths and assignment values.
+Unexpected handler errors keep their public code, message and retry posture; `BLOCK_EXECUTION_FAILED` adds `error.observed.cause`: the constructor `name` and first block-relative stack `frame` (path, line and column only), each limited to 200 UTF-8 bytes, plus optional `code` matching `^[A-Z0-9_]{1,40}$` and `syscall` matching `^[a-z_]{1,40}$`.
+Free-text error messages are omitted because they may contain credentials or private paths. Frames outside the block are omitted.
 
 ## Check, add, admit, use
 
