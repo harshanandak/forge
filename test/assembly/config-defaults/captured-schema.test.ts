@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssembly, localCall } from "../../../src/assembly/index.ts";
 import { agentAdapterObservation } from "../../../src/assembly/providers.ts";
+import type { PatchStep, ShowResult } from "../../../src/core/config/config.ts";
 
 setDefaultTimeout(30_000);
 
@@ -161,6 +162,311 @@ function withGreeting(greeting: string): Record<string, unknown> {
     },
   };
 }
+
+for (const scenario of [
+  {
+    name: "schema value",
+    path: "hello.greeting",
+    invalid: 5,
+    repaired: "hi",
+    problem: "blocks.hello.config.greeting",
+  },
+  {
+    name: "unavailable source",
+    path: "/blocks/hello/source/path",
+    invalid: "./missing-block",
+    repaired: "./hello",
+    problem: "blocks.hello.source",
+  },
+] as const) {
+  for (const repairing of [false, true]) {
+    test(`config show ${repairing ? "repairs" : "introduces"} a ${scenario.name} problem for one invocation only`, async () => {
+      const root = project(files);
+      const file = join(root, ".forge/config.yaml");
+      const broken = repairing;
+      writeFileSync(
+        file,
+        JSON.stringify({
+          schemaVersion: "forge.config/1",
+          blocks: {
+            hello: {
+              source: {
+                path:
+                  broken && scenario.name === "unavailable source"
+                    ? "./missing-block"
+                    : "./hello",
+              },
+              config: {
+                greeting: broken && scenario.name === "schema value" ? 5 : "hi",
+                style: { loud: true },
+              },
+            },
+          },
+        }),
+      );
+      const before = readFileSync(file, "utf8");
+      const assembly = await createAssembly({
+        root,
+        deviceRoot: join(root, "device"),
+      });
+      const { caller, context } = localCall(assembly);
+      const show = async (input: unknown = {}) =>
+        (await assembly.catalog.invoke({
+          schemaVersion: "forge.invocation/1",
+          requestId: "show",
+          op: "config.show",
+          input,
+          caller,
+          context: context ?? {},
+        })) as {
+          ok: boolean;
+          result: {
+            valid: boolean;
+            problems: string[];
+            effective: unknown;
+            revision: string;
+          };
+        };
+      try {
+        const baseline = await show();
+        expect(baseline.ok).toBe(!broken);
+        expect(baseline.result.valid).toBe(!broken);
+        expect(baseline.result.problems).toHaveLength(broken ? 1 : 0);
+        if (broken)
+          expect(baseline.result.problems[0]).toContain(scenario.problem);
+
+        const patched = await show({
+          invocation: [
+            {
+              op: "set",
+              path: scenario.path,
+              value: repairing ? scenario.repaired : scenario.invalid,
+            },
+          ],
+        });
+        expect(patched.ok).toBe(repairing);
+        expect(patched.result.valid).toBe(repairing);
+        expect(patched.result.problems).toHaveLength(repairing ? 0 : 1);
+        if (repairing) {
+          expect(patched.result.effective).toMatchObject({
+            blocks: {
+              hello: {
+                source: { path: "./hello" },
+                config: { greeting: "hi", style: { loud: true } },
+              },
+            },
+          });
+        } else {
+          expect(patched.result.problems[0]).toContain(scenario.problem);
+          expect(patched.result.effective).toMatchObject({
+            blocks: { hello: { enabled: false } },
+          });
+        }
+        expect(patched.result.revision).toBe(baseline.result.revision);
+        expect(readFileSync(file, "utf8")).toBe(before);
+        expect((await show()).result).toEqual(baseline.result);
+      } finally {
+        await assembly.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+for (const repairingRuntime of [false, true]) {
+  test(`config show ${repairingRuntime ? "repairs persisted runtime validation" : "validates an invocation-only block"} without changing persisted state`, async () => {
+    const root = project(files);
+    const file = join(root, ".forge/config.yaml");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        schemaVersion: "forge.config/1",
+        blocks: {},
+        ...(repairingRuntime ? { runtime: { timeoutMs: 0 } } : {}),
+      }),
+    );
+    const before = readFileSync(file, "utf8");
+    const assembly = await createAssembly({
+      root,
+      deviceRoot: join(root, "device"),
+    });
+    const { caller, context } = localCall(assembly);
+    const show = async (input: unknown = {}) =>
+      (await assembly.catalog.invoke({
+        schemaVersion: "forge.invocation/1",
+        requestId: "show",
+        op: "config.show",
+        input,
+        caller,
+        context: context ?? {},
+      })) as {
+        ok: boolean;
+        result: {
+          valid: boolean;
+          effective: { blocks: Record<string, unknown>; runtime?: unknown };
+          problems: string[];
+        };
+      };
+    try {
+      const baseline = await show();
+      expect(baseline.ok).toBe(!repairingRuntime);
+      expect(baseline.result.valid).toBe(!repairingRuntime);
+      expect(baseline.result.problems).toHaveLength(repairingRuntime ? 1 : 0);
+      expect(baseline.result.effective.blocks).toEqual({});
+      if (repairingRuntime) {
+        expect(baseline.result.problems[0]).toContain("runtime.timeoutMs");
+        expect(baseline.result.problems[0]).toContain("must be at least 1");
+        expect(baseline.result.effective.runtime).toBeUndefined();
+      }
+
+      const patched = await show({
+        invocation: [
+          repairingRuntime
+            ? { op: "set", path: "/runtime", value: { timeoutMs: 1000 } }
+            : {
+                op: "set",
+                path: "/blocks/extra",
+                value: { source: { path: "./missing-block" } },
+              },
+        ],
+      });
+      expect(patched.ok).toBe(repairingRuntime);
+      expect(patched.result.valid).toBe(repairingRuntime);
+      expect(patched.result.problems).toHaveLength(repairingRuntime ? 0 : 1);
+      if (repairingRuntime) {
+        expect(patched.result.effective.runtime).toEqual({ timeoutMs: 1000 });
+        expect(patched.result.effective.blocks).toEqual({});
+      } else {
+        expect(patched.result.effective.blocks).toEqual({
+          extra: { source: { path: "./missing-block" }, enabled: false },
+        });
+        expect(patched.result.problems[0]).toContain("blocks.extra.source");
+        expect(patched.result.problems[0]).toContain("missing-block");
+      }
+      expect(readFileSync(file, "utf8")).toBe(before);
+      const unpatched = await show();
+      expect(unpatched.ok).toBe(baseline.ok);
+      expect(unpatched.result).toEqual(baseline.result);
+    } finally {
+      await assembly.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+async function inspectInvocation(
+  document: Record<string, unknown>,
+  invocation: readonly PatchStep[],
+  inspect: (
+    shown: { ok: boolean; result: ShowResult },
+    baseline: { ok: boolean; result: ShowResult },
+  ) => void,
+): Promise<void> {
+  const root = project(files);
+  const file = join(root, ".forge/config.yaml");
+  writeFileSync(file, JSON.stringify(document));
+  const before = readFileSync(file, "utf8");
+  const assembly = await createAssembly({
+    root,
+    deviceRoot: join(root, "device"),
+  });
+  const { caller, context } = localCall(assembly);
+  const show = async (input: unknown = {}) =>
+    (await assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: "show",
+      op: "config.show",
+      input,
+      caller,
+      context: context ?? {},
+    })) as { ok: boolean; result: ShowResult };
+  try {
+    const baseline = await show();
+    const shown = await show({ invocation });
+    inspect(shown, baseline);
+    expect(shown.result.revision).toBe(baseline.result.revision);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    const unpatched = await show();
+    expect(unpatched.ok).toBe(baseline.ok);
+    expect(unpatched.result).toEqual(baseline.result);
+  } finally {
+    await assembly.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("config show repairs an unavailable source and resolves the replacement source's defaults", async () => {
+  await inspectInvocation(
+    {
+      schemaVersion: "forge.config/1",
+      blocks: { hello: { source: { path: "./missing-block" } } },
+    },
+    [{ op: "set", path: "/blocks/hello/source/path", value: "./hello" }],
+    (shown, baseline) => {
+      expect(baseline.ok).toBe(false);
+      expect(baseline.result.problems).toEqual([
+        expect.stringContaining("blocks.hello.source"),
+      ]);
+      expect(shown.ok).toBe(true);
+      expect(shown.result.valid).toBe(true);
+      expect(shown.result.problems).toEqual([]);
+      expect(shown.result.effective.blocks).toEqual({
+        hello: {
+          source: { path: "./hello" },
+          config: { greeting: "hi", style: { loud: true } },
+        },
+      });
+    },
+  );
+});
+
+test("config show reports an invocation-introduced runtime schema problem", async () => {
+  await inspectInvocation(
+    { schemaVersion: "forge.config/1", blocks: {} },
+    [{ op: "set", path: "/runtime", value: { timeoutMs: 0 } }],
+    (shown) => {
+      expect(shown.ok).toBe(false);
+      expect(shown.result.valid).toBe(false);
+      expect(shown.result.problems).toEqual([
+        expect.stringContaining("runtime.timeoutMs"),
+      ]);
+      expect(shown.result.excluded).toEqual([
+        {
+          pointer: "/runtime",
+          problems: [expect.stringContaining("runtime.timeoutMs")],
+        },
+      ]);
+      expect(shown.result.effective.runtime).toBeUndefined();
+    },
+  );
+});
+
+test("config show resolves the built-in source of an invocation-only instance", async () => {
+  const pointer = "/blocks/check/config/commands";
+  const commands = { test: "node --test" };
+  await inspectInvocation(
+    { schemaVersion: "forge.config/1", blocks: {} },
+    [{ op: "set", path: pointer, value: commands }],
+    (shown) => {
+      expect(shown.ok).toBe(true);
+      expect(shown.result.valid).toBe(true);
+      expect(shown.result.problems).toEqual([]);
+      expect(shown.result.instances).toEqual([
+        { name: "check", source: { builtin: "forge/check" }, enabled: true },
+      ]);
+      expect(shown.result.effective.blocks).toMatchObject({
+        check: { source: { builtin: "forge/check" }, config: { commands } },
+      });
+      expect(
+        shown.result.values.filter((entry) =>
+          entry.pointer.startsWith(pointer),
+        ),
+      ).toEqual([
+        { pointer, value: commands, layer: "invocation", active: true },
+      ]);
+    },
+  );
+});
 
 test("derived agent adapters target the configured instance name", () => {
   expect(agentAdapterObservation("router")).toMatchObject([
