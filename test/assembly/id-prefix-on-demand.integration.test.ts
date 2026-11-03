@@ -86,7 +86,6 @@ async function fixture(workEnabled: boolean) {
     });
     return {
       git,
-      blockPath: stages.get(memory)!,
       invoke(op: string, input: unknown = {}) {
         const { caller, context } = localCall(assembly);
         return assembly.catalog.invoke({
@@ -187,9 +186,15 @@ test("memory-only projects keep host operations and unknown names on main's path
   const project = await fixture(false);
   try {
     project.resetTrace();
+    const listed = done(await project.invoke("template.list")) as {
+      templates: { id: string; imported: string | null }[];
+    };
     expect(
-      await project.invoke("block.check", { path: project.blockPath }),
-    ).toMatchObject({ ok: true, result: { blockId: "forge/memory" } });
+      listed.templates.find((template) => template.id === "harsha/delivery"),
+    ).toMatchObject({
+      id: "harsha/delivery",
+      imported: null,
+    });
     expect(project.originQueries()).toBe(1);
 
     project.resetTrace();
