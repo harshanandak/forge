@@ -193,9 +193,13 @@ export function expandTemplate(value: unknown, lookup: BlockLookup): unknown {
 
 export function createTemplates(env: TemplateEnvironment): TemplateApi {
   const validated = (document: JsonObject): JsonObject => {
-    const filled = clone(document);
-    fillSources(filled, env);
-    checkDocument(filled);
+    const metadata: JsonObject = {
+      schemaVersion: "forge.config/1",
+      blocks: {},
+    };
+    for (const key of ["templates", "owners"])
+      if (Object.hasOwn(document, key)) metadata[key] = document[key];
+    checkDocument(metadata);
     return document;
   };
 
@@ -335,13 +339,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
 
   return {
     list() {
-      const document = readProject(env).document;
-      if (document !== undefined && Object.hasOwn(document, "templates"))
-        validated({
-          schemaVersion: "forge.config/1",
-          blocks: {},
-          templates: document.templates,
-        });
+      const document = validated(readProject(env).document ?? {});
       const installed = env.templates.list().map((t) => ({
         id: t.id,
         version: t.version,
