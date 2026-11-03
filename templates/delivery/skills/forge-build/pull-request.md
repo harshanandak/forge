@@ -12,7 +12,7 @@ Optional Stop guard: `forge agent guard`. Completion words outside code require 
 
 ## Checkpoints
 
-Run `forge issue checkpoint <slice> --step <step> --branch "<branch>" --worktree "<path>" --next "<next action>"` at `claimed`, `red`, `green`, `pushed`, and timebox expiry (`stopped`). Include `--head`, `--pr`, `--receipt` if available; `next` is required, 1-300 chars. Before stopping, checkpoint; report it, receipts and remaining work.
+Run `forge issue checkpoint <slice> --step <step> --branch "<branch>" --worktree "<path>" --next "<next action>"` at `claimed`, `red`, `green`, `pushed`, and timebox expiry (`stopped`). Include `--head`, `--pr`, `--receipt` when available; `next` is required, 1-300 chars. Before stopping, checkpoint; report it, receipts and remaining work.
 
 On checkpoint REVISION_CONFLICT: `forge issue resume <slice>`, `forge issue comments <slice>`, then re-checkpoint. No silent retry.
 
@@ -25,14 +25,14 @@ On checkpoint REVISION_CONFLICT: `forge issue resume <slice>`, `forge issue comm
 Fill PR template: plain opening; bold takeaways; What review found; Verification.
 
 - **Opening**: user-visible problem, then addition. Short, plain sentences; no internal codes.
-- **Before / after**: observations before and after X; real numbers if available; how measured. Performance only: name the workload; separate component and end-to-end timings.
+- **Before / after**: observations before and after X; real numbers if available; how they were measured. Performance only: name the workload; separate component and end-to-end timings.
 - **What review found**: each blocker: bold user-visible failure and one-line fix. Empty on first push.
 - **Verification**: `forge check run` receipt ids; test that fails without the change; CI for this head if available. User-visible PRs with `.forge/verify.md`: name the guide scenario and list saved evidence paths. Performance only: pin the saving with a work, process or call count or size bound.
 - **Not verified**: what you did not check. Always present. Performance only: what the measurement does not establish.
 - **Models**: for each of planned, implemented and reviewed, give display name, model id, reasoning level and harness: `Implemented: <display name> (<model id>, reasoning <effort>) via <harness>`. Use `not yet reviewed` when unreviewed. Roles alone are not allowed. No tool-branding footer.
 - `Tracking: <issue id>`.
 
-No local data (paths, usernames, local links).
+No machine-local data.
 
 ## Link, release, stop
 
