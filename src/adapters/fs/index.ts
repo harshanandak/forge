@@ -8,11 +8,9 @@
 // directory, then rename).
 import {
   closeSync,
-  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -24,10 +22,10 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import type { ConfigFiles } from "../../core/config/files.ts";
 import {
-  fileLimitExceeded,
   MAX_CONFIG_FILE_BYTES,
   MAX_LOCK_FILE_BYTES,
 } from "../../core/config/files.ts";
+import { nodeProjectFiles } from "./project-files.ts";
 
 function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
@@ -141,7 +139,11 @@ export function removeEmptyParents(
   }
 }
 
-export function nodeConfigFiles(root: string): ConfigFiles {
+export function nodeConfigFiles(
+  root: string,
+  options: { beforeOpen?: () => void } = {},
+): ConfigFiles {
+  const files = nodeProjectFiles(root, options);
   return {
     read(
       path,
@@ -149,27 +151,11 @@ export function nodeConfigFiles(root: string): ConfigFiles {
         ? MAX_LOCK_FILE_BYTES
         : MAX_CONFIG_FILE_BYTES,
     ) {
-      let fd: number;
       try {
-        fd = openSync(resolveIn(root, path, "refuse"), "r");
+        return files.read(path, maxBytes);
       } catch (error) {
         if (errorCode(error) === "ENOENT") return undefined;
         throw error;
-      }
-      try {
-        if (fstatSync(fd).size > maxBytes)
-          throw fileLimitExceeded(path, maxBytes);
-        const buffer = Buffer.allocUnsafe(maxBytes + 1);
-        let count = 0;
-        while (count <= maxBytes) {
-          const read = readSync(fd, buffer, count, maxBytes + 1 - count, null);
-          if (read === 0) break;
-          count += read;
-        }
-        if (count > maxBytes) throw fileLimitExceeded(path, maxBytes);
-        return buffer.subarray(0, count);
-      } finally {
-        closeSync(fd);
       }
     },
     write(path, bytes) {
