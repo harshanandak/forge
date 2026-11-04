@@ -1,8 +1,13 @@
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
-import { spawn, spawnSync } from "node:child_process";
+import {
+  spawn,
+  spawnSync,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -84,9 +89,20 @@ else {
   chmodSync(join(fake, "gh"), 0o755);
 }
 const mcpClients = new Map<number | undefined, ReturnType<typeof startMcp>>();
+async function closeMcpClients(
+  clients: Iterable<Promise<{ close(): Promise<void> }>>,
+  directory: string,
+) {
+  const results = await Promise.allSettled(
+    Array.from(clients, async (client) => (await client).close()),
+  );
+  rmSync(directory, { recursive: true, force: true });
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure) throw failure.reason;
+}
 afterAll(async () => {
-  for (const client of mcpClients.values()) await (await client).close();
-  expect(mcpLaunches).toBe(2);
+  await closeMcpClients(mcpClients.values(), root);
+  expect(mcpLaunches).toBe(3);
   expect(cliLaunches).toBe(91);
   expect(fakeChecks).toBe(8);
   console.log(
@@ -96,7 +112,6 @@ afterAll(async () => {
       fakeChecks,
     }),
   );
-  rmSync(root, { recursive: true, force: true });
 });
 function run(since?: string, pr = 7) {
   cliLaunches++;
@@ -139,7 +154,10 @@ async function mcpRead(): Promise<State> {
   if (!mcpClients.has(configuredCap)) mcpClients.set(configuredCap, startMcp());
   return (await mcpClients.get(configuredCap)!).read();
 }
-async function startMcp() {
+async function startMcp(
+  initialize?: () => Promise<unknown>,
+  onSpawn?: (child: ChildProcessWithoutNullStreams) => void,
+) {
   mcpLaunches++;
   const child = spawn(node, [bin, "--mcp"], {
     cwd: root,
@@ -147,6 +165,19 @@ async function startMcp() {
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
+  onSpawn?.(child);
+  const exited = new Promise<void>((resolve) =>
+    child.once("close", () => resolve()),
+  );
+  async function close() {
+    child.stdin.end();
+    const timer = setTimeout(() => child.kill(), 3000);
+    try {
+      await exited;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   let sequence = 0,
     buffer = "",
     errors = "";
@@ -192,12 +223,21 @@ async function startMcp() {
       pending.delete(id);
     }
   }
-  await rpc("initialize", {
-    protocolVersion: "2025-11-25",
-    capabilities: {},
-    clientInfo: { name: "pr-state-integration", version: "1" },
-  });
-  child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
+  try {
+    await (initialize
+      ? initialize()
+      : rpc("initialize", {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "pr-state-integration", version: "1" },
+        }));
+    child.stdin.write(
+      '{"jsonrpc":"2.0","method":"notifications/initialized"}\n',
+    );
+  } catch (error) {
+    await close();
+    throw error;
+  }
   return {
     async read(): Promise<State> {
       const result = (await rpc("tools/call", {
@@ -215,20 +255,51 @@ async function startMcp() {
       );
       return result.structuredContent.result;
     },
-    async close() {
-      const exited = new Promise<void>((resolve) =>
-        child.once("exit", () => resolve()),
-      );
-      child.stdin.end();
-      const timer = setTimeout(() => child.kill(), 3000);
-      try {
-        if (child.exitCode === null) await exited;
-      } finally {
-        clearTimeout(timer);
-      }
-    },
+    close,
   };
 }
+
+test("MCP initialization failure closes the child and teardown drains every client", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "forge-pr-state-init-failure-"));
+  const failure = new Error("Injected initialization failure");
+  let child: ChildProcessWithoutNullStreams | undefined;
+  let closed = 0;
+  const startup = startMcp(
+    () => Promise.reject(failure),
+    (value) => {
+      child = value;
+    },
+  );
+  try {
+    await expect(
+      closeMcpClients(
+        [
+          startup,
+          Promise.resolve({
+            close: () => {
+              closed++;
+              return Promise.reject(new Error("Injected close failure"));
+            },
+          }),
+          Promise.resolve({
+            close: () => {
+              closed++;
+              return Promise.resolve();
+            },
+          }),
+        ],
+        directory,
+      ),
+    ).rejects.toBe(failure);
+    expect(child!.stdin.writableEnded).toBe(true);
+    expect(child!.exitCode !== null || child!.signalCode !== null).toBe(true);
+    expect(closed).toBe(2);
+    expect(existsSync(directory)).toBe(false);
+  } finally {
+    child?.kill();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 function reviewedCycles() {
   const commits = Array.from({ length: 4 }, (_, index) => ({
