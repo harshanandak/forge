@@ -16,6 +16,7 @@ env:
   # Pinned Bun for check, test, build and pack smoke. `bun fmt` is stable in 1.4.4;
   # `bun lint` still needs the canary build used by the `static` job.
   BUN_VERSION: "1.4.4"
+  CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
 
 defaults:
   run:
@@ -71,12 +72,32 @@ jobs:
     name: Structure guards
     runs-on: ubuntu-latest
     steps:
+      - &start-record
+        name: Start timing record
+        run: |
+          touch "$RUNNER_TEMP/ci-tests.log"
+          echo '{"version":1,"files":{}}' > "$RUNNER_TEMP/ci-timings.json"
+          echo "CI_NODE=${CI_NODE:-$(node -p 'process.versions.node.split(".")[0]')}" >> "$GITHUB_ENV"
+          echo "CI_JOB_STARTED=$(date +%s)000" >> "$GITHUB_ENV"
+          echo "CI_TIMINGS=$RUNNER_TEMP/ci-timings.json" >> "$GITHUB_ENV"
+          echo "FORGE_TEST_TIMINGS_ARG=--timings=$RUNNER_TEMP/ci-timings.json" >> "$GITHUB_ENV"
+          echo "FORGE_TEST_UPDATE_ARG=--update-timings" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
-      - run: bun run test:structure
+      - run: bun run test:structure --timings="$CI_TIMINGS" --update-timings 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
+      - &write-record
+        if: always()
+        run: bun tools/ci/ci-record.ts
+      - &upload-record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-record-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: ${{ runner.temp }}/ci-record.json
+          if-no-files-found: error
 
   static:
     name: Lint and format
@@ -127,6 +148,9 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      CI_NODE: ${{ matrix.node }}
+      CI_SHARD: ${{ matrix.shard || matrix.suite }}
     strategy:
       fail-fast: false
       matrix:
@@ -153,6 +177,7 @@ jobs:
           - { os: windows-latest, node: "26", suite: tests, shard: "3/3" }
           - { os: windows-latest, node: "26", suite: pack }
     steps:
+      - *start-record
       - name: Keep Windows test temp files on the workspace disk
         if: runner.os == 'Windows'
         shell: pwsh
@@ -208,10 +233,10 @@ jobs:
         run: bun run check
       - name: Unit tests
         if: matrix.suite != 'pack'
-        run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:unit {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:unit' }}
+        run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:unit {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:unit' }} 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - name: Integration tests
         if: matrix.suite != 'pack'
-        run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:integration {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:integration' }}
+        run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:integration {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:integration' }} 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - if: matrix.suite != 'tests'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -223,7 +248,9 @@ jobs:
           # Node legs split counterfactuals; Bun keeps the full set on Node 24 only.
           STATE_NODE_LEG: ${{ matrix.node }}
           FORGE_PACK_INPUT: ${{ runner.temp }}/packed/forge-workflow.tgz
-        run: bun run test:pack
+        run: bun run test:pack 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
+      - *write-record
+      - *upload-record
       - name: Stop and summarize Windows runner trace
         id: trace
         if: always() && runner.os == 'Windows'
