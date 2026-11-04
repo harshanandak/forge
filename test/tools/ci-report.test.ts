@@ -14,4 +14,7 @@ test("nearest rank percentiles and empty samples", () => {
 test.each(f.cases)("$name", ({ attempts, includes }) => {
   const output = report(attempts);
   for (const line of includes) expect(output).toContain(line);
+  expect(
+    output.split("\n").filter((line) => line.startsWith("Flake ")),
+  ).toEqual(includes.filter((line) => line.startsWith("Flake ")));
 });
