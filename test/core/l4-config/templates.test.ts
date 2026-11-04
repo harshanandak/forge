@@ -113,6 +113,61 @@ describe("template lifecycle", () => {
     expect(p.read()).toBe(invalid);
   });
 
+  test("import gives a separate config set repair for a block without a source", () => {
+    const p = project();
+    const invalid = "schemaVersion: forge.config/1\nblocks:\n  custom: {}\n";
+    mkdirSync(join(p.root, ".forge"), { recursive: true });
+    writeFileSync(join(p.root, ".forge/config.yaml"), invalid);
+    const failure = failureOf(() =>
+      p.templates.importTemplate({
+        template: "forge/starter",
+        expectRevision: p.config.show().revision,
+      }),
+    );
+    expect(failure).toMatchObject({
+      code: "INPUT_INVALID",
+      pointer: "/blocks/custom/source",
+    });
+    expect(failure).toHaveProperty(
+      "repair",
+      expect.stringContaining("forge config set"),
+    );
+    expect(failure).toHaveProperty(
+      "repair",
+      expect.stringContaining("Then retry template import"),
+    );
+    expect(failure).toHaveProperty(
+      "repair",
+      expect.stringContaining("builtin"),
+    );
+    expect(failure).toHaveProperty(
+      "repair",
+      expect.stringContaining("package"),
+    );
+    expect(p.read()).toBe(invalid);
+  });
+
+  test("config set keeps the same-edit repair for a block without a source", () => {
+    const p = project();
+    const invalid = "schemaVersion: forge.config/1\nblocks:\n  custom: {}\n";
+    mkdirSync(join(p.root, ".forge"), { recursive: true });
+    writeFileSync(join(p.root, ".forge/config.yaml"), invalid);
+    const failure = failureOf(() =>
+      p.config.set({
+        path: "/blocks/custom/config/enabled",
+        value: true,
+        expectRevision: p.config.show().revision,
+      }),
+    );
+    expect(failure).toMatchObject({
+      code: "INPUT_INVALID",
+      pointer: "/blocks/custom/source",
+      repair:
+        'say where the block comes from in the same edit: set /blocks/custom/source to {"builtin": "<publisher>/<name>"}, {"path": "<dir>"} or {"package": "<name>"}',
+    });
+    expect(p.read()).toBe(invalid);
+  });
+
   test("template metadata cannot claim a user key or replace provenance", () => {
     const p = project();
     const userValue = { path: "blocks/my-custom" };
