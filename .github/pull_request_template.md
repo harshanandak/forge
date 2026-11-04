@@ -44,15 +44,34 @@ Fill every section in order and delete the hints. Write "None" rather than dropp
 
 ## Verification
 
-<!-- One proof line per claim. The test that fails without the change (link pinned to the head commit), the CI run for the current head, local checks with exit codes. -->
+<!--
+One row per claim in Fix and Before / after. Name the evidence rung reached; never round up:
+1 said so, 2 pointed at the line, 3 showed the bad case cannot happen, 4 ran it, 5 reproduced in the live system (CI on this head, the installed package, production).
+-->
 
-- Fails without the change: [<test name>](https://github.com/<owner>/<repo>/blob/<head-sha>/<path>#L<n>)
-- CI for the current head: <run link>
-- Local checks: <commands and exit codes>
+| Claim | Evidence | Rung |
+| ----- | -------- | ---- |
+|       |          |      |
+
+- Red without the change: [<test name>](https://github.com/<owner>/<repo>/blob/<head-sha>/<path>#L<n>) failed at <run or commit link> for the expected reason.
+- Green with the change: CI for the current head <run link>.
+- Local checks: <commands and exit codes>.
+
+## Validation
+
+<!-- Is the user-side problem in Problem actually gone, not only the tests green? How it was checked (the real workload, run counts, the measured numbers), and what result would prove this fix wrong. -->
+
+- <...>
 
 ## Not verified
 
 <!-- What you did not check and why, and what only the next runs or a later failure will prove. -->
+
+- <...>
+
+## Next steps
+
+<!-- How this moves forward after merge: what to watch and when the tracking issue closes, follow-ups filed (issue ids), decisions the owner still has to make with a default. "None" if the work is complete. -->
 
 - <...>
 

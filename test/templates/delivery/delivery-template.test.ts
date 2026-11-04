@@ -1212,7 +1212,7 @@ const GUIDANCE = [
   [
     "pr.style",
     "forge-build",
-    "Style: Problem; Root cause; Fix; bold takeaways; What review found; Verification",
+    "when the repository has a PR template, fill its sections in order and keep its headings",
   ],
 ] as const;
 

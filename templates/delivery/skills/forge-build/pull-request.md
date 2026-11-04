@@ -22,7 +22,7 @@ On checkpoint REVISION_CONFLICT: `forge issue resume <slice>`, `forge issue comm
 2. `git push -u origin <branch>`. Never force-push; that is a one-way door.
 3. Write body with editor, then `gh pr create --base <base> --title "<plain conventional commit>" --body-file <file>`. Speed, memory, size or work savings: the title names the user-visible gain and its number.
 
-Fill PR template sections in order. Style: Problem; Root cause; Fix; bold takeaways; What review found; Verification.
+PR body: when the repository has a PR template, fill its sections in order and keep its headings. Without one, cover:
 
 - **Before / after**: observations before and after X; real numbers if available; how they were measured. Performance only: name the workload; separate component and end-to-end timings.
 - **What review found**: each blocker: bold user-visible failure and one-line fix. Empty on first push.
