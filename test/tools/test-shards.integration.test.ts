@@ -10,8 +10,95 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 import { parse } from "yaml";
+import { changedPaths, scopeOf } from "../../tools/ci/change-scope.ts";
+
+test("docs-only source READMEs have no non-fixture source readers", () => {
+  const files = execFileSync("git", ["ls-files", "-z"], {
+    encoding: "utf8",
+    timeout: 10_000,
+  }).split("\0");
+  const documents = new Set(
+    files.filter((path) => /^(?:src\/.*|migrations)\/README\.md$/.test(path)),
+  );
+  const readers: string[] = [];
+  for (const file of files.filter(
+    (path) => /\.(?:ts|mjs)$/.test(path) && !path.includes("/fixtures/"),
+  )) {
+    const text = readFileSync(file, "utf8");
+    for (const match of text.matchAll(/["'`]([^"'`\r\n]*README\.md)["'`]/g)) {
+      const reference = match[1]!;
+      const target = reference.startsWith(".")
+        ? posix.normalize(posix.join(posix.dirname(file), reference))
+        : reference;
+      if (documents.has(target)) readers.push(`${file}: ${reference}`);
+    }
+  }
+  expect(readers).toEqual([]);
+}, 10_000);
+
+test("H2: a code-to-doc rename requires full CI through the real selector", () => {
+  const work = mkdtempSync(join(tmpdir(), "forge-change-scope-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: work,
+      encoding: "utf8",
+      timeout: 10_000,
+    }).trim();
+  try {
+    git("init");
+    mkdirSync(join(work, "src"));
+    mkdirSync(join(work, "docs"));
+    writeFileSync(join(work, "src/a.ts"), "export const value = 1;\n");
+    git("add", ".");
+    git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "base",
+    );
+    const base = git("rev-parse", "HEAD");
+    git("mv", "src/a.ts", "docs/a.md");
+    git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "rename",
+    );
+    const head = git("rev-parse", "HEAD");
+    const result = spawnSync(
+      process.execPath,
+      [resolve("tools/ci/change-scope.ts")],
+      {
+        cwd: work,
+        env: {
+          ...process.env,
+          EVENT: "pull_request",
+          BASE_SHA: base,
+          HEAD_SHA: head,
+        },
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("scope=full");
+    expect(changedPaths(base, head, work).sort()).toEqual([
+      "docs/a.md",
+      "src/a.ts",
+    ]);
+    expect(scopeOf(changedPaths(base, base, work))).toBe("full");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}, 30_000);
 
 function coverShards(count: number) {
   const root = resolve(import.meta.dir, "../..");
