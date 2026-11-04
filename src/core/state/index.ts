@@ -140,6 +140,10 @@ function keyValid(key: string): void {
   if (key.length === 0 || key.length > 500)
     invalid("Key must contain 1 to 500 characters");
 }
+function wellFormedText(value: string, position: string): void {
+  if (!value.isWellFormed())
+    invalid(`${position} must be well-formed UTF-16 text`);
+}
 function copyReadSet(value: unknown): WriteOptions["readSet"] {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) return invalid("Invalid read set");
@@ -164,7 +168,7 @@ function namespaceValid(namespace: string): void {
 
 function upperBound(prefix: string): string | undefined {
   // SQLite's binary UTF-8 order needs a code-point successor, carrying past U+10FFFF.
-  const points = prefix.isWellFormed() ? Array.from(prefix) : [];
+  const points = Array.from(prefix);
   while (points.length > 0) {
     const point = points.pop()!.codePointAt(0)!;
     if (point === 0x10ffff) continue;
@@ -765,7 +769,7 @@ export class StateOwner {
   }
   list(namespace: string, prefix = ""): readonly StateRecord[] {
     namespaceValid(namespace);
-    // Unpaired surrogates bind as U+FFFD, so only the body filter can distinguish them.
+    wellFormedText(prefix, "List prefix");
     const upper = upperBound(prefix);
     return this.#db
       .all(
@@ -787,8 +791,7 @@ export class StateOwner {
   }
   #aggregate(namespace: string, prefix: string, expression: string): number {
     namespaceValid(namespace);
-    if (!prefix.isWellFormed())
-      invalid("Aggregate prefix must be well-formed Unicode");
+    wellFormedText(prefix, "Aggregate prefix");
     const upper = upperBound(prefix);
     return Number(
       this.#db.get(
@@ -926,6 +929,7 @@ export class StateOwner {
   ): StateRecord {
     namespaceValid(namespace);
     keyValid(key);
+    wellFormedText(key, "Key");
     if (
       !validateActor(actor).ok ||
       !Number.isSafeInteger(options.expectRevision) ||
@@ -1022,8 +1026,9 @@ export class StateOwner {
     if (!validateActor(actor).ok) invalid("Invalid actor");
     const readSet = copyReadSet(options.readSet) ?? [];
     const keys = new Set<string>();
-    const prepared = entries.map((entry) => {
+    const prepared = entries.map((entry, index) => {
       keyValid(entry.key);
+      wellFormedText(entry.key, `Batch entry ${index} key`);
       if (
         !Number.isSafeInteger(entry.expectRevision) ||
         entry.expectRevision < 0 ||
@@ -1159,6 +1164,8 @@ export class StateOwner {
     return this.#db.transaction(() => {
       const now = this.#now();
       const current = this.lease(namespace, subject);
+      if (current?.subject !== subject)
+        wellFormedText(subject, "Lease subject");
       // Historical acquisition replays cannot grant authority over a newer holder or revive expiry.
       const prior = this.#db.get(
         "SELECT result FROM state_requests WHERE namespace=? AND request_id=?",

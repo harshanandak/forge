@@ -263,10 +263,10 @@ test("key aggregates match old JS allocation with gaps, aliases, literal prefixe
     expect(owner.maxNumber(namespace, "issue:work-")).toBe(oldMax);
     for (const prefix of ["\ud800", "literal%_:\ud801"]) {
       expect(() => owner.count(namespace, prefix)).toThrow(
-        "well-formed Unicode",
+        "Aggregate prefix must be well-formed UTF-16 text",
       );
       expect(() => owner.maxNumber(namespace, prefix)).toThrow(
-        "well-formed Unicode",
+        "Aggregate prefix must be well-formed UTF-16 text",
       );
     }
     expect(f.call("create", { title: "Parity" }).id).toBe(`work-${oldMax + 1}`);
