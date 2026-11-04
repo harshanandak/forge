@@ -136,6 +136,14 @@ describe("template lifecycle", () => {
       "repair",
       expect.stringContaining("Then retry template import"),
     );
+    expect(failure).toHaveProperty(
+      "repair",
+      expect.stringContaining("builtin"),
+    );
+    expect(failure).toHaveProperty(
+      "repair",
+      expect.stringContaining("package"),
+    );
     expect(p.read()).toBe(invalid);
   });
 
