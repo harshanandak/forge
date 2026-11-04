@@ -1,7 +1,8 @@
 // [integration] Real git worktrees and subprocesses; Forge and Codex are PATH fixtures.
-import { afterAll, afterEach, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout } from "bun:test";
+import { test as runTest } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -37,32 +38,29 @@ const sections = [
   "Prior art",
 ];
 const roots: string[] = [];
-let testCases = 0,
-  childLaunches = 0,
-  roleCases = 0,
-  directCases = 0;
-afterAll(() => {
-  expect(testCases).toBe(127);
-  expect(roleCases).toBe(41);
-  expect(directCases).toBe(8);
-  console.log(
-    JSON.stringify({
-      file: "lane-run",
-      childLaunches,
-      previousChildLaunches: childLaunches + roleCases + directCases,
-      roleCases,
-      directCases,
-    }),
-  );
+let childLaunches = 0;
+const caseNames: string[] = [];
+type Case = [name: string, body: () => void | Promise<void>];
+function register(run: (...args: Case) => unknown) {
+  return (...args: Case) => {
+    caseNames.push(args[0]);
+    run(...args);
+  };
+}
+const test = Object.assign(register(runTest), {
+  skipIf: (condition: boolean) => register(runTest.skipIf(condition)),
 });
 async function withEnvironment<T>(
   env: NodeJS.ProcessEnv,
   task: () => Promise<T>,
 ) {
+  const before = childLaunches;
   const prior = new Map(Object.keys(env).map((key) => [key, process.env[key]]));
   Object.assign(process.env, env);
   try {
-    return await task();
+    const result = await task();
+    expect(childLaunches - before).toBe(0);
+    return result;
   } finally {
     for (const [key, value] of prior) {
       if (value === undefined) delete process.env[key];
@@ -71,7 +69,6 @@ async function withEnvironment<T>(
   }
 }
 afterEach(() => {
-  testCases++;
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
@@ -368,7 +365,6 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
       "session" | "reply" | "log" | "exit" | "retries" | "stoppedAfterReply"
     >
   > {
-    directCases++;
     writeFileSync(join(root, "mode"), mode);
     const folder = join(root, "direct-output");
     mkdirSync(folder);
@@ -1084,7 +1080,6 @@ ${["builder", "fixer", "tester", "reviewer"]
   const issue = scriptFixture(join(f.root, "fake-forge.mjs"));
   // Role assembly owns no CLI lifecycle or lock proof; those stay in f.run/f.launch.
   const runRole = async (role: string, extra: string[] = []) => {
-    roleCases++;
     const lines: Record<string, unknown>[] = [];
     return withEnvironment(f.env, async () => {
       const code = await laneRun(["one", "--role", role, ...extra], {
@@ -2805,3 +2800,9 @@ for (const operation of ["reclaim", "rename"])
       ),
     ).toEqual([]);
   });
+
+// Registration is synchronous even when Bun selects a focused subset to execute.
+expect(caseNames).toHaveLength(128);
+expect(
+  createHash("sha256").update(JSON.stringify(caseNames)).digest("hex"),
+).toBe("cf896f415afa1c01a4fe9d778dbfd5d612c3546e1b45b604bb7607adb254451b");
