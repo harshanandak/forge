@@ -1,4 +1,4 @@
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, test as bunTest } from "bun:test";
 import {
   spawn,
   spawnSync,
@@ -17,6 +17,9 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { scriptFixture } from "../../script-fixture.ts";
+import entry from "../../../src/blocks/check/entry.cts";
+import { checkCrypto } from "../../../src/blocks/check/support.ts";
+import type { ProcessPort } from "../../../src/ports/process.ts";
 
 setDefaultTimeout(60000);
 const root = mkdtempSync(join(tmpdir(), "forge-pr-state-"));
@@ -53,7 +56,58 @@ if (initialized.status !== 0)
 let configuredCap: number | undefined;
 let cliLaunches = 0,
   mcpLaunches = 0,
-  fakeChecks = 0;
+  fakeChecks = 0,
+  logicReads = 0,
+  cases = 0;
+
+// Label, CLI launches, in-process reads, fake-script validation cases.
+const inventory: [string, number, number, number][] = [
+  ["MCP initialization", 0, 0, 0],
+  ["count three", 3, 0, 0],
+  ["rejects review cap", 1, 0, 0],
+  ["retain edited", 1, 0, 0],
+  ["omit stale", 1, 0, 0],
+  ["excludes pure", 0, 2, 0],
+  ["leave base-only", 3, 0, 0],
+  ["bot summary activity", 0, 3, 0],
+  ["the fake rejects", 0, 0, 8],
+  ["reads the configured", 2, 0, 0],
+  ["emits one raw", 3, 0, 0],
+  ["pr.state reports", 0, 2, 0],
+  ["each new failure", 0, 7, 0],
+  ["all remark feeds", 0, 4, 0],
+  ["pending, queue", 0, 9, 0],
+  ["R2-1 final", 0, 3, 0],
+  ["failed or incomplete", 4, 0, 0],
+  ["R2-5 required green", 0, 5, 0],
+  ["optional failures", 0, 6, 0],
+  ["R2-5 inline", 0, 4, 0],
+  ["large bodies", 0, 3, 0],
+];
+
+// Per-case deltas remain exact when Bun selects a subset with -t.
+function test(name: string, body: () => unknown) {
+  cases++;
+  const counts = inventory.find(([label]) => name.includes(label));
+  if (!counts) throw new Error(`Missing launch inventory: ${name}`);
+  const [, ...expected] = counts;
+  bunTest(name, async () => {
+    const before = [cliLaunches, logicReads, fakeChecks];
+    const beforeMcp = mcpLaunches;
+    const expectedMcp = name.startsWith("MCP initialization")
+      ? 1
+      : name.includes("CLI and MCP")
+        ? Number(!mcpClients.has(undefined)) +
+          (name.includes("count three") ? Number(!mcpClients.has(3)) : 0)
+        : 0;
+    await body();
+    expect(
+      [cliLaunches, logicReads, fakeChecks].map((n, i) => n - before[i]!),
+    ).toEqual(expected);
+    expect(mcpLaunches - beforeMcp).toBe(expectedMcp);
+  });
+}
+
 function configure(rounds?: number) {
   configuredCap = rounds;
   writeFileSync(
@@ -102,14 +156,12 @@ async function closeMcpClients(
 }
 afterAll(async () => {
   await closeMcpClients(mcpClients.values(), root);
-  expect(mcpLaunches).toBe(3);
-  expect(cliLaunches).toBe(91);
-  expect(fakeChecks).toBe(8);
   console.log(
     JSON.stringify({
       file: "pr-state",
       launches: 1 + cliLaunches + mcpLaunches,
       fakeChecks,
+      logicReads,
     }),
   );
 });
@@ -464,7 +516,7 @@ test("built CLI and MCP omit stale review advisory on a final head race", async 
   }
 });
 
-test("built CLI excludes pure running edits and retains substantive summary edits", () => {
+test("pr.state excludes pure running edits and retains substantive summary edits", async () => {
   const history = reviewedCycles();
   for (const [diff, count] of [
     ["+Review running", 0],
@@ -483,7 +535,7 @@ test("built CLI excludes pure running edits and retains substantive summary edit
         },
       ],
     });
-    expect(read().reviewRounds).toBe(count);
+    expect((await stateRead()).reviewRounds).toBe(count);
   }
 });
 
@@ -523,7 +575,7 @@ test("built CLI and MCP leave base-only updates and in-progress review at zero",
     expect(state.reviewRounds).toBe(0);
 });
 
-test("bot summary activity ignores hash references and duplicate evidence counts once", () => {
+test("bot summary activity ignores hash references and duplicate evidence counts once", async () => {
   const history = reviewedCycles(),
     sha = history.commits[0]!.sha,
     time = "2026-10-27T11:00:00Z";
@@ -545,7 +597,7 @@ test("bot summary activity ignores hash references and duplicate evidence counts
       },
     ],
   });
-  expect(read().reviewRounds).toBe(0);
+  expect((await stateRead()).reviewRounds).toBe(0);
   scenario({
     head: history.head,
     commits: history.commits,
@@ -559,16 +611,58 @@ test("bot summary activity ignores hash references and duplicate evidence counts
       },
     ],
   });
-  expect(read().reviewRounds).toBe(1);
+  expect((await stateRead()).reviewRounds).toBe(1);
   scenario({
     head: history.head,
     commits: history.commits,
     reviewPages: [history.reviewPages[1], history.reviewPages[1]],
   });
-  expect(read().reviewRounds).toBe(1);
+  expect((await stateRead()).reviewRounds).toBe(1);
 });
 
 const fakeGh = scriptFixture(join(import.meta.dirname, "gh.mjs"));
+
+async function stateRead(since?: string): Promise<State> {
+  const value = await stateValue(since);
+  expect(value).not.toBeNull();
+  return value!;
+}
+async function stateQuiet(since: string) {
+  expect(await stateValue(since)).toBeNull();
+}
+async function stateValue(since?: string): Promise<State | null> {
+  logicReads++;
+  const processPort: ProcessPort = {
+    capability: "forge.process/v1",
+    resolve: (path) => ({ kind: "resolved", path }),
+    run(_executable, args) {
+      const result = fakeGh("", [...args], env, root);
+      return Promise.resolve({
+        ...result,
+        exitCode: result.status,
+        signal: null,
+        timedOut: false,
+        truncated: false,
+        durationMs: 0,
+      });
+    },
+  };
+  return (
+    entry as unknown as Record<string, (args: unknown) => Promise<State | null>>
+  )["pr.state"]!({
+    input: { pr: 7, ...(since ? { since } : {}) },
+    config: { environment: [], review: { rounds: configuredCap ?? 2 } },
+    signal: new AbortController().signal,
+    deadline: Date.now() + 45000,
+    services: {
+      process: processPort,
+      files: { root },
+      environment: { select: () => env },
+      crypto: checkCrypto,
+    },
+  });
+}
+
 test("the fake rejects another PR in every read route", () => {
   for (const pr of [7, 23]) {
     scenario({ pr });
@@ -658,36 +752,36 @@ for (const [name, value, verdict, end] of [
   ["closed", { state: "CLOSED" }, "gone", true],
   ["merged", { state: "MERGED" }, "gone", true],
 ] as const)
-  test(`built CLI reports ${name}`, () => {
+  test(`pr.state reports ${name}`, async () => {
     scenario(value);
-    const state = read();
+    const state = await stateRead();
     expect(state).toMatchObject({ verdict, end });
-    quiet(state.next);
+    await stateQuiet(state.next);
   });
 
-test("each new failure, comment and head cycle emits its news once", () => {
+test("each new failure, comment and head cycle emits its news once", async () => {
   scenario({ pending: true });
-  const baseline = read();
+  const baseline = await stateRead();
   scenario({ failed: true, merge: "BLOCKED" });
-  const failure = read(baseline.next);
+  const failure = await stateRead(baseline.next);
   expect(failure.news).toEqual(["check failed: test"]);
-  quiet(failure.next);
+  await stateQuiet(failure.next);
   const comment = {
     id: 1,
     created_at: "2026-10-27T10:00:00Z",
     user: { login: "other" },
   };
   scenario({ failed: true, merge: "BLOCKED", comments: [comment] });
-  const remark = read(failure.next);
+  const remark = await stateRead(failure.next);
   expect(remark.news).toEqual(["1 new remarks: other"]);
-  quiet(remark.next);
+  await stateQuiet(remark.next);
   scenario({ head: "b", comments: [comment] });
-  const moved = read(remark.next);
+  const moved = await stateRead(remark.next);
   expect(moved.news).toEqual(["head moved", "required checks passed"]);
-  quiet(moved.next);
+  await stateQuiet(moved.next);
 });
 
-test("all remark feeds, later pages, own comments and same-time ids retain the cursor", () => {
+test("all remark feeds, later pages, own comments and same-time ids retain the cursor", async () => {
   const time = "2026-10-27T10:00:00Z",
     user = { login: "other" };
   const comment = { id: 1, created_at: time, user };
@@ -696,9 +790,9 @@ test("all remark feeds, later pages, own comments and same-time ids retain the c
     reviews: [{ id: 2, submitted_at: time, user }],
     reviewComments: [{ ...comment, id: 3 }],
   });
-  const first = read();
+  const first = await stateRead();
   expect(first.news).toContain("3 new remarks: other");
-  quiet(first.next);
+  await stateQuiet(first.next);
   scenario({
     issuePages: [[], [comment, { ...comment, id: 4 }]],
     reviews: [{ id: 2, submitted_at: time, user }],
@@ -707,24 +801,24 @@ test("all remark feeds, later pages, own comments and same-time ids retain the c
       { ...comment, id: 5, user: { login: "self" } },
     ],
   });
-  const next = read(first.next);
+  const next = await stateRead(first.next);
   expect(next.news).toEqual(["1 new remarks: other"]);
-  quiet(next.next);
+  await stateQuiet(next.next);
 });
 
-test("pending, queue and thread resolutions wake terminal readiness without a head move", () => {
+test("pending, queue and thread resolutions wake terminal readiness without a head move", async () => {
   for (const blocked of [
     { pending: true },
     { queued: true },
     { threads: true },
   ]) {
     scenario(blocked);
-    const first = read();
+    const first = await stateRead();
     scenario({});
-    const ready = read(first.next);
+    const ready = await stateRead(first.next);
     expect(ready).toMatchObject({ verdict: "ready", end: true });
     expect(ready.news.length).toBeGreaterThan(0);
-    quiet(ready.next);
+    await stateQuiet(ready.next);
   }
 });
 
@@ -732,23 +826,23 @@ for (const [name, value, head] of [
   ["head", { afterHead: "b" }, "b"],
   ["state", { state: "CLOSED", afterState: "OPEN" }, "a"],
 ] as const)
-  test(`R2-1 final ${name} race waits and does not latch stale passing checks`, () => {
+  test(`R2-1 final ${name} race waits and does not latch stale passing checks`, async () => {
     scenario(value);
-    const changed = read();
+    const changed = await stateRead();
     expect(changed).toMatchObject({
       head: head.repeat(40),
       verdict: "waiting",
       end: false,
     });
     expect(changed.news).not.toContain("required checks passed");
-    const stable = read(changed.next);
+    const stable = await stateRead(changed.next);
     expect(stable).toMatchObject({
       head: head.repeat(40),
       verdict: "ready",
       end: true,
     });
     expect(stable.news).toContain("required checks passed");
-    quiet(stable.next);
+    await stateQuiet(stable.next);
   });
 
 test("failed or incomplete reads and invalid tokens exit nonzero without next", () => {
@@ -767,58 +861,58 @@ test("failed or incomplete reads and invalid tokens exit nonzero without next", 
   expect(result.status).not.toBe(0);
   expect(result.stdout).not.toContain('"next"');
 });
-test("R2-5 required green, failed and green checks announce passing once per head", () => {
+test("R2-5 required green, failed and green checks announce passing once per head", async () => {
   scenario({});
-  const first = read();
+  const first = await stateRead();
   expect(first.news).toContain("required checks passed");
   scenario({ failed: true, merge: "BLOCKED" });
-  const failed = read(first.next);
+  const failed = await stateRead(first.next);
   expect(failed.verdict).toBe("blocked");
   expect(failed.news).toEqual(["check failed: test"]);
-  quiet(failed.next);
+  await stateQuiet(failed.next);
   scenario({});
-  const restored = read(failed.next);
+  const restored = await stateRead(failed.next);
   expect(restored).toMatchObject({ verdict: "ready", end: true });
   expect(restored.news).not.toContain("required checks passed");
-  quiet(restored.next);
+  await stateQuiet(restored.next);
 });
 
-test("optional failures block while missing checks and GitHub BLOCKED do not announce passing", () => {
+test("optional failures block while missing checks and GitHub BLOCKED do not announce passing", async () => {
   scenario({});
-  const first = read();
+  const first = await stateRead();
   scenario({ optionalFailed: true });
-  const failed = read(first.next);
+  const failed = await stateRead(first.next);
   expect(failed.verdict).toBe("blocked");
   expect(failed.news).toContain("check failed: optional");
   scenario({});
-  const restored = read(failed.next);
+  const restored = await stateRead(failed.next);
   expect(restored.news).not.toContain("required checks passed");
-  quiet(restored.next);
+  await stateQuiet(restored.next);
   scenario({ merge: "BLOCKED" });
-  expect(read().news).not.toContain("required checks passed");
+  expect((await stateRead()).news).not.toContain("required checks passed");
   scenario({ empty: true });
-  expect(read()).toMatchObject({
+  expect(await stateRead()).toMatchObject({
     verdict: "waiting",
     reasons: ["no checks reported"],
   });
 });
-test("R2-5 inline page two emits a new same-time remark exactly once", () => {
+test("R2-5 inline page two emits a new same-time remark exactly once", async () => {
   const comments = Array.from({ length: 100 }, (_, index) => ({
     id: index + 1,
     created_at: "2026-10-27T10:00:00Z",
     user: { login: "other" },
   }));
   scenario({ reviewComments: comments });
-  const first = read();
+  const first = await stateRead();
   expect(first.news).toContain("100 new remarks: other");
-  quiet(first.next);
+  await stateQuiet(first.next);
   scenario({ reviewComments: [...comments, { ...comments[0], id: 101 }] });
-  const second = read(first.next);
+  const second = await stateRead(first.next);
   expect(second.news).toEqual(["1 new remarks: other"]);
-  quiet(second.next);
+  await stateQuiet(second.next);
 });
 
-test("large bodies stay outside captured metadata and one thousand threads keep a compact token", () => {
+test("large bodies stay outside captured metadata and one thousand threads keep a compact token", async () => {
   const item = {
     id: 1,
     created_at: "2026-10-27T10:00:00Z",
@@ -830,12 +924,15 @@ test("large bodies stay outside captured metadata and one thousand threads keep 
     reviews: [{ ...item, submitted_at: item.created_at }],
     reviewComments: [item],
   });
-  const remarks = read();
+  const remarks = await stateRead();
   expect(remarks.news).toContain("3 new remarks: other");
   expect(remarks.next.length).toBeLessThan(2000);
   scenario({ threadCount: 1000 });
-  const threads = read();
+  const threads = await stateRead();
   expect(threads.news).toContain("1000 new unresolved threads");
   expect(threads.next.length).toBeLessThan(1000);
-  quiet(threads.next);
+  await stateQuiet(threads.next);
 });
+
+// Registration includes all loop cases even in focused runs.
+if (cases !== 34) throw new Error(`Expected 34 pr-state cases, got ${cases}`);
