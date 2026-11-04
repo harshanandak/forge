@@ -29,7 +29,7 @@ test("the docs-only migration README has no non-fixture source readers", () => {
     timeout: 10_000,
   }).split("\0");
   const documents = new Set<string>(
-    files.filter((path) => path === "migrations/README.md"),
+    files.filter((path) => path === posix.join("migrations", "README.md")),
   );
   const readers: string[] = [];
   for (const file of files.filter(
