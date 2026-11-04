@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { selectSourceFiles } from "./source-selection.ts";
 
 // Timings are whole-file milliseconds; unmeasured files get one second.
 export function assignShards(
@@ -21,7 +22,8 @@ export function assignShards(
 }
 
 if (import.meta.main) {
-  const [suite, shard, mode] = process.argv.slice(2);
+  const [suite, shard, ...options] = process.argv.slice(2);
+  const mode = options.includes("--list") ? "--list" : undefined;
   const [index, count] = (shard ?? "").split("/").map(Number);
   if (
     !/^test:(unit|integration)$/.test(suite ?? "") ||
@@ -36,7 +38,14 @@ if (import.meta.main) {
   const files = [...new Bun.Glob("{test,src}/**/*.test.ts").scanSync(".")]
     .map((file) => file.replaceAll("\\", "/"))
     .filter((file) => !file.endsWith("/packed.integration.test.ts"));
-  const assigned = assignShards(files, timings, count)[index - 1]!;
+  const selectedFiles = selectSourceFiles(
+    files,
+    options.includes("--node26") ? "26" : "24",
+  );
+  const assigned = assignShards(selectedFiles, timings, count)[index - 1]!;
+  console.log(
+    `Source selection: ${selectedFiles.length}/${files.length} files, shard ${shard}`,
+  );
   const { scripts } = JSON.parse(readFileSync("package.json", "utf8")) as {
     scripts: Record<string, string>;
   };

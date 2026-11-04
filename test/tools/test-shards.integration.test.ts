@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { nodeSensitive } from "../../tools/ci/node-sensitive.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -54,6 +55,11 @@ function coverShards(count: number) {
       join(work, "tools/ci/test-shards.ts"),
       readFileSync(join(root, "tools/ci/test-shards.ts")),
     );
+    for (const name of ["source-selection.ts", "node-sensitive.ts"])
+      writeFileSync(
+        join(work, "tools/ci", name),
+        readFileSync(join(root, "tools/ci", name)),
+      );
     writeFileSync(
       join(work, "package.json"),
       JSON.stringify({
@@ -81,6 +87,25 @@ function coverShards(count: number) {
     // New test paths have no measurements yet and must still be selected.
     for (const group of expected) delete timings.files[group[0]!];
     writeFileSync(join(work, "test/timings.json"), JSON.stringify(timings));
+    for (const suite of ["test:unit", "test:integration"]) {
+      const result = spawnSync(
+        process.execPath,
+        ["tools/ci/test-shards.ts", suite, "1/1", "--node26", "--list"],
+        { cwd: work, encoding: "utf8", timeout: 10_000 },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      const listed = result.stdout
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("["))
+        .flatMap((line) => JSON.parse(line) as string[]);
+      const groups = suite === "test:unit" ? [expected[0]!] : expected.slice(1);
+      expect(listed.sort()).toEqual(
+        groups
+          .flat()
+          .filter((file) => file in nodeSensitive)
+          .sort(),
+      );
+    }
     const selected: string[][] = [[], [], []];
     for (const shard of [
       "",
