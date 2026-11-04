@@ -2,6 +2,7 @@
 import { closeSync, existsSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
 import { createSqliteStore } from "../adapters/store-sqlite/index.ts";
+import { resolveIn } from "../adapters/fs/index.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
 import {
   privateFileGuard,
@@ -58,7 +59,8 @@ interface Entry {
 }
 /** Separate modes and invocation leases keep promotion from closing a live reader. */
 export class LocalState {
-  readonly #path: string;
+  #path: string;
+  readonly #projectRoot: string | undefined;
   readonly #store: StorePort;
   readonly #directories: DirectoryCreatePort | undefined;
   readonly #missing: ((write: boolean) => Promise<void>) | undefined;
@@ -70,11 +72,26 @@ export class LocalState {
     store: StorePort = sqliteStore,
     directories?: DirectoryCreatePort,
     missing?: (write: boolean) => Promise<void>,
+    projectRoot?: string,
   ) {
     this.#path = path;
+    this.#projectRoot = projectRoot;
     this.#store = store;
     this.#directories = directories;
     this.#missing = missing;
+  }
+  #resolveProjectPath(): void {
+    try {
+      if (this.#projectRoot !== undefined)
+        this.#path = resolveIn(
+          this.#projectRoot,
+          ".forge/state.sqlite",
+          "refuse",
+        );
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      refuse("INTERNAL", error.message);
+    }
   }
   #serial<T>(work: () => T | Promise<T>): Promise<T> {
     const result = this.#queue.then(work);
@@ -93,6 +110,7 @@ export class LocalState {
       );
     const pending = await this.#serial(() => {
       if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
+      this.#resolveProjectPath();
       if (process.platform === "win32")
         security ??= privateFileGuard(windowsPrivateFiles());
       const files = security ? securedFileOps(security) : undefined;
@@ -136,6 +154,7 @@ export class LocalState {
   }
   async #entry(write: boolean): Promise<Entry | undefined> {
     if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
+    this.#resolveProjectPath();
     const current =
       this.#entries.get(true) ??
       (!write ? this.#entries.get(false) : undefined);

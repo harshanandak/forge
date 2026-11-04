@@ -235,6 +235,7 @@ export async function createAssembly(
     undefined,
     undefined,
     () => requireRegisteredStore(deviceState, stateRoot),
+    stateRoot,
   );
   let trustActor: Actor | undefined;
   const trust = new TrustStore({
@@ -976,6 +977,10 @@ export async function createAssembly(
             const actor = bound.context.actor;
             const recovery = new LocalState(
               join(stateRoot, ".forge", "state.sqlite"),
+              undefined,
+              undefined,
+              undefined,
+              stateRoot,
             );
             return await recovery.create(async (staged) => {
               const opened = openLevels({
