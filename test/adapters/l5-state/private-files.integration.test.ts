@@ -3,10 +3,9 @@ import { expect, test, setDefaultTimeout } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { windowsPrivateFiles } from "../../../src/adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../../../src/adapters/store-sqlite/private-files.ts";
-import { childStep } from "../../child-step.ts";
+import { childStep, powerShellStep } from "../../child-step.ts";
 
 setDefaultTimeout(30000);
 
@@ -37,13 +36,8 @@ test.skipIf(process.platform !== "win32")(
       expect(() => guard.file(file)).toThrow(file);
       const command = refusal.split("Repair in PowerShell:\n")[1];
       expect(command).toBeDefined();
-      await childStep("PowerShell printed private-file repair", () => {
-        const repair = spawnSync(
-          "powershell.exe",
-          ["-NoProfile", "-NonInteractive", "-Command", command!],
-          { encoding: "utf8", timeout: 20_000, windowsHide: true },
-        );
-        expect(repair.error).toBeUndefined();
+      await childStep("PowerShell printed private-file repair", async () => {
+        const repair = await powerShellStep("powershell.exe", command!, 20_000);
         expect(repair.status, repair.stderr).toBe(0);
       });
       guard.file(file);

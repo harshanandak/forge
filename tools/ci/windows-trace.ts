@@ -10,6 +10,7 @@ const read = (suffix: string) =>
   Bun.file(trace + suffix)
     .text()
     .catch(() => null);
+import { parseCounters } from "./read-trace.ts";
 const csv = (line: string) => line.slice(1, -1).split('","');
 const processPattern = new RegExp(
   `^"(${names.join("|")})\\.exe","(\\d+)"`,
@@ -36,6 +37,11 @@ try {
     if ((await read(".done")) !== identity)
       throw new Error("Sampler did not stop");
     console.log(`Runner trace: ${await read(".summary")}`);
+    if (process.env.GITHUB_STEP_SUMMARY)
+      appendFileSync(
+        process.env.GITHUB_STEP_SUMMARY,
+        `Windows sampler cost: ${await read(".summary")}\n`,
+      );
   } else if (mode === "sample") {
     const identity = JSON.stringify({
       pid: process.pid,
@@ -44,6 +50,8 @@ try {
     await Bun.write(trace + ".pid", identity);
     const keys =
       "cpuPercent availableMemoryMB diskTimePercent diskQueueLength".split(" ");
+    let header: string[] = [],
+      counters: Record<string, number | null> = {};
     let values: (number | null)[] = [],
       updated = -Infinity;
     const counter = spawn(
@@ -53,6 +61,12 @@ try {
         "\\Memory\\Available MBytes",
         "\\PhysicalDisk(_Total)\\% Disk Time",
         "\\PhysicalDisk(_Total)\\Avg. Disk Queue Length",
+        ...["Avg. Disk sec/Read", "Avg. Disk sec/Write", "Disk Bytes/sec"].map(
+          (c) => `\\LogicalDisk(*)\\${c}`,
+        ),
+        ...["IO Data Bytes/sec", "% Processor Time", "ID Process"].map(
+          (c) => `\\Process(*)\\${c}`,
+        ),
         "-si",
         "1",
       ],
@@ -61,12 +75,16 @@ try {
     const clear = () => values.fill(null);
     counter.on("error", clear).on("exit", clear);
     createInterface({ input: counter.stdout }).on("line", (line) => {
+      if (line.startsWith('"(PDH-')) {
+        header = csv(line);
+        return;
+      }
       if (!/^"\d/.test(line)) return; // Skip typeperf's header and diagnostics.
       const fields = csv(line).slice(1);
-      if (fields.length !== 4) return;
-      values = fields.map((v) =>
-        v.trim() && Number.isFinite(+v) && +v >= 0 ? +v : null,
-      );
+      counters = parseCounters(header.slice(5), fields.slice(4));
+      values = fields
+        .slice(0, 4)
+        .map((v) => (v.trim() && Number.isFinite(+v) && +v >= 0 ? +v : null));
       updated = performance.now();
     });
     const summary = {
@@ -78,6 +96,7 @@ try {
       ),
       sampleDurationMs: { mean: 0, max: 0 },
       samplerCpuPercent: 0,
+      collectorCpuPercent: 0,
     };
     let previous: number | null = null,
       previousCpu = process.cpuUsage(),
@@ -138,12 +157,21 @@ try {
           processScanMs,
           processCounts,
           ...metrics,
+          performanceCounters:
+            performance.now() - updated < 2500 ? counters : null,
           samplerCpuMs,
           sampleDurationMs,
         };
         appendFileSync(trace, JSON.stringify(row) + "\n");
         processScanMs = null;
         summary.samples++;
+        const collectorCpu = Object.entries(counters)
+          .filter(([k]) =>
+            /\\Process\(typeperf(#\d+)?\)\\% Processor Time$/i.test(k),
+          )
+          .reduce((sum, [, v]) => sum + (v ?? 0), 0);
+        summary.collectorCpuPercent +=
+          (collectorCpu - summary.collectorCpuPercent) / summary.samples;
         if (summary.samples === 1 || (gapMs ?? 0) > summary.maxGapMs) {
           summary.maxGapMs = gapMs ?? 0;
           summary.at = timestamp;
