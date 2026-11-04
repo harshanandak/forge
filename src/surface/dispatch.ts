@@ -11,7 +11,7 @@ import type {
   OperationDeclaration,
 } from "../generated/types.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
-import { failure } from "./result.ts";
+import { displayEnvelope, failure } from "./result.ts";
 import { discoveryOperations } from "./discovery.ts";
 import { validateInvocationRequest } from "../generated/validators.ts";
 
@@ -73,6 +73,15 @@ export function suggestions(
 
 /** All execution, including overflow tools and hooks, joins the injected runtime here. */
 export async function dispatch(
+  catalog: SurfaceCatalog,
+  op: string,
+  input: unknown,
+  options: CallOptions,
+): Promise<ResultEnvelope> {
+  return displayEnvelope(await dispatchRaw(catalog, op, input, options));
+}
+
+async function dispatchRaw(
   catalog: SurfaceCatalog,
   op: string,
   input: unknown,
