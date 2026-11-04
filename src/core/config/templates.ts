@@ -296,6 +296,7 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
       )
         delete document.owners;
       const repair = (pointer: string): string => {
+        const source = /^\/blocks\/[^/]+\/source$/.test(pointer);
         const example = renderExample(
           "config.set",
           {
@@ -308,7 +309,9 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
                   value:
                     pointer === "/blocks/check/config/commands"
                       ? { test: "node --test" }
-                      : "<required value>",
+                      : source
+                        ? { builtin: "<publisher>/<name>" }
+                        : "<required value>",
                   expectRevision: current.revision,
                 },
               },
@@ -316,7 +319,10 @@ export function createTemplates(env: TemplateEnvironment): TemplateApi {
           },
           {},
         );
-        return `Example (replace the value with your project's setting):\n    ${example}\nThen retry template ${op.slice("template.".length)} at the new revision returned by config set.`;
+        const sourceForms = source
+          ? '\nOther source forms: {"path": "<dir>"} or {"package": "<name>"}.'
+          : "";
+        return `Example (replace the value with your project's setting):\n    ${example}\nThen retry template ${op.slice("template.".length)} at the new revision returned by config set.${sourceForms}`;
       };
       const planned = planBytes(
         env,
