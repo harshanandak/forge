@@ -361,6 +361,35 @@ function diagnosticResult(host: CleanupReport["host"]) {
   return { status: 0, stdout: JSON.stringify(host) };
 }
 
+test.skipIf(process.platform !== "win32")(
+  "Restart Manager refuses directory registration before opening a session",
+  () => {
+    const root = diagnosticRoot();
+    const script =
+      cleanupDiagnosticCommand.slice(
+        0,
+        cleanupDiagnosticCommand.indexOf(
+          "  $data.holders = @([CleanupRestartManager]",
+        ),
+      ) +
+      "  Write-Output ([CleanupRestartManager]::Query($env:FORGE_LANE_CLOSE_DIAGNOSTIC_PATH).Length)\n} catch { throw }";
+    const result = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10_000,
+        env: { ...process.env, FORGE_LANE_CLOSE_DIAGNOSTIC_PATH: root },
+      },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("0");
+  },
+  30_000,
+);
+
 test("cleanup diagnostic command registers the failing path and maps Restart Manager holders", () => {
   const command = cleanupDiagnosticCommand.replace(/\s+/g, " ");
   for (const fragment of [
