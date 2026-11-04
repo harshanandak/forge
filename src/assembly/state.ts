@@ -81,12 +81,17 @@ export class LocalState {
     this.#missing = missing;
   }
   #resolveProjectPath(): void {
-    if (this.#projectRoot !== undefined)
-      this.#path = resolveIn(
-        this.#projectRoot,
-        ".forge/state.sqlite",
-        "refuse",
-      );
+    try {
+      if (this.#projectRoot !== undefined)
+        this.#path = resolveIn(
+          this.#projectRoot,
+          ".forge/state.sqlite",
+          "refuse",
+        );
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      refuse("INTERNAL", error.message);
+    }
   }
   #serial<T>(work: () => T | Promise<T>): Promise<T> {
     const result = this.#queue.then(work);
