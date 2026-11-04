@@ -34,6 +34,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
 import { RepositoryFixtures } from "./lane-fixture.ts";
+import { cleanupAttribution } from "./cleanup-attribution.ts";
 
 setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<{ head: string; merge: string }>();
@@ -41,16 +42,11 @@ const script = resolve(import.meta.dirname, "../../tools/lane.ts");
 const roots: string[] = [];
 let gitBin: string | undefined;
 afterAll(() => {
-  try {
-    if (gitBin) rmSync(gitBin, { recursive: true, force: true });
-  } catch (error) {
-    if (
-      process.platform !== "win32" ||
-      !["EPERM", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")
-    )
-      throw error;
-    // Windows may briefly keep fake Git mapped; leave this temp directory to the OS temp cleaner.
-  }
+  const root = gitBin;
+  if (root)
+    cleanupAttribution(root, () =>
+      rmSync(root, { recursive: true, force: true }),
+    );
 });
 let testStartedAt = Date.now();
 beforeEach(() => {
@@ -93,16 +89,20 @@ public static class CleanupRestartManager {
   static extern uint RmGetList(uint session, out uint needed, ref uint count, [In, Out] ProcessInfo[] processes, out uint reasons);
   [DllImport("rstrtmgr.dll")]
   static extern uint RmEndSession(uint session);
+  static string stage;
   static void Check(uint code) {
-    if (code != 0) throw new InvalidOperationException("Restart Manager error " + code);
+    if (code != 0) throw new InvalidOperationException(stage + " native error " + code);
   }
   public static ProcessInfo[] Query(string path) {
+    if (!System.IO.File.Exists(path)) return new ProcessInfo[0];
     uint session;
+    stage = "RmStartSession";
     Check(RmStartSession(out session, 0, new StringBuilder(33)));
     try {
+      stage = "RmRegisterResources";
       Check(RmRegisterResources(session, 1, new string[] { path }, 0, IntPtr.Zero, 0, IntPtr.Zero));
       uint needed, count = 0, reasons;
-      uint code = RmGetList(session, out needed, ref count, null, out reasons);
+      stage = "RmGetList"; uint code = RmGetList(session, out needed, ref count, null, out reasons);
       if (code == 0) return new ProcessInfo[0];
       if (code != 234) Check(code);
       count = needed;
@@ -110,13 +110,13 @@ public static class CleanupRestartManager {
       Check(RmGetList(session, out needed, ref count, holders, out reasons));
       Array.Resize(ref holders, (int)count);
       return holders;
-    } finally { Check(RmEndSession(session)); }
+    } finally { stage = "RmEndSession"; Check(RmEndSession(session)); }
   }
 }
 '@
   $data.holders = @([CleanupRestartManager]::Query($env:FORGE_LANE_CLOSE_DIAGNOSTIC_PATH) | ForEach-Object { @{ pid = $_.process.pid; name = $_.name; appType = $_.appType } })
   if ($data.holders.Count -gt 0) { $data.holderUnknown = $false; $data.Remove('holderReason') }
-} catch { $data.holders = @(); $data.holderUnknown = $true; $data.holderReason = 'Restart Manager query failed' }
+} catch { $data.holders = @(); $data.holderUnknown = $true; $data.holderReason = $_.Exception.ToString() }
 try { $data.defender = Get-MpComputerStatus -ErrorAction Stop | Select-Object RealTimeProtectionEnabled } catch { $data.defenderError = 'Defender state unavailable' }
 try {
   $exclusions = @((Get-MpPreference -ErrorAction Stop).ExclusionPath)
@@ -284,7 +284,7 @@ function cleanupRoot(
   if (existsSync(bin))
     expect(readdirSync(bin).filter((name) => /\.exe$/i.test(name))).toEqual([]);
   try {
-    remove();
+    cleanupAttribution(root, remove, run);
   } catch (error) {
     if (
       process.platform === "win32" &&
@@ -404,10 +404,10 @@ test("cleanup diagnostic command registers the failing path and maps Restart Man
     "if (code == 0) return new ProcessInfo[0]; if (code != 234) Check(code); count = needed;",
     "ProcessInfo[] holders = new ProcessInfo[count]; Check(RmGetList(session, out needed, ref count, holders, out reasons));",
     "Array.Resize(ref holders, (int)count); return holders;",
-    "finally { Check(RmEndSession(session)); }",
+    'finally { stage = "RmEndSession"; Check(RmEndSession(session)); }',
     "$data.holders = @([CleanupRestartManager]::Query($env:FORGE_LANE_CLOSE_DIAGNOSTIC_PATH) | ForEach-Object { @{ pid = $_.process.pid; name = $_.name; appType = $_.appType } })",
     "if ($data.holders.Count -gt 0) { $data.holderUnknown = $false; $data.Remove('holderReason') }",
-    "catch { $data.holders = @(); $data.holderUnknown = $true; $data.holderReason = 'Restart Manager query failed' }",
+    "catch { $data.holders = @(); $data.holderUnknown = $true; $data.holderReason = $_.Exception.ToString() }",
   ])
     expect(command).toContain(fragment);
 });
