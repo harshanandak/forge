@@ -22,9 +22,8 @@ On checkpoint REVISION_CONFLICT: `forge issue resume <slice>`, `forge issue comm
 2. `git push -u origin <branch>`. Never force-push; that is a one-way door.
 3. Write body with editor, then `gh pr create --base <base> --title "<plain conventional commit>" --body-file <file>`. Speed, memory, size or work savings: the title names the user-visible gain and its number.
 
-Fill PR template. Style: plain opening; bold takeaways; What review found; Verification.
+Fill PR template sections in order. Style: Problem; Root cause; Fix; bold takeaways; What review found; Verification.
 
-- **Opening**: user-visible problem, then addition. Short, plain sentences; no internal codes.
 - **Before / after**: observations before and after X; real numbers if available; how they were measured. Performance only: name the workload; separate component and end-to-end timings.
 - **What review found**: each blocker: bold user-visible failure and one-line fix. Empty on first push.
 - **Verification**: `forge check run` receipt ids; test that fails without the change; CI for this head if available. User-visible PRs with `.forge/verify.md`: name the guide scenario and list saved evidence paths. Performance only: pin the saving with a work, process or call count or size bound.
@@ -32,7 +31,7 @@ Fill PR template. Style: plain opening; bold takeaways; What review found; Verif
 - **Models**: for each of planned, implemented and reviewed, give display name, model id, reasoning level and harness: `Implemented: <display name> (<model id>, reasoning <effort>) via <harness>`. Use `not yet reviewed` when unreviewed. Roles alone are not allowed. No tool-branding footer.
 - `Tracking: <issue id>`.
 
-No machine-local data.
+Plain sentences; no internal codes or machine-local data.
 
 ## Link, release, stop
 

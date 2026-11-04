@@ -1212,7 +1212,7 @@ const GUIDANCE = [
   [
     "pr.style",
     "forge-build",
-    "Style: plain opening; bold takeaways; What review found; Verification",
+    "Style: Problem; Root cause; Fix; bold takeaways; What review found; Verification",
   ],
 ] as const;
 
