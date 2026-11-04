@@ -61,7 +61,7 @@ blocks:
         memory-rules-regression: bun test test/blocks/memory/rules.test.ts test/blocks/memory/catalog.test.ts test/blocks/memory/recipes.integration.test.ts test/assembly/shared-store/shared-store.integration.test.ts
         acl-regression: bun test test/adapters/l5-state test/assembly/sqlite-acl.integration.test.ts test/assembly/state-acl-cli.integration.test.ts
         session-identity: bun test test/assembly/session-identity/packed.integration.test.ts
-        skills-regression: bun test test/surface/skills.test.ts test/assembly/template-skills/template-skills.test.ts test/templates/delivery/delivery-template.test.ts
+        skills-regression: bun test test/surface/skills.test.ts test/assembly/template-skills/template-skills.test.ts test/templates/delivery/delivery-template.test.ts test/templates/delivery/skill-contract.test.ts
         work-regression: bun test test/blocks/l7-work test/contract test/assembly/config-defaults test/core/config-defaults test/core/l4-config test/core/l2-runtime/shipped-trust.test.ts test/core/l2-runtime/input-errors.test.ts test/surface/held-lease.test.ts --path-ignore-patterns '**/packed.integration.test.ts'
         receipt-regression: bun test test/blocks/l9-check/gate.test.ts test/blocks/l7-work/close.test.ts test/assembly/shared-store/shared-store.integration.test.ts test/templates/delivery/delivery-template.test.ts
         typecheck: bun run check
