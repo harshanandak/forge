@@ -1,6 +1,5 @@
 // [integration] CLI output and copyable native ACL repair on a disposable device store.
-import { expect, setDefaultTimeout, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,8 +13,18 @@ import {
 import { LocalState, StateUnavailable } from "../../src/assembly/state.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { runCommand } from "../../src/surface/command.ts";
+import { powerShellBatch } from "../child-step.ts";
 
 setDefaultTimeout(30_000);
+const started = performance.now();
+const batch = powerShellBatch();
+afterAll(() => {
+  if (process.platform !== "win32") return;
+  expect(batch.launches).toBe(1);
+  console.log(
+    `state-acl-cli: ${Math.round(performance.now() - started)} ms (study 598.88 ms); PowerShell launches ${batch.launches} (was 1)`,
+  );
+});
 
 async function configShow(assembly: Assembly) {
   const output = new PassThrough();
@@ -145,11 +154,13 @@ test.skipIf(process.platform !== "win32")(
       if (command === undefined) throw new Error("Missing repair command");
       await assembly.close();
       assembly = undefined;
-      const repaired = spawnSync(
+      const repairs = await batch.run(
         "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", command],
-        { encoding: "utf8", windowsHide: true, timeout: 15_000 },
+        [{ name: "CLI ACL repair", command }],
+        15_000,
       );
+      expect(repairs).toHaveLength(1);
+      const repaired = repairs[0]!;
       expect(repaired.status, repaired.stderr).toBe(0);
       assembly = await createAssembly({ root, deviceRoot });
       const retried = await configShow(assembly);

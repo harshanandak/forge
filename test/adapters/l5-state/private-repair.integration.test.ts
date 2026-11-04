@@ -1,5 +1,5 @@
 // [integration] Execute the emitted repair in every installed PowerShell edition on temp files.
-import { expect, test, setDefaultTimeout } from "bun:test";
+import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { powerShellStep } from "../../child-step.ts";
+import { powerShellBatch } from "../../child-step.ts";
 import { windowsPrivateFiles } from "../../../src/adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../../../src/adapters/store-sqlite/private-files.ts";
 
@@ -19,6 +19,26 @@ const shells = [
   "powershell.exe",
   ...(Bun.which("pwsh") ? [Bun.which("pwsh")!] : []),
 ];
+const quotes = ["'", "\u2018", "\u2019", "\u201a", "\u201b"];
+const batch = powerShellBatch();
+const started = performance.now();
+const roots: string[] = [];
+let checked = 0;
+afterAll(() => {
+  try {
+    if (process.platform === "win32") {
+      expect(quotes).toHaveLength(5);
+      expect(roots).toHaveLength(5 * shells.length);
+      expect(checked).toBe(5 * shells.length);
+      expect(batch.launches).toBe(shells.length + 1);
+      console.log(
+        `private-repair: ${Math.round(performance.now() - started)} ms (study 4559.32 ms); PowerShell launches ${batch.launches} (was ${5 * shells.length + 1})`,
+      );
+    }
+  } finally {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  }
+});
 test.skipIf(process.platform !== "win32")(
   "borrowed folder refusal gives guidance without changing its tree or siblings",
   () => {
@@ -74,50 +94,74 @@ test.skipIf(process.platform !== "win32")(
   "PowerShell timeout names the running command phase",
   async () => {
     await expect(
-      powerShellStep("powershell.exe", "Start-Sleep -Seconds 60", 5000),
+      batch.run(
+        "powershell.exe",
+        [
+          { name: "completed probe", command: "Write-Output ready" },
+          { name: "deadline probe", command: "Start-Sleep -Seconds 60" },
+        ],
+        5000,
+      ),
     ).rejects.toThrow(
-      /timeout; phase=command;.*spawn.*firstOutput.*commandStart.*exit/,
+      /timeout; phase=command; case=deadline probe;.*spawn.*firstOutput.*commandStart.*exit/,
     );
   },
   10000,
 );
 for (const shell of shells) {
-  for (const quote of ["'", "\u2018", "\u2019", "\u201a", "\u201b"]) {
+  async function prepare() {
+    const cases = quotes.map((quote) => {
+      const root = mkdtempSync(join(tmpdir(), "forge-repair-quotes-"));
+      roots.push(root);
+      const native = windowsPrivateFiles();
+      const guard = privateFileGuard(native);
+      guard.directory(root);
+      const path = join(root, `file${quote}; Write-Output INJECTED; ${quote}`);
+      const sentinel = join(root, "sentinel");
+      writeFileSync(path, "target");
+      writeFileSync(sentinel, "sentinel");
+      const sentinelAcl = native.read(sentinel);
+      native.protect(path, `D:P(A;;FA;;;${native.sid})(A;;FR;;;WD)`);
+      let message = "";
+      try {
+        guard.file(path);
+      } catch (error) {
+        message = String(error);
+      }
+      const command = message.split(/Repair in PowerShell:\s*/)[1];
+      expect(command).toBeDefined();
+      return {
+        name: `quote U+${quote.charCodeAt(0).toString(16)}`,
+        command: command!,
+        path,
+        sentinel,
+        sentinelAcl,
+        guard,
+        native,
+      };
+    });
+    expect(cases).toHaveLength(5);
+    const runs = await batch.run(shell, cases, 15000);
+    expect(runs).toHaveLength(cases.length);
+    return cases.map((entry, index) => ({ ...entry, run: runs[index]! }));
+  }
+  let prepared: ReturnType<typeof prepare> | undefined;
+  for (const [index, quote] of quotes.entries()) {
     test.skipIf(process.platform !== "win32")(
       `repair is literal and portable in ${shell} for quote U+${quote.charCodeAt(0).toString(16)}`,
       async () => {
-        const root = mkdtempSync(join(tmpdir(), "forge-repair-quotes-"));
-        try {
-          const native = windowsPrivateFiles();
-          const guard = privateFileGuard(native);
-          guard.directory(root);
-          const path = join(
-            root,
-            `file${quote}; Write-Output INJECTED; ${quote}`,
-          );
-          const sentinel = join(root, "sentinel");
-          writeFileSync(path, "target");
-          writeFileSync(sentinel, "sentinel");
-          const sentinelAcl = native.read(sentinel);
-          native.protect(path, `D:P(A;;FA;;;${native.sid})(A;;FR;;;WD)`);
-          let message = "";
-          try {
-            guard.file(path);
-          } catch (error) {
-            message = String(error);
-          }
-          const command = message.split(/Repair in PowerShell:\s*/)[1];
-          expect(command).toBeDefined();
-          const run = await powerShellStep(shell, command!, 15000);
-          expect(run.status, run.stderr).toBe(0);
-          expect(run.stdout).not.toContain("INJECTED");
-          guard.file(path);
-          expect(readFileSync(path, "utf8")).toBe("target");
-          expect(native.read(sentinel)).toBe(sentinelAcl);
-          expect(readFileSync(sentinel, "utf8")).toBe("sentinel");
-        } finally {
-          rmSync(root, { recursive: true, force: true });
-        }
+        prepared ??= prepare();
+        const { run, path, sentinel, sentinelAcl, guard, native, name } = (
+          await prepared
+        )[index]!;
+        expect(run.name).toBe(name);
+        expect(run.status, run.stderr).toBe(0);
+        expect(run.stdout).not.toContain("INJECTED");
+        guard.file(path);
+        expect(readFileSync(path, "utf8")).toBe("target");
+        expect(native.read(sentinel)).toBe(sentinelAcl);
+        expect(readFileSync(sentinel, "utf8")).toBe("sentinel");
+        checked += 1;
       },
     );
   }

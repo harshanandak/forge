@@ -1,13 +1,22 @@
 // [integration] Windows native descriptors and inherited permissions on disposable stores.
-import { expect, test, setDefaultTimeout } from "bun:test";
+import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { windowsPrivateFiles } from "../../../src/adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../../../src/adapters/store-sqlite/private-files.ts";
-import { childStep, powerShellStep } from "../../child-step.ts";
+import { childStep, powerShellBatch } from "../../child-step.ts";
 
 setDefaultTimeout(30000);
+const started = performance.now();
+const batch = powerShellBatch();
+afterAll(() => {
+  if (process.platform !== "win32") return;
+  expect(batch.launches).toBe(1);
+  console.log(
+    `private-files: ${Math.round(performance.now() - started)} ms (study 2583.84 ms); PowerShell launches ${batch.launches} (was 1)`,
+  );
+});
 
 test.skipIf(process.platform !== "win32")(
   "native private directory inheritance, cache invalidation and fail-closed file verification",
@@ -37,7 +46,13 @@ test.skipIf(process.platform !== "win32")(
       const command = refusal.split("Repair in PowerShell:\n")[1];
       expect(command).toBeDefined();
       await childStep("PowerShell printed private-file repair", async () => {
-        const repair = await powerShellStep("powershell.exe", command!, 20_000);
+        const repairs = await batch.run(
+          "powershell.exe",
+          [{ name: "private-file repair", command: command! }],
+          20_000,
+        );
+        expect(repairs).toHaveLength(1);
+        const repair = repairs[0]!;
         expect(repair.status, repair.stderr).toBe(0);
       });
       guard.file(file);
