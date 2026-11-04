@@ -7,51 +7,55 @@ import { spawnSync } from "node:child_process";
 import { windowsPrivateFiles } from "../../../src/adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../../../src/adapters/store-sqlite/private-files.ts";
 import { childStep } from "../../child-step.ts";
+import { timed, timingRepeats } from "../../integration/call-timing.ts";
 
 setDefaultTimeout(30000);
 
-test.skipIf(process.platform !== "win32")(
-  "native private directory inheritance, cache invalidation and fail-closed file verification",
-  async () => {
-    const dir = mkdtempSync(join(tmpdir(), "forge-native-acl-"));
-    try {
-      const native = windowsPrivateFiles();
-      const guard = privateFileGuard(native);
-      guard.directory(dir);
-      const file = join(dir, "file'; throw 'must stay literal");
-      writeFileSync(file, "private");
-      guard.file(file);
-      const privateAcl = native.read(file);
-      expect(privateAcl).not.toContain(";;;WD)");
-      native.protect(file, `D:P(A;;FA;;;${native.sid})(A;;FR;;;WD)`);
-      expect(() => guard.file(file)).toThrow(file);
-      let refusal = "";
+for (let sample = 1; sample <= timingRepeats; sample++)
+  test.skipIf(process.platform !== "win32")(
+    `native private directory inheritance, cache invalidation and fail-closed file verification (sample ${sample})`,
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "forge-native-acl-"));
       try {
+        const native = windowsPrivateFiles();
+        const guard = privateFileGuard(native);
+        guard.directory(dir);
+        const file = join(dir, "file'; throw 'must stay literal");
+        writeFileSync(file, "private");
         guard.file(file);
-      } catch (error) {
-        refusal = String(error);
+        const privateAcl = native.read(file);
+        expect(privateAcl).not.toContain(";;;WD)");
+        native.protect(file, `D:P(A;;FA;;;${native.sid})(A;;FR;;;WD)`);
+        expect(() => guard.file(file)).toThrow(file);
+        let refusal = "";
+        try {
+          guard.file(file);
+        } catch (error) {
+          refusal = String(error);
+        }
+        expect(refusal).toContain("Repair in PowerShell:");
+        // Repairing the directory never silently blesses a file's explicit broad entry.
+        guard.directory(dir);
+        expect(() => guard.file(file)).toThrow(file);
+        const command = refusal.split("Repair in PowerShell:\n")[1];
+        expect(command).toBeDefined();
+        await childStep("PowerShell printed private-file repair", () => {
+          const repair = timed({ case: "private-file-repair", sample }, () =>
+            spawnSync(
+              "powershell.exe",
+              ["-NoProfile", "-NonInteractive", "-Command", command!],
+              { encoding: "utf8", timeout: 20_000, windowsHide: true },
+            ),
+          );
+          expect(repair.error).toBeUndefined();
+          expect(repair.status, repair.stderr).toBe(0);
+        });
+        guard.file(file);
+        expect(native.read(file)).not.toContain(";;;WD)");
+        expect(readFileSync(file, "utf8")).toBe("private");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
-      expect(refusal).toContain("Repair in PowerShell:");
-      // Repairing the directory never silently blesses a file's explicit broad entry.
-      guard.directory(dir);
-      expect(() => guard.file(file)).toThrow(file);
-      const command = refusal.split("Repair in PowerShell:\n")[1];
-      expect(command).toBeDefined();
-      await childStep("PowerShell printed private-file repair", () => {
-        const repair = spawnSync(
-          "powershell.exe",
-          ["-NoProfile", "-NonInteractive", "-Command", command!],
-          { encoding: "utf8", timeout: 20_000, windowsHide: true },
-        );
-        expect(repair.error).toBeUndefined();
-        expect(repair.status, repair.stderr).toBe(0);
-      });
-      guard.file(file);
-      expect(native.read(file)).not.toContain(";;;WD)");
-      expect(readFileSync(file, "utf8")).toBe("private");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  },
-  30000,
-);
+    },
+    30000,
+  );

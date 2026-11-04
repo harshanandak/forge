@@ -544,8 +544,29 @@ try {
       new URL("dist/src/assembly/state-client.js", packageUrl)
     );
     const { StateOwner } = await import("forge-workflow/state");
-    const { sqliteStore } = await import("forge-workflow/adapters/sqlite");
-    const database = await sqliteStore.open({
+    const { createSqliteStore } =
+      await import("forge-workflow/adapters/sqlite");
+    let putStarted;
+    let putWallMs = null;
+    let lockAttempt;
+    let lockWaitMs = 0;
+    let locksAcquired = 0;
+    const steps = [];
+    const store = createSqliteStore(process.cwd(), {
+      step(step) {
+        if (putStarted === undefined) return;
+        if (step !== "write-lock-attempt" && step !== "write-locked") return;
+        const atMs = performance.now() - putStarted;
+        steps.push({ step, atMs });
+        if (step === "write-lock-attempt") lockAttempt = atMs;
+        else if (lockAttempt !== undefined) {
+          lockWaitMs += atMs - lockAttempt;
+          locksAcquired++;
+          lockAttempt = undefined;
+        }
+      },
+    });
+    const database = await store.open({
       path: join(root, "leased.sqlite"),
       readOnly: false,
     });
@@ -584,15 +605,45 @@ try {
     f.trust.grant("human", f.block.digest, ["sample:write"]);
     let retained, cached;
     try {
-      const result = await f
-        .runtime({
-          state,
-          retain(client) {
-            retained = client;
-            cached = client.put;
-          },
-        })
-        .invoke(f.request);
+      const invoke = () =>
+        f
+          .runtime({
+            state: Object.freeze({
+              ...state,
+              put(...args) {
+                putStarted = performance.now();
+                try {
+                  return state.put(...args);
+                } finally {
+                  putWallMs = performance.now() - putStarted;
+                  putStarted = undefined;
+                }
+              },
+            }),
+            retain(client) {
+              retained = client;
+              cached = client.put;
+            },
+          })
+          .invoke(f.request);
+      const started = performance.now();
+      let result;
+      try {
+        result = await invoke();
+      } finally {
+        console.log(
+          `forge-821-timing ${JSON.stringify({
+            case: "leased-state-put",
+            platform: process.platform,
+            node: process.version,
+            wallMs: performance.now() - started,
+            putWallMs,
+            lockWaitMs: locksAcquired ? lockWaitMs : null,
+            locksAcquired,
+            steps,
+          })}`,
+        );
+      }
       assert.equal(result.result, "leased", JSON.stringify(result));
       assert.equal(owner.get("example.org/sample", "count").revision, 1);
       for (const call of [

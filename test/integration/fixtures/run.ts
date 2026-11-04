@@ -38,7 +38,11 @@ async function runFixture(fixture: Fixture, prefix: string): Promise<string> {
               `${fixture.label}: ${error?.message ?? `exited ${String(status)}`}\n${stdout}\n${stderr}`,
             ),
           );
-        else resolve(stdout);
+        else {
+          for (const line of stdout.split(/\r?\n/))
+            if (line.startsWith("forge-821-timing ")) console.log(line);
+          resolve(stdout);
+        }
       });
     });
   } finally {
