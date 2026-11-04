@@ -19,6 +19,7 @@ import { delimiter, join, resolve } from "node:path";
 
 import { laneRun, runClaude, runCodex } from "../../tools/lane-run.ts";
 import { scriptFixture } from "../script-fixture.ts";
+import { cliBatchFixture } from "./cli-batch-fixture.ts";
 import { RepositoryFixtures } from "./lane-fixture.ts";
 
 setDefaultTimeout(60_000);
@@ -2731,34 +2732,57 @@ for (const reason of [
 test("list never locks idle history during 25 concurrent detached autos", async () => {
   const f = autoFixture("auto-clean");
   expect(f.auto().code).toBe(0);
-  const helper = join(f.root, "slow-list-lock.ts"),
-    marker = join(f.root, "list-lock-attempt");
-  writeFileSync(
-    helper,
-    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const result=native.renameSync(from,to);if(String(to).endsWith('forge-lane-one.lock')){native.writeFileSync(${JSON.stringify(marker)},'locked');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,500);}return result;}}));await import(${JSON.stringify(script)});`,
-  );
-  let refusals = 0;
-  for (let i = 0; i < 25; i++) {
-    const listing = f.launch(helper, false, ["list"]);
-    // The old list implementation holds its lock here; the fixed list finishes.
-    await Promise.race([
-      listing,
-      waitForProcess(
-        "list lock or exit",
-        () => existsSync(marker) || listing.child.exitCode !== null,
-      ),
-    ]);
-    const result = await f.launch(script, false, ["auto", "one", "--detach"]);
-    await listing;
-    if (result.code !== 0) refusals++;
-    else {
-      const { pid } = result.output as unknown as { pid: number };
-      await waitForProcess("auto exit", () => !alive(pid));
+  const marker = join(f.root, "list-lock-attempt");
+  const listingWorker = cliBatchFixture({
+    ...f,
+    name: "listing",
+    script,
+    args: ["list"],
+    cwd: f.caller,
+    setup: `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const result=native.renameSync(from,to);if(String(to).endsWith('forge-lane-one.lock')){native.writeFileSync(${JSON.stringify(marker)},'locked');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,500);}return result;}}));`,
+  });
+  const autoWorker = cliBatchFixture({
+    ...f,
+    name: "auto",
+    script,
+    args: ["auto", "one", "--detach"],
+    cwd: f.caller,
+  });
+  const detached: number[] = [];
+  try {
+    let refusals = 0;
+    for (let i = 0; i < 25; i++) {
+      let listed = false;
+      const listing = listingWorker.next().then((result) => {
+        listed = true;
+        return result;
+      });
+      // The old list implementation holds its lock here; the fixed list finishes.
+      await Promise.race([
+        listing,
+        waitForProcess("list lock or exit", () => existsSync(marker) || listed),
+      ]);
+      const result = await autoWorker.next();
+      expect((await listing).code).toBe(0);
+      if (result.code !== 0) refusals++;
+      else {
+        const pid = result.lines[0]!.pid as number;
+        expect(pid).toBeGreaterThan(0);
+        detached.push(pid);
+        await waitForProcess("auto exit", () => !alive(pid));
+      }
+      rmSync(marker, { force: true });
     }
-    rmSync(marker, { force: true });
+    expect(refusals).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    expect(detached).toHaveLength(25);
+    console.info("list/auto fixture: 27 CLI processes instead of 75");
+  } finally {
+    for (const pid of detached) if (alive(pid)) killFixture(pid, true);
+    if (listingWorker.child.pid) killFixture(listingWorker.child.pid, true);
+    if (autoWorker.child.pid) killFixture(autoWorker.child.pid, true);
+    await Promise.all([listingWorker.close(), autoWorker.close()]);
   }
-  expect(refusals).toBe(0);
-  expect(existsSync(marker)).toBe(false);
 });
 
 for (const operation of ["reclaim", "rename"])
