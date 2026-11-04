@@ -1,0 +1,3 @@
+"(PDH-CSV 4.0) (UTC)(0)","\\host\PhysicalDisk(_Total)\Avg. Disk Queue Length","\\host\Process(System)\IO Write Bytes/sec","\\host\Process(svchost)\IO Write Bytes/sec","\\host\Process(svchost#12)\IO Write Bytes/sec","\\host\Process(_Total)\IO Write Bytes/sec","\\host\PhysicalDisk(0 C:)\Disk Write Bytes/sec","\\host\PhysicalDisk(1 D:)\Disk Write Bytes/sec","\\host\PhysicalDisk(_Total)\Disk Write Bytes/sec"
+"11/04/2026 03:00:01.000","13","400","200","100","900","800","100","900"
+"11/04/2026 03:00:02.000","1","-1","","0","0","0","0","0"

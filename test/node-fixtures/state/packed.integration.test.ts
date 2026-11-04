@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
+import { assertCounterfactualResult } from "../../integration/counterfactual-result.ts";
 import { cleanupAttribution } from "../../tools/cleanup-attribution.ts";
 import {
   counterfactuals,
@@ -159,6 +160,11 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
                   consumer,
                   mutation.kind === "timeout" ? mutation.timeout : 30000,
                 );
+                if (mutation.kind !== "timeout")
+                  assertCounterfactualResult(
+                    result,
+                    `${mutation.journey}: ${mutation.from} (${runtime})`,
+                  );
                 expect(result.error).toBeUndefined();
                 if (mutation.kind === "timeout") {
                   expect(result.status).toBeNull();

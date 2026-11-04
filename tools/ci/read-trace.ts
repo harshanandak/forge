@@ -25,7 +25,8 @@ export function parseCounters(header: string[], fields: string[]) {
   return Object.fromEntries(
     header.flatMap((key, i) =>
       /\\LogicalDisk\(/i.test(key) ||
-      /\\Process\((MsMpEng|TiWorker|SearchIndexer|SearchProtocolHost|csc|node|bun|git|powershell|typeperf)(#\d+)?\)/i.test(
+      /\\PhysicalDisk\([^)]+\)\\Disk Write Bytes\/sec$/i.test(key) ||
+      /\\Process\((System|svchost|_Total|MsMpEng|TiWorker|SearchIndexer|SearchProtocolHost|csc|node|bun|git|powershell|typeperf)(#\d+)?\)/i.test(
         key,
       )
         ? [
@@ -61,7 +62,15 @@ export function topIo(lines: string[]): [string, number][] {
       Math.abs(Date.parse(r.timestamp) - Date.parse(worst.timestamp)) <= 2500,
   ))
     for (const [key, value] of Object.entries(row.performanceCounters ?? {})) {
-      const name = /\\Process\(([^)]+)\)\\IO Data Bytes\/sec$/i.exec(key)?.[1];
+      const counter =
+        /\\(Process|PhysicalDisk)\(([^)]+)\)\\(IO Data Bytes\/sec|IO Write Bytes\/sec|Disk Write Bytes\/sec)$/i.exec(
+          key,
+        );
+      const name =
+        counter &&
+        (counter[3] === "IO Data Bytes/sec"
+          ? counter[2]
+          : `${counter[1]}(${counter[2]}) ${counter[3]}`);
       if (name && value !== null)
         totals.set(name, (totals.get(name) ?? 0) + value);
     }
@@ -146,7 +155,7 @@ if (import.meta.main) {
   const lines = traceWindow(await Bun.file(file).text(), start, end);
   for (const line of lines) console.log(line);
   console.log(
-    "Top I/O processes during the worst disk-queue window (+/-2.5s; summed bytes/sec samples):",
+    "Top I/O processes and disks during the worst disk-queue window (+/-2.5s; summed bytes/sec samples):",
     JSON.stringify(topIo(lines)),
   );
 }
