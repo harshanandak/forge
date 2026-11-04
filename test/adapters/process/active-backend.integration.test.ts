@@ -1,7 +1,8 @@
 // [integration] Exercise the backend selected by this runtime, including Bun's native POSIX path.
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createServer, type Socket } from "node:net";
 import { createProcessPort } from "../../../src/adapters/process/index.ts";
+import type { ProcessPort, ProcessResult } from "../../../src/ports/process.ts";
 import { waitUntilGone } from "../../node-fixtures/process/liveness.ts";
 
 const supervision = {
@@ -18,10 +19,51 @@ const options = {
   maxOutputBytes: 1000,
 };
 
-test("200 sequential short children retain their output without a timeout", async () => {
+function createTestSession() {
   const port = createProcessPort({ supervision });
-  for (let iteration = 0; iteration < 200; iteration++) {
-    const result = await port.run(
+  const controller = new AbortController();
+  const pending = new Set<Promise<void>>();
+  const run: ProcessPort["run"] = (file, args, spawnOptions) => {
+    const result = port.run(file, args, {
+      ...spawnOptions,
+      signal: spawnOptions.signal
+        ? AbortSignal.any([controller.signal, spawnOptions.signal])
+        : controller.signal,
+    });
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    pending.add(settled);
+    void settled.then(() => pending.delete(settled));
+    return result;
+  };
+  return {
+    run,
+    async close() {
+      controller.abort();
+      await Promise.all(pending);
+    },
+  };
+}
+
+let session: ReturnType<typeof createTestSession>;
+beforeEach(() => {
+  session = createTestSession();
+});
+// A runner timeout abandons the callback; its finally block alone cannot release the slot.
+afterEach(async () => {
+  await session.close();
+}, 15_000);
+
+test("sequential short children retain their output without a timeout", async () => {
+  const { run } = session;
+  const started = performance.now();
+  let count = 200,
+    completed = 0;
+  let backend: NonNullable<ProcessResult["supervision"]>["backend"] | undefined;
+  for (let iteration = 0; iteration < count; iteration++) {
+    const result = await run(
       executable,
       ["-e", "process.stdout.write('ready');process.stderr.write('err')"],
       { ...options, timeoutMs: 1000 },
@@ -34,11 +76,69 @@ test("200 sequential short children retain their output without a timeout", asyn
       stdout: "ready",
       stderr: "err",
     });
+    if (iteration === 0) {
+      backend = result.supervision?.backend;
+      expect(["process-group", "windows-job"]).toContain(backend ?? "missing");
+      // The 200-child Bun POSIX race proof stays intact; Windows uses a helper per call.
+      count = backend === "windows-job" ? 20 : 200;
+    }
+    expect(result.supervision?.backend).toBe(backend);
+    completed++;
+  }
+  expect(completed).toBe(count);
+  const elapsed = performance.now() - started;
+  console.info(
+    `sequential children: platform=${process.platform} backend=${backend} completed=${completed} totalMs=${elapsed.toFixed(1)} perChildMs=${(elapsed / completed).toFixed(1)}`,
+  );
+}, 30_000);
+
+test("caller timeout teardown releases the supervisor slot before the next test", async () => {
+  const ready = Promise.withResolvers<void>();
+  const running = session.run(
+    executable,
+    ["-e", "process.stdout.write('ready');setInterval(()=>{},1000)"],
+    {
+      ...options,
+      observer: {
+        push(stream) {
+          if (stream === "stdout") ready.resolve();
+        },
+      },
+    },
+  );
+  // Inject the runner abandoning its await while the real child still owns the slot.
+  await expect(
+    Promise.race([
+      running,
+      ready.promise.then(() => {
+        throw new Error("injected caller timeout");
+      }),
+    ]),
+  ).rejects.toThrow("injected caller timeout");
+  const next = createTestSession();
+  try {
+    await expect(
+      next.run(executable, ["-e", ""], options),
+    ).rejects.toMatchObject({
+      code: "PROCESS_LIMIT_EXCEEDED",
+    });
+    await session.close();
+    expect(await running).toMatchObject({ signal: "SIGKILL", timedOut: false });
+    expect(
+      await next.run(
+        executable,
+        ["-e", "process.stdout.write('next')"],
+        options,
+      ),
+    ).toMatchObject({ exitCode: 0, timedOut: false, stdout: "next" });
+  } finally {
+    await next.close();
   }
 }, 30_000);
 
 for (const mode of ["deadline", "cancel"] as const) {
   test(`the active backend stops a child and its running grandchild on ${mode}`, async () => {
+    const { run } = session;
     const connections = new Set<Socket>();
     let closing = false;
     const server = createServer((socket) => {
@@ -60,8 +160,7 @@ for (const mode of ["deadline", "cancel"] as const) {
       const parent = `${control}require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:['ignore','inherit','inherit'],detached:process.platform==='win32'});process.stdout.write('child:'+process.pid+'\\n');setInterval(()=>{},1000);`;
       const controller = new AbortController();
       let observed = "";
-      const port = createProcessPort({ supervision });
-      const result = await port.run(executable, ["-e", parent], {
+      const result = await run(executable, ["-e", parent], {
         ...options,
         signal: controller.signal,
         observer: {
