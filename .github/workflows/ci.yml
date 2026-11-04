@@ -140,7 +140,7 @@ jobs:
         # Assignment spans unit, parallel integration and serial integration together.
         include:
           - { os: ubuntu-latest, node: "24", suite: all }
-          - { os: ubuntu-latest, node: "26", suite: all }
+          - { os: ubuntu-latest, node: "26", suite: all, shard: "1/1" }
           - { os: macos-latest, node: "24", suite: all, shard: "1/2" }
           - { os: macos-latest, node: "24", suite: tests, shard: "2/2" }
           - { os: macos-latest, node: "26", suite: pack }
@@ -201,10 +201,10 @@ jobs:
         run: bun run check
       - name: Unit tests
         if: matrix.suite != 'pack'
-        run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:unit {0}', matrix.shard) || 'bun run test:unit' }}
+        run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:unit {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:unit' }}
       - name: Integration tests
         if: matrix.suite != 'pack'
-        run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:integration {0}', matrix.shard) || 'bun run test:integration' }}
+        run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:integration {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:integration' }}
       - if: matrix.suite != 'tests'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
