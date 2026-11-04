@@ -697,6 +697,107 @@ test("scope batch retires notes in order up to a concurrent source edit and resu
   }
 }, 30_000);
 
+for (const fault of [
+  "missing",
+  "different",
+  "missing after retirement",
+] as const) {
+  test(`scope reports every retired member of a five-note group when member 2 reads ${fault}`, async () => {
+    // The first note probes the cost; the remaining five form one group.
+    const { move, device, project } = await setup(6);
+    const get = project.get.bind(project);
+    const putMany = project.putMany.bind(project);
+    const retire = device.putMany.bind(device);
+    const verified = new Set<string>();
+    let grouped = false;
+    let retired = false;
+    let injecting = true;
+    project.putMany = (entries) => {
+      const result = putMany(entries);
+      if (entries.some((entry) => entry.key === "transfer/device/note-6")) {
+        expect(
+          entries.filter((entry) => entry.key.startsWith("note/")),
+        ).toHaveLength(5);
+        grouped = true;
+      }
+      return result;
+    };
+    device.putMany = (entries) => {
+      const result = retire(entries);
+      retired = true;
+      return result;
+    };
+    project.get = (key) => {
+      const record = get(key);
+      if (
+        injecting &&
+        grouped &&
+        key === "note/000000003" &&
+        (fault !== "missing after retirement" || retired)
+      ) {
+        if (fault !== "different") return undefined;
+        return (
+          record && {
+            ...record,
+            value: { ...(record.value as object), text: "different" },
+          }
+        );
+      }
+      if (record && key.startsWith("note/"))
+        verified.add(`project/${projectId}/note-${Number(key.slice(5))}`);
+      return record;
+    };
+    const assertReported = (moved: Batch["moved"]) => {
+      for (const { id, to } of moved) {
+        expect(verified.has(to)).toBe(true);
+        const number = Number(to.split("-").at(-1));
+        expect(
+          get(`note/${String(number).padStart(9, "0")}`)?.value,
+        ).toMatchObject({
+          text: `new ${id.split("-").at(-1)}`,
+          scope: "alpha",
+          tags: ["fact"],
+          links: ["device/note-1"],
+        });
+      }
+      for (let number = 1; number <= 6; number += 1) {
+        const key = `note/${String(number).padStart(9, "0")}`;
+        const source = device.get(key)!.value as {
+          deleted?: boolean;
+          movedTo?: string;
+          text?: string;
+        };
+        const destination = get(key)?.value as
+          { deleted?: boolean; text?: string } | undefined;
+        if (source.deleted === true) {
+          const to = `project/${projectId}/note-${number}`;
+          expect(source.movedTo).toBe(to);
+          expect(moved).toContainEqual({
+            id: `device/note-${number}`,
+            to,
+          });
+        } else expect(source.text).toBe(`new ${number}`);
+        expect(destination).toMatchObject({ text: `new ${number}` });
+        expect(destination?.deleted).not.toBe(true);
+      }
+    };
+    const first = await move();
+    expect(grouped).toBe(true);
+    assertReported(first.moved);
+    injecting = false;
+    const resumed = await move();
+    const moved = [...first.moved, ...resumed.moved];
+    assertReported(moved);
+    expect(moved).toHaveLength(6);
+    expect(new Set(moved.map((note) => note.id)).size).toBe(6);
+    expect(new Set(moved.map((note) => note.to)).size).toBe(6);
+    for (let number = 1; number <= 6; number += 1)
+      expect(
+        device.get(`note/${String(number).padStart(9, "0")}`)?.value,
+      ).toMatchObject({ deleted: true });
+  }, 30_000);
+}
+
 for (const sourceConflict of [true, false]) {
   test(`scope preserves a source whose copy was forgotten before ${sourceConflict ? "conflicting" : "conflict-free"} grouped retirement`, async () => {
     const { move, call, device, project } = await setup(6);
