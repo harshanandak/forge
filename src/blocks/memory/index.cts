@@ -1917,6 +1917,7 @@ module.exports = {
             failedNote = note;
             const noteStarted = Date.now();
             const single = !placed || i >= retired;
+            if (single && stopped) break;
             if (single && affordable(reserveMs) === 0) {
               deferred = true;
               break;
@@ -1930,10 +1931,15 @@ module.exports = {
                       expectRevision: note.record.revision,
                     },
                     services,
-                  })) as { to?: string }
+                  })) as { to: string }
                 ).to
-              : placed[i];
-            const ref = to === undefined ? undefined : parseRef(to);
+              : placed[i]!;
+            if (single && (!to || !to.startsWith(`${target.prefix}/`))) {
+              stopped ??= { id: note.id, code: "VERIFY_FAILED" };
+              break;
+            }
+            moved.push({ id: note.id, to });
+            const ref = parseRef(to);
             const destination =
               ref?.level === "project" &&
               target.prefix === `project/${ref.project}`
@@ -1942,8 +1948,7 @@ module.exports = {
             const tombstone = source.state.get(note.record.key)?.value as
               NoteValue | undefined;
             const value = destination?.value as NoteValue | undefined;
-            if (
-              !to ||
+            const drifted = (note: (typeof group)[number], to: string) =>
               !value ||
               value.deleted === true ||
               value.scope !== input.scope ||
@@ -1952,14 +1957,12 @@ module.exports = {
               canonical(value.links) !==
                 canonical(qualifiedLinks(note.value.links)) ||
               tombstone?.deleted !== true ||
-              tombstone.movedTo !== to
-            ) {
-              stopped = { id: note.id, code: "VERIFY_FAILED" };
-              break;
-            }
-            moved.push({ id: note.id, to });
+              tombstone.movedTo !== to;
+            if (drifted(note, to))
+              stopped ??= { id: note.id, code: "VERIFY_FAILED" };
             if (fresh) probed = true;
             slowestMoveMs = Math.max(slowestMoveMs, Date.now() - noteStarted);
+            if (single && stopped) break;
           }
           slowestMoveMs = Math.max(
             slowestMoveMs,
