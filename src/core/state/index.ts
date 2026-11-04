@@ -731,6 +731,8 @@ export class StateOwner {
           },
         ),
       list: (prefix?: string) => this.list(namespace, prefix),
+      count: (prefix: string) => this.count(namespace, prefix),
+      maxNumber: (prefix: string) => this.maxNumber(namespace, prefix),
       listRange: (options: RangeOptions) => this.listRange(namespace, options),
       history: (options: HistoryOptions) => this.history(namespace, options),
       events: (key?: string) => this.events(namespace, key),
@@ -768,6 +770,37 @@ export class StateOwner {
       )
       .map((row) => body<StateRecord>(row)!)
       .filter((record) => record.key.startsWith(prefix));
+  }
+  count(namespace: string, prefix: string): number {
+    return this.#aggregate(namespace, prefix, "COUNT(*)");
+  }
+  maxNumber(namespace: string, prefix: string): number {
+    return this.#aggregate(
+      namespace,
+      prefix,
+      "MAX(CASE WHEN key GLOB '*[0-9]' THEN CAST(substr(key, length(rtrim(key, '0123456789')) + 1) AS INTEGER) END)",
+    );
+  }
+  #aggregate(namespace: string, prefix: string, expression: string): number {
+    namespaceValid(namespace);
+    if (!prefix.isWellFormed())
+      invalid("Aggregate prefix must be well-formed Unicode");
+    const points = Array.from(prefix);
+    let upper: string | undefined;
+    while (points.length > 0) {
+      const point = points.pop()!.codePointAt(0)!;
+      if (point === 0x10ffff) continue;
+      upper =
+        points.join("") +
+        String.fromCodePoint(point === 0xd7ff ? 0xe000 : point + 1);
+      break;
+    }
+    return Number(
+      this.#db.get(
+        `SELECT ${expression} AS total FROM state_records WHERE namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"}`,
+        upper === undefined ? [namespace, prefix] : [namespace, prefix, upper],
+      )?.total ?? 0,
+    );
   }
   /** One bounded page of records from a key range, in key order or reverse. */
   listRange(namespace: string, options: RangeOptions): readonly StateRecord[] {

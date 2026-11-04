@@ -594,14 +594,7 @@ const operations: Operations<WorkOperations> = {
     const dependsOn = (input.dependsOn ?? []).map(ids.stored);
     const parent =
       input.parent === undefined ? undefined : ids.stored(input.parent);
-    const records = state.list("issue:");
-    const sequence =
-      records.reduce((max, record) => {
-        const { id } = stored(record);
-        return id.startsWith(STORED)
-          ? Math.max(max, Number(id.slice(STORED.length)) || 0)
-          : max;
-      }, 0) + 1;
+    const sequence = state.maxNumber(`issue:${STORED}`) + 1;
     const id = `${STORED}${sequence}`;
     const readSet = validateDependencies(state, id, dependsOn, ids);
     if (parent !== undefined) get(state, parent, input.parent);
@@ -919,7 +912,7 @@ const operations: Operations<WorkOperations> = {
     const id = ids.stored(input.id);
     get(state, id, input.id);
     const prefix = `comment:${id}:`;
-    const commentId = `${prefix}${state.list(prefix).length + 1}`;
+    const commentId = `${prefix}${state.count(prefix) + 1}`;
     persist(state, commentId, { id, body: input.body }, 0);
     return { id: ids.shown(id), commentId };
   },
@@ -970,7 +963,7 @@ const operations: Operations<WorkOperations> = {
       fail("INPUT_INVALID", "Checkpoint next must contain 1-300 characters");
     const { id: _given, ...checkpoint } = input;
     const prefix = `comment:${id}:`;
-    const commentId = `${prefix}${state.list(prefix).length + 1}`;
+    const commentId = `${prefix}${state.count(prefix) + 1}`;
     persist(
       state,
       commentId,
@@ -1091,7 +1084,7 @@ const operations: Operations<WorkOperations> = {
     const prefix = `link:${id}:`;
     return persist(
       state,
-      `${prefix}${state.list(prefix).length + 1}`,
+      `${prefix}${state.count(prefix) + 1}`,
       { ...input, id },
       0,
       key(id),
