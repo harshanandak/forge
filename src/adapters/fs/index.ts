@@ -43,13 +43,17 @@ const realpath = (path: string): string => realpathSync.native(path);
 
 function within(realRoot: string, candidate: string): boolean {
   const rel = relative(realRoot, candidate);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return !/^\.\.(?:[\\/]|$)/.test(rel) && !isAbsolute(rel);
 }
 
 /** How a symlink in the LAST component is treated: followed (list), refused, or left alone (remove). */
 type FinalLink = "follow" | "refuse" | "keep";
 
-function resolveIn(root: string, path: string, finalLink: FinalLink): string {
+export function resolveIn(
+  root: string,
+  path: string,
+  finalLink: FinalLink,
+): string {
   if (isAbsolute(path) || win32.isAbsolute(path))
     throw escape(path, "absolute path is outside the project root");
   const segments = path.split("/").filter((s) => s !== "" && s !== ".");
