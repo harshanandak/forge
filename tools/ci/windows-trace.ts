@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { appendFileSync, renameSync } from "node:fs";
 import { promisify } from "node:util";
-import { mergeCounterLog } from "./read-trace.ts";
+import { mergeCounterLog, topIo } from "./read-trace.ts";
 
 const [mode, trace = `${process.env.RUNNER_TEMP}/windows-trace.jsonl`] =
   process.argv.slice(2);
@@ -52,6 +52,7 @@ try {
       ...JSON.parse((await read(".summary"))!),
       collectorCpuPercent: converted.collectorCpuPercent,
       counterSamples: converted.samples,
+      topIo: topIo(converted.jsonl.split("\n").filter(Boolean)),
       conversionMs: performance.now() - conversionStarted,
     } as Record<string, unknown>;
     await Bun.write(trace + ".summary", JSON.stringify(summary));
@@ -74,6 +75,10 @@ try {
         "\\Memory\\Available MBytes",
         "\\PhysicalDisk(_Total)\\% Disk Time",
         "\\PhysicalDisk(_Total)\\Avg. Disk Queue Length",
+        "\\PhysicalDisk(*)\\Disk Write Bytes/sec",
+        ...["System", "svchost*", "_Total"].map(
+          (name) => `\\Process(${name})\\IO Write Bytes/sec`,
+        ),
         ...["Avg. Disk sec/Read", "Avg. Disk sec/Write", "Disk Bytes/sec"].map(
           (c) => `\\LogicalDisk(*)\\${c}`,
         ),

@@ -57,14 +57,11 @@ type DiagnosticRunner = (
   args: string[],
   options: SpawnSyncOptionsWithStringEncoding,
 ) => { status: number | null; stdout: string; error?: Error };
-const cleanupDiagnosticCommand = String.raw`
-$root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT
-$data = @{ holders = @(); holderUnknown = $true; holderReason = 'Restart Manager returned no holders' }
-try {
-  Add-Type -ErrorAction Stop -TypeDefinition @'
+const cleanupNativeSource = String.raw`
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 public static class CleanupRestartManager {
   [StructLayout(LayoutKind.Sequential)]
   public struct UniqueProcess {
@@ -113,7 +110,86 @@ public static class CleanupRestartManager {
     } finally { stage = "RmEndSession"; Check(RmEndSession(session)); }
   }
 }
-'@
+public static class CleanupDeleteProbe {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+  static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+  public static bool CanOpenForDelete(string path) {
+    // DELETE access, all sharing, OPEN_EXISTING, directory support; never delete-on-close.
+    using (SafeFileHandle handle = CreateFileW(path, 0x00010000, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+      return !handle.IsInvalid;
+    }
+  }
+}
+`;
+let cleanupAssembly:
+  { root: string; path: string; failure?: Error } | undefined;
+let cleanupCompilations = 0;
+function cleanupNativeEnvironment(run: DiagnosticRunner = spawnSync) {
+  if (run !== spawnSync && !cleanupAssembly) return process.env;
+  if (!cleanupAssembly) {
+    const root = mkdtempSync(join(tmpdir(), "forge-cleanup-native-"));
+    cleanupAssembly = { root, path: join(root, "cleanup.dll") };
+    cleanupCompilations += 1;
+    const started = performance.now();
+    try {
+      const result = spawnSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `Add-Type -ErrorAction Stop -OutputAssembly $env:FORGE_LANE_CLOSE_ASSEMBLY -TypeDefinition @'\n${cleanupNativeSource}\n'@`,
+        ],
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            FORGE_LANE_CLOSE_ASSEMBLY: cleanupAssembly.path,
+          },
+        },
+      );
+      const elapsedMs = Math.round(performance.now() - started);
+      const error = result.error as NodeJS.ErrnoException | undefined;
+      if (error || result.status !== 0) {
+        cleanupAssembly.failure = new Error(
+          `Cleanup diagnostic assembly compilation ${error?.code === "ETIMEDOUT" ? "timed out" : "failed"} after ${elapsedMs} ms; exit status ${result.status}; signal ${result.signal ?? "none"}; error code ${error?.code ?? "none"}; error ${error?.message ?? "none"}; stdout tail: ${result.stdout?.slice(-500) ?? ""}; stderr tail: ${result.stderr?.slice(-500) ?? ""}`,
+          { cause: error },
+        );
+        console.info(cleanupAssembly.failure.message);
+      } else {
+        console.info(`Cleanup diagnostic assembly compiled in ${elapsedMs} ms`);
+      }
+    } catch (cause) {
+      // Cache failure too: a diagnostic must not repeatedly invoke the compiler.
+      cleanupAssembly.failure = new Error(
+        `Cleanup diagnostic assembly compilation spawn threw after ${Math.round(performance.now() - started)} ms; error code ${(cause as NodeJS.ErrnoException)?.code ?? "none"}; ${String(cause)}`,
+        { cause },
+      );
+    }
+  }
+  const { path, failure } = cleanupAssembly;
+  return {
+    ...process.env,
+    FORGE_LANE_CLOSE_ASSEMBLY: failure ? "" : path,
+    FORGE_LANE_CLOSE_ASSEMBLY_ERROR: failure?.message ?? "",
+  };
+}
+afterAll(() => {
+  if (cleanupAssembly) {
+    const { root } = cleanupAssembly;
+    cleanupAttribution(root, () =>
+      rmSync(root, { recursive: true, force: true }),
+    );
+  }
+});
+const cleanupDiagnosticCommand = String.raw`
+$root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT
+$data = @{ holders = @(); holderUnknown = $true; holderReason = 'Restart Manager returned no holders' }
+try {
+  if ($env:FORGE_LANE_CLOSE_ASSEMBLY_ERROR) { throw $env:FORGE_LANE_CLOSE_ASSEMBLY_ERROR }
+  Add-Type -ErrorAction Stop -Path $env:FORGE_LANE_CLOSE_ASSEMBLY
   $data.holders = @([CleanupRestartManager]::Query($env:FORGE_LANE_CLOSE_DIAGNOSTIC_PATH) | ForEach-Object { @{ pid = $_.process.pid; name = $_.name; appType = $_.appType } })
   if ($data.holders.Count -gt 0) { $data.holderUnknown = $false; $data.Remove('holderReason') }
 } catch { $data.holders = @(); $data.holderUnknown = $true; $data.holderReason = $_.Exception.ToString() }
@@ -143,22 +219,9 @@ try {
 } catch { $data.processQueryError = 'Win32_Process query failed' }
 try {
   $data.gitExists = Test-Path -LiteralPath (Join-Path $bin 'git.exe') -PathType Leaf -ErrorAction Stop
-  if ([IO.Directory]::Exists($bin)) {
-    Add-Type -ErrorAction Stop -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
-public static class CleanupDeleteProbe {
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
-  static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
-  public static bool CanOpenForDelete(string path) {
-    // DELETE access, all sharing, OPEN_EXISTING, directory support; never delete-on-close.
-    using (SafeFileHandle handle = CreateFileW(path, 0x00010000, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
-      return !handle.IsInvalid;
-    }
-  }
-}
-'@
+  if ($env:FORGE_LANE_CLOSE_ASSEMBLY_ERROR) { $data.filesQueryError = $env:FORGE_LANE_CLOSE_ASSEMBLY_ERROR }
+  elseif ([IO.Directory]::Exists($bin)) {
+    Add-Type -ErrorAction Stop -Path $env:FORGE_LANE_CLOSE_ASSEMBLY
     $data.files = @(Get-ChildItem -LiteralPath $bin -Force -ErrorAction Stop | ForEach-Object {
       @{ name = $_.Name; deleteOpenSucceeded = [CleanupDeleteProbe]::CanOpenForDelete($_.FullName) }
     })
@@ -210,7 +273,10 @@ function diagnoseCleanup(
         encoding: "utf8",
         timeout: 10_000,
         windowsHide: true,
-        env: { ...process.env, FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT: root },
+        env: {
+          ...cleanupNativeEnvironment(run),
+          FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT: root,
+        },
       },
     );
     if (result.error || result.status !== 0)
@@ -224,8 +290,10 @@ function diagnoseCleanup(
     if (evidence.filesQueryError)
       report.filesQueryError = evidence.filesQueryError;
   } catch {
-    report.processQueryError = "Cleanup evidence query did not complete";
-    report.filesQueryError = "Cleanup evidence query did not complete";
+    report.processQueryError =
+      cleanupAssembly?.failure?.message ??
+      "Cleanup evidence query did not complete";
+    report.filesQueryError = report.processQueryError;
   }
   try {
     try {
@@ -254,7 +322,7 @@ function diagnoseCleanup(
       timeout: 10_000,
       windowsHide: true,
       env: {
-        ...process.env,
+        ...cleanupNativeEnvironment(run),
         FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT: root,
         FORGE_LANE_CLOSE_DIAGNOSTIC_PATH:
           (original as NodeJS.ErrnoException).path ?? root,
@@ -264,7 +332,8 @@ function diagnoseCleanup(
     if (!result.error && result.status === 0)
       report.host = JSON.parse(result.stdout) as unknown;
   } catch {
-    report.diagnosticError = "Cleanup diagnostic failed";
+    report.diagnosticError =
+      cleanupAssembly?.failure?.message ?? "Cleanup diagnostic failed";
   }
   report.elapsedMs = Date.now() - start;
   try {
@@ -365,6 +434,12 @@ test.skipIf(process.platform !== "win32")(
   "Restart Manager refuses directory registration before opening a session",
   () => {
     const root = diagnosticRoot();
+    const env = cleanupNativeEnvironment();
+    expect(cleanupNativeEnvironment().FORGE_LANE_CLOSE_ASSEMBLY).toBe(
+      env.FORGE_LANE_CLOSE_ASSEMBLY,
+    );
+    expect(cleanupCompilations).toBe(1);
+    expect(existsSync(env.FORGE_LANE_CLOSE_ASSEMBLY!)).toBe(true);
     const script =
       cleanupDiagnosticCommand.slice(
         0,
@@ -373,6 +448,7 @@ test.skipIf(process.platform !== "win32")(
         ),
       ) +
       "  Write-Output ([CleanupRestartManager]::Query($env:FORGE_LANE_CLOSE_DIAGNOSTIC_PATH).Length)\n} catch { throw }";
+    const started = performance.now();
     const result = spawnSync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
@@ -380,8 +456,11 @@ test.skipIf(process.platform !== "win32")(
         encoding: "utf8",
         windowsHide: true,
         timeout: 10_000,
-        env: { ...process.env, FORGE_LANE_CLOSE_DIAGNOSTIC_PATH: root },
+        env: { ...env, FORGE_LANE_CLOSE_DIAGNOSTIC_PATH: root },
       },
+    );
+    console.info(
+      `Restart Manager directory diagnostic: ${performance.now() - started} ms`,
     );
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
@@ -391,7 +470,17 @@ test.skipIf(process.platform !== "win32")(
 );
 
 test("cleanup diagnostic command registers the failing path and maps Restart Manager holders", () => {
-  const command = cleanupDiagnosticCommand.replace(/\s+/g, " ");
+  for (const script of [cleanupDiagnosticCommand, cleanupEvidenceCommand]) {
+    expect(script).not.toContain("-TypeDefinition");
+    expect(script).toContain("$env:FORGE_LANE_CLOSE_ASSEMBLY_ERROR");
+    expect(script).toContain(
+      "Add-Type -ErrorAction Stop -Path $env:FORGE_LANE_CLOSE_ASSEMBLY",
+    );
+  }
+  const command = (cleanupNativeSource + cleanupDiagnosticCommand).replace(
+    /\s+/g,
+    " ",
+  );
   for (const fragment of [
     'DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)',
     "public UniqueProcess process;",
@@ -453,6 +542,13 @@ test.skipIf(process.platform !== "win32")(
       mkdirSync(bin);
       writeFileSync(join(bin, "probe.txt"), "Cleanup evidence fixture.\n");
       const names = readdirSync(bin).sort();
+      const env = cleanupNativeEnvironment();
+      expect(cleanupNativeEnvironment().FORGE_LANE_CLOSE_ASSEMBLY).toBe(
+        env.FORGE_LANE_CLOSE_ASSEMBLY,
+      );
+      expect(cleanupCompilations).toBe(1);
+      expect(existsSync(env.FORGE_LANE_CLOSE_ASSEMBLY!)).toBe(true);
+      const started = performance.now();
       const result = spawnSync(
         "powershell.exe",
         ["-NoProfile", "-NonInteractive", "-Command", cleanupEvidenceCommand],
@@ -460,8 +556,11 @@ test.skipIf(process.platform !== "win32")(
           encoding: "utf8",
           timeout: 10_000,
           windowsHide: true,
-          env: { ...process.env, FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT: root },
+          env: { ...env, FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT: root },
         },
+      );
+      console.info(
+        `Cleanup evidence diagnostic: ${performance.now() - started} ms`,
       );
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(0);
@@ -490,6 +589,42 @@ test.skipIf(process.platform !== "win32")(
 );
 
 if (process.platform === "win32") {
+  test("cached compile failure preserves independent queries and its reason", () => {
+    const previous = cleanupAssembly,
+      compilations = cleanupCompilations;
+    const reason = "compile timed out; ETIMEDOUT; stderr tail: compiler detail";
+    const evidence = {
+      processes: [{ ProcessId: 717 }],
+      gitExists: true,
+      filesQueryError: reason,
+    };
+    const host = {
+      holders: [],
+      holderUnknown: true,
+      holderReason: reason,
+      defender: { RealTimeProtectionEnabled: true },
+    };
+    cleanupAssembly = { root: "unused", path: "", failure: new Error(reason) };
+    const calls: string[] = [];
+    try {
+      const report = JSON.parse(
+        cleanupReport(diagnosticRoot(), "EBUSY", (command, args, options) => {
+          if (command !== "powershell.exe") return { status: 0, stdout: "" };
+          calls.push(args[3]!);
+          expect(options.env?.FORGE_LANE_CLOSE_ASSEMBLY).toBe("");
+          expect(options.env?.FORGE_LANE_CLOSE_ASSEMBLY_ERROR).toBe(reason);
+          const data = args[3] === cleanupEvidenceCommand ? evidence : host;
+          return { status: 0, stdout: JSON.stringify(data) };
+        }),
+      ) as CleanupReport;
+      expect(calls).toEqual([cleanupEvidenceCommand, cleanupDiagnosticCommand]);
+      expect(cleanupCompilations).toBe(compilations);
+      expect(report).toMatchObject({ ...evidence, host });
+    } finally {
+      cleanupAssembly = previous;
+    }
+  });
+
   test("cleanup diagnostic preserves holders and every Defender report field", () => {
     const root = diagnosticRoot();
     const host: CleanupReport["host"] = {
@@ -580,10 +715,13 @@ if (process.platform === "win32") {
           "$_.CommandLine.Substring(0, [Math]::Min(300, $_.CommandLine.Length))",
           "catch { $data.processQueryError = 'Win32_Process query failed' }",
           "Get-ChildItem -LiteralPath $bin -Force -ErrorAction Stop",
+        ])
+          expect(args[3]).toContain(fragment);
+        for (const fragment of [
           "CreateFileW(path, 0x00010000, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)",
           "using (SafeFileHandle handle",
         ])
-          expect(args[3]).toContain(fragment);
+          expect(cleanupNativeSource).toContain(fragment);
         return { status: 0, stdout: JSON.stringify(evidence) };
       }),
     ) as CleanupReport;
