@@ -15,6 +15,8 @@ export function nodeReferences(
   const byPath = new Map(files.map((file) => [file.path, file.text]));
   const node =
     /["'`]node(?:\.exe)?(?:["'`]|[ \t])|\bNODE_(?:EXE|PATH|BINARY)\b|process\.(?:versions\.node|version)\b|(?:exec|env) node\b/i;
+  const npm =
+    /\b(?:spawn(?:Sync)?|exec(?:File)?(?:Sync)?)\s*\(\s*\[?\s*["'`](?:npm|npx)(?:\.cmd)?(?:["'`]|[ \t])/i;
   const imports =
     /(?:from\s*|import\s*\(|require\s*\(|import\s*)["'](\.[^"']+)["']/g;
   const references = (path: string, seen: Set<string>): boolean => {
@@ -22,7 +24,7 @@ export function nodeReferences(
     seen.add(path);
     const text = byPath.get(path);
     if (text === undefined) return false;
-    if (node.test(text)) return true;
+    if (node.test(text) || npm.test(text)) return true;
     return [...text.matchAll(imports)].some((match) => {
       const dependency = posix.normalize(
         posix.join(posix.dirname(path), match[1]!),
