@@ -9,7 +9,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { resolveBlock, sourceFor } from "../../src/assembly/capture.ts";
+import {
+  resolveBlock,
+  resolveConfiguredBlock,
+  sourceFor,
+} from "../../src/assembly/capture.ts";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
 import { runCli } from "../../src/surface/cli.ts";
 
@@ -31,6 +35,11 @@ for (const [spec, displayed, suggestion] of [
     '"./blocks/foo\\rINJECTED"',
   ],
   ["blocks/\u001b[2Jfoo", '"blocks/\\u001b[2Jfoo"', '"./blocks/\\u001b[2Jfoo"'],
+  ["blocks/\u007ffoo", '"blocks/\\u007ffoo"', '"./blocks/\\u007ffoo"'],
+  ["blocks/\u0080foo", '"blocks/\\u0080foo"', '"./blocks/\\u0080foo"'],
+  ["blocks/\u0085foo", '"blocks/\\u0085foo"', '"./blocks/\\u0085foo"'],
+  ["blocks/\u009b[2Jfoo", '"blocks/\\u009b[2Jfoo"', '"./blocks/\\u009b[2Jfoo"'],
+  ["blocks/\u009ffoo", '"blocks/\\u009ffoo"', '"./blocks/\\u009ffoo"'],
   ["blocks/\u2028foo", '"blocks/\\u2028foo"', '"./blocks/\\u2028foo"'],
   ["blocks/\u2029foo", '"blocks/\\u2029foo"', '"./blocks/\\u2029foo"'],
   ['blocks/"foo', '"blocks/\\"foo"', '"./blocks/\\"foo"'],
@@ -94,6 +103,21 @@ for (const [spec, displayed, suggestion] of [
     });
   }
 }
+
+test("configured outside paths escape C1 characters in the refusal", () => {
+  const sandbox = mkdtempSync(join(tmpdir(), "forge-block-control-"));
+  const root = join(sandbox, "project");
+  const path = "../outside\u0085";
+  try {
+    mkdirSync(root);
+    mkdirSync(resolve(root, path));
+    expect(() => resolveConfiguredBlock(root, { path })).toThrow(
+      'INPUT_INVALID: Block source "../outside\\u0085" resolves outside the project',
+    );
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+});
 
 test("explicit relative paths still check and add the local block", async () => {
   const root = mkdtempSync(join(tmpdir(), "forge-block-explicit-"));
