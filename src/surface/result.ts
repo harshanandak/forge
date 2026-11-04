@@ -1,5 +1,24 @@
 import type { FailureEnvelope, ResultEnvelope } from "../generated/types.ts";
 
+function displayText(text: string): string {
+  return text.replace(
+    /(?![\n\t])[\p{Cc}\u2028\u2029]/gu,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+function displayMessage<T extends { readonly message: string }>(value: T): T {
+  return { ...value, message: displayText(value.message) };
+}
+
+export function displayEnvelope(envelope: ResultEnvelope): ResultEnvelope {
+  return {
+    ...envelope,
+    ...(!envelope.ok ? { error: displayMessage(envelope.error) } : {}),
+    warnings: envelope.warnings.map(displayMessage),
+  };
+}
+
 export function failure(
   code: string,
   message: string,
@@ -10,7 +29,7 @@ export function failure(
     status: "FAIL",
     error: {
       code,
-      message,
+      message: displayText(message),
       retry: "never",
       ...(suggest.length === 0 ? {} : { suggest }),
     },
@@ -42,12 +61,13 @@ export function exitCode(result: ResultEnvelope): number {
 }
 
 export function renderText(value: unknown, depth = 0): string {
-  if (value === null || typeof value !== "object") return String(value);
+  if (value === null || typeof value !== "object")
+    return displayText(String(value));
   const indent = "  ".repeat(depth);
   return Object.entries(value)
     .map(([key, child]) => {
       const nested = child !== null && typeof child === "object";
-      return `${indent}${key}:${nested ? "\n" : " "}${renderText(child, nested ? depth + 1 : 0)}`;
+      return `${indent}${displayText(key)}:${nested ? "\n" : " "}${renderText(child, nested ? depth + 1 : 0)}`;
     })
     .join("\n");
 }
@@ -62,6 +82,7 @@ export function respond(
   envelope: ResultEnvelope,
   text = false,
 ): SurfaceResponse {
+  envelope = displayEnvelope(envelope);
   return {
     envelope,
     stdout: `${text ? renderText(envelope) : JSON.stringify(envelope)}\n`,
