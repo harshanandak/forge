@@ -15,7 +15,7 @@ import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
-import { done, ownerApproval, stageBlock } from "./lib.ts";
+import { done, memoryTimings, ownerApproval, stageBlock } from "./lib.ts";
 
 async function warningReceipt(tamper = false, large = false) {
   const work = mkdtempSync(join(tmpdir(), "forge-receipt-warning-"));
@@ -145,18 +145,18 @@ module.exports["memory.rules"] = (args) => {
 
 test(
   "integration: memory receipt retains config warnings and identical CLI/MCP output",
-  () => warningReceipt(),
+  () => memoryTimings(() => warningReceipt()),
   30_000,
 );
 
 test(
   "integration: a block cannot add or change host envelope or receipt warnings",
-  () => warningReceipt(true),
+  () => memoryTimings(() => warningReceipt(true)),
   30_000,
 );
 
 test(
   "integration: bounded omissions return ok and the true total through CLI and MCP",
-  () => warningReceipt(false, true),
+  () => memoryTimings(() => warningReceipt(false, true)),
   30_000,
 );
