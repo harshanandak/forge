@@ -834,21 +834,38 @@ export async function createAssembly(
               preview.declaration.args,
             ),
           );
-        derived.push(
-          ...(await idPrefixObservation(root, stateRoot, options.providers)),
-        );
+        const prefix = () =>
+          idPrefixObservation(root, stateRoot, options.providers);
+        const core = configCandidates
+          .concat(grantCandidate, discoveryOperations)
+          .some((entry) => entry.op === request.op);
+        if (core) derived.push(...(await prefix()));
+        let workEnabled = false;
         for (const instance of (deviceMemory
           ? snapshot(call, true).show
           : preview
             ? (call.configOperations[request.op]!(request.input) as ShowResult)
             : call.config.show()
-        ).instances)
+        ).instances) {
+          workEnabled ||= instance.enabled && instance.name === "work";
           if (
             instance.enabled &&
             "builtin" in instance.source &&
             instance.source.builtin === "forge/agent"
           )
             derived.push(...agentAdapterObservation(instance.name));
+        }
+        const blockCatalog =
+          core || workEnabled
+            ? undefined
+            : snapshot(call, deviceMemory).catalog;
+        if (
+          !core &&
+          (workEnabled ||
+            !blockCatalog?.list().includes(request.op) ||
+            blockCatalog.resolve(request.op).operation.instance === "work")
+        )
+          derived.push(...(await prefix()));
       } catch (error) {
         return failure(request.op, error);
       }
