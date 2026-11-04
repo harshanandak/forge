@@ -9,7 +9,6 @@ import {
 import { createRunnerOutput } from "../adapters/runner-output/index.ts";
 import {
   checkoutScopeRoot as gitCheckoutScopeRoot,
-  GitCommandError,
   mainCheckoutPath,
   originRepositoryName,
 } from "../adapters/vcs-git/index.ts";
@@ -294,17 +293,7 @@ export async function idPrefixObservation(
   stateRoot: string,
   options: ProviderOptions = {},
 ): Promise<readonly DetectionObservation[]> {
-  const repository = await originRepositoryName(
-    root,
-    gitOptions(options),
-  ).catch((error: unknown) => {
-    if (!(error instanceof GitCommandError)) throw error;
-    throw new ForgeFailure({
-      code: "UNAVAILABLE",
-      message: error.message.replace(/\p{Cc}/gu, "").trim(),
-      retry: error.exitCode === null ? "safe" : "never",
-    });
-  });
+  const repository = await originRepositoryName(root, gitOptions(options));
   const value = idPrefix(repository ?? basename(stateRoot));
   return value === undefined
     ? []

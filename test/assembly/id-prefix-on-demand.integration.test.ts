@@ -33,7 +33,7 @@ type OriginFailure =
   | "truncated"
   | "spawn";
 
-async function fixture(workEnabled: boolean) {
+async function fixture(workEnabled: boolean, idPrefix?: string) {
   const folder = mkdtempSync(join(tmpdir(), "forge-prefix-on-demand-"));
   const root = join(folder, "project");
   mkdirSync(join(root, ".forge"), { recursive: true });
@@ -64,7 +64,14 @@ async function fixture(workEnabled: boolean) {
       schemaVersion: "forge.config/1",
       blocks: {
         memory: { source: { builtin: "forge/memory" } },
-        ...(workEnabled ? { work: { source: { builtin: "forge/work" } } } : {}),
+        ...(workEnabled
+          ? {
+              work: {
+                source: { builtin: "forge/work" },
+                ...(idPrefix === undefined ? {} : { config: { idPrefix } }),
+              },
+            }
+          : {}),
       },
     }),
   );
@@ -327,19 +334,65 @@ test.each([
   },
 );
 
-test("a device memory call still succeeds when origin lookup would fail", async () => {
-  const project = await fixture(false);
+test.each([false, true])(
+  "a device memory call with work enabled=%s succeeds when origin lookup would fail",
+  async (workEnabled) => {
+    const project = await fixture(workEnabled);
+    try {
+      project.failOrigin("timeout");
+      project.resetTrace();
+      expect(
+        await project.call(["memory", "search", "heron", "--level", "device"]),
+      ).toMatchObject({ hits: [] });
+      expect(project.originQueries()).toBe(0);
+    } finally {
+      await project.close();
+    }
+  },
+);
+
+test("an explicit project prefix keeps work available when origin lookup times out", async () => {
+  const project = await fixture(true, "configured");
   try {
-    project.failOrigin(true);
-    project.resetTrace();
+    project.failOrigin("timeout");
     expect(
-      await project.call(["memory", "search", "heron", "--level", "device"]),
-    ).toMatchObject({ hits: [] });
-    expect(project.originQueries()).toBe(0);
+      await project.call(["issue", "create", "--title", "Configured"]),
+    ).toMatchObject({ id: "configured-1" });
+    expect(done(await project.invoke("issue.list"))).toMatchObject({
+      items: [{ id: "configured-1", title: "Configured" }],
+    });
   } finally {
     await project.close();
   }
 });
+
+test.each([undefined, "configured"])(
+  "config show with prefix=%s omits a failed derived prefix observation",
+  async (idPrefix) => {
+    const project = await fixture(true, idPrefix);
+    try {
+      project.failOrigin("timeout");
+      const shown = (await project.call(["config", "show"])) as {
+        values: { pointer: string; layer: string; value: unknown }[];
+        effective: { blocks: { work: { config: { idPrefix: string } } } };
+      };
+      expect(
+        shown.values.filter(
+          ({ pointer, layer }) =>
+            pointer === "/blocks/work/config/idPrefix" && layer === "derived",
+        ),
+      ).toEqual([]);
+      expect(shown.effective.blocks.work.config.idPrefix).toBe(
+        idPrefix ?? "work",
+      );
+      expect(done(await project.invoke("template.list"))).toHaveProperty(
+        "templates",
+      );
+    } finally {
+      await project.close();
+    }
+  },
+);
 
 test("memory-only projects keep host operations and unknown names on main's path", async () => {
   const project = await fixture(false);
