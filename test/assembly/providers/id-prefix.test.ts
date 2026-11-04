@@ -63,23 +63,58 @@ test.each([
   },
 );
 
-test("unanswered origins remain unavailable and capacity errors propagate", async () => {
-  for (const result of [
-    { stdout: "" },
-    { stdout: "/repos/alpha/.git", exitCode: 1 },
-    { stdout: "/repos/alpha/.git", truncated: true },
-    { exitCode: null, timedOut: true },
-  ]) {
+test("a missing origin permits the folder fallback even with stderr warnings", async () => {
+  for (const stderr of ["", "config read failed"])
     expect(
       await originRepositoryName(root, {
         ...options,
-        process: fakeProcess(["git"], () => result),
+        process: fakeProcess(["git"], () => ({ exitCode: 1, stderr })),
       }),
     ).toBeUndefined();
-  }
+});
+
+test("git missing permits the folder fallback", async () => {
   expect(
     await originRepositoryName(root, { ...options, process: fakeProcess([]) }),
   ).toBeUndefined();
+});
+
+test("failed origin queries never masquerade as a missing origin", async () => {
+  for (const result of [
+    { stdout: "" },
+    { stdout: "/repos/alpha/.git", exitCode: 1 },
+    { exitCode: 2 },
+    { stdout: "/repos/alpha/.git", truncated: true },
+    { exitCode: null, timedOut: true },
+    { stdout: "/repos/alpha/.git", timedOut: true },
+    { stdout: "/repos/alpha/.git", signal: "SIGTERM" },
+  ]) {
+    await expect(
+      originRepositoryName(root, {
+        ...options,
+        process: fakeProcess(["git"], () => result),
+      }),
+    ).rejects.toMatchObject({ name: "GitCommandError" });
+  }
+});
+
+test("a permanent origin failure preserves its exit code and first stderr line", async () => {
+  await expect(
+    originRepositoryName(root, {
+      ...options,
+      process: fakeProcess(["git"], () => ({
+        exitCode: 128,
+        stderr: "  fatal: dubious ownership  \r\nsecond line\n",
+      })),
+    }),
+  ).rejects.toMatchObject({
+    code: "GIT_FAILED",
+    exitCode: 128,
+    message: "fatal: dubious ownership",
+  });
+});
+
+test("origin spawn failures are reported and unrelated failures propagate", async () => {
   const spawnError = new Error("git cannot start");
   spawnError.name = "ProcessSpawnError";
   const capacityError = Object.assign(new Error("capacity exhausted"), {
@@ -92,7 +127,8 @@ test("unanswered origins remain unavailable and capacity errors propagate", asyn
         throw error;
       }),
     });
-    if (error === spawnError) expect(await read).toBeUndefined();
+    if (error === spawnError)
+      await expect(read).rejects.toMatchObject({ code: "GIT_FAILED" });
     else await expect(read).rejects.toBe(capacityError);
   }
 });
