@@ -1,5 +1,4 @@
-// [integration] Real subprocesses. The adapter is exercised by a Node program (the shipped runtime),
-// not by Bun, and this test asserts on the structured outcome that program prints.
+// [integration] The same process fixture runs under Node and the active test runtime.
 import { beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -63,15 +62,20 @@ beforeAll(() => {
 
 const windows = process.platform === "win32";
 
-test("a real command returns its output and its exit code", () => {
-  expect(outcomes.output).toMatchObject({
-    exitCode: 3,
-    stdout: "out",
-    stderr: "err",
-    timedOut: false,
-    truncated: false,
-  });
-}, 30_000);
+test.each(["node", "bun"])(
+  "under %s, a real command returns its output and non-zero exit code",
+  (runtime) => {
+    const ran = runtime === "node" ? outcomes : bunOutcomes;
+    expect(ran.output).toMatchObject({
+      exitCode: 3,
+      stdout: "out",
+      stderr: "err",
+      timedOut: false,
+      truncated: false,
+    });
+  },
+  30_000,
+);
 
 test("a shim named like npm resolves to the runnable file and runs with every argument intact (old issues 9997d516, c4393667)", () => {
   expect(outcomes.shimResolvedTo.toLowerCase()).toMatch(
@@ -110,20 +114,35 @@ test("arguments cmd.exe would expand are refused on Windows and passed literally
   }
 }, 30_000);
 
-test("stdin reaches the child and closes", () => {
-  expect(outcomes.stdin).toMatchObject({ exitCode: 0, stdout: "PIPE ME" });
-}, 30_000);
+test.each(["node", "bun"])(
+  "under %s, stdin reaches the child and closes",
+  (runtime) => {
+    const ran = runtime === "node" ? outcomes : bunOutcomes;
+    expect(ran.stdin).toMatchObject({ exitCode: 0, stdout: "PIPE ME" });
+  },
+  30_000,
+);
 
-test("output beyond the budget is dropped and reported, what was kept is returned", () => {
-  expect(outcomes.truncated.truncated).toBe(true);
-  expect(outcomes.truncated.stdout).toHaveLength(1000);
-  expect(outcomes.truncated.exitCode).toBe(0);
-  expect(outcomes.truncated.observedBytes).toBe(100000);
-}, 30_000);
+test.each(["node", "bun"])(
+  "under %s, output beyond the budget is dropped and reported, what was kept is returned",
+  (runtime) => {
+    const ran = runtime === "node" ? outcomes : bunOutcomes;
+    expect(ran.truncated.truncated).toBe(true);
+    expect(ran.truncated.stdout).toHaveLength(1000);
+    expect(ran.truncated.exitCode).toBe(0);
+    expect(ran.truncated.observedBytes).toBe(100000);
+  },
+  30_000,
+);
 
-test("the child gets exactly the environment it was given", () => {
-  expect(outcomes.envIsolation.stdout).toBe("undefined");
-}, 30_000);
+test.each(["node", "bun"])(
+  "under %s, the child gets exactly the environment it was given",
+  (runtime) => {
+    const ran = runtime === "node" ? outcomes : bunOutcomes;
+    expect(ran.envIsolation.stdout).toBe("undefined");
+  },
+  30_000,
+);
 
 test("a missing command is Unavailable and a bad working directory is a typed rejection", () => {
   expect(outcomes.missingCommand.kind).toBe("unavailable");
