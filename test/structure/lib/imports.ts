@@ -1,5 +1,7 @@
 import { builtinModules } from "node:module";
 import { posix } from "node:path";
+import { FILESYSTEM_OWNERS } from "./filesystem-owners.ts";
+import { maskSource } from "./platform.ts";
 import type { SourceFile, Violation } from "./repo.ts";
 import { CODE_FILE, DETECTOR_MODULE, TEST_FILE } from "./repo.ts";
 import { findWords } from "./words.ts";
@@ -55,8 +57,18 @@ export function importsOf(file: SourceFile): string[] {
   for (const match of file.text.matchAll(typeImports)) {
     if (match[1] !== undefined) found.add(match[1]);
   }
+  const withStrings = maskSource(file.text, false);
+  const codeOnly = maskSource(file.text, true);
+  const calls = /(?<![\w$.])(?:import|require)\s*\(\s*["']([^"']+)["']\s*[,)]/g;
+  for (const match of withStrings.matchAll(calls)) {
+    if (codeOnly[match.index] === match[0][0] && match[1] !== undefined)
+      found.add(match[1]);
+  }
   return [...found];
 }
+
+const FILESYSTEM_REMEDY =
+  "use the project-files port, or add an allowlist entry with a reason in review";
 
 export function packageOf(specifier: string): string {
   const parts = specifier.split("/");
@@ -98,6 +110,19 @@ export function findDependencyViolations(
     const inShipped = /^(?:src|bin)\//.test(file.path);
     const isTest =
       TEST_FILE.test(file.path) || /(?:^|\/)test\//.test(file.path);
+    const unownedFilesystem =
+      file.path.startsWith("src/") && !FILESYSTEM_OWNERS.has(file.path);
+    if (unownedFilesystem && CODE_FILE.test(file.path)) {
+      for (const match of maskSource(file.text, true).matchAll(
+        /\bBun\s*\.\s*(file|write)\s*\(/g,
+      )) {
+        violations.push({
+          rule: "dependency-boundary",
+          file: file.path,
+          message: `uses "Bun.${match[1]}": ${FILESYSTEM_REMEDY}`,
+        });
+      }
+    }
 
     for (const specifier of importsOf(file)) {
       const fail = (message: string): void => {
@@ -138,6 +163,9 @@ export function findDependencyViolations(
       const bare = specifier.replace(/^node:/, "");
       const builtin = BUILTINS.has(bare.split("/")[0] ?? bare);
       if (builtin) {
+        if (unownedFilesystem && bare.split("/")[0] === "fs") {
+          fail(FILESYSTEM_REMEDY);
+        }
         const owner = RESTRICTED_BUILTINS.get(bare.split("/")[0] ?? bare);
         if (inShipped && owner !== undefined && here !== owner) {
           fail(`only src/adapters/${owner}/ may use this built-in`);
