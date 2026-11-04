@@ -162,6 +162,20 @@ function namespaceValid(namespace: string): void {
   if (!validateBlockId(namespace).ok) invalid("Invalid namespace");
 }
 
+function upperBound(prefix: string): string | undefined {
+  // SQLite's binary UTF-8 order needs a code-point successor, carrying past U+10FFFF.
+  const points = prefix.isWellFormed() ? Array.from(prefix) : [];
+  while (points.length > 0) {
+    const point = points.pop()!.codePointAt(0)!;
+    if (point === 0x10ffff) continue;
+    return (
+      points.join("") +
+      String.fromCodePoint(point === 0xd7ff ? 0xe000 : point + 1)
+    );
+  }
+  return undefined;
+}
+
 // The same constructors define live history and the exact history restore accepts.
 function recordEvent(record: StateRecord, requestId?: string): StateEvent {
   return {
@@ -751,18 +765,8 @@ export class StateOwner {
   }
   list(namespace: string, prefix = ""): readonly StateRecord[] {
     namespaceValid(namespace);
-    // SQLite's binary UTF-8 order needs a code-point successor, carrying past U+10FFFF.
     // Unpaired surrogates bind as U+FFFD, so only the body filter can distinguish them.
-    const points = prefix.isWellFormed() ? Array.from(prefix) : [];
-    let upper: string | undefined;
-    while (points.length > 0) {
-      const point = points.pop()!.codePointAt(0)!;
-      if (point === 0x10ffff) continue;
-      upper =
-        points.join("") +
-        String.fromCodePoint(point === 0xd7ff ? 0xe000 : point + 1);
-      break;
-    }
+    const upper = upperBound(prefix);
     return this.#db
       .all(
         `SELECT body FROM state_records WHERE namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"} ORDER BY key`,
@@ -785,16 +789,7 @@ export class StateOwner {
     namespaceValid(namespace);
     if (!prefix.isWellFormed())
       invalid("Aggregate prefix must be well-formed Unicode");
-    const points = Array.from(prefix);
-    let upper: string | undefined;
-    while (points.length > 0) {
-      const point = points.pop()!.codePointAt(0)!;
-      if (point === 0x10ffff) continue;
-      upper =
-        points.join("") +
-        String.fromCodePoint(point === 0xd7ff ? 0xe000 : point + 1);
-      break;
-    }
+    const upper = upperBound(prefix);
     return Number(
       this.#db.get(
         `SELECT ${expression} AS total FROM state_records WHERE namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"}`,
