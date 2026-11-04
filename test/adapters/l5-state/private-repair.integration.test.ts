@@ -129,9 +129,10 @@ windowsTest(
 );
 test("PowerShell timeout follows recorded phases and batch case order", async () => {
   const commandStart = "FORGE_COMMAND_START:2026-11-03T00:00:00.000Z\n";
-  for (const [output, phase, name] of [
+  for (const [output, phase, name, stderr] of [
     ["", "startup", "pending"],
     ["loading\n", "startup-output", "pending"],
+    ["", "startup-output", "pending", "loading\n"],
     [commandStart, "command", "pending"],
     [`${commandStart}FORGE_CASE_START:0\n`, "command", "completed probe"],
     [
@@ -148,6 +149,7 @@ test("PowerShell timeout follows recorded phases and batch case order", async ()
     const simulated = powerShellBatch(() => {
       queueMicrotask(() => {
         if (output) child.stdout.emit("data", Buffer.from(output));
+        if (stderr) child.stderr.emit("data", Buffer.from(stderr));
       });
       return child;
     });
