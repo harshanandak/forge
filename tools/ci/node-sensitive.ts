@@ -75,6 +75,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for cleanup coverage.",
   "test/structure/dependency-boundary.integration.test.ts":
     "Conservatively retains synthetic Node-launch guard fixtures.",
+  "test/structure/node-sensitive.integration.test.ts":
+    "Conservatively retains synthetic npm/npx-launch guard fixtures.",
   "test/structure/process-lane.integration.test.ts":
     "Conservatively retains synthetic Node-launch guard fixtures.",
   "test/surface/conversation-approval.integration.test.ts":
