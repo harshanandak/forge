@@ -67,7 +67,7 @@ export const RETIRED_PATHS: readonly Pattern[] = [
   ),
   p("alias or manifest file", /(?:^|\/)_(?:aliases|manifest)\.[cm]?[jt]s$/),
   p("legacy entry point", /(?:^|\/)forge-(?:cmd|preflight)\.[cm]?[jt]s$/),
-  p("shell script", /\.(?:sh|bash|zsh)$/),
+  p("shell script", /\.(?:sh|bash|zsh|ps1|psm1|cmd|bat)$/i),
   p("committed agent mirror", /^\.(?:claude|cursor|codex|hermes)\//),
   p("dropped workspace", /^(?:web|packages|eval)\//),
 ];
