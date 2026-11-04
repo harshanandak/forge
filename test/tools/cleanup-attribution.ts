@@ -29,7 +29,7 @@ export function cleanupAttribution(
         const at = new Date().toISOString();
         try {
           if (unavailable) throw new Error(unavailable);
-          if (!tool) throw new Error("FORGE_HANDLE_EXE is not configured");
+          if (!tool) throw new Error("handle unavailable: not configured");
           const result = run(
             tool,
             ["-accepteula", "-nobanner", "-a", "-u", "-v", path],

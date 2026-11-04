@@ -41,10 +41,16 @@ for (const kind of ["file", "directory"])
           caught = error;
         }
         expect(caught).toBe(original);
-        if (process.env.FORGE_HANDLE_UNAVAILABLE) {
+        const tool = process.env.FORGE_HANDLE_EXE;
+        const unavailable = process.env.FORGE_HANDLE_UNAVAILABLE;
+        if (process.env.CI)
+          expect(Boolean(tool) !== Boolean(unavailable)).toBe(true);
+        if (!tool || unavailable) {
           expect(original.message).toContain(
-            process.env.FORGE_HANDLE_UNAVAILABLE,
+            unavailable || "handle unavailable: not configured",
           );
+          expect(original.message).toContain('"status":null');
+          expect(original.message).not.toContain('"status":0');
           return;
         }
         expect(original.message).toContain(String(child.pid));
@@ -90,7 +96,7 @@ test.skipIf(process.platform !== "win32")(
   1_000,
 );
 
-for (const reason of ["checksum mismatch", "download failed"])
+for (const reason of ["checksum mismatch", "download failed", "not configured"])
   test.skipIf(process.platform !== "win32")(
     `unavailable Handle reports ${reason} without executing it`,
     () => {
@@ -111,7 +117,10 @@ for (const reason of ["checksum mismatch", "download failed"])
             calls++;
             throw new Error("must not execute Handle");
           },
-          { tool: "unverified-handle.exe", unavailable },
+          {
+            tool: reason === "not configured" ? "" : "unverified-handle.exe",
+            unavailable: reason === "not configured" ? "" : unavailable,
+          },
         );
       } catch (error) {
         caught = error;
