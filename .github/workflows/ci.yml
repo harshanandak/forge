@@ -178,8 +178,7 @@ jobs:
       - name: Start Windows runner trace
         if: runner.os == 'Windows'
         continue-on-error: true
-        shell: pwsh
-        run: ./tools/ci/windows-trace.ps1 -Mode start -Trace "$env:RUNNER_TEMP/windows-trace.jsonl"
+        run: bun tools/ci/windows-trace.ts start
       - if: matrix.suite != 'pack'
         run: bun run check
       - name: Unit tests
@@ -207,7 +206,7 @@ jobs:
         shell: pwsh
         run: |
           "shard=$('${{ matrix.shard || 'pack' }}'.Replace('/', '-'))" >> $env:GITHUB_OUTPUT
-          ./tools/ci/windows-trace.ps1 -Mode stop -Trace "$env:RUNNER_TEMP/windows-trace.jsonl"
+          bun tools/ci/windows-trace.ts stop
       - name: Upload Windows runner trace
         if: always() && runner.os == 'Windows'
         continue-on-error: true
