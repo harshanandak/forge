@@ -8,6 +8,12 @@ import { refuse } from "../core/trust/index.ts";
 import { fileURLToPath } from "node:url";
 import { firstPartyBlocks } from "./first-party.ts";
 
+const shown = (s: string) =>
+  JSON.stringify(s.length > 200 ? s.slice(0, 200) + "..." : s).replace(
+    /[\u007f-\u009f\u2028\u2029]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+
 /** The plan's authoring filename is mapped at capture, before any code is loaded. */
 export const blockCapture: FileCapturePort = {
   open(root) {
@@ -54,7 +60,7 @@ export function resolveConfiguredBlock(
   if (from === ".." || from.startsWith(`..${sep}`) || isAbsolute(from))
     refuse(
       "INPUT_INVALID",
-      `Block source ${JSON.stringify(source.path)} resolves outside the project`,
+      `Block source ${shown(source.path)} resolves outside the project`,
     );
   return folder;
 }
@@ -62,11 +68,6 @@ export function resolveConfiguredBlock(
 export function resolveBlock(root: string, source: BlockSource): string {
   if ("path" in source) return resolve(root, source.path);
   if ("package" in source) {
-    const shown = (s: string) =>
-      JSON.stringify(s.length > 200 ? s.slice(0, 200) + "..." : s).replace(
-        /[\u2028\u2029]/g,
-        (c) => `\\u${c.charCodeAt(0).toString(16)}`,
-      );
     if (
       !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(
         source.package,
@@ -87,14 +88,14 @@ export function resolveBlock(root: string, source: BlockSource): string {
     }
     refuse(
       "PROVIDER_MISSING",
-      `Package ${source.package} is not installed; install it or repair the block source`,
+      `Package ${shown(source.package)} is not installed; install it or repair the block source`,
     );
   }
   const builtin = firstPartyBlocks[source.builtin];
   if (builtin) return fileURLToPath(builtin);
   refuse(
     "PROVIDER_MISSING",
-    `Built-in block ${source.builtin} is not registered`,
+    `Built-in block ${shown(source.builtin)} is not registered`,
   );
 }
 export function sourceFor(spec: string): BlockSource {
