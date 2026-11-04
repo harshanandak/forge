@@ -74,6 +74,18 @@ function reset() {
     ]),
   );
 }
+function recordRead() {
+  reads++;
+  assert.ok(reads <= bound, `graph reads exceeded bound: ${reads} > ${bound}`);
+}
+function aggregateKeys(prefix) {
+  // Charge the scalar read and matching keys to the existing budgets, without reading bodies.
+  recordRead();
+  const keys = [...records.keys()].filter((key) => key.startsWith(prefix));
+  listed += keys.length;
+  assert.ok(listed <= nodes);
+  return keys;
+}
 function call(operation, input = {}) {
   return JSON.parse(
     opened.handle.value.run({
@@ -86,11 +98,7 @@ function call(operation, input = {}) {
           state: {
             now: () => Date.parse("2026-10-18T00:00:00Z"),
             get(key) {
-              reads++;
-              assert.ok(
-                reads <= bound,
-                `graph reads exceeded bound: ${reads} > ${bound}`,
-              );
+              recordRead();
               if (edges.has(key.slice("issue:".length))) {
                 const count = (readsByKey.get(key) ?? 0) + 1;
                 readsByKey.set(key, count);
@@ -102,10 +110,19 @@ function call(operation, input = {}) {
               }
               return records.get(key);
             },
-            list() {
-              listed += records.size;
-              return [...records.values()];
+            list(prefix = "") {
+              const found = [...records.values()].filter((record) =>
+                record.key.startsWith(prefix),
+              );
+              listed += found.length;
+              return found;
             },
+            count: (prefix) => aggregateKeys(prefix).length,
+            maxNumber: (prefix) =>
+              aggregateKeys(prefix).reduce(
+                (max, key) => Math.max(max, Number(/\d+$/.exec(key)?.[0] ?? 0)),
+                0,
+              ),
             lease: () => undefined,
             acquire() {
               throw new Error("unexpected acquire");
