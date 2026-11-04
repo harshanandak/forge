@@ -180,7 +180,9 @@ jobs:
           "FORGE_HANDLE_UNAVAILABLE=" >> $env:GITHUB_ENV
           try {
             $zip = Join-Path $env:RUNNER_TEMP 'Handle.zip'
-            Invoke-WebRequest 'https://download.sysinternals.com/files/Handle.zip' -OutFile $zip -ErrorAction Stop
+            try {
+              Invoke-WebRequest 'https://download.sysinternals.com/files/Handle.zip' -OutFile $zip -ErrorAction Stop -TimeoutSec 60 -OperationTimeoutSeconds 60
+            } catch { throw "download failed: $($_.Exception.Message)" }
             # SHA-256 source: ScoopInstaller/Sysinternals bucket/handle.json (Handle 5.0).
             if ((Get-FileHash $zip -Algorithm SHA256 -ErrorAction Stop).Hash -ne '279aaf8eccb6f79147f4dcc6ba091fb895c4cb8b199a0dd186a4c76bc519d2cd') { throw 'Handle 5.0 checksum mismatch' }
             $directory = Join-Path $env:RUNNER_TEMP 'handle-5.0'
