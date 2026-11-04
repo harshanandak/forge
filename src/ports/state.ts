@@ -62,6 +62,10 @@ export interface RangeOptions {
  * one key, newest first, without scanning the event log.
  */
 export interface ExtendedStateClient extends StateClient {
+  /** Key-only aggregates over a well-formed Unicode prefix; empty sets return 0. */
+  count(prefix: string): number;
+  /** Maximum trailing decimal integer among matching keys ending in a digit. */
+  maxNumber(prefix: string): number;
   putMany(
     entries: readonly BatchEntry[],
     options?: BatchOptions,

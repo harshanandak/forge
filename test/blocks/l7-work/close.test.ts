@@ -96,15 +96,24 @@ function project(
     },
   };
   const state = {
+    count: (prefix: string) =>
+      [record, ...links].filter((row) => row.key.startsWith(prefix)).length,
+    maxNumber: (prefix: string) =>
+      [record, ...links]
+        .filter((row) => row.key.startsWith(prefix))
+        .reduce(
+          (max, row) => Math.max(max, Number(/\d+$/.exec(row.key)?.[0] ?? 0)),
+          0,
+        ),
     now: () => 0,
     lease: () => undefined,
     acquire: () => undefined,
     get: (key: string) =>
       key === record.key ? structuredClone(record) : undefined,
     list: (prefix: string) =>
-      prefix.startsWith("link:")
-        ? structuredClone(links)
-        : [structuredClone(record)],
+      structuredClone(
+        [record, ...links].filter((row) => row.key.startsWith(prefix)),
+      ),
     put(
       key: string,
       value: typeof record.value,

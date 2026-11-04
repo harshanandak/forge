@@ -46,6 +46,15 @@ afterAll(() => {
 function project() {
   const records = new Map<string, StateRecord>();
   const state = {
+    count: (prefix: string) =>
+      [...records.keys()].filter((key) => key.startsWith(prefix)).length,
+    maxNumber: (prefix: string) =>
+      [...records.keys()]
+        .filter((key) => key.startsWith(prefix))
+        .reduce(
+          (max, key) => Math.max(max, Number(/\d+$/.exec(key)?.[0] ?? 0)),
+          0,
+        ),
     now: () => 0,
     get: (key: string) => records.get(key),
     list: (prefix: string) =>

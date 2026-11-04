@@ -166,6 +166,20 @@ function namespaceValid(namespace: string): void {
   if (!validateBlockId(namespace).ok) invalid("Invalid namespace");
 }
 
+function upperBound(prefix: string): string | undefined {
+  // SQLite's binary UTF-8 order needs a code-point successor, carrying past U+10FFFF.
+  const points = Array.from(prefix);
+  while (points.length > 0) {
+    const point = points.pop()!.codePointAt(0)!;
+    if (point === 0x10ffff) continue;
+    return (
+      points.join("") +
+      String.fromCodePoint(point === 0xd7ff ? 0xe000 : point + 1)
+    );
+  }
+  return undefined;
+}
+
 // The same constructors define live history and the exact history restore accepts.
 function recordEvent(record: StateRecord, requestId?: string): StateEvent {
   return {
@@ -735,6 +749,8 @@ export class StateOwner {
           },
         ),
       list: (prefix?: string) => this.list(namespace, prefix),
+      count: (prefix: string) => this.count(namespace, prefix),
+      maxNumber: (prefix: string) => this.maxNumber(namespace, prefix),
       listRange: (options: RangeOptions) => this.listRange(namespace, options),
       history: (options: HistoryOptions) => this.history(namespace, options),
       events: (key?: string) => this.events(namespace, key),
@@ -754,17 +770,7 @@ export class StateOwner {
   list(namespace: string, prefix = ""): readonly StateRecord[] {
     namespaceValid(namespace);
     wellFormedText(prefix, "List prefix");
-    // SQLite's binary UTF-8 order needs a code-point successor, carrying past U+10FFFF.
-    const points = Array.from(prefix);
-    let upper: string | undefined;
-    while (points.length > 0) {
-      const point = points.pop()!.codePointAt(0)!;
-      if (point === 0x10ffff) continue;
-      upper =
-        points.join("") +
-        String.fromCodePoint(point === 0xd7ff ? 0xe000 : point + 1);
-      break;
-    }
+    const upper = upperBound(prefix);
     return this.#db
       .all(
         `SELECT body FROM state_records WHERE namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"} ORDER BY key`,
@@ -772,6 +778,27 @@ export class StateOwner {
       )
       .map((row) => body<StateRecord>(row)!)
       .filter((record) => record.key.startsWith(prefix));
+  }
+  count(namespace: string, prefix: string): number {
+    return this.#aggregate(namespace, prefix, "COUNT(*)");
+  }
+  maxNumber(namespace: string, prefix: string): number {
+    return this.#aggregate(
+      namespace,
+      prefix,
+      "MAX(CASE WHEN key GLOB '*[0-9]' THEN CAST(substr(key, length(rtrim(key, '0123456789')) + 1) AS INTEGER) END)",
+    );
+  }
+  #aggregate(namespace: string, prefix: string, expression: string): number {
+    namespaceValid(namespace);
+    wellFormedText(prefix, "Aggregate prefix");
+    const upper = upperBound(prefix);
+    return Number(
+      this.#db.get(
+        `SELECT ${expression} AS total FROM state_records WHERE namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"}`,
+        upper === undefined ? [namespace, prefix] : [namespace, prefix, upper],
+      )?.total ?? 0,
+    );
   }
   /** One bounded page of records from a key range, in key order or reverse. */
   listRange(namespace: string, options: RangeOptions): readonly StateRecord[] {

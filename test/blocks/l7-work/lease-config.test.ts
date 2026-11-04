@@ -31,6 +31,9 @@ afterAll(() => {
 function project() {
   let now = 1000;
   let lease: (Grant & { holder: unknown }) | undefined;
+  const records = new Map([
+    ["issue:work-1", { value: { id: "work-1", status: "open" } }],
+  ]);
   const writeLease = (_subject: string, ttl: number) => {
     lease = {
       generation: 1,
@@ -43,8 +46,17 @@ function project() {
     return lease;
   };
   const state = {
+    count: (prefix: string) =>
+      [...records.keys()].filter((key) => key.startsWith(prefix)).length,
+    maxNumber: (prefix: string) =>
+      [...records.keys()]
+        .filter((key) => key.startsWith(prefix))
+        .reduce(
+          (max, key) => Math.max(max, Number(/\d+$/.exec(key)?.[0] ?? 0)),
+          0,
+        ),
     now: () => now,
-    get: () => ({ value: { id: "work-1", status: "open" } }),
+    get: (key: string) => records.get(key),
     lease: () => lease,
     acquire: writeLease,
     renew: writeLease,
