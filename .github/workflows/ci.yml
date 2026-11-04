@@ -165,6 +165,31 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - name: Exclude Windows CI work folders from Defender scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue)) {
+            Write-Host 'Defender not running: status command is unavailable'
+            exit 0
+          }
+          try {
+            $status = Get-MpComputerStatus
+          } catch {
+            if ((Get-Service WinDefend -ErrorAction Stop).Status -eq 'Running') { throw }
+            Write-Host 'Defender not running: antimalware service is stopped'
+            exit 0
+          }
+          if (-not $status.AMServiceEnabled) {
+            Write-Host 'Defender not running: antimalware service is disabled'
+            exit 0
+          }
+          $paths = @($env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, $env:RUNNER_TOOL_CACHE, $env:TEMP,
+            $env:BUN_INSTALL, "$env:USERPROFILE\.bun", "$env:LOCALAPPDATA\npm-cache") |
+            Where-Object { $_ } | Select-Object -Unique
+          Add-MpPreference -ExclusionPath $paths -ExclusionProcess 'node.exe', 'bun.exe'
+          Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
       # Windows only: installs take 3-10 s there against about 0.2 s on Linux and macOS.
       - id: bun-cache
         if: runner.os == 'Windows'
