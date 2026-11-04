@@ -10,10 +10,6 @@ export async function runLocalCommand(
   argv: readonly string[],
 ): Promise<number> {
   try {
-    if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
-      process.stdout.write(`${version}\n`);
-      return 0;
-    }
     const assembly = await createLocalAssembly();
     try {
       return await runCommand(argv, {
