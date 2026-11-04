@@ -10,8 +10,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { parse } from "yaml";
 
-test("three shards cover every original suite file exactly once, including unknown timings", () => {
+function coverShards(count: number) {
   const root = resolve(import.meta.dir, "../..");
   const work = mkdtempSync(join(tmpdir(), "forge-test-shards-"));
   const files = execFileSync("git", ["ls-files", "--", "*.test.ts"], {
@@ -48,6 +49,11 @@ test("three shards cover every original suite file exactly once, including unkno
     ),
   ];
   try {
+    mkdirSync(join(work, "tools/ci"), { recursive: true });
+    writeFileSync(
+      join(work, "tools/ci/test-shards.ts"),
+      readFileSync(join(root, "tools/ci/test-shards.ts")),
+    );
     writeFileSync(
       join(work, "package.json"),
       JSON.stringify({
@@ -76,9 +82,15 @@ test("three shards cover every original suite file exactly once, including unkno
     for (const group of expected) delete timings.files[group[0]!];
     writeFileSync(join(work, "test/timings.json"), JSON.stringify(timings));
     const selected: string[][] = [[], [], []];
-    for (const shard of ["", "1/3", "2/3", "3/3"]) {
+    for (const shard of [
+      "",
+      ...Array.from({ length: count }, (_, i) => `${i + 1}/${count}`),
+    ]) {
       const run = (script: string) => {
-        const result = spawnSync(process.execPath, ["run", script], {
+        const args = shard
+          ? ["tools/ci/test-shards.ts", script, shard]
+          : ["run", script];
+        const result = spawnSync(process.execPath, args, {
           cwd: work,
           env: {
             ...process.env,
@@ -129,4 +141,36 @@ test("three shards cover every original suite file exactly once, including unkno
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
-}, 120_000);
+}
+test.each([2, 3])(
+  "%i shards cover every suite file exactly once",
+  coverShards,
+  120_000,
+);
+
+test("CI Gate rejects an injected failed matrix shard", () => {
+  const { jobs } = parse(
+    readFileSync(resolve(".github/workflows/ci.yml"), "utf8"),
+  ) as { jobs: Record<string, { needs: string[]; steps: { run: string }[] }> };
+  const gate = jobs["ci-gate"]!;
+  expect(gate.needs).toContain("verify");
+  for (const verify of ["success", "failure", "cancelled", "skipped"]) {
+    const result = spawnSync("bash", ["-c", gate.steps[0]!.run], {
+      env: {
+        ...process.env,
+        EVENT: "pull_request",
+        CODE: "true",
+        STARTED: "",
+        ...Object.fromEntries(
+          "CHANGES STRUCTURE STATIC PR_TITLE PACK"
+            .split(" ")
+            .map((name) => [name, "success"]),
+        ),
+        VERIFY: verify,
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    expect(result.status, result.stderr).toBe(verify === "success" ? 0 : 1);
+  }
+}, 30_000);

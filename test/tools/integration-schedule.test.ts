@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { assignShards } from "../../tools/ci/test-shards.ts";
+
+test("whole-file balancing separates expensive serial files and includes unknown timings", () => {
+  const files = ["unit", "parallel", "lane-run", "lane", "unknown"];
+  const timings = { unit: 1000, parallel: 2000, "lane-run": 5000, lane: 3000 };
+  const shards = assignShards(files, timings, 3);
+  expect(shards.flat().sort()).toEqual(files.toSorted());
+  expect(shards[0]).toEqual(["lane-run"]);
+}, 1000);
 
 test.each(["test:integration", "test:changed"])(
   "%s runs spawn-heavy integration files once, after the parallel group",

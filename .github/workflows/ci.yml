@@ -127,25 +127,22 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    env:
-      FORGE_TEST_SHARD_ARG: ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
-      FORGE_TEST_TIMINGS_ARG: ${{ matrix.shard && '--timings=test/timings.json' || '' }}
     strategy:
       fail-fast: false
       matrix:
         # macOS hosted runners are capacity-limited and jobs were never picked up (PRs #46, #50).
-        # macOS Node 26 runs the shared artifact; Node 24 retains its source tests.
+        # macOS adds one Node 24 source shard; only shard 1 also runs pack smoke.
         # Windows splits tests and pack smoke into two jobs: together they reached 1095 s of the
         # 1200 s limit once the spawn-heavy files ran serially (forge-648).
         # Each Windows tests leg now has three time-balanced shards; spawn-heavy files
         # stay serial inside each shard. Pack and the other platforms retain their coverage.
-        # Initial timings sum measured test durations per file from Windows Node 24 job
-        # 124770514279 (run 41280231270). Refresh on Windows, without a shard, then commit:
-        # FORGE_TEST_TIMINGS_ARG=--timings=test/timings.json FORGE_TEST_UPDATE_ARG=--update-timings bun exec 'bun run test:unit && bun run test:integration'
+        # Timings: slower Windows Node 24/26 file sums from study run 41780215418.
+        # Assignment spans unit, parallel integration and serial integration together.
         include:
           - { os: ubuntu-latest, node: "24", suite: all }
           - { os: ubuntu-latest, node: "26", suite: all }
-          - { os: macos-latest, node: "24", suite: all }
+          - { os: macos-latest, node: "24", suite: all, shard: "1/2" }
+          - { os: macos-latest, node: "24", suite: tests, shard: "2/2" }
           - { os: macos-latest, node: "26", suite: pack }
           - { os: windows-latest, node: "24", suite: tests, shard: "1/3" }
           - { os: windows-latest, node: "24", suite: tests, shard: "2/3" }
@@ -202,10 +199,10 @@ jobs:
         run: bun run check
       - name: Unit tests
         if: matrix.suite != 'pack'
-        run: bun run test:unit
+        run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:unit {0}', matrix.shard) || 'bun run test:unit' }}
       - name: Integration tests
         if: matrix.suite != 'pack'
-        run: bun run test:integration
+        run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:integration {0}', matrix.shard) || 'bun run test:integration' }}
       - if: matrix.suite != 'tests'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
