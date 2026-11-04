@@ -309,6 +309,174 @@
         "Flaky runs per 100: 25.00, target <= 2: MISS",
         "Flake 1: test/old.test.ts"
       ]
+    },
+    {
+      "name": "success, failure, success counts one flake from the failed attempt",
+      "attempts": [
+        {
+          "id": 1,
+          "head_sha": "same",
+          "event": "push",
+          "run_attempt": 1,
+          "conclusion": "success",
+          "records": [
+            {
+              "run_id": "1",
+              "run_attempt": 1,
+              "head_sha": "same",
+              "os": "Linux",
+              "node": "24",
+              "shard": "1/3",
+              "wallMs": 60000,
+              "files": {
+                "test/attempt-1.test.ts": {
+                  "status": "pass",
+                  "durationMs": 1000
+                }
+              }
+            }
+          ],
+          "jobs": []
+        },
+        {
+          "id": 1,
+          "head_sha": "same",
+          "event": "push",
+          "run_attempt": 2,
+          "conclusion": "failure",
+          "records": [
+            {
+              "run_id": "1",
+              "run_attempt": 2,
+              "head_sha": "same",
+              "os": "Linux",
+              "node": "24",
+              "shard": "1/3",
+              "wallMs": 60000,
+              "files": {
+                "test/attempt-2.test.ts": {
+                  "status": "fail",
+                  "durationMs": 1000
+                }
+              }
+            }
+          ],
+          "jobs": []
+        },
+        {
+          "id": 1,
+          "head_sha": "same",
+          "event": "push",
+          "run_attempt": 3,
+          "conclusion": "success",
+          "records": [
+            {
+              "run_id": "1",
+              "run_attempt": 3,
+              "head_sha": "same",
+              "os": "Linux",
+              "node": "24",
+              "shard": "1/3",
+              "wallMs": 60000,
+              "files": {
+                "test/attempt-3.test.ts": {
+                  "status": "pass",
+                  "durationMs": 1000
+                }
+              }
+            }
+          ],
+          "jobs": []
+        }
+      ],
+      "includes": [
+        "Flaky runs per 100: 100.00, target <= 2: MISS",
+        "Flake 1: test/attempt-2.test.ts"
+      ]
+    },
+    {
+      "name": "cancelled, failure, success counts one flake from the failed attempt",
+      "attempts": [
+        {
+          "id": 1,
+          "head_sha": "same",
+          "event": "push",
+          "run_attempt": 1,
+          "conclusion": "cancelled",
+          "records": [
+            {
+              "run_id": "1",
+              "run_attempt": 1,
+              "head_sha": "same",
+              "os": "Linux",
+              "node": "24",
+              "shard": "1/3",
+              "wallMs": 60000,
+              "files": {
+                "test/attempt-1.test.ts": {
+                  "status": "pass",
+                  "durationMs": 1000
+                }
+              }
+            }
+          ],
+          "jobs": []
+        },
+        {
+          "id": 1,
+          "head_sha": "same",
+          "event": "push",
+          "run_attempt": 2,
+          "conclusion": "failure",
+          "records": [
+            {
+              "run_id": "1",
+              "run_attempt": 2,
+              "head_sha": "same",
+              "os": "Linux",
+              "node": "24",
+              "shard": "1/3",
+              "wallMs": 60000,
+              "files": {
+                "test/attempt-2.test.ts": {
+                  "status": "fail",
+                  "durationMs": 1000
+                }
+              }
+            }
+          ],
+          "jobs": []
+        },
+        {
+          "id": 1,
+          "head_sha": "same",
+          "event": "push",
+          "run_attempt": 3,
+          "conclusion": "success",
+          "records": [
+            {
+              "run_id": "1",
+              "run_attempt": 3,
+              "head_sha": "same",
+              "os": "Linux",
+              "node": "24",
+              "shard": "1/3",
+              "wallMs": 60000,
+              "files": {
+                "test/attempt-3.test.ts": {
+                  "status": "pass",
+                  "durationMs": 1000
+                }
+              }
+            }
+          ],
+          "jobs": []
+        }
+      ],
+      "includes": [
+        "Flaky runs per 100: 100.00, target <= 2: MISS",
+        "Flake 1: test/attempt-2.test.ts"
+      ]
     }
   ]
 }

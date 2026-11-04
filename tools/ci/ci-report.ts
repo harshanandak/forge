@@ -49,14 +49,19 @@ export function report(attempts: Run[]): string {
     });
   const target = (label: string, values: number[], p: number, limit: number) =>
     `${label} gate p${p * 100}: ${percentile(values, p)?.toFixed(2) ?? "unknown"} min, target <= ${limit}: ${verdict(percentile(values, p), limit)} (n=${values.length})`;
-  const flakes = runs.filter(
-    (g) =>
-      g[0]!.run_attempt === 1 &&
-      g[0]!.conclusion === "failure" &&
-      g.some(
-        (a) => a.conclusion === "success" && a.head_sha === g[0]!.head_sha,
-      ),
-  );
+  const flakes = runs.flatMap((g) => {
+    const failed = g.find(
+      (a, i) =>
+        a.conclusion === "failure" &&
+        g
+          .slice(i + 1)
+          .some(
+            (later) =>
+              later.conclusion === "success" && later.head_sha === a.head_sha,
+          ),
+    );
+    return failed ? [failed] : [];
+  });
   const rate = runs.length ? (flakes.length / runs.length) * 100 : undefined;
   const cancelled = runs
     .filter((g) => g.at(-1)!.conclusion === "cancelled")
@@ -68,7 +73,7 @@ export function report(attempts: Run[]): string {
 ${[false, true].flatMap((final) => [target(final ? "final" : "first", samples(final), 0.5, 8), target(final ? "final" : "first", samples(final), 0.9, 10)]).join("\n")}
 ${runs.map((g) => `Run ${g[0]!.id}: ${g.reduce((sum, a) => sum + cost(a), 0).toFixed(2)} runner min (${g.length} attempts, ${g.flatMap((a) => a.records).length} artifacts)`).join("\n")}
 Flaky runs per 100: ${rate?.toFixed(2) ?? "unknown"}, target <= 2: ${verdict(rate, 2)} (same run/head fail then pass; symptoms, not root cause)
-${flakes.map((g) => `Flake ${g[0]!.id}: ${[...new Set(fileRows(g[0]!).flatMap(([name, f]) => (f.status === "fail" ? [name] : [])))].join(", ") || "unknown (no failing-file artifact)"}`).join("\n")}
+${flakes.map((a) => `Flake ${a.id}: ${[...new Set(fileRows(a).flatMap(([name, f]) => (f.status === "fail" ? [name] : [])))].join(", ") || "unknown (no failing-file artifact)"}`).join("\n")}
 Cancelled-run minutes: ${cancelled.toFixed(2)} (all attempts of ultimately cancelled runs)
 Slow jobs (minutes): ${slow(attempts.flatMap((a) => a.jobs.map((j): [string, number] => [j.name ?? "unknown", minutes(j)])))}
 Slow files (minutes): ${slow(
