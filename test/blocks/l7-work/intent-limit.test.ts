@@ -62,6 +62,15 @@ function project(stampDelay = 0) {
   };
   put("issue:work-1", { id: "work-1" }, { expectRevision: 0 });
   const state = {
+    count: (prefix: string) =>
+      [...records.keys()].filter((key) => key.startsWith(prefix)).length,
+    maxNumber: (prefix: string) =>
+      [...records.keys()]
+        .filter((key) => key.startsWith(prefix))
+        .reduce(
+          (max, key) => Math.max(max, Number(/\d+$/.exec(key)?.[0] ?? 0)),
+          0,
+        ),
     now: () => now,
     get: (key: string) => records.get(key),
     list: (prefix: string) =>
