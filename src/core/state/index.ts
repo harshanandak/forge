@@ -749,11 +749,22 @@ export class StateOwner {
   }
   list(namespace: string, prefix = ""): readonly StateRecord[] {
     namespaceValid(namespace);
-    // The prefix is a key range, so only those rows are read.
+    // SQLite's binary UTF-8 order needs a code-point successor, carrying past U+10FFFF.
+    // Unpaired surrogates bind as U+FFFD, so only the body filter can distinguish them.
+    const points = prefix.isWellFormed() ? Array.from(prefix) : [];
+    let upper: string | undefined;
+    while (points.length > 0) {
+      const point = points.pop()!.codePointAt(0)!;
+      if (point === 0x10ffff) continue;
+      upper =
+        points.join("") +
+        String.fromCodePoint(point === 0xd7ff ? 0xe000 : point + 1);
+      break;
+    }
     return this.#db
       .all(
-        "SELECT body FROM state_records WHERE namespace=? AND key>=? AND key<? ORDER BY key",
-        [namespace, prefix, `${prefix}\u{10FFFF}`],
+        `SELECT body FROM state_records WHERE namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"} ORDER BY key`,
+        upper === undefined ? [namespace, prefix] : [namespace, prefix, upper],
       )
       .map((row) => body<StateRecord>(row)!)
       .filter((record) => record.key.startsWith(prefix));
