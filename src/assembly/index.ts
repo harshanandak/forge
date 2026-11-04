@@ -845,7 +845,14 @@ export async function createAssembly(
         const prefix = () =>
           idPrefixObservation(root, stateRoot, options.providers).catch(
             (error: unknown) => {
-              if (core) return [];
+              if (core) {
+                if (!(error instanceof GitCommandError)) throw error;
+                call.warnings.push({
+                  code: "ID_PREFIX_UNAVAILABLE",
+                  message: `The id prefix could not be derived from the git origin: ${error.message.replace(/\p{Cc}/gu, "").trim()}`,
+                });
+                return [];
+              }
               const { show, catalog } = snapshot(call, deviceMemory);
               if (
                 catalog.resolve(request.op).operation.instance !== "work" ||
