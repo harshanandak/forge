@@ -1,5 +1,5 @@
 // [integration] Real git worktrees and subprocesses; Forge and Codex are PATH fixtures.
-import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -16,12 +16,13 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
+import { laneRun, runClaude, runCodex } from "../../tools/lane-run.ts";
+import { scriptFixture } from "../script-fixture.ts";
 import { RepositoryFixtures } from "./lane-fixture.ts";
 
 setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<boolean>();
 const script = resolve(import.meta.dirname, "../../tools/lane.ts");
-const runner = resolve(import.meta.dirname, "../../tools/lane-run.ts");
 const template = resolve(import.meta.dirname, "../../tools/lane-brief.md");
 const tiers = `    tiers:
       security: ["src/core/trust/**", "src/core/state/**", "src/adapters/store-sqlite/**", "src/adapters/fs/**", "src/adapters/process/**", "templates/delivery/harness/**", ".github/workflows/**", "package.json", "bun.lock", "migrations/**"]
@@ -36,7 +37,41 @@ const sections = [
   "Prior art",
 ];
 const roots: string[] = [];
+let testCases = 0,
+  childLaunches = 0,
+  roleCases = 0,
+  directCases = 0;
+afterAll(() => {
+  expect(testCases).toBe(127);
+  expect(roleCases).toBe(41);
+  expect(directCases).toBe(8);
+  console.log(
+    JSON.stringify({
+      file: "lane-run",
+      childLaunches,
+      previousChildLaunches: childLaunches + roleCases + directCases,
+      roleCases,
+      directCases,
+    }),
+  );
+});
+async function withEnvironment<T>(
+  env: NodeJS.ProcessEnv,
+  task: () => Promise<T>,
+) {
+  const prior = new Map(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  try {
+    return await task();
+  } finally {
+    for (const [key, value] of prior) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 afterEach(() => {
+  testCases++;
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
@@ -172,6 +207,7 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
   let pristine = false;
   function git(args: string[], cwd = main) {
     pristine = false;
+    childLaunches++;
     const result = spawnSync("git", args, {
       cwd,
       env,
@@ -222,6 +258,7 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
       .join("\n"),
   );
   function run(args: string[], cwd = caller, entry = script) {
+    childLaunches++;
     const result = spawnSync(process.execPath, [entry, ...args], {
       cwd,
       env,
@@ -280,6 +317,7 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
     allowEmpty = false,
     args = ["run", "one", "--role", "builder"],
   ) {
+    childLaunches++;
     const child = spawn(process.execPath, [entry, ...args], {
       cwd: caller,
       env,
@@ -319,33 +357,34 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
           .split("\n")
           .map((line) => JSON.parse(line) as Attempt)
       : [];
-  function direct(
+  async function direct(
     worktree: string,
     mode: string,
     resume?: string,
     harness = "codex",
-  ) {
+  ): Promise<
+    Pick<
+      Verdict,
+      "session" | "reply" | "log" | "exit" | "retries" | "stoppedAfterReply"
+    >
+  > {
+    directCases++;
     writeFileSync(join(root, "mode"), mode);
     const folder = join(root, "direct-output");
     mkdirSync(folder);
-    const helper = join(root, "direct.ts");
-    writeFileSync(
-      helper,
-      `import {${harness === "claude" ? "runClaude" : "runCodex"} as run} from ${JSON.stringify(runner)};const result=await run(${JSON.stringify({ worktree, folder, model: harness === "claude" ? "claude-sonnet-5-5" : "gpt-6.1-sol", effort: "high", prompt: "Direct fixture prompt", ...(resume ? { resume } : {}) })},{replyGraceMs:100,pollMs:10,retryDelayMs:1});console.log(JSON.stringify(result));`,
+    return withEnvironment(env, () =>
+      (harness === "claude" ? runClaude : runCodex)(
+        {
+          worktree,
+          folder,
+          model: harness === "claude" ? "claude-sonnet-5-5" : "gpt-6.1-sol",
+          effort: "high",
+          prompt: "Direct fixture prompt",
+          ...(resume ? { resume } : {}),
+        },
+        { replyGraceMs: 100, pollMs: 10, retryDelayMs: 1 },
+      ),
     );
-    const result = spawnSync(process.execPath, [helper], {
-      cwd: caller,
-      env,
-      encoding: "utf8",
-      timeout: 15_000,
-      windowsHide: true,
-    });
-    expect(result.error).toBeUndefined();
-    expect(result.status).toBe(0);
-    return JSON.parse(result.stdout) as Pick<
-      Verdict,
-      "session" | "reply" | "log" | "exit" | "retries" | "stoppedAfterReply"
-    >;
   }
   pristine = true;
   return {
@@ -362,6 +401,7 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
     attempts,
     direct,
     git,
+    env,
   };
 }
 function expectModel(attempt: Attempt, model: string) {
@@ -433,7 +473,7 @@ test("claude tester runs end to end with the same verdict, record and list shape
   expect(list.lanes[0]!.runs).toEqual([record]);
 });
 
-test("interrupted Claude tester recovers its stream session before resuming", () => {
+test("interrupted Claude tester recovers its stream session before resuming", async () => {
   const f = roleFixture();
   claudeRole(f, "tester");
   const record = f.seed("tester", 1, "started"),
@@ -450,7 +490,7 @@ test("interrupted Claude tester recovers its stream session before resuming", ()
       session_id: "interrupted-claude-session",
     })}\n`,
   );
-  const result = f.runRole("tester", ["--round-cap", "1"]);
+  const result = await f.runRole("tester", ["--round-cap", "1"]);
   expect(result.code).toBe(0);
   expect(JSON.parse(readFileSync(file, "utf8")) as unknown).toMatchObject({
     verdict: "interrupted",
@@ -485,10 +525,10 @@ test("claude reviewer has only read tools and no MCP; builder skips permissions"
 });
 
 for (const mode of ["capacity", "rate-limit", "rate-event"])
-  test(`claude ${mode} retries once and resumes the stream session`, () => {
+  test(`claude ${mode} retries once and resumes the stream session`, async () => {
     const f = fixture(),
       lane = f.start();
-    const result = f.direct(lane, mode, undefined, "claude");
+    const result = await f.direct(lane, mode, undefined, "claude");
     expect(result.retries).toBe(1);
     expect(result.session).toBe("claude-session");
     expect(result.exit).toBe(0);
@@ -508,6 +548,7 @@ test.skipIf(process.platform !== "win32")(
   () => {
     const f = fixture();
     f.start();
+    childLaunches++;
     const compile = spawnSync(
       process.execPath,
       [
@@ -533,10 +574,10 @@ test.skipIf(process.platform !== "win32")(
   },
 );
 
-test("claude reply grace stops a hanging process after the result event", () => {
+test("claude reply grace stops a hanging process after the result event", async () => {
   const f = fixture(),
     lane = f.start();
-  const result = f.direct(lane, "hang", undefined, "claude");
+  const result = await f.direct(lane, "hang", undefined, "claude");
   expect(result.stoppedAfterReply).toBe(true);
   expect(result.retries).toBe(0);
   expect(readFileSync(result.reply!, "utf8")).toBe(
@@ -547,10 +588,10 @@ test("claude reply grace stops a hanging process after the result event", () => 
   );
 });
 
-test("claude capacity stops at three retries and keeps the session and error log", () => {
+test("claude capacity stops at three retries and keeps the session and error log", async () => {
   const f = fixture(),
     lane = f.start();
-  const result = f.direct(lane, "limit", undefined, "claude");
+  const result = await f.direct(lane, "limit", undefined, "claude");
   expect(result).toMatchObject({
     retries: 3,
     exit: 1,
@@ -837,6 +878,7 @@ test("empty reply fails with a typed verdict and the log path", () => {
 test("a dead owner run lock is reclaimed and released", () => {
   const f = fixture();
   f.start();
+  childLaunches++;
   const dead = spawnSync(process.execPath, ["-e", ""], {
     timeout: 5_000,
     windowsHide: true,
@@ -944,10 +986,10 @@ test("custom prompt is persisted and passed to an explicit resumed session", () 
   );
 });
 
-test("capacity retry resumes the same session at default tier", () => {
+test("capacity retry resumes the same session at default tier", async () => {
   const f = fixture(),
     lane = f.start();
-  const result = f.direct(lane, "capacity");
+  const result = await f.direct(lane, "capacity");
   expect(result).toMatchObject({
     session: "fake-session",
     exit: 0,
@@ -963,10 +1005,10 @@ test("capacity retry resumes the same session at default tier", () => {
   expect(readFileSync(result.reply!, "utf8")).toBe("Fixture final reply.");
 });
 
-test("capacity retries stop after three retries and retain failure evidence", () => {
+test("capacity retries stop after three retries and retain failure evidence", async () => {
   const f = fixture(),
     lane = f.start();
-  const result = f.direct(lane, "limit");
+  const result = await f.direct(lane, "limit");
   expect(result).toMatchObject({
     session: "fake-session",
     exit: 1,
@@ -983,11 +1025,11 @@ test("capacity retries stop after three retries and retain failure evidence", ()
   );
 });
 
-test("reply guard stops a lingering child after a reply and preserves the reply", () => {
+test("reply guard stops a lingering child after a reply and preserves the reply", async () => {
   const f = fixture(),
     lane = f.start(),
     before = Date.now();
-  const result = f.direct(lane, "hang");
+  const result = await f.direct(lane, "hang");
   expect(Date.now() - before).toBeLessThan(10_000);
   expect(result.stoppedAfterReply).toBe(true);
   expect(result.retries).toBe(0);
@@ -1039,8 +1081,43 @@ ${["builder", "fixer", "tester", "reviewer"]
     writeFileSync(join(folder, "run.json"), JSON.stringify(record));
     return record;
   }
-  const runRole = (role: string, extra: string[] = []) =>
-    f.run(["run", "one", "--role", role, ...extra]);
+  const issue = scriptFixture(join(f.root, "fake-forge.mjs"));
+  // Role assembly owns no CLI lifecycle or lock proof; those stay in f.run/f.launch.
+  const runRole = async (role: string, extra: string[] = []) => {
+    roleCases++;
+    const lines: Record<string, unknown>[] = [];
+    return withEnvironment(f.env, async () => {
+      const code = await laneRun(["one", "--role", role, ...extra], {
+        common: join(f.main, ".git"),
+        configRoot: f.caller,
+        lanes: [
+          {
+            issue: "one",
+            worktree: join(f.main, ".worktrees", "one"),
+            branch: "lane/one",
+            brief: f.brief,
+          },
+        ],
+        issue: (id) =>
+          issue(
+            "",
+            ["issue", "show", "--input", JSON.stringify({ id })],
+            f.env,
+            f.caller,
+          ).stdout,
+        lock: () => () => {},
+        report: (json) =>
+          lines.push(JSON.parse(json) as Record<string, unknown>),
+      });
+      expect(lines).toHaveLength(1);
+      return {
+        code,
+        output: lines[0] as unknown as Verdict,
+        lines,
+        stderr: "",
+      };
+    });
+  };
   const prompt = () => f.attempts().at(-1)!.prompt;
   return { ...f, runs, seed, runRole, prompt };
 }
@@ -1108,13 +1185,14 @@ test("auto reads the Claude tester verdict through the same parser as Codex", ()
 });
 
 function killFixture(pid: number, group = false) {
-  if (process.platform === "win32")
+  if (process.platform === "win32") {
+    childLaunches++;
     spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], {
       windowsHide: true,
       stdio: "ignore",
       timeout: 10_000,
     });
-  else {
+  } else {
     try {
       process.kill(group ? -pid : pid, "SIGKILL");
     } catch (error) {
@@ -1225,7 +1303,7 @@ for (const detect of ["list", "auto", "run"])
       }
       const result =
         detect === "run"
-          ? f.runRole("tester", ["--round-cap", "1"])
+          ? f.run(["run", "one", "--role", "tester", "--round-cap", "1"])
           : f.auto(["--round-cap", "1"]);
       expect(result.code).toBe(0);
       const interrupted = JSON.parse(readFileSync(record, "utf8")) as Record<
@@ -1562,10 +1640,10 @@ test("auto treats an empty reviewer reply as ACT and verifies its report after r
 
 for (const role of ["tester", "reviewer"])
   for (const mode of ["empty", "no-reply"])
-    test(`manual ${role} with ${mode} reply fails without consuming a round`, () => {
+    test(`manual ${role} with ${mode} reply fails without consuming a round`, async () => {
       const f = roleFixture();
       writeFileSync(join(f.root, "mode"), mode);
-      const result = f.runRole(role);
+      const result = await f.runRole(role);
       expect(result.code).toBe(1);
       expect(result.output.verdict).toBe("failed");
       expect(JSON.stringify(result.output)).toContain("no reply was written");
@@ -1575,7 +1653,7 @@ for (const role of ["tester", "reviewer"])
       expect(record.verdict).toBe("failed");
       if (role === "tester") {
         writeFileSync(join(f.root, "mode"), "ok");
-        const retry = f.runRole(role, ["--round-cap", "1"]);
+        const retry = await f.runRole(role, ["--round-cap", "1"]);
         expect(retry.code).toBe(0);
         expect(
           JSON.parse(
@@ -1953,9 +2031,9 @@ test("tier ignores weakened local policy from main and lane invocation directori
   }
 });
 
-test("tier reviewer uses trusted policy while preserving caller role model", () => {
+test("tier reviewer uses trusted policy while preserving caller role model", async () => {
   const f = weakenedPolicyFixture();
-  const reviewed = f.runRole("reviewer");
+  const reviewed = await f.runRole("reviewer");
   expect(reviewed.output).toMatchObject({
     tier: "security",
     model: "caller-review-model",
@@ -2031,10 +2109,10 @@ test("tier repository default policy makes a policy-only change security", () =>
 });
 
 for (const role of ["tester", "reviewer"])
-  test(`tier is in ${role} brief, verdict and durable record`, () => {
+  test(`tier is in ${role} brief, verdict and durable record`, async () => {
     const f = roleFixture();
     change(f, ["src/core/trust/access.ts"]);
-    const result = f.runRole(role);
+    const result = await f.runRole(role);
     const prompt = f.prompt();
     expect(prompt).toContain(
       "Tier: security (because src/core/trust/access.ts). Reviews: tester, reviewer, security-reviewer, github-codex.",
@@ -2052,7 +2130,7 @@ for (const role of ["tester", "reviewer"])
     }
   });
 
-test("tier run keeps complete builder and fixer prompts identical", () => {
+test("tier run keeps complete builder and fixer prompts identical", async () => {
   const f = roleFixture();
   change(f, ["tools/changed.ts"]);
   const expected = [
@@ -2070,17 +2148,17 @@ test("tier run keeps complete builder and fixer prompts identical", () => {
     readFileSync(f.brief, "utf8"),
   ].join("\n");
   for (const role of ["builder", "fixer"]) {
-    const result = f.runRole(role);
+    const result = await f.runRole(role);
     expect(f.prompt()).toBe(expected);
     expect(result.output.tier).toBe("code");
     expect(result.code).toBe(0);
   }
 });
 
-test("tester round one uses its template, issue, contract, builder reply and durable metadata", () => {
+test("tester round one uses its template, issue, contract, builder reply and durable metadata", async () => {
   const f = roleFixture();
-  const builder = f.runRole("builder");
-  const result = f.runRole("tester");
+  const builder = await f.runRole("builder");
+  const result = await f.runRole("tester");
   expect(result.code).toBe(0);
   expect(f.prompt()).toContain("You are the local tester");
   expect(f.prompt()).toContain("This is test round 1.");
@@ -2113,12 +2191,12 @@ test("tester round one uses its template, issue, contract, builder reply and dur
   });
 });
 
-test("tester round two names previous tester and only the subsequent newest fix", () => {
+test("tester round two names previous tester and only the subsequent newest fix", async () => {
   const f = roleFixture();
   f.seed("builder", null);
   const previous = f.seed("tester", 1);
   const fix = f.seed("fixer", null);
-  f.runRole("tester");
+  await f.runRole("tester");
   expect(f.prompt()).toContain(
     `This is test round 2. The previous report is ${previous.reply.replaceAll("\\", "/")} and the builder's fix reply is ${fix.reply.replaceAll("\\", "/")}.`,
   );
@@ -2127,29 +2205,29 @@ test("tester round two names previous tester and only the subsequent newest fix"
   );
 });
 
-test("third tester round refuses before launch, explicit caps permit three and reject bounds", () => {
+test("third tester round refuses before launch, explicit caps permit three and reject bounds", async () => {
   const f = roleFixture();
   f.seed("tester", 1);
   f.seed("tester", 2);
-  const result = f.runRole("tester");
+  const result = await f.runRole("tester");
   expect(result.output.verdict).toBe("refused");
   expect(result.output.next).toBe(
     "Test round 3 exceeds the cap (2). Write a three-line threat model, then choose ship, simplify or park.",
   );
   expect(f.attempts()).toHaveLength(0);
-  expect(f.runRole("tester", ["--round-cap", "3"]).code).toBe(0);
+  expect((await f.runRole("tester", ["--round-cap", "3"])).code).toBe(0);
   expect(f.prompt()).toContain("This is test round 3.");
   expect(f.prompt()).toContain(
     "No completed builder or fixer reply is available",
   );
   for (const cap of ["0", "11", "1.5"])
-    expect(f.runRole("tester", ["--round-cap", cap]).output.next).toContain(
-      "integer from 1 to 10",
-    );
+    expect(
+      (await f.runRole("tester", ["--round-cap", cap])).output.next,
+    ).toContain("integer from 1 to 10");
   expect(f.attempts()).toHaveLength(1);
 });
 
-test("review uses read-only template, exact lane diff and optional PR", () => {
+test("review uses read-only template, exact lane diff and optional PR", async () => {
   const f = roleFixture();
   const laneDir = join(f.main, ".worktrees", "one");
   writeFileSync(join(laneDir, "review-change.txt"), "Lane change.");
@@ -2179,7 +2257,7 @@ test("review uses read-only template, exact lane diff and optional PR", () => {
   ]);
   f.git(["push", "origin", "main"]);
   f.git(["fetch", "origin", "main"]);
-  const result = f.runRole("reviewer", ["--pr", "42"]);
+  const result = await f.runRole("reviewer", ["--pr", "42"]);
   expect(result.code).toBe(0);
   expect(f.prompt()).toContain("You are an independent code reviewer.");
   const lane = f.git(["rev-parse", "--show-toplevel"], f.attempts()[0]!.cwd);
@@ -2197,15 +2275,15 @@ test("review uses read-only template, exact lane diff and optional PR", () => {
     "--dangerously-bypass-approvals-and-sandbox",
   );
   for (const pr of ["0", "-1", "1.5"])
-    expect(f.runRole("reviewer", ["--pr", pr]).code).toBe(1);
-  expect(f.runRole("reviewer").code).toBe(0);
+    expect((await f.runRole("reviewer", ["--pr", pr])).code).toBe(1);
+  expect((await f.runRole("reviewer")).code).toBe(0);
   expect(f.prompt()).toContain("You are an independent code reviewer.");
   expect(f.prompt()).not.toContain("PR #");
 });
 
-test("builder and fixer assembly remains byte-identical while every launch records metadata", () => {
+test("builder and fixer assembly remains byte-identical while every launch records metadata", async () => {
   const f = roleFixture();
-  const result = f.runRole("builder");
+  const result = await f.runRole("builder");
   const issue = {
     ok: true,
     result: {
@@ -2229,11 +2307,11 @@ test("builder and fixer assembly remains byte-identical while every launch recor
   expect(record.start).toMatch(/^\d{4}-/);
   expect(record.end).toMatch(/^\d{4}-/);
   expect(record.verdict).toBe("completed");
-  expect(f.runRole("fixer").code).toBe(0);
+  expect((await f.runRole("fixer")).code).toBe(0);
   expect(f.prompt()).toBe(expected);
 });
 
-test("failed and empty tester records do not count, explicit prompts override templates", () => {
+test("failed and empty tester records do not count, explicit prompts override templates", async () => {
   const f = roleFixture();
   const builder = f.seed("builder", null);
   const failedFix = f.seed("fixer", null, "failed");
@@ -2242,7 +2320,7 @@ test("failed and empty tester records do not count, explicit prompts override te
   f.seed("tester", 1, "completed", "  ");
   for (const mode of ["empty", "fail"]) {
     writeFileSync(join(f.root, "mode"), mode);
-    const failed = f.runRole("tester");
+    const failed = await f.runRole("tester");
     expect(failed.output.verdict).toBe("failed");
     const record = JSON.parse(
       readFileSync(join(failed.output.folder!, "run.json"), "utf8"),
@@ -2256,14 +2334,14 @@ test("failed and empty tester records do not count, explicit prompts override te
     expect(record.end).toMatch(/^\d{4}-/);
   }
   writeFileSync(join(f.root, "mode"), "ok");
-  f.runRole("tester");
+  await f.runRole("tester");
   expect(f.prompt()).toContain("This is test round 1.");
   expect(f.prompt()).toContain(builder.reply.replaceAll("\\", "/"));
   expect(f.prompt()).not.toContain(failedFix.reply.replaceAll("\\", "/"));
   expect(f.prompt()).not.toContain(emptyFix.reply.replaceAll("\\", "/"));
   const custom = join(f.root, "custom-role.md");
   writeFileSync(custom, "Exact tester override.\n");
-  expect(f.runRole("tester", ["--prompt", custom]).code).toBe(0);
+  expect((await f.runRole("tester", ["--prompt", custom])).code).toBe(0);
   expect(f.prompt()).toBe("Exact tester override.\n");
 });
 
@@ -2312,10 +2390,10 @@ function unknownRows(f: ReturnType<typeof roleFixture>) {
   ).lanes[0]!.runs.filter((run) => run.role === "unknown");
 }
 
-test("unknown history legacy-count fails closed, allows explicit cap and never invents prior replies", () => {
+test("unknown history legacy-count fails closed, allows explicit cap and never invents prior replies", async () => {
   const f = roleFixture();
   const folders = [unknownRun(f, "old-builder"), unknownRun(f, "old-tester")];
-  const refused = f.runRole("tester");
+  const refused = await f.runRole("tester");
   expect(refused.output.verdict).toBe("refused");
   expect(refused.output.next).toBe(
     "Test round 3 exceeds the cap (2). Write a three-line threat model, then choose ship, simplify or park.",
@@ -2330,7 +2408,7 @@ test("unknown history legacy-count fails closed, allows explicit cap and never i
       .map((run) => run.folder)
       .sort(),
   ).toEqual(folders.sort());
-  const override = f.runRole("tester", ["--round-cap", "3"]);
+  const override = await f.runRole("tester", ["--round-cap", "3"]);
   expect(override.code).toBe(0);
   expect(f.prompt()).toContain("This is test round 3.");
   expect(f.prompt()).toContain(
@@ -2343,7 +2421,7 @@ test("unknown history legacy-count fails closed, allows explicit cap and never i
     );
 });
 
-test("unknown history truncated and unreadable records list without blocking other roles", () => {
+test("unknown history truncated and unreadable records list without blocking other roles", async () => {
   const f = roleFixture();
   const truncated = unknownRun(f, "truncated", "{");
   const unreadable = unknownRun(f, "unreadable");
@@ -2354,24 +2432,24 @@ test("unknown history truncated and unreadable records list without blocking oth
       .sort(),
   ).toEqual([truncated, unreadable].sort());
   for (const role of ["builder", "fixer", "reviewer"])
-    expect(f.runRole(role).code).toBe(0);
-  const refused = f.runRole("tester");
+    expect((await f.runRole(role)).code).toBe(0);
+  const refused = await f.runRole("tester");
   expect(refused.output.verdict).toBe("refused");
   expect(refused.output.next).toContain("Test round 3 exceeds the cap (2).");
   expect(f.attempts()).toHaveLength(3);
 });
 
-test("unknown history missing record counts alongside classified testers and custom prompts", () => {
+test("unknown history missing record counts alongside classified testers and custom prompts", async () => {
   const f = roleFixture();
   f.seed("tester", 1);
   const missing = unknownRun(f, "missing");
   const custom = join(f.root, "custom-unknown.md");
   writeFileSync(custom, "Exact unknown-history override.\n");
-  const refused = f.runRole("tester", ["--prompt", custom]);
+  const refused = await f.runRole("tester", ["--prompt", custom]);
   expect(refused.output.verdict).toBe("refused");
   expect(refused.output.next).toContain("Test round 3 exceeds the cap (2).");
   expect(unknownRows(f)).toEqual([{ role: "unknown", folder: missing }]);
-  const override = f.runRole("tester", [
+  const override = await f.runRole("tester", [
     "--round-cap",
     "3",
     "--prompt",
@@ -2386,7 +2464,7 @@ test("unknown history missing record counts alongside classified testers and cus
   ).toMatchObject({ role: "tester", round: 3 });
 });
 
-test("unknown history noninteger and missing tester rounds never classify as completed testers", () => {
+test("unknown history noninteger and missing tester rounds never classify as completed testers", async () => {
   const f = roleFixture();
   const rounds: unknown[] = [1.5, 0, 11, null, undefined, "1"];
   const folders = rounds.map((round) => {
@@ -2403,13 +2481,13 @@ test("unknown history noninteger and missing tester rounds never classify as com
       .map((run) => run.folder)
       .sort(),
   ).toEqual(folders.sort());
-  const refused = f.runRole("tester");
+  const refused = await f.runRole("tester");
   expect(refused.output.verdict).toBe("refused");
   expect(refused.output.next).toContain("Test round 7 exceeds the cap (2).");
   expect(f.attempts()).toHaveLength(0);
 });
 
-test("unknown history wrongrole rejects unknown roles and non-tester rounds", () => {
+test("unknown history wrongrole rejects unknown roles and non-tester rounds", async () => {
   const f = roleFixture();
   const roles = ["builder", "fixer", "reviewer", "unrecognized"];
   const folders = roles.map((role) => {
@@ -2421,7 +2499,7 @@ test("unknown history wrongrole rejects unknown roles and non-tester rounds", ()
       .map((run) => run.folder)
       .sort(),
   ).toEqual(folders.sort());
-  const allowed = f.runRole("tester", ["--round-cap", "5"]);
+  const allowed = await f.runRole("tester", ["--round-cap", "5"]);
   expect(allowed.code).toBe(0);
   expect(f.prompt()).toContain("This is test round 5.");
   expect(f.prompt()).toContain(
@@ -2698,6 +2776,7 @@ for (const operation of ["reclaim", "rename"])
     );
     const lock = join(f.main, ".git", "forge-lane-one.lock");
     mkdirSync(lock);
+    childLaunches++;
     const dead = spawnSync(process.execPath, ["-e", ""], {
       timeout: 5_000,
       windowsHide: true,
