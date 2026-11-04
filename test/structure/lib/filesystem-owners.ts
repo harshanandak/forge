@@ -4,6 +4,7 @@ export const FILESYSTEM_OWNERS: ReadonlySet<string> = new Set([
   "src/adapters/fs/device-identity.ts", // Device identity: private persisted identity.
   "src/adapters/fs/durable-io.ts", // State store: shared durable file operations.
   "src/adapters/fs/index.ts", // Project files: configuration filesystem provider.
+  "src/adapters/fs/project-files.ts", // Project files: identity-checked bounded reads.
   "src/adapters/node-runtime/capture.ts", // Project files: bounded block capture.
   "src/adapters/node-runtime/catalog.ts", // Package files: locate installed blocks.
   "src/adapters/process/resolve.ts", // Process: executable and permission checks.
