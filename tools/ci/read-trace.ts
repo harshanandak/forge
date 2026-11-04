@@ -68,6 +68,75 @@ export function topIo(lines: string[]): [string, number][] {
   return [...totals].sort((a, b) => b[1] - a[1]);
 }
 
+/** Relog expands the union of binary-log instances; an absent instance has an empty cell. */
+export function mergeCounterLog(jsonl: string, csv: string) {
+  const fields = (line: string) => line.trim().slice(1, -1).split('","');
+  const [head = "", ...lines] = csv.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const header = fields(head);
+  const bias = Number(/\((-?\d+)\)$/.exec(header[0] ?? "")?.[1] ?? 0);
+  const samples = lines
+    .filter((line) => /^"\d/.test(line))
+    .map((line) => {
+      const [stamp = "", ...values] = fields(line);
+      const [month, day, year, hour, minute, second, ms] = stamp
+        .split(/\D/)
+        .map(Number);
+      const at =
+        Date.UTC(year!, month! - 1, day, hour, minute, second, ms ?? 0) +
+        bias * 60000;
+      return { at, counters: parseCounters(header.slice(1), values), values };
+    });
+  let index = 0,
+    collectorCpu = 0;
+  for (const sample of samples)
+    collectorCpu += Object.entries(sample.counters).reduce(
+      (sum, [key, value]) =>
+        sum +
+        (/\\Process\(typeperf(#\d+)?\)\\% Processor Time$/i.test(key)
+          ? (value ?? 0)
+          : 0),
+      0,
+    );
+  const rows = jsonl
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const row = JSON.parse(line) as { timestamp: string };
+      const at = Date.parse(row.timestamp);
+      while (index + 1 < samples.length && samples[index + 1]!.at <= at)
+        index++;
+      const sample = samples[index];
+      const fresh = sample && at >= sample.at && at - sample.at < 2500;
+      const metrics = Object.fromEntries(
+        Object.entries({
+          cpuPercent: "\\Processor(_Total)\\% Processor Time",
+          availableMemoryMB: "\\Memory\\Available MBytes",
+          diskTimePercent: "\\PhysicalDisk(_Total)\\% Disk Time",
+          diskQueueLength: "\\PhysicalDisk(_Total)\\Avg. Disk Queue Length",
+        }).map(([key, path]) => {
+          const i = header.findIndex((name) => name.endsWith(path)) - 1;
+          const value = fresh ? sample.values[i] : undefined;
+          return [
+            key,
+            value?.trim() && Number.isFinite(+value) && +value >= 0
+              ? +value
+              : null,
+          ];
+        }),
+      );
+      return JSON.stringify({
+        ...row,
+        ...metrics,
+        performanceCounters: fresh ? sample.counters : null,
+      });
+    });
+  return {
+    jsonl: rows.join("\n") + "\n",
+    collectorCpuPercent: samples.length ? collectorCpu / samples.length : null,
+    samples: samples.length,
+  };
+}
+
 if (import.meta.main) {
   const [file, start, end] = process.argv.slice(2);
   if (!file || !start || !end)

@@ -214,6 +214,7 @@ jobs:
           path: |
             ${{ runner.temp }}/windows-trace.jsonl
             ${{ runner.temp }}/windows-trace.jsonl.error
+            ${{ runner.temp }}/windows-trace.jsonl.blg
           retention-days: 7
           if-no-files-found: warn
 
