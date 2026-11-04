@@ -4,6 +4,7 @@ export async function powerShellStep(
   shell: string,
   command: string,
   timeout: number,
+  caseNames: readonly string[] = [],
 ) {
   const phases: Record<string, string | undefined> = {
     spawn: new Date().toISOString(),
@@ -35,6 +36,8 @@ export async function powerShellStep(
         phases.commandStart ??= new RegExp(`${marker}([^\\r\\n]+)`).exec(
           stdout,
         )?.[1];
+        for (const match of stdout.matchAll(/FORGE_CASE_START:(\d+)\r?\n/g))
+          phases.case = caseNames[Number(match[1])];
       });
       child.stderr.on("data", (data: Buffer) => {
         phases.firstOutput ??= new Date().toISOString();
@@ -46,7 +49,7 @@ export async function powerShellStep(
         else
           reject(
             new Error(
-              `PowerShell ${timedOut ? "timeout" : `exit ${status}`}; phase=${phases.commandStart ? "command" : phases.firstOutput ? "startup-output" : "startup"}; ${JSON.stringify(phases)}; ${stderr}`,
+              `PowerShell ${timedOut ? "timeout" : `exit ${status}`}; phase=${phases.commandStart ? "command" : phases.firstOutput ? "startup-output" : "startup"}; case=${phases.case ?? "pending"}; ${JSON.stringify(phases)}; ${stderr}`,
             ),
           );
       });
@@ -59,6 +62,43 @@ export async function powerShellStep(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** One launch per batch; emitted commands remain verbatim inside isolated script blocks. */
+export function powerShellBatch() {
+  let launches = 0;
+  return {
+    get launches() {
+      return launches;
+    },
+    async run(
+      shell: string,
+      cases: readonly { name: string; command: string }[],
+      timeout: number,
+    ) {
+      const script = cases
+        .map(
+          ({ command }, index) =>
+            `[Console]::Out.WriteLine('FORGE_CASE_START:${index}'); & {\n${command}\n}; $caseStatus = [int](-not $?); [Console]::Out.WriteLine('FORGE_CASE_END:${index}:' + $caseStatus)`,
+        )
+        .join("\n");
+      launches += 1;
+      const run = await powerShellStep(
+        shell,
+        script,
+        timeout,
+        cases.map(({ name }) => name),
+      );
+      return cases.map(({ name }, index) => {
+        const match = new RegExp(
+          `FORGE_CASE_START:${index}\\r?\\n([\\s\\S]*?)FORGE_CASE_END:${index}:([01])\\r?\\n`,
+        ).exec(run.stdout);
+        if (match === null)
+          throw new Error(`PowerShell case did not complete: ${name}`);
+        return { ...run, name, stdout: match[1]!, status: Number(match[2]) };
+      });
+    },
+  };
 }
 
 export async function childStep<T>(
