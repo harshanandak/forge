@@ -3,7 +3,16 @@ import { execFileSync } from "node:child_process";
 export type Scope = "docs" | "full";
 
 export function scopeOf(paths: readonly string[]): Scope {
-  return paths.every((path) => /^(docs\/|LICENSE$|.*\.md$|$)/.test(path))
+  return paths.length > 0 &&
+    paths.every(
+      (path) =>
+        path !== "docs/writing-a-block.md" &&
+        (/^docs\/.+/.test(path) ||
+          path === "AGENTS.md" ||
+          path === "CODING_STANDARDS.md" ||
+          path === "migrations/README.md" ||
+          /^src\/(?:[^/]+\/)*README\.md$/.test(path)),
+    )
     ? "docs"
     : "full";
 }
@@ -13,11 +22,15 @@ export function changedPaths(
   head: string,
   cwd: string,
 ): string[] {
-  return execFileSync("git", ["diff", "--name-only", "-z", base, head], {
-    cwd,
-    encoding: "utf8",
-    timeout: 30_000,
-  })
+  return execFileSync(
+    "git",
+    ["diff", "--no-renames", "--name-only", "-z", base, head],
+    {
+      cwd,
+      encoding: "utf8",
+      timeout: 30_000,
+    },
+  )
     .split("\0")
     .filter((path) => path !== "");
 }

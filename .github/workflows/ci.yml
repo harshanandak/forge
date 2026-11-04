@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Pinned Bun for check, test, build and pack smoke. `bun fmt` is stable in 1.4.4;
@@ -28,7 +28,7 @@ jobs:
     name: Changes
     runs-on: ubuntu-latest
     outputs:
-      code: ${{ steps.diff.outputs.code }}
+      scope: ${{ steps.diff.outputs.scope }}
       started: ${{ steps.start.outputs.at }}
     steps:
       - id: start
@@ -36,22 +36,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       - id: diff
         env:
           EVENT: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          code=true
-          if [ "$EVENT" = "pull_request" ]; then
-            changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-            echo "$changed"
-            if ! printf '%s\n' "$changed" | grep -qvE '^(docs/|LICENSE$|.*\.md$|$)'; then
-              code=false
-            fi
-          fi
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "code changed: $code"
+          scope="$(bun tools/ci/change-scope.ts)"
+          echo "$scope" >> "$GITHUB_OUTPUT"
+          echo "$scope"
 
   pr-title:
     name: PR title
@@ -115,7 +111,7 @@ jobs:
   pack:
     name: Pack artifact
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.scope == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -145,7 +141,7 @@ jobs:
   verify:
     name: Verify (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     needs: [changes, pack]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.scope == 'full'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
@@ -282,7 +278,7 @@ jobs:
     steps:
       - env:
           EVENT: ${{ github.event_name }}
-          CODE: ${{ needs.changes.outputs.code }}
+          SCOPE: ${{ needs.changes.outputs.scope }}
           CHANGES: ${{ needs.changes.result }}
           PR_TITLE: ${{ needs.pr-title.result }}
           STRUCTURE: ${{ needs.structure.result }}
@@ -310,11 +306,16 @@ jobs:
           require "structure" "$STRUCTURE"
           require "static" "$STATIC"
           if [ "$EVENT" = "pull_request" ]; then require "pr-title" "$PR_TITLE"; fi
-          if [ "$CODE" = "true" ]; then
+          if [ "$SCOPE" = "full" ]; then
             require "pack" "$PACK"
             require "verify" "$VERIFY"
-          elif [ "$VERIFY" != "skipped" ] || [ "$PACK" != "skipped" ]; then
-            echo "::error::verify='$VERIFY', pack='$PACK' on a documentation-only change"
+          elif [ "$SCOPE" = "docs" ] && [ "$EVENT" = "pull_request" ]; then
+            if [ "$VERIFY" != "skipped" ] || [ "$PACK" != "skipped" ]; then
+              echo "::error::verify='$VERIFY', pack='$PACK' on a documentation-only change"
+              ok=0
+            fi
+          else
+            echo "::error::unexpected scope '$SCOPE' for '$EVENT'"
             ok=0
           fi
           [ "$ok" = "1" ]

@@ -14,6 +14,15 @@ import { dirname, join, posix, resolve } from "node:path";
 import { parse } from "yaml";
 import { changedPaths, scopeOf } from "../../tools/ci/change-scope.ts";
 
+const quotes = "\"'`";
+const readmeReference = new RegExp(
+  `[${quotes}]([^${quotes}\\r\\n]*README\\.md)[${quotes}]`,
+  "g",
+);
+const possibleReader = new RegExp(
+  `\\breadFile(?:Sync)?\\s*\\(|\\bBun\\.file\\s*\\(|(?:from|import)\\s*[${quotes}][^${quotes}]*README\\.md`,
+);
+
 test("docs-only source READMEs have no non-fixture source readers", () => {
   const files = execFileSync("git", ["ls-files", "-z"], {
     encoding: "utf8",
@@ -27,7 +36,8 @@ test("docs-only source READMEs have no non-fixture source readers", () => {
     (path) => /\.(?:ts|mjs)$/.test(path) && !path.includes("/fixtures/"),
   )) {
     const text = readFileSync(file, "utf8");
-    for (const match of text.matchAll(/["'`]([^"'`\r\n]*README\.md)["'`]/g)) {
+    if (!possibleReader.test(text)) continue;
+    for (const match of text.matchAll(readmeReference)) {
       const reference = match[1]!;
       const target = reference.startsWith(".")
         ? posix.normalize(posix.join(posix.dirname(file), reference))
@@ -95,6 +105,37 @@ test("H2: a code-to-doc rename requires full CI through the real selector", () =
       "src/a.ts",
     ]);
     expect(scopeOf(changedPaths(base, base, work))).toBe("full");
+    for (const event of ["push", "workflow_dispatch", ""]) {
+      const main = spawnSync(
+        process.execPath,
+        [resolve("tools/ci/change-scope.ts")],
+        {
+          cwd: work,
+          env: { ...process.env, EVENT: event, BASE_SHA: "", HEAD_SHA: "" },
+          encoding: "utf8",
+          timeout: 10_000,
+        },
+      );
+      expect(main.status, main.stderr).toBe(0);
+      expect(main.stdout.trim()).toBe("scope=full");
+    }
+    const invalid = spawnSync(
+      process.execPath,
+      [resolve("tools/ci/change-scope.ts")],
+      {
+        cwd: work,
+        env: {
+          ...process.env,
+          EVENT: "pull_request",
+          BASE_SHA: "not-a-revision",
+          HEAD_SHA: head,
+        },
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    expect(invalid.status).not.toBe(0);
+    expect(invalid.stdout).toBe("");
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -260,29 +301,102 @@ test.each([2, 3])(
   120_000,
 );
 
-test("CI Gate rejects an injected failed matrix shard", () => {
-  const { jobs } = parse(
-    readFileSync(resolve(".github/workflows/ci.yml"), "utf8"),
-  ) as { jobs: Record<string, { needs: string[]; steps: { run: string }[] }> };
-  const gate = jobs["ci-gate"]!;
-  expect(gate.needs).toContain("verify");
-  for (const verify of ["success", "failure", "cancelled", "skipped"]) {
+test.each([
+  {
+    scope: "full",
+    event: "pull_request",
+    pack: "success",
+    verify: "success",
+    expected: 0,
+  },
+  {
+    scope: "full",
+    event: "push",
+    pack: "success",
+    verify: "success",
+    expected: 0,
+  },
+  ...["failure", "cancelled", "skipped"].flatMap((result) => [
+    {
+      scope: "full",
+      event: "pull_request",
+      pack: "success",
+      verify: result,
+      expected: 1,
+    },
+    {
+      scope: "full",
+      event: "pull_request",
+      pack: result,
+      verify: "success",
+      expected: 1,
+    },
+  ]),
+  {
+    scope: "docs",
+    event: "pull_request",
+    pack: "skipped",
+    verify: "skipped",
+    expected: 0,
+  },
+  ...["success", "failure", "cancelled"].flatMap((result) => [
+    {
+      scope: "docs",
+      event: "pull_request",
+      pack: "skipped",
+      verify: result,
+      expected: 1,
+    },
+    {
+      scope: "docs",
+      event: "pull_request",
+      pack: result,
+      verify: "skipped",
+      expected: 1,
+    },
+  ]),
+  {
+    scope: "docs",
+    event: "push",
+    pack: "skipped",
+    verify: "skipped",
+    expected: 1,
+  },
+  ...["", "unknown", "linux"].map((scope) => ({
+    scope,
+    event: "pull_request",
+    pack: "skipped",
+    verify: "skipped",
+    expected: 1,
+  })),
+])(
+  "CI Gate enforces scope and required results: %j",
+  ({ scope, event, pack, verify, expected }) => {
+    const { jobs } = parse(
+      readFileSync(resolve(".github/workflows/ci.yml"), "utf8"),
+    ) as {
+      jobs: Record<string, { needs: string[]; steps: { run: string }[] }>;
+    };
+    const gate = jobs["ci-gate"]!;
+    expect(gate.needs).toContain("verify");
     const result = spawnSync("bash", ["-c", gate.steps[0]!.run], {
       env: {
         ...process.env,
-        EVENT: "pull_request",
-        CODE: "true",
+        EVENT: event,
+        SCOPE: scope,
         STARTED: "",
         ...Object.fromEntries(
-          "CHANGES STRUCTURE STATIC PR_TITLE PACK"
+          "CHANGES STRUCTURE STATIC PR_TITLE"
             .split(" ")
             .map((name) => [name, "success"]),
         ),
         VERIFY: verify,
+        PACK: pack,
       },
       encoding: "utf8",
       timeout: 10_000,
     });
-    expect(result.status, result.stderr).toBe(verify === "success" ? 0 : 1);
-  }
-}, 30_000);
+    expect(result.status, result.stderr).toBe(expected);
+  },
+  30_000,
+);
