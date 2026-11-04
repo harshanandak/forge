@@ -78,6 +78,28 @@ export class StoreRestoringError extends Error {
   }
 }
 
+export function applyDurability(raw: Binding, name: string): void {
+  raw.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;");
+  if (process.platform === "darwin") raw.exec("PRAGMA fullfsync=ON;");
+  const values = ["journal_mode", "synchronous", "fullfsync"].map((pragma) => {
+    const statement = raw.prepare(`PRAGMA ${pragma}`);
+    try {
+      return (statement.get() as SqlRow)[pragma];
+    } finally {
+      statement.finalize?.();
+    }
+  });
+  const journal = String(values[0]).toLowerCase();
+  if (
+    journal !== (name === ":memory:" ? "memory" : "delete") ||
+    Number(values[1]) !== 2 ||
+    (process.platform === "darwin" && Number(values[2]) !== 1)
+  )
+    throw new StoreRestoringError(
+      `Store durability settings did not take: journal_mode=${journal} synchronous=${String(values[1])} fullfsync=${String(values[2])}`,
+    );
+}
+
 export function sqliteIdentityError(
   error: unknown,
   identityChanged = false,
@@ -324,6 +346,7 @@ export function createSqliteStore(
           return statement;
         };
         db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
+        if (!options.readOnly) applyDurability(db, path);
         let closed = false;
         let active = false;
         const assertOpen = (): void => {
@@ -480,7 +503,10 @@ export function createSqliteStore(
               candidate = undefined;
               step("validated");
               candidate = connect(candidatePath, false);
-              candidate.exec("PRAGMA foreign_keys=ON");
+              candidate.exec(
+                "PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON",
+              );
+              applyDurability(candidate, candidatePath);
               prepareCandidate(wrap(candidate));
               check(wrap(candidate));
               candidate.close();
@@ -558,6 +584,7 @@ export function createSqliteStore(
                 db = connect(path, false);
               }
               db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON");
+              applyDurability(db, memory ? candidatePath : path);
               check(wrap(db));
               validate(wrap(db));
               step("verified");
@@ -597,6 +624,7 @@ export function createSqliteStore(
                   }
                   db = connect(path, false);
                   db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON");
+                  applyDurability(db, path);
                   identity = statSync(path, { bigint: true });
                 }
               } catch (recoveryError) {

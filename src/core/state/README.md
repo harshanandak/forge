@@ -10,6 +10,8 @@ Deleted keys disappear from `get`, `list` and `listRange`; their indexed events 
 
 The synchronous database adapter rejects nested and asynchronous transaction bodies. Both runtime bindings normalize an absent row to `undefined`. Native driver failures propagate; they are never blindly retried or swallowed.
 
+Writable SQLite connections pin and read back `journal_mode=DELETE` (`memory` for `:memory:`), `synchronous=FULL`, and, on macOS, `fullfsync=ON`; mismatches refuse the connection.
+
 Reviewed first-party registrations supply migrations, table names (prefixed `domain_`), and a review digest. The owner persists each table's namespace and review identity. Outside clients have no registration method. A different registration cannot take over an existing table. The registration API is a trusted assembly boundary; a digest string alone is not code admission.
 
 `export()` asks the storage adapter to create a consistent complete SQLite image using the selected runtime's `VACUUM INTO`. The snapshot keeps its existing records, history, receipts, lease and domain metadata, read from that image, and adds the database image as base64 so JSON transport remains lossless. It also records `eventHighWaterMark` from the same image. Restore requires event sequences exactly 1 through that mark before replaying records, receipts and leases; a missing or invalid mark, a gap, duplicate or truncated history refuses the whole snapshot. Snapshots exported without the mark must be exported again. Binary cells and large integers survive without conversion through INSERT statements.
