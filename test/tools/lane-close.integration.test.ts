@@ -262,6 +262,9 @@ function cleanupRoot(
   remove = () => rmSync(root, { recursive: true, force: true }),
   run: DiagnosticRunner = spawnSync,
 ) {
+  const bin = join(root, "bin");
+  if (existsSync(bin))
+    expect(readdirSync(bin).filter((name) => /\.exe$/i.test(name))).toEqual([]);
   try {
     remove();
   } catch (error) {
