@@ -179,7 +179,7 @@ export async function checkoutScopeRoot(
 /**
  * The repository's name as its `origin` remote names it (`forge` for `.../forge.git`), so every
  * clone and worktree of one repository agrees whatever its folder is called. Undefined outside a
- * repository (no git is started then), without an origin, or when git cannot answer.
+ * repository (no git is started then), without git or without an origin. Failed lookups throw.
  */
 export async function originRepositoryName(
   dir: string,
@@ -200,15 +200,22 @@ export async function originRepositoryName(
         maxOutputBytes: options.maxOutputBytes,
       },
     );
-    if (result.exitCode !== 0 || result.truncated) return undefined;
+    const { exitCode, stdout, stderr, timedOut, truncated, signal } = result;
+    const detail = stderr.split(/\r?\n/, 1)[0]?.trim() || "git origin failed";
+    const status = timedOut || truncated || signal !== null ? null : exitCode;
+    const missing = status === 1 && stdout === "";
+    if (status !== 0 && !missing)
+      throw new GitCommandError("GIT_FAILED", detail, status);
+    if (missing) return undefined;
     // A local checkout remote may point at its Git directory rather than its repository folder.
     const origin = firstLine(result.stdout).replace(/[/\\]\.git[/\\]*$/, "");
     // The last path segment of an https, ssh or scp-style URL, or of a local path.
     const name = /([^/\\:]+?)(?:\.git)?[/\\]*$/.exec(origin);
+    if (!name) throw new GitCommandError("GIT_FAILED", detail, 0);
     return name?.[1];
   } catch (error) {
     if (error instanceof Error && error.name === "ProcessSpawnError")
-      return undefined;
+      throw new GitCommandError("GIT_FAILED", error.message, null);
     throw error;
   }
 }

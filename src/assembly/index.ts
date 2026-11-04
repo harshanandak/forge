@@ -7,6 +7,7 @@ import {
   type ShowResult,
 } from "../core/config/index.ts";
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
+import { GitCommandError } from "../adapters/vcs-git/index.ts";
 import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
 import { detectProject, createFolderFiles } from "../blocks/project/index.ts";
 import {
@@ -842,7 +843,27 @@ export async function createAssembly(
             ),
           );
         const prefix = () =>
-          idPrefixObservation(root, stateRoot, options.providers);
+          idPrefixObservation(root, stateRoot, options.providers).catch(
+            (error: unknown) => {
+              if (core) return [];
+              const { show, catalog } = snapshot(call, deviceMemory);
+              if (
+                catalog.resolve(request.op).operation.instance !== "work" ||
+                show.values.some(
+                  ({ pointer, layer }) =>
+                    pointer === "/blocks/work/config/idPrefix" &&
+                    layer === "project",
+                )
+              )
+                return [];
+              if (!(error instanceof GitCommandError)) throw error;
+              throw new ForgeFailure({
+                code: "UNAVAILABLE",
+                message: error.message.replace(/\p{Cc}/gu, "").trim(),
+                retry: error.exitCode === null ? "safe" : "never",
+              });
+            },
+          );
         const core = configCandidates
           .concat(grantCandidate, discoveryOperations)
           .some((entry) => entry.op === request.op);
