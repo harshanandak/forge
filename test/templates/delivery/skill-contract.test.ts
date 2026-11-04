@@ -44,6 +44,8 @@ const inventory: Rule[] = (
   ...(copies ? { copies } : {}),
 }));
 const limits: Budgets = budgets;
+const INTAKE_ORDER =
+  /Before dispatch,[^\n]+forge issue call[^\n]+Retry REVISION_CONFLICT[^\n]+Then dispatch the subagent\./;
 
 function tree(root: string, prefix = ""): Record<string, Buffer> {
   const files: Record<string, Buffer> = {};
@@ -89,8 +91,10 @@ test("delivery skill contracts: shape, links, rules, budgets, lint and mirrors",
         const revision = record(
           (await invoke(first, "config.show")).result,
         )?.revision;
+        const expectRevision =
+          typeof revision === "string" ? String(revision) : "";
         expect(
-          await invoke(first, op, { ...input, expectRevision: revision }),
+          await invoke(first, op, { ...input, expectRevision }),
         ).toMatchObject({ ok: true });
       };
       await call("template.import", { template: "delivery" });
@@ -141,7 +145,8 @@ test("delivery skill contracts: shape, links, rules, budgets, lint and mirrors",
           problems.push(`${path}: ${problem}`);
       }
       expect(problems, problems.join("\n")).toEqual([]);
-      expect(inventory).toHaveLength(43);
+      expect(inventory).toHaveLength(47);
+      expect(rendered["forge-intake/SKILL.md"]).toMatch(INTAKE_ORDER);
       expect(Object.keys(shipped).sort()).toEqual(Object.keys(source).sort());
       expect(
         Object.keys(other)
@@ -214,6 +219,38 @@ test("rule checker detects deletion, duplication and rewording until inventory c
   expect(checkRules(copied, [{ ...row, copies: ["other.md"] }])).toEqual([]);
 }, 5_000);
 
+test("intake contracts reject removed call, limit, prototype isolation and report rules", () => {
+  const source = markdown(tree(sourceRoot));
+  for (const id of [
+    "in.call.count",
+    "in.call.limit",
+    "in.proto.workspace",
+    "in.proto.destination",
+  ]) {
+    const rule = inventory.find((candidate) => candidate.id === id)!;
+    expect(checkRules(source, [rule])).toEqual([]);
+    const missing = {
+      ...source,
+      [rule.home]: source[rule.home]!.replace(rule.anchor, ""),
+    };
+    expect(checkRules(missing, [rule])).toContain(
+      `rule ${id}: not found in ${rule.home}`,
+    );
+  }
+  const intake = source["forge-intake/SKILL.md"]!;
+  expect(intake).toMatch(INTAKE_ORDER);
+  const call = inventory.find((rule) => rule.id === "in.call.count")!.anchor;
+  for (const instruction of [
+    "Retry REVISION_CONFLICT.",
+    "Then dispatch the subagent.",
+  ]) {
+    const reordered = intake
+      .replace(instruction, "")
+      .replace(call, `${instruction} ${call}`);
+    expect(reordered).not.toMatch(INTAKE_ORDER);
+  }
+}, 5_000);
+
 test("shape and links reject missing sections, preamble reads and broken targets", () => {
   const shape = (files: Files) => checkShape(files, ["forge-example"]);
   expect(shape(fixture)).toEqual([]);
@@ -222,6 +259,8 @@ test("shape and links reject missing sections, preamble reads and broken targets
     edit("## Steps", "## Work"),
     edit("1. Read", "Read"),
     edit("# forge-example\n", "# forge-example\n[read](detail.md)\n"),
+    edit("[detail](detail.md#detail) when needed", "[when](detail.md)"),
+    edit("[detail](detail.md#detail) when needed", "[detail](when.md)"),
   ])
     expect(shape(files).length).toBeGreaterThan(0);
   for (const to of ["missing.md", "detail.md#missing", "../../outside.md"])
@@ -247,6 +286,18 @@ test("budgets and neutrality reject growth and harness-specific instructions", (
   expect(checkBudgets(fixture, fixture, policy)).toEqual([]);
   const big = changed(row.home, "x".repeat(6145));
   expect(checkBudgets(big, big, policy)).toHaveLength(2);
+  const noRoutes = { ...policy, routes: {} };
+  expect(checkBudgets(fixture, big, noRoutes)).toEqual([]);
+  const path = "forge-example/SKILL.md";
+  const marker = `${GENERATED_MARKER}\n`;
+  const text = fixture[path]!.padEnd(policy.router - bytes(marker));
+  const source = changed(path, text);
+  const rendered = changed(path, text + marker);
+  expect(checkBudgets(source, rendered, noRoutes)).toEqual([]);
+  const oversized = { ...rendered, [path]: rendered[path]! + "x" };
+  expect(checkBudgets(source, oversized, noRoutes)).toEqual([
+    `${path}: exceeds 2560 rendered bytes`,
+  ]);
   expect(checkNeutral(fixture)).toEqual([]);
   for (const text of [
     "watch_pull_request",

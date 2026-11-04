@@ -11,7 +11,7 @@ This prevents building on a definition the repository contradicts, or waiting on
 ## Steps
 
 1. Create an intent issue with `forge issue create` if missing. Read it and linked context. Keep its map there: Destination, Decisions so far, Not yet specified, Out of scope. Track each decision's prerequisites and status.
-2. Investigate facts in code, tools or primary sources, or dispatch a subagent. A pending investigation blocks only its dependent decisions; continue with the others. Before dispatch, run `forge route get <role> --text` and use its line to select the route; run `forge issue call <intent> --role <role>`. Retry REVISION_CONFLICT. Pass returned timeboxMinutes and stopBy.
+2. Investigate facts in code, tools or primary sources. A pending investigation blocks only its dependent decisions; continue with the others. Before dispatch, run `forge route get <role> --text` and use its line to select the route; run `forge issue call <intent> --role <role>`. Retry REVISION_CONFLICT. Pass returned timeboxMinutes and stopBy. Then dispatch the subagent.
 3. Read [prototype.md](prototype.md) when only running code can answer a question. Name the question first.
 4. Read [rounds.md](rounds.md) when decisions are ready to ask or an answer changes.
 5. Show the settled map and answer digest. In an attended run, get confirmation of the shared understanding. Then route to `forge-cut` for framing and slicing.

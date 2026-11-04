@@ -18,7 +18,8 @@ export interface Budgets {
 }
 export const lf = (text: string): string => text.replace(/\r\n/g, "\n");
 export const bytes = (text: string): number => Buffer.byteLength(lf(text));
-const links = (text: string) => [...text.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)];
+const LINK = /\[[^\]]*\]\(([^)]+)\)/g;
+const links = (text: string) => [...text.matchAll(LINK)];
 const headings = (text: string) => [...text.matchAll(/^#{1,6} (.+)$/gm)];
 const slug = (text: string) =>
   text
@@ -63,7 +64,7 @@ export function checkShape(
         errors.push(`${path}: link outside Steps or Read on demand`);
       if (
         steps.includes(line) &&
-        !/^\d+\. .*\b(when|before|after|on|if)\b/i.test(line)
+        !/^\d+\. .*\b(when|before|after|on|if)\b/i.test(line.replace(LINK, ""))
       )
         errors.push(`${path}: step link has no trigger`);
     }
@@ -144,12 +145,15 @@ export function checkBudgets(
   const errors: string[] = [];
   for (const [path, text] of Object.entries(source)) {
     if (!budgets.migrated.includes(path.split("/")[0]!)) continue;
-    const limit = path.endsWith("/SKILL.md")
-      ? budgets.router
-      : budgets.reference;
-    if (bytes(text) > limit)
-      errors.push(`${path}: exceeds ${limit} source bytes`);
-    if (path.endsWith("/SKILL.md")) {
+    const router = path.endsWith("/SKILL.md");
+    const limit = router ? budgets.router : budgets.reference;
+    if (router && !(path in rendered))
+      errors.push(`${path}: missing rendered router`);
+    if (bytes(router ? (rendered[path] ?? "") : text) > limit)
+      errors.push(
+        `${path}: exceeds ${limit} ${router ? "rendered" : "source"} bytes`,
+      );
+    if (router) {
       const front = /^---\n([\s\S]*?)\n---\n/.exec(lf(text));
       const meta = parse(front?.[1] ?? "") as { description?: string } | null;
       if ([...(meta?.description ?? "")].length > budgets.description)

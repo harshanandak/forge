@@ -23,6 +23,16 @@
   ["in.proto.when", "forge-intake/SKILL.md", "Name the question first"],
   ["in.proto.limits", "forge-intake/SKILL.md", "one session and 300 lines"],
   [
+    "in.proto.workspace",
+    "forge-intake/prototype.md",
+    "`prototype/<name>` branch or a scratch folder"
+  ],
+  [
+    "in.proto.destination",
+    "forge-intake/prototype.md",
+    "End with the verdict, evidence (output, timing or screenshot) and branch pointer as a comment on the intent issue."
+  ],
+  [
     "in.proto.report",
     "forge-intake/prototype.md",
     "output, timing or screenshot"
@@ -49,6 +59,16 @@
     "in.handoff",
     "forge-intake/SKILL.md",
     "Finish only when no open decision or pending fact remains"
+  ],
+  [
+    "in.call.count",
+    "forge-intake/SKILL.md",
+    "run `forge issue call <intent> --role <role>`"
+  ],
+  [
+    "in.call.limit",
+    "forge-intake/SKILL.md",
+    "On LIMIT_REACHED stop and report."
   ],
   [
     "sh.call",
