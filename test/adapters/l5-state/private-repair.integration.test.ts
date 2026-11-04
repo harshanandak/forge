@@ -1,5 +1,6 @@
 // [integration] Execute the emitted repair in every installed PowerShell edition on temp files.
 import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
+import { EventEmitter } from "node:events";
 import {
   mkdirSync,
   mkdtempSync,
@@ -98,22 +99,71 @@ windowsTest(
   "PowerShell timeout names the running command phase",
   async () => {
     const launches = batch.launches;
+    const message = await batch
+      .run(
+        "powershell.exe",
+        [{ name: "deadline probe", command: "Start-Sleep -Seconds 60" }],
+        5000,
+      )
+      .then(() => "", String);
+    const match = /timeout; phase=([^;]+); case=([^;]+); (\{.*\});/.exec(
+      message,
+    );
+    expect(match).not.toBeNull();
+    const phases = JSON.parse(match![3]!) as Record<string, string | undefined>;
+    expect(typeof phases.spawn).toBe("string");
+    expect(typeof phases.exit).toBe("string");
+    expect(match![1]).toBe(
+      phases.commandStart
+        ? "command"
+        : phases.firstOutput
+          ? "startup-output"
+          : "startup",
+    );
+    expect(match![2]).toBe(phases.case ?? "pending");
+    expect([undefined, "deadline probe"]).toContain(phases.case);
+    if (!phases.commandStart) expect(phases.case).toBeUndefined();
+    expect(batch.launches - launches).toBe(1);
+  },
+  10000,
+);
+test("PowerShell timeout follows recorded phases and batch case order", async () => {
+  const commandStart = "FORGE_COMMAND_START:2026-11-03T00:00:00.000Z\n";
+  for (const [output, phase, name] of [
+    ["", "startup", "pending"],
+    ["loading\n", "startup-output", "pending"],
+    [commandStart, "command", "pending"],
+    [`${commandStart}FORGE_CASE_START:0\n`, "command", "completed probe"],
+    [
+      `${commandStart}FORGE_CASE_START:0\nready\nFORGE_CASE_END:0:0\nFORGE_CASE_START:1\n`,
+      "command",
+      "deadline probe",
+    ],
+  ] as const) {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: () => child.emit("close", null),
+    });
+    const simulated = powerShellBatch(() => {
+      queueMicrotask(() => {
+        if (output) child.stdout.emit("data", Buffer.from(output));
+      });
+      return child;
+    });
     await expect(
-      batch.run(
+      simulated.run(
         "powershell.exe",
         [
           { name: "completed probe", command: "Write-Output ready" },
           { name: "deadline probe", command: "Start-Sleep -Seconds 60" },
         ],
-        5000,
+        0,
       ),
-    ).rejects.toThrow(
-      /timeout; phase=command; case=deadline probe;.*spawn.*firstOutput.*commandStart.*exit/,
-    );
-    expect(batch.launches - launches).toBe(1);
-  },
-  10000,
-);
+    ).rejects.toThrow(`timeout; phase=${phase}; case=${name};`);
+    expect(simulated.launches).toBe(1);
+  }
+});
 for (const shell of shells) {
   async function prepare() {
     const cases = quotes.map((quote) => {
