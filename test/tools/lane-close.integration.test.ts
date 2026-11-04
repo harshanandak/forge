@@ -1,5 +1,6 @@
 // [integration] Real local git repositories; Forge, GitHub and cleanup failures are PATH fixtures.
 import {
+  afterAll,
   afterEach,
   beforeEach,
   expect,
@@ -36,6 +37,19 @@ setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<{ head: string; merge: string }>();
 const script = resolve(import.meta.dirname, "../../tools/lane.ts");
 const roots: string[] = [];
+let gitBin: string | undefined;
+afterAll(() => {
+  try {
+    if (gitBin) rmSync(gitBin, { recursive: true, force: true });
+  } catch (error) {
+    if (
+      process.platform !== "win32" ||
+      !["EPERM", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")
+    )
+      throw error;
+    // Windows may briefly keep fake Git mapped; leave this temp directory to the OS temp cleaner.
+  }
+});
 let testStartedAt = Date.now();
 beforeEach(() => {
   testStartedAt = Date.now();
@@ -1199,16 +1213,18 @@ switch(op){
         ["claim", "link", "close", "comment"].includes(call.args[1]!),
     );
   function cleanupFailure(kind: "worktree" | "branch") {
+    env.LANE_CLOSE_CLEANUP_KIND = kind;
     const helper = join(root, "fake-git.mjs");
     writeFileSync(
       helper,
-      `import {spawnSync} from 'node:child_process';import {existsSync} from 'node:fs';import {join} from 'node:path';const args=process.argv.slice(2).filter(Boolean);if(existsSync(join(process.env.LANE_CLOSE_FIXTURE,'fail-cleanup'))&&(args.includes(${JSON.stringify(kind)})||(${JSON.stringify(kind)}==='branch'&&args.includes('update-ref')))&&args.some(a=>['remove','-d','-D'].includes(a))){console.error('injected cleanup failure');process.exit(1)}const result=spawnSync(${JSON.stringify(realGit)},args,{stdio:'inherit',env:process.env,windowsHide:true});process.exit(result.status??1);`,
+      `import {spawnSync} from 'node:child_process';import {existsSync} from 'node:fs';import {join} from 'node:path';const kind=process.env.LANE_CLOSE_CLEANUP_KIND,args=process.argv.slice(2).filter(Boolean);if(existsSync(join(process.env.LANE_CLOSE_FIXTURE,'fail-cleanup'))&&(args.includes(kind)||(kind==='branch'&&args.includes('update-ref')))&&args.some(a=>['remove','-d','-D'].includes(a))){console.error('injected cleanup failure');process.exit(1)}const result=spawnSync(process.env.LANE_CLOSE_REAL_GIT,args,{stdio:'inherit',env:process.env,windowsHide:true});process.exit(result.status??1);`,
     );
-    if (process.platform === "win32") {
-      // Bun refuses cmd metacharacters before a batch fixture can quote them.
+    if (process.platform === "win32" && !gitBin) {
+      // Bun refuses Git's %(refname) batch argument; keep the mapped image outside test roots.
+      gitBin = mkdtempSync(join(tmpdir(), "forge-lane-close-git-"));
       const compiled = spawnSync(
         process.execPath,
-        ["build", helper, "--compile", "--outfile", join(bin, "git.exe")],
+        ["build", helper, "--compile", "--outfile", join(gitBin, "git.exe")],
         {
           cwd: root,
           env,
@@ -1221,7 +1237,8 @@ switch(op){
         throw new Error(
           `fake git executable compilation failed: ${compiled.stderr}`,
         );
-    } else shim("git", helper);
+    } else if (process.platform !== "win32") shim("git", helper);
+    if (gitBin) env[pathKey] = gitBin + delimiter + env[pathKey];
     writeFileSync(join(root, "fail-cleanup"), "");
   }
   const close = (extra: string[] = []) =>
