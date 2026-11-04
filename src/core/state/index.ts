@@ -750,7 +750,8 @@ export class StateOwner {
   list(namespace: string, prefix = ""): readonly StateRecord[] {
     namespaceValid(namespace);
     // SQLite's binary UTF-8 order needs a code-point successor, carrying past U+10FFFF.
-    const points = Array.from(prefix);
+    // Unpaired surrogates bind as U+FFFD, so only the body filter can distinguish them.
+    const points = prefix.isWellFormed() ? Array.from(prefix) : [];
     let upper: string | undefined;
     while (points.length > 0) {
       const point = points.pop()!.codePointAt(0)!;

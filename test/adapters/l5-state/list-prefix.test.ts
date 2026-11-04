@@ -210,3 +210,33 @@ test("already working on main: listRange decodes at most its limit before JS tru
     await close();
   }
 }, 30_000);
+
+test("unpaired-surrogate prefixes stay listable and filter other surrogate bodies", async () => {
+  for (const keys of [
+    ["target/\ud800child"],
+    ["target/\ud801child"],
+    ["target/\ud800a", "target/\ud801b"],
+  ]) {
+    const opened = await createSqliteStore(tmpdir()).open({
+      path: ":memory:",
+      readOnly: false,
+    });
+    if (!opened.ok) throw new Error(opened.unavailable.reason);
+    try {
+      const owner = new StateOwner(opened.handle.value, { now: () => 1000 });
+      owner.initialize();
+      const records = owner.putMany(
+        namespace,
+        keys.map((key) => ({ key, value: key, expectRevision: 0 })),
+        actor,
+      );
+      for (const prefix of ["target/\ud800", "target/\ud801", "target/"]) {
+        expect(owner.list(namespace, prefix)).toEqual(
+          records.filter((record) => record.key.startsWith(prefix)),
+        );
+      }
+    } finally {
+      await opened.handle.close();
+    }
+  }
+}, 30_000);
