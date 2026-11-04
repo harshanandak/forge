@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { powerShellStep } from "../../child-step.ts";
 import { windowsPrivateFiles } from "../../../src/adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../../../src/adapters/store-sqlite/private-files.ts";
 
@@ -70,11 +70,22 @@ test.skipIf(process.platform !== "win32")(
     }
   },
 );
+test.skipIf(process.platform !== "win32")(
+  "PowerShell timeout names the running command phase",
+  async () => {
+    await expect(
+      powerShellStep("powershell.exe", "Start-Sleep -Seconds 60", 5000),
+    ).rejects.toThrow(
+      /timeout; phase=command;.*spawn.*firstOutput.*commandStart.*exit/,
+    );
+  },
+  10000,
+);
 for (const shell of shells) {
   for (const quote of ["'", "\u2018", "\u2019", "\u201a", "\u201b"]) {
     test.skipIf(process.platform !== "win32")(
       `repair is literal and portable in ${shell} for quote U+${quote.charCodeAt(0).toString(16)}`,
-      () => {
+      async () => {
         const root = mkdtempSync(join(tmpdir(), "forge-repair-quotes-"));
         try {
           const native = windowsPrivateFiles();
@@ -97,14 +108,7 @@ for (const shell of shells) {
           }
           const command = message.split(/Repair in PowerShell:\s*/)[1];
           expect(command).toBeDefined();
-          const run = spawnSync(
-            shell,
-            ["-NoProfile", "-NonInteractive", "-Command", command!],
-            {
-              encoding: "utf8",
-              timeout: 15000,
-            },
-          );
+          const run = await powerShellStep(shell, command!, 15000);
           expect(run.status, run.stderr).toBe(0);
           expect(run.stdout).not.toContain("INJECTED");
           guard.file(path);

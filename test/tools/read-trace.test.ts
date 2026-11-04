@@ -1,7 +1,72 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { traceWindow } from "../../tools/ci/read-trace.ts";
+import {
+  traceWindow,
+  parseCounters,
+  topIo,
+  mergeCounterLog,
+} from "../../tools/ci/read-trace.ts";
 
 setDefaultTimeout(1000);
+test("binary-log conversion retains a process started mid-trace", async () => {
+  const csv = await Bun.file(
+    new URL("./fixtures/windows-late-process.csv", import.meta.url),
+  ).text();
+  const ticks = [0, 1, 2, 3, 7]
+    .map((second) =>
+      JSON.stringify({
+        timestamp: `2026-11-04T03:00:0${second}.500Z`,
+        gapMs: 1000,
+      }),
+    )
+    .join("\n");
+  const result = mergeCounterLog(ticks, csv);
+  const rows = result.jsonl
+    .trim()
+    .split("\n")
+    .map(
+      (line) =>
+        JSON.parse(line) as {
+          diskQueueLength: number | null;
+          performanceCounters: Record<string, number | null> | null;
+        },
+    );
+  const io = "\\\\host\\Process(node#1)\\IO Data Bytes/sec";
+  expect(rows[0]!.performanceCounters).toBeNull();
+  expect(rows[1]!.performanceCounters?.[io]).toBeNull();
+  expect(rows[2]!.performanceCounters?.[io]).toBe(800);
+  expect(rows[3]!.performanceCounters?.[io]).toBe(900);
+  expect(rows[4]!.performanceCounters).toBeNull();
+  expect(rows[2]!.diskQueueLength).toBe(22);
+  expect(topIo(result.jsonl.trim().split("\n"))[0]).toEqual(["node#1", 1700]);
+  expect(result.collectorCpuPercent).toBeCloseTo(1.5);
+  expect(result.samples).toBe(3);
+});
+test("reads disk/process counters and ranks I/O only near the worst queue", async () => {
+  const fixture = await Bun.file(
+    new URL("./fixtures/windows-io.jsonl", import.meta.url),
+  ).text();
+  const lines = traceWindow(
+    fixture,
+    "2026-11-04T03:00:00Z",
+    "2026-11-04T03:00:20Z",
+  );
+  const { performanceCounters: counters } = JSON.parse(lines[0]!) as {
+    performanceCounters: Record<string, number>;
+  };
+  expect(
+    parseCounters(Object.keys(counters), Object.values(counters).map(String)),
+  ).toEqual(counters);
+  expect(
+    parseCounters(["\\\\host\\Process(bun)\\IO Data Bytes/sec"], ["-1"]),
+  ).toEqual({ "\\\\host\\Process(bun)\\IO Data Bytes/sec": null });
+  expect(topIo(lines)).toEqual([
+    ["MsMpEng", 900],
+    ["bun#1", 200],
+  ]);
+  expect(
+    topIo([JSON.stringify({ timestamp: "2026-11-04T03:00:00Z" })]),
+  ).toEqual([]);
+});
 const start = "2026-11-04T03:00:01Z";
 const end = "2026-11-04T03:00:02Z";
 const rows = [0, 1, 2, 3].map((second) =>
