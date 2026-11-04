@@ -122,7 +122,10 @@ function invalid(
 }
 
 /** The forge.config/1 checks; each instance's own config is checked resolved, in config.ts. */
-export function checkDocument(document: JsonObject): void {
+export function checkDocument(
+  document: JsonObject,
+  repair?: (pointer: string) => string,
+): void {
   const uses = absoluteUses(document);
   if (uses.length > 0) throw invalid(uses);
   const checked = validateConfigDocument(document);
@@ -138,7 +141,9 @@ export function checkDocument(document: JsonObject): void {
         message: `blocks.${name} has no source, and no installed block is named "${name}"`,
         pointer: missingSource.pointer,
         retry: "never",
-        repair: `say where the block comes from in the same edit: set /blocks/${name}/source to {"builtin": "<publisher>/<name>"}, {"path": "<dir>"} or {"package": "<name>"}`,
+        repair:
+          repair?.(missingSource.pointer) ??
+          `say where the block comes from in the same edit: set /blocks/${name}/source to {"builtin": "<publisher>/<name>"}, {"path": "<dir>"} or {"package": "<name>"}`,
       });
     }
     throw invalid(checked.problems);
