@@ -109,6 +109,11 @@ export function runProcessTree(
   started: number,
 ): Promise<ProcessResult> {
   return new Promise((resolveRun, rejectRun) => {
+    const spawned = performance.now();
+    const now = () => performance.now() - spawned;
+    const timeline: Record<string, number | string | null> = {};
+    const bytes = { stdout: 0, stderr: 0 };
+    let diagnostics: ProcessResult["diagnostics"];
     const child = spawn(plan.file, [...plan.args], {
       cwd: options.cwd,
       env: { ...options.env },
@@ -119,6 +124,9 @@ export function runProcessTree(
     const { stdout, stderr } = captureStreams(options);
     let failure: Error | undefined;
     const capture = (stream: StreamCapture, chunk: Buffer): void => {
+      const name = stream === stdout ? "stdout" : "stderr";
+      if (chunk.length) timeline[`${name}FirstData`] ??= now();
+      bytes[name] += chunk.length;
       try {
         stream.push(chunk);
       } catch (error) {
@@ -129,15 +137,28 @@ export function runProcessTree(
     };
     child.stdout?.on("data", (chunk: Buffer) => capture(stdout, chunk));
     child.stderr?.on("data", (chunk: Buffer) => capture(stderr, chunk));
+    child.once("spawn", () => (timeline.spawn = now()));
+    for (const name of ["stdout", "stderr"] as const)
+      child[name]?.once("end", () => (timeline[`${name}End`] = now()));
     if (options.stdin !== undefined) {
       child.stdin?.on("error", () => undefined);
       child.stdin?.end(options.stdin);
     }
     const exited = new Promise<void>((resolve) =>
-      child.once("exit", () => resolve()),
+      child.once("exit", (code, signal) => {
+        Object.assign(timeline, {
+          exit: now(),
+          exitCode: code,
+          exitSignal: signal,
+        });
+        resolve();
+      }),
     );
     const closed = new Promise<void>((resolve) =>
-      child.once("close", () => resolve()),
+      child.once("close", () => {
+        timeline.close = now();
+        resolve();
+      }),
     );
     let pipesClosed = false;
     void closed.then(() => (pipesClosed = true));
@@ -181,6 +202,7 @@ export function runProcessTree(
         timedOut,
         truncated: stdout.truncated || stderr.truncated,
         durationMs: Math.round(performance.now() - started),
+        ...(diagnostics === undefined ? {} : { diagnostics }),
         supervision: {
           mode: "supervised",
           backend: "process-group",
@@ -206,6 +228,16 @@ export function runProcessTree(
     const timer = setTimeout(
       () => {
         timedOut = true;
+        diagnostics = {
+          exitCode: child.exitCode,
+          signalCode: child.signalCode,
+          killed: child.killed,
+          stdoutReadableEnded: child.stdout?.readableEnded,
+          stderrReadableEnded: child.stderr?.readableEnded,
+          stdoutBytes: bytes.stdout,
+          stderrBytes: bytes.stderr,
+          timeline: { ...timeline },
+        };
         cancel();
       },
       Math.max(1, options.timeoutMs - (performance.now() - started)),

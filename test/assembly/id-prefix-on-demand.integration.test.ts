@@ -55,6 +55,7 @@ interface OriginLookup {
   stderrFirstLine: string | null;
   errorCode: string | null;
   trace2: TraceEvent[];
+  diagnostics?: ProcessResult["diagnostics"];
 }
 
 async function fixture(workEnabled: boolean, idPrefix?: string) {
@@ -191,6 +192,9 @@ async function fixture(workEnabled: boolean, idPrefix?: string) {
               result === undefined ? null : Buffer.byteLength(result.stdout),
             stderrFirstLine: result?.stderr.split(/\r?\n/, 1)[0] ?? null,
             errorCode,
+            ...(result?.diagnostics === undefined
+              ? {}
+              : { diagnostics: result.diagnostics }),
             trace2: events.filter(
               (event) =>
                 sessions.has(event.sid) &&

@@ -55,6 +55,8 @@ export interface ProcessResult {
   /** Output exceeded the requested capture bounds; retained bytes are still returned. */
   readonly truncated: boolean;
   readonly durationMs: number;
+  /** Runtime state observed at the deadline, before timeout cleanup. */
+  readonly diagnostics?: Readonly<Record<string, unknown>>;
   /** Present when capture was requested. Digests include every observed raw byte. */
   readonly outputEvidence?: {
     readonly stdout: ProcessOutputEvidence;
