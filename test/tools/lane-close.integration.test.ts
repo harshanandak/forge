@@ -9,10 +9,12 @@ import {
   test,
 } from "bun:test";
 import {
+  spawn,
   spawnSync,
   type SpawnSyncOptionsWithStringEncoding,
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import * as fs from "node:fs";
 import {
   chmodSync,
@@ -128,7 +130,9 @@ $root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT
 $bin = Join-Path $root 'bin'
 $data = @{ processes = @(); files = @(); gitExists = $null }
 try {
-  $data.processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+  $pattern = $root.Replace('\', '\\').Replace("'", "\'").Replace('[', '[[]').Replace('%', '[%]').Replace('_', '[_]')
+  $filter = "ExecutablePath LIKE '%$pattern%' OR CommandLine LIKE '%$pattern%'"
+  $data.processes = @(Get-CimInstance Win32_Process -ErrorAction Stop -Filter $filter | Where-Object {
     ($_.ExecutablePath -and $_.ExecutablePath.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
     ($_.CommandLine -and $_.CommandLine.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0)
   } | ForEach-Object {
@@ -404,9 +408,18 @@ test("cleanup diagnostic command collects matching Defender exclusions with an e
 
 test.skipIf(process.platform !== "win32")(
   "cleanup evidence script queries processes and probes bin files through PowerShell",
-  () => {
-    const root = mkdtempSync(join(tmpdir(), "forge-cleanup-evidence-"));
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-cleanup-evidence-[_%']-"));
+    const child = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)", root],
+      {
+        stdio: "ignore",
+        windowsHide: true,
+      },
+    );
     try {
+      await once(child, "spawn");
       const bin = join(root, "bin");
       mkdirSync(bin);
       writeFileSync(join(bin, "probe.txt"), "Cleanup evidence fixture.\n");
@@ -425,6 +438,10 @@ test.skipIf(process.platform !== "win32")(
       expect(result.status).toBe(0);
       const evidence = JSON.parse(result.stdout) as CleanupEvidence;
       expect(Array.isArray(evidence.processes)).toBe(true);
+      const holder = evidence.processes.find(
+        (entry) => entry.ProcessId === child.pid,
+      );
+      expect(holder?.CommandLine).toContain(root);
       expect(Array.isArray(evidence.files)).toBe(true);
       expect(evidence.files.map((file) => file.name).sort()).toEqual(names);
       for (const file of evidence.files)
@@ -433,6 +450,10 @@ test.skipIf(process.platform !== "win32")(
       expect(evidence.processQueryError).toBeUndefined();
       expect(evidence.filesQueryError).toBeUndefined();
     } finally {
+      if (child.pid && child.exitCode === null) {
+        child.kill();
+        await once(child, "exit");
+      }
       rmSync(root, { recursive: true, force: true });
     }
   },
@@ -524,6 +545,7 @@ if (process.platform === "win32") {
         expect(options.env?.FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT).toBe(root);
         for (const fragment of [
           "Get-CimInstance Win32_Process -ErrorAction Stop",
+          "-Filter $filter",
           "$_.ExecutablePath.IndexOf($root, [StringComparison]::OrdinalIgnoreCase)",
           "$_.CommandLine.IndexOf($root, [StringComparison]::OrdinalIgnoreCase)",
           "$_.CommandLine.Substring(0, [Math]::Min(300, $_.CommandLine.Length))",
