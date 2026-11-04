@@ -62,7 +62,12 @@ import { version } from "../version.ts";
 import { withCheckRunBudget } from "./check-budget.ts";
 import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
-import { blockCapture, resolveBlock, sourceFor } from "./capture.ts";
+import {
+  blockCapture,
+  resolveBlock,
+  resolveConfiguredBlock,
+  sourceFor,
+} from "./capture.ts";
 import { firstPartyBlocks } from "./first-party.ts";
 import {
   configCandidates,
@@ -270,7 +275,7 @@ export async function createAssembly(
         try {
           // Only a builtin source reads the installed package's own block folder (resolveBlock).
           found = captureBlock(
-            resolveBlock(root, source),
+            resolveConfiguredBlock(root, source),
             blockCapture,
             undefined,
             "builtin" in source,
@@ -756,7 +761,9 @@ export async function createAssembly(
         return sources.some((source) => {
           try {
             // Read the declaration even if capture failed on an entry or schema.
-            const handle = blockCapture.open(resolveBlock(root, source));
+            const handle = blockCapture.open(
+              resolveConfiguredBlock(root, source),
+            );
             const manifest = validateBlockManifest(
               JSON.parse(
                 new TextDecoder().decode(
@@ -1158,7 +1165,9 @@ export async function createAssembly(
             const spec = String(input.path);
             const source = sourceFor(spec);
             const block = captureBlock(
-              resolveBlock(root, source),
+              request.op === "block.add"
+                ? resolveConfiguredBlock(root, source)
+                : resolveBlock(root, source),
               blockCapture,
             );
             const name = block.manifest.id.split("/").at(-1)!;
