@@ -141,7 +141,10 @@ export function removeEmptyParents(
   }
 }
 
-export function nodeConfigFiles(root: string): ConfigFiles {
+export function nodeConfigFiles(
+  root: string,
+  options: { beforeOpen?: () => void } = {},
+): ConfigFiles {
   return {
     read(
       path,
@@ -151,7 +154,9 @@ export function nodeConfigFiles(root: string): ConfigFiles {
     ) {
       let fd: number;
       try {
-        fd = openSync(resolveIn(root, path, "refuse"), "r");
+        const target = resolveIn(root, path, "refuse");
+        options.beforeOpen?.();
+        fd = openSync(target, "r");
       } catch (error) {
         if (errorCode(error) === "ENOENT") return undefined;
         throw error;
