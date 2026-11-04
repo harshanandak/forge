@@ -1867,6 +1867,7 @@ module.exports = {
                   return destinations.slice(0, group.length);
                 });
           let retired = 0;
+          const verified: StateRecord[] = [];
           if (placed) {
             const tombstones: BatchEntry[] = [];
             for (const [i, note] of group.entries()) {
@@ -1887,9 +1888,12 @@ module.exports = {
               if (
                 !settled ||
                 !("at" in settled) ||
-                idIn(target, settled.at) !== placed[i]
+                idIn(target, settled.at) !== placed[i] ||
+                canonical(current?.value) !==
+                  canonical(moveCopy(source, note.record, note.value, note.id))
               )
                 break;
+              verified.push(current!);
               tombstones.push({
                 key: note.record.key,
                 value: { ...TOMBSTONE, movedTo: placed[i] },
@@ -1928,17 +1932,35 @@ module.exports = {
                       id: note.id,
                       to: "project",
                       expectRevision: note.record.revision,
+                      keep: true,
                     },
                     services,
                   })) as { to?: string }
                 ).to
               : placed[i];
             const ref = to === undefined ? undefined : parseRef(to);
-            const destination =
-              ref?.level === "project" &&
-              target.prefix === `project/${ref.project}`
+            // Reuse the pre-retirement read for the committed prefix so reporting cannot stop midway.
+            const destination = !single
+              ? verified[i]
+              : ref?.level === "project" &&
+                  target.prefix === `project/${ref.project}`
                 ? target.state.get(noteKey(ref.number))
                 : undefined;
+            if ((destination?.value as NoteValue | undefined)?.deleted === true)
+              fail(
+                "TRANSFER_CONFLICT",
+                `${to} was forgotten after copying ${note.id}`,
+              );
+            if (
+              single &&
+              canonical(destination?.value) ===
+                canonical(moveCopy(source, note.record, note.value, note.id))
+            )
+              source.state.put(
+                note.record.key,
+                { ...TOMBSTONE, movedTo: to },
+                { expectRevision: note.record.revision },
+              );
             const tombstone = source.state.get(note.record.key)?.value as
               NoteValue | undefined;
             const value = destination?.value as NoteValue | undefined;
