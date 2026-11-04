@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { cleanupAttribution } from "./cleanup-attribution.ts";
 
 // Keep immutable Git seeds outside the per-test roots removed by afterEach.
 export class RepositoryFixtures<T> {
@@ -22,7 +23,9 @@ export class RepositoryFixtures<T> {
   constructor() {
     afterAll(() => {
       for (const seed of this.seeds.values())
-        rmSync(seed.directory, { recursive: true, force: true });
+        cleanupAttribution(seed.directory, () =>
+          rmSync(seed.directory, { recursive: true, force: true }),
+        );
     });
   }
 

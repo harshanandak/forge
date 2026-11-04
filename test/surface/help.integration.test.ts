@@ -4,6 +4,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { environmentWithoutBun } from "../../tools/pack-smoke/environment.ts";
+import { cleanupAttribution } from "../tools/cleanup-attribution.ts";
 
 test("built CLI help alias matches --help on Node without Bun or stores", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-help-alias-"));
@@ -47,6 +48,8 @@ test("built CLI help alias matches --help on Node without Bun or stores", () => 
     }
     expect(readdirSync(root)).toEqual(["bin"]);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanupAttribution(root, () =>
+      rmSync(root, { recursive: true, force: true }),
+    );
   }
 }, 60_000);

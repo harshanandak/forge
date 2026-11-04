@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
+import { cleanupAttribution } from "../../tools/cleanup-attribution.ts";
 import {
   counterfactuals,
   packedCoverage,
@@ -176,7 +177,7 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
               }),
             );
           } finally {
-            writeFileSync(path, original);
+            cleanupAttribution(isolated, () => writeFileSync(path, original));
           }
         }
       }),

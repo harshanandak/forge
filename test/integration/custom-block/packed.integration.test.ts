@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { packedConsumer } from "../packed-consumer.ts";
 import { environmentWithoutBun } from "../../../tools/pack-smoke/environment.ts";
+import { cleanupAttribution } from "../../tools/cleanup-attribution.ts";
 
 test("the installed guide runs the shipped block and explains three manifest mistakes", () => {
   const scratch = mkdtempSync(join(tmpdir(), "forge-author-"));
@@ -28,6 +29,8 @@ test("the installed guide runs the shipped block and explains three manifest mis
     console.log(result.stdout.trim());
     expect(result.stdout).toContain("CUSTOM_BLOCK_JOURNEY_PASS");
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    cleanupAttribution(scratch, () =>
+      rmSync(scratch, { recursive: true, force: true }),
+    );
   }
 }, 150_000);
