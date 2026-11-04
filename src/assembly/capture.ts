@@ -1,6 +1,6 @@
-﻿import { existsSync } from "node:fs";
+﻿import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { nodeFileCapture } from "../adapters/node-runtime/capture.ts";
 import type { FileCapturePort } from "../core/catalog/index.ts";
 import type { BlockSource } from "../generated/types.ts";
@@ -29,6 +29,36 @@ export const blockCapture: FileCapturePort = {
     };
   },
 };
+export function resolveConfiguredBlock(
+  root: string,
+  source: BlockSource,
+): string {
+  if (!("path" in source)) return resolveBlock(root, source);
+  const realRoot = realpathSync.native(root);
+  const path = resolve(root, source.path);
+  let folder: string;
+  try {
+    folder = realpathSync.native(path);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error.code === "ENOENT" || error.code === "ENOTDIR")
+    )
+      return path;
+    throw error;
+  }
+  // node:path.relative compares case-insensitively on Windows.
+  const from = relative(realRoot, folder);
+  if (from === ".." || from.startsWith(`..${sep}`) || isAbsolute(from))
+    refuse(
+      "INPUT_INVALID",
+      `Block source ${JSON.stringify(source.path)} resolves outside the project`,
+    );
+  return folder;
+}
+
 export function resolveBlock(root: string, source: BlockSource): string {
   if ("path" in source) return resolve(root, source.path);
   if ("package" in source) {
