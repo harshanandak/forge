@@ -1868,8 +1868,8 @@ module.exports = {
                 });
           let retired = 0;
           const verified: StateRecord[] = [];
+          const tombstones: BatchEntry[] = [];
           if (placed) {
-            const tombstones: BatchEntry[] = [];
             for (const [i, note] of group.entries()) {
               const checked = Date.now();
               const recorded = target.state.get(`${TRANSFER_PREFIX}${note.id}`)
@@ -1921,7 +1921,7 @@ module.exports = {
             failedNote = note;
             const noteStarted = Date.now();
             const single = !placed || i >= retired;
-            if (single && affordable(reserveMs) === 0) {
+            if (single && (stopped || affordable(reserveMs) === 0)) {
               deferred = true;
               break;
             }
@@ -1932,7 +1932,6 @@ module.exports = {
                       id: note.id,
                       to: "project",
                       expectRevision: note.record.revision,
-                      keep: true,
                     },
                     services,
                   })) as { to?: string }
@@ -1946,22 +1945,15 @@ module.exports = {
                   target.prefix === `project/${ref.project}`
                 ? target.state.get(noteKey(ref.number))
                 : undefined;
-            if ((destination?.value as NoteValue | undefined)?.deleted === true)
-              fail(
-                "TRANSFER_CONFLICT",
-                `${to} was forgotten after copying ${note.id}`,
-              );
+            const observed = source.state.get(note.record.key);
+            const committed = single ? undefined : tombstones[i];
             if (
-              single &&
-              canonical(destination?.value) ===
-                canonical(moveCopy(source, note.record, note.value, note.id))
+              committed &&
+              (observed?.revision !== committed.expectRevision + 1 ||
+                canonical(observed.value) !== canonical(committed.value))
             )
-              source.state.put(
-                note.record.key,
-                { ...TOMBSTONE, movedTo: to },
-                { expectRevision: note.record.revision },
-              );
-            const tombstone = source.state.get(note.record.key)?.value as
+              stopped ??= { id: note.id, code: "VERIFY_FAILED" };
+            const tombstone = (committed ?? observed)?.value as
               NoteValue | undefined;
             const value = destination?.value as NoteValue | undefined;
             if (
