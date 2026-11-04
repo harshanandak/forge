@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -140,7 +141,15 @@ for (const [label, mutate, sentences] of [
     );
     assert.equal(envelope.error.code, "INPUT_INVALID");
     const message = envelope.error.message;
-    assert.ok(message.includes(manifestPath.replaceAll("\\", "/")));
+    // Check preserves the caller's path; add captures the canonical folder.
+    const expectedManifestPath =
+      verb === "add"
+        ? join(realpathSync.native(dirname(manifestPath)), "forge.block.json")
+        : manifestPath;
+    assert.equal(
+      message.split("\n")[0],
+      `Invalid input for block manifest ${expectedManifestPath.replaceAll("\\", "/")}:`,
+    );
     assert.deepEqual(message.split("\n").slice(1), sentences);
     console.log(`${label} (${verb}): ${message}`);
   }
