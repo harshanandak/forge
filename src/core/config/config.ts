@@ -365,7 +365,7 @@ export function planBytes(
     if (!hasIn(current.document, path.slice(0, 2)))
       setIn(explicit, path, getIn(next, path));
   }
-  checkDocument(next);
+  checkDocument(next, repair);
   const proposed = next as unknown as ConfigDocument;
   const manifests = new Map<string, BlockManifest>();
   if (env.blockManifest !== undefined)
