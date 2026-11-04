@@ -273,7 +273,6 @@ test("rendered loop keeps adopted decision titles with the pagination rules", as
 
 test.each([
   ["forge-build", "<slice>", "<role>"],
-  ["forge-intake", "<intent>", "<role>"],
   ["forge-review", "<slice>", "review"],
 ])(
   "%s counts dispatch calls without shell-sensitive JSON",
@@ -294,7 +293,7 @@ test.each([
   30_000,
 );
 
-test.each(["forge-intake", "forge-review"])(
+test.each(["forge-review"])(
   "%s passes the returned call timebox and deadline to its subagent",
   async (name) => {
     await withDelivery(async (root, call, lint) => {
@@ -418,21 +417,6 @@ test("performance PR handoff scopes measured gains and regression guards", async
       ),
     ).toBe(text);
   });
-}, 30_000);
-
-test("intake counts its routed call before dispatch", () => {
-  const text = readFileSync(
-    join(repo, "templates/delivery/skills/forge-intake/SKILL.md"),
-    "utf8",
-  );
-  expect(text).toContain("forge issue call");
-  expect(text).toContain("LIMIT_REACHED");
-  expect(text).toContain("intake's dispatch rules");
-  expect(text).toContain("Before each dispatch, run `forge issue call");
-  expect(text).toContain("Retry REVISION_CONFLICT");
-  expect(text.indexOf("intake's dispatch rules")).toBeGreaterThan(
-    text.indexOf("Retry REVISION_CONFLICT"),
-  );
 }, 30_000);
 
 test("every harness wake reads the shared verdict and the owning session holds watches", async () => {
@@ -828,33 +812,6 @@ test("forge-cut replaces marked slice copies while keeping user notes in both ad
     expect(await call("skills.sync", { check: true })).toMatchObject({
       ok: true,
     });
-  });
-}, 30_000);
-
-test("intake prototypes answer a named question and report evidence on the intent issue", async () => {
-  await withDelivery(async (root, call) => {
-    await call("skills.sync");
-    const intake = readFileSync(join(root, rendered("forge-intake")), "utf8");
-    for (const rule of [
-      "only running code can answer",
-      "Name the question first",
-      "one session",
-      "300 lines",
-      "prototype/<name>",
-      "scratch folder",
-      "no tests or polish",
-      "verdict",
-      "output, timing or screenshot",
-      "branch pointer",
-      "comment on the intent issue",
-      "validated snippet",
-      "never merges",
-      "`forge-cut`",
-    ])
-      expect(intake).toContain(rule);
-    const credits = readFileSync(join(repo, "CREDITS"), "utf8");
-    for (const source of ["to-tickets", "prototype"])
-      expect(credits).toContain(`skills/engineering/${source}`);
   });
 }, 30_000);
 

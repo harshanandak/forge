@@ -1,5 +1,5 @@
 // [integration] Real git worktrees and subprocesses; Forge and Codex are PATH fixtures.
-import { afterEach, expect, setDefaultTimeout } from "bun:test";
+import { afterAll, afterEach, expect, setDefaultTimeout } from "bun:test";
 import { test as runTest } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -40,6 +40,7 @@ const sections = [
 ];
 const roots: string[] = [];
 let childLaunches = 0;
+let avoidedIssueChildren = 0;
 const caseNames: string[] = [];
 type Case = [name: string, body: () => void | Promise<void>];
 function register(run: (...args: Case) => unknown) {
@@ -70,8 +71,19 @@ async function withEnvironment<T>(
   }
 }
 afterEach(() => {
-  for (const root of roots.splice(0))
+  for (const root of roots.splice(0)) {
+    const calls = join(root, "issue-calls");
+    if (existsSync(calls))
+      avoidedIssueChildren += readFileSync(calls, "utf8")
+        .trim()
+        .split("\n").length;
     rmSync(root, { recursive: true, force: true });
+  }
+});
+afterAll(() => {
+  console.info(
+    `lane-run fixture: avoided ${avoidedIssueChildren} issue CLI children`,
+  );
 });
 type Verdict = {
   verdict: string;
@@ -142,7 +154,7 @@ const mode=readFileSync(join(root,'mode'),'utf8');
 writeFileSync(join(root,'harness-pid'),String(process.pid));
 if(mode==='capacity'||mode==='limit')console.log('session id: fake-session');else console.log(JSON.stringify({type:'thread.started',thread_id:'fake-session'}));
 if(mode==='limit'||(mode==='capacity'&&count===0)){console.log('Selected model is at capacity');process.exit(1)}
-if(mode==='auto-slow')await new Promise(done=>setTimeout(done,3000));
+if(mode==='auto-slow')while(!existsSync(join(root,'finish')))await new Promise(done=>setTimeout(done,10));
 if(mode==='auto-hold'&&args[args.indexOf('-m')+1]==='tester')await new Promise(()=>setInterval(()=>{},1000));
 const flag=args.findIndex(a=>a==='--output-last-message'||a==='-o');if(flag<0)process.exit(8);
 if(mode.startsWith('auto')){
@@ -254,6 +266,24 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
           `## ${section}\nConcrete ${section.toLowerCase()} evidence.\n`,
       )
       .join("\n"),
+  );
+  const autoScript = join(root, "auto-fixture.ts");
+  // Keep CLI isolation and real Git/harness children; only the canned issue lookup
+  // needs no shell and Node process for every step of an ordinary auto chain.
+  writeFileSync(
+    autoScript,
+    String.raw`import {mock} from 'bun:test';
+import {runCommand} from ${JSON.stringify(resolve(import.meta.dirname, "../../tools/run-command.ts"))};
+import {scriptFixture} from ${JSON.stringify(resolve(import.meta.dirname, "../script-fixture.ts"))};
+import {appendFileSync} from 'node:fs';
+const issue=scriptFixture(${JSON.stringify(forge)}),nativeRunCommand=runCommand;
+mock.module(${JSON.stringify(resolve(import.meta.dirname, "../../tools/run-command.ts"))},()=>({runCommand:(command,args,options)=>{
+ if(command!=='forge')return nativeRunCommand(command,args,options);
+ const result=issue('',args,options.env??process.env,options.cwd??process.cwd());
+ appendFileSync(${JSON.stringify(join(root, "issue-calls"))},'lookup\n');
+ return result;
+}}));
+await import(${JSON.stringify(script)});`,
   );
   function run(args: string[], cwd = caller, entry = script) {
     childLaunches++;
@@ -399,6 +429,7 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
     direct,
     git,
     env,
+    autoScript,
   };
 }
 function expectModel(attempt: Attempt, model: string) {
@@ -1149,7 +1180,12 @@ function autoFixture(mode = "auto-chain") {
     config = config.replace("model: fixture-model", `model: ${role}`);
   writeFileSync(f.config, config);
   writeFileSync(join(f.root, "mode"), mode);
-  const auto = (extra: string[] = []) => f.run(["auto", "one", ...extra]);
+  const auto = (extra: string[] = []) =>
+    f.run(
+      ["auto", "one", ...extra],
+      f.caller,
+      extra.includes("--detach") ? script : f.autoScript,
+    );
   const roles = () => f.attempts().map((a) => a.args[a.args.indexOf("-m") + 1]);
   const head = () =>
     f.git(["rev-parse", "HEAD"], join(f.main, ".worktrees", "one"));
@@ -1241,6 +1277,7 @@ test("detached auto survives parent exit and refuses a second chain", async () =
     expect(JSON.parse(before) as unknown).toMatchObject({ verdict: "started" });
     f.run(["list"]);
     expect(readFileSync(record, "utf8")).toBe(before);
+    writeFileSync(join(f.root, "finish"), "continue");
     const deadline = Date.now() + 20_000;
     while (
       !readFileSync(log, "utf8").includes('"outcome":"ready"') &&
