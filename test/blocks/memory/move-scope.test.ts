@@ -697,6 +697,145 @@ test("scope batch retires notes in order up to a concurrent source edit and resu
   }
 }, 30_000);
 
+function expectReportedRetirements(
+  device: ReturnType<typeof memoryState>,
+  project: ReturnType<typeof memoryState>,
+  batches: readonly Batch[],
+) {
+  const sources = device.list("note/");
+  const copies = project.list("note/");
+  const retired = sources.flatMap((record) => {
+    const value = record.value as { deleted?: boolean; movedTo?: string };
+    return value.deleted === true &&
+      value.movedTo?.startsWith(`project/${projectId}/`)
+      ? [
+          {
+            id: `device/note-${Number(record.key.slice(5))}`,
+            to: value.movedTo,
+          },
+        ]
+      : [];
+  });
+  const byId = (a: { id: string }, b: { id: string }) =>
+    a.id.localeCompare(b.id);
+  expect(batches.flatMap((batch) => batch.moved).sort(byId)).toEqual(
+    retired.sort(byId),
+  );
+  for (const source of sources) {
+    const id = `device/note-${Number(source.key.slice(5))}`;
+    expect(
+      copies.filter((copy) => (copy.value as { from?: string }).from === id),
+    ).toHaveLength(1);
+  }
+}
+
+test("scope reports an edited existing copy after retiring its source and resumes without duplicates", async () => {
+  const { move, call, device, project } = await setup(5);
+  const copied = (await call("memory.move", {
+    id: "device/note-2",
+    to: "project",
+    expectRevision: 2,
+    keep: true,
+  })) as { to: string };
+  await call("memory.add", {
+    id: copied.to,
+    expectRevision: 1,
+    text: "edited at destination",
+  });
+  const first = await move();
+  expect(first.moved.map((pair) => pair.id)).toEqual([
+    "device/note-1",
+    "device/note-2",
+  ]);
+  expect(first).toMatchObject({
+    stopped: { id: "device/note-2", code: "VERIFY_FAILED" },
+    complete: false,
+  });
+  const second = await move();
+  expect(second.moved.map((pair) => pair.id)).toEqual([
+    "device/note-3",
+    "device/note-4",
+    "device/note-5",
+  ]);
+  expect(second.complete).toBe(false);
+  expect(second.stopped).toBeUndefined();
+  const confirmation = await move();
+  expect(confirmation).toMatchObject({ moved: [], complete: true });
+  expect(confirmation.stopped).toBeUndefined();
+  expect(project.list("note/")).toHaveLength(5);
+  expect(await call("memory.show", { id: copied.to })).toMatchObject({
+    note: { text: { text: "edited at destination" } },
+  });
+  expectReportedRetirements(device, project, [first, second, confirmation]);
+}, 30_000);
+
+for (const fault of [
+  "edited copy",
+  "copy missing after retirement",
+  "source missing after retirement",
+  "copy missing before retirement",
+]) {
+  test(`scope reports every grouped retirement with ${fault}`, async () => {
+    const { move, device, project } = await setup(6);
+    const key = "note/000000003";
+    const sourceGet = device.get.bind(device);
+    const copyGet = project.get.bind(project);
+    if (fault === "source missing after retirement") {
+      device.get = (readKey) => {
+        const record = sourceGet(readKey);
+        return readKey === key && record && record.revision >= 3
+          ? undefined
+          : record;
+      };
+    } else {
+      project.get = (readKey) => {
+        const record = copyGet(readKey);
+        if (readKey !== key || !record) return record;
+        if (fault === "edited copy")
+          return {
+            ...record,
+            value: { ...(record.value as object), text: "edited copy" },
+          };
+        const source = sourceGet(key)?.value as { deleted?: boolean };
+        return fault === "copy missing before retirement" ||
+          source.deleted === true
+          ? undefined
+          : record;
+      };
+    }
+    const first = await move();
+    const beforeRetirement = fault === "copy missing before retirement";
+    expect(first.moved.map((pair) => pair.id)).toEqual(
+      Array.from(
+        { length: beforeRetirement ? 2 : 6 },
+        (_, i) => `device/note-${i + 1}`,
+      ),
+    );
+    expect(first).toMatchObject({
+      stopped: {
+        id: "device/note-3",
+        code: beforeRetirement ? "REVISION_CONFLICT" : "VERIFY_FAILED",
+      },
+      complete: false,
+    });
+    const batches = [first];
+    if (beforeRetirement) {
+      for (let n = 3; n <= 6; n += 1)
+        expect(sourceGet(`note/${String(n).padStart(9, "0")}`)).toMatchObject({
+          revision: 2,
+          value: { text: `new ${n}` },
+        });
+    } else {
+      const confirmation = await move();
+      expect(confirmation).toMatchObject({ moved: [], complete: true });
+      expect(confirmation.stopped).toBeUndefined();
+      batches.push(confirmation);
+    }
+    expect(project.list("note/")).toHaveLength(6);
+    expectReportedRetirements(device, project, batches);
+  }, 30_000);
+}
+
 for (const sourceConflict of [true, false]) {
   test(`scope preserves a source whose copy was forgotten before ${sourceConflict ? "conflicting" : "conflict-free"} grouped retirement`, async () => {
     const { move, call, device, project } = await setup(6);
@@ -1429,9 +1568,14 @@ for (const field of ["text", "tags", "links", "scope", "movedTo"]) {
         },
       };
     };
-    await expect(move()).rejects.toThrow(
-      "VERIFY_FAILED: Scope move stopped at device/note-1",
-    );
+    const result = await move();
+    expect(result.moved).toEqual([
+      { id: "device/note-1", to: `project/${projectId}/note-1` },
+    ]);
+    expect(result).toMatchObject({
+      stopped: { id: "device/note-1", code: "VERIFY_FAILED" },
+      complete: false,
+    });
     expect(device.get("note/000000002")?.revision).toBe(2);
   }, 30_000);
 }
