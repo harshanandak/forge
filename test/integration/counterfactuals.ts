@@ -41,9 +41,9 @@ export const firstSliceMutations: readonly FirstSliceMutation[] = [
     evidence: "retry must re-sync the failed parent before opening storage",
   },
   {
-    file: "src/assembly/command.js",
+    file: "bin/forge.js",
     from: "process.stdout.write(`${version}\\n`);",
-    to: "await (await createLocalAssembly()).prepareTrust(); process.stdout.write(`${version}\\n`);",
+    to: "await (await (await import('../src/assembly/index.js')).createLocalAssembly()).prepareTrust(); process.stdout.write(`${version}\\n`);",
     mode: "bootstrap",
     fixture: "review-two",
     evidence: "version must not open local state",
