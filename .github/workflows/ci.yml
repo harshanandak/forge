@@ -175,6 +175,10 @@ jobs:
           path: ${{ steps.bun-cache.outputs.dir }}
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
+      - name: Start Windows runner trace
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: bun tools/ci/windows-trace.ts start
       - if: matrix.suite != 'pack'
         run: bun run check
       - name: Unit tests
@@ -195,6 +199,26 @@ jobs:
           STATE_NODE_LEG: ${{ matrix.node }}
           FORGE_PACK_INPUT: ${{ runner.temp }}/packed/forge-workflow.tgz
         run: bun run test:pack
+      - name: Stop and summarize Windows runner trace
+        id: trace
+        if: always() && runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          "shard=$('${{ matrix.shard || 'pack' }}'.Replace('/', '-'))" >> $env:GITHUB_OUTPUT
+          bun tools/ci/windows-trace.ts stop
+          if (Test-Path "$env:RUNNER_TEMP/windows-trace.jsonl.error") { Get-Content "$env:RUNNER_TEMP/windows-trace.jsonl.error" }
+      - name: Upload Windows runner trace
+        if: always() && runner.os == 'Windows'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-trace-node-${{ matrix.node }}-${{ matrix.suite }}-${{ steps.trace.outputs.shard || strategy.job-index }}
+          path: |
+            ${{ runner.temp }}/windows-trace.jsonl
+            ${{ runner.temp }}/windows-trace.jsonl.error
+          retention-days: 7
+          if-no-files-found: warn
 
   # The one required check. Skipped heavy legs pass only when the change is documentation-only.
   ci-gate:
