@@ -179,7 +179,7 @@ export async function checkoutScopeRoot(
 /**
  * The repository's name as its `origin` remote names it (`forge` for `.../forge.git`), so every
  * clone and worktree of one repository agrees whatever its folder is called. Undefined outside a
- * repository (no git is started then) or without an origin. Failed lookups throw.
+ * repository (no git is started then), without git or without an origin. Failed lookups throw.
  */
 export async function originRepositoryName(
   dir: string,
@@ -188,8 +188,7 @@ export async function originRepositoryName(
   if (nearestGitEntry(dir) === undefined) return undefined;
   const env = gitEnvironment(options.env);
   const found = options.process.resolve("git", env);
-  if (found.kind === "unavailable")
-    throw new GitCommandError("GIT_UNAVAILABLE", found.reason, null);
+  if (found.kind === "unavailable") return undefined;
   try {
     const result = await options.process.run(
       found,
@@ -202,20 +201,21 @@ export async function originRepositoryName(
       },
     );
     const { exitCode, stdout, stderr, timedOut, truncated, signal } = result;
-    const missing = exitCode === 1 && stdout === "" && stderr === "";
-    if (
-      timedOut ||
-      truncated ||
-      signal !== null ||
-      (exitCode !== 0 && !missing)
-    )
-      throw new GitCommandError("GIT_FAILED", "git origin failed", exitCode);
+    const detail = stderr.split(/\r?\n/, 1)[0]?.trim() || "git origin failed";
+    const transient = timedOut || truncated || signal !== null;
+    const missing = exitCode === 1 && stdout === "";
+    if (transient || (exitCode !== 0 && !missing))
+      throw new GitCommandError(
+        "GIT_FAILED",
+        detail,
+        transient ? null : exitCode,
+      );
     if (missing) return undefined;
     // A local checkout remote may point at its Git directory rather than its repository folder.
     const origin = firstLine(result.stdout).replace(/[/\\]\.git[/\\]*$/, "");
     // The last path segment of an https, ssh or scp-style URL, or of a local path.
     const name = /([^/\\:]+?)(?:\.git)?[/\\]*$/.exec(origin);
-    if (!name) throw new GitCommandError("GIT_FAILED", "Empty origin name", 0);
+    if (!name) throw new GitCommandError("GIT_FAILED", detail, 0);
     return name[1];
   } catch (error) {
     if (error instanceof Error && error.name === "ProcessSpawnError")

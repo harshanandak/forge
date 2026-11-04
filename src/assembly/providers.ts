@@ -245,7 +245,7 @@ function gitOptions(options: ProviderOptions) {
             throw new ForgeFailure({
               code: error.code,
               message: "Process capacity is unavailable for Git discovery",
-              retry: "safe",
+              retry: "never",
             });
           throw error;
         }
@@ -301,8 +301,8 @@ export async function idPrefixObservation(
     if (!(error instanceof GitCommandError)) throw error;
     throw new ForgeFailure({
       code: "UNAVAILABLE",
-      message: "Could not read the origin repository name; retry",
-      retry: "safe",
+      message: error.message.replace(/\p{Cc}/gu, "").trim(),
+      retry: error.exitCode === null ? "safe" : "never",
     });
   });
   const value = idPrefix(repository ?? basename(stateRoot));

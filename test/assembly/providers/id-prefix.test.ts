@@ -63,12 +63,19 @@ test.each([
   },
 );
 
-test("only a clean missing origin permits the folder fallback", async () => {
+test("a missing origin permits the folder fallback even with stderr warnings", async () => {
+  for (const stderr of ["", "config read failed"])
+    expect(
+      await originRepositoryName(root, {
+        ...options,
+        process: fakeProcess(["git"], () => ({ exitCode: 1, stderr })),
+      }),
+    ).toBeUndefined();
+});
+
+test("git missing permits the folder fallback", async () => {
   expect(
-    await originRepositoryName(root, {
-      ...options,
-      process: fakeProcess(["git"], () => ({ exitCode: 1 })),
-    }),
+    await originRepositoryName(root, { ...options, process: fakeProcess([]) }),
   ).toBeUndefined();
 });
 
@@ -76,7 +83,6 @@ test("failed origin queries never masquerade as a missing origin", async () => {
   for (const result of [
     { stdout: "" },
     { stdout: "/repos/alpha/.git", exitCode: 1 },
-    { exitCode: 1, stderr: "config read failed" },
     { exitCode: 2 },
     { stdout: "/repos/alpha/.git", truncated: true },
     { exitCode: null, timedOut: true },
@@ -90,9 +96,22 @@ test("failed origin queries never masquerade as a missing origin", async () => {
       }),
     ).rejects.toMatchObject({ name: "GitCommandError" });
   }
+});
+
+test("a permanent origin failure preserves its exit code and first stderr line", async () => {
   await expect(
-    originRepositoryName(root, { ...options, process: fakeProcess([]) }),
-  ).rejects.toMatchObject({ code: "GIT_UNAVAILABLE" });
+    originRepositoryName(root, {
+      ...options,
+      process: fakeProcess(["git"], () => ({
+        exitCode: 128,
+        stderr: "  fatal: dubious ownership  \r\nsecond line\n",
+      })),
+    }),
+  ).rejects.toMatchObject({
+    code: "GIT_FAILED",
+    exitCode: 128,
+    message: "fatal: dubious ownership",
+  });
 });
 
 test("origin spawn failures are reported and unrelated failures propagate", async () => {

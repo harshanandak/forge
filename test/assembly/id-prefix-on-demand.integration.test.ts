@@ -16,10 +16,22 @@ import { createAssembly, localCall } from "../../src/assembly/index.ts";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../src/assembly/first-party.ts";
 import * as processAdapter from "../../src/adapters/process/index.ts";
+import { result as processResult } from "../adapters/process/fake-process.ts";
 import { runCli } from "../../src/surface/cli.ts";
 import { done, stageBlock } from "../blocks/memory/lib.ts";
 
 setDefaultTimeout(30_000);
+
+type OriginFailure =
+  | boolean
+  | "missing-git"
+  | "missing-warning"
+  | "permanent"
+  | "unparsable"
+  | "timeout"
+  | "signal"
+  | "truncated"
+  | "spawn";
 
 async function fixture(workEnabled: boolean) {
   const folder = mkdtempSync(join(tmpdir(), "forge-prefix-on-demand-"));
@@ -79,7 +91,7 @@ async function fixture(workEnabled: boolean) {
   const capture = spyOn(blockCapture, "open").mockImplementation((path) =>
     open(stages.get(path) ?? path),
   );
-  let originFails = false;
+  let originFails: OriginFailure = false;
   const createProcess = processAdapter.createProcessPort;
   const processes = spyOn(
     processAdapter,
@@ -88,17 +100,58 @@ async function fixture(workEnabled: boolean) {
     const port = createProcess(options);
     return {
       ...port,
+      resolve(executable, env) {
+        if (originFails === "missing-git" && executable === "git")
+          return {
+            kind: "unavailable",
+            reason: "git missing",
+            remedy: "Install git",
+          };
+        return port.resolve(executable, env);
+      },
       run(executable, args, options) {
         if (
           originFails &&
           JSON.stringify(args) ===
             JSON.stringify(["config", "--get", "remote.origin.url"])
-        )
+        ) {
+          if (
+            originFails === "timeout" ||
+            originFails === "signal" ||
+            originFails === "truncated"
+          )
+            return Promise.resolve(
+              processResult({
+                exitCode: originFails === "truncated" ? 0 : null,
+                timedOut: originFails === "timeout",
+                truncated: originFails === "truncated",
+                signal: originFails === "signal" ? "SIGTERM" : null,
+              }),
+            );
+          if (originFails === "spawn")
+            throw new processAdapter.ProcessSpawnError(
+              "SPAWN_FAILED",
+              "git cannot start",
+            );
+          if (originFails === "unparsable")
+            return Promise.resolve(
+              processResult({
+                stdout: "///",
+                stderr: "  invalid origin\nsecond line",
+              }),
+            );
+          const script =
+            originFails === "permanent"
+              ? "process.stderr.write('  fatal: dubious\\u0007 ownership  \\r\\nsecond line\\n');process.exit(128)"
+              : originFails === "missing-warning"
+                ? "process.stderr.write('unrelated warning');process.exit(1)"
+                : "process.exit(2)";
           return port.run(
             { kind: "resolved", path: process.execPath },
-            ["-e", "process.exit(2)"],
+            ["-e", script],
             options,
           );
+        }
         return port.run(executable, args, options);
       },
     };
@@ -111,7 +164,7 @@ async function fixture(workEnabled: boolean) {
     });
     return {
       git,
-      failOrigin(value: boolean) {
+      failOrigin(value: OriginFailure) {
         originFails = value;
       },
       invoke(op: string, input: unknown = {}) {
@@ -212,49 +265,67 @@ test("memory-only searches skip origin queries while config inspection keeps the
   }
 });
 
-test("a missing origin uses the folder prefix and records the folder note", async () => {
-  const project = await fixture(true);
-  try {
-    project.git("remote", "remove", "origin");
-    const shown = (await project.call(["config", "show"])) as {
-      values: unknown[];
-    };
-    expect(shown.values).toContainEqual({
-      pointer: "/blocks/work/config/idPrefix",
-      value: "project",
-      layer: "derived",
-      origin: { detector: "project.detect", note: "the project folder's name" },
-      active: true,
-    });
-    expect(
-      await project.call(["issue", "create", "--title", "Folder"]),
-    ).toMatchObject({ id: "project-1" });
-  } finally {
-    await project.close();
-  }
-});
+test.each(["missing-origin", "missing-git", "missing-warning"] as const)(
+  "%s uses the folder prefix and records the folder note",
+  async (mode) => {
+    const project = await fixture(true);
+    try {
+      if (mode === "missing-origin") project.git("remote", "remove", "origin");
+      else project.failOrigin(mode);
+      const shown = (await project.call(["config", "show"])) as {
+        values: unknown[];
+      };
+      expect(shown.values).toContainEqual({
+        pointer: "/blocks/work/config/idPrefix",
+        value: "project",
+        layer: "derived",
+        origin: {
+          detector: "project.detect",
+          note: "the project folder's name",
+        },
+        active: true,
+      });
+      expect(
+        await project.call(["issue", "create", "--title", "Folder"]),
+      ).toMatchObject({ id: "project-1" });
+    } finally {
+      await project.close();
+    }
+  },
+);
 
-test("a failed origin lookup refuses before minting and a later call reads the origin", async () => {
-  const project = await fixture(true);
-  try {
-    project.failOrigin(true);
-    expect(
-      await project.invoke("issue.create", { title: "Must not mint" }),
-    ).toMatchObject({
-      ok: false,
-      error: { code: "UNAVAILABLE", retry: "safe" },
-    });
-    project.failOrigin(false);
-    expect(
-      await project.call(["issue", "create", "--title", "Recovered"]),
-    ).toMatchObject({ id: "alpha-1" });
-    expect(done(await project.invoke("issue.list"))).toMatchObject({
-      items: [{ id: "alpha-1", title: "Recovered" }],
-    });
-  } finally {
-    await project.close();
-  }
-});
+test.each([
+  { mode: true, retry: "never", message: "git origin failed" },
+  { mode: "permanent", retry: "never", message: "fatal: dubious ownership" },
+  { mode: "unparsable", retry: "never", message: "invalid origin" },
+  { mode: "timeout", retry: "safe", message: "git origin failed" },
+  { mode: "signal", retry: "safe", message: "git origin failed" },
+  { mode: "truncated", retry: "safe", message: "git origin failed" },
+  { mode: "spawn", retry: "safe", message: "git cannot start" },
+] satisfies { mode: OriginFailure; retry: string; message: string }[])(
+  "origin failure $mode refuses with retry $retry before minting and later recovers",
+  async ({ mode, retry, message }) => {
+    const project = await fixture(true);
+    try {
+      project.failOrigin(mode);
+      expect(
+        await project.invoke("issue.create", { title: "Must not mint" }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE", retry, message },
+      });
+      project.failOrigin(false);
+      expect(
+        await project.call(["issue", "create", "--title", "Recovered"]),
+      ).toMatchObject({ id: "alpha-1" });
+      expect(done(await project.invoke("issue.list"))).toMatchObject({
+        items: [{ id: "alpha-1", title: "Recovered" }],
+      });
+    } finally {
+      await project.close();
+    }
+  },
+);
 
 test("a device memory call still succeeds when origin lookup would fail", async () => {
   const project = await fixture(false);
