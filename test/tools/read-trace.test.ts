@@ -7,6 +7,38 @@ import {
 } from "../../tools/ci/read-trace.ts";
 
 setDefaultTimeout(1000);
+test("binary-log conversion retains system, service and physical-disk writers", async () => {
+  const csv = await Bun.file(
+    new URL("./fixtures/windows-writers.csv", import.meta.url),
+  ).text();
+  const ticks = [1, 2]
+    .map((second) =>
+      JSON.stringify({
+        timestamp: `2026-11-04T03:00:0${second}.500Z`,
+      }),
+    )
+    .join("\n");
+  const result = mergeCounterLog(ticks, csv);
+  const lines = result.jsonl.trim().split("\n");
+  expect(topIo(lines)).toEqual([
+    ["Process(_Total) IO Write Bytes/sec", 900],
+    ["PhysicalDisk(_Total) Disk Write Bytes/sec", 900],
+    ["PhysicalDisk(0 C:) Disk Write Bytes/sec", 800],
+    ["Process(System) IO Write Bytes/sec", 400],
+    ["Process(svchost) IO Write Bytes/sec", 200],
+    ["Process(svchost#12) IO Write Bytes/sec", 100],
+    ["PhysicalDisk(1 D:) Disk Write Bytes/sec", 100],
+  ]);
+  const row = JSON.parse(lines[1]!) as {
+    performanceCounters: Record<string, number | null>;
+  };
+  expect(
+    row.performanceCounters["\\\\host\\Process(System)\\IO Write Bytes/sec"],
+  ).toBeNull();
+  expect(
+    row.performanceCounters["\\\\host\\Process(svchost)\\IO Write Bytes/sec"],
+  ).toBeNull();
+});
 test("binary-log conversion retains a process started mid-trace", async () => {
   const csv = await Bun.file(
     new URL("./fixtures/windows-late-process.csv", import.meta.url),

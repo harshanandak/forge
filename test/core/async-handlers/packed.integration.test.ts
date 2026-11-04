@@ -22,6 +22,7 @@ import {
 import { asyncCounterfactuals } from "../../node-fixtures/async-handlers/counterfactuals.ts";
 import { runFixtures } from "../../integration/fixtures/run.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
+import { assertCounterfactualResult } from "../../integration/counterfactual-result.ts";
 const root = resolve(import.meta.dirname, "../../..");
 function run(
   command: string,
@@ -158,6 +159,10 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
           work,
           mutationEnv,
           15000,
+        );
+        assertCounterfactualResult(
+          result,
+          `${mutation.mode}: ${mutation.from}`,
         );
         const loaded = readFileSync(proof, "utf8")
           .trim()
