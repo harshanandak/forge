@@ -798,6 +798,58 @@ for (const fault of [
   }, 30_000);
 }
 
+test("scope reports the committed five-note prefix when source member 2 cannot be read back", async () => {
+  const { move, device, project } = await setup(6);
+  const get = device.get.bind(device);
+  const putMany = device.putMany.bind(device);
+  let committed = false;
+  let injecting = true;
+  let failedRead = false;
+  device.putMany = (entries) => {
+    expect(entries.map((entry) => entry.key)).toEqual(
+      Array.from(
+        { length: 5 },
+        (_, i) => `note/${String(i + 2).padStart(9, "0")}`,
+      ),
+    );
+    const result = putMany(entries);
+    committed = true;
+    return result;
+  };
+  device.get = (key) => {
+    if (committed && injecting && key === "note/000000003") {
+      failedRead = true;
+      return undefined;
+    }
+    return get(key);
+  };
+  const first = await move();
+  expect(committed).toBe(true);
+  expect(failedRead).toBe(true);
+  injecting = false;
+  const retry = await move();
+  const moved = [...first.moved, ...retry.moved];
+  for (let number = 1; number <= 6; number += 1) {
+    const key = `note/${String(number).padStart(9, "0")}`;
+    const to = `project/${projectId}/note-${number}`;
+    expect(get(key)?.value).toMatchObject({ deleted: true, movedTo: to });
+    expect(moved).toContainEqual({ id: `device/note-${number}`, to });
+    expect(project.get(key)?.value).toMatchObject({
+      text: `new ${number}`,
+      scope: "alpha",
+      tags: ["fact"],
+      links: ["device/note-1"],
+    });
+  }
+  expect(moved).toHaveLength(6);
+  expect(new Set(moved.map((note) => note.id)).size).toBe(6);
+  expect(first).toMatchObject({
+    complete: false,
+    stopped: { id: "device/note-3", code: "VERIFY_FAILED" },
+  });
+  expect(retry).toMatchObject({ moved: [], complete: true });
+}, 30_000);
+
 for (const sourceConflict of [true, false]) {
   test(`scope preserves a source whose copy was forgotten before ${sourceConflict ? "conflicting" : "conflict-free"} grouped retirement`, async () => {
     const { move, call, device, project } = await setup(6);
