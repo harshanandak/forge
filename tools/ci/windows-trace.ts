@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -82,6 +82,10 @@ try {
     let previous: number | null = null,
       previousCpu = process.cpuUsage(),
       cpuTotal = 0;
+    let processes: { name: string; pid: number }[] | null = null;
+    let processesAt: number | null = null,
+      processScanMs: number | null = null;
+    let scanning = false;
     const began = performance.now();
     try {
       // Only this process can accept its PID AND start-time token; never signal a reused PID.
@@ -89,18 +93,26 @@ try {
         const at = performance.now(),
           timestamp = new Date().toISOString();
         const gapMs = previous === null ? null : at - previous;
-        const listed = spawnSync(
-          system + "tasklist.exe",
-          ["/fo", "csv", "/nh"],
-          { encoding: "utf8", windowsHide: true, timeout: 1000 },
-        );
-        const processes =
-          listed.status === 0
-            ? [...listed.stdout.matchAll(processPattern)].map((m) => ({
-                name: m[1]!.toLowerCase(),
-                pid: Number(m[2]),
-              }))
-            : null;
+        if ((summary.samples + 1) % 5 === 0 && !scanning) {
+          scanning = true;
+          const started = performance.now();
+          execFile(
+            system + "tasklist.exe",
+            ["/fo", "csv", "/nh"],
+            { encoding: "utf8", windowsHide: true, timeout: 1000 },
+            (error, stdout) => {
+              processes = error
+                ? null
+                : [...stdout.matchAll(processPattern)].map((m) => ({
+                    name: m[1]!.toLowerCase(),
+                    pid: Number(m[2]),
+                  }));
+              processesAt = error ? null : performance.now();
+              processScanMs = performance.now() - started;
+              scanning = false;
+            },
+          );
+        }
         const processCounts = Object.fromEntries(
           names.map((n) => [
             n,
@@ -122,12 +134,15 @@ try {
           timestamp,
           gapMs,
           processes,
+          processesAgeMs: processesAt === null ? null : at - processesAt,
+          processScanMs,
           processCounts,
           ...metrics,
           samplerCpuMs,
           sampleDurationMs,
         };
         appendFileSync(trace, JSON.stringify(row) + "\n");
+        processScanMs = null;
         summary.samples++;
         if (summary.samples === 1 || (gapMs ?? 0) > summary.maxGapMs) {
           summary.maxGapMs = gapMs ?? 0;
