@@ -125,7 +125,7 @@ let cleanupAssembly:
   { root: string; path: string; failure?: Error } | undefined;
 let cleanupCompilations = 0;
 function cleanupNativeEnvironment(run: DiagnosticRunner = spawnSync) {
-  if (run !== spawnSync) return process.env;
+  if (run !== spawnSync && !cleanupAssembly) return process.env;
   if (!cleanupAssembly) {
     const root = mkdtempSync(join(tmpdir(), "forge-cleanup-native-"));
     cleanupAssembly = { root, path: join(root, "cleanup.dll") };
@@ -154,9 +154,10 @@ function cleanupNativeEnvironment(run: DiagnosticRunner = spawnSync) {
       const error = result.error as NodeJS.ErrnoException | undefined;
       if (error || result.status !== 0) {
         cleanupAssembly.failure = new Error(
-          `Cleanup diagnostic assembly compilation ${error?.code === "ETIMEDOUT" ? "timed out" : "failed"} after ${elapsedMs} ms; exit status ${result.status}; signal ${result.signal ?? "none"}; error code ${error?.code ?? "none"}; error ${error?.message ?? "none"}; stderr tail: ${result.stderr?.slice(-500) ?? ""}`,
+          `Cleanup diagnostic assembly compilation ${error?.code === "ETIMEDOUT" ? "timed out" : "failed"} after ${elapsedMs} ms; exit status ${result.status}; signal ${result.signal ?? "none"}; error code ${error?.code ?? "none"}; error ${error?.message ?? "none"}; stdout tail: ${result.stdout?.slice(-500) ?? ""}; stderr tail: ${result.stderr?.slice(-500) ?? ""}`,
           { cause: error },
         );
+        console.info(cleanupAssembly.failure.message);
       } else {
         console.info(`Cleanup diagnostic assembly compiled in ${elapsedMs} ms`);
       }
@@ -168,8 +169,12 @@ function cleanupNativeEnvironment(run: DiagnosticRunner = spawnSync) {
       );
     }
   }
-  if (cleanupAssembly.failure) throw cleanupAssembly.failure;
-  return { ...process.env, FORGE_LANE_CLOSE_ASSEMBLY: cleanupAssembly.path };
+  const { path, failure } = cleanupAssembly;
+  return {
+    ...process.env,
+    FORGE_LANE_CLOSE_ASSEMBLY: failure ? "" : path,
+    FORGE_LANE_CLOSE_ASSEMBLY_ERROR: failure?.message ?? "",
+  };
 }
 afterAll(() => {
   if (cleanupAssembly) {
@@ -183,6 +188,7 @@ const cleanupDiagnosticCommand = String.raw`
 $root = $env:FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT
 $data = @{ holders = @(); holderUnknown = $true; holderReason = 'Restart Manager returned no holders' }
 try {
+  if ($env:FORGE_LANE_CLOSE_ASSEMBLY_ERROR) { throw $env:FORGE_LANE_CLOSE_ASSEMBLY_ERROR }
   Add-Type -ErrorAction Stop -Path $env:FORGE_LANE_CLOSE_ASSEMBLY
   $data.holders = @([CleanupRestartManager]::Query($env:FORGE_LANE_CLOSE_DIAGNOSTIC_PATH) | ForEach-Object { @{ pid = $_.process.pid; name = $_.name; appType = $_.appType } })
   if ($data.holders.Count -gt 0) { $data.holderUnknown = $false; $data.Remove('holderReason') }
@@ -213,7 +219,8 @@ try {
 } catch { $data.processQueryError = 'Win32_Process query failed' }
 try {
   $data.gitExists = Test-Path -LiteralPath (Join-Path $bin 'git.exe') -PathType Leaf -ErrorAction Stop
-  if ([IO.Directory]::Exists($bin)) {
+  if ($env:FORGE_LANE_CLOSE_ASSEMBLY_ERROR) { $data.filesQueryError = $env:FORGE_LANE_CLOSE_ASSEMBLY_ERROR }
+  elseif ([IO.Directory]::Exists($bin)) {
     Add-Type -ErrorAction Stop -Path $env:FORGE_LANE_CLOSE_ASSEMBLY
     $data.files = @(Get-ChildItem -LiteralPath $bin -Force -ErrorAction Stop | ForEach-Object {
       @{ name = $_.Name; deleteOpenSucceeded = [CleanupDeleteProbe]::CanOpenForDelete($_.FullName) }
@@ -283,8 +290,10 @@ function diagnoseCleanup(
     if (evidence.filesQueryError)
       report.filesQueryError = evidence.filesQueryError;
   } catch {
-    report.processQueryError = "Cleanup evidence query did not complete";
-    report.filesQueryError = "Cleanup evidence query did not complete";
+    report.processQueryError =
+      cleanupAssembly?.failure?.message ??
+      "Cleanup evidence query did not complete";
+    report.filesQueryError = report.processQueryError;
   }
   try {
     try {
@@ -323,7 +332,8 @@ function diagnoseCleanup(
     if (!result.error && result.status === 0)
       report.host = JSON.parse(result.stdout) as unknown;
   } catch {
-    report.diagnosticError = "Cleanup diagnostic failed";
+    report.diagnosticError =
+      cleanupAssembly?.failure?.message ?? "Cleanup diagnostic failed";
   }
   report.elapsedMs = Date.now() - start;
   try {
@@ -462,6 +472,7 @@ test.skipIf(process.platform !== "win32")(
 test("cleanup diagnostic command registers the failing path and maps Restart Manager holders", () => {
   for (const script of [cleanupDiagnosticCommand, cleanupEvidenceCommand]) {
     expect(script).not.toContain("-TypeDefinition");
+    expect(script).toContain("$env:FORGE_LANE_CLOSE_ASSEMBLY_ERROR");
     expect(script).toContain(
       "Add-Type -ErrorAction Stop -Path $env:FORGE_LANE_CLOSE_ASSEMBLY",
     );
@@ -578,6 +589,42 @@ test.skipIf(process.platform !== "win32")(
 );
 
 if (process.platform === "win32") {
+  test("cached compile failure preserves independent queries and its reason", () => {
+    const previous = cleanupAssembly,
+      compilations = cleanupCompilations;
+    const reason = "compile timed out; ETIMEDOUT; stderr tail: compiler detail";
+    const evidence = {
+      processes: [{ ProcessId: 717 }],
+      gitExists: true,
+      filesQueryError: reason,
+    };
+    const host = {
+      holders: [],
+      holderUnknown: true,
+      holderReason: reason,
+      defender: { RealTimeProtectionEnabled: true },
+    };
+    cleanupAssembly = { root: "unused", path: "", failure: new Error(reason) };
+    const calls: string[] = [];
+    try {
+      const report = JSON.parse(
+        cleanupReport(diagnosticRoot(), "EBUSY", (command, args, options) => {
+          if (command !== "powershell.exe") return { status: 0, stdout: "" };
+          calls.push(args[3]!);
+          expect(options.env?.FORGE_LANE_CLOSE_ASSEMBLY).toBe("");
+          expect(options.env?.FORGE_LANE_CLOSE_ASSEMBLY_ERROR).toBe(reason);
+          const data = args[3] === cleanupEvidenceCommand ? evidence : host;
+          return { status: 0, stdout: JSON.stringify(data) };
+        }),
+      ) as CleanupReport;
+      expect(calls).toEqual([cleanupEvidenceCommand, cleanupDiagnosticCommand]);
+      expect(cleanupCompilations).toBe(compilations);
+      expect(report).toMatchObject({ ...evidence, host });
+    } finally {
+      cleanupAssembly = previous;
+    }
+  });
+
   test("cleanup diagnostic preserves holders and every Defender report field", () => {
     const root = diagnosticRoot();
     const host: CleanupReport["host"] = {
