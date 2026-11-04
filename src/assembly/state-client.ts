@@ -79,6 +79,8 @@ export function createStateClient(options: {
     now: () => Date.now(),
     get: (key: string) => owner?.get(namespace, key),
     list: (prefix?: string) => owner?.list(namespace, prefix) ?? [],
+    count: (prefix: string) => owner?.count(namespace, prefix) ?? 0,
+    maxNumber: (prefix: string) => owner?.maxNumber(namespace, prefix) ?? 0,
     listRange: (range: RangeOptions) =>
       owner?.listRange(namespace, range) ?? [],
     history: (options: HistoryOptions) =>

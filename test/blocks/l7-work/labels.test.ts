@@ -56,7 +56,17 @@ function services(items: readonly Item[]) {
   }));
   return {
     state: {
-      list: () => records,
+      count: (prefix: string) =>
+        records.filter((row) => row.key.startsWith(prefix)).length,
+      maxNumber: (prefix: string) =>
+        records
+          .filter((row) => row.key.startsWith(prefix))
+          .reduce(
+            (max, row) => Math.max(max, Number(/\d+$/.exec(row.key)?.[0] ?? 0)),
+            0,
+          ),
+      list: (prefix = "") =>
+        records.filter((row) => row.key.startsWith(prefix)),
       get: (key: string) => records.find((record) => record.key === key),
       lease: () => undefined,
       acquire: () => undefined,
