@@ -207,13 +207,16 @@ jobs:
         run: |
           "shard=$('${{ matrix.shard || 'pack' }}'.Replace('/', '-'))" >> $env:GITHUB_OUTPUT
           bun tools/ci/windows-trace.ts stop
+          if (Test-Path "$env:RUNNER_TEMP/windows-trace.jsonl.error") { Get-Content "$env:RUNNER_TEMP/windows-trace.jsonl.error" }
       - name: Upload Windows runner trace
         if: always() && runner.os == 'Windows'
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-trace-node-${{ matrix.node }}-${{ matrix.suite }}-${{ steps.trace.outputs.shard || strategy.job-index }}
-          path: ${{ runner.temp }}/windows-trace.jsonl
+          path: |
+            ${{ runner.temp }}/windows-trace.jsonl
+            ${{ runner.temp }}/windows-trace.jsonl.error
           retention-days: 7
           if-no-files-found: warn
 

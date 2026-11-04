@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 const [mode, trace = `${process.env.RUNNER_TEMP}/windows-trace.jsonl`] =
   process.argv.slice(2);
 const names = ["bun", "node", "powershell", "pwsh", "git", "cmd", "conhost"];
-const system = "C:/Windows/System32/";
+const system = `${process.env.SystemRoot ?? "C:/Windows"}/System32/`;
 const read = (suffix: string) =>
   Bun.file(trace + suffix)
     .text()
@@ -24,8 +24,12 @@ try {
       stdio: ["ignore", "ignore", "ignore"],
     }).unref();
   } else if (mode === "stop") {
-    const identity = await read(".pid");
-    if (!identity) throw new Error("No sampler");
+    let identity = await read(".pid");
+    for (let n = 0; n < 30 && !identity; n++) {
+      await Bun.sleep(100);
+      identity = await read(".pid");
+    }
+    if (!identity) throw new Error("sampler never started");
     await Bun.write(trace + ".stop", identity);
     for (let n = 0; n < 30 && (await read(".done")) !== identity; n++)
       await Bun.sleep(100);
@@ -152,6 +156,13 @@ try {
     await Bun.write(trace + ".summary", JSON.stringify(summary));
     await Bun.write(trace + ".done", identity);
   }
-} catch {
+} catch (error) {
+  try {
+    const { name, message } =
+      error instanceof Error ? error : new Error(String(error));
+    appendFileSync(trace + ".error", JSON.stringify({ name, message }) + "\n");
+  } catch {
+    // A full or unwritable temp directory must stay nonfatal.
+  }
   console.log("Runner trace: no trace (sampler unavailable or failed)");
 }
