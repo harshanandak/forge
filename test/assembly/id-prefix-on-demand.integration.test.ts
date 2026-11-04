@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../src/assembly/first-party.ts";
+import * as processAdapter from "../../src/adapters/process/index.ts";
 import { runCli } from "../../src/surface/cli.ts";
 import { done, stageBlock } from "../blocks/memory/lib.ts";
 
@@ -78,6 +79,30 @@ async function fixture(workEnabled: boolean) {
   const capture = spyOn(blockCapture, "open").mockImplementation((path) =>
     open(stages.get(path) ?? path),
   );
+  let originFails = false;
+  const createProcess = processAdapter.createProcessPort;
+  const processes = spyOn(
+    processAdapter,
+    "createProcessPort",
+  ).mockImplementation((options) => {
+    const port = createProcess(options);
+    return {
+      ...port,
+      run(executable, args, options) {
+        if (
+          originFails &&
+          JSON.stringify(args) ===
+            JSON.stringify(["config", "--get", "remote.origin.url"])
+        )
+          return port.run(
+            { kind: "resolved", path: process.execPath },
+            ["-e", "process.exit(2)"],
+            options,
+          );
+        return port.run(executable, args, options);
+      },
+    };
+  });
   try {
     const assembly = await createAssembly({
       root,
@@ -86,6 +111,9 @@ async function fixture(workEnabled: boolean) {
     });
     return {
       git,
+      failOrigin(value: boolean) {
+        originFails = value;
+      },
       invoke(op: string, input: unknown = {}) {
         const { caller, context } = localCall(assembly);
         return assembly.catalog.invoke({
@@ -123,12 +151,14 @@ async function fixture(workEnabled: boolean) {
         try {
           await assembly.close();
         } finally {
+          processes.mockRestore();
           capture.mockRestore();
           rmSync(folder, { recursive: true, force: true });
         }
       },
     };
   } catch (error) {
+    processes.mockRestore();
     capture.mockRestore();
     rmSync(folder, { recursive: true, force: true });
     throw error;
@@ -177,6 +207,64 @@ test("memory-only searches skip origin queries while config inspection keeps the
     });
     expect(shown.effective.blocks.work.config.idPrefix).toBe("alpha");
     expect(project.originQueries()).toBe(1);
+  } finally {
+    await project.close();
+  }
+});
+
+test("a missing origin uses the folder prefix and records the folder note", async () => {
+  const project = await fixture(true);
+  try {
+    project.git("remote", "remove", "origin");
+    const shown = (await project.call(["config", "show"])) as {
+      values: unknown[];
+    };
+    expect(shown.values).toContainEqual({
+      pointer: "/blocks/work/config/idPrefix",
+      value: "project",
+      layer: "derived",
+      origin: { detector: "project.detect", note: "the project folder's name" },
+      active: true,
+    });
+    expect(
+      await project.call(["issue", "create", "--title", "Folder"]),
+    ).toMatchObject({ id: "project-1" });
+  } finally {
+    await project.close();
+  }
+});
+
+test("a failed origin lookup refuses before minting and a later call reads the origin", async () => {
+  const project = await fixture(true);
+  try {
+    project.failOrigin(true);
+    expect(
+      await project.invoke("issue.create", { title: "Must not mint" }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "UNAVAILABLE", retry: "safe" },
+    });
+    project.failOrigin(false);
+    expect(
+      await project.call(["issue", "create", "--title", "Recovered"]),
+    ).toMatchObject({ id: "alpha-1" });
+    expect(done(await project.invoke("issue.list"))).toMatchObject({
+      items: [{ id: "alpha-1", title: "Recovered" }],
+    });
+  } finally {
+    await project.close();
+  }
+});
+
+test("a device memory call still succeeds when origin lookup would fail", async () => {
+  const project = await fixture(false);
+  try {
+    project.failOrigin(true);
+    project.resetTrace();
+    expect(
+      await project.call(["memory", "search", "heron", "--level", "device"]),
+    ).toMatchObject({ hits: [] });
+    expect(project.originQueries()).toBe(0);
   } finally {
     await project.close();
   }

@@ -63,23 +63,39 @@ test.each([
   },
 );
 
-test("unanswered origins remain unavailable and capacity errors propagate", async () => {
+test("only a clean missing origin permits the folder fallback", async () => {
+  expect(
+    await originRepositoryName(root, {
+      ...options,
+      process: fakeProcess(["git"], () => ({ exitCode: 1 })),
+    }),
+  ).toBeUndefined();
+});
+
+test("failed origin queries never masquerade as a missing origin", async () => {
   for (const result of [
     { stdout: "" },
     { stdout: "/repos/alpha/.git", exitCode: 1 },
+    { exitCode: 1, stderr: "config read failed" },
+    { exitCode: 2 },
     { stdout: "/repos/alpha/.git", truncated: true },
     { exitCode: null, timedOut: true },
+    { stdout: "/repos/alpha/.git", timedOut: true },
+    { stdout: "/repos/alpha/.git", signal: "SIGTERM" },
   ]) {
-    expect(
-      await originRepositoryName(root, {
+    await expect(
+      originRepositoryName(root, {
         ...options,
         process: fakeProcess(["git"], () => result),
       }),
-    ).toBeUndefined();
+    ).rejects.toMatchObject({ name: "GitCommandError" });
   }
-  expect(
-    await originRepositoryName(root, { ...options, process: fakeProcess([]) }),
-  ).toBeUndefined();
+  await expect(
+    originRepositoryName(root, { ...options, process: fakeProcess([]) }),
+  ).rejects.toMatchObject({ code: "GIT_UNAVAILABLE" });
+});
+
+test("origin spawn failures are reported and unrelated failures propagate", async () => {
   const spawnError = new Error("git cannot start");
   spawnError.name = "ProcessSpawnError";
   const capacityError = Object.assign(new Error("capacity exhausted"), {
@@ -92,7 +108,8 @@ test("unanswered origins remain unavailable and capacity errors propagate", asyn
         throw error;
       }),
     });
-    if (error === spawnError) expect(await read).toBeUndefined();
+    if (error === spawnError)
+      await expect(read).rejects.toMatchObject({ code: "GIT_FAILED" });
     else await expect(read).rejects.toBe(capacityError);
   }
 });
