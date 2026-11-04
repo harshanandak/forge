@@ -1,5 +1,5 @@
 // [integration] Catalog CLI/MCP parity and byte-for-byte store preservation on disposable stores.
-import { expect, test } from "bun:test";
+import { expect, test as bunTest } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { localCall } from "../../../src/assembly/index.ts";
@@ -9,9 +9,13 @@ import {
   blockSchema,
   done,
   openHarness,
+  memoryTimings,
   ownerApproval,
   type Harness,
 } from "./lib.ts";
+
+const test = (name: string, run: () => Promise<void>, timeout: number) =>
+  bunTest(name, () => memoryTimings(run), timeout);
 
 async function restore(
   h: Harness,

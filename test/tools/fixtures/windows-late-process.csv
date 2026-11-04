@@ -1,0 +1,4 @@
+"(PDH-CSV 4.0) (Test Standard Time)(-60)","\\host\Process(node#1)\IO Data Bytes/sec","\\host\Process(node#1)\ID Process","\\host\Process(node#1)\% Processor Time","\\host\PhysicalDisk(_Total)\Avg. Disk Queue Length","\\host\Processor(_Total)\% Processor Time","\\host\Memory\Available MBytes","\\host\PhysicalDisk(_Total)\% Disk Time","\\host\Process(typeperf)\% Processor Time"
+"11/04/2026 04:00:01.000","","","","1","30","8192","50","1"
+"11/04/2026 04:00:02.000","800","123","5","22","31","8192","80","1.5"
+"11/04/2026 04:00:03.000","900","123","6","12","32","8192","60","2"

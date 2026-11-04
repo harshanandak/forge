@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
-import { appendFileSync } from "node:fs";
-import { createInterface } from "node:readline";
+import { appendFileSync, renameSync } from "node:fs";
+import { promisify } from "node:util";
+import { mergeCounterLog } from "./read-trace.ts";
 
 const [mode, trace = `${process.env.RUNNER_TEMP}/windows-trace.jsonl`] =
   process.argv.slice(2);
@@ -10,7 +11,6 @@ const read = (suffix: string) =>
   Bun.file(trace + suffix)
     .text()
     .catch(() => null);
-const csv = (line: string) => line.slice(1, -1).split('","');
 const processPattern = new RegExp(
   `^"(${names.join("|")})\\.exe","(\\d+)"`,
   "gim",
@@ -35,17 +35,38 @@ try {
       await Bun.sleep(100);
     if ((await read(".done")) !== identity)
       throw new Error("Sampler did not stop");
+    const conversionStarted = performance.now();
+    await promisify(execFile)(
+      system + "relog.exe",
+      [trace + ".blg", "-f", "CSV", "-o", trace + ".csv", "-y"],
+      { windowsHide: true, timeout: 30000 },
+    );
+    const bytes = Buffer.from(await Bun.file(trace + ".csv").arrayBuffer());
+    const converted = mergeCounterLog(
+      await Bun.file(trace).text(),
+      bytes.toString(bytes[0] === 255 && bytes[1] === 254 ? "utf16le" : "utf8"),
+    );
+    await Bun.write(trace + ".converted", converted.jsonl);
+    renameSync(trace + ".converted", trace);
+    const summary = {
+      ...JSON.parse((await read(".summary"))!),
+      collectorCpuPercent: converted.collectorCpuPercent,
+      counterSamples: converted.samples,
+      conversionMs: performance.now() - conversionStarted,
+    } as Record<string, unknown>;
+    await Bun.write(trace + ".summary", JSON.stringify(summary));
     console.log(`Runner trace: ${await read(".summary")}`);
+    if (process.env.GITHUB_STEP_SUMMARY)
+      appendFileSync(
+        process.env.GITHUB_STEP_SUMMARY,
+        `Windows sampler cost: ${await read(".summary")}\n`,
+      );
   } else if (mode === "sample") {
     const identity = JSON.stringify({
       pid: process.pid,
       started: performance.timeOrigin,
     });
     await Bun.write(trace + ".pid", identity);
-    const keys =
-      "cpuPercent availableMemoryMB diskTimePercent diskQueueLength".split(" ");
-    let values: (number | null)[] = [],
-      updated = -Infinity;
     const counter = spawn(
       system + "typeperf.exe",
       [
@@ -53,22 +74,25 @@ try {
         "\\Memory\\Available MBytes",
         "\\PhysicalDisk(_Total)\\% Disk Time",
         "\\PhysicalDisk(_Total)\\Avg. Disk Queue Length",
+        ...["Avg. Disk sec/Read", "Avg. Disk sec/Write", "Disk Bytes/sec"].map(
+          (c) => `\\LogicalDisk(*)\\${c}`,
+        ),
+        ...["IO Data Bytes/sec", "% Processor Time", "ID Process"].map(
+          (c) => `\\Process(*)\\${c}`,
+        ),
+        "-f",
+        "BIN",
+        "-o",
+        trace + ".blg",
+        "-y",
         "-si",
         "1",
       ],
-      { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
+      { windowsHide: true, stdio: "ignore" },
     );
-    const clear = () => values.fill(null);
-    counter.on("error", clear).on("exit", clear);
-    createInterface({ input: counter.stdout }).on("line", (line) => {
-      if (!/^"\d/.test(line)) return; // Skip typeperf's header and diagnostics.
-      const fields = csv(line).slice(1);
-      if (fields.length !== 4) return;
-      values = fields.map((v) =>
-        v.trim() && Number.isFinite(+v) && +v >= 0 ? +v : null,
-      );
-      updated = performance.now();
-    });
+    const closed = new Promise<void>((resolve) =>
+      counter.on("close", () => resolve()).on("error", () => resolve()),
+    );
     const summary = {
       samples: 0,
       maxGapMs: 0,
@@ -124,12 +148,6 @@ try {
         previousCpu = process.cpuUsage();
         cpuTotal += samplerCpuMs;
         const sampleDurationMs = performance.now() - at;
-        const metrics = Object.fromEntries(
-          keys.map((k, i) => [
-            k,
-            performance.now() - updated < 2500 ? (values[i] ?? null) : null,
-          ]),
-        );
         const row = {
           timestamp,
           gapMs,
@@ -137,7 +155,6 @@ try {
           processesAgeMs: processesAt === null ? null : at - processesAt,
           processScanMs,
           processCounts,
-          ...metrics,
           samplerCpuMs,
           sampleDurationMs,
         };
@@ -165,6 +182,7 @@ try {
       }
     } finally {
       counter.kill();
+      await closed;
     }
     summary.samplerCpuPercent =
       (100 * cpuTotal) / Math.max(1, performance.now() - began);

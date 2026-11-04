@@ -1,3 +1,6 @@
+import { spyOn } from "bun:test";
+import { Database } from "bun:sqlite";
+
 import {
   cpSync,
   mkdirSync,
@@ -29,6 +32,35 @@ import type {
   ResultEnvelope,
   StateRecord,
 } from "../../../src/generated/types.ts";
+
+export async function memoryTimings(run: () => Promise<void>) {
+  const durations: string[] = [];
+  const exec = Object.getOwnPropertyDescriptor(Database.prototype, "exec")
+    ?.value as Database["exec"];
+  const spy = spyOn(Database.prototype, "exec").mockImplementation(function (
+    this: Database,
+    ...args: Parameters<typeof exec>
+  ) {
+    const started = performance.now();
+    try {
+      return exec.apply(this, args);
+    } finally {
+      durations.push(
+        `${args[0].split(/\s/)[0]}=${(performance.now() - started).toFixed(1)}ms`,
+      );
+    }
+  });
+  try {
+    await run();
+  } catch (cause) {
+    throw new Error(
+      `${String(cause)}; SQLite operations: ${durations.join(", ")}`,
+      { cause },
+    );
+  } finally {
+    spy.mockRestore();
+  }
+}
 
 const repo = resolve(import.meta.dirname, "../../..");
 const transpiler = new Bun.Transpiler({ loader: "ts" });
