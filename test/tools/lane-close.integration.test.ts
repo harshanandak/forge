@@ -130,6 +130,7 @@ function cleanupNativeEnvironment(run: DiagnosticRunner = spawnSync) {
     const root = mkdtempSync(join(tmpdir(), "forge-cleanup-native-"));
     cleanupAssembly = { root, path: join(root, "cleanup.dll") };
     cleanupCompilations += 1;
+    const started = performance.now();
     try {
       const result = spawnSync(
         "powershell.exe",
@@ -149,12 +150,21 @@ function cleanupNativeEnvironment(run: DiagnosticRunner = spawnSync) {
           },
         },
       );
-      if (result.error || result.status !== 0)
-        throw new Error("Cleanup diagnostic assembly compilation failed");
-    } catch {
+      const elapsedMs = Math.round(performance.now() - started);
+      const error = result.error as NodeJS.ErrnoException | undefined;
+      if (error || result.status !== 0) {
+        cleanupAssembly.failure = new Error(
+          `Cleanup diagnostic assembly compilation ${error?.code === "ETIMEDOUT" ? "timed out" : "failed"} after ${elapsedMs} ms; exit status ${result.status}; signal ${result.signal ?? "none"}; error code ${error?.code ?? "none"}; error ${error?.message ?? "none"}; stderr tail: ${result.stderr?.slice(-500) ?? ""}`,
+          { cause: error },
+        );
+      } else {
+        console.info(`Cleanup diagnostic assembly compiled in ${elapsedMs} ms`);
+      }
+    } catch (cause) {
       // Cache failure too: a diagnostic must not repeatedly invoke the compiler.
       cleanupAssembly.failure = new Error(
-        "Cleanup diagnostic assembly compilation failed",
+        `Cleanup diagnostic assembly compilation spawn threw after ${Math.round(performance.now() - started)} ms; error code ${(cause as NodeJS.ErrnoException)?.code ?? "none"}; ${String(cause)}`,
+        { cause },
       );
     }
   }
