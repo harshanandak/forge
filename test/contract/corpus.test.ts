@@ -92,6 +92,16 @@ const accept: readonly Case[] = [
     value: "forge/starter@0.1.0",
   },
   {
+    validator: "validateTemplateRef",
+    why: "template release version",
+    value: "forge/starter@1.0.0",
+  },
+  {
+    validator: "validateTemplateRef",
+    why: "template prerelease version",
+    value: "forge/starter@1.0.0-rc.1",
+  },
+  {
     validator: "validateRelativePath",
     why: "nested file",
     value: "schemas/bump.input.json",
@@ -218,6 +228,30 @@ const accept: readonly Case[] = [
 ];
 
 const refuse: readonly Case[] = [
+  {
+    validator: "validateTemplateRef",
+    why: "template prerelease starts with an empty identifier",
+    value: "forge/starter@1.0.0-.a",
+    refusedAt: "",
+  },
+  {
+    validator: "validateTemplateRef",
+    why: "template numeric prerelease has a leading zero",
+    value: "forge/starter@1.0.0-01",
+    refusedAt: "",
+  },
+  {
+    validator: "validateTemplateRef",
+    why: "template prerelease is empty",
+    value: "forge/starter@1.0.0-",
+    refusedAt: "",
+  },
+  {
+    validator: "validateTemplateRef",
+    why: "template build metadata remains unsupported",
+    value: "forge/starter@1.0.0+build.5",
+    refusedAt: "",
+  },
   {
     validator: "validateBlockId",
     why: "no publisher",
