@@ -12,7 +12,6 @@ const started = performance.now();
 const batch = powerShellBatch();
 afterAll(() => {
   if (process.platform !== "win32") return;
-  expect(batch.launches).toBe(1);
   console.log(
     `private-files: ${Math.round(performance.now() - started)} ms (study 2583.84 ms); PowerShell launches ${batch.launches} (was 1)`,
   );
@@ -51,6 +50,7 @@ test.skipIf(process.platform !== "win32")(
           [{ name: "private-file repair", command: command! }],
           20_000,
         );
+        expect(batch.launches).toBe(1);
         expect(repairs).toHaveLength(1);
         const repair = repairs[0]!;
         expect(repair.status, repair.stderr).toBe(0);

@@ -23,14 +23,18 @@ const quotes = ["'", "\u2018", "\u2019", "\u201a", "\u201b"];
 const batch = powerShellBatch();
 const started = performance.now();
 const roots: string[] = [];
-let checked = 0;
+const caseNames: string[] = [];
+function windowsTest(
+  name: string,
+  run: () => void | Promise<void>,
+  timeout = 30000,
+) {
+  caseNames.push(name);
+  test.skipIf(process.platform !== "win32")(name, run, timeout);
+}
 afterAll(() => {
   try {
     if (process.platform === "win32") {
-      expect(quotes).toHaveLength(5);
-      expect(roots).toHaveLength(5 * shells.length);
-      expect(checked).toBe(5 * shells.length);
-      expect(batch.launches).toBe(shells.length + 1);
       console.log(
         `private-repair: ${Math.round(performance.now() - started)} ms (study 4559.32 ms); PowerShell launches ${batch.launches} (was ${5 * shells.length + 1})`,
       );
@@ -39,7 +43,7 @@ afterAll(() => {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
   }
 });
-test.skipIf(process.platform !== "win32")(
+windowsTest(
   "borrowed folder refusal gives guidance without changing its tree or siblings",
   () => {
     const root = mkdtempSync(join(tmpdir(), "forge-repair-directory-"));
@@ -90,9 +94,10 @@ test.skipIf(process.platform !== "win32")(
     }
   },
 );
-test.skipIf(process.platform !== "win32")(
+windowsTest(
   "PowerShell timeout names the running command phase",
   async () => {
+    const launches = batch.launches;
     await expect(
       batch.run(
         "powershell.exe",
@@ -105,6 +110,7 @@ test.skipIf(process.platform !== "win32")(
     ).rejects.toThrow(
       /timeout; phase=command; case=deadline probe;.*spawn.*firstOutput.*commandStart.*exit/,
     );
+    expect(batch.launches - launches).toBe(1);
   },
   10000,
 );
@@ -141,13 +147,15 @@ for (const shell of shells) {
       };
     });
     expect(cases).toHaveLength(5);
+    const launches = batch.launches;
     const runs = await batch.run(shell, cases, 15000);
+    expect(batch.launches - launches).toBe(1);
     expect(runs).toHaveLength(cases.length);
     return cases.map((entry, index) => ({ ...entry, run: runs[index]! }));
   }
   let prepared: ReturnType<typeof prepare> | undefined;
   for (const [index, quote] of quotes.entries()) {
-    test.skipIf(process.platform !== "win32")(
+    windowsTest(
       `repair is literal and portable in ${shell} for quote U+${quote.charCodeAt(0).toString(16)}`,
       async () => {
         prepared ??= prepare();
@@ -161,8 +169,20 @@ for (const shell of shells) {
         expect(readFileSync(path, "utf8")).toBe("target");
         expect(native.read(sentinel)).toBe(sentinelAcl);
         expect(readFileSync(sentinel, "utf8")).toBe("sentinel");
-        checked += 1;
       },
     );
   }
 }
+expect(caseNames).toHaveLength(2 + 5 * shells.length);
+expect(caseNames.join("\n")).toBe(
+  [
+    "borrowed folder refusal gives guidance without changing its tree or siblings",
+    "PowerShell timeout names the running command phase",
+    ...shells.flatMap((shell) =>
+      ["27", "2018", "2019", "201a", "201b"].map(
+        (code) =>
+          `repair is literal and portable in ${shell} for quote U+${code}`,
+      ),
+    ),
+  ].join("\n"),
+);

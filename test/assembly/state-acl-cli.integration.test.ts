@@ -20,7 +20,6 @@ const started = performance.now();
 const batch = powerShellBatch();
 afterAll(() => {
   if (process.platform !== "win32") return;
-  expect(batch.launches).toBe(1);
   console.log(
     `state-acl-cli: ${Math.round(performance.now() - started)} ms (study 598.88 ms); PowerShell launches ${batch.launches} (was 1)`,
   );
@@ -159,6 +158,7 @@ test.skipIf(process.platform !== "win32")(
         [{ name: "CLI ACL repair", command }],
         15_000,
       );
+      expect(batch.launches).toBe(1);
       expect(repairs).toHaveLength(1);
       const repaired = repairs[0]!;
       expect(repaired.status, repaired.stderr).toBe(0);
