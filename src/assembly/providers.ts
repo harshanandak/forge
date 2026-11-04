@@ -9,6 +9,7 @@ import {
 import { createRunnerOutput } from "../adapters/runner-output/index.ts";
 import {
   checkoutScopeRoot as gitCheckoutScopeRoot,
+  GitCommandError,
   mainCheckoutPath,
   originRepositoryName,
 } from "../adapters/vcs-git/index.ts";
@@ -244,7 +245,7 @@ function gitOptions(options: ProviderOptions) {
             throw new ForgeFailure({
               code: error.code,
               message: "Process capacity is unavailable for Git discovery",
-              retry: "never",
+              retry: "safe",
             });
           throw error;
         }
@@ -293,7 +294,17 @@ export async function idPrefixObservation(
   stateRoot: string,
   options: ProviderOptions = {},
 ): Promise<readonly DetectionObservation[]> {
-  const repository = await originRepositoryName(root, gitOptions(options));
+  const repository = await originRepositoryName(
+    root,
+    gitOptions(options),
+  ).catch((error: unknown) => {
+    if (!(error instanceof GitCommandError)) throw error;
+    throw new ForgeFailure({
+      code: "UNAVAILABLE",
+      message: "Could not read the origin repository name; retry",
+      retry: "safe",
+    });
+  });
   const value = idPrefix(repository ?? basename(stateRoot));
   return value === undefined
     ? []
