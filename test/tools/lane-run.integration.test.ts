@@ -19,6 +19,7 @@ import { delimiter, join, resolve } from "node:path";
 
 import { laneRun, runClaude, runCodex } from "../../tools/lane-run.ts";
 import { scriptFixture } from "../script-fixture.ts";
+import { cliTopologyFixture } from "./cli-topology-fixture.ts";
 import { RepositoryFixtures } from "./lane-fixture.ts";
 
 setDefaultTimeout(60_000);
@@ -2768,34 +2769,72 @@ for (const reason of [
 test("list never locks idle history during 25 concurrent detached autos", async () => {
   const f = autoFixture("auto-clean");
   expect(f.auto().code).toBe(0);
+  const topology = cliTopologyFixture({ ...f, script });
   const helper = join(f.root, "slow-list-lock.ts"),
+    autoHelper = join(f.root, "auto-topology.ts"),
     marker = join(f.root, "list-lock-attempt");
   writeFileSync(
     helper,
-    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const result=native.renameSync(from,to);if(String(to).endsWith('forge-lane-one.lock')){native.writeFileSync(${JSON.stringify(marker)},'locked');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,500);}return result;}}));await import(${JSON.stringify(script)});`,
+    `${topology.setup}import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const result=native.renameSync(from,to);if(String(to).endsWith('forge-lane-one.lock')){native.writeFileSync(${JSON.stringify(marker)},'locked');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,500);}return result;}}));await import(${JSON.stringify(script)});`,
+  );
+  writeFileSync(
+    autoHelper,
+    `${topology.setup}await import(${JSON.stringify(script)});`,
   );
   let refusals = 0;
+  const detached: number[] = [];
   for (let i = 0; i < 25; i++) {
     const listing = f.launch(helper, false, ["list"]);
-    // The old list implementation holds its lock here; the fixed list finishes.
-    await Promise.race([
-      listing,
-      waitForProcess(
-        "list lock or exit",
-        () => existsSync(marker) || listing.child.exitCode !== null,
-      ),
-    ]);
-    const result = await f.launch(script, false, ["auto", "one", "--detach"]);
-    await listing;
-    if (result.code !== 0) refusals++;
-    else {
-      const { pid } = result.output as unknown as { pid: number };
-      await waitForProcess("auto exit", () => !alive(pid));
+    let competing: ReturnType<typeof f.launch> | undefined;
+    let detachedPid: number | undefined;
+    try {
+      // The old list implementation holds its lock here; the fixed list finishes.
+      await Promise.race([
+        listing,
+        waitForProcess(
+          "list lock or exit",
+          () => existsSync(marker) || listing.child.exitCode !== null,
+        ),
+      ]);
+      competing = f.launch(autoHelper, false, ["auto", "one", "--detach"]);
+      const result = await competing;
+      expect((await listing).code).toBe(0);
+      if (result.code !== 0) refusals++;
+      else {
+        const { pid } = result.output as unknown as { pid: number };
+        expect(pid).toBeGreaterThan(0);
+        detachedPid = pid;
+        detached.push(pid);
+        await waitForProcess("auto exit", () => !alive(pid));
+      }
+      rmSync(marker, { force: true });
+    } finally {
+      for (const launched of [listing, competing])
+        if (
+          launched?.child.pid &&
+          launched.child.exitCode === null &&
+          launched.child.signalCode === null
+        )
+          killFixture(launched.child.pid, launched === competing);
+      await Promise.allSettled(competing ? [listing, competing] : [listing]);
+      const orphan = detachedPid;
+      if (orphan && alive(orphan)) {
+        killFixture(orphan, true);
+        await waitForProcess("detached cleanup", () => !alive(orphan));
+      }
     }
-    rmSync(marker, { force: true });
   }
   expect(refusals).toBe(0);
   expect(existsSync(marker)).toBe(false);
+  expect(detached).toHaveLength(25);
+  expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
+  topology.verify();
+  const cachedCalls = readFileSync(topology.calls, "utf8")
+    .trim()
+    .split("\n").length;
+  console.info(
+    `list/auto fixture: kept 75 CLI processes; reused ${cachedCalls} topology reads with 4 setup and 4 verification Git children`,
+  );
 });
 
 for (const operation of ["reclaim", "rename"])
