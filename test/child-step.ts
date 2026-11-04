@@ -1,10 +1,22 @@
 import { spawn } from "node:child_process";
+import type { EventEmitter } from "node:events";
+
+type PowerShellSpawn = (
+  shell: string,
+  args: string[],
+  options: { windowsHide: boolean },
+) => EventEmitter & {
+  stdout: EventEmitter;
+  stderr: EventEmitter;
+  kill(): unknown;
+};
 
 export async function powerShellStep(
   shell: string,
   command: string,
   timeout: number,
   caseNames: readonly string[] = [],
+  launch: PowerShellSpawn = spawn,
 ) {
   const phases: Record<string, string | undefined> = {
     spawn: new Date().toISOString(),
@@ -12,7 +24,7 @@ export async function powerShellStep(
   let stdout = "",
     stderr = "";
   const marker = "FORGE_COMMAND_START:";
-  const child = spawn(
+  const child = launch(
     shell,
     [
       "-NoProfile",
@@ -65,7 +77,7 @@ export async function powerShellStep(
 }
 
 /** One launch per batch; emitted commands remain verbatim inside isolated script blocks. */
-export function powerShellBatch() {
+export function powerShellBatch(launch: PowerShellSpawn = spawn) {
   let launches = 0;
   return {
     get launches() {
@@ -88,6 +100,7 @@ export function powerShellBatch() {
         script,
         timeout,
         cases.map(({ name }) => name),
+        launch,
       );
       return cases.map(({ name }, index) => {
         const match = new RegExp(
