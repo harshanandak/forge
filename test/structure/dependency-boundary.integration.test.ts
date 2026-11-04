@@ -109,6 +109,86 @@ test("the guard rejects a runtime dependency with no adapter", () => {
   ).toHaveLength(1);
 }, 30_000);
 
+for (const module of ["fs", "node:fs", "fs/promises", "node:fs/promises"]) {
+  for (const text of [
+    `import * as fs from "${module}";`,
+    `export * from "${module}";`,
+    `const fs = await import("${module}");`,
+    `const fs = require("${module}");`,
+  ]) {
+    test(`new filesystem readers are refused: ${text}`, () => {
+      const path = "src/adapters/new-reader/index.ts";
+      const found = findDependencyViolations([{ path, text }], {}, []);
+      expect(found).toHaveLength(1);
+      expect(found[0]?.file).toBe(path);
+      expect(found[0]?.message).toContain(module);
+      expect(found[0]?.message).toContain("project-files port");
+    }, 30_000);
+  }
+}
+
+test("filesystem ownership allows only exact inventoried files", () => {
+  const text = 'import * as fs from "node:fs";';
+  const allowed = [
+    "src/adapters/fs/index.ts",
+    "src/blocks/project/files.ts",
+    "src/assembly/capture.ts",
+    "src/version.ts",
+  ];
+  expect(
+    findDependencyViolations(
+      allowed.map((path) => ({ path, text })),
+      {},
+      [],
+    ),
+  ).toEqual([]);
+  const refused = [
+    "src/adapters/fs/new-reader.ts",
+    "src/adapters/store-sqlite/new-reader.ts",
+    "src/blocks/project/new-reader.ts",
+    "src/assembly/new-reader.ts",
+  ];
+  expect(
+    findDependencyViolations(
+      refused.map((path) => ({ path, text })),
+      {},
+      [],
+    ).map((v) => v.file),
+  ).toEqual(refused);
+}, 30_000);
+
+for (const api of ["Bun.file", "Bun.write"]) {
+  test(`new filesystem readers cannot use ${api}`, () => {
+    const path = "src/adapters/new-reader/index.ts";
+    const found = findDependencyViolations(
+      [{ path, text: `${api}("outside");` }],
+      {},
+      [],
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0]?.file).toBe(path);
+    expect(found[0]?.message).toContain(api);
+    expect(found[0]?.message).toContain("project-files port");
+  }, 30_000);
+}
+
+test("filesystem call examples in comments and strings are not imports", () => {
+  expect(
+    findDependencyViolations(
+      [
+        {
+          path: "src/adapters/new-reader/index.ts",
+          text: `// require("fs"); Bun.file("outside");
+/* import("node:fs"); Bun.write("outside"); */
+const example = 'require("fs/promises"); Bun.file("outside");';`,
+        },
+      ],
+      {},
+      [],
+    ),
+  ).toEqual([]);
+}, 30_000);
+
 test("a platform builtin is owned by its adapter without claiming the Node executable", () => {
   const sqlite = {
     name: "store-sqlite",
