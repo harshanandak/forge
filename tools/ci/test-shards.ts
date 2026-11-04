@@ -75,6 +75,9 @@ if (import.meta.main) {
         ...command
           .match(/--parallel|--timeout \d+/g)!
           .flatMap((arg) => arg.split(" ")),
+        ...(process.env.CI_TIMINGS
+          ? [`--timings=${process.env.CI_TIMINGS}`, "--update-timings"]
+          : []),
         ...selected.map((file) => `./${file}`),
       ]);
   }

@@ -247,6 +247,9 @@ async function main(): Promise<void> {
           "--timeout",
           "30000",
           "packed.integration.test",
+          ...(process.env.CI_TIMINGS
+            ? [`--timings=${process.env.CI_TIMINGS}`, "--update-timings"]
+            : []),
         ],
         {
           cwd: root,
