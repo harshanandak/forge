@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { scriptFixture } from "../../script-fixture.ts";
 
 setDefaultTimeout(60000);
 const root = mkdtempSync(join(tmpdir(), "forge-pr-state-"));
@@ -44,7 +45,12 @@ const initialized = spawnSync(git, ["init", "--quiet", root], {
 });
 if (initialized.status !== 0)
   throw new Error("Could not initialize isolated Git fixture");
+let configuredCap: number | undefined;
+let cliLaunches = 0,
+  mcpLaunches = 0,
+  fakeChecks = 0;
 function configure(rounds?: number) {
+  configuredCap = rounds;
   writeFileSync(
     join(root, ".forge/config.yaml"),
     JSON.stringify({
@@ -77,8 +83,23 @@ else {
   );
   chmodSync(join(fake, "gh"), 0o755);
 }
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+const mcpClients = new Map<number | undefined, ReturnType<typeof startMcp>>();
+afterAll(async () => {
+  for (const client of mcpClients.values()) await (await client).close();
+  expect(mcpLaunches).toBe(2);
+  expect(cliLaunches).toBe(91);
+  expect(fakeChecks).toBe(8);
+  console.log(
+    JSON.stringify({
+      file: "pr-state",
+      launches: 1 + cliLaunches + mcpLaunches,
+      fakeChecks,
+    }),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
 function run(since?: string, pr = 7) {
+  cliLaunches++;
   return spawnSync(
     node,
     [bin, "pr", "state", String(pr), ...(since ? ["--since", since] : [])],
@@ -115,6 +136,11 @@ function quiet(since: string) {
 }
 
 async function mcpRead(): Promise<State> {
+  if (!mcpClients.has(configuredCap)) mcpClients.set(configuredCap, startMcp());
+  return (await mcpClients.get(configuredCap)!).read();
+}
+async function startMcp() {
+  mcpLaunches++;
   const child = spawn(node, [bin, "--mcp"], {
     cwd: root,
     env,
@@ -166,41 +192,42 @@ async function mcpRead(): Promise<State> {
       pending.delete(id);
     }
   }
-  try {
-    await rpc("initialize", {
-      protocolVersion: "2025-11-25",
-      capabilities: {},
-      clientInfo: { name: "pr-state-integration", version: "1" },
-    });
-    child.stdin.write(
-      '{"jsonrpc":"2.0","method":"notifications/initialized"}\n',
-    );
-    const result = (await rpc("tools/call", {
-      name: "pr_state",
-      arguments: { pr: 7 },
-    })) as {
-      content: { text: string }[];
-      structuredContent: { ok: boolean; result: State };
-    };
-    expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
-      ok: true,
-    });
-    expect(JSON.parse(result.content[0]!.text)).toEqual(
-      result.structuredContent,
-    );
-    return result.structuredContent.result;
-  } finally {
-    const exited = new Promise<void>((resolve) =>
-      child.once("exit", () => resolve()),
-    );
-    child.stdin.end();
-    const timer = setTimeout(() => child.kill(), 3000);
-    try {
-      if (child.exitCode === null) await exited;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
+  await rpc("initialize", {
+    protocolVersion: "2025-11-25",
+    capabilities: {},
+    clientInfo: { name: "pr-state-integration", version: "1" },
+  });
+  child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
+  return {
+    async read(): Promise<State> {
+      const result = (await rpc("tools/call", {
+        name: "pr_state",
+        arguments: { pr: 7 },
+      })) as {
+        content: { text: string }[];
+        structuredContent: { ok: boolean; result: State };
+      };
+      expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
+        ok: true,
+      });
+      expect(JSON.parse(result.content[0]!.text)).toEqual(
+        result.structuredContent,
+      );
+      return result.structuredContent.result;
+    },
+    async close() {
+      const exited = new Promise<void>((resolve) =>
+        child.once("exit", () => resolve()),
+      );
+      child.stdin.end();
+      const timer = setTimeout(() => child.kill(), 3000);
+      try {
+        if (child.exitCode === null) await exited;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
 }
 
 function reviewedCycles() {
@@ -470,6 +497,7 @@ test("bot summary activity ignores hash references and duplicate evidence counts
   expect(read().reviewRounds).toBe(1);
 });
 
+const fakeGh = scriptFixture(join(import.meta.dirname, "gh.mjs"));
 test("the fake rejects another PR in every read route", () => {
   for (const pr of [7, 23]) {
     scenario({ pr });
@@ -485,13 +513,8 @@ test("the fake rejects another PR in every read route", () => {
       ],
       ["api", "graphql", "-F", `n=${wrong}`, "--jq", "{}"],
     ]) {
-      const result = spawnSync(node, [join(fake, "gh.mjs"), ...args], {
-        cwd: root,
-        env,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 10_000,
-      });
+      fakeChecks++;
+      const result = fakeGh("", args, env, root);
       expect(result.status).toBe(1);
       expect(result.stdout).toBe("");
       expect(result.stderr).toContain(

@@ -1,4 +1,4 @@
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   closeSync,
@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 
 setDefaultTimeout(30_000);
 const repo = resolve(import.meta.dirname, "../../..");
@@ -25,6 +26,9 @@ const env = Object.fromEntries(
 Object.assign(env, { HOME: home, USERPROFILE: home });
 const payloadDir = mkdtempSync(join(tmpdir(), "forge-526-payloads-"));
 let payloadNumber = 0;
+let launches = 0,
+  checked = 0;
+let corpus: Map<string, { status: number; stdout: string; stderr: string }>;
 afterAll(() => rmSync(payloadDir, { recursive: true, force: true }));
 const refused: [string, string[]][] = [
   [
@@ -202,7 +206,14 @@ function payload(harness: string, command: unknown) {
     ...(harness === "codex" ? { turn_id: "fixture", model: "fixture" } : {}),
   });
 }
-function run(input: string, executable = node, args = [script]) {
+function run(input: string, executable?: string, args = [script]) {
+  if (executable === undefined) {
+    checked++;
+    const result = corpus.get(input);
+    if (!result) throw new Error("Guard case missing from batch");
+    return result;
+  }
+  launches++;
   const file = join(payloadDir, `${payloadNumber++}.json`);
   writeFileSync(file, input);
   const fd = openSync(file, "r");
@@ -573,6 +584,51 @@ const reviewRoundOne: typeof localRoundOne = [
     ],
   ],
 ];
+const inputs = ["claude", "codex"]
+  .flatMap((harness) => [
+    ...[...reviewRoundOne, ...localRoundOne, ...localRoundTwo].flatMap(
+      ([, rows]) => rows.map(([command]) => payload(harness, command)),
+    ),
+    ...refused.flatMap(([, commands]) =>
+      commands.map((command) =>
+        payload(harness, `${command} # canary-do-not-echo`),
+      ),
+    ),
+    ...allowed.map((command) => payload(harness, command)),
+    ...[42, null, {}, undefined].map((command) => payload(harness, command)),
+  ])
+  .concat([
+    "not JSON",
+    "null",
+    "[]",
+    "42",
+    JSON.stringify({ tool_name: "Read", tool_input: { file_path: ".env" } }),
+  ]);
+beforeAll(() => {
+  expect(inputs).toHaveLength(1201 + 2 * Number(process.platform === "win32"));
+  const helper = pathToFileURL(join(repo, "test/script-fixture.ts")).href;
+  const batch = run(JSON.stringify(inputs), node, [
+    "--input-type=module",
+    "-e",
+    `import {readFileSync} from 'node:fs';import {scriptFixture} from ${JSON.stringify(helper)};const run=scriptFixture(${JSON.stringify(script)});console.log(JSON.stringify(JSON.parse(readFileSync(0,'utf8')).map(input=>run(input,[],process.env,process.cwd()))));`,
+  ]);
+  expect(batch.status, batch.stderr).toBe(0);
+  const results = JSON.parse(batch.stdout) as {
+    status: number;
+    stdout: string;
+    stderr: string;
+  }[];
+  expect(results).toHaveLength(inputs.length);
+  corpus = new Map(inputs.map((input, index) => [input, results[index]!]));
+});
+afterAll(() => {
+  expect(checked).toBe(inputs.length);
+  expect(launches).toBe(7 + Number(process.platform === "win32"));
+  console.log(
+    JSON.stringify({ file: "command-guard", cases: checked, launches }),
+  );
+});
+
 for (const harness of ["claude", "codex"])
   for (const [decision, rows] of reviewRoundOne)
     for (const [index, [command, status, rule]] of rows.entries())
@@ -691,6 +747,7 @@ test("the exact rendered command runs through the platform shell for both harnes
   expect(group.matcher).toBe("Bash");
   let shell = "/bin/sh";
   if (process.platform === "win32") {
+    launches++;
     const git = spawnSync("git", ["--exec-path"], {
       encoding: "utf8",
       windowsHide: true,
@@ -715,4 +772,16 @@ test("the exact rendered command runs through the platform shell for both harnes
       if (status === 0) expect(checked.stderr).toBe("");
       else expect(checked.stderr).toMatch(/^Forge guard refused \(env-dump\):/);
     }
+});
+
+test("the Node entry preserves exit codes and stdio for allow and refuse", () => {
+  for (const command of ["git status", "printenv # canary-do-not-echo"]) {
+    const input = payload("claude", command);
+    const actual = run(input, node);
+    expect({
+      status: actual.status,
+      stdout: actual.stdout,
+      stderr: actual.stderr,
+    }).toEqual(corpus.get(input)!);
+  }
 });
