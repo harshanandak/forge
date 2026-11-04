@@ -35,6 +35,8 @@ test("a timeout preserves the live child's state before cleanup", async () => {
   } else {
     // Only the POSIX runProcessTree path records pre-cleanup diagnostics.
     expect(result.supervision?.backend).toBe("process-group");
+    if (process.versions.bun !== undefined)
+      expect(result.diagnostics?.backend).toBe("bun-spawn");
     expect(result.diagnostics).toMatchObject({
       exitCode: null,
       signalCode: null,

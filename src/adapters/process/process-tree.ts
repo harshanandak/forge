@@ -5,6 +5,10 @@ import { captureStreams, type StreamCapture } from "./capture.ts";
 import { ProcessSpawnError } from "./errors.ts";
 import type { SpawnPlan } from "./plan.ts";
 import type { SupervisionOptions } from "./supervision.ts";
+import { runBunProcessTree } from "./bun-process-tree.ts";
+
+const useBun =
+  process.platform !== "win32" && process.versions.bun !== undefined;
 
 type Kill = (pid: number, signal: NodeJS.Signals | 0) => void;
 
@@ -108,6 +112,7 @@ export function runProcessTree(
   supervision: SupervisionOptions,
   started: number,
 ): Promise<ProcessResult> {
+  if (useBun) return runBunProcessTree(plan, options, supervision, started);
   return new Promise((resolveRun, rejectRun) => {
     const spawned = performance.now();
     const now = () => performance.now() - spawned;
