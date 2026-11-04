@@ -10,8 +10,7 @@ export function scopeOf(paths: readonly string[]): Scope {
         (/^docs\/.+/.test(path) ||
           path === "AGENTS.md" ||
           path === "CODING_STANDARDS.md" ||
-          path === "migrations/README.md" ||
-          /^src\/(?:[^/]+\/)*README\.md$/.test(path)),
+          path === "migrations/README.md"),
     )
     ? "docs"
     : "full";
@@ -22,9 +21,14 @@ export function changedPaths(
   head: string,
   cwd: string,
 ): string[] {
+  const mergeBase = execFileSync("git", ["merge-base", base, head], {
+    cwd,
+    encoding: "utf8",
+    timeout: 30_000,
+  }).trim();
   return execFileSync(
     "git",
-    ["diff", "--no-renames", "--name-only", "-z", base, head],
+    ["diff", "--no-renames", "--name-only", "-z", mergeBase, head],
     {
       cwd,
       encoding: "utf8",

@@ -7,7 +7,6 @@ test.each([
   "AGENTS.md",
   "CODING_STANDARDS.md",
   "migrations/README.md",
-  "src/blocks/example/README.md",
 ])(
   "documentation allowlist: %s",
   (path) => {
@@ -42,6 +41,10 @@ test.each([
   "unknown.md",
   "unknown/path",
   "src/index.ts",
+  "src/README.md",
+  "src/blocks/example/README.md",
+  "src/blocks/check/README.md",
+  "src/adapters/process/README.md",
   "src/blocks/README.md.ts",
   "tools/ci/change-scope.ts",
   "tools/ci/legs.ts",
