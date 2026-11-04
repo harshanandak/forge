@@ -419,7 +419,6 @@ test("performance PR handoff scopes measured gains and regression guards", async
   });
 }, 30_000);
 
-
 test("every harness wake reads the shared verdict and the owning session holds watches", async () => {
   await withDelivery(async (root, call, lint) => {
     await call("skills.sync");
@@ -815,7 +814,6 @@ test("forge-cut replaces marked slice copies while keeping user notes in both ad
     });
   });
 }, 30_000);
-
 
 test("the delivery template renders all six skills: linted, at most 4 KB, values filled in", async () => {
   await withDelivery(async (root, call, lint) => {

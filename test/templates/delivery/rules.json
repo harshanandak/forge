@@ -1,245 +1,189 @@
 [
-  {
-    "id": "in.purpose",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "definition the repository contradicts"
-  },
-  {
-    "id": "in.map",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "Destination, Decisions so far, Not yet specified, Out of scope"
-  },
-  {
-    "id": "in.ids",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "never renumber or reuse"
-  },
-  {
-    "id": "in.facts",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "Never ask the user for a fact you can investigate"
-  },
-  {
-    "id": "in.pending",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "blocks only its dependent decisions"
-  },
-  {
-    "id": "in.proto.when",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "Name the question first"
-  },
-  {
-    "id": "in.proto.limits",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "one session and 300 lines"
-  },
-  {
-    "id": "in.proto.report",
-    "home": "forge-intake/prototype.md",
-    "anchor": "output, timing or screenshot"
-  },
-  {
-    "id": "in.proto.merge",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "A prototype never merges"
-  },
-  {
-    "id": "in.round.ask",
-    "home": "forge-intake/rounds.md",
-    "anchor": "Ask all of them in this round"
-  },
-  {
-    "id": "in.round.format",
-    "home": "forge-intake/rounds.md",
-    "anchor": "word the question so \"yes\" accepts"
-  },
-  {
-    "id": "in.round.attended",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "Silence is not an answer"
-  },
-  {
-    "id": "in.round.record",
-    "home": "forge-intake/rounds.md",
-    "anchor": "Record answers under their existing ids"
-  },
-  {
-    "id": "in.unattended",
-    "home": "forge-intake/rounds.md",
-    "anchor": "List every such answer by id, recommendation and reason"
-  },
-  {
-    "id": "in.handoff",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "Finish only when no open decision or pending fact remains"
-  },
-  {
-    "id": "sh.call",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "Retry REVISION_CONFLICT",
-    "copies": ["forge-build/SKILL.md", "forge-review/SKILL.md"]
-  },
-  {
-    "id": "sh.timebox",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "Pass returned timeboxMinutes and stopBy",
-    "copies": ["forge-review/SKILL.md"]
-  },
-  {
-    "id": "sh.route-get",
-    "home": "forge-intake/SKILL.md",
-    "anchor": "forge route get <role> --text"
-  },
-  {
-    "id": "guidance.slice.targetLines",
-    "home": "forge-cut/SKILL.md",
-    "anchor": "Aim at 400 changed lines",
-    "value": "Aim at 400 changed lines"
-  },
-  {
-    "id": "guidance.slice.splitAbove",
-    "home": "forge-cut/SKILL.md",
-    "anchor": "split above 800",
-    "value": "split above 800"
-  },
-  {
-    "id": "guidance.slice.maxFiles",
-    "home": "forge-cut/SKILL.md",
-    "anchor": "over 10 files +2",
-    "value": "over 10 files +2"
-  },
-  {
-    "id": "guidance.review.rounds",
-    "home": "forge-review/SKILL.md",
-    "anchor": "At most 2 rounds",
-    "value": "At most 2 rounds"
-  },
-  {
-    "id": "guidance.review.fix",
-    "home": "forge-review/SKILL.md",
-    "anchor": "Fix only P0, P1 findings",
-    "value": "Fix only P0, P1 findings"
-  },
-  {
-    "id": "guidance.review.file",
-    "home": "forge-review/SKILL.md",
-    "anchor": "Everything else (P2, P3",
-    "value": "Everything else (P2, P3"
-  },
-  {
-    "id": "guidance.review.reruns",
-    "home": "forge-review/SKILL.md",
-    "anchor": "Rerun up to 1 time",
-    "value": "Rerun up to 1 time"
-  },
-  {
-    "id": "guidance.merge.by",
-    "home": "forge-land/SKILL.md",
-    "anchor": "Merge by: agent",
-    "value": "Merge by: agent"
-  },
-  {
-    "id": "guidance.merge.method",
-    "home": "forge-land/SKILL.md",
-    "anchor": "gh pr merge <n> --squash",
-    "value": "gh pr merge <n> --squash"
-  },
-  {
-    "id": "guidance.doors",
-    "home": "forge-loop/SKILL.md",
-    "anchor": "publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config",
-    "value": "publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config",
-    "copies": ["forge-cut/SKILL.md", "forge-land/SKILL.md"]
-  },
-  {
-    "id": "guidance.fixes.maxFailedPerCheck",
-    "home": "forge-build/SKILL.md",
-    "anchor": "After 2 failed fixes on the same check",
-    "value": "After 2 failed fixes on the same check"
-  },
-  {
-    "id": "guidance.lanes.max",
-    "home": "forge-loop/SKILL.md",
-    "anchor": "At most 3 workers at once",
-    "value": "At most 3 workers at once"
-  },
-  {
-    "id": "guidance.lanes.fullSuiteRuns",
-    "home": "forge-loop/SKILL.md",
-    "anchor": "1 full-suite run at a time",
-    "value": "1 full-suite run at a time"
-  },
-  {
-    "id": "guidance.lanes.stallMinutes",
-    "home": "forge-loop/SKILL.md",
-    "anchor": "silent for 10 minutes",
-    "value": "silent for 10 minutes"
-  },
-  {
-    "id": "guidance.labels.priority",
-    "home": "forge-cut/SKILL.md",
-    "anchor": "Priority is one label of p0, p1, p2, p3, p4",
-    "value": "Priority is one label of p0, p1, p2, p3, p4"
-  },
-  {
-    "id": "guidance.labels.deferred",
-    "home": "forge-review/SKILL.md",
-    "anchor": "\"review-deferred\"",
-    "value": "\"review-deferred\""
-  },
-  {
-    "id": "guidance.labels.gap",
-    "home": "forge-build/SKILL.md",
-    "anchor": "`contract-gap` issue",
-    "value": "`contract-gap` issue"
-  },
-  {
-    "id": "guidance.roles.orchestrator",
-    "home": "forge-loop/SKILL.md",
-    "anchor": "orchestrator strong",
-    "value": "orchestrator strong"
-  },
-  {
-    "id": "guidance.roles.implementer",
-    "home": "forge-loop/SKILL.md",
-    "anchor": "implementer fast",
-    "value": "implementer fast"
-  },
-  {
-    "id": "guidance.roles.reviewer",
-    "home": "forge-loop/SKILL.md",
-    "anchor": "reviewer other-family",
-    "value": "reviewer other-family"
-  },
-  {
-    "id": "guidance.roles.housekeeping",
-    "home": "forge-loop/SKILL.md",
-    "anchor": "housekeeping cheapest",
-    "value": "housekeeping cheapest"
-  },
-  {
-    "id": "guidance.pr.models",
-    "home": "forge-build/pull-request.md",
-    "anchor": "**Models**: for each of planned, implemented and reviewed",
-    "value": "**Models**: for each of planned, implemented and reviewed"
-  },
-  {
-    "id": "guidance.pr.notVerified",
-    "home": "forge-build/pull-request.md",
-    "anchor": "**Not verified**: what you did not check",
-    "value": "**Not verified**: what you did not check"
-  },
-  {
-    "id": "guidance.pr.trailers",
-    "home": "forge-build/pull-request.md",
-    "anchor": "trailers: none",
-    "value": "trailers: none"
-  },
-  {
-    "id": "guidance.pr.style",
-    "home": "forge-build/pull-request.md",
-    "anchor": "when the repository has a PR template, fill its sections in order and keep its headings",
-    "value": "when the repository has a PR template, fill its sections in order and keep its headings"
-  }
+  [
+    "in.purpose",
+    "forge-intake/SKILL.md",
+    "definition the repository contradicts"
+  ],
+  [
+    "in.map",
+    "forge-intake/SKILL.md",
+    "Destination, Decisions so far, Not yet specified, Out of scope"
+  ],
+  ["in.ids", "forge-intake/SKILL.md", "never renumber or reuse"],
+  [
+    "in.facts",
+    "forge-intake/SKILL.md",
+    "Never ask the user for a fact you can investigate"
+  ],
+  [
+    "in.pending",
+    "forge-intake/SKILL.md",
+    "blocks only its dependent decisions"
+  ],
+  ["in.proto.when", "forge-intake/SKILL.md", "Name the question first"],
+  ["in.proto.limits", "forge-intake/SKILL.md", "one session and 300 lines"],
+  [
+    "in.proto.report",
+    "forge-intake/prototype.md",
+    "output, timing or screenshot"
+  ],
+  ["in.proto.merge", "forge-intake/SKILL.md", "A prototype never merges"],
+  ["in.round.ask", "forge-intake/rounds.md", "Ask all of them in this round"],
+  [
+    "in.round.format",
+    "forge-intake/rounds.md",
+    "word the question so \"yes\" accepts"
+  ],
+  ["in.round.attended", "forge-intake/SKILL.md", "Silence is not an answer"],
+  [
+    "in.round.record",
+    "forge-intake/rounds.md",
+    "Record answers under their existing ids"
+  ],
+  [
+    "in.unattended",
+    "forge-intake/rounds.md",
+    "List every such answer by id, recommendation and reason"
+  ],
+  [
+    "in.handoff",
+    "forge-intake/SKILL.md",
+    "Finish only when no open decision or pending fact remains"
+  ],
+  [
+    "sh.call",
+    "forge-intake/SKILL.md",
+    "Retry REVISION_CONFLICT",
+    null,
+    ["forge-build/SKILL.md", "forge-review/SKILL.md"]
+  ],
+  [
+    "sh.timebox",
+    "forge-intake/SKILL.md",
+    "Pass returned timeboxMinutes and stopBy",
+    null,
+    ["forge-review/SKILL.md"]
+  ],
+  ["sh.route-get", "forge-intake/SKILL.md", "forge route get <role> --text"],
+  [
+    "guidance.slice.targetLines",
+    "forge-cut/SKILL.md",
+    "Aim at 400 changed lines",
+    400
+  ],
+  ["guidance.slice.splitAbove", "forge-cut/SKILL.md", "split above 800", 800],
+  ["guidance.slice.maxFiles", "forge-cut/SKILL.md", "over 10 files +2", 10],
+  ["guidance.review.rounds", "forge-review/SKILL.md", "At most 2 rounds", 2],
+  [
+    "guidance.review.fix",
+    "forge-review/SKILL.md",
+    "Fix only P0, P1 findings",
+    "P0,P1"
+  ],
+  [
+    "guidance.review.file",
+    "forge-review/SKILL.md",
+    "Everything else (P2, P3",
+    "P2,P3"
+  ],
+  ["guidance.review.reruns", "forge-review/SKILL.md", "Rerun up to 1 time", 1],
+  ["guidance.merge.by", "forge-land/SKILL.md", "Merge by: agent", "agent"],
+  [
+    "guidance.merge.method",
+    "forge-land/SKILL.md",
+    "gh pr merge <n> --squash",
+    "squash"
+  ],
+  [
+    "guidance.doors",
+    "forge-loop/SKILL.md",
+    "publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config",
+    "owner reply",
+    ["forge-cut/SKILL.md", "forge-land/SKILL.md"]
+  ],
+  [
+    "guidance.fixes.maxFailedPerCheck",
+    "forge-build/SKILL.md",
+    "After 2 failed fixes on the same check",
+    2
+  ],
+  ["guidance.lanes.max", "forge-loop/SKILL.md", "At most 3 workers at once", 3],
+  [
+    "guidance.lanes.fullSuiteRuns",
+    "forge-loop/SKILL.md",
+    "1 full-suite run at a time",
+    1
+  ],
+  [
+    "guidance.lanes.stallMinutes",
+    "forge-loop/SKILL.md",
+    "silent for 10 minutes",
+    10
+  ],
+  [
+    "guidance.labels.priority",
+    "forge-cut/SKILL.md",
+    "Priority is one label of p0, p1, p2, p3, p4",
+    "p0-p4"
+  ],
+  [
+    "guidance.labels.deferred",
+    "forge-review/SKILL.md",
+    "\"review-deferred\"",
+    "review-deferred"
+  ],
+  [
+    "guidance.labels.gap",
+    "forge-build/SKILL.md",
+    "`contract-gap` issue",
+    "contract-gap"
+  ],
+  [
+    "guidance.roles.orchestrator",
+    "forge-loop/SKILL.md",
+    "orchestrator strong",
+    "strong"
+  ],
+  [
+    "guidance.roles.implementer",
+    "forge-loop/SKILL.md",
+    "implementer fast",
+    "fast"
+  ],
+  [
+    "guidance.roles.reviewer",
+    "forge-loop/SKILL.md",
+    "reviewer other-family",
+    "other-family"
+  ],
+  [
+    "guidance.roles.housekeeping",
+    "forge-loop/SKILL.md",
+    "housekeeping cheapest",
+    "cheapest"
+  ],
+  [
+    "guidance.pr.models",
+    "forge-build/pull-request.md",
+    "**Models**: for each of planned, implemented and reviewed",
+    "attribution"
+  ],
+  [
+    "guidance.pr.notVerified",
+    "forge-build/pull-request.md",
+    "**Not verified**: what you did not check",
+    "unchecked"
+  ],
+  [
+    "guidance.pr.trailers",
+    "forge-build/pull-request.md",
+    "trailers: none",
+    "none"
+  ],
+  [
+    "guidance.pr.style",
+    "forge-build/pull-request.md",
+    "when the repository has a PR template, fill its sections in order and keep its headings",
+    "project template"
+  ]
 ]

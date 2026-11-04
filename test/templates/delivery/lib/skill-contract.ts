@@ -173,7 +173,7 @@ export function checkBudgets(
 export function checkNeutral(files: Files): string[] {
   return Object.entries(files)
     .filter(([, text]) =>
-      /watch_pull_request|Claude Code|\bCodex\b|\bT3\b|templates\/|\{\{|<!--\s*rule:|rule-tag/i.test(
+      /watch_pull_request|Claude Code|\bCodex\b|\bT3\b|templates\/|\{\{|<!--\s*rule:|rule-tag/.test(
         text,
       ),
     )

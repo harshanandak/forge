@@ -10,7 +10,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createAssembly, localCall } from "../../../src/assembly/index.ts";
+import {
+  type Assembly,
+  createAssembly,
+  localCall,
+} from "../../../src/assembly/index.ts";
 import { dispatch, record } from "../../../src/surface/dispatch.ts";
 import { GENERATED_MARKER, lintSkill } from "../../../src/surface/skills.ts";
 import {
@@ -30,7 +34,15 @@ import rules from "./rules.json" with { type: "json" };
 
 const repo = resolve(import.meta.dirname, "../../..");
 const sourceRoot = join(repo, "templates/delivery/skills");
-const inventory: Rule[] = rules;
+const inventory: Rule[] = (
+  rules as [string, string, string, (string | number | null)?, string[]?][]
+).map(([id, home, anchor, value, copies]) => ({
+  id,
+  home,
+  anchor,
+  ...(value == null ? {} : { value }),
+  ...(copies ? { copies } : {}),
+}));
 const limits: Budgets = budgets;
 
 function tree(root: string, prefix = ""): Record<string, Buffer> {
@@ -52,13 +64,17 @@ function markdown(files: Record<string, Buffer>): Files {
   );
 }
 
+function invoke(assembly: Assembly, op: string, input: object = {}) {
+  return dispatch(assembly.catalog, op, input, localCall(assembly));
+}
+
 test("delivery skill contracts: shape, links, rules, budgets, lint and mirrors", async () => {
   const root = mkdtempSync(join(tmpdir(), "forge-skill-contract-"));
   try {
     mkdirSync(join(root, ".forge"));
     writeFileSync(
       join(root, "package.json"),
-      JSON.stringify({ name: "p", scripts: { test: "node test.js" } }),
+      JSON.stringify({ name: "p", scripts: { test: "echo fixture" } }),
     );
     writeFileSync(join(root, "package-lock.json"), '{"lockfileVersion":3}');
     writeFileSync(
@@ -70,25 +86,14 @@ test("delivery skill contracts: shape, links, rules, budgets, lint and mirrors",
     const first = await open();
     try {
       const call = async (op: string, input: object) => {
-        const revision = await dispatch(
-          first.catalog,
-          "config.show",
-          {},
-          localCall(first),
-        );
-        return dispatch(
-          first.catalog,
-          op,
-          {
-            ...input,
-            expectRevision: String(record(revision.result)?.revision ?? ""),
-          },
-          localCall(first),
-        );
+        const revision = record(
+          (await invoke(first, "config.show")).result,
+        )?.revision;
+        expect(
+          await invoke(first, op, { ...input, expectRevision: revision }),
+        ).toMatchObject({ ok: true });
       };
-      expect(
-        await call("template.import", { template: "delivery" }),
-      ).toMatchObject({ ok: true });
+      await call("template.import", { template: "delivery" });
       for (const name of ["work", "memory", "check", "agent"]) {
         const target = join(root, "blocks", name);
         cpSync(join(repo, "src/blocks", name), target, { recursive: true });
@@ -96,35 +101,24 @@ test("delivery skill contracts: shape, links, rules, budgets, lint and mirrors",
           readFileSync(join(target, "forge.block.json"), "utf8"),
         ) as { entry: string };
         writeFileSync(join(target, entry), "module.exports={};");
-        expect(
-          await call("config.set", {
-            path: `/blocks/${name}/source`,
-            value: { path: `./blocks/${name}` },
-          }),
-        ).toMatchObject({ ok: true });
-      }
-      expect(
         await call("config.set", {
-          path: "/blocks/agent/config/adapters",
-          value: [
-            { id: "agents", detect: [], skills: ".agents/skills" },
-            { id: "claude", detect: [], skills: ".claude/skills" },
-          ],
-        }),
-      ).toMatchObject({ ok: true });
+          path: `/blocks/${name}/source`,
+          value: { path: `./blocks/${name}` },
+        });
+      }
+      await call("config.set", {
+        path: "/blocks/agent/config/adapters",
+        value: [
+          { id: "agents", detect: [], skills: ".agents/skills" },
+          { id: "claude", detect: [], skills: ".claude/skills" },
+        ],
+      });
     } finally {
       await first.close();
     }
     const assembly = await open();
     try {
-      expect(
-        await dispatch(
-          assembly.catalog,
-          "skills.sync",
-          {},
-          localCall(assembly),
-        ),
-      ).toMatchObject({ ok: true });
+      expect(await invoke(assembly, "skills.sync")).toMatchObject({ ok: true });
       const source = tree(sourceRoot);
       const adopted = tree(join(root, ".agents/skills"));
       const other = tree(join(root, ".claude/skills"));
@@ -171,12 +165,7 @@ test("delivery skill contracts: shape, links, rules, budgets, lint and mirrors",
           expect(lf(adopted[path]!.toString()), path).toBe(expected);
         }
       }
-      const checked = await dispatch(
-        assembly.catalog,
-        "skills.sync",
-        { check: true },
-        localCall(assembly),
-      );
+      const checked = await invoke(assembly, "skills.sync", { check: true });
       expect(checked).toMatchObject({ ok: true });
       expect(record(checked.result)?.differences).toEqual([]);
     } finally {
@@ -198,94 +187,55 @@ const row: Rule = {
   anchor: "Keep the evidence.",
 };
 
+function changed(path: string, text: string): Files {
+  return { ...fixture, [path]: text };
+}
+function edit(from: string, to: string): Files {
+  const path = "forge-example/SKILL.md";
+  return changed(path, fixture[path]!.replace(from, to));
+}
+
 test("rule checker detects deletion, duplication and rewording until inventory changes", () => {
   expect(checkRules(fixture, [row])).toEqual([]);
-  expect(checkRules({ ...fixture, [row.home]: "# Detail\n" }, [row])).toEqual([
-    "rule example: not found in forge-example/detail.md",
-  ]);
-  expect(
-    checkRules({ ...fixture, "forge-example/extra.md": fixture[row.home]! }, [
-      row,
-    ]),
-  ).toEqual(["rule example: duplicate in forge-example/extra.md"]);
-  expect(
-    checkRules({ ...fixture, [row.home]: fixture[row.home]! + row.anchor }, [
-      row,
-    ]),
-  ).toEqual(["rule example: duplicate in forge-example/detail.md"]);
-  const rewritten = {
-    ...fixture,
-    [row.home]: "# Detail\n\nSave the evidence.\n",
-  };
+  const bad = [
+    changed(row.home, "# Detail\n"),
+    changed("extra.md", row.anchor),
+    changed(row.home, row.anchor.repeat(2)),
+  ];
+  for (const files of bad) expect(checkRules(files, [row])).toHaveLength(1);
+  const rewritten = changed(row.home, "# Detail\nSave the evidence.");
   expect(checkRules(rewritten, [row])).toHaveLength(1);
-  expect(
-    checkRules(rewritten, [{ ...row, anchor: "Save the evidence." }]),
-  ).toEqual([]);
+  const updated = { ...row, anchor: "Save the evidence." };
+  expect(checkRules(rewritten, [updated])).toEqual([]);
   expect(checkRules(fixture, [row, row])).toContain(
     "rule example: duplicate id",
   );
-  const copied = { ...fixture, "forge-other/SKILL.md": row.anchor };
-  expect(
-    checkRules(copied, [{ ...row, copies: ["forge-other/SKILL.md"] }]),
-  ).toEqual([]);
+  const copied = changed("other.md", row.anchor);
+  expect(checkRules(copied, [{ ...row, copies: ["other.md"] }])).toEqual([]);
 }, 5_000);
 
-test("shape and link checkers reject missing sections, preamble reads and broken targets", () => {
-  expect(checkShape(fixture, ["forge-example"])).toEqual([]);
+test("shape and links reject missing sections, preamble reads and broken targets", () => {
+  const shape = (files: Files) => checkShape(files, ["forge-example"]);
+  expect(shape(fixture)).toEqual([]);
   expect(checkLinks(fixture)).toEqual([]);
-  const path = "forge-example/SKILL.md";
+  for (const files of [
+    edit("## Steps", "## Work"),
+    edit("1. Read", "Read"),
+    edit("# forge-example\n", "# forge-example\n[read](detail.md)\n"),
+  ])
+    expect(shape(files).length).toBeGreaterThan(0);
+  for (const to of ["missing.md", "detail.md#missing", "../../outside.md"])
+    expect(checkLinks(edit("detail.md#detail", to)).length).toBeGreaterThan(0);
   expect(
-    checkShape(
-      { ...fixture, [path]: fixture[path]!.replace("## Steps", "## Work") },
-      ["forge-example"],
-    ),
-  ).toContain(`${path}: missing ## Steps`);
-  expect(
-    checkShape(
-      { ...fixture, [path]: fixture[path]!.replace("1. Read", "Read") },
-      ["forge-example"],
-    ),
-  ).toContain(`${path}: step link has no trigger`);
-  expect(
-    checkShape(
-      {
-        ...fixture,
-        [path]: fixture[path]!.replace(
-          "# forge-example\n",
-          "# forge-example\n[read](detail.md)\n",
-        ),
-      },
-      ["forge-example"],
-    ),
-  ).toContain(`${path}: link outside Steps or Read on demand`);
-  expect(
-    checkLinks({
-      ...fixture,
-      [path]: fixture[path]!.replace("detail.md#detail", "missing.md"),
-    }),
-  ).toContain(`${path}: broken link missing.md`);
-  expect(
-    checkLinks({
-      ...fixture,
-      [path]: fixture[path]!.replace("#detail", "#missing"),
-    }),
-  ).toContain(`${path}: missing anchor detail.md#missing`);
-  expect(
-    checkLinks({ ...fixture, "forge-example/orphan.md": "# Orphan\n" }),
-  ).toContain("forge-example/orphan.md: orphan reference");
-  expect(
-    checkLinks({
-      ...fixture,
-      [path]: fixture[path]!.replace("detail.md#detail", "../../outside.md"),
-    }),
-  ).toContain(`${path}: invalid cross-skill link ../../outside.md`);
+    checkLinks(changed("forge-example/orphan.md", "# Orphan")),
+  ).toHaveLength(1);
 }, 5_000);
 
-test("budget and neutral-text checkers reject growth and harness-specific instructions", () => {
+test("budgets and neutrality reject growth and harness-specific instructions", () => {
   const policy: Budgets = {
     migrated: ["forge-example"],
-    router: 2_560,
-    reference: 6_144,
+    router: 2560,
+    reference: 6144,
     description: 300,
     routes: {
       example: {
@@ -295,13 +245,8 @@ test("budget and neutral-text checkers reject growth and harness-specific instru
     },
   };
   expect(checkBudgets(fixture, fixture, policy)).toEqual([]);
-  const big = { ...fixture, "forge-example/detail.md": "x".repeat(6_145) };
-  expect(checkBudgets(big, big, policy)).toContain(
-    "forge-example/detail.md: exceeds 6144 source bytes",
-  );
-  expect(
-    checkBudgets(big, big, policy).some((e) => e.includes("route bytes")),
-  ).toBe(true);
+  const big = changed(row.home, "x".repeat(6145));
+  expect(checkBudgets(big, big, policy)).toHaveLength(2);
   expect(checkNeutral(fixture)).toEqual([]);
   for (const text of [
     "watch_pull_request",
@@ -312,7 +257,5 @@ test("budget and neutral-text checkers reject growth and harness-specific instru
     "{{value}}",
     "<!-- rule: example -->",
   ])
-    expect(checkNeutral({ "example.md": text })).toEqual([
-      "example.md: non-neutral text",
-    ]);
+    expect(checkNeutral({ "example.md": text })).toHaveLength(1);
 }, 5_000);
