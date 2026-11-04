@@ -16,6 +16,7 @@ import { createAssembly, localCall } from "../../src/assembly/index.ts";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../src/assembly/first-party.ts";
 import * as processAdapter from "../../src/adapters/process/index.ts";
+import type { ProcessResult } from "../../src/ports/process.ts";
 import { result as processResult } from "../adapters/process/fake-process.ts";
 import { runCli } from "../../src/surface/cli.ts";
 import { done, stageBlock } from "../blocks/memory/lib.ts";
@@ -31,7 +32,30 @@ type OriginFailure =
   | "timeout"
   | "signal"
   | "truncated"
-  | "spawn";
+  | "spawn"
+  | "unexpected";
+
+interface TraceEvent {
+  event: string;
+  sid?: string;
+  time?: string;
+  argv?: string[];
+  code?: number;
+}
+
+interface OriginLookup {
+  executable: string;
+  elapsedMs: number;
+  timeoutMs: number;
+  exitCode: number | null;
+  timedOut: boolean | null;
+  signal: string | null;
+  truncated: boolean | null;
+  stdoutBytes: number | null;
+  stderrFirstLine: string | null;
+  errorCode: string | null;
+  trace2: TraceEvent[];
+}
 
 async function fixture(workEnabled: boolean, idPrefix?: string) {
   const folder = mkdtempSync(join(tmpdir(), "forge-prefix-on-demand-"));
@@ -39,6 +63,17 @@ async function fixture(workEnabled: boolean, idPrefix?: string) {
   mkdirSync(join(root, ".forge"), { recursive: true });
   const trace = join(folder, "git-trace.jsonl");
   writeFileSync(trace, "");
+  const originLookups: OriginLookup[] = [];
+  const originArgs = ["config", "--get", "remote.origin.url"];
+  const isOrigin = (args: readonly string[]) =>
+    JSON.stringify(args) === JSON.stringify(originArgs);
+  function traceEvents(): TraceEvent[] {
+    return readFileSync(trace, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as TraceEvent);
+  }
+  const diagnostics = () => JSON.stringify({ originLookups });
   const env: Record<string, string> = {};
   for (const name of ["PATH", "Path", "PATHEXT", "SystemRoot", "TEMP", "TMP"])
     if (process.env[name] !== undefined) env[name] = process.env[name]!;
@@ -116,12 +151,58 @@ async function fixture(workEnabled: boolean, idPrefix?: string) {
           };
         return port.resolve(executable, env);
       },
-      run(executable, args, options) {
-        if (
-          originFails &&
-          JSON.stringify(args) ===
-            JSON.stringify(["config", "--get", "remote.origin.url"])
-        ) {
+      async run(executable, args, options) {
+        if (!isOrigin(args)) return port.run(executable, args, options);
+        const started = performance.now();
+        const traceOffset = traceEvents().length;
+        let result: ProcessResult | undefined;
+        let errorCode: string | null = null;
+        try {
+          result = await lookup();
+          return result;
+        } catch (error) {
+          errorCode =
+            error instanceof Error
+              ? "code" in error
+                ? String(error.code)
+                : error.name
+              : String(error);
+          throw error;
+        } finally {
+          const events = traceEvents().slice(traceOffset);
+          const sessions = new Set(
+            events
+              .filter(
+                (event) =>
+                  event.event === "start" &&
+                  isOrigin(event.argv?.slice(-3) ?? []),
+              )
+              .map((event) => event.sid),
+          );
+          originLookups.push({
+            executable: executable.path,
+            elapsedMs: performance.now() - started,
+            timeoutMs: options.timeoutMs,
+            exitCode: result?.exitCode ?? null,
+            timedOut: result?.timedOut ?? null,
+            signal: result?.signal ?? null,
+            truncated: result?.truncated ?? null,
+            stdoutBytes:
+              result === undefined ? null : Buffer.byteLength(result.stdout),
+            stderrFirstLine: result?.stderr.split(/\r?\n/, 1)[0] ?? null,
+            errorCode,
+            trace2: events.filter(
+              (event) =>
+                sessions.has(event.sid) &&
+                (event.event === "start" || event.event === "exit"),
+            ),
+          });
+        }
+
+        async function lookup() {
+          if (!originFails) return port.run(executable, args, options);
+          if (originFails === "unexpected")
+            throw new Error("prefix provider failed");
           if (
             originFails === "timeout" ||
             originFails === "signal" ||
@@ -159,7 +240,6 @@ async function fixture(workEnabled: boolean, idPrefix?: string) {
             options,
           );
         }
-        return port.run(executable, args, options);
       },
     };
   });
@@ -171,6 +251,7 @@ async function fixture(workEnabled: boolean, idPrefix?: string) {
     });
     return {
       git,
+      diagnostics,
       failOrigin(value: OriginFailure) {
         originFails = value;
       },
@@ -191,21 +272,21 @@ async function fixture(workEnabled: boolean, idPrefix?: string) {
           args,
           localCall(assembly),
         );
-        expect(result.exitCode, JSON.stringify(result.envelope)).toBe(0);
+        expect(
+          result.exitCode,
+          `${JSON.stringify(result.envelope)} ${diagnostics()}`,
+        ).toBe(0);
         return done(result.envelope);
       },
-      resetTrace: () => writeFileSync(trace, ""),
+      resetTrace() {
+        writeFileSync(trace, "");
+        originLookups.length = 0;
+      },
       originQueries() {
-        return readFileSync(trace, "utf8")
-          .split(/\r?\n/)
-          .filter(Boolean)
-          .map((line) => JSON.parse(line) as { event: string; argv?: string[] })
-          .filter(
-            (event) =>
-              event.event === "start" &&
-              JSON.stringify(event.argv?.slice(-3)) ===
-                JSON.stringify(["config", "--get", "remote.origin.url"]),
-          ).length;
+        return traceEvents().filter(
+          (event) =>
+            event.event === "start" && isOrigin(event.argv?.slice(-3) ?? []),
+        ).length;
       },
       async close() {
         try {
@@ -247,15 +328,18 @@ test("memory-only searches skip origin queries while config inspection keeps the
     ])) as {
       hits: { id: string }[];
     };
-    expect(found.hits.map((hit) => hit.id)).toContain(added.id);
-    expect(project.originQueries()).toBe(0);
+    expect(
+      found.hits.map((hit) => hit.id),
+      project.diagnostics(),
+    ).toContain(added.id);
+    expect(project.originQueries(), project.diagnostics()).toBe(0);
 
     project.resetTrace();
     const shown = (await project.call(["config", "show"])) as {
       values: unknown[];
       effective: { blocks: { work: { config: { idPrefix: string } } } };
     };
-    expect(shown.values).toContainEqual({
+    expect(shown.values, project.diagnostics()).toContainEqual({
       pointer: "/blocks/work/config/idPrefix",
       value: "alpha",
       layer: "derived",
@@ -265,8 +349,11 @@ test("memory-only searches skip origin queries while config inspection keeps the
       },
       active: true,
     });
-    expect(shown.effective.blocks.work.config.idPrefix).toBe("alpha");
-    expect(project.originQueries()).toBe(1);
+    expect(
+      shown.effective.blocks.work.config.idPrefix,
+      project.diagnostics(),
+    ).toBe("alpha");
+    expect(project.originQueries(), project.diagnostics()).toBe(1);
   } finally {
     await project.close();
   }
@@ -282,7 +369,7 @@ test.each(["missing-origin", "missing-git", "missing-warning"] as const)(
       const shown = (await project.call(["config", "show"])) as {
         values: unknown[];
       };
-      expect(shown.values).toContainEqual({
+      expect(shown.values, project.diagnostics()).toContainEqual({
         pointer: "/blocks/work/config/idPrefix",
         value: "project",
         layer: "derived",
@@ -294,6 +381,7 @@ test.each(["missing-origin", "missing-git", "missing-warning"] as const)(
       });
       expect(
         await project.call(["issue", "create", "--title", "Folder"]),
+        project.diagnostics(),
       ).toMatchObject({ id: "project-1" });
     } finally {
       await project.close();
@@ -317,6 +405,7 @@ test.each([
       project.failOrigin(mode);
       expect(
         await project.invoke("issue.create", { title: "Must not mint" }),
+        project.diagnostics(),
       ).toMatchObject({
         ok: false,
         error: { code: "UNAVAILABLE", retry, message },
@@ -324,8 +413,12 @@ test.each([
       project.failOrigin(false);
       expect(
         await project.call(["issue", "create", "--title", "Recovered"]),
+        project.diagnostics(),
       ).toMatchObject({ id: "alpha-1" });
-      expect(done(await project.invoke("issue.list"))).toMatchObject({
+      expect(
+        done(await project.invoke("issue.list")),
+        project.diagnostics(),
+      ).toMatchObject({
         items: [{ id: "alpha-1", title: "Recovered" }],
       });
     } finally {
@@ -343,8 +436,9 @@ test.each([false, true])(
       project.resetTrace();
       expect(
         await project.call(["memory", "search", "heron", "--level", "device"]),
+        project.diagnostics(),
       ).toMatchObject({ hits: [] });
-      expect(project.originQueries()).toBe(0);
+      expect(project.originQueries(), project.diagnostics()).toBe(0);
     } finally {
       await project.close();
     }
@@ -357,8 +451,12 @@ test("an explicit project prefix keeps work available when origin lookup times o
     project.failOrigin("timeout");
     expect(
       await project.call(["issue", "create", "--title", "Configured"]),
+      project.diagnostics(),
     ).toMatchObject({ id: "configured-1" });
-    expect(done(await project.invoke("issue.list"))).toMatchObject({
+    expect(
+      done(await project.invoke("issue.list")),
+      project.diagnostics(),
+    ).toMatchObject({
       items: [{ id: "configured-1", title: "Configured" }],
     });
   } finally {
@@ -367,12 +465,21 @@ test("an explicit project prefix keeps work available when origin lookup times o
 });
 
 test.each([undefined, "configured"])(
-  "config show with prefix=%s omits a failed derived prefix observation",
+  "config show with prefix=%s warns when the derived prefix cannot be read",
   async (idPrefix) => {
     const project = await fixture(true, idPrefix);
     try {
       project.failOrigin("timeout");
-      const shown = (await project.call(["config", "show"])) as {
+      const result = await project.invoke("config.show");
+      expect(result, project.diagnostics()).toMatchObject({ ok: true });
+      expect(result.warnings, project.diagnostics()).toEqual([
+        {
+          code: "ID_PREFIX_UNAVAILABLE",
+          message:
+            "The id prefix could not be derived from the git origin: git origin failed",
+        },
+      ]);
+      const shown = done(result) as {
         values: { pointer: string; layer: string; value: unknown }[];
         effective: { blocks: { work: { config: { idPrefix: string } } } };
       };
@@ -381,18 +488,47 @@ test.each([undefined, "configured"])(
           ({ pointer, layer }) =>
             pointer === "/blocks/work/config/idPrefix" && layer === "derived",
         ),
+        project.diagnostics(),
       ).toEqual([]);
-      expect(shown.effective.blocks.work.config.idPrefix).toBe(
-        idPrefix ?? "work",
-      );
-      expect(done(await project.invoke("template.list"))).toHaveProperty(
-        "templates",
-      );
+      expect(
+        shown.effective.blocks.work.config.idPrefix,
+        project.diagnostics(),
+      ).toBe(idPrefix ?? "work");
+      expect(
+        done(await project.invoke("template.list")),
+        project.diagnostics(),
+      ).toHaveProperty("templates");
+      project.failOrigin("permanent");
+      const failed = await project.invoke("config.show");
+      expect(failed, project.diagnostics()).toMatchObject({ ok: true });
+      expect(failed.warnings, project.diagnostics()).toEqual([
+        {
+          code: "ID_PREFIX_UNAVAILABLE",
+          message:
+            "The id prefix could not be derived from the git origin: fatal: dubious ownership",
+        },
+      ]);
     } finally {
       await project.close();
     }
   },
 );
+
+test("config show propagates non-git prefix errors", async () => {
+  const project = await fixture(true);
+  try {
+    project.failOrigin("unexpected");
+    expect(
+      await project.invoke("config.show"),
+      project.diagnostics(),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "INTERNAL", message: "prefix provider failed" },
+    });
+  } finally {
+    await project.close();
+  }
+});
 
 test("memory-only projects keep host operations and unknown names on main's path", async () => {
   const project = await fixture(false);
@@ -403,18 +539,22 @@ test("memory-only projects keep host operations and unknown names on main's path
     };
     expect(
       listed.templates.find((template) => template.id === "harsha/delivery"),
+      project.diagnostics(),
     ).toMatchObject({
       id: "harsha/delivery",
       imported: null,
     });
-    expect(project.originQueries()).toBe(1);
+    expect(project.originQueries(), project.diagnostics()).toBe(1);
 
     project.resetTrace();
-    expect(await project.invoke("memory.serach")).toMatchObject({
+    expect(
+      await project.invoke("memory.serach"),
+      project.diagnostics(),
+    ).toMatchObject({
       ok: false,
       error: { code: "UNKNOWN_COMMAND" },
     });
-    expect(project.originQueries()).toBe(1);
+    expect(project.originQueries(), project.diagnostics()).toBe(1);
   } finally {
     await project.close();
   }
@@ -426,10 +566,11 @@ test("enabled work derives a fresh origin prefix on each issue create", async ()
     project.resetTrace();
     expect(
       await project.call(["issue", "create", "--title", "First"]),
+      project.diagnostics(),
     ).toMatchObject({
       id: "alpha-1",
     });
-    expect(project.originQueries()).toBe(1);
+    expect(project.originQueries(), project.diagnostics()).toBe(1);
     project.git(
       "remote",
       "set-url",
@@ -439,10 +580,11 @@ test("enabled work derives a fresh origin prefix on each issue create", async ()
     project.resetTrace();
     expect(
       await project.call(["issue", "create", "--title", "Second"]),
+      project.diagnostics(),
     ).toMatchObject({
       id: "beta-2",
     });
-    expect(project.originQueries()).toBe(1);
+    expect(project.originQueries(), project.diagnostics()).toBe(1);
   } finally {
     await project.close();
   }
