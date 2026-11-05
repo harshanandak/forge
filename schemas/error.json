@@ -59,7 +59,7 @@
   "$defs": {
     "UpgradeHint": {
       "type": "object",
-      "required": ["running", "required", "command"],
+      "required": ["running", "required", "cwd", "command"],
       "properties": {
         "running": {
           "type": "object",
@@ -72,6 +72,7 @@
           "additionalProperties": false
         },
         "required": { "type": "string" },
+        "cwd": { "type": ["string", "null"] },
         "command": { "type": "string" }
       },
       "additionalProperties": false

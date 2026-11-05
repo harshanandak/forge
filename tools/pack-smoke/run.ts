@@ -193,10 +193,7 @@ async function main(): Promise<void> {
         ),
       ],
     ])
-      if (
-        (how === "import" ? printed!.trim() : printed!.trim().split(" ")[0]) !==
-        expected
-      )
+      if (printed!.trim() !== expected)
         fail(`${how} printed "${printed!.trim()}", expected "${expected}"`);
     console.log(
       `- forge ${expected} runs through npm exec, its bin and import`,

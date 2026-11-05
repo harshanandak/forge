@@ -52,7 +52,7 @@ function readBuild(): BuildIdentity {
       typeof value.version === "string" &&
       "commit" in value &&
       typeof value.commit === "string" &&
-      /^[a-f0-9]{40}$/.test(value.commit) &&
+      /^(?:[a-f0-9]{40}|unknown)$/.test(value.commit) &&
       "dirty" in value &&
       typeof value.dirty === "boolean"
     )
@@ -67,4 +67,3 @@ function readBuild(): BuildIdentity {
   return { version, commit: null, dirty: false };
 }
 export const buildIdentity: BuildIdentity = readBuild();
-export const versionLabel: string = `${buildIdentity.version} (${buildIdentity.commit ?? "unbuilt"}${buildIdentity.dirty ? "+dirty" : ""})`;

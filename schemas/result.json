@@ -51,8 +51,7 @@
       "required": ["code", "message"],
       "properties": {
         "code": { "$ref": "common.json#/$defs/ErrorCode" },
-        "message": { "type": "string", "minLength": 1, "maxLength": 2000 },
-        "hint": { "$ref": "error.json#/$defs/UpgradeHint" }
+        "message": { "type": "string", "minLength": 1, "maxLength": 2000 }
       },
       "additionalProperties": false
     }

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -62,7 +63,7 @@ for (const entry of ["bin/forge.ts", "dist/bin/forge.js"]) {
       }
       for (const flag of ["--version", "-v"]) {
         const result = run([flag]);
-        expect(result.stdout).toStartWith(`${version} (`);
+        expect(result.stdout).toBe(`${version}\n`);
         expect(result.assembly).toEqual([]);
       }
       const identity = run(["--version", "--json"]);
@@ -91,3 +92,73 @@ for (const entry of ["bin/forge.ts", "dist/bin/forge.js"]) {
     }
   }, 30_000);
 }
+
+test("asset builds outside a source repository record unknown identity and remain readable", () => {
+  const node = Bun.which("node");
+  if (!node) throw new Error("Node runtime required");
+  const root = mkdtempSync(join(tmpdir(), "forge-archive-build-"));
+  const repo = fileURLToPath(new URL("../../", import.meta.url));
+  try {
+    const archive = join(root, "archive");
+    for (const directory of [
+      "src",
+      "schemas",
+      "tools/gen",
+      "dist/src",
+      "dist/bin",
+    ])
+      mkdirSync(join(archive, directory), { recursive: true });
+    for (const file of [
+      "package.json",
+      "tools/build-assets.ts",
+      "tools/gen/write.ts",
+      "dist/src/version.js",
+      "dist/bin/forge.js",
+    ])
+      cpSync(join(repo, file), join(archive, file));
+    for (const mode of ["no git", "parent repository", "git unavailable"]) {
+      if (mode === "parent repository") {
+        const initialized = spawnSync("git", ["init", "--quiet", root], {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 5000,
+        });
+        expect(initialized.error).toBeUndefined();
+        expect(initialized.status).toBe(0);
+      }
+      const env =
+        mode === "git unavailable" ? { ...process.env, PATH: "" } : process.env;
+      const built = spawnSync(node, [join(archive, "tools/build-assets.ts")], {
+        cwd: archive,
+        env,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 15_000,
+      });
+      expect(built.error).toBeUndefined();
+      expect(built.status, built.stdout + built.stderr).toBe(0);
+      const expected = { version, commit: "unknown", dirty: false };
+      expect(
+        JSON.parse(
+          readFileSync(join(archive, "dist/build.json"), "utf8"),
+        ) as unknown,
+      ).toEqual(expected);
+      const identity = spawnSync(
+        node,
+        [join(archive, "dist/bin/forge.js"), "--version", "--json"],
+        {
+          cwd: archive,
+          env,
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 15_000,
+        },
+      );
+      expect(identity.error).toBeUndefined();
+      expect(identity.status, identity.stdout + identity.stderr).toBe(0);
+      expect(JSON.parse(identity.stdout) as unknown).toEqual(expected);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);

@@ -12,7 +12,9 @@ function isUpgradeHint(value: unknown): value is UpgradeHint {
     !("required" in value) ||
     typeof value.required !== "string" ||
     !("command" in value) ||
-    typeof value.command !== "string"
+    typeof value.command !== "string" ||
+    !("cwd" in value) ||
+    (value.cwd !== null && typeof value.cwd !== "string")
   )
     return false;
   const running = value.running;
@@ -96,11 +98,9 @@ export function renderText(value: unknown, depth = 0): string {
     .map(([key, child]) => {
       if (key === "hint" && isUpgradeHint(child)) {
         const hint = child;
-        return `${indent}hint: ${displayText(
-          `Running Forge ${hint.running.version} (${hint.running.commit ?? "unbuilt"}${hint.running.dirty ? "+dirty" : ""}); repo needs ${hint.required}; run: ${hint.command}`,
-        )
-          .replaceAll("\n", "\\n")
-          .replaceAll("\t", "\\t")}`;
+        const literal = (text: string): string =>
+          displayText(text).replaceAll("\n", "\\n").replaceAll("\t", "\\t");
+        return `${indent}hint: ${literal(`Running Forge ${hint.running.version} (${hint.running.commit ?? "unbuilt"}${hint.running.dirty ? "+dirty" : ""}); repo needs ${hint.required}`)}${hint.cwd === null ? "" : `\n${indent}In ${literal(hint.cwd)},`}\n${indent}run: ${literal(hint.command)}`;
       }
       const nested = child !== null && typeof child === "object";
       return `${indent}${displayText(key)}:${nested ? "\n" : " "}${renderText(child, nested ? depth + 1 : 0)}`;
