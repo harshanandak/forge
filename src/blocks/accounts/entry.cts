@@ -71,6 +71,22 @@ function parse<T>(text: string | undefined, fallback: T): T {
     return refuse("ACCOUNT_INTEGRITY", "Invalid accounts record");
   }
 }
+function parseObject<T extends object>(
+  text: string | undefined,
+  fallback: T,
+): T {
+  const value = parse<unknown>(text, fallback);
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
+    return refuse(
+      "ACCOUNT_INTEGRITY",
+      "Accounts record must be a plain object",
+    );
+  return value as T;
+}
 async function contact(
   { input, services: s }: Call,
   action: "plan" | "use" | "decline",
@@ -148,8 +164,8 @@ async function contact(
     : `local:${common}`;
   const bindingText = s.device.read("bindings.json"),
     accountText = s.device.read("accounts.json");
-  const bindings = parse<Record<string, Binding>>(bindingText, {});
-  const accounts = parse<Record<string, Account>>(accountText, {});
+  const bindings = parseObject<Record<string, Binding>>(bindingText, {});
+  const accounts = parseObject<Record<string, Account>>(accountText, {});
   const binding = Object.hasOwn(bindings, repo) ? bindings[repo] : undefined;
   if (binding?.declined && action !== "use" && action !== "decline")
     return { repo, declined: true };
@@ -210,7 +226,7 @@ async function contact(
     const approval = (s.device.read("audit.jsonl") ?? "")
       .split("\n")
       .filter(Boolean)
-      .map((line) => parse<ApprovalRecord>(line, {}))
+      .map((line) => parseObject<ApprovalRecord>(line, {}))
       .find((row) => row.id === binding.appliedFrom);
     if (
       approval?.kind !== "use" ||

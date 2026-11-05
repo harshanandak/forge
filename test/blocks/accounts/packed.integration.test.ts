@@ -337,6 +337,11 @@ if (a[0] === 'auth' && a[1] === 'status') {
       "[user]\nemail=changed@example.test\n",
     );
     expect(cli(repo, "plan").error.code).toBe("ACCOUNT_INTEGRITY");
+    writeFileSync(join(home, ".forge/accounts/bindings.json"), "[]");
+    expect(cli(clone("malformed-bindings"), "plan")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_INTEGRITY" },
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

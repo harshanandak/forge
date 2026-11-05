@@ -2,8 +2,9 @@
 
 Consumer: agents preparing the first commit or push in a GitHub repository.
 Enable the `forge/accounts` built-in block, run `forge accounts plan --json`, and relay `result.ask` unchanged.
-The agent calls `accounts use --input` only for a clear yes or named account, with `approval: {quote, source}`.
-For other clear replies it calls `accounts decline`; if unsure, it asks again before acting.
+The agent calls `forge accounts use --input` only for a clear yes or named account, with `approval: {quote, source}`.
+It calls `forge accounts decline --input` only for a clear no, with the same approval fields.
+For any unclear reply it asks again and calls neither operation.
 Forge checks only that quote and source are non-empty, and records them verbatim. It does not interpret the reply.
 No terminal confirmation substitutes for the owner's chat reply.
 
