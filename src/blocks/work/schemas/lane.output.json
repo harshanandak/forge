@@ -5,6 +5,7 @@
     "issue": {
       "type": "string"
     },
+    "issueId": { "type": "string" },
     "worktree": {
       "type": "string"
     },

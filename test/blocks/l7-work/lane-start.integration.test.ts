@@ -407,8 +407,8 @@ test("lane CLI recovers a registry lock left by a dead helper owner", () => {
 
 function closeFixture() {
   configure(30);
-  const id = issue(),
-    lane = start(id).result;
+  const id = issue();
+  const lane = start(id).result;
   expect(call("issue.claim", { id }).ok).toBe(true);
   const head = git(["rev-parse", "HEAD"], String(lane.worktree));
   const pull = {
