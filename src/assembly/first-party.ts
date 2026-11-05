@@ -4,6 +4,7 @@
  * copy of the same bytes, or with the same id, still needs human admission.
  */
 export const firstPartyBlocks: Readonly<Record<string, URL>> = {
+  "forge/accounts": new URL("../blocks/accounts/", import.meta.url),
   "forge/agent": new URL("../blocks/agent/", import.meta.url),
   "forge/check": new URL("../blocks/check/", import.meta.url),
   "forge/memory": new URL("../blocks/memory/", import.meta.url),

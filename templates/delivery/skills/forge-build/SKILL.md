@@ -29,6 +29,8 @@ Standing rules: <adopted rules; layer 1 passes the memory packet>
 
 ## Red, then green
 
+Before the first commit or push in a repo, run `forge accounts plan` and send its ask.
+
 1. Read `forge issue resume <slice>` and every Touches file before editing; later comments override the body. Read `forge issue comments <slice>` once before acting if a checkpoint exists or `more` is true. forge-cut risk: light 0-1, standard 2-3, heavy 4-5.
 2. Reproduce the issue (or read the code named) before editing. Log: `forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'` or `premise does not hold: <evidence>`; if false, stop and report; change no code.
 3. Every slice goes red then green. Name a check's implementation-independent expected value. Run the new assertion on trunk first; it must fail on that assertion, not setup or unrelated errors.

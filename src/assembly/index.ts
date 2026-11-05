@@ -1502,6 +1502,20 @@ export async function createAssembly(
                 }
                 if (
                   interfaceSatisfies(
+                    "forge.device-files@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  if (!providers.deviceFiles)
+                    refuse(
+                      "PROVIDER_MISSING",
+                      "Private device files unavailable",
+                    );
+                  clients[binding.slot] = providers.deviceFiles(scope);
+                  continue;
+                }
+                if (
+                  interfaceSatisfies(
                     "forge.environment@1.0.0",
                     binding.interface,
                   )

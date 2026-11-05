@@ -1,0 +1,6 @@
+{
+  "type": "object",
+  "required": ["repo"],
+  "properties": { "repo": { "type": "string" } },
+  "additionalProperties": true
+}

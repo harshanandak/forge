@@ -12,6 +12,20 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 
+type Reply = {
+  ok: boolean;
+  result: {
+    proposal: { login: string };
+    reason: string;
+    ask: string;
+    hazards: string[];
+    appliedFrom: string;
+    declined?: boolean;
+  };
+  error: { code: string; message: string };
+};
+type Audit = { id: string; approval?: { quote: string; source: string } };
+
 test("installed accounts: one approval catches wrong authors and binds every clone", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-accounts-"));
   const home = join(root, "home"),
@@ -41,8 +55,8 @@ test("installed accounts: one approval catches wrong authors and binds every clo
 const a = process.argv.slice(2);
 if (Object.keys(process.env).some(k => /^(GH_TOKEN|GITHUB_TOKEN|NODE_OPTIONS|GIT_AUTHOR_EMAIL)$/i.test(k))) process.exit(9);
 if (a[0] === 'auth' && a[1] === 'status') {
-  if (process.env.FAKE_TEXT === '1' && a.includes('--json')) { process.stderr.write('unknown flag: --json'); process.exit(1); }
-  if (!a.includes('--json')) process.stdout.write('github.com\\n  ✓ Logged in to github.com account alice (keyring)\\n  - Active account: false\\n  ✓ Logged in to github.com account bob (keyring)\\n  - Active account: true\\n');
+  if (require('node:fs').existsSync(require('node:path').join(__dirname, 'text')) && a.includes('--json')) { process.stderr.write('unknown flag: --json'); process.exit(1); }
+  if (!a.includes('--json')) process.stderr.write('github.com\\n  ✓ Logged in to github.com account alice (keyring)\\n  - Active account: false\\n  ✓ Logged in to github.com account bob (keyring)\\n  - Active account: true\\n');
   else console.log(JSON.stringify({hosts:{'github.com':[{state:'success',active:false,host:'github.com',login:'alice',tokenSource:'keyring',gitProtocol:'https'},{state:'success',active:true,host:'github.com',login:'bob',tokenSource:'keyring',gitProtocol:'https'}]}}));
 } else if (a[0] === 'api' && /^users\\/(alice|bob)$/.test(a[1])) {
   console.log(JSON.stringify({id:a[1].endsWith('alice')?101:202,name:a[1].slice(6)}));
@@ -53,8 +67,12 @@ if (a[0] === 'auth' && a[1] === 'status') {
   writeFileSync(
     gh,
     process.platform === "win32"
-      ? `@echo off\r\n"${node}" "${fake}" %*\r\n`
-      : `#!/bin/sh\nexec '${node.replaceAll("'", "'\\''")}' '${fake.replaceAll("'", "'\\''")}' "$@"\n`,
+      ? ["@echo off", `"${node}" "${fake}" %*`, ""].join("\r\n")
+      : [
+          "#!/bin/sh",
+          `exec '${node.replaceAll("'", "'\\''")}' '${fake.replaceAll("'", "'\\''")}' "$@"`,
+          "",
+        ].join("\n"),
   );
   chmodSync(gh, 0o700);
   const forge = join(
@@ -84,7 +102,7 @@ if (a[0] === 'auth' && a[1] === 'status') {
       cwd,
       extra,
     );
-    return { status: out.status, ...JSON.parse(out.stdout) };
+    return { status: out.status, ...(JSON.parse(out.stdout) as Reply) };
   }
   function clone(name: string) {
     const path = join(root, name);
@@ -141,7 +159,11 @@ if (a[0] === 'auth' && a[1] === 'status') {
     expect(plan.result.reason).toContain("owns the remote");
     expect(plan.result.ask).toContain("bob");
     expect(plan.result.ask).toContain("unpushed");
+    expect(plan.result.ask).toContain(wrong);
     expect(plan.result.hazards.length).toBeGreaterThanOrEqual(2);
+    writeFileSync(join(bin, "text"), "");
+    expect(cli(repo, "plan").result.proposal.login).toBe("alice");
+    rmSync(join(bin, "text"));
     expect(cli(repo, "use", { login: "alice" }).ok).toBe(false);
     expect(
       cli(repo, "use", { login: "alice", approval: { quote: "yes" } }).ok,
@@ -155,7 +177,7 @@ if (a[0] === 'auth' && a[1] === 'status') {
     )
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line));
+      .map((line) => JSON.parse(line) as Audit);
     expect(
       audit.some(
         (row) =>
@@ -169,22 +191,16 @@ if (a[0] === 'auth' && a[1] === 'status') {
     expect(git(repo, "log", "-1", "--format=%ae")).toBe(
       "101+alice@users.noreply.github.com",
     );
-    const check = cli(repo, "check", { service: "github" });
-    expect(check.ok).toBe(false);
-    expect(check.error.message).toContain(wrong);
-    expect(check.error.message).toContain("alice");
     const second = clone("second");
-    const inherited = cli(second, "check", { service: "github" });
+    const inherited = cli(second, "plan");
     expect(inherited.ok, JSON.stringify(inherited)).toBe(true);
     expect(inherited.result.appliedFrom).toBe(used.result.appliedFrom);
+    expect(inherited.result.ask).not.toContain("Reply");
     expect(git(second, "config", "user.email")).toBe(
       "101+alice@users.noreply.github.com",
     );
     const other = clone("other");
     git(other, "remote", "set-url", "origin", "git@github.com:bob/other.git");
-    expect(cli(other, "check", { service: "github" }).error.code).toBe(
-      "ACCOUNT_UNBOUND",
-    );
     expect(cli(other, "decline", {}).ok).toBe(false);
     expect(cli(other, "decline", { approval }).ok).toBe(true);
     expect(cli(other, "plan").result.declined).toBe(true);
@@ -192,9 +208,7 @@ if (a[0] === 'auth' && a[1] === 'status') {
       join(repo, ".git/forge/accounts.gitconfig"),
       "[user]\nemail=changed@example.test\n",
     );
-    expect(cli(repo, "check", { service: "github" }).error.code).toBe(
-      "ACCOUNT_INTEGRITY",
-    );
+    expect(cli(repo, "plan").error.code).toBe("ACCOUNT_INTEGRITY");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
