@@ -6,13 +6,13 @@ import {
 
 /** Retain the children whose working directories and streams belong to a fixture. */
 export class FixtureChildren {
-  private readonly pending = new Set<Promise<void>>();
+  private readonly pending = new Map<Promise<void>, (() => void) | undefined>();
 
-  own<T extends ChildProcess>(child: T): T {
+  own<T extends ChildProcess>(child: T, stop?: () => void): T {
     const closed = new Promise<void>((resolve) => {
       child.once("close", resolve);
     });
-    this.pending.add(closed);
+    this.pending.set(closed, stop);
     void closed.then(() => this.pending.delete(closed));
     return child;
   }
@@ -46,8 +46,22 @@ export class FixtureChildren {
   }
 
   async cleanup(remove: () => void): Promise<void> {
-    // A leader can exit while a descendant still owns an inherited output pipe.
-    while (this.pending.size) await Promise.all([...this.pending]);
+    const failures: unknown[] = [];
+    while (this.pending.size) {
+      const children = [...this.pending];
+      for (const [closed, stop] of children) {
+        // Request shutdown once, while the parent can still reap its descendants.
+        this.pending.set(closed, undefined);
+        try {
+          stop?.();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      await Promise.all(children.map(([closed]) => closed));
+    }
+    if (failures.length)
+      throw new AggregateError(failures, "Fixture child shutdown failed");
     remove();
   }
 }
