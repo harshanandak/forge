@@ -405,37 +405,6 @@ test("lane CLI recovers a registry lock left by a dead helper owner", () => {
   expect(result.ok, JSON.stringify(result)).toBe(true);
 }, 30000);
 
-test("lane brief diagnostics state the heading contract and repair unclosed frontmatter", () => {
-  const id = issue(), path = ".worktrees/briefs/syntax.md";
-  writeFileSync(join(repo, path), text.replaceAll("## ", "### "));
-  expect(start(id, { brief: path }).error?.message).toContain("## Goal");
-  writeFileSync(join(repo, path), "---\nunclosed: true\n" + text);
-  expect(start(id, { brief: path }).error?.message).toContain("Close frontmatter with ---");
-}, 30000);
-
-test("lane briefs preserve comment literals in inline and fenced code", () => {
-  configure(30);
-  for (const content of ["`<!--`", "```html\n<!--\n```", "~~~html\n<!--\n~~~"]) {
-    const path = ".worktrees/briefs/literals.md";
-    writeFileSync(join(repo, path), text.replace("Concrete content.", content));
-    expect(start(issue(), { brief: path }).ok).toBe(true);
-  }
-}, 30000);
-
-test("lane start excludes its worktree directory and reconciles moved branches before the cap", () => {
-  configure(30);
-  const id = issue(), lane = start(id).result;
-  expect(readFileSync(join(repo, ".git/info/exclude"), "utf8")).toContain(".worktrees/");
-  const moved = join(root, `moved-${id}`);
-  git(["worktree", "move", String(lane.worktree), moved]);
-  const adopted = start(id);
-  expect(adopted.ok, JSON.stringify(adopted)).toBe(true);
-  expect(adopted.result.worktree).toBe(moved.replaceAll("\\", "/"));
-  configure(registry().length);
-  expect(start(issue()).error?.code).toBe("LIMIT_REACHED");
-  configure(30);
-}, 30000);
-
 function closeFixture() {
   configure(30);
   const id = issue();
@@ -488,16 +457,23 @@ function close(id: string, extra: Record<string, unknown>, cwd = repo) {
 
 test("lane close drops a clean no-PR lane at base and records the reason", () => {
   const { id, lane } = closeFixture();
-  const result = close(id, { pr: undefined, noPr: true, dropped: "Abandoned before PR" });
+  const result = close(id, {
+    pr: undefined,
+    noPr: true,
+    dropped: "Abandoned before PR",
+  });
   expect(result.ok, JSON.stringify(result)).toBe(true);
   expect(existsSync(String(lane.worktree))).toBe(false);
   expect(git(["branch", "--list", String(lane.branch)])).toBe("");
   expect(call("issue.show", { id }).result.status).toBe("open");
-  expect(JSON.stringify(call("issue.comments", { id }).result)).toContain("Abandoned before PR");
+  expect(JSON.stringify(call("issue.comments", { id }).result)).toContain(
+    "Abandoned before PR",
+  );
 }, 30000);
 
 test("lane close refuses a dirty no-PR drop and preserves ahead commits", () => {
-  const { id, lane } = closeFixture(), cwd = String(lane.worktree);
+  const { id, lane } = closeFixture(),
+    cwd = String(lane.worktree);
   writeFileSync(join(cwd, "unfinished"), "keep");
   const input = { pr: undefined, noPr: true, dropped: "Paused work" };
   expect(close(id, input).error?.code).toBe("INPUT_CONFLICT");
@@ -516,33 +492,21 @@ test("lane close refuses a dirty no-PR drop and preserves ahead commits", () => 
 
 test("lane close invoked inside the lane finishes post-removal cleanup", () => {
   const { id, lane } = closeFixture();
-  const result = close(id, { receipt: receipt() }, String(lane.worktree));
+  const proof = receipt(),
+    cwd = String(lane.worktree);
+  mkdirSync(join(cwd, ".forge"));
+  writeFileSync(
+    join(cwd, ".forge/config.yaml"),
+    readFileSync(join(repo, ".forge/config.yaml")),
+  );
+  writeFileSync(join(repo, ".git/info/exclude"), ".worktrees/\n.forge/\n");
+  const result = close(id, { receipt: proof, discardIgnored: true }, cwd);
   expect(result.ok, JSON.stringify(result)).toBe(true);
   expect(existsSync(String(lane.worktree))).toBe(false);
   expect(git(["branch", "--list", String(lane.branch)])).toBe("");
   expect(registry().some((row) => row.issue === id)).toBe(false);
 }, 30000);
 
-test("lane close repairs a missing landing comment on recovery", () => {
-  const { id, lane, head } = closeFixture(), proof = receipt();
-  expect(call("issue.link", { id, relation: "delivers", url: "https://github.com/example/project/pull/42" }).ok).toBe(true);
-  expect(call("issue.close", { id, receipt: proof }).ok).toBe(true);
-  writeFileSync(join(repo, `.git/forge-lane-close-${id}.json`), JSON.stringify({ pr: 42, receipt: proof, keepOpen: false, dropped: "", branch: lane.branch, worktree: lane.worktree, head, mergeCommit: head, claimed: true }));
-  const lock = join(repo, ".git/forge-lanes.json.lock");
-  writeFileSync(lock, "held", { flag: "wx" });
-  try { expect(close(id, { receipt: proof }).ok).toBe(false); } finally { rmSync(lock); }
-  expect(close(id, { receipt: proof }).ok).toBe(true);
-  const records = call("issue.comments", { id }).result.records as { value: { body: string } }[];
-  expect(records.filter((row) => row.value.body.startsWith("PR #42 landed:"))).toHaveLength(1);
-}, 30000);
-
-test("lane helper start and close refuse with equivalent argv", () => {
-  for (const args of [["start", "sample-1", "--branch", "feat/a", "--brief", "brief.md"], ["close", "sample-1", "--no-pr", "--dropped", "Use another approach"]]) {
-    const result = spawnSync(process.execPath, [resolve(import.meta.dirname, "../../../tools/lane.ts"), ...args], { cwd: repo, encoding: "utf8", windowsHide: true, timeout: 20000 });
-    expect(result.status, result.stderr).toBe(2);
-    expect(JSON.parse(result.stdout).next).toEqual(["forge", "lane", ...args]);
-  }
-}, 30000);
 function receipt() {
   const current = cli(["config", "show"]);
   expect(

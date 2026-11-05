@@ -1294,8 +1294,20 @@ switch(op){
     stateFile,
     JSON.stringify({ issue: { id: "one", title: "Fixture", status: "open" } }),
   );
+  const closeHarness = join(root, "legacy-close.ts");
+  writeFileSync(
+    closeHarness,
+    `import {laneClose} from ${JSON.stringify(resolve(import.meta.dirname, "../../tools/lane-close.ts"))};
+import {acquireLaneLock} from ${JSON.stringify(script)};
+import {runCommand} from ${JSON.stringify(resolve(import.meta.dirname, "../../tools/run-command.ts"))};
+import {readFileSync} from 'node:fs';
+const root=${JSON.stringify(main)},common=root+'/.git';
+const run=(cmd,args,cwd=root,env=process.env)=>{const r=runCommand(cmd,args,{cwd,env,encoding:'utf8',windowsHide:true,timeout:30000});if(r.status!==0)throw new Error(r.stderr);return r.stdout.trim()};
+process.exitCode=await laneClose(process.argv.slice(3),()=>({root,common,load:()=>JSON.parse(readFileSync(common+'/forge-lanes.json','utf8')),run,lock:(id)=>acquireLaneLock(common,id,"owner-"+process.pid+"-"+crypto.randomUUID())}));`,
+  );
   function run(args: string[], cwd = caller) {
-    const result = spawnSync(process.execPath, [script, ...args], {
+    const entry = args[0] === "close" ? closeHarness : script;
+    const result = spawnSync(process.execPath, [entry, ...args], {
       cwd,
       env,
       encoding: "utf8",
@@ -1313,16 +1325,13 @@ switch(op){
   let head = cached?.head ?? "",
     merge = cached?.merge ?? "";
   if (!cached) {
-    const started = run([
-      "start",
-      "one",
-      "--branch",
-      "lane/one",
-      "--brief",
-      brief,
-    ]);
-    expect(started.code).toBe(0);
-    expect(started.output.worktree).toBe(lane);
+    git(["worktree", "add", "-b", "lane/one", lane, "origin/main"]);
+    writeFileSync(
+      join(main, ".git/forge-lanes.json"),
+      JSON.stringify([
+        { issue: "one", worktree: lane, branch: "lane/one", brief },
+      ]),
+    );
     writeFileSync(join(lane, "change.txt"), "Delivered change.\n");
     git(["add", "change.txt"], lane);
     commit("lane change", lane);

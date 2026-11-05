@@ -1,4 +1,4 @@
-// Repository helper: bun tools/lane.ts start <issue> --branch <name> --brief <file> [--max N]
+// Repository helper for list/run/auto/tier; use forge lane for start/close.
 // Markdown scanning adapted from cursor/plugins pstack check-plan.mjs:
 // https://github.com/cursor/plugins/blob/main/pstack/skills/poteto-mode/scripts/check-plan.mjs
 // MIT License, Copyright (c) 2026 Lauren Tan
@@ -275,7 +275,7 @@ function laneLockLive(lock: string): boolean {
   }
   return false;
 }
-function acquireLaneLock(common: string, id: string, owner: string) {
+export function acquireLaneLock(common: string, id: string, owner: string) {
   const lock = join(common, `forge-lane-${id}.lock`),
     staged = `${lock}.${randomUUID()}`,
     prior = join(lock, `${inheritedOwner}-${process.pid}`);
@@ -611,7 +611,17 @@ async function laneAuto(
 const laneOwner = `owner-${process.pid}-${randomUUID()}`;
 const inheritedOwner = process.env.FORGE_LANE_LOCK_OWNER;
 delete process.env.FORGE_LANE_LOCK_OWNER;
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
+  if (["start", "close"].includes(process.argv[2] ?? "")) {
+    console.log(
+      JSON.stringify({
+        verdict: "refused",
+        reasons: ["Use forge lane instead"],
+        next: ["forge", "lane", ...process.argv.slice(2)],
+      }),
+    );
+    return 2;
+  }
   let parsed: Options | "list" | "run" | "auto" | "tier" | "close";
   let target: string | null = null;
   const reply = (
@@ -837,4 +847,4 @@ async function main(): Promise<number> {
     else if (staged) release(staged, owner);
   }
 }
-process.exitCode = await main();
+if (import.meta.main) process.exitCode = await main();
