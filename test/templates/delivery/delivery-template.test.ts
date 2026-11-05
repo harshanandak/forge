@@ -856,7 +856,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       /forge issue release[\s\S]*Last action: the owning session runs `forge agent wait <n>`/,
     );
     expect(text["forge-build"]).toContain(
-      "git worktree add <path> -b <branch> <base-ref>",
+      "forge lane start <slice> --branch <branch> --brief <project-relative-brief>",
     );
     expect(text["forge-build"]).toContain("then the project's install");
     expect(text["forge-review"]).toContain(

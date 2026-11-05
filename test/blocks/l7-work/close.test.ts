@@ -66,9 +66,7 @@ test("lane close retries an injected landing-comment write failure exactly once"
   put("link:work-1:1", { relation: "delivers", url: pr });
   const lane = { issue: "work-1", branch: "b", worktree: "/w", brief: "" };
   const files = new Map([["forge-lanes.json", JSON.stringify([lane])]]);
-  let failComment = true,
-    present = true,
-    branch = true;
+  const flags = { fail: true, present: true, branch: true };
   const services = {
     state: {
       acquire() {},
@@ -80,8 +78,8 @@ test("lane close retries an injected landing-comment write failure exactly once"
       count: (prefix: string) =>
         [...rows.keys()].filter((key) => key.startsWith(prefix)).length,
       put: (key: string, value: Record<string, unknown>) => {
-        if (key.startsWith("comment:") && failComment) {
-          failComment = false;
+        if (key.startsWith("comment:") && flags.fail) {
+          flags.fail = false;
           throw new Error("injected comment failure");
         }
         return put(key, value);
@@ -113,14 +111,14 @@ test("lane close retries an injected landing-comment write failure exactly once"
         else if (args[0] === "worktree" && args[1] === "list")
           stdout = "worktree /project\0branch refs/heads/main\0\0";
         else if (args[0] === "for-each-ref")
-          stdout = branch ? `refs/heads/${lane.branch}` : "";
+          stdout = flags.branch ? `refs/heads/${lane.branch}` : "";
         else if (args[0] === "rev-parse") stdout = head;
         else if (args[0] === "symbolic-ref") stdout = lane.branch;
         else if (args[0] === "-C") {
           stdout = "true";
-          if (!present) exitCode = 1;
-        } else if (args[0] === "worktree") present = false;
-        else if (args[0] === "update-ref") branch = false;
+          if (!flags.present) exitCode = 1;
+        } else if (args[0] === "worktree") flags.present = false;
+        else if (args[0] === "update-ref") flags.branch = false;
         return Promise.resolve({
           stdout,
           exitCode,
@@ -144,8 +142,8 @@ test("lane close retries an injected landing-comment write failure exactly once"
   expect(services.state.count("comment:")).toBe(0);
   await operations["lane.close"]!(call);
   expect(services.state.count("comment:")).toBe(1);
-  expect(present).toBe(false);
-  expect(branch).toBe(false);
+  expect(flags.present).toBe(false);
+  expect(flags.branch).toBe(false);
 });
 type Options = {
   links?: readonly { relation: string; url: string }[];
