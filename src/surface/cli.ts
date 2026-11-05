@@ -166,6 +166,7 @@ export async function runCli(
   let jsonHelp = false;
   let dryRun = options.dryRun;
   let rawInput: string | undefined;
+  const outputFlags = new Set<string>();
   const tokens: string[] = [];
   let literal = false;
   try {
@@ -182,11 +183,13 @@ export async function runCli(
         continue;
       }
       if (token === "--text") {
+        outputFlags.add("text");
         text = true;
         jsonHelp = false;
         continue;
       }
       if (token === "--json") {
+        outputFlags.add("json");
         text = false;
         jsonHelp = true;
         continue;
@@ -248,6 +251,14 @@ export async function runCli(
         throw new Error("Do not mix --input with operation arguments.");
       input = JSON.parse(rawInput);
     } else {
+      const properties =
+        record((entry?.argumentSchema ?? entry?.inputSchema)?.properties) ?? {};
+      for (const name of outputFlags) {
+        if (Object.hasOwn(properties, name))
+          throw new Error(
+            `--${name} is reserved for output formatting and cannot supply the ${name} input of ${op}; use --input JSON to supply operation inputs.`,
+          );
+      }
       input = mapArguments(tokens, entry);
     }
     const envelope = await dispatch(catalog, op, input, {
