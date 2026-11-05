@@ -102,68 +102,72 @@ function failure(code: string, message: string): never {
 /** Owner filenames make dead-owner cleanup generation-specific; unknown locks stay untouched. */
 function recoverableLock(target: string): CloneFileLock {
   const owner = "owner-" + process.pid + "-" + randomUUID();
-  const pending = target + "." + randomUUID();
-  const removeEmpty = (path: string) => {
+  const conflict = () =>
+    failure(
+      "INPUT_CONFLICT",
+      "Recoverable exclusion lock is held; inspect its owner before retrying",
+    );
+  const removeEmpty = () => {
     try {
-      removePrivateDirectory(path);
+      removePrivateDirectory(target);
     } catch (error) {
       if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(errorCode(error) ?? ""))
         throw error;
     }
   };
-  const release = (path: string, name: string) => {
-    const info = stat(path);
-    if (!info?.isDirectory() || info.isSymbolicLink()) return;
+  const release = (name: string, identity: BigIntStats) => {
+    const info = stat(target);
+    if (
+      !info?.isDirectory() ||
+      info.isSymbolicLink() ||
+      !sameFile(info, identity)
+    )
+      return;
     try {
-      removeDurable(join(path, name));
+      removeDurable(join(target, name));
     } catch (error) {
-      if (errorCode(error) !== "ENOENT") throw error;
+      if (errorCode(error) === "ENOENT") return;
+      throw error;
     }
-    removeEmpty(path);
+    removeEmpty();
   };
   const existing = stat(target);
-  if (existing?.isDirectory() && !existing.isSymbolicLink()) {
+  if (existing !== null) {
+    if (!existing.isDirectory() || existing.isSymbolicLink()) conflict();
     const names = readdirSync(target),
       name = names.length === 1 ? names[0] : undefined;
     const match = name?.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}$/);
-    if (match) {
-      let dead = false;
-      try {
-        process.kill(Number(match[1]), 0);
-      } catch (error) {
-        dead = errorCode(error) === "ESRCH";
-      }
-      if (dead) release(target, name!);
-    } else if (names.length === 0) removeEmpty(target);
-  }
-  createPrivateDirectory(pending);
-  try {
-    closeSync(createPrivateFile(join(pending, owner), false));
+    if (!match) conflict();
+    let dead = false;
     try {
-      replaceDurable(pending, target);
+      process.kill(Number(match![1]), 0);
     } catch (error) {
-      if (
-        ["EEXIST", "ENOTEMPTY", "EPERM", "EACCES", "ENOTDIR"].includes(
-          errorCode(error) ?? "",
-        )
-      )
-        failure(
-          "INPUT_CONFLICT",
-          "Recoverable exclusion lock is held; inspect its owner before retrying",
-        );
-      throw error;
+      dead = errorCode(error) === "ESRCH";
     }
-    const identity = stat(target)!;
-    return {
-      release() {
-        const current = stat(target);
-        if (current && sameFile(current, identity)) release(target, owner);
-      },
-    };
-  } finally {
-    release(pending, owner);
-    removeEmpty(pending);
+    if (!dead) conflict();
+    release(name!, existing);
   }
+  // mkdir is exclusive on every platform. A directory rename can replace a file on Windows.
+  // An empty directory has no proven owner, including while its creator publishes the marker.
+  try {
+    createPrivateDirectory(target);
+  } catch (error) {
+    if (errorCode(error) === "EEXIST") conflict();
+    throw error;
+  }
+  const identity = stat(target)!;
+  try {
+    closeSync(createPrivateFile(join(target, owner), false));
+  } catch (error) {
+    const current = stat(target);
+    if (current && sameFile(current, identity)) removeEmpty();
+    throw error;
+  }
+  return {
+    release() {
+      release(owner, identity);
+    },
+  };
 }
 function active(options: CloneFilesOptions): void {
   options.signal.throwIfAborted();
