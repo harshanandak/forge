@@ -36,7 +36,7 @@ for (const [name, config, refused] of [
         value: {
           ...handle.value,
           read: (name, budget) =>
-            path.replaceAll("\\", "/").endsWith("/work") &&
+            path.replaceAll("\\", "/").replace(/\/$/, "").endsWith("/work") &&
             name === "schemas/config.json"
               ? new TextEncoder().encode(
                   JSON.stringify({
@@ -48,7 +48,9 @@ for (const [name, config, refused] of [
                   }),
                 )
               : name.endsWith(".cjs")
-                ? new TextEncoder().encode("module.exports={};")
+                ? new TextEncoder().encode(
+                    "module.exports={'check.list':()=>({commands:[]})};",
+                  )
                 : handle.value.read(name, budget),
         },
       };
