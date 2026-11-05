@@ -19,6 +19,13 @@ for (const [name, config, refused] of [
   ["distance-one typo", { labls: [] }, true],
   ["case typo", { LABELS: [] }, true],
   ["known key type", { labels: 1 }, true],
+  [
+    "nested newer key",
+    { settings: { lanes: { discardIgnored: ["cache"] } } },
+    false,
+  ],
+  ["nested typo", { settings: { labls: [] } }, true],
+  ["known key value", { settings: { mode: "invalid" } }, true],
 ] as const) {
   test(`older block config schema handles ${name}`, async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-newer-config-"));
@@ -43,13 +50,21 @@ for (const [name, config, refused] of [
                     type: "object",
                     properties: {
                       labels: { type: "array", items: { type: "string" } },
+                      settings: {
+                        type: "object",
+                        properties: {
+                          labels: { type: "array", items: { type: "string" } },
+                          mode: { enum: ["auto", "manual"] },
+                        },
+                        additionalProperties: false,
+                      },
                     },
                     additionalProperties: false,
                   }),
                 )
               : name.endsWith(".cjs")
                 ? new TextEncoder().encode(
-                    "module.exports={'check.list':()=>({commands:[]})};",
+                    "module.exports={'check.list':()=>({commands:[],receiptChecks:[]})};",
                   )
                 : handle.value.read(name, budget),
         },
@@ -61,10 +76,12 @@ for (const [name, config, refused] of [
       providers: { env: {} },
     });
     try {
-      for (const args of [
-        ["check", "list"],
-        ["config", "show"],
-      ]) {
+      for (const args of refused
+        ? [["config", "show"]]
+        : [
+            ["config", "show"],
+            ["check", "list"],
+          ]) {
         const { envelope } = await runCli(
           assembly.catalog,
           args,
@@ -83,7 +100,7 @@ for (const [name, config, refused] of [
           expect(envelope.ok, JSON.stringify(envelope)).toBe(true);
           expect(envelope.warnings).toHaveLength(1);
           expect(envelope.warnings[0]?.message).toContain(
-            "blocks.work.config.lanes",
+            `blocks.work.config.${name === "nested newer key" ? "settings." : ""}lanes`,
           );
           expect(envelope.warnings[0]?.message).toContain(
             "newer Forge version",
@@ -95,6 +112,28 @@ for (const [name, config, refused] of [
               "effective.blocks.work.config.lanes",
             );
         }
+      }
+      if (!refused) {
+        const preview = await runCli(
+          assembly.catalog,
+          [
+            "config",
+            "preview",
+            "--input",
+            JSON.stringify({
+              patch: [{ op: "set", path: "work.labels", value: ["p2"] }],
+            }),
+          ],
+          localCall(assembly),
+        );
+        expect(preview.envelope).toMatchObject({
+          ok: true,
+          result: { valid: true },
+        });
+        expect(preview.envelope.warnings).toHaveLength(1);
+        expect((preview.envelope.result as { text: string }).text).toContain(
+          "discardIgnored",
+        );
       }
       expect(readFileSync(file, "utf8")).toBe(text);
     } finally {
