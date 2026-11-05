@@ -1,3 +1,7 @@
+import {
+  withCliOwnerApproval,
+  withOwnerApproval,
+} from "../../fixtures/owner-approval.mjs";
 import assert from "node:assert/strict";
 import { awaitDeadline, closeChild } from "./deadline.mjs";
 import { isRunning as alive } from "./liveness.mjs";
@@ -453,42 +457,7 @@ try {
     const f = fixture(
       "async ({ input }) => { await Promise.resolve(); return input.value; }",
     );
-    function cli(args, expected = 0, ...rest) {
-      if (
-        expected === 0 &&
-        ["block.admit", "config.grant", "store.reinit"].includes(
-          args.slice(0, 2).join("."),
-        )
-      ) {
-        const input = args.includes("--input")
-          ? JSON.parse(args[args.indexOf("--input") + 1])
-          : { digest: args[2] };
-        if (!input.approval) {
-          const first = cliRaw(args, 1, ...rest);
-          assert.equal(first.error.code, "APPROVAL_REQUIRED");
-          return cliRaw(
-            [
-              ...args.slice(0, 2),
-              "--input",
-              JSON.stringify({
-                ...input,
-                approval: {
-                  request: first.result.request.id,
-                  quote: "yes",
-                  source: {
-                    harness: "packed-fixture",
-                    thread: "packed-owner-chat",
-                  },
-                },
-              }),
-            ],
-            expected,
-            ...rest,
-          );
-        }
-      }
-      return cliRaw(args, expected, ...rest);
-    }
+    const cli = withCliOwnerApproval(cliRaw);
     function cliRaw(args, expected = 0) {
       const child = spawnSync(process.execPath, [bin, ...args], {
         cwd: root,
@@ -726,31 +695,7 @@ try {
       device: { id: join(assemblyRoot, "device") },
     };
     let sequence = 0;
-    const invoke = async (op, input = {}, ...rest) => {
-      const first = await invokeRaw(op, input, ...rest);
-      if (
-        !first.ok &&
-        first.error.code === "APPROVAL_REQUIRED" &&
-        first.result?.request &&
-        !input.approval
-      )
-        return invokeRaw(
-          op,
-          {
-            ...input,
-            approval: {
-              request: first.result.request.id,
-              quote: "yes",
-              source: {
-                harness: "packed-fixture",
-                thread: "packed-owner-chat",
-              },
-            },
-          },
-          ...rest,
-        );
-      return first;
-    };
+    const invoke = withOwnerApproval((...args) => invokeRaw(...args));
     const invokeRaw = (op, input = {}, context = ctx, caller = "agent") =>
       assembly.catalog.invoke({
         schemaVersion: "forge.invocation/1",

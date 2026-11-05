@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../../fixtures/owner-approval.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
@@ -74,6 +75,9 @@ const commands = guide
   .trim()
   .split("\n");
 assert.equal(commands.length, 4);
+const cli = withCliOwnerApproval((args, expected = 0) =>
+  JSON.parse(run(process.execPath, [npx, "forge", ...args], expected)),
+);
 let digest;
 for (const command of commands) {
   assert.ok(command.startsWith("npx forge "));
@@ -81,27 +85,7 @@ for (const command of commands) {
     .replace("<digest>", digest ?? "")
     .split(" ")
     .slice(1);
-  let envelope = JSON.parse(
-    run(process.execPath, [npx, ...args], args[2] === "admit" ? 1 : 0),
-  );
-  if (args[2] === "admit") {
-    assert.equal(envelope.error.code, "APPROVAL_REQUIRED");
-    const approval = {
-      request: envelope.result.request.id,
-      quote: "yes",
-      source: { harness: "packed-fixture", thread: "packed-owner-chat" },
-    };
-    envelope = JSON.parse(
-      run(process.execPath, [
-        npx,
-        "forge",
-        "block",
-        "admit",
-        "--input",
-        JSON.stringify({ digest, approval }),
-      ]),
-    );
-  }
+  const envelope = cli(args.slice(1));
   assert.equal(envelope.ok, true);
   if (args[2] === "check") {
     assert.equal(envelope.result.admitted, false);

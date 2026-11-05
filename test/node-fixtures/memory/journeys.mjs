@@ -1,3 +1,4 @@
+import { withOwnerApproval } from "../../fixtures/owner-approval.mjs";
 // Runs under plain Node against the installed package: node journeys.mjs <package dir> [journey].
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -475,25 +476,9 @@ async function host(at) {
         id: `journey-${caller}`,
       }),
     });
+  const approvedCall = withOwnerApproval(call);
   const ok = async (op, input, caller) => {
-    let result = await call(op, input, caller);
-    if (
-      !result.ok &&
-      result.error.code === "APPROVAL_REQUIRED" &&
-      result.result?.request
-    )
-      result = await call(
-        op,
-        {
-          ...input,
-          approval: {
-            request: result.result.request.id,
-            quote: "yes",
-            source: { harness: "packed-fixture", thread: "packed-owner-chat" },
-          },
-        },
-        caller,
-      );
+    const result = await approvedCall(op, input, caller);
     assert.equal(result.ok, true, `${op}: ${JSON.stringify(result)}`);
     return result.result;
   };

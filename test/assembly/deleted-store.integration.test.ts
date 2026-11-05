@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../fixtures/owner-approval.mjs";
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -31,38 +32,7 @@ function project() {
     work,
     root,
     device,
-    cli(args: string[], status: number): ResultEnvelope {
-      if (
-        args[0] === "store" &&
-        args[1] === "reinit" &&
-        !args.includes("--input")
-      ) {
-        const first = this.cli(args.concat("--input", "{}"), 1);
-        expect(first).toMatchObject({
-          ok: false,
-          error: { code: "APPROVAL_REQUIRED" },
-        });
-        const request = (first.result as { request: { id: string } }).request
-          .id;
-        return this.cli(
-          [
-            "store",
-            "reinit",
-            "--input",
-            JSON.stringify({
-              approval: {
-                request,
-                quote: "yes",
-                source: {
-                  harness: "packed-fixture",
-                  thread: "packed-owner-chat",
-                },
-              },
-            }),
-          ],
-          status,
-        );
-      }
+    cli: withCliOwnerApproval((args: string[], status = 0): ResultEnvelope => {
       const result = spawnSync("node", [bin, ...args], {
         cwd: root,
         env: {
@@ -77,7 +47,7 @@ function project() {
       expect(result.error).toBeUndefined();
       expect(result.status, result.stdout + result.stderr).toBe(status);
       return JSON.parse(result.stdout) as ResultEnvelope;
-    },
+    }),
   };
 }
 

@@ -1,3 +1,4 @@
+import { stageOwnerApprovalFixture } from "../../fixtures/stage-owner-approval.ts";
 // [integration] Drive the journey's real finally block with stale evidence and a live orphan.
 import { expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
@@ -32,7 +33,8 @@ function journey(injected: string) {
   );
   const marker = 'try {\n  if (["all", "async"].includes(mode)) {';
   expect(original.replaceAll("\r\n", "\n").split(marker)).toHaveLength(2);
-  writeFileSync(
+  stageOwnerApprovalFixture(
+    join(import.meta.dirname, "journey.mjs"),
     join(work, "journey.mjs"),
     original
       .replaceAll("\r\n", "\n")

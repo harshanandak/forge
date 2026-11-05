@@ -9,6 +9,7 @@ import {
   type OwnerApproval,
 } from "../../src/core/trust/index.ts";
 import type { StateRecord } from "../../src/generated/types.ts";
+import { approvalReply } from "./owner-approval.mjs";
 
 /** Runtime fixtures relay a synthetic owner reply; production proof validation still runs. */
 export class TrustStore extends Store {
@@ -84,13 +85,8 @@ export async function relay(
   const first = await call(op, input);
   if (first.ok || first.error.code !== "APPROVAL_REQUIRED")
     throw Error(JSON.stringify(first));
-  const request = (first.result as { request: { id: string } }).request.id;
   return call(op, {
     ...input,
-    approval: {
-      request,
-      quote: "yes",
-      source: { harness: "fixture", thread: "fixture" },
-    },
+    approval: approvalReply(first, { harness: "fixture", thread: "fixture" }),
   });
 }

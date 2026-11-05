@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../fixtures/owner-approval.mjs";
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -64,7 +65,7 @@ function fixture(kind: "outside" | "internal" | "plain" | "missing") {
       root,
       device,
       target,
-      call(args: string[]): ResultEnvelope {
+      call: withCliOwnerApproval((args: string[]): ResultEnvelope => {
         const result = spawnSync("node", [bin, ...args], {
           cwd: checkout,
           env: {
@@ -83,7 +84,7 @@ function fixture(kind: "outside" | "internal" | "plain" | "missing") {
           envelope.ok ? 0 : 1,
         );
         return envelope;
-      },
+      }),
       close() {
         rmSync(sandbox, { recursive: true, force: true });
       },

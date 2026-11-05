@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../../fixtures/owner-approval.mjs";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import { spawnSync } from "node:child_process";
@@ -94,43 +95,8 @@ function phase(name) {
       `Second review ${name}: ${Math.round(performance.now() - started)} ms; ${cliCalls - calls} CLI calls, ${Math.round(cliTime - time)} ms in CLI`,
     );
 }
-function cli(root, args, expected = 0, ...rest) {
-  if (
-    expected === 0 &&
-    ["block.admit", "config.grant", "store.reinit"].includes(
-      args.slice(0, 2).join("."),
-    )
-  ) {
-    const input = args.includes("--input")
-      ? JSON.parse(args[args.indexOf("--input") + 1])
-      : { digest: args[2] };
-    if (!input.approval) {
-      const first = cliRaw(root, args, 1, ...rest);
-      assert.equal(first.error.code, "APPROVAL_REQUIRED");
-      return cliRaw(
-        root,
-        [
-          ...args.slice(0, 2),
-          "--input",
-          JSON.stringify({
-            ...input,
-            approval: {
-              request: first.result.request.id,
-              quote: "yes",
-              source: {
-                harness: "packed-fixture",
-                thread: "packed-owner-chat",
-              },
-            },
-          }),
-        ],
-        expected,
-        ...rest,
-      );
-    }
-  }
-  return cliRaw(root, args, expected, ...rest);
-}
+const cli = (root, ...args) =>
+  withCliOwnerApproval(cliRaw.bind(null, root))(...args);
 function cliRaw(root, args, expected = 0) {
   const result = spawnCli(args, {
     cwd: root,

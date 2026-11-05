@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../../fixtures/owner-approval.mjs";
 // A user's journey with the shipped delivery template, against the npm-installed package only:
 // import it by name, render its skills, and run the project's own (npm) test command through check.
 import assert from "node:assert/strict";
@@ -67,42 +68,7 @@ function project(files) {
     });
     assert.equal(git.status, 0, git.stderr);
   }
-  function cli(args, expected = 0, ...rest) {
-    if (
-      expected === 0 &&
-      ["block.admit", "config.grant", "store.reinit"].includes(
-        args.slice(0, 2).join("."),
-      )
-    ) {
-      const input = args.includes("--input")
-        ? JSON.parse(args[args.indexOf("--input") + 1])
-        : { digest: args[2] };
-      if (!input.approval) {
-        const first = cliRaw(args, 1, ...rest);
-        assert.equal(first.error.code, "APPROVAL_REQUIRED");
-        return cliRaw(
-          [
-            ...args.slice(0, 2),
-            "--input",
-            JSON.stringify({
-              ...input,
-              approval: {
-                request: first.result.request.id,
-                quote: "yes",
-                source: {
-                  harness: "packed-fixture",
-                  thread: "packed-owner-chat",
-                },
-              },
-            }),
-          ],
-          expected,
-          ...rest,
-        );
-      }
-    }
-    return cliRaw(args, expected, ...rest);
-  }
+  const cli = withCliOwnerApproval((...args) => cliRaw(...args));
   const cliRaw = (args, expected = 0, detect = {}) => {
     const result = spawnSync(process.execPath, [bin, ...args], {
       cwd: root,
