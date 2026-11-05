@@ -62,9 +62,18 @@ for (const entry of ["bin/forge.ts", "dist/bin/forge.js"]) {
       }
       for (const flag of ["--version", "-v"]) {
         const result = run([flag]);
-        expect(result.stdout).toBe(`${version}\n`);
+        expect(result.stdout).toStartWith(`${version} (`);
         expect(result.assembly).toEqual([]);
       }
+      const identity = run(["--version", "--json"]);
+      expect(JSON.parse(identity.stdout)).toMatchObject({
+        version,
+        commit: entry.startsWith("dist/")
+          ? expect.stringMatching(/^[a-f0-9]{40}$/)
+          : null,
+        dirty: expect.any(Boolean),
+      });
+      expect(identity.assembly).toEqual([]);
       const help = run(["--help"]);
       expect(help.stdout).toStartWith("Usage: forge");
       expect(help.assembly).toContain(

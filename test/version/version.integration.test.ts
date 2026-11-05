@@ -16,7 +16,7 @@ test("the command bin prints the version, discovers its catalog and refuses unkn
   const bin = fileURLToPath(new URL("bin/forge.ts", root));
   const ok = Bun.spawnSync([process.execPath, bin, "--version"]);
   expect(ok.exitCode).toBe(0);
-  expect(ok.stdout.toString().trim()).toBe(version);
+  expect(ok.stdout.toString().trim()).toBe(`${version} (unbuilt)`);
   for (const args of [[], ["--help"]]) {
     const help = Bun.spawnSync([process.execPath, bin, ...args]);
     expect(help.exitCode).toBe(0);
