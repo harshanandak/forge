@@ -1,11 +1,11 @@
 ---
 name: forge-build
-description: "Build with proof; stop at push; never merge."
+description: "Build; stop at push; never merge."
 ---
 
 # forge-build
 
-Setup and PR handoff: [pull-request.md](pull-request.md).
+[PR setup](pull-request.md).
 
 Every wake runs `forge pr state <n>` and acts on `verdict`.
 
@@ -29,7 +29,7 @@ Standing rules: <adopted rules; layer 1 passes the memory packet>
 
 ## Red, then green
 
-Before this repo's first commit or push, run `forge accounts plan` and send its ask.
+Before first commit/push: `forge accounts plan`; if unbound, relay ask, await chat approval, then use/decline with quote/source. Bound/declined: continue.
 
 1. Read `forge issue resume <slice>` and every Touches file before editing; later comments override the body. Read `forge issue comments <slice>` once before acting if a checkpoint exists or `more` is true. forge-cut risk: light 0-1, standard 2-3, heavy 4-5.
 2. Reproduce the issue (or read the code named) before editing. Log: `forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'` or `premise does not hold: <evidence>`; if false, stop and report; change no code.

@@ -82,6 +82,16 @@ async function contact(
       "APPROVAL_REQUIRED",
       "Relay the owner's chat reply with approval: {quote, source}",
     );
+  if (
+    action === "use" &&
+    /^(?:(?:please|thanks)[,\s]+)?(?:no\b|nope\b|not\b|never\b|decline\b|refuse\b|do\s+not\b|don['’]t\b)/i.test(
+      input.approval!.quote.trim(),
+    )
+  )
+    refuse(
+      "APPROVAL_REQUIRED",
+      "A refusal is not approval; relay it through accounts decline",
+    );
   const env: Record<string, string> = {
     ...s.environment.select([
       "PATH",
@@ -149,7 +159,7 @@ async function contact(
     accountText = s.device.read("accounts.json");
   const bindings = parse<Record<string, Binding>>(bindingText, {});
   const accounts = parse<Record<string, Account>>(accountText, {});
-  const binding = bindings[repo];
+  const binding = Object.hasOwn(bindings, repo) ? bindings[repo] : undefined;
   if (binding?.declined && action !== "use" && action !== "decline")
     return { repo, declined: true };
   const applied = parse<Applied | null>(
@@ -201,7 +211,9 @@ async function contact(
   }
   let selected: Account | undefined;
   if (binding?.login) {
-    selected = accounts[binding.login];
+    selected = Object.hasOwn(accounts, binding.login)
+      ? accounts[binding.login]
+      : undefined;
     if (!selected || hash(selected) !== binding.fingerprint)
       integrity("Approved account definition is missing or changed");
     const approval = (s.device.read("audit.jsonl") ?? "")
@@ -452,7 +464,9 @@ async function contact(
           "ACCOUNT_VERIFY_FAILED",
           "GitHub did not return a public account id",
         );
-      const existing = accounts[login];
+      const existing = Object.hasOwn(accounts, login)
+        ? accounts[login]
+        : undefined;
       if (
         existing &&
         (existing.userId !== info.id ||

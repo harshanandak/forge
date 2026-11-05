@@ -61,9 +61,9 @@ for (const key of ['APPDATA','GH_CONFIG_DIR','XDG_CONFIG_HOME']) if (!process.en
 if (a[0] === 'auth' && a[1] === 'status') {
   if (require('node:fs').existsSync(require('node:path').join(__dirname, 'text')) && a.includes('--json')) { process.stderr.write('unknown flag: --json'); process.exit(1); }
   if (!a.includes('--json')) process.stderr.write('github.com\\n  ✓ Logged in to github.com account alice (keyring)\\n  - Active account: false\\n  ✓ Logged in to github.com account bob (keyring)\\n  - Active account: true\\n');
-  else console.log(JSON.stringify({hosts:{'github.com':[{state:'success',active:false,host:'github.com',login:'alice',tokenSource:'keyring',gitProtocol:'https'},{state:'success',active:true,host:'github.com',login:'bob',tokenSource:'keyring',gitProtocol:'https'}]}}));
-} else if (a[0] === 'api' && /^users\\/(alice|bob)$/.test(a[1])) {
-  console.log(JSON.stringify({id:a[1].endsWith('alice')?101:202,name:a[1].slice(6)+(require('node:fs').existsSync(require('node:path').join(__dirname,'renamed'))?' updated':'')}));
+  else console.log(JSON.stringify({hosts:{'github.com':[{state:'success',active:false,host:'github.com',login:'alice',tokenSource:'keyring',gitProtocol:'https'},{state:'success',active:true,host:'github.com',login:'bob',tokenSource:'keyring',gitProtocol:'https'},{state:'success',active:false,host:'github.com',login:'constructor',tokenSource:'keyring',gitProtocol:'https'}]}}));
+} else if (a[0] === 'api' && /^users\\/(alice|bob|constructor)$/.test(a[1])) {
+  console.log(JSON.stringify({id:a[1].endsWith('alice')?101:a[1].endsWith('bob')?202:303,name:a[1].slice(6)+(require('node:fs').existsSync(require('node:path').join(__dirname,'renamed'))?' updated':'')}));
 } else process.exit(8);
 `,
   );
@@ -173,6 +173,12 @@ if (a[0] === 'auth' && a[1] === 'status') {
       cli(repo, "use", { login: "alice", approval: { quote: "yes" } }).ok,
     ).toBe(false);
     const approval = { quote: "yes", source: "t3:fixture/message:1" };
+    for (const quote of ["no", "no thanks", "do not bind this repo"]) {
+      expect(
+        cli(repo, "use", { login: "alice", approval: { ...approval, quote } })
+          .error.code,
+      ).toBe("APPROVAL_REQUIRED");
+    }
     const used = cli(repo, "use", { login: "alice", approval });
     expect(used.ok, JSON.stringify(used)).toBe(true);
     const audit = readFileSync(
@@ -239,6 +245,21 @@ if (a[0] === 'auth' && a[1] === 'status') {
     const refused = cli(overridden, "use", { login: "alice", approval });
     expect(refused.ok).toBe(false);
     expect(refused.error.code).toBe("ACCOUNT_INTEGRITY");
+    const inheritedKey = clone("inherited-key");
+    git(
+      inheritedKey,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/constructor/app.git",
+    );
+    expect(
+      cli(inheritedKey, "use", { login: "constructor", approval }).ok,
+    ).toBe(true);
+    expect(git(inheritedKey, "config", "user.email")).toBe(
+      "303+constructor@users.noreply.github.com",
+    );
+    expect(cli(inheritedKey, "plan").result.proposal.login).toBe("constructor");
     const other = clone("other");
     git(other, "remote", "set-url", "origin", "git@github.com:bob/other.git");
     expect(cli(other, "decline", {}).ok).toBe(false);
