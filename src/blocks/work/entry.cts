@@ -1010,6 +1010,7 @@ const operations: Operations<WorkOperations> = {
       bound = services as {
         process?: ProcessService;
         environment?: EnvironmentService;
+        crypto?: CryptoService;
       };
     if (!bound.process || !bound.environment)
       fail("UNAVAILABLE", "Lane close needs process and environment");
@@ -1052,6 +1053,7 @@ const operations: Operations<WorkOperations> = {
       cwd = checkout,
       github = false,
       optional = false,
+      leaveDirectory?: string,
     ) => {
       const remaining = deadline - Date.now();
       if (remaining <= 0)
@@ -1065,6 +1067,7 @@ const operations: Operations<WorkOperations> = {
         signal,
         timeoutMs: Math.min(20000, remaining),
         maxOutputBytes: 262144,
+        ...(leaveDirectory ? { leaveDirectory } : {}),
       });
       if (result.timedOut || result.truncated)
         refuse(
@@ -1151,8 +1154,9 @@ const operations: Operations<WorkOperations> = {
             state: "CLOSED",
             headRefName: branch,
             headRefOid:
-              lane?.base ??
-              (typeof progress?.base === "string" ? progress.base : ""),
+              typeof progress?.base === "string"
+                ? progress.base
+                : (lane?.base ?? ""),
             mergeCommit: null,
             url: "",
           }
@@ -1178,6 +1182,11 @@ const operations: Operations<WorkOperations> = {
       const commit = (value: unknown): value is string =>
         typeof value === "string" &&
         /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
+      if (noPr && !commit(pull.headRefOid))
+        refuse(
+          "INPUT_CONFLICT",
+          "Lane has no recorded base. Re-record its verified starting commit in forge-lanes.json, or close with --pr instead of --no-pr",
+        );
       if (
         !pull ||
         !commit(pull.headRefOid) ||
@@ -1335,6 +1344,19 @@ const operations: Operations<WorkOperations> = {
           body === note || (!dropped && body?.startsWith(note + "\nChecks: "))
         );
       });
+      if (dropped)
+        state.renew(
+          key(id),
+          ((config as WorkConfig | undefined)?.claimTtlSeconds ?? 3600) * 1000,
+        );
+      const archive =
+        progress?.archive ??
+        `close-${input.pr ?? `no-pr-${bound.crypto?.randomUUID() ?? fail("UNAVAILABLE", "No-PR close requires crypto")}`}.json`;
+      if (
+        typeof archive !== "string" ||
+        !/^close-(?:[1-9]\d*|no-pr-[0-9a-f-]{36})\.json$/i.test(archive)
+      )
+        return refuse("INPUT_INVALID", "Invalid close archive name in journal");
       const progressState = {
         ...progress,
         pr: input.pr,
@@ -1347,6 +1369,7 @@ const operations: Operations<WorkOperations> = {
         head,
         mergeCommit,
         claimed: true,
+        archive,
         ...(matching ? { commentId: matching.key } : {}),
       };
       const save = () =>
@@ -1391,18 +1414,24 @@ const operations: Operations<WorkOperations> = {
         refuse("INPUT_CONFLICT", "Lane head changed during close");
       if (await exists()) {
         await clean();
-        await run([
-          "worktree",
-          "remove",
-          ...(ignored.length ? ["--force"] : []),
+        await run(
+          [
+            "worktree",
+            "remove",
+            ...(ignored.length ? ["--force"] : []),
+            worktree,
+          ],
+          checkout,
+          false,
+          false,
           worktree,
-        ]);
+        );
       }
       if (hasBranch && (!dropped || (noPr && head === pull.headRefOid)))
         await run(["update-ref", "-d", ref, head]);
       if (dropped)
         files.write(
-          `forge-lane-runs/${lane?.issue ?? current.id}/close-${input.pr ?? "no-pr"}.json`,
+          `forge-lane-runs/${lane?.issue ?? current.id}/${archive}`,
           JSON.stringify(progressState),
           { area: "common" },
         );

@@ -1302,7 +1302,7 @@ import {acquireLaneLock} from ${JSON.stringify(script)};
 import {runCommand} from ${JSON.stringify(resolve(import.meta.dirname, "../../tools/run-command.ts"))};
 import {readFileSync} from 'node:fs';
 const root=${JSON.stringify(main)},common=root+'/.git';
-const run=(cmd,args,cwd=root,env=process.env)=>{const r=runCommand(cmd,args,{cwd,env,encoding:'utf8',windowsHide:true,timeout:30000});if(r.status!==0)throw new Error(r.stderr);return r.stdout.trim()};
+const run=(cmd,args,cwd=root,env=process.env)=>{const r=runCommand(cmd,args,{cwd,env,encoding:'utf8',windowsHide:true,timeout:30000});if(r.error||r.status!==0)throw new Error(r.stderr||cmd+' command failed');return r.stdout.trim()};
 process.exitCode=await laneClose(process.argv.slice(3),()=>({root,common,load:()=>JSON.parse(readFileSync(common+'/forge-lanes.json','utf8')),run,lock:(id)=>acquireLaneLock(common,id,"owner-"+process.pid+"-"+crypto.randomUUID())}));`,
   );
   function run(args: string[], cwd = caller) {

@@ -215,7 +215,11 @@ test("invalid command arguments return one JSON with exit 2", () => {
     expect(result.code).toBe(2);
     expect(result.output.verdict).toBe("refused");
     if (argv[0] === "start")
-      expect(result.output.next).toEqual(["forge", "lane", ...argv]);
+      expect(result.output.next).toEqual([
+        "forge",
+        "lane",
+        ...(argv.includes("--max") ? f.args("bad") : argv),
+      ]);
     else
       expect(Object.keys(result.output).sort()).toEqual([
         "branch",
@@ -227,6 +231,13 @@ test("invalid command arguments return one JSON with exit 2", () => {
       ]);
   }
 });
+
+test("retired start omits the script-only max flag from replacement argv", () => {
+  const f = fixture();
+  const result = f.run(f.args("one", ["--max", "2"]));
+  expect(result.code).toBe(2);
+  expect(result.output.next).toEqual(["forge", "lane", ...f.args("one")]);
+}, 30000);
 
 test("retired start never calls Forge or publishes a registry", () => {
   const f = fixture();

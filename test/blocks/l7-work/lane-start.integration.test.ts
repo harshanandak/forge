@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -39,13 +40,13 @@ function git(args: string[], cwd = repo) {
   expect(result.status, result.stderr).toBe(0);
   return result.stdout.trim();
 }
-function cli(args: string[], cwd = repo) {
+function cli(args: string[], cwd = repo, session = "lane-acceptance") {
   const result = spawnSync("node", [bin, ...args], {
     cwd,
     env: {
       ...process.env,
       FORGE_DEVICE_ROOT: join(root, "device"),
-      FORGE_SESSION: "lane-acceptance",
+      FORGE_SESSION: session,
     },
     encoding: "utf8",
     windowsHide: true,
@@ -434,7 +435,12 @@ function closeFixture() {
   );
   return { id, lane: closeRecord, head, pull };
 }
-function close(id: string, extra: Record<string, unknown>, cwd = repo) {
+function close(
+  id: string,
+  extra: Record<string, unknown>,
+  cwd = repo,
+  session = "lane-acceptance",
+) {
   const result = spawnSync(
     "node",
     [bin, "lane", "close", "--input", JSON.stringify({ id, pr: 42, ...extra })],
@@ -444,7 +450,7 @@ function close(id: string, extra: Record<string, unknown>, cwd = repo) {
         ...process.env,
         PATH: join(root, "bin") + delimiter + process.env.PATH,
         FORGE_DEVICE_ROOT: join(root, "device"),
-        FORGE_SESSION: "lane-acceptance",
+        FORGE_SESSION: session,
       },
       encoding: "utf8",
       windowsHide: true,
@@ -468,6 +474,50 @@ test("lane close drops a clean no-PR lane at base and records the reason", () =>
   expect(call("issue.show", { id }).result.status).toBe("open");
   expect(JSON.stringify(call("issue.comments", { id }).result)).toContain(
     "Abandoned before PR",
+  );
+}, 30000);
+
+test("a repeated no-PR reason cannot bypass a different session's lease or overwrite archives", () => {
+  const { id } = closeFixture();
+  const input = { pr: undefined, noPr: true, dropped: "Paused work" };
+  expect(close(id, input).ok).toBe(true);
+  expect(call("issue.release", { id }).ok).toBe(true);
+  expect(cli(["issue", "claim", id], repo, "lane-second").ok).toBe(true);
+  const lane = start(id).result;
+  const before = git(["rev-parse", String(lane.branch)]);
+  expect(close(id, input).ok).toBe(false);
+  expect(existsSync(String(lane.worktree))).toBe(true);
+  expect(git(["rev-parse", String(lane.branch)])).toBe(before);
+  expect(close(id, input, repo, "lane-second").ok).toBe(true);
+  const directory = join(repo, ".git/forge-lane-runs", id);
+  const archives = readdirSync(directory).filter((name) =>
+    name.startsWith("close-no-pr-"),
+  );
+  expect(archives).toHaveLength(2);
+  for (const name of archives)
+    expect(
+      JSON.parse(readFileSync(join(directory, name), "utf8")),
+    ).toMatchObject({ dropped: "Paused work" });
+}, 30000);
+
+test("no-PR close explains how to repair a legacy lane without a recorded base", () => {
+  const { id, lane } = closeFixture();
+  writeFileSync(
+    join(repo, ".git/forge-lanes.json"),
+    JSON.stringify(registry().map(({ base: _base, ...row }) => row)),
+  );
+  const result = close(id, {
+    pr: undefined,
+    noPr: true,
+    dropped: "Legacy lane",
+  });
+  expect(result.error?.message).toContain(
+    "Re-record its verified starting commit",
+  );
+  expect(result.error?.message).toContain("--pr instead of --no-pr");
+  expect(existsSync(String(lane.worktree))).toBe(true);
+  expect(git(["branch", "--list", String(lane.branch)])).toContain(
+    String(lane.branch),
   );
 }, 30000);
 

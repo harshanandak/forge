@@ -1,4 +1,5 @@
 import type { Unavailable } from "../../generated/types.ts";
+import { isAbsolute, relative, sep } from "node:path";
 import type {
   ProcessPort,
   ProcessResult,
@@ -42,6 +43,11 @@ export function createProcessPort(
       args: readonly string[],
       spawnOptions: SpawnOptions,
     ): Promise<ProcessResult> {
+      if (spawnOptions.leaveDirectory) {
+        const from = relative(spawnOptions.leaveDirectory, process.cwd());
+        if (from !== ".." && !from.startsWith(".." + sep) && !isAbsolute(from))
+          process.chdir(spawnOptions.cwd);
+      }
       return runProcess(executable.path, args, spawnOptions, platform, options);
     },
   };

@@ -613,11 +613,18 @@ const inheritedOwner = process.env.FORGE_LANE_LOCK_OWNER;
 delete process.env.FORGE_LANE_LOCK_OWNER;
 export async function main(): Promise<number> {
   if (["start", "close"].includes(process.argv[2] ?? "")) {
+    const next = process.argv
+      .slice(2)
+      .filter(
+        (arg, i, args) =>
+          process.argv[2] !== "start" ||
+          (arg !== "--max" && args[i - 1] !== "--max"),
+      );
     console.log(
       JSON.stringify({
         verdict: "refused",
-        reasons: ["Use forge lane instead"],
-        next: ["forge", "lane", ...process.argv.slice(2)],
+        reasons: ["Use forge lane instead; configure the cap with lanes.max"],
+        next: ["forge", "lane", ...next],
       }),
     );
     return 2;
