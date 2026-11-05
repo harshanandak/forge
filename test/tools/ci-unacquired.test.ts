@@ -58,6 +58,20 @@ const queued = {
 };
 const queuedNullRunner = { ...queued, runner_name: null };
 
+test("reruns a queued never-acquired job without a steps field", () => {
+  const queuedWithoutSteps = JSON.parse(
+    '{"name":"Verify","status":"queued","conclusion":null,"runner_name":null}',
+  ) as CiJob;
+  for (const run_attempt of [1, 2]) {
+    expect(
+      decideRerun(
+        { ...run, run_attempt, jobs: [success, queuedWithoutSteps, gate] },
+        { ...current, run_attempt },
+      ).rerun,
+    ).toBe(true);
+  }
+});
+
 test("reruns a queued never-acquired job with a null runner name", () => {
   for (const run_attempt of [1, 2]) {
     expect(
