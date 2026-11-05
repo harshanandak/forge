@@ -26,6 +26,12 @@ function inputPropertyNames(schema: unknown): Set<string> {
   const names = new Set<string>();
   const visit = (value: unknown): void => {
     const node = record(value);
+    const type = node?.type;
+    if (
+      (typeof type === "string" && type !== "object") ||
+      (Array.isArray(type) && !type.includes("object"))
+    )
+      return;
     for (const name of Object.keys(record(node?.properties) ?? {}))
       names.add(name);
     for (const keyword of ["allOf", "anyOf", "oneOf"]) {
