@@ -64,12 +64,7 @@ test("lane close retries an injected landing-comment write failure exactly once"
     dependsOn: [],
   });
   put("link:work-1:1", { relation: "delivers", url: pr });
-  const lane = {
-    issue: "work-1",
-    branch: "feat/test",
-    worktree: "/project/lane",
-    brief: "brief.md",
-  };
+  const lane = { issue: "work-1", branch: "b", worktree: "/w", brief: "" };
   const files = new Map([["forge-lanes.json", JSON.stringify([lane])]]);
   let failComment = true,
     present = true,
@@ -146,13 +141,9 @@ test("lane close retries an injected landing-comment write failure exactly once"
     "injected comment failure",
   );
   expect(rows.get("issue:work-1")?.value.status).toBe("closed");
-  expect(
-    [...rows.keys()].filter((key) => key.startsWith("comment:")),
-  ).toHaveLength(0);
+  expect(services.state.count("comment:")).toBe(0);
   await operations["lane.close"]!(call);
-  expect(
-    [...rows.keys()].filter((key) => key.startsWith("comment:")),
-  ).toHaveLength(1);
+  expect(services.state.count("comment:")).toBe(1);
   expect(present).toBe(false);
   expect(branch).toBe(false);
 });

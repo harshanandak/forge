@@ -1106,8 +1106,6 @@ const operations: Operations<WorkOperations> = {
         receipt = input.receipt ?? "",
         keepOpen = !!dropped || !!input.keepOpen;
       const noPr = !!input.noPr;
-      if (noPr && (!dropped || input.pr !== undefined || receipt))
-        fail("INPUT_INVALID", "No-PR close requires only a dropped reason");
       const resume = [
         "forge",
         "lane",
@@ -1209,8 +1207,12 @@ const operations: Operations<WorkOperations> = {
       )
         .split("\n")
         .includes(ref);
-      let head = hasBranch ? await run(["rev-parse", ref]) : progress?.head;
-      if (!commit(head)) refuse("INPUT_CONFLICT", "Lane head is unavailable");
+      const observedHead = hasBranch
+        ? await run(["rev-parse", ref])
+        : progress?.head;
+      if (!commit(observedHead))
+        return refuse("INPUT_CONFLICT", "Lane head is unavailable");
+      let head = observedHead;
       if (
         progress &&
         (progress.head !== head ||
@@ -1292,7 +1294,7 @@ const operations: Operations<WorkOperations> = {
         )
           refuse("INPUT_CONFLICT", "Fetched PR head changed");
         await run(
-          ["merge-base", "--is-ancestor", head as string, pull.headRefOid!],
+          ["merge-base", "--is-ancestor", head, pull.headRefOid!],
           worktree,
         );
         await run(["merge", "--ff-only", pull.headRefOid!], worktree);
@@ -1302,19 +1304,10 @@ const operations: Operations<WorkOperations> = {
       }
       const ahead =
         dropped && head !== pull.headRefOid
-          ? await run([
-              "log",
-              "--format=%H %s",
-              `${pull.headRefOid}..${head as string}`,
-            ])
+          ? await run(["log", "--format=%H %s", `${pull.headRefOid}..${head}`])
           : "";
       if (noPr && head !== pull.headRefOid)
-        await run([
-          "merge-base",
-          "--is-ancestor",
-          pull.headRefOid!,
-          head as string,
-        ]);
+        await run(["merge-base", "--is-ancestor", pull.headRefOid!, head]);
       const links = appended(state, `link:${id}:`),
         linked = links.some((record) => {
           const link = record.value as LinkInput;
@@ -1404,7 +1397,7 @@ const operations: Operations<WorkOperations> = {
         ]);
       }
       if (hasBranch && (!dropped || (noPr && head === pull.headRefOid)))
-        await run(["update-ref", "-d", ref, head as string]);
+        await run(["update-ref", "-d", ref, head]);
       if (dropped)
         files.write(
           `forge-lane-runs/${lane?.issue ?? current.id}/close-${input.pr ?? "no-pr"}.json`,

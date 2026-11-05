@@ -8,7 +8,7 @@ Optional Stop guard: `forge agent guard`. Completion words outside code require 
 
 1. Threaded chats: MCP `t3_thread_configuration` once (no args); `FORGE_SESSION=t3:<threadId>` on every forge command across harnesses. Workers: own sessions. Start: `forge memory rules` unless hook-supplied; `result.text.text` is a pointer, never note text. Before tasks: memory search/show. Separate CLI workers, before claim: POSIX `export FORGE_SESSION="<slice>-worker"`; PowerShell `$env:FORGE_SESSION="<slice>-worker"`; reuse on re-dispatch.
 2. `forge issue claim <slice>`. Already held: steer the live worker, never start a second. Long work: renew: `forge issue renew <slice>`.
-3. `git fetch origin`; resolve `<base-ref>`: `origin/<declared>` for the slice's declared base, else `git symbolic-ref --short refs/remotes/origin/HEAD` (if missing, first `git remote set-head origin --auto`). Derive `<base>` by dropping the `origin/` prefix. Use the supplied isolated worktree; otherwise run `forge lane start <slice> --branch <branch> --brief <project-relative-brief>`, then the project's install. The brief has non-empty `## Goal`, `## Acceptance test`, `## Files`, `## Forbidden actions`, `## Stop point` and `## Prior art` sections.
+3. `git fetch origin`; resolve `<base-ref>`: `origin/<declared>` for the slice's declared base, else `git symbolic-ref --short refs/remotes/origin/HEAD` (if missing, first `git remote set-head origin --auto`). Derive `<base>` by dropping the `origin/` prefix. Use the supplied isolated worktree; otherwise run `forge lane start <slice> --branch <branch> --brief <project-relative-brief>`, then the project's install.
 
 ## Checkpoints
 

@@ -46,7 +46,8 @@ test("rendered build resolves and reuses the slice base", async () => {
       "git symbolic-ref --short refs/remotes/origin/HEAD",
     );
     expect(setup).toContain("git remote set-head origin --auto");
-    expect(setup).toContain("-b <branch> <base-ref>");
+    expect(setup).toContain("forge lane start <slice> --branch <branch>");
+    expect(setup).toContain("--brief <project-relative-brief>");
     expect(build).toContain("git diff --name-only <base-ref>...HEAD");
     expect(setup).toContain("dropping the `origin/` prefix");
     expect(setup).toContain("gh pr create --base <base>");

@@ -473,17 +473,17 @@ test("lane close drops a clean no-PR lane at base and records the reason", () =>
 
 test("lane close refuses a dirty no-PR drop and preserves ahead commits", () => {
   const { id, lane } = closeFixture(),
-    cwd = String(lane.worktree);
-  writeFileSync(join(cwd, "unfinished"), "keep");
+    laneDirectory = String(lane.worktree);
+  writeFileSync(join(laneDirectory, "unfinished"), "keep");
   const input = { pr: undefined, noPr: true, dropped: "Paused work" };
   expect(close(id, input).error?.code).toBe("INPUT_CONFLICT");
-  expect(existsSync(cwd)).toBe(true);
-  git(["add", "unfinished"], cwd);
-  git(["commit", "-m", "preserve this work"], cwd);
-  const head = git(["rev-parse", "HEAD"], cwd);
+  expect(existsSync(laneDirectory)).toBe(true);
+  git(["add", "unfinished"], laneDirectory);
+  git(["commit", "-m", "preserve this work"], laneDirectory);
+  const head = git(["rev-parse", "HEAD"], laneDirectory);
   const result = close(id, input);
   expect(result.ok, JSON.stringify(result)).toBe(true);
-  expect(existsSync(cwd)).toBe(false);
+  expect(existsSync(laneDirectory)).toBe(false);
   expect(git(["rev-parse", String(lane.branch)])).toBe(head);
   const notes = JSON.stringify(call("issue.comments", { id }).result);
   expect(notes).toContain(head);
@@ -493,14 +493,18 @@ test("lane close refuses a dirty no-PR drop and preserves ahead commits", () => 
 test("lane close invoked inside the lane finishes post-removal cleanup", () => {
   const { id, lane } = closeFixture();
   const proof = receipt(),
-    cwd = String(lane.worktree);
-  mkdirSync(join(cwd, ".forge"));
+    laneDirectory = String(lane.worktree);
+  mkdirSync(join(laneDirectory, ".forge"));
   writeFileSync(
-    join(cwd, ".forge/config.yaml"),
+    join(laneDirectory, ".forge/config.yaml"),
     readFileSync(join(repo, ".forge/config.yaml")),
   );
   writeFileSync(join(repo, ".git/info/exclude"), ".worktrees/\n.forge/\n");
-  const result = close(id, { receipt: proof, discardIgnored: true }, cwd);
+  const result = close(
+    id,
+    { receipt: proof, discardIgnored: true },
+    laneDirectory,
+  );
   expect(result.ok, JSON.stringify(result)).toBe(true);
   expect(existsSync(String(lane.worktree))).toBe(false);
   expect(git(["branch", "--list", String(lane.branch)])).toBe("");
