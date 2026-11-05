@@ -1,5 +1,11 @@
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
@@ -7,6 +13,95 @@ import { runCli } from "../../src/surface/cli.ts";
 import { blockCapture } from "../../src/assembly/capture.ts";
 
 setDefaultTimeout(30_000);
+
+for (const [name, config, refused] of [
+  ["newer key", { lanes: { discardIgnored: ["cache"] } }, false],
+  ["distance-one typo", { labls: [] }, true],
+  ["case typo", { LABELS: [] }, true],
+  ["known key type", { labels: 1 }, true],
+] as const) {
+  test(`older block config schema handles ${name}`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-newer-config-"));
+    mkdirSync(join(root, ".forge"));
+    const file = join(root, ".forge/config.yaml");
+    const text = JSON.stringify({
+      blocks: { work: { config }, check: { commands: {} } },
+    });
+    writeFileSync(file, text);
+    const open = blockCapture.open.bind(blockCapture);
+    const capture = spyOn(blockCapture, "open").mockImplementation((path) => {
+      const handle = open(path);
+      return {
+        ...handle,
+        value: {
+          ...handle.value,
+          read: (name, budget) =>
+            path.replaceAll("\\", "/").endsWith("/work") &&
+            name === "schemas/config.json"
+              ? new TextEncoder().encode(
+                  JSON.stringify({
+                    type: "object",
+                    properties: {
+                      labels: { type: "array", items: { type: "string" } },
+                    },
+                    additionalProperties: false,
+                  }),
+                )
+              : name.endsWith(".cjs")
+                ? new TextEncoder().encode("module.exports={};")
+                : handle.value.read(name, budget),
+        },
+      };
+    });
+    const assembly = await createAssembly({
+      root,
+      deviceRoot: join(root, "device"),
+      providers: { env: {} },
+    });
+    try {
+      for (const args of [
+        ["check", "list"],
+        ["config", "show"],
+      ]) {
+        const { envelope } = await runCli(
+          assembly.catalog,
+          args,
+          localCall(assembly),
+        );
+        if (refused) {
+          expect(envelope).toMatchObject({
+            ok: false,
+            error: { code: "INPUT_INVALID" },
+          });
+          if (envelope.ok) throw Error("Expected invalid config");
+          expect(envelope.error.message).toContain("blocks.work.config");
+          if (name.includes("typo"))
+            expect(envelope.error.message).toContain("did you mean labels?");
+        } else {
+          expect(envelope.ok, JSON.stringify(envelope)).toBe(true);
+          expect(envelope.warnings).toHaveLength(1);
+          expect(envelope.warnings[0]?.message).toContain(
+            "blocks.work.config.lanes",
+          );
+          expect(envelope.warnings[0]?.message).toContain(
+            "newer Forge version",
+          );
+          expect(envelope.warnings[0]?.message).toContain("ignored");
+          expect(envelope.warnings[0]?.message).toContain("upgrade");
+          if (args[0] === "config")
+            expect(envelope.result).not.toHaveProperty(
+              "effective.blocks.work.config.lanes",
+            );
+        }
+      }
+      expect(readFileSync(file, "utf8")).toBe(text);
+    } finally {
+      await assembly.close();
+      capture.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 const cases = [
   [
