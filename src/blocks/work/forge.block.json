@@ -320,7 +320,7 @@
       "leaseMode": "held",
       "timeoutMs": 120000,
       "effects": [
-        "issue:write",
+        "lane:write",
         "files:read",
         "files:write",
         "external:process",

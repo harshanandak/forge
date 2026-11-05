@@ -408,12 +408,12 @@ test("lane CLI recovers a registry lock left by a dead helper owner", () => {
 function closeFixture() {
   configure(30);
   const id = issue();
-  const lane = start(id).result;
+  const closeRecord = start(id).result;
   expect(call("issue.claim", { id }).ok).toBe(true);
-  const head = git(["rev-parse", "HEAD"], String(lane.worktree));
+  const head = git(["rev-parse", "HEAD"], String(closeRecord.worktree));
   const pull = {
     state: "MERGED",
-    headRefName: lane.branch,
+    headRefName: closeRecord.branch,
     headRefOid: head,
     mergeCommit: { oid: head },
     url: "https://github.com/example/project/pull/42",
@@ -432,7 +432,7 @@ function closeFixture() {
     join(root, "bin/gh.cmd"),
     `@echo off\r\nnode "${join(root, "bin/gh.cjs")}" %*\r\n`,
   );
-  return { id, lane, head, pull };
+  return { id, lane: closeRecord, head, pull };
 }
 function close(id: string, extra: Record<string, unknown>) {
   const result = spawnSync(
