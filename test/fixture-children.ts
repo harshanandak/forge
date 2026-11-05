@@ -1,6 +1,7 @@
 import {
   spawn,
   type ChildProcess,
+  type ChildProcessWithoutNullStreams,
   type SpawnOptionsWithoutStdio,
 } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -19,6 +20,7 @@ interface OwnedChild {
   isClosed: boolean;
   stop: (() => void) | undefined;
   job: WindowsJob | undefined;
+  tree: boolean;
 }
 
 async function within<T>(
@@ -48,10 +50,10 @@ function holder({ child }: OwnedChild): string {
   return `PID ${child.pid ?? "unspawned"} (${child.spawnargs[0]}): ${open.join(", ") || "child close"}`;
 }
 
-/** Own immediately after spawn; on POSIX spawn detached to give the tree its own group. */
 export class FixtureChildren {
   private readonly pending = new Set<OwnedChild>();
 
+  // Already-started children retain cooperative shutdown only, with no job or group signals.
   own<T extends ChildProcess>(child: T, stop?: () => void): T {
     const entry: OwnedChild = {
       child,
@@ -59,28 +61,34 @@ export class FixtureChildren {
       isClosed: false,
       stop,
       job: undefined,
+      tree: false,
     };
     this.pending.add(entry);
     void entry.closed.then(() => {
       entry.isClosed = true;
-    });
-    if (process.platform === "win32" && child.pid !== undefined) {
-      try {
-        entry.job = openWindowsJob({
-          cleanupTimeoutMs: SHUTDOWN_GRACE_MS,
-          pollIntervalMs: 10,
-        });
-        entry.job.attach(child.pid);
-      } catch (error) {
-        entry.job?.close();
-        child.kill("SIGKILL");
-        throw error;
+      if (!entry.tree || (!entry.job && !this.groupAlive(entry))) {
+        this.pending.delete(entry);
       }
-    }
+    });
     return child;
   }
 
+  private groupAlive(entry: OwnedChild): boolean {
+    if (!entry.tree || entry.child.pid === undefined) return false;
+    try {
+      process.kill(-entry.child.pid, 0);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") return true;
+      // Forget an empty group at close, before its identifier can be reused.
+      entry.tree = false;
+      if (entry.isClosed) this.pending.delete(entry);
+      return false;
+    }
+  }
+
   private async endTree(entry: OwnedChild): Promise<void> {
+    if (!entry.tree) return;
     if (entry.job) {
       try {
         await entry.job.stop();
@@ -88,49 +96,77 @@ export class FixtureChildren {
         entry.job.close();
       }
       entry.job = undefined;
-    } else if (process.platform !== "win32" && entry.child.pid !== undefined) {
+    } else if (this.groupAlive(entry)) {
       try {
-        process.kill(-entry.child.pid, "SIGKILL");
+        process.kill(-entry.child.pid!, "SIGKILL");
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        if (!entry.isClosed) entry.child.kill("SIGKILL");
       }
-    } else if (!entry.isClosed) {
-      entry.child.kill("SIGKILL");
+    }
+    entry.tree = false;
+  }
+
+  spawn(
+    command: string,
+    args: string[],
+    options: SpawnOptionsWithoutStdio,
+  ): ChildProcessWithoutNullStreams {
+    const windows = process.platform === "win32";
+    const job = windows
+      ? openWindowsJob({
+          cleanupTimeoutMs: SHUTDOWN_GRACE_MS,
+          pollIntervalMs: 10,
+        })
+      : undefined;
+    let child: ChildProcessWithoutNullStreams | undefined;
+    try {
+      child = this.own(
+        spawn(
+          windows ? Bun.which("node")! : command,
+          windows
+            ? [
+                fileURLToPath(
+                  new URL("./fixture-child-leader.ts", import.meta.url),
+                ),
+                command,
+                JSON.stringify(args),
+              ]
+            : args,
+          {
+            ...options,
+            detached: !windows,
+            stdio: windows
+              ? ["pipe", "pipe", "pipe", "ipc"]
+              : ["pipe", "pipe", "pipe"],
+          },
+        ) as ChildProcessWithoutNullStreams,
+      );
+      const entry = [...this.pending].find((owned) => owned.child === child)!;
+      entry.tree = child.pid !== undefined;
+      entry.job = job;
+      if (job) {
+        job.attach(child.pid!);
+        // The waiting leader cannot fork until assignment has succeeded.
+        child.send({ start: true });
+      }
+      return child;
+    } catch (error) {
+      job?.close();
+      child?.kill("SIGKILL");
+      throw error;
     }
   }
 
   run(command: string, args: string[], options: SpawnOptionsWithoutStdio) {
-    const windows = process.platform === "win32";
-    const child = this.own(
-      spawn(
-        windows ? Bun.which("node")! : command,
-        windows
-          ? [
-              fileURLToPath(
-                new URL("./fixture-child-leader.ts", import.meta.url),
-              ),
-              command,
-              JSON.stringify(args),
-            ]
-          : args,
-        {
-          ...options,
-          detached: !windows,
-          stdio: windows
-            ? ["pipe", "pipe", "pipe", "ipc"]
-            : ["pipe", "pipe", "pipe"],
-        },
-      ),
-    );
+    const child = this.spawn(command, args, options);
     const entry = [...this.pending].find((owned) => owned.child === child)!;
     let stdout = "";
     let stderr = "";
     let error: Error | undefined;
-    child.stdout!.setEncoding("utf8").on("data", (chunk: string) => {
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
       stdout += chunk;
     });
-    child.stderr!.setEncoding("utf8").on("data", (chunk: string) => {
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
       stderr += chunk;
     });
     child.once("error", (cause) => {
@@ -149,8 +185,7 @@ export class FixtureChildren {
         );
       }
     });
-    // The Windows leader cannot fork until own() has attached its Job Object.
-    child.stdin!.end(windows ? "start" : undefined);
+    child.stdin.end();
     // A completed command must not leave an orphan holding its capture pipes open.
     const ended = new Promise<void>((resolve) => {
       child.once("exit", () => {
@@ -176,10 +211,9 @@ export class FixtureChildren {
 
   async cleanup(remove: () => void): Promise<void> {
     const deadline = performance.now() + CLEANUP_DEADLINE_MS;
-    const entries = [...this.pending];
     const failures: unknown[] = [];
     await Promise.all(
-      entries.map(async (entry) => {
+      [...this.pending].map(async (entry) => {
         const describe = () => `Fixture cleanup deadline: ${holder(entry)}`;
         try {
           if (entry.stop && !entry.isClosed) {

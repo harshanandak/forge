@@ -1,8 +1,14 @@
 // [integration] Real child owns a descendant holding a fixture file and private pipes.
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FixtureChildren } from "./fixture-children.ts";
@@ -52,6 +58,11 @@ test("fixture cleanup waits for its owned child and descendant stream before rem
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
+    // An adopted Linux zombie has terminated and holds no files or pipe handles.
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+    }
     return true;
   } catch {
     return false;
@@ -64,14 +75,10 @@ test("fixture cleanup ends an orphan holding a file and inherited pipe after its
   const descendant = `const fs=require('node:fs'); const fd=fs.openSync('held.txt','w'); const watcher=fs.watch('.',()=>{if(fs.existsSync('release')){watcher.close();fs.closeSync(fd);process.exit(0)}}); process.stdout.write(JSON.stringify({pid:process.pid}));`;
   // Gate the fork until ownership is installed, then let the leader exit first.
   const source = `process.stdin.once('data',()=>{const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{detached:process.platform==='win32',stdio:['ignore',1,2]});c.unref();process.stdin.destroy()});`;
-  const child = owner.own(
-    spawn(Bun.which("node")!, ["-e", source], {
-      cwd: root,
-      windowsHide: true,
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-    }),
-  );
+  const child = owner.spawn(Bun.which("node")!, ["-e", source], {
+    cwd: root,
+    windowsHide: true,
+  });
   const exited = once(child, "exit");
   const closed = once(child, "close");
   const ready = once(child.stdout, "data");
@@ -191,3 +198,41 @@ test("fixture command capture preserves output, exit status and spawn errors", a
   }
   expect(existsSync(root)).toBe(false);
 }, 10_000);
+
+test.skipIf(process.platform === "win32")(
+  "fixture cleanup forgets an empty process group and leaves a later sibling alive",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-stale-group-"));
+    const owner = new FixtureChildren();
+    const leader = owner.spawn(Bun.which("node")!, ["-e", ""], { cwd: root });
+    leader.stdin.end();
+    await once(leader, "close");
+    expect(() => process.kill(-leader.pid!, 0)).toThrow();
+    const sibling = spawn(
+      Bun.which("node")!,
+      ["-e", "setInterval(()=>{},1000);process.stdout.write('ready');"],
+      { detached: true, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const siblingClosed = once(sibling, "close");
+    const kill = process.kill.bind(process);
+    let signalledStaleGroup = false;
+    let probe: ReturnType<typeof spyOn<typeof process, "kill">> | undefined;
+    try {
+      await once(sibling.stdout, "data");
+      probe = spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (pid === -leader.pid! && signal !== 0) signalledStaleGroup = true;
+        return kill(pid, signal);
+      });
+      await owner.cleanup(() => rmSync(root, { recursive: true }));
+      expect(signalledStaleGroup).toBe(false);
+      expect(alive(sibling.pid!)).toBe(true);
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      probe?.mockRestore();
+      sibling.kill("SIGKILL");
+      await siblingClosed;
+      if (existsSync(root)) rmSync(root, { recursive: true });
+    }
+  },
+  10_000,
+);
