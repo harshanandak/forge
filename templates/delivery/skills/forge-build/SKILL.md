@@ -14,7 +14,7 @@ Every wake runs `forge pr state <n>` and acts on `verdict`.
 
 Before each call run `forge issue call <slice> --role <role>`; LIMIT_REACHED ends intent: report, start nothing. Retry REVISION_CONFLICT.
 
-Fill every field; empty fields block dispatch:
+Fill every field before delegating; an empty field blocks the call:
 
 ```
 Goal: <slice id and end state; read forge issue show for the spec>
@@ -34,9 +34,9 @@ Standing rules: <adopted rules; layer 1 passes the memory packet>
 2. Reproduce the issue (or read the code named) before editing. Log: `forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'` or `premise does not hold: <evidence>`; if false, stop and report; change no code.
 3. Every slice goes red then green. Name a check's implementation-independent expected value. Run the new assertion on trunk first; it must fail on that assertion, not setup or unrelated errors.
 4. `forge check run --input '{"checks":["<name>"]}'`. FAIL: exit 1, `ok:false`; INCOMPLETE/NOT_EXECUTED: exit 2; only PASS exits 0. Keep full `result`/receipt id, even nonzero. No `&&` red chains or discarded failure output.
-5. Smallest fix; rerun green; keep receipt id. Conventional commits.
+5. Smallest fix; rerun green; keep receipt id.
 
-Three proof levels:
+Proof:
 
 - **Light, not user-visible**: independent red/green assertion plus final-head receipt.
 - **User-visible, including standard slices** (UI, CLI output, API response, published package): Save one scenario on the built artifact as users get it, with a pass predicate and output; if `.forge/verify.md` exists, take that scenario from it, run its declared check with `forge check run`, save its named evidence and list the evidence paths in a slice comment.

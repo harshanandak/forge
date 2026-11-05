@@ -24,15 +24,11 @@ function pending(result: ResultEnvelope): string {
   expect(result).toMatchObject({
     ok: false,
     error: { code: "APPROVAL_REQUIRED" },
-    result: {
-      request: {
-        id: expect.any(String) as unknown,
-        ask: expect.any(String) as unknown,
-        binding: expect.any(String) as unknown,
-      },
-    },
   });
   const request = record(record(result.result)?.request);
+  expect(request?.id).toMatch(/^[a-f0-9-]{36}$/);
+  expect(typeof request?.ask).toBe("string");
+  expect(request?.binding).toMatch(/^sha256:[a-f0-9]{64}$/);
   return String(request?.id);
 }
 
