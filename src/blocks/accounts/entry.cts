@@ -111,10 +111,11 @@ async function contact(
     exe: ResolvedExecutable,
     args: string[],
     optional = false,
+    childEnv = env,
   ) {
     const out = await s.process.run(exe, args, {
       cwd: s.files.root,
-      env,
+      env: childEnv,
       timeoutMs: 10000,
       maxOutputBytes: LIMIT,
     });
@@ -228,10 +229,15 @@ async function contact(
   }
   const pin = ghPin(selected?.gh);
   const gh: ResolvedExecutable = { kind: "resolved", path: pin.path };
+  const ghEnv = {
+    ...env,
+    ...s.environment.select(["APPDATA", "GH_CONFIG_DIR", "XDG_CONFIG_HOME"]),
+  };
   const status = await run(
     gh,
     ["auth", "status", "--hostname", "github.com", "--json", "hosts"],
     true,
+    ghEnv,
   );
   let candidates: { login: string; active: boolean }[] = [];
   if (status.ok) {
@@ -250,7 +256,12 @@ async function contact(
       )
       .map(({ login, active }) => ({ login, active }));
   } else if (/unknown flag.*json/i.test(status.error)) {
-    const text = await run(gh, ["auth", "status", "--hostname", "github.com"]);
+    const text = await run(
+      gh,
+      ["auth", "status", "--hostname", "github.com"],
+      false,
+      ghEnv,
+    );
     candidates = [
       ...(text.text + "\n" + text.error).matchAll(
         /Logged in to github\.com account ([a-z\d-]+)[^\r\n]*\r?\n\s*- Active account: (true|false)/gi,
@@ -433,7 +444,7 @@ async function contact(
           "The reply must name the revised account choice",
         );
       const info = parse<{ id?: number; name?: string | null }>(
-        (await run(gh, ["api", `users/${login}`])).text,
+        (await run(gh, ["api", `users/${login}`], false, ghEnv)).text,
         {},
       );
       if (!Number.isSafeInteger(info.id) || !info.id || info.id < 1)

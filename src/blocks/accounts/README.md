@@ -9,6 +9,7 @@ The block runs Git and GitHub CLI through the process port. GitHub CLI 2.81.0 in
 `auth status --json hosts`; older versions use its text account and active-account lines.
 GitHub's public user lookup supplies the numeric noreply id and display name.
 No tokens are requested or stored. Detection drops ambient token and Git override variables.
+Only gh discovery receives the non-token APPDATA, GH_CONFIG_DIR and XDG_CONFIG_HOME paths.
 The approved absolute gh path, size and modification time are checked on later contact.
 
 Private device files live under `~/.forge/accounts`. The clone gets one marked include in the

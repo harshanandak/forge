@@ -37,6 +37,9 @@ test("installed accounts: one approval catches wrong authors and binds every clo
   const env: Record<string, string> = {
     HOME: home,
     USERPROFILE: home,
+    APPDATA: join(home, "appdata"),
+    GH_CONFIG_DIR: join(home, "gh"),
+    XDG_CONFIG_HOME: join(home, "xdg"),
     TMPDIR: temp,
     TEMP: temp,
     TMP: temp,
@@ -54,6 +57,7 @@ test("installed accounts: one approval catches wrong authors and binds every clo
     `
 const a = process.argv.slice(2);
 if (Object.keys(process.env).some(k => /^(GH_TOKEN|GITHUB_TOKEN|NODE_OPTIONS|GIT_AUTHOR_EMAIL)$/i.test(k))) process.exit(9);
+for (const key of ['APPDATA','GH_CONFIG_DIR','XDG_CONFIG_HOME']) if (!process.env[key]?.startsWith(process.env.HOME)) process.exit(7);
 if (a[0] === 'auth' && a[1] === 'status') {
   if (require('node:fs').existsSync(require('node:path').join(__dirname, 'text')) && a.includes('--json')) { process.stderr.write('unknown flag: --json'); process.exit(1); }
   if (!a.includes('--json')) process.stderr.write('github.com\\n  ✓ Logged in to github.com account alice (keyring)\\n  - Active account: false\\n  ✓ Logged in to github.com account bob (keyring)\\n  - Active account: true\\n');
