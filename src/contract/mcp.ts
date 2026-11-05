@@ -16,6 +16,8 @@ export interface McpCandidate {
   readonly op: string;
   /** Resolved block identity and original operation, unaffected by noun renames. */
   readonly blockId?: string;
+  /** Assembly provenance, independent of a custom block's declared id. */
+  readonly builtin?: boolean;
   readonly declaredOp?: string;
   readonly declaration: OperationDeclaration;
   /** Only admitted operations are listed; others stay reachable as ADMISSION_REQUIRED refusals. */
