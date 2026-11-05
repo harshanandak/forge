@@ -151,7 +151,8 @@ jobs:
       fail-fast: false
       matrix:
         # macOS hosted runners are capacity-limited and jobs were never picked up (PRs #46, #50).
-        # macOS adds one Node 24 source shard; only shard 1 also runs pack smoke.
+        # macOS and Linux each split their Node 24 tests into two shards (Linux Node 26 too);
+        # only shard 1 also runs pack smoke. One Linux job took 7.6 min at the median (forge-852).
         # Windows splits tests and pack smoke into two jobs: together they reached 1095 s of the
         # 1200 s limit once the spawn-heavy files ran serially (forge-648).
         # Each Windows tests leg now has three time-balanced shards; spawn-heavy files
@@ -160,8 +161,10 @@ jobs:
         # weigh 2.5x because they run alone while parallel files overlap.
         # Assignment spans unit, parallel integration and serial integration together.
         include:
-          - { os: ubuntu-latest, node: "24", suite: all }
-          - { os: ubuntu-latest, node: "26", suite: all, shard: "1/1" }
+          - { os: ubuntu-latest, node: "24", suite: all, shard: "1/2" }
+          - { os: ubuntu-latest, node: "24", suite: tests, shard: "2/2" }
+          - { os: ubuntu-latest, node: "26", suite: all, shard: "1/2" }
+          - { os: ubuntu-latest, node: "26", suite: tests, shard: "2/2" }
           - { os: macos-latest, node: "24", suite: all, shard: "1/2" }
           - { os: macos-latest, node: "24", suite: tests, shard: "2/2" }
           - { os: macos-latest, node: "26", suite: pack }
