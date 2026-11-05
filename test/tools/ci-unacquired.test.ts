@@ -51,6 +51,41 @@ const current: CurrentRun = {
   status: "completed",
   conclusion: "failure",
 };
+const queued = {
+  ...unacquired,
+  status: "queued",
+  conclusion: null,
+};
+
+test("reruns a queued never-acquired job and failed gate on a completed run", () => {
+  for (const run_attempt of [1, 2]) {
+    expect(
+      decideRerun(
+        { ...run, run_attempt, jobs: [success, queued, gate] },
+        { ...current, run_attempt },
+      ).rerun,
+    ).toBe(true);
+  }
+});
+
+for (const [name, input] of [
+  ["real test failure", { ...run, jobs: [queued, realFailure, gate] }],
+  [
+    "assigned runner",
+    { ...run, jobs: [{ ...queued, runner_name: "assigned runner" }, gate] },
+  ],
+  [
+    "recorded steps",
+    { ...run, jobs: [{ ...queued, steps: realFailure.steps }, gate] },
+  ],
+  ["third attempt", { ...run, run_attempt: 3, jobs: [queued, gate] }],
+] satisfies [string, CiRun][]) {
+  test(`does not rerun a queued job with ${name}`, () => {
+    expect(
+      decideRerun(input, { ...current, run_attempt: input.run_attempt }).rerun,
+    ).toBe(false);
+  });
+}
 
 test("reruns a never-acquired macOS job and failed gate on attempts 1 and 2", () => {
   for (const run_attempt of [1, 2]) {
