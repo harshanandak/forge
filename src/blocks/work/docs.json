@@ -1,5 +1,10 @@
 {
   "operations": {
+    "lane.close": {
+      "title": "Close lane",
+      "summary": "Claim the issue first. Close a merged lane with a PASS receipt, or a CLOSED unmerged PR with a dropped reason. Refuse active run locks and dirty work; resume matching close journals. keepOpen preserves the issue; discardIgnored authorizes other ignored files.",
+      "examples": [{ "input": { "id": "demo-1", "pr": 42, "receipt": "<id>" } }]
+    },
     "lane.start": {
       "title": "Start lane",
       "summary": "Start a capped worktree for an open issue. Brief must be in the project with Goal, Acceptance test, Files, Forbidden actions, Stop point and Prior art sections. Repeating the same arguments adopts a preserved worktree.",

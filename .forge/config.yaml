@@ -34,6 +34,9 @@ blocks:
       builtin: forge/work
     config:
       claimTtlSeconds: 7200
+      lanes:
+        discardIgnored:
+          [node_modules/, dist/, .agents/, .claude/, src/generated/]
       labelOrder:
         - p0
         - p1

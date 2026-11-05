@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["issue", "status", "removed", "discarded"],
+  "properties": {
+    "issue": { "type": "string" },
+    "status": { "type": "string" },
+    "removed": { "type": "boolean" },
+    "discarded": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

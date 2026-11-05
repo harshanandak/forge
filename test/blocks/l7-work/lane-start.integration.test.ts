@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -402,4 +403,316 @@ test("lane CLI recovers a registry lock left by a dead helper owner", () => {
   expect(crashed.status, crashed.stderr).toBe(0);
   const result = start(issue());
   expect(result.ok, JSON.stringify(result)).toBe(true);
+}, 30000);
+
+function closeFixture() {
+  configure(30);
+  const id = issue();
+  const closeRecord = start(id).result;
+  expect(call("issue.claim", { id }).ok).toBe(true);
+  const head = git(["rev-parse", "HEAD"], String(closeRecord.worktree));
+  const pull = {
+    state: "MERGED",
+    headRefName: closeRecord.branch,
+    headRefOid: head,
+    mergeCommit: { oid: head },
+    url: "https://github.com/example/project/pull/42",
+  };
+  writeFileSync(join(root, "pull.json"), JSON.stringify(pull));
+  writeFileSync(
+    join(root, "bin/gh.cjs"),
+    `process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(join(root, "pull.json"))}, 'utf8'));`,
+  );
+  writeFileSync(
+    join(root, "bin/gh"),
+    `#!/bin/sh\nexec node "${join(root, "bin/gh.cjs").replaceAll("\\", "/")}" "$@"\n`,
+  );
+  chmodSync(join(root, "bin/gh"), 0o755);
+  writeFileSync(
+    join(root, "bin/gh.cmd"),
+    `@echo off\r\nnode "${join(root, "bin/gh.cjs")}" %*\r\n`,
+  );
+  return { id, lane: closeRecord, head, pull };
+}
+function close(id: string, extra: Record<string, unknown>) {
+  const result = spawnSync(
+    "node",
+    [bin, "lane", "close", "--input", JSON.stringify({ id, pr: 42, ...extra })],
+    {
+      cwd: repo,
+      env: {
+        ...process.env,
+        PATH: join(root, "bin") + delimiter + process.env.PATH,
+        FORGE_DEVICE_ROOT: join(root, "device"),
+        FORGE_SESSION: "lane-acceptance",
+      },
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 20000,
+    },
+  );
+  expect(result.error).toBeUndefined();
+  return JSON.parse(result.stdout) as ReturnType<typeof cli>;
+}
+function receipt() {
+  const current = cli(["config", "show"]);
+  expect(
+    call("config.apply", {
+      expectRevision: current.result.revision,
+      patch: [
+        {
+          op: "set",
+          path: "/blocks/check",
+          value: {
+            source: { builtin: "forge/check" },
+            bind: { state: "core" },
+            config: {
+              commands: {
+                acceptance: { argv: ["node", "-e", "process.exit(0)"] },
+              },
+            },
+          },
+        },
+      ],
+    }).ok,
+  ).toBe(true);
+  const result = call("check.run", { checks: ["acceptance"] });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  return String(result.result.id);
+}
+function registry() {
+  return JSON.parse(
+    readFileSync(join(repo, ".git/forge-lanes.json"), "utf8"),
+  ) as Record<string, unknown>[];
+}
+
+test("lane close CLI removes a merged lane with a verified receipt", () => {
+  const { id, lane } = closeFixture(),
+    proof = receipt();
+  expect(close(id, { receipt: "missing" }).error?.code).toBe("RECEIPT_INVALID");
+  expect(existsSync(join(repo, `.git/forge-lane-close-${id}.json`))).toBe(
+    false,
+  );
+  const contender = `
+const fs = require('node:fs');
+const staged = fs.mkdtempSync(${JSON.stringify(join(root, "contender-"))});
+fs.writeFileSync(staged + '/owner', 'held');
+try { fs.renameSync(staged, ${JSON.stringify(join(repo, `.git/forge-lane-${id}.lock`))}); fs.writeFileSync(${JSON.stringify(join(root, "contender"))}, 'entered'); }
+catch { fs.writeFileSync(${JSON.stringify(join(root, "contender"))}, 'excluded'); }
+finally { fs.rmSync(staged, { recursive: true, force: true }); }
+`;
+  const ghScript = join(root, "bin/gh.cjs");
+  writeFileSync(ghScript, contender + readFileSync(ghScript, "utf8"));
+  const result = close(id, { receipt: proof });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(readFileSync(join(root, "contender"), "utf8")).toBe("excluded");
+  expect(result.result).toMatchObject({
+    issue: id,
+    status: "closed",
+    removed: true,
+  });
+  expect(call("issue.show", { id }).result).toMatchObject({
+    status: "closed",
+    receipt: proof,
+  });
+  expect(existsSync(String(lane.worktree))).toBe(false);
+  expect(git(["branch", "--list", String(lane.branch)])).toBe("");
+  expect(registry().some((row) => row.issue === id)).toBe(false);
+}, 30000);
+
+test("lane close CLI drops a closed unmerged PR and keeps the issue and branch", () => {
+  const { id, lane, pull } = closeFixture();
+  writeFileSync(
+    join(root, "pull.json"),
+    JSON.stringify({ ...pull, state: "CLOSED", mergeCommit: null }),
+  );
+  const result = close(id, { dropped: "Replaced by another approach" });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(call("issue.show", { id }).result.status).toBe("open");
+  expect(existsSync(String(lane.worktree))).toBe(false);
+  expect(git(["branch", "--list", String(lane.branch)])).toContain(
+    String(lane.branch),
+  );
+  const records = call("issue.comments", { id }).result.records as {
+    value: { body: string };
+  }[];
+  expect(
+    records.filter((row) =>
+      row.value.body.includes("Replaced by another approach"),
+    ),
+  ).toHaveLength(1);
+}, 30000);
+
+test("lane close CLI refuses a receipt for another merged PR on the same issue", () => {
+  const { id, lane, pull } = closeFixture();
+  const otherUrl = "https://github.com/example/project/pull/43";
+  git(["switch", "--detach"]);
+  let proof: string, otherHead: string;
+  try {
+    git(["commit", "--allow-empty", "-m", "other merged PR"]);
+    otherHead = git(["rev-parse", "HEAD"]);
+    proof = receipt();
+  } finally {
+    git(["switch", "main"]);
+  }
+  expect(otherHead).not.toBe(pull.mergeCommit.oid);
+  for (const url of [pull.url, otherUrl])
+    expect(call("issue.link", { id, relation: "delivers", url }).ok).toBe(true);
+  writeFileSync(
+    join(root, "pull-43.json"),
+    JSON.stringify({
+      ...pull,
+      url: otherUrl,
+      headRefOid: otherHead,
+      mergeCommit: { oid: otherHead },
+    }),
+  );
+  writeFileSync(
+    join(root, "bin/gh.cjs"),
+    `const file = process.argv[4].endsWith('/43') ? 'pull-43.json' : 'pull.json';
+process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(root)} + '/' + file, 'utf8'));`,
+  );
+  const result = close(id, { receipt: proof });
+  expect(result.error?.code, JSON.stringify(result)).toBe(
+    "RECEIPT_HEAD_MISMATCH",
+  );
+  expect(call("issue.show", { id }).result.status).toBe("open");
+  expect(existsSync(String(lane.worktree))).toBe(true);
+  expect(existsSync(join(repo, `.git/forge-lane-close-${id}.json`))).toBe(
+    false,
+  );
+  const correct = close(id, { receipt: receipt() });
+  expect(correct.ok, JSON.stringify(correct)).toBe(true);
+  expect(existsSync(String(lane.worktree))).toBe(false);
+}, 30000);
+
+test("lane close CLI retries failed cleanup without another close event or comment", () => {
+  const { id, lane } = closeFixture(),
+    proof = receipt();
+  expect(call("issue.release", { id }).ok).toBe(true);
+  expect(close(id, { receipt: proof }).error?.code).toBe("CONTEXT_MISSING");
+  expect(call("issue.claim", { id }).ok).toBe(true);
+  const lock = join(repo, ".git/forge-lanes.json.lock");
+  writeFileSync(lock, "held", { flag: "wx" });
+  try {
+    const failed = close(id, { receipt: proof });
+    expect(failed.error?.code, JSON.stringify(failed)).toBe("INPUT_CONFLICT");
+  } finally {
+    rmSync(lock);
+  }
+  const accepted = call("issue.show", { id }).result;
+  expect(accepted).toMatchObject({ status: "closed", receipt: proof });
+  expect(existsSync(String(lane.worktree))).toBe(false);
+  expect(call("issue.release", { id }).ok).toBe(true);
+  const released = call("issue.show", { id }).result;
+  expect(released.lease).toBeUndefined();
+  const beforeEvents = call("issue.events", { id }).result.events;
+  const beforeComments = call("issue.comments", { id }).result.records;
+  expect(beforeComments).toHaveLength(1);
+  const result = close(id, { receipt: proof });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(call("issue.show", { id }).result).toEqual(released);
+  expect(call("issue.events", { id }).result.events).toEqual(beforeEvents);
+  expect(call("issue.comments", { id }).result.records).toEqual(beforeComments);
+  expect(existsSync(join(repo, `.git/forge-lane-close-${id}.json`))).toBe(
+    false,
+  );
+}, 30000);
+
+test("lane close CLI refuses a nonempty run lock", () => {
+  const { id, lane } = closeFixture(),
+    lock = join(repo, `.git/forge-lane-${id}.lock`);
+  mkdirSync(lock);
+  writeFileSync(join(lock, "owner"), "held");
+  try {
+    const result = close(id, { receipt: "unused" });
+    expect(result.error?.code).toBe("INPUT_CONFLICT");
+    expect(result.error?.message).toContain("run lock");
+    expect(existsSync(String(lane.worktree))).toBe(true);
+  } finally {
+    rmSync(lock, { recursive: true });
+  }
+}, 30000);
+
+test("lane close CLI refuses an unmerged PR before tracker or checkout changes", () => {
+  const { id, lane, pull } = closeFixture();
+  writeFileSync(
+    join(root, "pull.json"),
+    JSON.stringify({ ...pull, state: "OPEN", mergeCommit: null }),
+  );
+  expect(close(id, { receipt: "unused" }).error?.code).toBe("PR_NOT_MERGED");
+  expect(call("issue.show", { id }).result.status).toBe("open");
+  expect(existsSync(String(lane.worktree))).toBe(true);
+}, 30000);
+
+test("lane close CLI resumes the helper journal after registry removal without duplicate comments", () => {
+  const { id, lane, head, pull } = closeFixture(),
+    proof = receipt();
+  // Match the old helper's note by body, even when its comment id was not journaled.
+  const body = `PR #42 landed: ${pull.url}\nMerge commit: ${head}\nReceipt: ${proof}\nChecks: acceptance: PASS`;
+  expect(call("issue.comment", { id, body }).ok).toBe(true);
+  const journal = join(repo, `.git/forge-lane-close-${id}.json`);
+  writeFileSync(
+    journal,
+    JSON.stringify({
+      pr: 42,
+      receipt: proof,
+      keepOpen: false,
+      dropped: "",
+      branch: lane.branch,
+      worktree: lane.worktree,
+      head,
+      mergeCommit: head,
+      claimed: true,
+    }),
+  );
+  writeFileSync(
+    join(repo, ".git/forge-lanes.json"),
+    JSON.stringify(registry().filter((row) => row.issue !== id)),
+  );
+  expect(close(id, { receipt: proof }).ok).toBe(true);
+  const records = call("issue.comments", { id }).result.records as {
+    value: { body: string };
+  }[];
+  expect(records.filter((row) => row.value.body === body)).toHaveLength(1);
+  expect(existsSync(journal)).toBe(false);
+  expect(existsSync(String(lane.worktree))).toBe(false);
+}, 30000);
+
+test("lane registry survives a reverted display prefix for show, start and close", () => {
+  configure(30);
+  const id = issue();
+  const setPrefix = (value: string) => {
+    const current = cli(["config", "show"]);
+    expect(
+      call("config.apply", {
+        expectRevision: current.result.revision,
+        patch: [{ op: "set", path: "/blocks/work/config/idPrefix", value }],
+      }).ok,
+    ).toBe(true);
+  };
+  setPrefix("temporary");
+  const temporary = id.replace(/^sample-/, "temporary-"),
+    lane = start(temporary).result;
+  setPrefix("sample");
+  expect(call("lane.show", { id }).ok).toBe(true);
+  expect(start(id, { branch: lane.branch }).ok).toBe(true);
+  expect(start(issue()).ok).toBe(true);
+  // Slice 1 and helper records have no stable-id field. They must remain readable too.
+  const old = registry().map(({ issueId: _identity, ...row }) => row);
+  writeFileSync(join(repo, ".git/forge-lanes.json"), JSON.stringify(old));
+  expect(call("lane.show", { id }).ok).toBe(true);
+  expect(call("issue.claim", { id }).ok).toBe(true);
+  const head = git(["rev-parse", "HEAD"], String(lane.worktree));
+  writeFileSync(
+    join(root, "pull.json"),
+    JSON.stringify({
+      state: "CLOSED",
+      headRefName: lane.branch,
+      headRefOid: head,
+      mergeCommit: null,
+      url: "https://github.com/example/project/pull/42",
+    }),
+  );
+  expect(close(id, { dropped: "Prefix recovery" }).ok).toBe(true);
 }, 30000);
