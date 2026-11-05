@@ -287,7 +287,7 @@ mock.module(${JSON.stringify(resolve(import.meta.dirname, "../../tools/run-comma
  appendFileSync(${JSON.stringify(join(root, "issue-calls"))},'lookup\n');
  return result;
 }}));
-await import(${JSON.stringify(script)});`,
+const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
   );
   function run(args: string[], cwd = caller, entry = script) {
     childLaunches++;
@@ -317,17 +317,16 @@ await import(${JSON.stringify(script)});`,
     const key = `started:${trustedPolicy}`;
     if (reuse && repositories.restore(key, root))
       return join(main, ".worktrees", "one");
-    const result = run([
-      "start",
-      "one",
-      "--branch",
-      "lane/one",
-      "--brief",
-      brief,
-    ]);
-    expect(result.code).toBe(0);
+    const lane = join(main, ".worktrees", "one");
+    git(["worktree", "add", "-b", "lane/one", lane, "origin/main"]);
+    writeFileSync(
+      join(main, ".git/forge-lanes.json"),
+      JSON.stringify([
+        { issue: "one", worktree: lane, branch: "lane/one", brief },
+      ]),
+    );
     if (reuse) repositories.save(key, root, true);
-    return result.output.worktree!;
+    return lane;
   }
   function trust(policy: string) {
     writeFileSync(join(main, ".forge", "config.yaml"), policy);
@@ -846,7 +845,7 @@ async function signalRun(emitted: boolean) {
   const helper = join(f.root, "emit-term.ts");
   writeFileSync(
     helper,
-    `import {existsSync} from 'node:fs';const timer=setInterval(()=>{if(existsSync(${JSON.stringify(join(f.root, "signal"))})){clearInterval(timer);process.emit('SIGTERM');}},20);await import(${JSON.stringify(script)});`,
+    `import {existsSync} from 'node:fs';const timer=setInterval(()=>{if(existsSync(${JSON.stringify(join(f.root, "signal"))})){clearInterval(timer);process.emit('SIGTERM');}},20);const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
   );
   const first = f.launch(emitted ? helper : script, true);
   let pid = 0;
@@ -939,7 +938,7 @@ test("reply guard releases the lane run lock after stopping the harness", () => 
   // Accelerate the child clock; exercise the CLI's actual 90-second guard and finally.
   writeFileSync(
     helper,
-    `const now=Date.now;Date.now=()=>now()*1000;await import(${JSON.stringify(script)});`,
+    `const now=Date.now;Date.now=()=>now()*1000;const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
   );
   const result = f.run(["run", "one", "--role", "builder"], f.caller, helper);
   expect(result.code).toBe(0);
@@ -2558,7 +2557,7 @@ test("run records retain the old complete JSON when atomic publication is interr
   const helper = join(f.root, "interrupted-publish.ts");
   writeFileSync(
     helper,
-    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};let injected=false;mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{if(String(to).endsWith('run.json')&&native.existsSync(to)&&!injected){injected=true;native.writeFileSync(${JSON.stringify(before)},native.readFileSync(to));throw new Error('injected publication interruption');}return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};let injected=false;mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{if(String(to).endsWith('run.json')&&native.existsSync(to)&&!injected){injected=true;native.writeFileSync(${JSON.stringify(before)},native.readFileSync(to));throw new Error('injected publication interruption');}return native.renameSync(from,to);}}));const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
   );
   const result = f.run(["run", "one", "--role", "builder"], f.caller, helper);
   expect(existsSync(before)).toBe(true);
@@ -2578,7 +2577,7 @@ function detachProbe(f: ReturnType<typeof autoFixture>, handoff = "") {
     pidFile = join(f.root, "detached-pid");
   writeFileSync(
     helper,
-    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const match=String(to).match(/owner-.*-(\\d+)$/);if(match){native.writeFileSync(${JSON.stringify(pidFile)},match[1]);${handoff}}return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const match=String(to).match(/owner-.*-(\\d+)$/);if(match){native.writeFileSync(${JSON.stringify(pidFile)},match[1]);${handoff}}return native.renameSync(from,to);}}));const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
   );
   return { helper, pid: () => Number(readFileSync(pidFile, "utf8")) };
 }
@@ -2727,7 +2726,7 @@ test("detach waits for a deliberately delayed parent lock handoff", async () => 
   const helper = join(f.root, "delayed-handoff.ts");
   writeFileSync(
     helper,
-    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{if(/owner-.*-\\d+$/.test(String(to)))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5500);return native.renameSync(from,to);}}));await import(${JSON.stringify(script)});`,
+    `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{if(/owner-.*-\\d+$/.test(String(to)))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5500);return native.renameSync(from,to);}}));const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
   );
   const result = await f.launch(helper, false, ["auto", "one", "--detach"]);
   const { pid, log } = result.output as unknown as { pid: number; log: string };
@@ -2782,11 +2781,11 @@ test("list never locks idle history during 25 concurrent detached autos", async 
     marker = join(f.root, "list-lock-attempt");
   writeFileSync(
     helper,
-    `${topology.setup}import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const result=native.renameSync(from,to);if(String(to).endsWith('forge-lane-one.lock')){native.writeFileSync(${JSON.stringify(marker)},'locked');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,500);}return result;}}));await import(${JSON.stringify(script)});`,
+    `${topology.setup}import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,renameSync:(from,to)=>{const result=native.renameSync(from,to);if(String(to).endsWith('forge-lane-one.lock')){native.writeFileSync(${JSON.stringify(marker)},'locked');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,500);}return result;}}));const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
   );
   writeFileSync(
     autoHelper,
-    `${topology.setup}await import(${JSON.stringify(script)});`,
+    `${topology.setup}const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
   );
   let refusals = 0;
   const detached: number[] = [];
@@ -2865,7 +2864,7 @@ for (const operation of ["reclaim", "rename"])
     const helper = join(f.root, "lock-error.ts");
     writeFileSync(
       helper,
-      `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,${operation === "reclaim" ? "unlinkSync" : "renameSync"}:(from,...args)=>{if(${operation === "reclaim" ? `String(from)===${JSON.stringify(owner)}` : `String(args[0])===${JSON.stringify(lock)}`})throw Object.assign(new Error('injected ${operation} denied'),{code:'EACCES'});return native.${operation === "reclaim" ? "unlinkSync" : "renameSync"}(from,...args);}}));await import(${JSON.stringify(script)});`,
+      `import {mock} from 'bun:test';import fs from 'node:fs';const native={...fs};mock.module('node:fs',()=>({...native,${operation === "reclaim" ? "unlinkSync" : "renameSync"}:(from,...args)=>{if(${operation === "reclaim" ? `String(from)===${JSON.stringify(owner)}` : `String(args[0])===${JSON.stringify(lock)}`})throw Object.assign(new Error('injected ${operation} denied'),{code:'EACCES'});return native.${operation === "reclaim" ? "unlinkSync" : "renameSync"}(from,...args);}}));const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
     );
     const result = f.run(["list"], f.caller, helper);
     expect(result.code).toBe(0);

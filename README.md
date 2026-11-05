@@ -214,13 +214,15 @@ The `test` script runs all lanes. CI runs the full matrix. Lint requires a canar
 Bun; format is available in stable Bun 1.4.4. Read
 [AGENTS.md](AGENTS.md) and [CODING_STANDARDS.md](CODING_STANDARDS.md) before editing.
 
-Repository lanes use `bun tools/lane.ts start`, `run`, `tier` and `list`. After
-merging, close from outside the lane worktree with a PASS receipt on the merge commit:
+Start repository lanes with `forge lane start <issue> --branch <name> --brief <file>`;
+`bun tools/lane.ts` provides `run`, `tier` and `list`. After
+merging, close with a PASS receipt on the merge commit:
 Run from an agent session, or set `FORGE_SESSION` to a stable session id in a plain
 terminal before running close.
 
 ```sh
-FORGE_GH_USER=<github-user> bun tools/lane.ts close <issue> --pr <number> --receipt <id>
+forge issue claim <issue>
+forge lane close <issue> --pr <number> --receipt <id>
 ```
 
 Close checks the PR, local head, clean worktree and receipt before writing, then

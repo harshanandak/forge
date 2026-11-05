@@ -46,7 +46,8 @@ test("rendered build resolves and reuses the slice base", async () => {
       "git symbolic-ref --short refs/remotes/origin/HEAD",
     );
     expect(setup).toContain("git remote set-head origin --auto");
-    expect(setup).toContain("-b <branch> <base-ref>");
+    expect(setup).toContain("forge lane start <slice> --branch <branch>");
+    expect(setup).toContain("--brief <project-relative-brief>");
     expect(build).toContain("git diff --name-only <base-ref>...HEAD");
     expect(setup).toContain("dropping the `origin/` prefix");
     expect(setup).toContain("gh pr create --base <base>");
@@ -855,7 +856,7 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       /forge issue release[\s\S]*Last action: the owning session runs `forge agent wait <n>`/,
     );
     expect(text["forge-build"]).toContain(
-      "git worktree add <path> -b <branch> <base-ref>",
+      "forge lane start <slice> --branch <branch> --brief <project-relative-brief>",
     );
     expect(text["forge-build"]).toContain("then the project's install");
     expect(text["forge-review"]).toContain(
