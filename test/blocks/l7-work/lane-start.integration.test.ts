@@ -543,6 +543,82 @@ test("lane close CLI drops a closed unmerged PR and keeps the issue and branch",
   ).toHaveLength(1);
 }, 30000);
 
+test("lane close CLI refuses a receipt for another merged PR on the same issue", () => {
+  const { id, lane, pull } = closeFixture();
+  const otherUrl = "https://github.com/example/project/pull/43";
+  git(["switch", "--detach"]);
+  let proof: string, otherHead: string;
+  try {
+    git(["commit", "--allow-empty", "-m", "other merged PR"]);
+    otherHead = git(["rev-parse", "HEAD"]);
+    proof = receipt();
+  } finally {
+    git(["switch", "main"]);
+  }
+  expect(otherHead).not.toBe(pull.mergeCommit.oid);
+  for (const url of [pull.url, otherUrl])
+    expect(call("issue.link", { id, relation: "delivers", url }).ok).toBe(true);
+  writeFileSync(
+    join(root, "pull-43.json"),
+    JSON.stringify({
+      ...pull,
+      url: otherUrl,
+      headRefOid: otherHead,
+      mergeCommit: { oid: otherHead },
+    }),
+  );
+  writeFileSync(
+    join(root, "bin/gh.cjs"),
+    `const file = process.argv[4].endsWith('/43') ? 'pull-43.json' : 'pull.json';
+process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(root)} + '/' + file, 'utf8'));`,
+  );
+  const result = close(id, { receipt: proof });
+  expect(result.error?.code, JSON.stringify(result)).toBe(
+    "RECEIPT_HEAD_MISMATCH",
+  );
+  expect(call("issue.show", { id }).result.status).toBe("open");
+  expect(existsSync(String(lane.worktree))).toBe(true);
+  expect(existsSync(join(repo, `.git/forge-lane-close-${id}.json`))).toBe(
+    false,
+  );
+  const correct = close(id, { receipt: receipt() });
+  expect(correct.ok, JSON.stringify(correct)).toBe(true);
+  expect(existsSync(String(lane.worktree))).toBe(false);
+}, 30000);
+
+test("lane close CLI retries failed cleanup without another close event or comment", () => {
+  const { id, lane } = closeFixture(),
+    proof = receipt();
+  expect(call("issue.release", { id }).ok).toBe(true);
+  expect(close(id, { receipt: proof }).error?.code).toBe("CONTEXT_MISSING");
+  expect(call("issue.claim", { id }).ok).toBe(true);
+  const lock = join(repo, ".git/forge-lanes.json.lock");
+  writeFileSync(lock, "held", { flag: "wx" });
+  try {
+    const failed = close(id, { receipt: proof });
+    expect(failed.error?.code, JSON.stringify(failed)).toBe("INPUT_CONFLICT");
+  } finally {
+    rmSync(lock);
+  }
+  const accepted = call("issue.show", { id }).result;
+  expect(accepted).toMatchObject({ status: "closed", receipt: proof });
+  expect(existsSync(String(lane.worktree))).toBe(false);
+  expect(call("issue.release", { id }).ok).toBe(true);
+  const released = call("issue.show", { id }).result;
+  expect(released.lease).toBeUndefined();
+  const beforeEvents = call("issue.events", { id }).result.events;
+  const beforeComments = call("issue.comments", { id }).result.records;
+  expect(beforeComments).toHaveLength(1);
+  const result = close(id, { receipt: proof });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(call("issue.show", { id }).result).toEqual(released);
+  expect(call("issue.events", { id }).result.events).toEqual(beforeEvents);
+  expect(call("issue.comments", { id }).result.records).toEqual(beforeComments);
+  expect(existsSync(join(repo, `.git/forge-lane-close-${id}.json`))).toBe(
+    false,
+  );
+}, 30000);
+
 test("lane close CLI refuses a nonempty run lock", () => {
   const { id, lane } = closeFixture(),
     lock = join(repo, `.git/forge-lane-${id}.lock`);

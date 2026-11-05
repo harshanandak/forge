@@ -100,6 +100,7 @@ type LaneOutput = Lane & { lease?: TrackerItem["lease"] };
 type CloseIssue = (
   call: HandlerCall<TrackerOperations<"issue">["issue.close"][0]>,
   validateOnly?: boolean,
+  deliveredUrl?: string,
 ) => Promise<TrackerItem>;
 type CloseLaneInput = ItemRef & {
   pr: number;
@@ -771,7 +772,7 @@ const operations: Operations<WorkOperations> = {
     let lane = laneRegistry(files).lanes.find(
       (row) => laneIdentity(row) === identity,
     );
-    const journal = lane ? undefined : closeJournal(files, identity).value;
+    const journal = closeJournal(files, identity, lane).value;
     if (
       !lane &&
       journal &&
@@ -785,10 +786,19 @@ const operations: Operations<WorkOperations> = {
         brief: "",
       };
     if (!lane) fail("NOT_FOUND", `No recorded lane for ${issue.id}`);
+    // A historical generation admits cleanup context only; issue writes remain lease-fenced.
+    const lease =
+      issue.lease ??
+      (issue.status === "closed" &&
+      journal?.receipt === issue.receipt &&
+      journal?.keepOpen === false &&
+      !journal?.dropped
+        ? state.lease(key(identity))
+        : undefined);
     return {
       ...lane,
       issue: issue.id,
-      ...(issue.lease ? { lease: issue.lease } : {}),
+      ...(lease ? { lease } : {}),
     };
   },
   "lane.start": async ({ input, services, config, signal, deadline }) => {
@@ -1273,6 +1283,7 @@ const operations: Operations<WorkOperations> = {
           (!linked || current.receipt !== receipt))
       )
         refuse("INPUT_CONFLICT", "Issue was closed by another landing");
+      const recovering = !!progress && !keepOpen && current.status === "closed";
       const note = dropped
         ? `PR #${input.pr} dropped: ${pull.url}\nReason: ${dropped}`
         : `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}`;
@@ -1313,11 +1324,20 @@ const operations: Operations<WorkOperations> = {
             ...call,
             input: { id: current.id, relation: "delivers", url: pull.url! },
           });
-        await (operations["issue.close"] as CloseIssue)(closing, true);
+        await (operations["issue.close"] as CloseIssue)(
+          closing,
+          true,
+          pull.url,
+        );
       }
       save();
-      if (!keepOpen) current = await operations["issue.close"](closing);
-      if (!matching) {
+      if (!keepOpen && current.status !== "closed")
+        current = await (operations["issue.close"] as CloseIssue)(
+          closing,
+          false,
+          pull.url,
+        );
+      if (!matching && !recovering) {
         const prefix = `comment:${id}:`,
           commentId = prefix + (state.count(prefix) + 1);
         persist(state, commentId, { id, body: note }, 0, key(id));
@@ -1548,6 +1568,7 @@ const operations: Operations<WorkOperations> = {
   "issue.close": async (
     { input, services, config, signal },
     validateOnly = false,
+    deliveredUrl?: string,
   ) => {
     const state = client(services);
     const ids = idsFor(state, config);
@@ -1566,9 +1587,13 @@ const operations: Operations<WorkOperations> = {
           "RECEIPT_INVALID",
           "Closing requires an existing verified PASS receipt",
         );
-      const link = appended(state, `link:${id}:`).findLast(
-        (record) => (record.value as LinkInput).relation === "delivers",
-      )?.value as LinkInput | undefined;
+      const link = appended(state, `link:${id}:`).findLast((record) => {
+        const link = record.value as LinkInput;
+        return (
+          link.relation === "delivers" &&
+          (deliveredUrl === undefined || link.url === deliveredUrl)
+        );
+      })?.value as LinkInput | undefined;
       if (
         !link ||
         !/^https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*\/?$/.test(
