@@ -3,6 +3,103 @@ import { runCli } from "../../src/surface/cli.ts";
 import { candidate, fakeCatalog } from "./fixtures/catalog.ts";
 
 for (const name of ["text", "json"]) {
+  for (const [key, ref, target] of [
+    ["flags", "#/$defs/flag%73", { properties: { [name]: {} } }],
+    ["flags/~", "#/$defs/flags~1~0", { properties: { [name]: {} } }],
+    ["flags/~", "#/$defs/flags%7E1%7E0", { properties: { [name]: {} } }],
+    ["flags", "#/%24defs%2Fflags", { properties: { [name]: {} } }],
+  ] as const) {
+    test(`CLI refuses --${name} declared through escaped ref ${ref}`, async () => {
+      const entry = {
+        ...candidate("sample.capture", { args: [] }),
+        inputSchema: {
+          type: "object",
+          allOf: [{ $ref: ref }],
+          $defs: { [key]: target },
+        },
+      };
+      const catalog = fakeCatalog([entry]);
+      const response = await runCli(catalog, [entry.op, `--${name}`]);
+      expect(response.exitCode).toBe(6);
+      expect(response.stdout).toContain("reserved");
+      expect(response.stdout).toContain("--input JSON");
+      expect(catalog.calls).toHaveLength(0);
+      const input = { [name]: "hello" };
+      const explicit = await runCli(catalog, [
+        entry.op,
+        "--input",
+        JSON.stringify(input),
+        `--${name}`,
+      ]);
+      expect(explicit.exitCode).toBe(0);
+      expect(catalog.calls.at(-1)?.input).toEqual(input);
+    }, 30_000);
+  }
+
+  for (const [label, ref, target] of [
+    [
+      "non-object",
+      "#/$defs/flags",
+      { type: "string", properties: { [name]: {} } },
+    ],
+    ["true", "#/$defs/flags", true],
+    ["false", "#/$defs/flags", false],
+    ["missing", "#/$defs/missing", { properties: { [name]: {} } }],
+    [
+      "non-local",
+      "https://example.invalid/input#/$defs/flags",
+      { properties: { [name]: {} } },
+    ],
+    ["decoded non-object", "#/$defs/flag%73", { type: "string" }],
+  ] as const) {
+    test(`CLI preserves --${name} formatting for a ${label} ref target`, async () => {
+      const entry = {
+        ...candidate("sample.capture", { args: [] }),
+        inputSchema: {
+          type: "object",
+          allOf: [{ $ref: ref }],
+          $defs: {
+            flags: target,
+            "flag%73": { properties: { [name]: {} } },
+          },
+        },
+      };
+      const catalog = fakeCatalog([entry]);
+      const response = await runCli(catalog, [entry.op, `--${name}`]);
+      expect(response.exitCode).toBe(0);
+      expect(response.envelope).toMatchObject({ ok: true, result: {} });
+      expect(catalog.calls).toHaveLength(1);
+      expect(catalog.calls[0]?.input).toEqual({});
+      if (name === "text") expect(response.stdout).toContain("ok: true\n");
+      else expect(JSON.parse(response.stdout)).toMatchObject({ ok: true });
+    }, 30_000);
+  }
+
+  test(`CLI finds --${name} in mutually cyclic refs without looping`, async () => {
+    for (const declared of [false, true]) {
+      const entry = {
+        ...candidate("sample.capture", { args: [] }),
+        inputSchema: {
+          type: "object",
+          allOf: [{ $ref: "#/$defs/a" }],
+          $defs: {
+            a: { allOf: [{ $ref: "#/$defs/b" }] },
+            b: {
+              allOf: [{ $ref: "#/$defs/a" }],
+              ...(declared ? { properties: { [name]: {} } } : {}),
+            },
+          },
+        },
+      };
+      const catalog = fakeCatalog([entry]);
+      const response = await runCli(catalog, [entry.op, `--${name}`]);
+      expect(response.exitCode).toBe(declared ? 6 : 0);
+      expect(catalog.calls).toHaveLength(declared ? 0 : 1);
+      if (declared) expect(response.stdout).toContain("reserved");
+      else expect(catalog.calls[0]?.input).toEqual({});
+    }
+  }, 30_000);
+
   test(`CLI preserves --${name} formatting when only non-object branches declare the input`, async () => {
     for (const type of ["string", ["string", "null"]]) {
       for (const branch of [
