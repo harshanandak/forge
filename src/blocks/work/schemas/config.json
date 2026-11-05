@@ -81,6 +81,13 @@
           "minimum": 1,
           "default": 3
         },
+        "discardIgnored": {
+          "description": "Ignored paths safe to discard when removing a clean lane. A trailing slash matches a directory prefix.",
+          "type": "array",
+          "default": ["node_modules/", "dist/"],
+          "maxItems": 64,
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        },
         "base": {
           "type": "string",
           "minLength": 1,

@@ -1,4 +1,8 @@
-import type { Operations, TrackerOperations } from "../../contract/author.ts";
+import type {
+  HandlerCall,
+  Operations,
+  TrackerOperations,
+} from "../../contract/author.ts";
 import type { LeaseStateClient } from "../../assembly/state-client.ts";
 import type {
   ReceiptsService,
@@ -39,7 +43,11 @@ type WorkListInput = ListItemsInput & {
   readonly createdSince?: string;
 };
 type WorkConfig = {
-  readonly lanes?: { readonly max?: number; readonly base?: string };
+  readonly lanes?: {
+    readonly max?: number;
+    readonly base?: string;
+    readonly discardIgnored?: readonly string[];
+  };
   readonly labelOrder?: readonly string[];
   readonly idPrefix?: string;
   readonly claimTtlSeconds?: number;
@@ -81,6 +89,7 @@ type CallBudget = ItemRef & {
 };
 type Lane = {
   issue: string;
+  issueId?: string;
   worktree: string;
   branch: string;
   brief: string;
@@ -88,9 +97,30 @@ type Lane = {
 };
 type LaneInput = ItemRef & { branch: string; brief: string };
 type LaneOutput = Lane & { lease?: TrackerItem["lease"] };
+type CloseIssue = (
+  call: HandlerCall<TrackerOperations<"issue">["issue.close"][0]>,
+  validateOnly?: boolean,
+  deliveredUrl?: string,
+) => Promise<TrackerItem>;
+type CloseLaneInput = ItemRef & {
+  pr: number;
+  receipt?: string;
+  dropped?: string;
+  keepOpen?: boolean;
+  discardIgnored?: boolean;
+};
 type WorkOperations = TrackerOperations<"issue"> & {
   readonly "lane.start": readonly [LaneInput, LaneOutput];
   readonly "lane.show": readonly [ItemRef, LaneOutput];
+  readonly "lane.close": readonly [
+    CloseLaneInput,
+    {
+      issue: string;
+      status: string;
+      removed: boolean;
+      discarded: string[];
+    },
+  ];
   readonly "issue.checkpoint": readonly [
     ItemRef & Checkpoint,
     ItemRef & { readonly commentId: string },
@@ -680,11 +710,42 @@ function laneRegistry(files: FilesService): {
           (field) =>
             typeof (row as Record<string, unknown>)[field] === "string",
         ) &&
-        (!("base" in row) || typeof row.base === "string"),
+        (!("base" in row) || typeof row.base === "string") &&
+        (!("issueId" in row) ||
+          (typeof row.issueId === "string" && /^work-\d+$/.test(row.issueId))),
     )
   )
     fail("INPUT_INVALID", "Repair the invalid lane registry before retrying");
   return { text, lanes: value as Lane[] };
+}
+function laneIdentity(lane: Lane): string {
+  // Registry ids belong to this project; legacy writers stored a display prefix.
+  const number = QUALIFIED.exec(lane.issue)?.[2];
+  if (!number) fail("INPUT_INVALID", "Invalid issue identity in lane registry");
+  return lane.issueId ?? `${STORED}${number}`;
+}
+function closeJournal(files: FilesService, id: string, lane?: Lane) {
+  const suffix = id.slice(STORED.length);
+  const name = lane
+    ? `forge-lane-close-${lane.issue}.json`
+    : files
+        .list(".", 1024, "common")
+        .find(
+          (name) =>
+            /^forge-lane-close-.+-\d+\.json$/.test(name) &&
+            name.endsWith(`-${suffix}.json`),
+        );
+  const text = name ? files.read(name, 262144, "common") : undefined;
+  const value: unknown = text === undefined ? undefined : JSON.parse(text);
+  if (
+    value !== undefined &&
+    (!value || typeof value !== "object" || Array.isArray(value))
+  )
+    fail("INPUT_INVALID", "Invalid close journal");
+  return {
+    name: name ?? `forge-lane-close-${id}.json`,
+    value: value as Record<string, unknown> | undefined,
+  };
 }
 function slash(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/$/, "");
@@ -706,11 +767,39 @@ const operations: Operations<WorkOperations> = {
     const state = client(services),
       ids = idsFor(state, config);
     const issue = item(state, get(state, ids.stored(input.id), input.id), ids);
-    const lane = laneRegistry(laneFiles(services)).lanes.find(
-      (row) => ids.stored(row.issue) === ids.stored(issue.id),
+    const files = laneFiles(services),
+      identity = ids.stored(issue.id);
+    let lane = laneRegistry(files).lanes.find(
+      (row) => laneIdentity(row) === identity,
     );
+    const journal = closeJournal(files, identity, lane).value;
+    if (
+      !lane &&
+      journal &&
+      typeof journal.branch === "string" &&
+      typeof journal.worktree === "string"
+    )
+      lane = {
+        issue: issue.id,
+        branch: journal.branch,
+        worktree: journal.worktree,
+        brief: "",
+      };
     if (!lane) fail("NOT_FOUND", `No recorded lane for ${issue.id}`);
-    return { ...lane, ...(issue.lease ? { lease: issue.lease } : {}) };
+    // A historical generation admits cleanup context only; issue writes remain lease-fenced.
+    const lease =
+      issue.lease ??
+      (issue.status === "closed" &&
+      journal?.receipt === issue.receipt &&
+      journal?.keepOpen === false &&
+      !journal?.dropped
+        ? state.lease(key(identity))
+        : undefined);
+    return {
+      ...lane,
+      issue: issue.id,
+      ...(lease ? { lease } : {}),
+    };
   },
   "lane.start": async ({ input, services, config, signal, deadline }) => {
     const state = client(services),
@@ -840,7 +929,7 @@ const operations: Operations<WorkOperations> = {
           )) === "true"
         )
           lanes.push(lane);
-      const existing = lanes.find((lane) => ids.stored(lane.issue) === issueId);
+      const existing = lanes.find((lane) => laneIdentity(lane) === issueId);
       const worktree = `${slash(trees[0]!.path)}/.worktrees/${issue.id}`;
       const briefFile = `${slash(files.root)}/${relativeBrief}`;
       if (existing) {
@@ -855,7 +944,11 @@ const operations: Operations<WorkOperations> = {
             "INPUT_CONFLICT",
             `Issue ${issue.id} already has a different lane`,
           );
-        return { ...existing, ...(issue.lease ? { lease: issue.lease } : {}) };
+        return {
+          ...existing,
+          issue: issue.id,
+          ...(issue.lease ? { lease: issue.lease } : {}),
+        };
       }
       if (lanes.length >= (laneConfig?.max ?? 3))
         fail(
@@ -874,6 +967,7 @@ const operations: Operations<WorkOperations> = {
         await run(["worktree", "add", "-b", input.branch, worktree, base]);
       const lane: Lane = {
         issue: issue.id,
+        issueId,
         worktree,
         branch: input.branch,
         brief: briefFile,
@@ -894,6 +988,403 @@ const operations: Operations<WorkOperations> = {
       return { ...lane, ...(issue.lease ? { lease: issue.lease } : {}) };
     } finally {
       lock.release();
+    }
+  },
+
+  "lane.close": async (call) => {
+    const { input, services, config, signal, deadline } = call;
+    const state = client(services),
+      ids = idsFor(state, config),
+      id = ids.stored(input.id);
+    let current = item(state, get(state, id, input.id), ids);
+    if (input.dropped !== undefined && !input.dropped.trim())
+      fail("INPUT_INVALID", "Supply a nonempty dropped reason");
+    const files = laneFiles(services),
+      bound = services as {
+        process?: ProcessService;
+        environment?: EnvironmentService;
+      };
+    if (!bound.process || !bound.environment)
+      fail("UNAVAILABLE", "Lane close needs process and environment");
+    const executor = bound.process,
+      env = bound.environment.select([
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "windir",
+        "ComSpec",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "SSH_AUTH_SOCK",
+        "GH_TOKEN",
+        "GH_HOST",
+        "GH_ENTERPRISE_TOKEN",
+      ]);
+    const git = executor.resolve("git", env),
+      gh = executor.resolve("gh", env);
+    if (git.kind !== "resolved" || gh.kind !== "resolved")
+      fail("UNAVAILABLE", "Install Git and gh and put them on PATH");
+    let next: string[][] = [];
+    const refuse = (code: string, message: string): never => {
+      try {
+        fail(code, message);
+      } catch (error) {
+        const failure = error as { error?: Record<string, unknown> };
+        if (failure.error) failure.error.observed = { next };
+        throw error;
+      }
+    };
+    const run = async (
+      args: string[],
+      cwd = files.root,
+      github = false,
+      optional = false,
+    ) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0)
+        refuse("INVOCATION_TIMEOUT", "Lane close deadline expired");
+      const result = await executor.run(github ? gh : git, args, {
+        cwd,
+        env,
+        signal,
+        timeoutMs: Math.min(20000, remaining),
+        maxOutputBytes: 262144,
+      });
+      if (result.timedOut || result.truncated)
+        refuse(
+          "UNAVAILABLE",
+          "Lane command timed out or exceeded output limit",
+        );
+      if (result.exitCode !== 0) {
+        if (optional) return "";
+        refuse(
+          "INPUT_CONFLICT",
+          `${github ? "gh" : "git"} ${args[0]} failed; inspect the command before resuming`,
+        );
+      }
+      return result.stdout.trim();
+    };
+    let lock: ReturnType<FilesService["lock"]>,
+      runLock: typeof lock | undefined;
+    try {
+      lock = files.lock([registryLock], { recoverDeadOwner: true });
+    } catch {
+      fail(
+        "INPUT_CONFLICT",
+        `Lane registry is locked; inspect ${registryLock}`,
+      );
+    }
+    try {
+      const saved = laneRegistry(files),
+        lane = saved.lanes.find((row) => laneIdentity(row) === id);
+      const journal = closeJournal(files, id, lane),
+        progress = journal.value;
+      const branch = lane?.branch ?? progress?.branch,
+        worktree = lane?.worktree ?? progress?.worktree;
+      if (typeof branch !== "string" || typeof worktree !== "string")
+        fail("NOT_FOUND", `No recorded lane for ${current.id}`);
+      const dropped = input.dropped ?? "",
+        receipt = input.receipt ?? "",
+        keepOpen = !!dropped || !!input.keepOpen;
+      const resume = [
+        "forge",
+        "lane",
+        "close",
+        current.id,
+        "--pr",
+        String(input.pr),
+        ...(dropped ? ["--dropped", dropped] : ["--receipt", receipt]),
+        ...(input.keepOpen ? ["--keep-open"] : []),
+        ...(input.discardIgnored ? ["--discard-ignored"] : []),
+      ];
+      next = [resume];
+      if (
+        progress &&
+        (progress.pr !== input.pr ||
+          progress.receipt !== receipt ||
+          progress.keepOpen !== keepOpen ||
+          (progress.dropped ?? "") !== dropped ||
+          progress.branch !== branch ||
+          progress.worktree !== worktree ||
+          typeof progress.head !== "string")
+      )
+        refuse("INPUT_CONFLICT", "Resume the pending close arguments");
+      const lockId =
+        lane?.issue ?? journal.name.replace(/^forge-lane-close-|\.json$/g, "");
+      const names = new Set([current.id, lockId, id]);
+      for (const name of names) {
+        const path = `forge-lane-${name}.lock`,
+          info = files.inspect(path, "common");
+        if (
+          info &&
+          (info.regular
+            ? info.size > 0
+            : files.list(path, 10, "common").length > 0)
+        )
+          refuse("INPUT_CONFLICT", `Lane run lock is held: ${path}`);
+      }
+      runLock = files.lock([`forge-lane-${lockId}.lock`], {
+        recoverDeadOwner: true,
+      });
+      const pull = JSON.parse(
+        await run(
+          [
+            "pr",
+            "view",
+            String(input.pr),
+            "--json",
+            "state,headRefName,headRefOid,mergeCommit,url",
+          ],
+          files.root,
+          true,
+        ),
+      ) as {
+        state?: string;
+        headRefName?: string;
+        headRefOid?: string;
+        mergeCommit?: { oid?: string } | null;
+        url?: string;
+      };
+      const commit = (value: unknown): value is string =>
+        typeof value === "string" &&
+        /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
+      if (
+        !pull ||
+        !commit(pull.headRefOid) ||
+        !pull.url ||
+        !new RegExp(
+          `^https://[^/\\s]+/[^/\\s]+/[^/\\s]+/pull/${input.pr}$`,
+        ).test(pull.url) ||
+        pull.headRefName !== branch
+      )
+        refuse("INPUT_CONFLICT", "PR data or branch mismatch");
+      if (
+        dropped
+          ? pull.state !== "CLOSED" || pull.mergeCommit !== null
+          : pull.state !== "MERGED" || !commit(pull.mergeCommit?.oid)
+      )
+        refuse(
+          "PR_NOT_MERGED",
+          dropped
+            ? "Dropped PR must be CLOSED and unmerged"
+            : "PR must be MERGED with a merge commit",
+        );
+      const mergeCommit = pull.mergeCommit?.oid ?? "",
+        ref = `refs/heads/${branch}`;
+      const hasBranch = (
+        await run(["for-each-ref", "--format=%(refname)", ref])
+      )
+        .split("\n")
+        .includes(ref);
+      let head = hasBranch ? await run(["rev-parse", ref]) : progress?.head;
+      if (!commit(head)) refuse("INPUT_CONFLICT", "Lane head is unavailable");
+      if (
+        progress &&
+        (progress.head !== pull.headRefOid ||
+          progress.mergeCommit !== mergeCommit)
+      )
+        refuse("INPUT_CONFLICT", "PR changed since close began");
+      const exists = async () =>
+        (await run(
+          ["-C", worktree, "rev-parse", "--is-inside-work-tree"],
+          files.root,
+          false,
+          true,
+        )) === "true";
+      const discardable = (config as WorkConfig | undefined)?.lanes
+        ?.discardIgnored ?? ["node_modules/", "dist/"];
+      let ignored: string[] = [];
+      const clean = async () => {
+        if (
+          (await run(["symbolic-ref", "--short", "HEAD"], worktree)) !==
+            branch ||
+          (await run(["rev-parse", "HEAD"], worktree)) !== head
+        )
+          refuse("INPUT_CONFLICT", "Checkout is not at the lane head");
+        if (
+          await run(
+            ["status", "--porcelain", "--untracked-files=all"],
+            worktree,
+          )
+        )
+          refuse("INPUT_CONFLICT", "Lane checkout is not clean");
+        ignored = (
+          await run(
+            [
+              "status",
+              "--porcelain",
+              "--ignored",
+              "--untracked-files=normal",
+              "-z",
+            ],
+            worktree,
+          )
+        )
+          .split("\0")
+          .filter((row) => row.startsWith("!! "))
+          .map((row) => row.slice(3));
+        const protectedPaths = ignored.filter(
+          (path) =>
+            !discardable.some((allowed) =>
+              allowed.endsWith("/")
+                ? path.startsWith(allowed)
+                : path === allowed,
+            ),
+        );
+        if (protectedPaths.length && !input.discardIgnored) {
+          next = [
+            ["git", "-C", worktree, "status", "--ignored"],
+            [...resume, "--discard-ignored"],
+          ];
+          refuse(
+            "INPUT_CONFLICT",
+            `Preserve ignored paths before discarding: ${protectedPaths.join(", ")}`,
+          );
+        }
+      };
+      if (await exists()) await clean();
+      else if (!progress) refuse("INPUT_CONFLICT", "Lane checkout is missing");
+      if (head !== pull.headRefOid) {
+        next = [
+          ["git", "-C", worktree, "fetch", "origin", `pull/${input.pr}/head`],
+          ["git", "-C", worktree, "merge", "--ff-only", pull.headRefOid!],
+          resume,
+        ];
+        if (!hasBranch || !(await exists()))
+          refuse("INPUT_CONFLICT", "Local head differs from PR head");
+        await run(["fetch", "origin", `pull/${input.pr}/head`], worktree);
+        if (
+          (await run(["rev-parse", "FETCH_HEAD"], worktree)) !== pull.headRefOid
+        )
+          refuse("INPUT_CONFLICT", "Fetched PR head changed");
+        await run(
+          ["merge-base", "--is-ancestor", head as string, pull.headRefOid!],
+          worktree,
+        );
+        await run(["merge", "--ff-only", pull.headRefOid!], worktree);
+        head = await run(["rev-parse", "HEAD"], worktree);
+        if (head !== pull.headRefOid)
+          refuse("INPUT_CONFLICT", "Fast-forward missed the PR head");
+      }
+      const links = appended(state, `link:${id}:`),
+        linked = links.some((record) => {
+          const link = record.value as LinkInput;
+          return link.relation === "delivers" && link.url === pull.url;
+        });
+      if (
+        (!dropped && keepOpen && current.status !== "open") ||
+        (!keepOpen &&
+          current.status === "closed" &&
+          (!linked || current.receipt !== receipt))
+      )
+        refuse("INPUT_CONFLICT", "Issue was closed by another landing");
+      const recovering = !!progress && !keepOpen && current.status === "closed";
+      const note = dropped
+        ? `PR #${input.pr} dropped: ${pull.url}\nReason: ${dropped}`
+        : `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}`;
+      const matching = appended(state, `comment:${id}:`).find((record) => {
+        const body = (record.value as { body?: string }).body;
+        return (
+          body === note || (!dropped && body?.startsWith(note + "\nChecks: "))
+        );
+      });
+      const progressState = {
+        ...progress,
+        pr: input.pr,
+        receipt,
+        keepOpen,
+        dropped,
+        branch,
+        worktree,
+        head,
+        mergeCommit,
+        claimed: true,
+        ...(matching ? { commentId: matching.key } : {}),
+      };
+      const save = () =>
+        files.write(journal.name, JSON.stringify(progressState), {
+          area: "common",
+        });
+      const closing = {
+        ...call,
+        input: {
+          id: current.id,
+          receipt,
+          reason: `PR #${input.pr} merged as ${mergeCommit.slice(0, 7)}`,
+        },
+      };
+      if (!dropped) {
+        if (!linked)
+          await operations["issue.link"]({
+            ...call,
+            input: { id: current.id, relation: "delivers", url: pull.url! },
+          });
+        await (operations["issue.close"] as CloseIssue)(
+          closing,
+          true,
+          pull.url,
+        );
+      }
+      save();
+      if (!keepOpen && current.status !== "closed")
+        current = await (operations["issue.close"] as CloseIssue)(
+          closing,
+          false,
+          pull.url,
+        );
+      if (!matching && !recovering) {
+        const prefix = `comment:${id}:`,
+          commentId = prefix + (state.count(prefix) + 1);
+        persist(state, commentId, { id, body: note }, 0, key(id));
+        Object.assign(progressState, { commentId });
+        save();
+      }
+      if (hasBranch && (await run(["rev-parse", ref])) !== head)
+        refuse("INPUT_CONFLICT", "Lane head changed during close");
+      if (await exists()) {
+        await clean();
+        await run([
+          "worktree",
+          "remove",
+          ...(ignored.length ? ["--force"] : []),
+          worktree,
+        ]);
+      }
+      if (hasBranch && !dropped)
+        await run(["update-ref", "-d", ref, head as string]);
+      if (dropped)
+        files.write(
+          `forge-lane-runs/${lane?.issue ?? current.id}/close-${input.pr}.json`,
+          JSON.stringify(progressState),
+          { area: "common" },
+        );
+      files.write(
+        registryPath,
+        JSON.stringify(
+          saved.lanes.filter((row) => laneIdentity(row) !== id),
+          null,
+          2,
+        ) + "\n",
+        { area: "common", expected: saved.text },
+      );
+      files.remove(journal.name, { area: "common" });
+      return {
+        issue: current.id,
+        status: current.status,
+        removed: true,
+        discarded: ignored,
+      };
+    } finally {
+      try {
+        runLock?.release();
+      } finally {
+        lock.release();
+      }
     }
   },
 
@@ -1074,7 +1565,11 @@ const operations: Operations<WorkOperations> = {
       fail("INTERNAL", "Released lease did not match its readback");
     return { id: ids.shown(id) };
   },
-  "issue.close": async ({ input, services, config, signal }) => {
+  "issue.close": async (
+    { input, services, config, signal },
+    validateOnly = false,
+    deliveredUrl?: string,
+  ) => {
     const state = client(services);
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
@@ -1092,9 +1587,13 @@ const operations: Operations<WorkOperations> = {
           "RECEIPT_INVALID",
           "Closing requires an existing verified PASS receipt",
         );
-      const link = appended(state, `link:${id}:`).findLast(
-        (record) => (record.value as LinkInput).relation === "delivers",
-      )?.value as LinkInput | undefined;
+      const link = appended(state, `link:${id}:`).findLast((record) => {
+        const link = record.value as LinkInput;
+        return (
+          link.relation === "delivers" &&
+          (deliveredUrl === undefined || link.url === deliveredUrl)
+        );
+      })?.value as LinkInput | undefined;
       if (
         !link ||
         !/^https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*\/?$/.test(
@@ -1196,6 +1695,7 @@ const operations: Operations<WorkOperations> = {
         "Supply a PASS receipt or an explicit withoutReceipt reason",
       );
     }
+    if (validateOnly) return item(state, record, ids);
     const {
       receipt: _previousReceipt,
       withoutReceipt: _previousExemption,

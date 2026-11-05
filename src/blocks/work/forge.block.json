@@ -313,6 +313,25 @@
       "stability": "experimental",
       "args": ["id"]
     },
+    "lane.close": {
+      "input": "schemas/lane-close.input.json",
+      "output": "schemas/lane-close.output.json",
+      "context": "leased",
+      "leaseMode": "held",
+      "timeoutMs": 120000,
+      "effects": [
+        "lane:write",
+        "files:read",
+        "files:write",
+        "external:process",
+        "external:network",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
     "lane.show": {
       "input": "schemas/ItemRef.json",
       "output": "schemas/lane.output.json",
