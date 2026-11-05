@@ -9,6 +9,7 @@ import {
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
 import { GitCommandError } from "../adapters/vcs-git/index.ts";
 import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
+import { compatibleConfigProblems } from "../core/config/compatible.ts";
 import { detectProject, createFolderFiles } from "../blocks/project/index.ts";
 import {
   Catalog,
@@ -261,6 +262,7 @@ export async function createAssembly(
   type CallScope = {
     inProject: boolean;
     warnings: Array<ResultEnvelope["warnings"][number]>;
+    warnUnknownConfig: (message: string) => void;
     captured(source: BlockSource): CapturedBlock;
     shipped: ReturnType<typeof shippedTemplates>;
     config: ReturnType<typeof createConfig>;
@@ -291,6 +293,16 @@ export async function createAssembly(
       return found;
     }
     const environment = {
+      warnUnknownConfig: (message: string) => {
+        if (
+          !warnings.some(
+            (warning) =>
+              warning.code === "CONFIG_KEY_IGNORED" &&
+              warning.message === message,
+          )
+        )
+          warnings.push({ code: "CONFIG_KEY_IGNORED", message });
+      },
       warn: (message: string) =>
         warnings.push({ code: "CONFIG_FORMATTING_LOST", message }),
       files: nodeConfigFiles(root),
@@ -331,6 +343,7 @@ export async function createAssembly(
       inProject:
         options.project ?? existsSync(join(root, ".forge", "config.yaml")),
       warnings,
+      warnUnknownConfig: environment.warnUnknownConfig,
       captured,
       shipped,
       config: createConfig(environment),
@@ -379,6 +392,7 @@ export async function createAssembly(
     block: CapturedBlock,
     instance: BlockInstance,
     name: string,
+    call: CallScope,
   ): DocsRecords {
     const value: unknown = JSON.parse(block.text(block.manifest.docs));
     const docs = validateDocsRecords(value);
@@ -403,9 +417,12 @@ export async function createAssembly(
         ),
       );
     if (block.manifest.configSchema) {
-      const problems = block.problems(
-        block.manifest.configSchema,
-        instance.config ?? {},
+      const config = instance.config ?? {};
+      const problems = compatibleConfigProblems(
+        name,
+        config,
+        block.problems(block.manifest.configSchema, config),
+        call.warnUnknownConfig,
       );
       if (problems.length)
         refuse(
@@ -624,11 +641,15 @@ export async function createAssembly(
           "builtin" in instance.source &&
           instance.source.builtin === "forge/memory" &&
           block.manifest.configSchema !== undefined &&
-          block.problems(block.manifest.configSchema, instance.config ?? {})
-            .length > 0
+          compatibleConfigProblems(
+            name,
+            instance.config ?? {},
+            block.problems(block.manifest.configSchema, instance.config ?? {}),
+            call.warnUnknownConfig,
+          ).length > 0
         )
           return snapshot(call, true, true);
-        const docs = ready(block, instance, name);
+        const docs = ready(block, instance, name, call);
         const proposed = new Map(blocks);
         proposed.set(name, block);
         const checked = new Catalog(
@@ -1217,7 +1238,7 @@ export async function createAssembly(
             };
             const blocks = new Map(current.blocks);
             blocks.set(name, block);
-            ready(block, instance, name);
+            ready(block, instance, name, call);
             const checkedCatalog = new Catalog(
               availableComposition(proposed, blocks),
               blocks,

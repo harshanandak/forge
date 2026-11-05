@@ -2,6 +2,7 @@
 // change one thing at a time with compare-and-set edits; or import a template (templates.ts).
 // Reads never write: show, explain and detect only read files.
 import { ForgeFailure } from "../../contract/failure.ts";
+import { compatibleConfigProblems } from "./compatible.ts";
 import { operationTimeoutProblems } from "../../contract/operation-timeouts.ts";
 import { bindingProblems } from "../../contract/composition.ts";
 import { formatProblem as schemaDiagnostic } from "../../contract/input-error.ts";
@@ -63,6 +64,7 @@ import {
 
 export interface ConfigEnvironment extends StoreDeps, BlockLookup {
   readonly warn?: (message: string) => void;
+  readonly warnUnknownConfig?: (message: string) => void;
   readonly files: ConfigFiles;
   readonly codec: ConfigCodecPort;
   readonly clock: ClockPort;
@@ -392,12 +394,19 @@ export function planBytes(
   }
   // check what the block will run with, so a detected or default value counts without being saved
   const { effective } = resolve(env, next, [], deriveLayer(env.detect()));
-  for (const [name, schema] of blockSchemas(next, env))
+  for (const [name, schema] of blockSchemas(next, env)) {
+    const config = getIn(effective, ["blocks", name, "config"]) ?? {};
     checkInstanceConfig(
       name,
-      schema.check(getIn(effective, ["blocks", name, "config"]) ?? {}),
+      compatibleConfigProblems(
+        name,
+        config,
+        schema.check(config),
+        env.warnUnknownConfig,
+      ),
       repair,
     );
+  }
   const bytes = encodeDocument(
     explicit,
     env.codec,
