@@ -238,7 +238,7 @@ test("device fallback handles arbitrary config load problems while short valid c
     for (const config of [
       "blocks: [\n",
       "unexpected: true\n",
-      "blocks:\n  memory:\n    typo: true\n",
+      "blocks:\n  memory:\n    scop: true\n",
     ]) {
       writeFileSync(file, config);
       const result = (

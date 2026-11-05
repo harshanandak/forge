@@ -13,6 +13,7 @@ export interface SchemaProblem {
   readonly expected?: string;
   readonly received?: string;
   readonly suggestion?: string;
+  readonly knownProperties?: readonly string[];
 }
 
 /** Closest declared spelling; the schema, rather than a list of special cases, owns the names. */
@@ -506,12 +507,14 @@ export class SchemaRegistry {
       expected = message,
       received = detailed ? (JSON.stringify(value) ?? "missing") : "",
       suggestion?: string,
+      knownProperties?: readonly string[],
     ): void => {
       problems.push({
         pointer,
         keyword,
         message,
         ...(suggestion === undefined ? {} : { suggestion }),
+        ...(knownProperties === undefined ? {} : { knownProperties }),
         ...(detailed
           ? {
               expected,
@@ -704,6 +707,7 @@ export class SchemaRegistry {
               detailed
                 ? closestName(key, Object.keys(properties))
                 : closestNames(key, Object.keys(properties))[0],
+              Object.keys(properties),
             );
           } else {
             problems.push(

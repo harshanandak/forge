@@ -277,24 +277,31 @@ test("an unavailable unrelated block preserves healthy memory override project n
   }
 }, 120_000);
 
-test("memory config recovery retains healthy unrelated operations", () => {
+test("newer memory config keys warn without disabling healthy operations", () => {
   const place = fixture();
   try {
     place.config(
-      "blocks:\n  memory:\n    typo: true\n  check:\n    commands: {}\n",
+      "blocks:\n  memory:\n    scope: repo:override\n    typo: true\n  check:\n    commands: {}\n",
     );
     const recovered = place.call(["memory", "scope"]);
     expect(recovered.status).toBe(0);
-    expect(recovered.envelope.warnings[0]?.code).toBe(
-      "PROJECT_CONFIG_UNAVAILABLE",
+    expect(recovered.envelope).toMatchObject({
+      ok: true,
+      result: { scope: "repo:override" },
+      warnings: [{ code: "CONFIG_KEY_IGNORED" }],
+    });
+    expect(recovered.envelope.warnings).toHaveLength(1);
+    expect(recovered.envelope.warnings[0]?.message).toContain(
+      "blocks.memory.config.typo",
     );
     const unrelated = place.call(["check", "list"]);
     expect(unrelated.status).toBe(0);
     expect(unrelated.envelope).toMatchObject({
       ok: true,
       result: { commands: [] },
-      warnings: [],
+      warnings: [{ code: "CONFIG_KEY_IGNORED" }],
     });
+    expect(unrelated.envelope.warnings).toHaveLength(1);
     place.config("unexpected: true\nblocks:\n  memory: {}\n");
     const exported = place.call([
       "memory",
