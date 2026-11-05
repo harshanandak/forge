@@ -401,14 +401,51 @@ async function contact(
       }
     }
   }
-  async function verifyIdentity(account: Account) {
+  const verifyIdentity = async (account: Account) => {
+    for (const role of ["AUTHOR", "COMMITTER"] as const) {
+      const prefix = `GIT_${role}`;
+      // Observe caller identity overrides only for these probes, never in gh discovery.
+      const identityEnv = Object.fromEntries(
+        Object.entries(
+          s.environment.select([
+            `${prefix}_NAME`,
+            `${prefix}_EMAIL`,
+            `${prefix}_DATE`,
+          ]),
+        ).map(([key, value]) => [key.toUpperCase(), value]),
+      );
+      const ident = await run(
+        git,
+        ["-c", "core.fsmonitor=false", "var", `${prefix}_IDENT`],
+        true,
+        { ...env, ...identityEnv },
+      );
+      const roleKey = `${role.toLowerCase()}.email`;
+      if (!ident.ok)
+        integrity(
+          `Cannot verify ${prefix}_IDENT; inspect ${Object.keys(identityEnv).join(", ") || `${roleKey}, user.email`}`,
+        );
+      const effectiveEmail = / <([^<>\r\n]*)> -?\d+ [+-]\d{4}$/.exec(
+        ident.text,
+      )?.[1];
+      if (!effectiveEmail || !account.commitEmails.includes(effectiveEmail)) {
+        const overridingKey = Object.hasOwn(identityEnv, `${prefix}_EMAIL`)
+          ? `${prefix}_EMAIL`
+          : (await g(["config", roleKey], true)).ok
+            ? roleKey
+            : "user.email";
+        integrity(
+          `${overridingKey} overrides the effective ${role.toLowerCase()} email for GitHub ${account.login}`,
+        );
+      }
+    }
     if (
       (await g(["config", "user.email"])).text !== account.commitEmails[0] ||
       (await g(["config", "--bool", "user.useConfigOnly"])).text !== "true" ||
       (await g(["config", "user.name"])).text !== account.commitName
     )
       integrity("Effective Git identity overrides the approved include");
-  }
+  };
   const lock = s.device.lock();
   try {
     if (

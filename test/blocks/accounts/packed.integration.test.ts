@@ -245,6 +245,34 @@ if (a[0] === 'auth' && a[1] === 'status') {
     const refused = cli(overridden, "use", { login: "alice", approval });
     expect(refused.ok).toBe(false);
     expect(refused.error.code).toBe("ACCOUNT_INTEGRITY");
+    const authorOverride = clone("author-override");
+    git(
+      authorOverride,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/alice/author-override.git",
+    );
+    git(
+      authorOverride,
+      "config",
+      "author.email",
+      "202+bob@users.noreply.github.com",
+    );
+    const authorRefusal = cli(authorOverride, "use", {
+      login: "alice",
+      approval,
+    });
+    expect({
+      ok: authorRefusal.ok,
+      code: authorRefusal.error?.code,
+      namesAuthorOverride:
+        authorRefusal.error?.message.includes("author.email"),
+    }).toEqual({
+      ok: false,
+      code: "ACCOUNT_INTEGRITY",
+      namesAuthorOverride: true,
+    });
     const inheritedKey = clone("inherited-key");
     git(
       inheritedKey,
