@@ -183,6 +183,32 @@ async function contact(
     (!applied || !binding?.login || !owned || !config.includes(MARK))
   )
     integrity("Owned include has no matching device binding or clone record");
+  if (action === "decline") {
+    const lock = s.device.lock();
+    try {
+      if (
+        s.device.read("bindings.json") !== bindingText ||
+        s.device.read("accounts.json") !== accountText
+      )
+        refuse(
+          "INPUT_CONFLICT",
+          "Accounts changed before declining; plan again",
+        );
+      if (applied || binding?.login)
+        refuse(
+          "ACCOUNT_BOUND",
+          "An applied binding must be explicitly revoked before declining",
+        );
+      bindings[repo] = {
+        declined: true,
+        appliedFrom: audit({ kind: "decline", approval: input.approval }),
+      };
+      s.device.write("bindings.json", JSON.stringify(bindings));
+      return { repo, declined: true };
+    } finally {
+      lock.release();
+    }
+  }
   function ghPin(pin?: ExecutablePin) {
     const excluded = [
       s.files.root,
@@ -450,19 +476,6 @@ async function contact(
       s.device.read("accounts.json") !== accountText
     )
       refuse("INPUT_CONFLICT", "Accounts changed during discovery; plan again");
-    if (action === "decline") {
-      if (applied || binding?.login)
-        refuse(
-          "ACCOUNT_BOUND",
-          "An applied binding must be explicitly revoked before declining",
-        );
-      bindings[repo] = {
-        declined: true,
-        appliedFrom: audit({ kind: "decline", approval: input.approval, ask }),
-      };
-      s.device.write("bindings.json", JSON.stringify(bindings));
-      return { repo, declined: true };
-    }
     if (action === "use") {
       if (selected && binding) {
         if (input.login && input.login !== selected.login)

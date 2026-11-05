@@ -332,6 +332,39 @@ if (a[0] === 'auth' && a[1] === 'status') {
       )?.approval,
     ).toEqual(declineApproval);
     expect(cli(other, "plan").result.declined).toBe(true);
+    const noGh = clone("no-gh");
+    git(
+      noGh,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/alice/no-gh.git",
+    );
+    const gitOnly = join(home, "git-only");
+    mkdirSync(gitOnly);
+    const gitPath = Bun.which("git");
+    if (!gitPath) throw new Error("Git required");
+    const gitWrapper = join(
+      gitOnly,
+      process.platform === "win32" ? "git.cmd" : "git",
+    );
+    writeFileSync(
+      gitWrapper,
+      process.platform === "win32"
+        ? ["@echo off", `"${gitPath}" %*`, ""].join("\r\n")
+        : [
+            "#!/bin/sh",
+            `exec '${gitPath.replaceAll("'", "'\\''")}' "$@"`,
+            "",
+          ].join("\n"),
+    );
+    chmodSync(gitWrapper, 0o700);
+    expect(
+      cli(noGh, "decline", { approval: declineApproval }, { PATH: gitOnly }),
+    ).toMatchObject({
+      ok: true,
+      result: { declined: true },
+    });
     writeFileSync(
       join(repo, ".git/forge/accounts.gitconfig"),
       "[user]\nemail=changed@example.test\n",
