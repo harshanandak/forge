@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -135,7 +136,7 @@ test("repo-declared missing operations carry a build hint while unknown names st
             dirty: expect.any(Boolean) as unknown,
           },
           required: expect.stringContaining("check.future") as unknown,
-          cwd: privateBuild,
+          cwd: realpathSync(privateBuild),
           command: expect.stringContaining(
             "bun install --frozen-lockfile && bun run build",
           ) as unknown,
@@ -145,7 +146,7 @@ test("repo-declared missing operations carry a build hint while unknown names st
     expect(missing.error.hint.command).toBe(
       "bun install --frozen-lockfile && bun run build",
     );
-    expect(missing.error.hint.cwd).toContain(privateBuild);
+    expect(missing.error.hint.cwd).toContain(realpathSync(privateBuild));
     const text = invokePrivateCli(["check", "future", "--text"], 3);
     expect(text).toContain("Unknown operation: check.future");
     expect(
