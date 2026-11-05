@@ -489,8 +489,23 @@ function registry() {
 test("lane close CLI removes a merged lane with a verified receipt", () => {
   const { id, lane } = closeFixture(),
     proof = receipt();
+  expect(close(id, { receipt: "missing" }).error?.code).toBe("RECEIPT_INVALID");
+  expect(existsSync(join(repo, `.git/forge-lane-close-${id}.json`))).toBe(
+    false,
+  );
+  const contender = `
+const fs = require('node:fs');
+const staged = fs.mkdtempSync(${JSON.stringify(join(root, "contender-"))});
+fs.writeFileSync(staged + '/owner', 'held');
+try { fs.renameSync(staged, ${JSON.stringify(join(repo, `.git/forge-lane-${id}.lock`))}); fs.writeFileSync(${JSON.stringify(join(root, "contender"))}, 'entered'); }
+catch { fs.writeFileSync(${JSON.stringify(join(root, "contender"))}, 'excluded'); }
+finally { fs.rmSync(staged, { recursive: true, force: true }); }
+`;
+  const ghScript = join(root, "bin/gh.cjs");
+  writeFileSync(ghScript, contender + readFileSync(ghScript, "utf8"));
   const result = close(id, { receipt: proof });
   expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(readFileSync(join(root, "contender"), "utf8")).toBe("excluded");
   expect(result.result).toMatchObject({
     issue: id,
     status: "closed",

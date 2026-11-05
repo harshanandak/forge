@@ -728,7 +728,7 @@ function closeJournal(files: FilesService, id: string, lane?: Lane) {
   const name = lane
     ? `forge-lane-close-${lane.issue}.json`
     : files
-        .list(".", 10000, "common")
+        .list(".", 1024, "common")
         .find(
           (name) =>
             /^forge-lane-close-.+-\d+\.json$/.test(name) &&
@@ -995,10 +995,7 @@ const operations: Operations<WorkOperations> = {
         environment?: EnvironmentService;
       };
     if (!bound.process || !bound.environment)
-      fail(
-        "UNAVAILABLE",
-        "Lane close requires process and environment services",
-      );
+      fail("UNAVAILABLE", "Lane close needs process and environment");
     const executor = bound.process,
       env = bound.environment.select([
         "PATH",
@@ -1027,14 +1024,8 @@ const operations: Operations<WorkOperations> = {
       try {
         fail(code, message);
       } catch (error) {
-        if (
-          error &&
-          typeof error === "object" &&
-          "error" in error &&
-          error.error &&
-          typeof error.error === "object"
-        )
-          Object.assign(error.error, { observed: { next } });
+        const failure = error as { error?: Record<string, unknown> };
+        if (failure.error) failure.error.observed = { next };
         throw error;
       }
     };
@@ -1068,7 +1059,8 @@ const operations: Operations<WorkOperations> = {
       }
       return result.stdout.trim();
     };
-    let lock: ReturnType<FilesService["lock"]>;
+    let lock: ReturnType<FilesService["lock"]>,
+      runLock: typeof lock | undefined;
     try {
       lock = files.lock([registryLock], { recoverDeadOwner: true });
     } catch {
@@ -1111,11 +1103,10 @@ const operations: Operations<WorkOperations> = {
           progress.worktree !== worktree ||
           typeof progress.head !== "string")
       )
-        refuse(
-          "INPUT_CONFLICT",
-          "Pending close has different arguments; resume the original close",
-        );
-      const names = new Set([current.id, lane?.issue ?? current.id, id]);
+        refuse("INPUT_CONFLICT", "Resume the pending close arguments");
+      const lockId =
+        lane?.issue ?? journal.name.replace(/^forge-lane-close-|\.json$/g, "");
+      const names = new Set([current.id, lockId, id]);
       for (const name of names) {
         const path = `forge-lane-${name}.lock`,
           info = files.inspect(path, "common");
@@ -1127,6 +1118,9 @@ const operations: Operations<WorkOperations> = {
         )
           refuse("INPUT_CONFLICT", `Lane run lock is held: ${path}`);
       }
+      runLock = files.lock([`forge-lane-${lockId}.lock`], {
+        recoverDeadOwner: true,
+      });
       const pull = JSON.parse(
         await run(
           [
@@ -1158,7 +1152,7 @@ const operations: Operations<WorkOperations> = {
         ).test(pull.url) ||
         pull.headRefName !== branch
       )
-        refuse("INPUT_CONFLICT", "PR data does not match the lane branch");
+        refuse("INPUT_CONFLICT", "PR data or branch mismatch");
       if (
         dropped
           ? pull.state !== "CLOSED" || pull.mergeCommit !== null
@@ -1178,14 +1172,13 @@ const operations: Operations<WorkOperations> = {
         .split("\n")
         .includes(ref);
       let head = hasBranch ? await run(["rev-parse", ref]) : progress?.head;
-      if (!commit(head))
-        refuse("INPUT_CONFLICT", "Local lane head is unavailable");
+      if (!commit(head)) refuse("INPUT_CONFLICT", "Lane head is unavailable");
       if (
         progress &&
         (progress.head !== pull.headRefOid ||
           progress.mergeCommit !== mergeCommit)
       )
-        refuse("INPUT_CONFLICT", "PR head changed since close began");
+        refuse("INPUT_CONFLICT", "PR changed since close began");
       const exists = async () =>
         (await run(
           ["-C", worktree, "rev-parse", "--is-inside-work-tree"],
@@ -1202,17 +1195,14 @@ const operations: Operations<WorkOperations> = {
             branch ||
           (await run(["rev-parse", "HEAD"], worktree)) !== head
         )
-          refuse("INPUT_CONFLICT", "Worktree is not at the lane head");
+          refuse("INPUT_CONFLICT", "Checkout is not at the lane head");
         if (
           await run(
             ["status", "--porcelain", "--untracked-files=all"],
             worktree,
           )
         )
-          refuse(
-            "INPUT_CONFLICT",
-            "Lane worktree has uncommitted or untracked changes",
-          );
+          refuse("INPUT_CONFLICT", "Lane checkout is not clean");
         ignored = (
           await run(
             [
@@ -1248,11 +1238,7 @@ const operations: Operations<WorkOperations> = {
         }
       };
       if (await exists()) await clean();
-      else if (!progress)
-        refuse(
-          "INPUT_CONFLICT",
-          "Lane worktree is missing; cannot verify clean work",
-        );
+      else if (!progress) refuse("INPUT_CONFLICT", "Lane checkout is missing");
       if (head !== pull.headRefOid) {
         next = [
           ["git", "-C", worktree, "fetch", "origin", `pull/${input.pr}/head`],
@@ -1260,7 +1246,7 @@ const operations: Operations<WorkOperations> = {
           resume,
         ];
         if (!hasBranch || !(await exists()))
-          refuse("INPUT_CONFLICT", "Local lane head does not match PR head");
+          refuse("INPUT_CONFLICT", "Local head differs from PR head");
         await run(["fetch", "origin", `pull/${input.pr}/head`], worktree);
         if (
           (await run(["rev-parse", "FETCH_HEAD"], worktree)) !== pull.headRefOid
@@ -1273,7 +1259,7 @@ const operations: Operations<WorkOperations> = {
         await run(["merge", "--ff-only", pull.headRefOid!], worktree);
         head = await run(["rev-parse", "HEAD"], worktree);
         if (head !== pull.headRefOid)
-          refuse("INPUT_CONFLICT", "Fast-forward did not reach PR head");
+          refuse("INPUT_CONFLICT", "Fast-forward missed the PR head");
       }
       const links = appended(state, `link:${id}:`),
         linked = links.some((record) => {
@@ -1313,26 +1299,24 @@ const operations: Operations<WorkOperations> = {
         files.write(journal.name, JSON.stringify(progressState), {
           area: "common",
         });
-      save();
+      const closing = {
+        ...call,
+        input: {
+          id: current.id,
+          receipt,
+          reason: `PR #${input.pr} merged as ${mergeCommit.slice(0, 7)}`,
+        },
+      };
       if (!dropped) {
         if (!linked)
           await operations["issue.link"]({
             ...call,
             input: { id: current.id, relation: "delivers", url: pull.url! },
           });
-        const closed = await (operations["issue.close"] as CloseIssue)(
-          {
-            ...call,
-            input: {
-              id: current.id,
-              receipt,
-              reason: `PR #${input.pr} merged as ${mergeCommit.slice(0, 7)}`,
-            },
-          },
-          keepOpen,
-        );
-        if (!keepOpen) current = closed;
+        await (operations["issue.close"] as CloseIssue)(closing, true);
       }
+      save();
+      if (!keepOpen) current = await operations["issue.close"](closing);
       if (!matching) {
         const prefix = `comment:${id}:`,
           commentId = prefix + (state.count(prefix) + 1);
@@ -1376,7 +1360,11 @@ const operations: Operations<WorkOperations> = {
         discarded: ignored,
       };
     } finally {
-      lock.release();
+      try {
+        runLock?.release();
+      } finally {
+        lock.release();
+      }
     }
   },
 
