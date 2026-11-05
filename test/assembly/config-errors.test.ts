@@ -33,7 +33,7 @@ for (const [name, config, refused] of [
     {
       lanes: { discardIgnored: ["cache"] },
       ...Object.fromEntries(
-        Array.from({ length: 40 }, (_, i) => [`futureOption${i}`, true]),
+        Array.from({ length: 100 }, (_, i) => [`futureOption${i}`, true]),
       ),
     },
     false,
@@ -130,11 +130,13 @@ for (const [name, config, refused] of [
             expect(envelope.result).not.toHaveProperty(
               `effective.blocks.work.config.${name === "nested newer key" ? "settings." : ""}lanes`,
             );
-          if (name === "many newer keys")
-            for (let i = 0; i < 40; i++)
-              expect(envelope.warnings[0]?.message).toContain(
-                `blocks.work.config.futureOption${i}`,
-              );
+          if (name === "many newer keys") {
+            const message = envelope.warnings[0]!.message;
+            expect(message.length).toBeLessThanOrEqual(2000);
+            const listed = message.match(/blocks\.work\.config\.[\w.]+/g) ?? [];
+            expect(listed.length).toBeGreaterThan(0);
+            expect(message).toContain(`and ${101 - listed.length} more`);
+          }
         }
       }
       if (!refused) {
@@ -196,6 +198,145 @@ for (const [name, config, refused] of [
         expect(added.envelope.warnings[0]?.code).toBe("CONFIG_KEY_IGNORED");
         expect(readFileSync(file, "utf8")).toContain("discardIgnored");
       }
+    } finally {
+      await assembly.close();
+      capture.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("core config reads and refusals carry one ignored-key warning per block", async () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-config-core-warning-"));
+  mkdirSync(join(root, ".forge"));
+  const file = join(root, ".forge/config.yaml");
+  const text = JSON.stringify({
+    blocks: {
+      work: { futureOption: true },
+      check: { commands: {}, futureOption: true },
+    },
+  });
+  writeFileSync(file, text);
+  const assembly = await createAssembly({
+    root,
+    deviceRoot: join(root, "device"),
+    providers: { env: {} },
+  });
+  try {
+    for (const args of [
+      ["config", "explain", "work.futureOption"],
+      ["config", "explain", "--input", JSON.stringify({ path: 42 })],
+      ["config", "show", "--input", JSON.stringify({ unexpected: true })],
+    ]) {
+      const { envelope } = await runCli(
+        assembly.catalog,
+        args,
+        localCall(assembly),
+      );
+      expect(envelope.ok).toBe(args.length === 3);
+      expect(envelope.warnings).toHaveLength(2);
+      expect(envelope.warnings).toEqual(
+        expect.arrayContaining([
+          {
+            code: "CONFIG_KEY_IGNORED",
+            message: expect.stringContaining("blocks.work.config.futureOption"),
+          },
+          {
+            code: "CONFIG_KEY_IGNORED",
+            message: expect.stringContaining(
+              "blocks.check.config.futureOption",
+            ),
+          },
+        ]),
+      );
+    }
+    const { caller, context } = localCall(assembly);
+    for (const input of [{ path: "work.futureOption" }, { path: 42 }]) {
+      const envelope = await assembly.catalog.invoke({
+        schemaVersion: "forge.invocation/1",
+        requestId: "core-warning",
+        op: "config.explain",
+        input,
+        caller,
+        context: context ?? {},
+      });
+      expect(envelope.ok).toBe(typeof input.path === "string");
+      expect(
+        envelope.warnings.filter(({ code }) => code === "CONFIG_KEY_IGNORED"),
+      ).toHaveLength(2);
+    }
+    expect(readFileSync(file, "utf8")).toBe(text);
+  } finally {
+    await assembly.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const [name, command, refused] of [
+  ["newer key", { argv: ["node", "--version"], futureOption: true }, false],
+  ["typo", { argv: ["node", "--version"], argvv: ["node"] }, true],
+  ["case typo", { argv: ["node", "--version"], ARGV: ["node"] }, true],
+  ["wrong type", { argv: 42, futureOption: true }, true],
+] as const) {
+  test(`object command alternative handles ${name}`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-config-alternative-"));
+    mkdirSync(join(root, ".forge"));
+    const file = join(root, ".forge/config.yaml");
+    const text = JSON.stringify({
+      blocks: { check: { commands: { test: command } } },
+    });
+    writeFileSync(file, text);
+    const open = blockCapture.open.bind(blockCapture);
+    const capture = spyOn(blockCapture, "open").mockImplementation((path) => {
+      const handle = open(path);
+      return {
+        ...handle,
+        value: {
+          ...handle.value,
+          read: (name, budget) =>
+            name.endsWith(".cjs")
+              ? new TextEncoder().encode(
+                  "module.exports={'check.list':()=>({commands:[],receiptChecks:[]})};",
+                )
+              : handle.value.read(name, budget),
+        },
+      };
+    });
+    const assembly = await createAssembly({
+      root,
+      deviceRoot: join(root, "device"),
+      providers: { env: {} },
+    });
+    try {
+      for (const args of [
+        ["config", "show"],
+        ["check", "list"],
+      ]) {
+        const { envelope } = await runCli(
+          assembly.catalog,
+          args,
+          localCall(assembly),
+        );
+        expect(envelope.ok, JSON.stringify(envelope)).toBe(!refused);
+        if (refused)
+          expect(envelope).toMatchObject({ error: { code: "INPUT_INVALID" } });
+        else {
+          expect(envelope.warnings).toEqual([
+            {
+              code: "CONFIG_KEY_IGNORED",
+              message: expect.stringContaining(
+                "blocks.check.config.commands.test.futureOption",
+              ),
+            },
+          ]);
+          if (args[0] === "config")
+            expect(envelope.result).toHaveProperty(
+              "effective.blocks.check.config.commands.test",
+              { argv: ["node", "--version"] },
+            );
+        }
+      }
+      expect(readFileSync(file, "utf8")).toBe(text);
     } finally {
       await assembly.close();
       capture.mockRestore();
