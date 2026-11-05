@@ -4,6 +4,8 @@ import type { Unavailable } from "../generated/types.ts";
 
 export interface SpawnOptions {
   readonly cwd: string;
+  /** Release the host's cwd if it is inside this directory before spawning. */
+  readonly leaveDirectory?: string;
   /** The full child environment; nothing is inherited implicitly. */
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;

@@ -103,7 +103,8 @@ type CloseIssue = (
   deliveredUrl?: string,
 ) => Promise<TrackerItem>;
 type CloseLaneInput = ItemRef & {
-  pr: number;
+  pr?: number;
+  noPr?: boolean;
   receipt?: string;
   dropped?: string;
   keepOpen?: boolean;
@@ -929,6 +930,12 @@ const operations: Operations<WorkOperations> = {
           )) === "true"
         )
           lanes.push(lane);
+      const exclude = files.read("info/exclude", 262144, "common") ?? null;
+      if (!exclude?.split(/\r?\n/).includes(".worktrees/"))
+        files.write("info/exclude", `${exclude ?? ""}\n.worktrees/\n`, {
+          area: "common",
+          expected: exclude,
+        });
       const existing = lanes.find((lane) => laneIdentity(lane) === issueId);
       const worktree = `${slash(trees[0]!.path)}/.worktrees/${issue.id}`;
       const briefFile = `${slash(files.root)}/${relativeBrief}`;
@@ -1003,6 +1010,7 @@ const operations: Operations<WorkOperations> = {
       bound = services as {
         process?: ProcessService;
         environment?: EnvironmentService;
+        crypto?: CryptoService;
       };
     if (!bound.process || !bound.environment)
       fail("UNAVAILABLE", "Lane close needs process and environment");
@@ -1027,7 +1035,7 @@ const operations: Operations<WorkOperations> = {
       ]);
     const git = executor.resolve("git", env),
       gh = executor.resolve("gh", env);
-    if (git.kind !== "resolved" || gh.kind !== "resolved")
+    if (git.kind !== "resolved" || (!input.noPr && gh.kind !== "resolved"))
       fail("UNAVAILABLE", "Install Git and gh and put them on PATH");
     let next: string[][] = [];
     const refuse = (code: string, message: string): never => {
@@ -1039,21 +1047,27 @@ const operations: Operations<WorkOperations> = {
         throw error;
       }
     };
+    let checkout = files.root;
     const run = async (
       args: string[],
-      cwd = files.root,
+      cwd = checkout,
       github = false,
       optional = false,
+      leaveDirectory?: string,
     ) => {
       const remaining = deadline - Date.now();
       if (remaining <= 0)
         refuse("INVOCATION_TIMEOUT", "Lane close deadline expired");
-      const result = await executor.run(github ? gh : git, args, {
+      const executable = github ? gh : git;
+      if (executable.kind !== "resolved")
+        return refuse("UNAVAILABLE", "Install gh and put it on PATH");
+      const result = await executor.run(executable, args, {
         cwd,
         env,
         signal,
         timeoutMs: Math.min(20000, remaining),
         maxOutputBytes: 262144,
+        ...(leaveDirectory ? { leaveDirectory } : {}),
       });
       if (result.timedOut || result.truncated)
         refuse(
@@ -1069,6 +1083,9 @@ const operations: Operations<WorkOperations> = {
       }
       return result.stdout.trim();
     };
+    checkout = (await run(["worktree", "list", "--porcelain", "-z"]))
+      .split("\0")[0]!
+      .slice(9);
     let lock: ReturnType<FilesService["lock"]>,
       runLock: typeof lock | undefined;
     try {
@@ -1091,13 +1108,13 @@ const operations: Operations<WorkOperations> = {
       const dropped = input.dropped ?? "",
         receipt = input.receipt ?? "",
         keepOpen = !!dropped || !!input.keepOpen;
+      const noPr = !!input.noPr;
       const resume = [
         "forge",
         "lane",
         "close",
         current.id,
-        "--pr",
-        String(input.pr),
+        ...(noPr ? ["--no-pr"] : ["--pr", String(input.pr)]),
         ...(dropped ? ["--dropped", dropped] : ["--receipt", receipt]),
         ...(input.keepOpen ? ["--keep-open"] : []),
         ...(input.discardIgnored ? ["--discard-ignored"] : []),
@@ -1106,6 +1123,7 @@ const operations: Operations<WorkOperations> = {
       if (
         progress &&
         (progress.pr !== input.pr ||
+          !!progress.noPr !== noPr ||
           progress.receipt !== receipt ||
           progress.keepOpen !== keepOpen ||
           (progress.dropped ?? "") !== dropped ||
@@ -1131,35 +1149,52 @@ const operations: Operations<WorkOperations> = {
       runLock = files.lock([`forge-lane-${lockId}.lock`], {
         recoverDeadOwner: true,
       });
-      const pull = JSON.parse(
-        await run(
-          [
-            "pr",
-            "view",
-            String(input.pr),
-            "--json",
-            "state,headRefName,headRefOid,mergeCommit,url",
-          ],
-          files.root,
-          true,
-        ),
-      ) as {
-        state?: string;
-        headRefName?: string;
-        headRefOid?: string;
-        mergeCommit?: { oid?: string } | null;
-        url?: string;
-      };
+      const pull = noPr
+        ? {
+            state: "CLOSED",
+            headRefName: branch,
+            headRefOid:
+              typeof progress?.base === "string"
+                ? progress.base
+                : (lane?.base ?? ""),
+            mergeCommit: null,
+            url: "",
+          }
+        : (JSON.parse(
+            await run(
+              [
+                "pr",
+                "view",
+                String(input.pr),
+                "--json",
+                "state,headRefName,headRefOid,mergeCommit,url",
+              ],
+              checkout,
+              true,
+            ),
+          ) as {
+            state?: string;
+            headRefName?: string;
+            headRefOid?: string;
+            mergeCommit?: { oid?: string } | null;
+            url?: string;
+          });
       const commit = (value: unknown): value is string =>
         typeof value === "string" &&
         /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
+      if (noPr && !commit(pull.headRefOid))
+        refuse(
+          "INPUT_CONFLICT",
+          "Lane has no recorded base. Re-record its verified starting commit in forge-lanes.json, or close with --pr instead of --no-pr",
+        );
       if (
         !pull ||
         !commit(pull.headRefOid) ||
-        !pull.url ||
-        !new RegExp(
-          `^https://[^/\\s]+/[^/\\s]+/[^/\\s]+/pull/${input.pr}$`,
-        ).test(pull.url) ||
+        (!noPr &&
+          (!pull.url ||
+            !new RegExp(
+              `^https://[^/\\s]+/[^/\\s]+/[^/\\s]+/pull/${input.pr}$`,
+            ).test(pull.url))) ||
         pull.headRefName !== branch
       )
         refuse("INPUT_CONFLICT", "PR data or branch mismatch");
@@ -1181,18 +1216,23 @@ const operations: Operations<WorkOperations> = {
       )
         .split("\n")
         .includes(ref);
-      let head = hasBranch ? await run(["rev-parse", ref]) : progress?.head;
-      if (!commit(head)) refuse("INPUT_CONFLICT", "Lane head is unavailable");
+      const observedHead = hasBranch
+        ? await run(["rev-parse", ref])
+        : progress?.head;
+      if (!commit(observedHead))
+        return refuse("INPUT_CONFLICT", "Lane head is unavailable");
+      let head = observedHead;
       if (
         progress &&
-        (progress.head !== pull.headRefOid ||
+        (progress.head !== head ||
+          (!dropped && progress.head !== pull.headRefOid) ||
           progress.mergeCommit !== mergeCommit)
       )
         refuse("INPUT_CONFLICT", "PR changed since close began");
       const exists = async () =>
         (await run(
           ["-C", worktree, "rev-parse", "--is-inside-work-tree"],
-          files.root,
+          checkout,
           false,
           true,
         )) === "true";
@@ -1249,7 +1289,7 @@ const operations: Operations<WorkOperations> = {
       };
       if (await exists()) await clean();
       else if (!progress) refuse("INPUT_CONFLICT", "Lane checkout is missing");
-      if (head !== pull.headRefOid) {
+      if (!dropped && head !== pull.headRefOid) {
         next = [
           ["git", "-C", worktree, "fetch", "origin", `pull/${input.pr}/head`],
           ["git", "-C", worktree, "merge", "--ff-only", pull.headRefOid!],
@@ -1263,7 +1303,7 @@ const operations: Operations<WorkOperations> = {
         )
           refuse("INPUT_CONFLICT", "Fetched PR head changed");
         await run(
-          ["merge-base", "--is-ancestor", head as string, pull.headRefOid!],
+          ["merge-base", "--is-ancestor", head, pull.headRefOid!],
           worktree,
         );
         await run(["merge", "--ff-only", pull.headRefOid!], worktree);
@@ -1271,6 +1311,14 @@ const operations: Operations<WorkOperations> = {
         if (head !== pull.headRefOid)
           refuse("INPUT_CONFLICT", "Fast-forward missed the PR head");
       }
+      if (dropped && !noPr && head !== pull.headRefOid)
+        await run(["fetch", "origin", `pull/${input.pr}/head`]);
+      const ahead =
+        dropped && head !== pull.headRefOid
+          ? await run(["log", "--format=%H %s", `${pull.headRefOid}..${head}`])
+          : "";
+      if (noPr && head !== pull.headRefOid)
+        await run(["merge-base", "--is-ancestor", pull.headRefOid!, head]);
       const links = appended(state, `link:${id}:`),
         linked = links.some((record) => {
           const link = record.value as LinkInput;
@@ -1283,19 +1331,36 @@ const operations: Operations<WorkOperations> = {
           (!linked || current.receipt !== receipt))
       )
         refuse("INPUT_CONFLICT", "Issue was closed by another landing");
-      const recovering = !!progress && !keepOpen && current.status === "closed";
-      const note = dropped
-        ? `PR #${input.pr} dropped: ${pull.url}\nReason: ${dropped}`
-        : `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}`;
+      const note =
+        (dropped
+          ? `${noPr ? "Lane dropped without a PR" : `PR #${input.pr} dropped: ${pull.url}`}\nReason: ${dropped}`
+          : `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}`) +
+        (ahead
+          ? `\nBranch retained: ${branch}\nCommits preserved:\n${ahead}`
+          : "");
       const matching = appended(state, `comment:${id}:`).find((record) => {
         const body = (record.value as { body?: string }).body;
         return (
           body === note || (!dropped && body?.startsWith(note + "\nChecks: "))
         );
       });
+      if (dropped || !progress)
+        state.renew(
+          key(id),
+          ((config as WorkConfig | undefined)?.claimTtlSeconds ?? 3600) * 1000,
+        );
+      const archive =
+        progress?.archive ??
+        `close-${input.pr ?? `no-pr-${bound.crypto?.randomUUID() ?? fail("UNAVAILABLE", "No-PR close requires crypto")}`}.json`;
+      if (
+        typeof archive !== "string" ||
+        !/^close-(?:[1-9]\d*|no-pr-[0-9a-f-]{36})\.json$/i.test(archive)
+      )
+        return refuse("INPUT_INVALID", "Invalid close archive name in journal");
       const progressState = {
         ...progress,
         pr: input.pr,
+        ...(noPr ? { noPr: true, base: pull.headRefOid } : {}),
         receipt,
         keepOpen,
         dropped,
@@ -1304,6 +1369,7 @@ const operations: Operations<WorkOperations> = {
         head,
         mergeCommit,
         claimed: true,
+        archive,
         ...(matching ? { commentId: matching.key } : {}),
       };
       const save = () =>
@@ -1337,7 +1403,7 @@ const operations: Operations<WorkOperations> = {
           false,
           pull.url,
         );
-      if (!matching && !recovering) {
+      if (!matching) {
         const prefix = `comment:${id}:`,
           commentId = prefix + (state.count(prefix) + 1);
         persist(state, commentId, { id, body: note }, 0, key(id));
@@ -1348,18 +1414,24 @@ const operations: Operations<WorkOperations> = {
         refuse("INPUT_CONFLICT", "Lane head changed during close");
       if (await exists()) {
         await clean();
-        await run([
-          "worktree",
-          "remove",
-          ...(ignored.length ? ["--force"] : []),
+        await run(
+          [
+            "worktree",
+            "remove",
+            ...(ignored.length ? ["--force"] : []),
+            worktree,
+          ],
+          checkout,
+          false,
+          false,
           worktree,
-        ]);
+        );
       }
-      if (hasBranch && !dropped)
-        await run(["update-ref", "-d", ref, head as string]);
+      if (hasBranch && (!dropped || (noPr && head === pull.headRefOid)))
+        await run(["update-ref", "-d", ref, head]);
       if (dropped)
         files.write(
-          `forge-lane-runs/${lane?.issue ?? current.id}/close-${input.pr}.json`,
+          `forge-lane-runs/${lane?.issue ?? current.id}/${archive}`,
           JSON.stringify(progressState),
           { area: "common" },
         );

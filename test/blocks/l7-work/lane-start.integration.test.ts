@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -39,13 +40,13 @@ function git(args: string[], cwd = repo) {
   expect(result.status, result.stderr).toBe(0);
   return result.stdout.trim();
 }
-function cli(args: string[], cwd = repo) {
+function cli(args: string[], cwd = repo, session = "lane-acceptance") {
   const result = spawnSync("node", [bin, ...args], {
     cwd,
     env: {
       ...process.env,
       FORGE_DEVICE_ROOT: join(root, "device"),
-      FORGE_SESSION: "lane-acceptance",
+      FORGE_SESSION: session,
     },
     encoding: "utf8",
     windowsHide: true,
@@ -434,17 +435,22 @@ function closeFixture() {
   );
   return { id, lane: closeRecord, head, pull };
 }
-function close(id: string, extra: Record<string, unknown>) {
+function close(
+  id: string,
+  extra: Record<string, unknown>,
+  cwd = repo,
+  session = "lane-acceptance",
+) {
   const result = spawnSync(
     "node",
     [bin, "lane", "close", "--input", JSON.stringify({ id, pr: 42, ...extra })],
     {
-      cwd: repo,
+      cwd,
       env: {
         ...process.env,
         PATH: join(root, "bin") + delimiter + process.env.PATH,
         FORGE_DEVICE_ROOT: join(root, "device"),
-        FORGE_SESSION: "lane-acceptance",
+        FORGE_SESSION: session,
       },
       encoding: "utf8",
       windowsHide: true,
@@ -454,6 +460,116 @@ function close(id: string, extra: Record<string, unknown>) {
   expect(result.error).toBeUndefined();
   return JSON.parse(result.stdout) as ReturnType<typeof cli>;
 }
+
+test("lane close drops a clean no-PR lane at base and records the reason", () => {
+  const { id, lane } = closeFixture();
+  const result = close(id, {
+    pr: undefined,
+    noPr: true,
+    dropped: "Abandoned before PR",
+  });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(existsSync(String(lane.worktree))).toBe(false);
+  expect(git(["branch", "--list", String(lane.branch)])).toBe("");
+  expect(call("issue.show", { id }).result.status).toBe("open");
+  expect(JSON.stringify(call("issue.comments", { id }).result)).toContain(
+    "Abandoned before PR",
+  );
+}, 30000);
+
+test.each(["no-pr", "merged keep-open"])(
+  "a repeated %s close cannot bypass a different session's lease",
+  (mode) => {
+    const { id } = closeFixture();
+    const input =
+      mode === "no-pr"
+        ? { pr: undefined, noPr: true, dropped: "Paused work" }
+        : { receipt: receipt(), keepOpen: true };
+    expect(close(id, input).ok).toBe(true);
+    expect(call("issue.release", { id }).ok).toBe(true);
+    expect(cli(["issue", "claim", id], repo, "lane-second").ok).toBe(true);
+    const { result: secondCheckout } = start(id);
+    const before = git(["rev-parse", String(secondCheckout.branch)]);
+    expect(close(id, input).ok).toBe(false);
+    expect(existsSync(String(secondCheckout.worktree))).toBe(true);
+    expect(git(["rev-parse", String(secondCheckout.branch)])).toBe(before);
+    expect(close(id, input, repo, "lane-second").ok).toBe(true);
+    if (mode === "no-pr") {
+      const directory = join(repo, ".git/forge-lane-runs", id);
+      const archives = readdirSync(directory).filter((name) =>
+        name.startsWith("close-no-pr-"),
+      );
+      expect(archives).toHaveLength(2);
+      for (const name of archives)
+        expect(
+          JSON.parse(readFileSync(join(directory, name), "utf8")),
+        ).toMatchObject({ dropped: "Paused work" });
+    }
+  },
+  30000,
+);
+
+test("no-PR close explains how to repair a legacy lane without a recorded base", () => {
+  const { id, lane } = closeFixture();
+  writeFileSync(
+    join(repo, ".git/forge-lanes.json"),
+    JSON.stringify(registry().map(({ base: _base, ...row }) => row)),
+  );
+  const result = close(id, {
+    pr: undefined,
+    noPr: true,
+    dropped: "Legacy lane",
+  });
+  expect(result.error?.message).toContain(
+    "Re-record its verified starting commit",
+  );
+  expect(result.error?.message).toContain("--pr instead of --no-pr");
+  expect(existsSync(String(lane.worktree))).toBe(true);
+  expect(git(["branch", "--list", String(lane.branch)])).toContain(
+    String(lane.branch),
+  );
+}, 30000);
+
+test("lane close refuses a dirty no-PR drop and preserves ahead commits", () => {
+  const { id, lane } = closeFixture(),
+    laneDirectory = String(lane.worktree);
+  writeFileSync(join(laneDirectory, "unfinished"), "keep");
+  const input = { pr: undefined, noPr: true, dropped: "Paused work" };
+  expect(close(id, input).error?.code).toBe("INPUT_CONFLICT");
+  expect(existsSync(laneDirectory)).toBe(true);
+  git(["add", "unfinished"], laneDirectory);
+  git(["commit", "-m", "preserve this work"], laneDirectory);
+  const head = git(["rev-parse", "HEAD"], laneDirectory);
+  const result = close(id, input);
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(existsSync(laneDirectory)).toBe(false);
+  expect(git(["rev-parse", String(lane.branch)])).toBe(head);
+  const notes = JSON.stringify(call("issue.comments", { id }).result);
+  expect(notes).toContain(head);
+  expect(notes).toContain("preserve this work");
+}, 30000);
+
+test("lane close invoked inside the lane finishes post-removal cleanup", () => {
+  const { id, lane } = closeFixture();
+  const proof = receipt(),
+    laneDirectory = String(lane.worktree);
+  mkdirSync(join(laneDirectory, ".forge"));
+  writeFileSync(
+    join(laneDirectory, ".forge/config.yaml"),
+    readFileSync(join(repo, ".forge/config.yaml")),
+  );
+  writeFileSync(join(repo, ".git/info/exclude"), ".worktrees/\n.forge/\n");
+  const result = close(
+    id,
+    { receipt: proof, discardIgnored: true },
+    laneDirectory,
+  );
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(existsSync(String(lane.worktree))).toBe(false);
+  expect(git(["branch", "--list", String(lane.branch)])).toBe("");
+  expect(registry().some((row) => row.issue === id)).toBe(false);
+}, 30000);
+
 function receipt() {
   const current = cli(["config", "show"]);
   expect(
@@ -522,9 +638,18 @@ finally { fs.rmSync(staged, { recursive: true, force: true }); }
 
 test("lane close CLI drops a closed unmerged PR and keeps the issue and branch", () => {
   const { id, lane, pull } = closeFixture();
+  git(["config", "user.name", "Lane test"], origin);
+  git(["config", "user.email", "lane@example.test"], origin);
+  const remoteHead = git(["commit-tree", "HEAD^{tree}", "-p", "HEAD"], origin);
+  git(["--git-dir", origin, "update-ref", "refs/pull/42/head", remoteHead]);
   writeFileSync(
     join(root, "pull.json"),
-    JSON.stringify({ ...pull, state: "CLOSED", mergeCommit: null }),
+    JSON.stringify({
+      ...pull,
+      headRefOid: remoteHead,
+      state: "CLOSED",
+      mergeCommit: null,
+    }),
   );
   const result = close(id, { dropped: "Replaced by another approach" });
   expect(result.ok, JSON.stringify(result)).toBe(true);
