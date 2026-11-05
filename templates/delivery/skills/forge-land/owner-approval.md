@@ -2,8 +2,9 @@
 
 When Forge returns `APPROVAL_REQUIRED`, ask the owner in this chat using
 `result.request.ask`: say what will happen, to what, and what it allows. Wait for
-their reply. Silence, "continue", or a reply to another question is not approval.
-A short answer such as "yes" counts when it answers this specific question.
+their reply to this specific request. Silence or a reply to another question is
+not approval. Any non-empty answer, including "yes" or "continue", counts when it
+answers this specific question.
 
 Retry the same operation with the same input plus:
 

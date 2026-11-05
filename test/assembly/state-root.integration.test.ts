@@ -134,3 +134,15 @@ for (const kind of ["internal", "plain", "missing"] as const) {
     }
   });
 }
+
+test("invalid reinit returns its validation error without creating an approval request", () => {
+  const f = fixture("outside");
+  try {
+    const result = f.call(["store", "reinit"]);
+    expect(result).toMatchObject({ ok: false, error: { code: "INTERNAL" } });
+    expect(result.result).toBeUndefined();
+    expect(existsSync(f.device)).toBe(false);
+  } finally {
+    f.close();
+  }
+});

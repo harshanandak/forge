@@ -206,6 +206,12 @@ export class BlockCatalog {
         warnings: [],
       };
     } catch (error) {
+      const approvalRequest =
+        error instanceof ForgeFailure &&
+        error.error.code === "APPROVAL_REQUIRED" &&
+        "request" in error
+          ? error.request
+          : undefined;
       return {
         ok: false,
         op: request.op,
@@ -222,6 +228,9 @@ export class BlockCatalog {
                 retry: "never",
               },
         warnings: [],
+        ...(approvalRequest === undefined
+          ? {}
+          : { result: { request: approvalRequest } }),
       };
     }
   }

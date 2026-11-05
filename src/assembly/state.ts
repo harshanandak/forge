@@ -101,21 +101,27 @@ export class LocalState {
     );
     return result;
   }
+  #alreadyExists(): never {
+    refuse(
+      "INPUT_CONFLICT",
+      `Forge store already exists at ${this.#path}. Fix: keep the existing store, or restore a backup instead.`,
+    );
+  }
+  /** Read-only preflight before asking for consent; create rechecks after approval. */
+  validateCreate(): void {
+    if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
+    this.#resolveProjectPath();
+    if (existsSync(this.#path)) this.#alreadyExists();
+  }
   /** Initialize privately, then publish exclusively; failed recovery never unlinks a public store. */
   async create<T>(initialize: (staged: LocalState) => Promise<T>): Promise<T> {
-    const existing = (): never =>
-      refuse(
-        "INPUT_CONFLICT",
-        `Forge store already exists at ${this.#path}. Fix: keep the existing store, or restore a backup instead.`,
-      );
     const pending = await this.#serial(() => {
-      if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
-      this.#resolveProjectPath();
+      this.validateCreate();
       if (process.platform === "win32")
         security ??= privateFileGuard(windowsPrivateFiles());
       const files = security ? securedFileOps(security) : undefined;
       ensurePrivateDirectory(dirname(this.#path), this.#directories);
-      if (existsSync(this.#path)) existing();
+      if (existsSync(this.#path)) this.#alreadyExists();
       const directory = makePrivateTempDirectory(
         `${this.#path}.reinit-`,
         files,
@@ -144,7 +150,8 @@ export class LocalState {
       try {
         linkDurable(pending.path, this.#path, pending.files);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") existing();
+        if ((error as NodeJS.ErrnoException).code === "EEXIST")
+          this.#alreadyExists();
         throw error;
       }
       return result;

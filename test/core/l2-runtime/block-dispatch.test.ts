@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createNodeBlockCatalog } from "../../../src/adapters/node-runtime/catalog.ts";
 import { type TrustRecord } from "../../../src/core/trust/index.ts";
 import { TrustStore, approval } from "../../fixtures/owner-approval.ts";
+import { ApprovalRequired } from "../../../src/assembly/approval.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 
@@ -59,9 +60,12 @@ for (const blockName of ["sample", "a".repeat(41)])
       );
       const records = new Map<string, TrustRecord>();
       const trust = new TrustStore(records);
-      const catalog = createNodeBlockCatalog(root, trust, (request) =>
-        approval(request.op, request.input as Record<string, unknown>),
-      );
+      let pending: { id: string; ask: string; binding: string } | undefined;
+      const catalog = createNodeBlockCatalog(root, trust, (request) => {
+        if (pending)
+          throw new ApprovalRequired("Owner reply required", pending);
+        return approval(request.op, request.input as Record<string, unknown>);
+      });
       const cli = async (args: string[], human = false) =>
         (
           await runCli(catalog, args, {
@@ -118,6 +122,20 @@ for (const blockName of ["sample", "a".repeat(41)])
         { ok: false, error: { code: "UNAVAILABLE" } },
       );
       assert.equal(catalog.list()[0]?.admitted, false);
+      pending = {
+        id: "embedding-request",
+        ask: "Admit these bytes?",
+        binding: digest,
+      };
+      assert.partialDeepStrictEqual(
+        await cli(["block", "admit", digest], true),
+        {
+          ok: false,
+          error: { code: "APPROVAL_REQUIRED" },
+          result: { request: pending },
+        },
+      );
+      pending = undefined;
       assert.partialDeepStrictEqual(
         (await runCli(catalog, ["block", "admit", digest], { caller: "human" }))
           .envelope,

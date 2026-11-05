@@ -1121,16 +1121,17 @@ export async function createAssembly(
             if (bound.context.variant !== "project")
               refuse("CONTEXT_MISSING", "Store recovery requires a project");
             const actor = bound.context.actor;
-            await approve(
-              request,
-              `Start a new empty Forge store for ${stateRoot}. Existing records will not be recovered.`,
-            );
             const recovery = new LocalState(
               join(stateRoot, ".forge", "state.sqlite"),
               undefined,
               undefined,
               undefined,
               stateRoot,
+            );
+            recovery.validateCreate();
+            await approve(
+              request,
+              `Start a new empty Forge store for ${stateRoot}. Existing records will not be recovered.`,
             );
             return await recovery.create(async (staged) => {
               const opened = openLevels({
