@@ -35,7 +35,7 @@ export function decideRerun(
       reason: "Current run is no longer the judged failed attempt",
     };
   const unacquired = (job: CiJob) =>
-    job.conclusion === "cancelled" &&
+    (job.conclusion === "cancelled" || job.conclusion === null) &&
     job.steps.length === 0 &&
     job.runner_name === "";
   const rerun =
