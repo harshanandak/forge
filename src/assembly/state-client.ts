@@ -137,14 +137,15 @@ export function createStateClient(options: {
           "No matching accepted landing authorizes this comment",
         );
       const prefix = `comment:${input.id}:`;
-      const matching = state.list(namespace, prefix).find((row) => {
+      const comments = state.list(namespace, prefix);
+      const matching = comments.find((row) => {
         const body = (row.value as { body?: string }).body;
         return (
           body === landing.note || body?.startsWith(landing.note + "\nChecks: ")
         );
       });
       if (matching) return matching;
-      const key = prefix + (state.count(namespace, prefix) + 1);
+      const key = prefix + (comments.length + 1);
       // Only this accepted note may cross the expired lease boundary, never an issue write.
       const written = state.put(
         namespace,
