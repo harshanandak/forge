@@ -40,7 +40,7 @@ test("fixture cleanup waits for its owned child and descendant stream before rem
     expect(child.stdout.closed).toBe(true);
     expect(existsSync(root)).toBe(false);
   } finally {
-    child.stdin.end("release");
+    if (!child.stdin.writableEnded) child.stdin.end("release");
     await closed;
     await pending?.catch(() => {});
     if (existsSync(root)) rmSync(root, { recursive: true });

@@ -35,6 +35,7 @@ import { delimiter, join, resolve } from "node:path";
 
 import { RepositoryFixtures } from "./lane-fixture.ts";
 import { cleanupAttribution } from "./cleanup-attribution.ts";
+import { FixtureChildren } from "../fixture-children.ts";
 
 setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<{ head: string; merge: string }>();
@@ -528,13 +529,12 @@ test.skipIf(process.platform !== "win32")(
   "cleanup evidence script queries processes and probes bin files through PowerShell",
   async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-cleanup-evidence-[_%']-"));
-    const child = spawn(
-      process.execPath,
-      ["-e", "setInterval(() => {}, 1000)", root],
-      {
+    const children = new FixtureChildren();
+    const child = children.own(
+      spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", root], {
         stdio: "ignore",
         windowsHide: true,
-      },
+      }),
     );
     try {
       await once(child, "spawn");
@@ -580,9 +580,10 @@ test.skipIf(process.platform !== "win32")(
     } finally {
       if (child.pid && child.exitCode === null) {
         child.kill();
-        await once(child, "exit");
       }
-      rmSync(root, { recursive: true, force: true });
+      await children.cleanup(() =>
+        rmSync(root, { recursive: true, force: true }),
+      );
     }
   },
   30_000,
