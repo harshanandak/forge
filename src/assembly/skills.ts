@@ -8,6 +8,7 @@ import { ForgeFailure } from "../contract/failure.ts";
 import { refuse } from "../core/trust/index.ts";
 import {
   GENERATED_MARKER,
+  lintReference,
   lintSkill,
   renderSkills,
   renderTemplateSkill,
@@ -240,13 +241,19 @@ export function syncSkills(
       error instanceof Error ? error.message : "Cannot read template skills",
     );
   }
-  const problems = skills.flatMap((skill) =>
-    skill.bytes === undefined
-      ? lintSkill(skill.text, candidates, prefix).map(
-          (p) => `${skill.path}: ${p}`,
-        )
-      : [],
-  );
+  const problems = skills.flatMap((skill) => {
+    const issues =
+      skill.bytes === undefined
+        ? lintSkill(skill.text, candidates, prefix)
+        : /\.md$/i.test(skill.path)
+          ? lintReference(
+              new TextDecoder().decode(skill.bytes),
+              candidates,
+              prefix,
+            )
+          : [];
+    return issues.map((problem) => `${skill.path}: ${problem}`);
+  });
   const paths = skills.map((skill) => skill.path);
   for (const [index, path] of paths.entries())
     if (paths.findIndex((other) => key(other) === key(path)) !== index)

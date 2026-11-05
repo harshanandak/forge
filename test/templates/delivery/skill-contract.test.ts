@@ -16,7 +16,7 @@ import {
   localCall,
 } from "../../../src/assembly/index.ts";
 import { dispatch, record } from "../../../src/surface/dispatch.ts";
-import { GENERATED_MARKER, lintSkill } from "../../../src/surface/skills.ts";
+import { GENERATED_MARKER } from "../../../src/surface/skills.ts";
 import {
   bytes,
   checkBudgets,
@@ -137,13 +137,6 @@ test("delivery skill contracts: shape, links, rules, budgets, lint and mirrors",
         ...checkBudgets(markdown(source), rendered, limits),
         ...checkNeutral(rendered),
       ];
-      for (const [path, text] of Object.entries(rendered)) {
-        const wrapped = path.endsWith("/SKILL.md")
-          ? text
-          : `---\nname: reference\ndescription: Reference lint\n---\n${text}`;
-        for (const problem of lintSkill(wrapped, assembly.catalog.list()))
-          problems.push(`${path}: ${problem}`);
-      }
       expect(problems, problems.join("\n")).toEqual([]);
       expect(inventory).toHaveLength(47);
       expect(rendered["forge-intake/SKILL.md"]).toMatch(INTAKE_ORDER);

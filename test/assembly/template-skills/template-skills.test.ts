@@ -821,6 +821,80 @@ test.each(["frontmatter", "placeholder"])(
   30_000,
 );
 
+test("skills sync refuses markdown companions with unknown operations and literal models before writes", async () => {
+  await withTemplate(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const original = readFileSync(join(root, RENDERED));
+    writeFileSync(join(root, SOURCE), REVIEW.replace("Stop", "Halt"));
+    writeFileSync(
+      join(root, "tpl/skills/review/reference.md"),
+      "# Reference\n\nRun `forge nosuch op` with gpt-5.\n",
+    );
+    for (const check of [false, true]) {
+      const failed = await call("skills.sync", { check });
+      expect(failed).toMatchObject({
+        ok: false,
+        error: { code: "OUTPUT_INVALID" },
+      });
+      expect(JSON.stringify(failed)).toContain("review/reference.md");
+      expect(JSON.stringify(failed)).toContain("unknown operation nosuch.op");
+      expect(JSON.stringify(failed)).toContain("literal model or effort");
+      expect(readFileSync(join(root, RENDERED))).toEqual(original);
+      expect(existsSync(join(root, ".agents/skills/review/reference.md"))).toBe(
+        false,
+      );
+    }
+  });
+}, 30_000);
+
+test.each([
+  ["literal effort", "reasoning high", "literal model or effort"],
+  ["oversized UTF-8 text", "é".repeat(4097), "8194 bytes; the limit is 8192"],
+])(
+  "skills sync refuses invalid nested markdown companion: %s",
+  async (_kind, text, problem) => {
+    await withTemplate(async (root, call) => {
+      const path = "review/details/reference.MD";
+      mkdirSync(join(root, "tpl/skills/review/details"));
+      writeFileSync(join(root, "tpl/skills", path), text);
+      const failed = await call("skills.sync");
+      expect(failed).toMatchObject({
+        ok: false,
+        error: { code: "OUTPUT_INVALID" },
+      });
+      expect(JSON.stringify(failed)).toContain(path);
+      expect(JSON.stringify(failed)).toContain(problem);
+      expect(existsSync(join(root, RENDERED))).toBe(false);
+    });
+  },
+  30_000,
+);
+
+test("markdown companions need no frontmatter and copy unchanged while scripts and YAML are not linted", async () => {
+  await withTemplate(async (root, call) => {
+    const companions = {
+      "reference.md": "# Reference\r\nUse `forge catalog list`.\r\n",
+      "details/reference.MD": "# Details\nKeep {{values.review.rounds}}.\n",
+      "helper.mjs": "// forge nosuch op, gpt-5, reasoning high\n",
+      "agents/openai.yaml": "model: gpt-5\n",
+    };
+    for (const [path, text] of Object.entries(companions)) {
+      const source = join(root, "tpl/skills/review", path);
+      mkdirSync(dirname(source), { recursive: true });
+      writeFileSync(source, text);
+    }
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    for (const [path, text] of Object.entries(companions))
+      expect(readFileSync(join(root, ".agents/skills/review", path))).toEqual(
+        Buffer.from(text),
+      );
+    expect(await call("skills.sync", { check: true })).toMatchObject({
+      ok: true,
+      differences: [],
+    });
+  });
+}, 30_000);
+
 test("a genuinely removed template skill source still retires its rendered skill", async () => {
   await withTemplate(async (root, call) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });

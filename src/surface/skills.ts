@@ -205,9 +205,6 @@ export function lintSkill(
   maxBytes: number = SKILL_MAX_BYTES,
 ): readonly string[] {
   const problems: string[] = [];
-  const bytes = new TextEncoder().encode(text).length;
-  if (bytes > maxBytes)
-    problems.push(`skill is ${bytes} bytes; the limit is ${maxBytes}`);
   const front = /^---\n([\s\S]*?)\n---\n/.exec(text)?.[1] ?? "";
   if (!/^name: \S/m.test(front)) problems.push("frontmatter has no name");
   const description = /^description: (.*)$/m.exec(front)?.[1];
@@ -215,6 +212,20 @@ export function lintSkill(
     problems.push("frontmatter has no description");
   else if (description.length > SKILL_DESCRIPTION_MAX + 2)
     problems.push(`description exceeds ${SKILL_DESCRIPTION_MAX} characters`);
+  return [...problems, ...lintReference(text, candidates, prefix, maxBytes)];
+}
+
+/** Markdown companions share the content rules without requiring skill frontmatter. */
+export function lintReference(
+  text: string,
+  candidates: readonly McpCandidate[],
+  prefix?: string,
+  maxBytes: number = SKILL_MAX_BYTES,
+): readonly string[] {
+  const problems: string[] = [];
+  const bytes = new TextEncoder().encode(text).length;
+  if (bytes > maxBytes)
+    problems.push(`skill is ${bytes} bytes; the limit is ${maxBytes}`);
   const concrete = text.replace(/<(?!!--)[^<>\n]*>|\{[^{}\n:"']*\}/g, (span) =>
     "\0".repeat(span.length),
   );
