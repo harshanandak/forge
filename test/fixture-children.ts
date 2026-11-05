@@ -20,7 +20,6 @@ interface OwnedChild {
   isClosed: boolean;
   stop: (() => void) | undefined;
   job: WindowsJob | undefined;
-  tree: boolean;
 }
 
 async function within<T>(
@@ -61,49 +60,25 @@ export class FixtureChildren {
       isClosed: false,
       stop,
       job: undefined,
-      tree: false,
     };
     this.pending.add(entry);
     void entry.closed.then(() => {
       entry.isClosed = true;
-      if (!entry.tree || (!entry.job && !this.groupAlive(entry))) {
+      if (!entry.job) {
         this.pending.delete(entry);
       }
     });
     return child;
   }
 
-  private groupAlive(entry: OwnedChild): boolean {
-    if (!entry.tree || entry.child.pid === undefined) return false;
+  private async endJob(entry: OwnedChild): Promise<void> {
+    if (!entry.job) return;
     try {
-      process.kill(-entry.child.pid, 0);
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") return true;
-      // Forget an empty group at close, before its identifier can be reused.
-      entry.tree = false;
-      if (entry.isClosed) this.pending.delete(entry);
-      return false;
+      await entry.job.stop();
+    } finally {
+      entry.job.close();
     }
-  }
-
-  private async endTree(entry: OwnedChild): Promise<void> {
-    if (!entry.tree) return;
-    if (entry.job) {
-      try {
-        await entry.job.stop();
-      } finally {
-        entry.job.close();
-      }
-      entry.job = undefined;
-    } else if (this.groupAlive(entry)) {
-      try {
-        process.kill(-entry.child.pid!, "SIGKILL");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-      }
-    }
-    entry.tree = false;
+    entry.job = undefined;
   }
 
   spawn(
@@ -134,7 +109,6 @@ export class FixtureChildren {
             : args,
           {
             ...options,
-            detached: !windows,
             stdio: windows
               ? ["pipe", "pipe", "pipe", "ipc"]
               : ["pipe", "pipe", "pipe"],
@@ -142,7 +116,6 @@ export class FixtureChildren {
         ) as ChildProcessWithoutNullStreams,
       );
       const entry = [...this.pending].find((owned) => owned.child === child)!;
-      entry.tree = child.pid !== undefined;
       entry.job = job;
       if (job) {
         job.attach(child.pid!);
@@ -186,10 +159,10 @@ export class FixtureChildren {
       }
     });
     child.stdin.end();
-    // A completed command must not leave an orphan holding its capture pipes open.
+    // On Windows, end the retained job before waiting for inherited capture pipes.
     const ended = new Promise<void>((resolve) => {
       child.once("exit", () => {
-        void this.endTree(entry)
+        void this.endJob(entry)
           .catch((cause: unknown) => {
             error = cause instanceof Error ? cause : new Error(String(cause));
           })
@@ -227,7 +200,7 @@ export class FixtureChildren {
             }
           }
           await within(
-            this.endTree(entry),
+            this.endJob(entry),
             deadline - performance.now(),
             describe,
           );
