@@ -1302,6 +1302,8 @@ const operations: Operations<WorkOperations> = {
         if (head !== pull.headRefOid)
           refuse("INPUT_CONFLICT", "Fast-forward missed the PR head");
       }
+      if (dropped && !noPr && head !== pull.headRefOid)
+        await run(["fetch", "origin", `pull/${input.pr}/head`]);
       const ahead =
         dropped && head !== pull.headRefOid
           ? await run(["log", "--format=%H %s", `${pull.headRefOid}..${head}`])

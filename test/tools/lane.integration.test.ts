@@ -198,3 +198,45 @@ test("list is read only, shared across worktrees, and removed worktrees release 
   expect(f.run(["list"]).output.lanes).toHaveLength(2);
   expect(readFileSync(f.registry, "utf8")).toBe(registry);
 });
+
+test("invalid command arguments return one JSON with exit 2", () => {
+  const f = fixture();
+  for (const argv of [
+    [],
+    ["wat"],
+    ["start"],
+    ["list", "--max", "2"],
+    f.args("../escape"),
+    f.args("bad", ["--max", "0"]),
+    f.args("bad", ["--max", "1.5"]),
+    f.args("bad", ["--unknown", "x"]),
+  ]) {
+    const result = f.run(argv);
+    expect(result.code).toBe(2);
+    expect(result.output.verdict).toBe("refused");
+    if (argv[0] === "start")
+      expect(result.output.next).toEqual(["forge", "lane", ...argv]);
+    else
+      expect(Object.keys(result.output).sort()).toEqual([
+        "branch",
+        "brief",
+        "next",
+        "reasons",
+        "verdict",
+        "worktree",
+      ]);
+  }
+});
+
+test("retired start never calls Forge or publishes a registry", () => {
+  const f = fixture();
+  for (const mode of ["refused", "invalid", "exit"]) {
+    writeFileSync(join(f.root, "mode"), mode);
+    expect(f.run(f.args(mode)).code).toBe(2);
+    expect(existsSync(f.registry)).toBe(false);
+  }
+  writeFileSync(join(f.root, "mode"), "ok");
+  f.git(["branch", "lane/occupied"]);
+  expect(f.run(f.args("occupied")).code).toBe(2);
+  expect(existsSync(f.registry)).toBe(false);
+});

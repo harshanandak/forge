@@ -579,9 +579,18 @@ finally { fs.rmSync(staged, { recursive: true, force: true }); }
 
 test("lane close CLI drops a closed unmerged PR and keeps the issue and branch", () => {
   const { id, lane, pull } = closeFixture();
+  git(["config", "user.name", "Lane test"], origin);
+  git(["config", "user.email", "lane@example.test"], origin);
+  const remoteHead = git(["commit-tree", "HEAD^{tree}", "-p", "HEAD"], origin);
+  git(["--git-dir", origin, "update-ref", "refs/pull/42/head", remoteHead]);
   writeFileSync(
     join(root, "pull.json"),
-    JSON.stringify({ ...pull, state: "CLOSED", mergeCommit: null }),
+    JSON.stringify({
+      ...pull,
+      headRefOid: remoteHead,
+      state: "CLOSED",
+      mergeCommit: null,
+    }),
   );
   const result = close(id, { dropped: "Replaced by another approach" });
   expect(result.ok, JSON.stringify(result)).toBe(true);
