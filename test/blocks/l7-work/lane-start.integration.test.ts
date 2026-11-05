@@ -483,11 +483,11 @@ test("a repeated no-PR reason cannot bypass a different session's lease or overw
   expect(close(id, input).ok).toBe(true);
   expect(call("issue.release", { id }).ok).toBe(true);
   expect(cli(["issue", "claim", id], repo, "lane-second").ok).toBe(true);
-  const lane = start(id).result;
-  const before = git(["rev-parse", String(lane.branch)]);
+  const { result: secondCheckout } = start(id);
+  const before = git(["rev-parse", String(secondCheckout.branch)]);
   expect(close(id, input).ok).toBe(false);
-  expect(existsSync(String(lane.worktree))).toBe(true);
-  expect(git(["rev-parse", String(lane.branch)])).toBe(before);
+  expect(existsSync(String(secondCheckout.worktree))).toBe(true);
+  expect(git(["rev-parse", String(secondCheckout.branch)])).toBe(before);
   expect(close(id, input, repo, "lane-second").ok).toBe(true);
   const directory = join(repo, ".git/forge-lane-runs", id);
   const archives = readdirSync(directory).filter((name) =>
