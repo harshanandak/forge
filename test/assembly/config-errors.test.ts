@@ -1,12 +1,208 @@
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
 import { runCli } from "../../src/surface/cli.ts";
 import { blockCapture } from "../../src/assembly/capture.ts";
+import { yamlConfigCodec } from "../../src/assembly/config.ts";
 
 setDefaultTimeout(30_000);
+
+for (const [name, config, refused] of [
+  ["newer key", { lanes: { discardIgnored: ["cache"] } }, false],
+  ["distance-one typo", { labls: [] }, true],
+  ["case typo", { LABELS: [] }, true],
+  ["known key type", { labels: 1 }, true],
+  [
+    "nested newer key",
+    { settings: { lanes: { discardIgnored: ["cache"] } } },
+    false,
+  ],
+  ["nested typo", { settings: { labls: [] } }, true],
+  ["known key value", { settings: { mode: "invalid" } }, true],
+  [
+    "many newer keys",
+    {
+      lanes: { discardIgnored: ["cache"] },
+      ...Object.fromEntries(
+        Array.from({ length: 40 }, (_, i) => [`futureOption${i}`, true]),
+      ),
+    },
+    false,
+  ],
+] as const) {
+  test(`older block config schema handles ${name}`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-newer-config-"));
+    mkdirSync(join(root, ".forge"));
+    const file = join(root, ".forge/config.yaml");
+    const text = yamlConfigCodec.encode({
+      schemaVersion: "forge.config/1",
+      blocks: {
+        work: { source: { builtin: "forge/work" }, config },
+        check: { source: { builtin: "forge/check" }, config: { commands: {} } },
+      },
+    });
+    writeFileSync(file, text);
+    const open = blockCapture.open.bind(blockCapture);
+    const capture = spyOn(blockCapture, "open").mockImplementation((path) => {
+      const handle = open(path);
+      return {
+        ...handle,
+        value: {
+          ...handle.value,
+          read: (name, budget) =>
+            path.replaceAll("\\", "/").replace(/\/$/, "").endsWith("/work") &&
+            name === "schemas/config.json"
+              ? new TextEncoder().encode(
+                  JSON.stringify({
+                    type: "object",
+                    properties: {
+                      idPrefix: { type: "string" },
+                      labels: { type: "array", items: { type: "string" } },
+                      settings: {
+                        type: "object",
+                        properties: {
+                          labels: { type: "array", items: { type: "string" } },
+                          mode: { enum: ["auto", "manual"] },
+                        },
+                        additionalProperties: false,
+                      },
+                    },
+                    additionalProperties: false,
+                  }),
+                )
+              : name.endsWith(".cjs")
+                ? new TextEncoder().encode(
+                    "module.exports={'check.list':()=>({commands:[],receiptChecks:[]})};",
+                  )
+                : handle.value.read(name, budget),
+        },
+      };
+    });
+    const assembly = await createAssembly({
+      root,
+      deviceRoot: join(root, "device"),
+      providers: { env: {} },
+    });
+    try {
+      for (const args of refused
+        ? [["config", "show"]]
+        : [
+            ["config", "show"],
+            ["check", "list"],
+            ["check", "list"],
+            ["config", "show"],
+          ]) {
+        const { envelope } = await runCli(
+          assembly.catalog,
+          args,
+          localCall(assembly),
+        );
+        if (refused) {
+          expect(envelope).toMatchObject({
+            ok: false,
+            error: { code: "INPUT_INVALID" },
+          });
+          if (envelope.ok) throw Error("Expected invalid config");
+          expect(envelope.error.message).toContain("blocks.work.config");
+          if (name.includes("typo"))
+            expect(envelope.error.message).toContain("did you mean labels?");
+        } else {
+          expect(envelope.ok, JSON.stringify(envelope)).toBe(true);
+          expect(envelope.warnings, args.join(" ")).toHaveLength(1);
+          expect(envelope.warnings[0]?.message).toContain(
+            `blocks.work.config.${name === "nested newer key" ? "settings." : ""}lanes`,
+          );
+          expect(envelope.warnings[0]?.message).toContain(
+            "newer Forge version",
+          );
+          expect(envelope.warnings[0]?.message).toContain("ignored");
+          expect(envelope.warnings[0]?.message).toContain("upgrade");
+          if (args[0] === "config")
+            expect(envelope.result).not.toHaveProperty(
+              `effective.blocks.work.config.${name === "nested newer key" ? "settings." : ""}lanes`,
+            );
+          if (name === "many newer keys")
+            for (let i = 0; i < 40; i++)
+              expect(envelope.warnings[0]?.message).toContain(
+                `blocks.work.config.futureOption${i}`,
+              );
+        }
+      }
+      if (!refused) {
+        const preview = await runCli(
+          assembly.catalog,
+          [
+            "config",
+            "preview",
+            "--input",
+            JSON.stringify({
+              patch: [{ op: "set", path: "work.labels", value: ["p2"] }],
+            }),
+          ],
+          localCall(assembly),
+        );
+        expect(preview.envelope).toMatchObject({
+          ok: true,
+          result: { valid: true },
+        });
+        expect(
+          preview.envelope.warnings,
+          JSON.stringify(preview.envelope.warnings),
+        ).toHaveLength(1);
+        expect(preview.envelope.warnings[0]?.code).toBe("CONFIG_KEY_IGNORED");
+        expect((preview.envelope.result as { text: string }).text).toContain(
+          "discardIgnored",
+        );
+        const { caller, context } = localCall(assembly);
+        const failed = await assembly.catalog.invoke({
+          schemaVersion: "forge.invocation/1",
+          requestId: "invalid-input",
+          op: "check.list",
+          input: { unexpected: true },
+          caller,
+          context: context ?? {},
+        });
+        expect(failed).toMatchObject({
+          ok: false,
+          error: { code: "INPUT_INVALID" },
+          warnings: [{ code: "CONFIG_KEY_IGNORED" }],
+        });
+        expect(failed.warnings).toHaveLength(1);
+      }
+      expect(readFileSync(file, "utf8")).toBe(text);
+      if (name === "newer key") {
+        const localBlock = join(root, "blocks/work");
+        cpSync(
+          resolve(import.meta.dirname, "../../src/blocks/work"),
+          localBlock,
+          { recursive: true },
+        );
+        const added = await runCli(
+          assembly.catalog,
+          ["block", "add", "./blocks/work"],
+          localCall(assembly),
+        );
+        expect(added.envelope.ok, JSON.stringify(added.envelope)).toBe(true);
+        expect(added.envelope.warnings).toHaveLength(1);
+        expect(added.envelope.warnings[0]?.code).toBe("CONFIG_KEY_IGNORED");
+        expect(readFileSync(file, "utf8")).toContain("discardIgnored");
+      }
+    } finally {
+      await assembly.close();
+      capture.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 const cases = [
   [
