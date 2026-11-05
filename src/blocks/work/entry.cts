@@ -1344,7 +1344,7 @@ const operations: Operations<WorkOperations> = {
           body === note || (!dropped && body?.startsWith(note + "\nChecks: "))
         );
       });
-      if (dropped)
+      if (dropped || !progress)
         state.renew(
           key(id),
           ((config as WorkConfig | undefined)?.claimTtlSeconds ?? 3600) * 1000,

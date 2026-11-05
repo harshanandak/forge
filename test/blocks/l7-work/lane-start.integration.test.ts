@@ -477,28 +477,37 @@ test("lane close drops a clean no-PR lane at base and records the reason", () =>
   );
 }, 30000);
 
-test("a repeated no-PR reason cannot bypass a different session's lease or overwrite archives", () => {
-  const { id } = closeFixture();
-  const input = { pr: undefined, noPr: true, dropped: "Paused work" };
-  expect(close(id, input).ok).toBe(true);
-  expect(call("issue.release", { id }).ok).toBe(true);
-  expect(cli(["issue", "claim", id], repo, "lane-second").ok).toBe(true);
-  const { result: secondCheckout } = start(id);
-  const before = git(["rev-parse", String(secondCheckout.branch)]);
-  expect(close(id, input).ok).toBe(false);
-  expect(existsSync(String(secondCheckout.worktree))).toBe(true);
-  expect(git(["rev-parse", String(secondCheckout.branch)])).toBe(before);
-  expect(close(id, input, repo, "lane-second").ok).toBe(true);
-  const directory = join(repo, ".git/forge-lane-runs", id);
-  const archives = readdirSync(directory).filter((name) =>
-    name.startsWith("close-no-pr-"),
-  );
-  expect(archives).toHaveLength(2);
-  for (const name of archives)
-    expect(
-      JSON.parse(readFileSync(join(directory, name), "utf8")),
-    ).toMatchObject({ dropped: "Paused work" });
-}, 30000);
+test.each(["no-pr", "merged keep-open"])(
+  "a repeated %s close cannot bypass a different session's lease",
+  (mode) => {
+    const { id } = closeFixture();
+    const input =
+      mode === "no-pr"
+        ? { pr: undefined, noPr: true, dropped: "Paused work" }
+        : { receipt: receipt(), keepOpen: true };
+    expect(close(id, input).ok).toBe(true);
+    expect(call("issue.release", { id }).ok).toBe(true);
+    expect(cli(["issue", "claim", id], repo, "lane-second").ok).toBe(true);
+    const { result: secondCheckout } = start(id);
+    const before = git(["rev-parse", String(secondCheckout.branch)]);
+    expect(close(id, input).ok).toBe(false);
+    expect(existsSync(String(secondCheckout.worktree))).toBe(true);
+    expect(git(["rev-parse", String(secondCheckout.branch)])).toBe(before);
+    expect(close(id, input, repo, "lane-second").ok).toBe(true);
+    if (mode === "no-pr") {
+      const directory = join(repo, ".git/forge-lane-runs", id);
+      const archives = readdirSync(directory).filter((name) =>
+        name.startsWith("close-no-pr-"),
+      );
+      expect(archives).toHaveLength(2);
+      for (const name of archives)
+        expect(
+          JSON.parse(readFileSync(join(directory, name), "utf8")),
+        ).toMatchObject({ dropped: "Paused work" });
+    }
+  },
+  30000,
+);
 
 test("no-PR close explains how to repair a legacy lane without a recorded base", () => {
   const { id, lane } = closeFixture();
