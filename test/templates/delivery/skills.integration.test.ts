@@ -615,7 +615,7 @@ test("built delivery import syncs linted router and intake and retires generated
     expect(names).toContain("forge-intake");
     expect(names).not.toContain("loop");
     const intake = readFileSync(join(skills, "forge-intake/SKILL.md"), "utf8");
-    expect(intake).toContain("forge route get <role> --text");
+    expect(intake).toContain("../forge-loop/dispatch.md");
     expect(intake).toContain("disable-model-invocation: false");
     expect(readFileSync(join(skills, "forge-loop/SKILL.md"), "utf8")).toContain(
       "disable-model-invocation: true",

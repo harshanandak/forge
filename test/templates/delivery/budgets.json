@@ -1,12 +1,12 @@
 {
-  "migrated": ["forge-intake"],
+  "migrated": ["forge-intake", "forge-loop"],
   "router": 2560,
   "reference": 6144,
   "description": 300,
   "routes": {
     "loop:intake": {
       "files": ["forge-loop/SKILL.md", "forge-intake/SKILL.md"],
-      "bytes": 7466
+      "bytes": 5500
     },
     "loop:cut": {
       "files": [
@@ -14,7 +14,7 @@
         "forge-cut/SKILL.md",
         "forge-cut/framing.md"
       ],
-      "bytes": 7534
+      "bytes": 6500
     },
     "loop:build": {
       "files": [
@@ -22,7 +22,7 @@
         "forge-build/SKILL.md",
         "forge-build/pull-request.md"
       ],
-      "bytes": 12223
+      "bytes": 11800
     },
     "loop:review": {
       "files": [
@@ -30,11 +30,11 @@
         "forge-review/SKILL.md",
         "forge-build/pull-request.md"
       ],
-      "bytes": 11856
+      "bytes": 11400
     },
     "loop:land": {
       "files": ["forge-loop/SKILL.md", "forge-land/SKILL.md"],
-      "bytes": 8155
+      "bytes": 7900
     },
     "review:threads": {
       "files": [
@@ -43,11 +43,11 @@
         "forge-build/pull-request.md",
         "forge-review/thread-helpers.md"
       ],
-      "bytes": 13089
+      "bytes": 12800
     },
     "loop:restart": {
       "files": ["forge-loop/SKILL.md", "forge-loop/resume.md"],
-      "bytes": 5988
+      "bytes": 5000
     }
   }
 }

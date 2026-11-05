@@ -62,29 +62,31 @@
   ],
   [
     "in.call.count",
-    "forge-intake/SKILL.md",
-    "run `forge issue call <intent> --role <role>`"
+    "forge-loop/dispatch.md",
+    "run `forge issue call <slice> --role <role>`"
   ],
   [
     "in.call.limit",
-    "forge-intake/SKILL.md",
-    "On LIMIT_REACHED stop and report."
+    "forge-loop/SKILL.md",
+    "On LIMIT_REACHED stop and report.",
+    null,
+    ["forge-intake/SKILL.md"]
   ],
   [
     "sh.call",
-    "forge-intake/SKILL.md",
+    "forge-loop/dispatch.md",
     "Retry REVISION_CONFLICT",
     null,
     ["forge-build/SKILL.md", "forge-review/SKILL.md"]
   ],
   [
     "sh.timebox",
-    "forge-intake/SKILL.md",
+    "forge-loop/dispatch.md",
     "Pass returned timeboxMinutes and stopBy",
     null,
     ["forge-review/SKILL.md"]
   ],
-  ["sh.route-get", "forge-intake/SKILL.md", "forge route get <role> --text"],
+  ["sh.route-get", "forge-loop/dispatch.md", "forge route get <role> --text"],
   [
     "guidance.slice.targetLines",
     "forge-cut/SKILL.md",
@@ -116,7 +118,7 @@
   ],
   [
     "guidance.doors",
-    "forge-loop/SKILL.md",
+    "forge-loop/doors.md",
     "publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config",
     "owner reply",
     ["forge-cut/SKILL.md", "forge-land/SKILL.md"]
@@ -127,16 +129,21 @@
     "After 2 failed fixes on the same check",
     2
   ],
-  ["guidance.lanes.max", "forge-loop/SKILL.md", "At most 3 workers at once", 3],
+  [
+    "guidance.lanes.max",
+    "forge-loop/dispatch.md",
+    "At most 3 workers at once",
+    3
+  ],
   [
     "guidance.lanes.fullSuiteRuns",
-    "forge-loop/SKILL.md",
+    "forge-loop/dispatch.md",
     "1 full-suite run at a time",
     1
   ],
   [
     "guidance.lanes.stallMinutes",
-    "forge-loop/SKILL.md",
+    "forge-loop/dispatch.md",
     "silent for 10 minutes",
     10
   ],
@@ -160,25 +167,25 @@
   ],
   [
     "guidance.roles.orchestrator",
-    "forge-loop/SKILL.md",
+    "forge-loop/dispatch.md",
     "orchestrator strong",
     "strong"
   ],
   [
     "guidance.roles.implementer",
-    "forge-loop/SKILL.md",
+    "forge-loop/dispatch.md",
     "implementer fast",
     "fast"
   ],
   [
     "guidance.roles.reviewer",
-    "forge-loop/SKILL.md",
+    "forge-loop/dispatch.md",
     "reviewer other-family",
     "other-family"
   ],
   [
     "guidance.roles.housekeeping",
-    "forge-loop/SKILL.md",
+    "forge-loop/dispatch.md",
     "housekeeping cheapest",
     "cheapest"
   ],
@@ -205,5 +212,164 @@
     "forge-build/pull-request.md",
     "when the repository has a PR template, fill its sections in order and keep its headings",
     "project template"
+  ],
+  [
+    "sh.stop-point",
+    "forge-loop/SKILL.md",
+    "link an open PR to the issue, release the claim, then stop",
+    null,
+    ["forge-build/pull-request.md", "forge-review/SKILL.md"]
+  ],
+  [
+    "sh.verdict",
+    "forge-loop/watching.md",
+    "forge pr state <n>",
+    null,
+    ["forge-build/SKILL.md", "forge-review/SKILL.md"]
+  ],
+  [
+    "sh.t3-session",
+    "forge-loop/session.md",
+    "FORGE_SESSION=t3:<threadId>",
+    null,
+    ["forge-build/pull-request.md"]
+  ],
+  [
+    "sh.worker-session",
+    "forge-loop/session.md",
+    "reuse on re-dispatch",
+    null,
+    ["forge-build/pull-request.md"]
+  ],
+  [
+    "sh.memory-start",
+    "forge-loop/memory.md",
+    "`result.text.text` is a pointer, never note text",
+    null,
+    ["forge-build/pull-request.md"]
+  ],
+  [
+    "sh.repo-scope",
+    "forge-loop/memory.md",
+    "gh repo view --json name --jq '.name|ascii_downcase'",
+    null,
+    ["forge-cut/framing.md", "forge-land/SKILL.md"]
+  ],
+  [
+    "sh.propose",
+    "forge-loop/memory.md",
+    "On `format_missing`, follow the returned `repair`, then propose again. Only after `proposed`",
+    null,
+    ["forge-cut/framing.md", "forge-land/SKILL.md"]
+  ],
+  [
+    "sh.link-issue",
+    "forge-loop/watching.md",
+    "forge issue link --input",
+    null,
+    ["forge-build/pull-request.md"]
+  ],
+  [
+    "sh.after-push",
+    "forge-loop/watching.md",
+    "After each push, run `forge agent wait <n>`",
+    null,
+    ["forge-review/SKILL.md"]
+  ],
+  [
+    "sh.done",
+    "forge-loop/watching.md",
+    "forge agent wait <n> --done",
+    null,
+    ["forge-land/SKILL.md"]
+  ],
+  [
+    "sh.fallback",
+    "forge-loop/watching.md",
+    "Use `--fallback` only if a plain opening wait's link or watch step fails."
+  ],
+  [
+    "sh.resume-read",
+    "forge-loop/resume.md",
+    "Later comments override the body."
+  ],
+  [
+    "lp.wake",
+    "forge-loop/SKILL.md",
+    "Every wake: read, route, stop. Read the chosen skill before acting."
+  ],
+  [
+    "lp.task-session",
+    "forge-loop/session.md",
+    "Workers you launch keep their own task session."
+  ],
+  [
+    "lp.sweep",
+    "forge-loop/watching.md",
+    "Only when resuming a session with existing PR work"
+  ],
+  ["lp.ready", "forge-loop/SKILL.md", "forge issue ready --input '{}'"],
+  ["lp.stale", "forge-loop/SKILL.md", "forge issue stale --input '{}'"],
+  ["lp.show", "forge-loop/SKILL.md", "forge issue show"],
+  [
+    "lp.changed",
+    "forge-loop/SKILL.md",
+    "Act only on what changed since your last push, then stop. Forge never watches: the harness wakes you."
+  ],
+  ["lp.roles", "forge-loop/SKILL.md", "One agent may hold both on small work."],
+  [
+    "lp.steps",
+    "forge-loop/SKILL.md",
+    "4 claim/workspace, 5 build, 6 check, 7 open PR: `forge-build`"
+  ],
+  [
+    "lp.link-thread",
+    "forge-loop/watching.md",
+    "Wakes act without re-arming event watches."
+  ],
+  [
+    "lp.reversible",
+    "forge-loop/SKILL.md",
+    "Proceed on reversible actions without asking."
+  ],
+  [
+    "lp.stops",
+    "forge-loop/SKILL.md",
+    "Stop for a one-way door, a scope change beyond the done boundary, or a blocked guard or hook. Never route around a block."
+  ],
+  [
+    "lp.stall",
+    "forge-loop/SKILL.md",
+    "Never start a second worker on the same slice."
+  ],
+  ["lp.model", "forge-loop/dispatch.md", "The harness picks the model."],
+  [
+    "lp.brief",
+    "forge-loop/dispatch.md",
+    "Fill every field before delegating; an empty field blocks the call",
+    null,
+    ["forge-build/SKILL.md"]
+  ],
+  ["lp.standing", "forge-loop/memory.md", "even if a page is empty"],
+  ["res.find", "forge-loop/resume.md", "With a known slice, go straight to"],
+  ["res.read", "forge-loop/resume.md", "Resume spends no call"],
+  ["res.tree", "forge-loop/resume.md", "preserve uncommitted work"],
+  [
+    "res.redispatch",
+    "forge-loop/resume.md",
+    "Re-dispatch only after the old worker is gone."
+  ],
+  [
+    "res.follow",
+    "forge-loop/resume.md",
+    "Existing PR work also follows forge-loop's sweep."
+  ],
+  ["res.record", "forge-loop/resume.md", "seconds to first productive action"],
+  [
+    "am.memory-add",
+    "forge-loop/memory.md",
+    "Save future-session facts:",
+    null,
+    ["forge-land/SKILL.md"]
   ]
 ]
