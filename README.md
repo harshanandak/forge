@@ -215,10 +215,10 @@ Bun; format is available in stable Bun 1.4.4. Read
 [AGENTS.md](AGENTS.md) and [CODING_STANDARDS.md](CODING_STANDARDS.md) before editing.
 
 Start repository lanes with `forge lane start <issue> --branch <name> --brief <file>`;
-`bun tools/lane.ts` provides `run`, `tier` and `list`. After
-merging, close with a PASS receipt on the merge commit:
-Run from an agent session, or set `FORGE_SESSION` to a stable session id in a plain
-terminal before running close.
+Use `bun tools/lane.ts` for repository-only `run`, `tier`, `list` and `auto` commands.
+After merging, close with a PASS receipt on the merge commit. In a plain terminal,
+set `FORGE_SESSION` to a stable session id before claiming and closing; agent
+sessions supply their own session identity.
 
 ```sh
 forge issue claim <issue>

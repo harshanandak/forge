@@ -1,5 +1,9 @@
 import type { StateOwner, WriteOptions } from "../core/state/index.ts";
-import type { BoundContext, LeaseRecord } from "../generated/types.ts";
+import type {
+  BoundContext,
+  LeaseRecord,
+  StateRecord,
+} from "../generated/types.ts";
 import type {
   BatchEntry,
   BatchOptions,
@@ -12,11 +16,18 @@ import type {
   StateClient,
 } from "../ports/state.ts";
 import { refuse } from "../core/trust/index.ts";
+import { jsonEqual } from "../contract/schema.ts";
 
 type ClientPutOptions = PutOptions &
   Pick<WriteOptions, "readSet"> & { readonly subject?: string };
 type ClientBatchOptions = BatchOptions & { readonly subject?: string };
 type ClientDeleteOptions = DeleteOptions & { readonly subject?: string };
+type LandingCommentInput = {
+  readonly id: string;
+  readonly pr: number;
+  readonly receipt: string;
+  readonly generation: number;
+};
 
 /** Assembly capability extension; the outside-block forge.state@1 contract is unchanged.
  * Held puts fence the supplied subject (the record key by default) in the owner's transaction.
@@ -31,6 +42,8 @@ export interface LeaseStateClient extends DeletableStateClient {
   acquire(subject: string, durationMs: number): LeaseRecord;
   renew(subject: string, durationMs: number): LeaseRecord;
   release(subject: string): LeaseRecord;
+  /** Completes only the note already authorized by a fenced work landing. */
+  appendLandingComment(input: LandingCommentInput): StateRecord;
   put(
     key: string,
     value: unknown,
@@ -87,6 +100,74 @@ export function createStateClient(options: {
       owner?.history(namespace, options) ?? [],
     events: (key?: string) => owner?.events(namespace, key) ?? [],
     lease: (subject: string) => owner?.lease(namespace, subject),
+    appendLandingComment(input: LandingCommentInput) {
+      const state = writable();
+      const held = fence(`issue:${input.id}`);
+      const authorityKey = `landing:${input.id}:${input.pr}`;
+      const authority = state.get(namespace, authorityKey);
+      const landing = authority?.value as
+        | {
+            id?: string;
+            pr?: number;
+            receipt?: string;
+            generation?: number;
+            note?: string;
+          }
+        | undefined;
+      const issue = state.get(namespace, held.subject);
+      const value = issue?.value as
+        { status?: string; receipt?: string } | undefined;
+      const lease = state.lease(namespace, held.subject);
+      if (
+        !authority ||
+        !issue ||
+        !landing ||
+        landing.id !== input.id ||
+        landing.pr !== input.pr ||
+        landing.receipt !== input.receipt ||
+        landing.generation !== input.generation ||
+        held.generation !== input.generation ||
+        lease?.generation !== input.generation ||
+        value?.status !== "closed" ||
+        value.receipt !== input.receipt ||
+        typeof landing.note !== "string" ||
+        !landing.note
+      )
+        refuse(
+          "LEASE_REQUIRED",
+          "No matching accepted landing authorizes this comment",
+        );
+      const prefix = `comment:${input.id}:`;
+      const comments = state.list(namespace, prefix);
+      const matching = comments.find((row) => {
+        const body = (row.value as { body?: string }).body;
+        return (
+          body === landing.note || body?.startsWith(landing.note + "\nChecks: ")
+        );
+      });
+      if (matching) return matching;
+      const key = prefix + (comments.length + 1);
+      // Only this accepted note may cross the expired lease boundary, never an issue write.
+      const written = state.put(
+        namespace,
+        key,
+        { id: input.id, body: landing.note },
+        held.holder.actor,
+        {
+          expectRevision: 0,
+          readSet: [
+            { key: authorityKey, expectRevision: authority.revision },
+            { key: held.subject, expectRevision: issue.revision },
+          ],
+        },
+      );
+      if (!jsonEqual(state.get(namespace, key), written))
+        refuse(
+          "INTERNAL",
+          "Accepted landing comment did not match its readback",
+        );
+      return written;
+    },
     delete(key: string, options: ClientDeleteOptions) {
       const state = writable();
       if (context.variant === "stateless")

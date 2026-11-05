@@ -17,7 +17,7 @@ A matched door path always refuses: the owner merges that PR by hand. A merge th
 
 ## Merge, pinned and serial
 
-Merge one PR at a time, after combined-code CI: minimise time to merge within floors of zero red checks, open threads and open doors.
+Merge one PR at a time after combined-code CI, with zero red checks, open threads and open doors.
 
 ```
 forge pr merge <n>
@@ -32,7 +32,7 @@ A refused merge because the head moved means run the gate again. Never merge wit
 1. `gh pr view <n> --json state,mergeCommit,headRefOid` must show `MERGED`, `headRefOid` equal to `<head>` and a valid `mergeCommit.oid`; otherwise the merge is not verified: stop. Keep its merge commit SHA.
 2. Base CI: `gh run list --branch <base> --commit <sha>`. Wait through the harness, not a sleep loop. Red is a new bug: file at p0 or p1 and fix forward.
 3. Claim before closing: `forge issue claim <slice>`. Run `forge issue links <slice>`; if the newest `delivers` link is not the PR being landed (or none exists), add the current PR URL first with `forge issue link <slice> --relation delivers --url "<pr url>"` while holding the claim. For a lane, run `forge lane close <slice> --pr <n> --receipt <id>` with the gate's receipt or a `check run` receipt at the merge commit. Without a lane, run `forge issue close <slice> --reason "merged in <sha>" --receipt <id>`. On `RECEIPT_HEAD_MISMATCH` or `PR_NOT_MERGED`, stop; never switch to `withoutReceipt`. On `UNAVAILABLE`, retry.
-4. Review the removal door before close. No PR: `forge lane close <slice> --no-pr --dropped "<reason>"`. Dirty checkouts refuse; ahead commits retain their branch.
+4. Before `forge lane close <slice> --no-pr --dropped "<reason>"`, require the owner's reply naming delete-worktree and, at base, delete-branch. Silence is not approval. Dirty checkouts refuse; ahead commits retain their branch.
 5. Stop watching after verify: run `forge agent wait <n> --done`, do each step, then follow `then`. Same cleanup when abandoning or handing back the PR.
 
 ## Learn
