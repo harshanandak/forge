@@ -2,7 +2,7 @@
 // change one thing at a time with compare-and-set edits; or import a template (templates.ts).
 // Reads never write: show, explain and detect only read files.
 import { ForgeFailure } from "../../contract/failure.ts";
-import { compatibleConfigProblems } from "./compatible.ts";
+import { compatibleConfig } from "./compatible.ts";
 import { operationTimeoutProblems } from "../../contract/operation-timeouts.ts";
 import { bindingProblems } from "../../contract/composition.ts";
 import { formatProblem as schemaDiagnostic } from "../../contract/input-error.ts";
@@ -64,7 +64,7 @@ import {
 
 export interface ConfigEnvironment extends StoreDeps, BlockLookup {
   readonly warn?: (message: string) => void;
-  readonly warnUnknownConfig?: (message: string) => void;
+  readonly warnUnknownConfig?: (name: string, paths: readonly string[]) => void;
   readonly files: ConfigFiles;
   readonly codec: ConfigCodecPort;
   readonly clock: ClockPort;
@@ -398,12 +398,12 @@ export function planBytes(
     const config = getIn(effective, ["blocks", name, "config"]) ?? {};
     checkInstanceConfig(
       name,
-      compatibleConfigProblems(
+      compatibleConfig(
         name,
         config,
         schema.check(config),
         env.warnUnknownConfig,
-      ),
+      ).problems,
       repair,
     );
   }

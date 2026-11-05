@@ -9,7 +9,7 @@ import {
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
 import { GitCommandError } from "../adapters/vcs-git/index.ts";
 import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
-import { compatibleConfigProblems } from "../core/config/compatible.ts";
+import { compatibleConfig } from "../core/config/compatible.ts";
 import { detectProject, createFolderFiles } from "../blocks/project/index.ts";
 import {
   Catalog,
@@ -262,7 +262,7 @@ export async function createAssembly(
   type CallScope = {
     inProject: boolean;
     warnings: Array<ResultEnvelope["warnings"][number]>;
-    warnUnknownConfig: (message: string) => void;
+    warnUnknownConfig: (name: string, paths: readonly string[]) => void;
     captured(source: BlockSource): CapturedBlock;
     shipped: ReturnType<typeof shippedTemplates>;
     config: ReturnType<typeof createConfig>;
@@ -270,6 +270,10 @@ export async function createAssembly(
   };
   function callScope(derived: readonly DetectionObservation[] = []): CallScope {
     const warnings: Array<ResultEnvelope["warnings"][number]> = [];
+    const ignoredConfig = new Map<
+      string,
+      { paths: Set<string>; index: number }
+    >();
     const captures = new Map<string, CapturedBlock | { failed: unknown }>();
     const shipped = shippedTemplates();
     function captured(source: BlockSource): CapturedBlock {
@@ -293,15 +297,17 @@ export async function createAssembly(
       return found;
     }
     const environment = {
-      warnUnknownConfig: (message: string) => {
-        if (
-          !warnings.some(
-            (warning) =>
-              warning.code === "CONFIG_KEY_IGNORED" &&
-              warning.message === message,
-          )
-        )
-          warnings.push({ code: "CONFIG_KEY_IGNORED", message });
+      warnUnknownConfig: (name: string, paths: readonly string[]) => {
+        let ignored = ignoredConfig.get(name);
+        if (ignored === undefined) {
+          ignored = { paths: new Set(), index: warnings.length };
+          ignoredConfig.set(name, ignored);
+        }
+        for (const path of paths) ignored.paths.add(path);
+        warnings[ignored.index] = {
+          code: "CONFIG_KEY_IGNORED",
+          message: `.forge/config.yaml: unknown properties ${[...ignored.paths].sort().join(", ")} may come from a newer Forge version; upgrade to use them. They are ignored by this version.`,
+        };
       },
       warn: (message: string) =>
         warnings.push({ code: "CONFIG_FORMATTING_LOST", message }),
@@ -375,6 +381,25 @@ export async function createAssembly(
     }
     return checked.value;
   }
+  function withCallWarnings(
+    call: CallScope,
+    result: ResultEnvelope,
+  ): ResultEnvelope {
+    return {
+      ...result,
+      warnings: [
+        ...call.warnings.filter(
+          (warning) =>
+            warning.code === "PROJECT_CONFIG_UNAVAILABLE" ||
+            warning.code === "CONFIG_KEY_IGNORED",
+        ),
+        // The call owns these warnings; core results may already reference or copy them.
+        ...result.warnings.filter(
+          (warning) => warning.code !== "CONFIG_KEY_IGNORED",
+        ),
+      ],
+    };
+  }
   function availableComposition(
     document: ConfigDocument,
     blocks: ReadonlyMap<string, CapturedBlock>,
@@ -393,7 +418,8 @@ export async function createAssembly(
     instance: BlockInstance,
     name: string,
     call: CallScope,
-  ): DocsRecords {
+  ): { docs: DocsRecords; instance: BlockInstance } {
+    let configured = instance;
     const value: unknown = JSON.parse(block.text(block.manifest.docs));
     const docs = validateDocsRecords(value);
     const problems = docs.ok
@@ -418,12 +444,13 @@ export async function createAssembly(
       );
     if (block.manifest.configSchema) {
       const config = instance.config ?? {};
-      const problems = compatibleConfigProblems(
+      const checked = compatibleConfig(
         name,
         config,
         block.problems(block.manifest.configSchema, config),
         call.warnUnknownConfig,
       );
+      const { problems } = checked;
       if (problems.length)
         refuse(
           "INPUT_INVALID",
@@ -437,10 +464,11 @@ export async function createAssembly(
             )
             .join("\n"),
         );
+      configured = { ...instance, config: checked.config };
     }
     if (block.shipped && block.manifest.id === "forge/check")
       validateConfiguration(
-        instance.config as unknown as CheckConfig,
+        configured.config as unknown as CheckConfig,
         `blocks.${name}.config`,
       );
     for (const required of block.manifest.requires ?? []) {
@@ -470,7 +498,7 @@ export async function createAssembly(
           );
       }
     }
-    return docs.value;
+    return { docs: docs.value, instance: configured };
   }
   function readyBindings(catalog: Catalog, name: string): void {
     for (const binding of catalog.bindings(name)) {
@@ -570,7 +598,7 @@ export async function createAssembly(
             },
           }
         : configured;
-    const document = composition(show);
+    let document = structuredClone(composition(show));
     const blocks = new Map<string, CapturedBlock>();
     const candidates: McpCandidate[] = [];
     const unavailable: UnavailableBlock[] = [];
@@ -641,15 +669,20 @@ export async function createAssembly(
           "builtin" in instance.source &&
           instance.source.builtin === "forge/memory" &&
           block.manifest.configSchema !== undefined &&
-          compatibleConfigProblems(
+          compatibleConfig(
             name,
             instance.config ?? {},
             block.problems(block.manifest.configSchema, instance.config ?? {}),
             call.warnUnknownConfig,
-          ).length > 0
+          ).problems.length > 0
         )
           return snapshot(call, true, true);
-        const docs = ready(block, instance, name, call);
+        const prepared = ready(block, instance, name, call);
+        const { docs } = prepared;
+        document = {
+          ...document,
+          blocks: { ...document.blocks, [name]: prepared.instance },
+        };
         const proposed = new Map(blocks);
         proposed.set(name, block);
         const checked = new Catalog(
@@ -713,7 +746,10 @@ export async function createAssembly(
     );
     const executable = new Set(active.list());
     return {
-      show,
+      show: {
+        ...show,
+        effective: { ...show.effective, blocks: document.blocks },
+      },
       document,
       catalog: active,
       blocks,
@@ -924,7 +960,7 @@ export async function createAssembly(
         )
           derived.push(...(await prefix()));
       } catch (error) {
-        return failure(request.op, error);
+        return withCallWarnings(call, failure(request.op, error));
       }
       const result = await direct.invoke(call, request);
       if (
@@ -935,29 +971,14 @@ export async function createAssembly(
         (result.error.code === "LEASE_HELD" ||
           result.error.code === "LEASE_NOT_HELD")
       )
-        return {
+        return withCallWarnings(call, {
           ...result,
           error: {
             ...result.error,
             message: `${result.error.message}\nSame T3 chat after a harness switch? Rerun with FORGE_SESSION=t3:<threadId> from t3_thread_configuration. Separate workers: keep your own session and stop.`,
           },
-        };
-      return {
-        ...result,
-        warnings: [
-          ...call.warnings.filter(
-            (warning) =>
-              warning.code === "PROJECT_CONFIG_UNAVAILABLE" ||
-              (warning.code === "CONFIG_KEY_IGNORED" &&
-                !result.warnings.some(
-                  (existing) =>
-                    existing.code === warning.code &&
-                    existing.message === warning.message,
-                )),
-          ),
-          ...result.warnings,
-        ],
-      };
+        });
+      return withCallWarnings(call, result);
     },
   };
   const direct = {
@@ -1239,13 +1260,13 @@ export async function createAssembly(
               refuse("NOUN_COLLISION", "Block instance name is already in use");
             const document = { value: composition(show) };
             const instance = { ...document.value.blocks[name], source };
+            const prepared = ready(block, instance, name, call);
             const proposed = {
-              ...document.value,
-              blocks: { ...document.value.blocks, [name]: instance },
+              ...current.document,
+              blocks: { ...current.document.blocks, [name]: prepared.instance },
             };
             const blocks = new Map(current.blocks);
             blocks.set(name, block);
-            ready(block, instance, name, call);
             const checkedCatalog = new Catalog(
               availableComposition(proposed, blocks),
               blocks,

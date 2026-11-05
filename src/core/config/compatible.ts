@@ -1,15 +1,17 @@
 import { nameDistance } from "../../contract/distance.ts";
 import type { SchemaProblem } from "../../contract/schema.ts";
-import { parsePointer } from "./pointer.ts";
+import { clone, parsePointer } from "./pointer.ts";
 
 /** Ignore newer config keys in memory, preserving the file and every other schema refusal. */
-export function compatibleConfigProblems(
+export function compatibleConfig<T>(
   name: string,
-  config: unknown,
+  config: T,
   problems: readonly SchemaProblem[],
-  warn?: (message: string) => void,
-): readonly SchemaProblem[] {
-  return problems.flatMap((problem) => {
+  warn?: (name: string, paths: readonly string[]) => void,
+): { config: T; problems: readonly SchemaProblem[] } {
+  const sanitized = clone(config);
+  const paths: string[] = [];
+  const remaining = problems.flatMap((problem) => {
     const parts = parsePointer(problem.pointer) ?? [];
     const key = parts.at(-1);
     if (
@@ -26,16 +28,22 @@ export function compatibleConfigProblems(
       problem.knownProperties.some((known) => nameDistance(key, known, 1) <= 1)
     )
       return [problem];
-    let parent = config;
+    let parent: unknown = sanitized;
     for (const part of parts.slice(0, -1)) {
-      if (typeof parent !== "object" || parent === null) return [problem];
+      // Array items are schema-defined records, not extensible config option objects.
+      if (
+        typeof parent !== "object" ||
+        parent === null ||
+        Array.isArray(parent)
+      )
+        return [problem];
       parent = (parent as Record<string, unknown>)[part];
     }
     if (typeof parent !== "object" || parent === null) return [problem];
     delete (parent as Record<string, unknown>)[key];
-    warn?.(
-      `.forge/config.yaml: blocks.${name}.config.${parts.join(".")}: unknown property "${key}" may come from a newer Forge version; upgrade to use it. It is ignored by this version.`,
-    );
+    paths.push(`blocks.${name}.config.${parts.join(".")}`);
     return [];
   });
+  if (paths.length) warn?.(name, paths);
+  return { config: sanitized, problems: remaining };
 }

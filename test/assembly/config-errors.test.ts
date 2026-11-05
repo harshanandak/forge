@@ -1,5 +1,6 @@
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -7,10 +8,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
 import { runCli } from "../../src/surface/cli.ts";
 import { blockCapture } from "../../src/assembly/capture.ts";
+import { yamlConfigCodec } from "../../src/assembly/config.ts";
 
 setDefaultTimeout(30_000);
 
@@ -26,13 +28,27 @@ for (const [name, config, refused] of [
   ],
   ["nested typo", { settings: { labls: [] } }, true],
   ["known key value", { settings: { mode: "invalid" } }, true],
+  [
+    "many newer keys",
+    {
+      lanes: { discardIgnored: ["cache"] },
+      ...Object.fromEntries(
+        Array.from({ length: 40 }, (_, i) => [`futureOption${i}`, true]),
+      ),
+    },
+    false,
+  ],
 ] as const) {
   test(`older block config schema handles ${name}`, async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-newer-config-"));
     mkdirSync(join(root, ".forge"));
     const file = join(root, ".forge/config.yaml");
-    const text = JSON.stringify({
-      blocks: { work: { config }, check: { commands: {} } },
+    const text = yamlConfigCodec.encode({
+      schemaVersion: "forge.config/1",
+      blocks: {
+        work: { source: { builtin: "forge/work" }, config },
+        check: { source: { builtin: "forge/check" }, config: { commands: {} } },
+      },
     });
     writeFileSync(file, text);
     const open = blockCapture.open.bind(blockCapture);
@@ -112,8 +128,13 @@ for (const [name, config, refused] of [
           expect(envelope.warnings[0]?.message).toContain("upgrade");
           if (args[0] === "config")
             expect(envelope.result).not.toHaveProperty(
-              "effective.blocks.work.config.lanes",
+              `effective.blocks.work.config.${name === "nested newer key" ? "settings." : ""}lanes`,
             );
+          if (name === "many newer keys")
+            for (let i = 0; i < 40; i++)
+              expect(envelope.warnings[0]?.message).toContain(
+                `blocks.work.config.futureOption${i}`,
+              );
         }
       }
       if (!refused) {
@@ -133,12 +154,48 @@ for (const [name, config, refused] of [
           ok: true,
           result: { valid: true },
         });
-        expect(preview.envelope.warnings).toHaveLength(1);
+        expect(
+          preview.envelope.warnings,
+          JSON.stringify(preview.envelope.warnings),
+        ).toHaveLength(1);
+        expect(preview.envelope.warnings[0]?.code).toBe("CONFIG_KEY_IGNORED");
         expect((preview.envelope.result as { text: string }).text).toContain(
           "discardIgnored",
         );
+        const { caller, context } = localCall(assembly);
+        const failed = await assembly.catalog.invoke({
+          schemaVersion: "forge.invocation/1",
+          requestId: "invalid-input",
+          op: "check.list",
+          input: { unexpected: true },
+          caller,
+          context: context ?? {},
+        });
+        expect(failed).toMatchObject({
+          ok: false,
+          error: { code: "INPUT_INVALID" },
+          warnings: [{ code: "CONFIG_KEY_IGNORED" }],
+        });
+        expect(failed.warnings).toHaveLength(1);
       }
       expect(readFileSync(file, "utf8")).toBe(text);
+      if (name === "newer key") {
+        const localBlock = join(root, "blocks/work");
+        cpSync(
+          resolve(import.meta.dirname, "../../src/blocks/work"),
+          localBlock,
+          { recursive: true },
+        );
+        const added = await runCli(
+          assembly.catalog,
+          ["block", "add", "./blocks/work"],
+          localCall(assembly),
+        );
+        expect(added.envelope.ok, JSON.stringify(added.envelope)).toBe(true);
+        expect(added.envelope.warnings).toHaveLength(1);
+        expect(added.envelope.warnings[0]?.code).toBe("CONFIG_KEY_IGNORED");
+        expect(readFileSync(file, "utf8")).toContain("discardIgnored");
+      }
     } finally {
       await assembly.close();
       capture.mockRestore();
