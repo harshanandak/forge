@@ -13,6 +13,7 @@ import {
 } from "../contract/naming.ts";
 import { record } from "./dispatch.ts";
 import { discoveryOperations } from "./discovery.ts";
+import { buildIdentity } from "../version.ts";
 
 /** D9 ceiling: a skill larger than this fails the lint. */
 export const SKILL_MAX_BYTES = 8192;
@@ -93,6 +94,7 @@ function skill(
 ): string {
   const agent = entries.filter((c) => isAgentCallable(c.declaration));
   const human = entries.filter((c) => !isAgentCallable(c.declaration));
+  const block = entries[0]?.blockId;
   return [
     "---",
     `name: ${noun}`,
@@ -102,6 +104,11 @@ function skill(
     `# ${noun}`,
     "",
     GENERATED_MARKER,
+    `<!-- forge version: ${buildIdentity.version} -->`,
+    ...(block?.startsWith("forge/") &&
+    entries.every((entry) => entry.blockId === block && entry.builtin === true)
+      ? [`<!-- forge block: ${block} -->`]
+      : []),
     "Every call returns a JSON result envelope. When an MCP tool below is not listed, use `catalog_call` with the operation name and input; `catalog_describe` returns the full schemas.",
     "",
     ...agent.map((c) => section(c, prefix)),
