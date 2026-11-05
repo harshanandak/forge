@@ -394,7 +394,7 @@ async function contact(
     )
       refuse("INPUT_CONFLICT", "Accounts changed during discovery; plan again");
     if (action === "decline") {
-      if (applied)
+      if (applied || binding?.login)
         refuse(
           "ACCOUNT_BOUND",
           "An applied binding must be explicitly revoked before declining",

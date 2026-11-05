@@ -192,6 +192,9 @@ if (a[0] === 'auth' && a[1] === 'status') {
       "101+alice@users.noreply.github.com",
     );
     const second = clone("second");
+    expect(cli(second, "decline", { approval }).error.code).toBe(
+      "ACCOUNT_BOUND",
+    );
     const inherited = cli(second, "plan");
     expect(inherited.ok, JSON.stringify(inherited)).toBe(true);
     expect(inherited.result.appliedFrom).toBe(used.result.appliedFrom);
