@@ -748,7 +748,10 @@ export async function createAssembly(
     return {
       show: {
         ...show,
-        effective: { ...show.effective, blocks: document.blocks },
+        effective: {
+          ...show.effective,
+          blocks: { ...record(show.effective.blocks), ...document.blocks },
+        },
       },
       document,
       catalog: active,
