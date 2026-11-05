@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { FixtureChildren } from "../../fixture-children.ts";
 
 export type Fixture = {
   label: string;
@@ -11,36 +11,18 @@ export type Fixture = {
 async function runFixture(fixture: Fixture, prefix: string): Promise<string> {
   const started = performance.now();
   try {
-    return await new Promise<string>((resolve, reject) => {
-      const child = spawn(fixture.command, fixture.args, {
-        cwd: fixture.cwd,
-        env: fixture.env,
-        windowsHide: true,
-        timeout: 90000,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      let error: Error | undefined;
-      child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-        stdout += chunk;
-      });
-      child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-        stderr += chunk;
-      });
-      child.once("error", (cause) => {
-        error = cause;
-      });
-      child.once("close", (status) => {
-        if (error || status !== 0)
-          reject(
-            new Error(
-              `${fixture.label}: ${error?.message ?? `exited ${String(status)}`}\n${stdout}\n${stderr}`,
-            ),
-          );
-        else resolve(stdout);
-      });
+    const children = new FixtureChildren();
+    const result = await children.run(fixture.command, fixture.args, {
+      cwd: fixture.cwd,
+      env: fixture.env,
+      windowsHide: true,
+      timeout: 90000,
     });
+    if (result.error || result.status !== 0)
+      throw new Error(
+        `${fixture.label}: ${result.error?.message ?? `exited ${String(result.status)}`}\n${result.stdout}\n${result.stderr}`,
+      );
+    return result.stdout;
   } finally {
     console.log(
       `${prefix} ${fixture.label}: ${Math.round(performance.now() - started)} ms`,
