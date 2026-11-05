@@ -312,9 +312,21 @@ test("built sync manages marked skills and companions in both adapter directorie
     for (const dir of adapterDirs) {
       const skill = join(root, dir, "forge-loop/SKILL.md");
       const text = readFileSync(skill, "utf8");
-      expect(text).toContain(
-        `${GENERATED_MARKER}\n<!-- forge companions: agents/openai.yaml, resume.md -->`,
-      );
+      expect(text).toContain(`${GENERATED_MARKER}\n`);
+      const companions = text
+        .split(`${GENERATED_MARKER}\n`)[1]
+        ?.match(/^<!-- forge companions: (.+) -->\n/)?.[1]
+        ?.split(", ");
+      for (const companion of [
+        "agents/openai.yaml",
+        "dispatch.md",
+        "doors.md",
+        "memory.md",
+        "resume.md",
+        "session.md",
+        "watching.md",
+      ])
+        expect(companions).toContain(companion);
       expect(
         readFileSync(join(root, dir, "forge-loop/agents/openai.yaml"), "utf8"),
       ).toBe("policy:\n  allow_implicit_invocation: false\n");
@@ -615,7 +627,7 @@ test("built delivery import syncs linted router and intake and retires generated
     expect(names).toContain("forge-intake");
     expect(names).not.toContain("loop");
     const intake = readFileSync(join(skills, "forge-intake/SKILL.md"), "utf8");
-    expect(intake).toContain("forge route get <role> --text");
+    expect(intake).toContain("../forge-loop/dispatch.md");
     expect(intake).toContain("disable-model-invocation: false");
     expect(readFileSync(join(skills, "forge-loop/SKILL.md"), "utf8")).toContain(
       "disable-model-invocation: true",
