@@ -156,7 +156,8 @@ jobs:
         # 1200 s limit once the spawn-heavy files ran serially (forge-648).
         # Each Windows tests leg now has three time-balanced shards; spawn-heavy files
         # stay serial inside each shard. Pack and the other platforms retain their coverage.
-        # Timings: slower Windows Node 24/26 file sums from study run 41780215418.
+        # Timings: median Windows Node 24 file times over 12 main runs (forge-852); serial files
+        # weigh 2.5x because they run alone while parallel files overlap.
         # Assignment spans unit, parallel integration and serial integration together.
         include:
           - { os: ubuntu-latest, node: "24", suite: all }
