@@ -221,3 +221,40 @@ test("absolute lock aliases resolve to canonical metadata before confinement, in
   expect(readdirSync(outside)).toEqual([]);
   lease.close();
 });
+
+test("recoverable locks preserve live owners and replacement directory generations", () => {
+  const { files, commonDirectory, lease } = fixture();
+  const path = join(commonDirectory, "coordination.lock");
+  const held = files.lock(["coordination.lock"], { recoverDeadOwner: true });
+  expect(() =>
+    files.lock(["coordination.lock"], { recoverDeadOwner: true }),
+  ).toThrow(/INPUT_CONFLICT/);
+  renameSync(path, path + ".moved");
+  mkdirSync(path);
+  writeFileSync(join(path, "other-owner"), "");
+  held.release();
+  lease.close();
+  expect(readdirSync(path)).toEqual(["other-owner"]);
+});
+
+test.each(["file", "empty directory", "unknown marker"])(
+  "recoverable locks preserve an unproven owner: %s",
+  (kind) => {
+    const { files, commonDirectory, lease } = fixture();
+    const path = join(commonDirectory, "unknown.lock");
+    if (kind === "file") writeFileSync(path, "held");
+    else {
+      mkdirSync(path);
+      if (kind === "unknown marker") writeFileSync(join(path, "held"), "held");
+    }
+    expect(() =>
+      files.lock(["unknown.lock"], { recoverDeadOwner: true }),
+    ).toThrow(/INPUT_CONFLICT/);
+    lease.close();
+    if (kind === "file") expect(readFileSync(path, "utf8")).toBe("held");
+    else
+      expect(readdirSync(path)).toEqual(
+        kind === "unknown marker" ? ["held"] : [],
+      );
+  },
+);

@@ -53,6 +53,9 @@ test.each(["test:integration", "test:changed"])(
       expect(serial.split(" ").filter((arg) => arg === path)).toHaveLength(1);
       expect(ignore.match(path), `${path} excluded from bulk`).toBe(true);
     }
+    expect(
+      ignore.match("test/blocks/l7-work/lane-start.integration.test.ts"),
+    ).toBe(false);
     const serialPaths = serial
       .split(" ")
       .filter((arg) => arg.endsWith(".test.ts"));

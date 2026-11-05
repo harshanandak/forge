@@ -4,6 +4,8 @@ import type {
   ReceiptsService,
   ProcessService,
   EnvironmentService,
+  FilesService,
+  CryptoService,
 } from "../../assembly/providers.ts";
 import type {
   StateRecord,
@@ -37,6 +39,7 @@ type WorkListInput = ListItemsInput & {
   readonly createdSince?: string;
 };
 type WorkConfig = {
+  readonly lanes?: { readonly max?: number; readonly base?: string };
   readonly labelOrder?: readonly string[];
   readonly idPrefix?: string;
   readonly claimTtlSeconds?: number;
@@ -76,7 +79,18 @@ type CallBudget = ItemRef & {
   readonly left: number;
   readonly stopBy: string;
 };
+type Lane = {
+  issue: string;
+  worktree: string;
+  branch: string;
+  brief: string;
+  base?: string;
+};
+type LaneInput = ItemRef & { branch: string; brief: string };
+type LaneOutput = Lane & { lease?: TrackerItem["lease"] };
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "lane.start": readonly [LaneInput, LaneOutput];
+  readonly "lane.show": readonly [ItemRef, LaneOutput];
   readonly "issue.checkpoint": readonly [
     ItemRef & Checkpoint,
     ItemRef & { readonly commentId: string },
@@ -586,7 +600,303 @@ function grant(
     expiresAt: lease.expiresAt,
   };
 }
+const required = [
+  "Goal",
+  "Acceptance test",
+  "Files",
+  "Forbidden actions",
+  "Stop point",
+  "Prior art",
+];
+function briefProblems(text: string): string[] {
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, "")
+    .split(/\r?\n/);
+  let start = 0;
+  if (lines[0] === "---") {
+    const end = lines.indexOf("---", 1);
+    if (end < 0) return ["brief frontmatter is not closed"];
+    start = end + 1;
+  }
+  const bodies = new Map<string, string[]>();
+  let current: string | undefined;
+  let fence: { char: string; length: number } | undefined;
+  for (const line of lines.slice(start)) {
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      if (
+        marker &&
+        marker[1]![0] === fence.char &&
+        marker[1]!.length >= fence.length &&
+        marker[2]!.trim() === ""
+      )
+        fence = undefined;
+      else if (current) bodies.get(current)?.push(line);
+      continue;
+    }
+    if (marker && !(marker[1]![0] === "`" && marker[2]!.includes("`"))) {
+      fence = { char: marker[1]![0]!, length: marker[1]!.length };
+      continue;
+    }
+    const heading = line.match(/^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading && heading[1]!.length <= 2) {
+      current = heading[1] === "##" ? heading[2] : undefined;
+      if (current && !bodies.has(current)) bodies.set(current, []);
+    } else if (current) bodies.get(current)?.push(line);
+  }
+  return required
+    .filter(
+      (name) => !bodies.get(name)?.some((line) => /[\p{L}\p{N}]/u.test(line)),
+    )
+    .map((name) => `brief requires non-empty section: ${name}`);
+}
+
+const registryPath = "forge-lanes.json";
+const registryLock = "forge-lanes-registry.lock";
+function laneFiles(services: unknown): FilesService {
+  const files = (services as { files?: FilesService }).files;
+  if (!files) fail("UNAVAILABLE", "Lane operations require the files service");
+  return files;
+}
+function laneRegistry(files: FilesService): {
+  text: string | null;
+  lanes: Lane[];
+} {
+  const text = files.read(registryPath, 1_048_576, "common") ?? null;
+  let value: unknown;
+  try {
+    value = text === null ? [] : JSON.parse(text);
+  } catch {
+    fail("INPUT_INVALID", "Repair the invalid lane registry before retrying");
+  }
+  if (
+    !Array.isArray(value) ||
+    !value.every(
+      (row: unknown) =>
+        row !== null &&
+        typeof row === "object" &&
+        ["issue", "worktree", "branch", "brief"].every(
+          (field) =>
+            typeof (row as Record<string, unknown>)[field] === "string",
+        ) &&
+        (!("base" in row) || typeof row.base === "string"),
+    )
+  )
+    fail("INPUT_INVALID", "Repair the invalid lane registry before retrying");
+  return { text, lanes: value as Lane[] };
+}
+function slash(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/$/, "");
+}
+function briefPath(
+  files: FilesService,
+  path: string,
+  windows: boolean,
+): string {
+  const root = slash(files.root),
+    given = slash(path);
+  const fold = (value: string) => (windows ? value.toLowerCase() : value);
+  return fold(given).startsWith(fold(root) + "/")
+    ? given.slice(root.length + 1)
+    : given;
+}
 const operations: Operations<WorkOperations> = {
+  "lane.show": ({ input, services, config }) => {
+    const state = client(services),
+      ids = idsFor(state, config);
+    const issue = item(state, get(state, ids.stored(input.id), input.id), ids);
+    const lane = laneRegistry(laneFiles(services)).lanes.find(
+      (row) => ids.stored(row.issue) === ids.stored(issue.id),
+    );
+    if (!lane) fail("NOT_FOUND", `No recorded lane for ${issue.id}`);
+    return { ...lane, ...(issue.lease ? { lease: issue.lease } : {}) };
+  },
+  "lane.start": async ({ input, services, config, signal, deadline }) => {
+    const state = client(services),
+      ids = idsFor(state, config);
+    const issueId = ids.stored(input.id);
+    const issue = item(state, get(state, issueId, input.id), ids);
+    if (issue.status === "closed")
+      fail("INPUT_CONFLICT", `Issue ${issue.id} is closed`);
+    const files = laneFiles(services);
+    const bound = services as {
+      process?: ProcessService;
+      environment?: EnvironmentService;
+      crypto?: CryptoService;
+    };
+    if (!bound.process || !bound.environment || !bound.crypto)
+      fail(
+        "UNAVAILABLE",
+        "Starting a lane requires process, environment and crypto services",
+      );
+    const windows = bound.environment.platform === "win32";
+    const pathKey = (path: string) =>
+      windows ? slash(path).toLowerCase() : slash(path);
+    const relativeBrief = briefPath(files, input.brief, windows);
+    const brief = files.read(relativeBrief, 262144);
+    if (brief === undefined)
+      fail("INPUT_INVALID", `Brief file does not exist: ${input.brief}`);
+    const problems = briefProblems(brief);
+    if (problems.length) fail("INPUT_INVALID", problems.join("; "));
+    const executor = bound.process;
+    const env = bound.environment.select([
+      "PATH",
+      "PATHEXT",
+      "SystemRoot",
+      "windir",
+      "ComSpec",
+      "TEMP",
+      "TMP",
+      "TMPDIR",
+      "HOME",
+      "USERPROFILE",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "SSH_AUTH_SOCK",
+    ]);
+    const git = executor.resolve("git", env);
+    if (git.kind !== "resolved")
+      fail("UNAVAILABLE", "Install Git and put it on PATH to start a lane");
+    const run = async (args: string[], optional = false): Promise<string> => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0)
+        fail("INVOCATION_TIMEOUT", "Lane start deadline expired");
+      const result = await executor.run(git, args, {
+        cwd: files.root,
+        env,
+        signal,
+        timeoutMs: Math.min(60000, remaining),
+        maxOutputBytes: 262144,
+      });
+      if (result.timedOut || result.truncated)
+        fail("UNAVAILABLE", "Git timed out or exceeded the lane output limit");
+      if (result.exitCode !== 0) {
+        if (optional) return "";
+        fail(
+          "INPUT_CONFLICT",
+          `git ${args[0]} failed: ${result.stderr.trim().split(/\r?\n/)[0] || "no diagnostic"}`,
+        );
+      }
+      return result.stdout.trim();
+    };
+    if (
+      input.branch.startsWith("-") ||
+      !(await run(["check-ref-format", "--branch", input.branch], true))
+    )
+      fail("INPUT_INVALID", "Invalid lane branch name");
+    const laneConfig = (config as WorkConfig | undefined)?.lanes;
+    const remoteHead =
+      laneConfig?.base ??
+      ((
+        await run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], true)
+      ).replace(/^refs\/remotes\/origin\//, "") ||
+        "main");
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(remoteHead))
+      fail("INPUT_INVALID", "Invalid lane base");
+    const baseRef = "refs/forge/lane-base/" + bound.crypto.randomUUID();
+    let base: string;
+    try {
+      await run([
+        "fetch",
+        "origin",
+        "+refs/heads/" + remoteHead + ":" + baseRef,
+      ]);
+      base = await run(["rev-parse", "--verify", baseRef + "^{commit}"]);
+    } finally {
+      await run(["update-ref", "-d", baseRef]);
+    }
+    let lock: ReturnType<FilesService["lock"]>;
+    try {
+      lock = files.lock([registryLock], { recoverDeadOwner: true });
+    } catch {
+      fail(
+        "INPUT_CONFLICT",
+        `Lane registry is locked; inspect ${files.roots.common}/${registryLock} before retrying`,
+      );
+    }
+    try {
+      const saved = laneRegistry(files);
+      const trees = (await run(["worktree", "list", "--porcelain", "-z"]))
+        .split("\0\0")
+        .map((record) => {
+          const fields = record.split("\0");
+          return {
+            path:
+              fields.find((field) => field.startsWith("worktree "))?.slice(9) ??
+              "",
+            branch:
+              fields.find((field) => field.startsWith("branch "))?.slice(7) ??
+              "",
+          };
+        });
+      const lanes: Lane[] = [];
+      for (const lane of saved.lanes)
+        if (
+          trees.some((tree) => pathKey(tree.path) === pathKey(lane.worktree)) &&
+          (await run(
+            ["-C", lane.worktree, "rev-parse", "--is-inside-work-tree"],
+            true,
+          )) === "true"
+        )
+          lanes.push(lane);
+      const existing = lanes.find((lane) => ids.stored(lane.issue) === issueId);
+      const worktree = `${slash(trees[0]!.path)}/.worktrees/${issue.id}`;
+      const briefFile = `${slash(files.root)}/${relativeBrief}`;
+      if (existing) {
+        if (
+          trees.find(
+            (tree) => pathKey(tree.path) === pathKey(existing.worktree),
+          )?.branch !== `refs/heads/${input.branch}` ||
+          existing.branch !== input.branch ||
+          pathKey(existing.brief) !== pathKey(briefFile)
+        )
+          fail(
+            "INPUT_CONFLICT",
+            `Issue ${issue.id} already has a different lane`,
+          );
+        return { ...existing, ...(issue.lease ? { lease: issue.lease } : {}) };
+      }
+      if (lanes.length >= (laneConfig?.max ?? 3))
+        fail(
+          "LIMIT_REACHED",
+          `Active lane cap ${laneConfig?.max ?? 3} reached; finish a lane first`,
+        );
+      const adopted = trees.find(
+        (tree) => pathKey(tree.path) === pathKey(worktree),
+      );
+      if (adopted && adopted.branch !== `refs/heads/${input.branch}`)
+        fail(
+          "INPUT_CONFLICT",
+          `Worktree ${worktree} belongs to a different branch`,
+        );
+      if (!adopted)
+        await run(["worktree", "add", "-b", input.branch, worktree, base]);
+      const lane: Lane = {
+        issue: issue.id,
+        worktree,
+        branch: input.branch,
+        brief: briefFile,
+        base: adopted ? await run(["-C", worktree, "rev-parse", "HEAD"]) : base,
+      };
+      try {
+        files.write(
+          registryPath,
+          `${JSON.stringify([...lanes, lane], null, 2)}\n`,
+          { area: "common", expected: saved.text },
+        );
+      } catch {
+        fail(
+          "INPUT_CONFLICT",
+          `Worktree preserved at ${worktree}; registry publication failed. Rerun lane.start with the same arguments to adopt it`,
+        );
+      }
+      return { ...lane, ...(issue.lease ? { lease: issue.lease } : {}) };
+    } finally {
+      lock.release();
+    }
+  },
+
   "issue.create": ({ input, services, config }) => {
     const state = client(services);
     const ids = idsFor(state, config);

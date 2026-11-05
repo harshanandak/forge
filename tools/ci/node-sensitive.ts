@@ -39,6 +39,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Conservatively retains Node command/configuration literals.",
   "test/blocks/agent/wait-guard.test.ts":
     "Conservatively retains Node command/configuration literals.",
+  "test/blocks/l7-work/lane-start.integration.test.ts":
+    "Launches selected Node for lane start and registry recovery coverage.",
   "test/blocks/l7-work/map-cli.integration.test.ts":
     "Launches selected Node for map cli coverage.",
   "test/blocks/memory/move-scope.integration.test.ts":
