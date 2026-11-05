@@ -55,8 +55,18 @@ test("an agent's local block admission needs a single-use chat reply bound to it
   cpSync(join(root, "hello"), join(root, "other"), { recursive: true });
   writeFileSync(
     join(root, "other/forge.block.json"),
-    JSON.stringify({ ...manifest, id: "example.org/other" }),
+    JSON.stringify({ ...manifest, id: "example.org/other" }).replaceAll(
+      "hello.say",
+      "other.say",
+    ),
   );
+  for (const file of ["docs.json", "index.cjs"]) {
+    const path = join(root, "other", file);
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replaceAll("hello.say", "other.say"),
+    );
+  }
   const assembly = await createAssembly({
     root,
     deviceRoot: join(work, "device"),
@@ -69,7 +79,7 @@ test("an agent's local block admission needs a single-use chat reply bound to it
     expect(added.ok).toBe(true);
     const digest = String(record(added.result)?.digest);
     const other = await call("block.add", { path: "./other" });
-    expect(other.ok).toBe(true);
+    expect(other).toMatchObject({ ok: true });
     const otherDigest = String(record(other.result)?.digest);
     const request = pending(await call("block.admit", { digest }));
     expect(await call("hello.say", { name: "Owner" })).toMatchObject({

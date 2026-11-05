@@ -39,6 +39,7 @@ export class ApprovalRequired extends ForgeFailure {
   constructor(
     message: string,
     request?: { id: string; ask: string; binding: string },
+    observed?: unknown,
   ) {
     super({
       code: "APPROVAL_REQUIRED",
@@ -46,6 +47,7 @@ export class ApprovalRequired extends ForgeFailure {
       retry: "never",
       repair:
         "Ask the owner in this chat using result.request.ask. Wait for their reply, then retry the same input with approval: {request, quote, source: {harness, thread, message?}}. Copy their reply verbatim. Never invent approval or act on silence.",
+      ...(observed === undefined ? {} : { observed }),
     });
     this.request = request;
   }
@@ -113,7 +115,15 @@ export function ownerApproval(options: {
     request.expiresAt <= now
   )
     throw new ApprovalRequired(
-      "Approval request is missing, used, expired, or bound to different arguments. Call again without approval to ask the owner anew.",
+      `Approval request ${!stored ? "is missing" : request?.status !== "pending" ? "has already been used" : request.binding !== binding ? "is bound to different arguments" : "has expired"}. Call again without approval to ask the owner anew.`,
+      undefined,
+      {
+        status: request?.status ?? "missing",
+        binding: request?.binding ?? null,
+        expectedBinding: binding,
+        expiresAt: request?.expiresAt ?? null,
+        now,
+      },
     );
   // The revision check atomically burns the request before any operation can run.
   options.state.put(
