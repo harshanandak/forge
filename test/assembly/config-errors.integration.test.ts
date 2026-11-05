@@ -5,14 +5,403 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { ResultEnvelope } from "../../src/generated/types.ts";
+import type {
+  FailureEnvelope,
+  ResultEnvelope,
+  UpgradeHint,
+} from "../../src/generated/types.ts";
 import { counterfactuals } from "../node-fixtures/check/counterfactuals.ts";
+import { localUpgradeCommand } from "../../src/adapters/node-runtime/catalog.ts";
+import { pathToFileURL } from "node:url";
+import { GENERATED_MARKER, renderSkills } from "../../src/surface/skills.ts";
+import { version } from "../../src/version.ts";
+import { candidate } from "../surface/fixtures/catalog.ts";
+
+type HintedFailure = FailureEnvelope & {
+  readonly error: FailureEnvelope["error"] & {
+    readonly hint: UpgradeHint & {
+      readonly cwd: string;
+      readonly running: UpgradeHint["running"] & { readonly commit: string };
+    };
+  };
+};
+
+const futureSkill = (
+  op: string,
+  block = "forge/check",
+  version = "999.0.0",
+): string =>
+  `${GENERATED_MARKER}\n<!-- forge version: ${version} -->\n<!-- forge block: ${block} -->\n## \`${op}\`\n`;
+
+test("source repair keeps shell syntax in cwd data and emits a fixed command", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-repair-"));
+  try {
+    const checkout = join(root, "$(calc) ` ' forge");
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+    const repair = localUpgradeCommand(pathToFileURL(checkout), version);
+    expect(repair).toEqual({
+      cwd: checkout,
+      command: "bun install --frozen-lockfile && bun run build",
+    });
+    expect(repair.command).not.toContain("$(calc)");
+    const local = join(root, "consumer", "node_modules", "forge-workflow");
+    expect(localUpgradeCommand(pathToFileURL(local), version)).toEqual({
+      cwd: join(root, "consumer"),
+      command: "npm install --save-dev forge-workflow@beta",
+    });
+    expect(
+      localUpgradeCommand(pathToFileURL(join(root, "installed")), "1.0.0"),
+    ).toEqual({
+      cwd: null,
+      command: "npm install --global forge-workflow@latest",
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("generated builtin skills record the generator version and block provenance", () => {
+  const skill =
+    renderSkills([
+      { ...candidate("check.future"), blockId: "forge/check", builtin: true },
+    ])[0]?.text ?? "";
+  expect(skill).toContain(`<!-- forge version: ${version} -->`);
+  expect(skill).toContain("<!-- forge block: forge/check -->");
+  expect(
+    renderSkills([
+      { ...candidate("check.future"), blockId: "forge/check", builtin: false },
+    ])[0]?.text,
+  ).not.toContain("<!-- forge block:");
+}, 30_000);
+
+test("repo-declared missing operations carry a build hint while unknown names stay plain", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-stale-command-"));
+  const repo = resolve(import.meta.dirname, "../..");
+  const privateBuild = join(root, "build");
+  const privateBin = join(privateBuild, "dist/bin/forge.js");
+  function invokePrivateCli(args: string[], status: number): string {
+    const result = spawnSync("node", [privateBin, ...args], {
+      cwd: root,
+      env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 15_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(status);
+    return result.stdout;
+  }
+  try {
+    cpSync(join(repo, "dist"), join(privateBuild, "dist"), { recursive: true });
+    cpSync(join(repo, "templates"), join(privateBuild, "templates"), {
+      recursive: true,
+    });
+    cpSync(join(repo, "package.json"), join(privateBuild, "package.json"));
+    symlinkSync(
+      join(repo, "node_modules"),
+      join(privateBuild, "node_modules"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    mkdirSync(join(privateBuild, ".git"));
+    mkdirSync(join(root, ".forge"));
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      "blocks:\n  check:\n    commands: {}\n",
+    );
+    mkdirSync(join(root, ".agents/skills/check"), { recursive: true });
+    const privateSkillFile = join(root, ".agents/skills/check/SKILL.md");
+    writeFileSync(privateSkillFile, futureSkill("check.future"));
+    const missing = JSON.parse(
+      invokePrivateCli(["check", "future"], 3),
+    ) as HintedFailure;
+    expect(typeof missing.error.hint.command).toBe("string");
+    // Bun's asymmetric object matcher replaces fields on its received object.
+    expect(structuredClone(missing)).toMatchObject({
+      ok: false,
+      error: {
+        code: "UNKNOWN_COMMAND",
+        retry: "never",
+        message: "Unknown operation: check.future",
+        hint: {
+          running: {
+            version: expect.any(String) as unknown,
+            commit: expect.stringMatching(/^[a-f0-9]{40}$/) as unknown,
+            dirty: expect.any(Boolean) as unknown,
+          },
+          required: expect.stringContaining("check.future") as unknown,
+          cwd: realpathSync(privateBuild),
+          command: expect.stringContaining(
+            "bun install --frozen-lockfile && bun run build",
+          ) as unknown,
+        },
+      },
+    });
+    expect(missing.error.hint.command).toBe(
+      "bun install --frozen-lockfile && bun run build",
+    );
+    expect(missing.error.hint.cwd).toContain(realpathSync(privateBuild));
+    const text = invokePrivateCli(["check", "future", "--text"], 3);
+    expect(text).toContain("Unknown operation: check.future");
+    expect(
+      text.split("\n").filter((line) => line.includes("bun install")),
+    ).toHaveLength(1);
+    expect(text).toContain(missing.error.hint.running.commit);
+    expect(
+      (
+        JSON.parse(invokePrivateCli(["check", "unmentioned"], 3)) as {
+          error: unknown;
+        }
+      ).error,
+    ).not.toHaveProperty("hint");
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      "blocks:\n  check:\n    enabled: false\n",
+    );
+    writeFileSync(
+      privateSkillFile,
+      "<!-- Generated by forge skills sync from the catalog; edits are overwritten. -->\n## `check.list`\n",
+    );
+    expect(
+      (JSON.parse(invokePrivateCli(["check", "list"], 3)) as { error: unknown })
+        .error,
+    ).not.toHaveProperty("hint");
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      "blocks:\n  check:\n    commands: {}\n",
+    );
+    writeFileSync(privateSkillFile, "## `check.future`\n");
+    expect(
+      (
+        JSON.parse(invokePrivateCli(["check", "future"], 3)) as {
+          error: unknown;
+        }
+      ).error,
+    ).not.toHaveProperty("hint");
+    for (const evidence of [
+      futureSkill("check.future", "custom/check"),
+      futureSkill("check.future", "forge/check", version),
+      `${GENERATED_MARKER}\n## \`check.future\`\n`,
+    ]) {
+      writeFileSync(privateSkillFile, evidence);
+      expect(
+        (
+          JSON.parse(invokePrivateCli(["check", "future"], 3)) as {
+            error: unknown;
+          }
+        ).error,
+      ).not.toHaveProperty("hint");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 110_000);
+
+test("a retained newer skill cannot suggest rebuilding an operation exposed under a config rename", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-renamed-hint-"));
+  try {
+    mkdirSync(join(root, ".forge"));
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      JSON.stringify({
+        blocks: {
+          check: {
+            source: { builtin: "forge/check" },
+            rename: { check: "verify" },
+            config: { commands: {} },
+          },
+        },
+      }),
+    );
+    mkdirSync(join(root, ".agents/skills/check"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents/skills/check/SKILL.md"),
+      futureSkill("check.run"),
+    );
+    const result = spawnSync(
+      "node",
+      [resolve(import.meta.dirname, "../../dist/bin/forge.js"), "check", "run"],
+      {
+        cwd: root,
+        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 15_000,
+      },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(3);
+    const envelope = JSON.parse(result.stdout) as FailureEnvelope;
+    expect(envelope).toMatchObject({
+      ok: false,
+      error: {
+        code: "UNKNOWN_COMMAND",
+        message: "Unknown operation: check.run",
+        retry: "never",
+      },
+    });
+    expect(envelope.error).not.toHaveProperty("hint");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("newer generated skills for disabled builtin and custom blocks do not suggest rebuilding", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-disabled-hint-"));
+  try {
+    mkdirSync(join(root, ".forge"));
+    mkdirSync(join(root, ".agents/skills/check"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents/skills/check/SKILL.md"),
+      futureSkill("check.future"),
+    );
+    for (const source of [
+      { builtin: "forge/check" },
+      { path: "./removed-custom" },
+    ]) {
+      writeFileSync(
+        join(root, ".forge/config.yaml"),
+        JSON.stringify({ blocks: { check: { source, enabled: false } } }),
+      );
+      const result = spawnSync(
+        "node",
+        [
+          resolve(import.meta.dirname, "../../dist/bin/forge.js"),
+          "check",
+          "future",
+        ],
+        {
+          cwd: root,
+          env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 15_000,
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stdout + result.stderr).toBe(3);
+      const envelope = JSON.parse(result.stdout) as { error: unknown };
+      expect(envelope).toMatchObject({
+        ok: false,
+        error: { code: "UNKNOWN_COMMAND" },
+      });
+      expect(envelope.error).not.toHaveProperty("hint");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("packaged builds keep their identity and offer a package upgrade without runtime git", () => {
+  const node = Bun.which("node");
+  if (!node) throw new Error("Node runtime required");
+  const repo = resolve(import.meta.dirname, "../..");
+  const root = mkdtempSync(join(tmpdir(), "forge-stale-package-"));
+  try {
+    const installed = join(root, "installed");
+    cpSync(join(repo, "dist"), join(installed, "dist"), { recursive: true });
+    cpSync(join(repo, "templates"), join(installed, "templates"), {
+      recursive: true,
+    });
+    cpSync(join(repo, "package.json"), join(installed, "package.json"));
+    symlinkSync(
+      join(repo, "node_modules"),
+      join(installed, "node_modules"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    mkdirSync(join(root, ".forge"));
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      "blocks:\n  check:\n    commands: {}\n",
+    );
+    mkdirSync(join(root, ".agents/skills/check"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents/skills/check/SKILL.md"),
+      futureSkill("check.future"),
+    );
+    const result = spawnSync(
+      node,
+      [join(installed, "dist/bin/forge.js"), "check", "future"],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          PATH: "",
+          FORGE_DEVICE_ROOT: join(root, "device"),
+        },
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 15_000,
+      },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(3);
+    expect(JSON.parse(result.stdout) as unknown).toMatchObject({
+      error: {
+        code: "UNKNOWN_COMMAND",
+        hint: {
+          running: JSON.parse(
+            readFileSync(join(installed, "dist/build.json"), "utf8"),
+          ) as unknown,
+          required: expect.stringContaining("check.future") as unknown,
+          cwd: null,
+          command: "npm install --global forge-workflow@beta",
+        },
+      },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("unknown config keys without positive version evidence retain a plain warning", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-stale-config-"));
+  try {
+    mkdirSync(join(root, ".forge"));
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      "blocks:\n  check:\n    commands: {}\n    futureOption: true\n",
+    );
+    const result = spawnSync(
+      "node",
+      [
+        resolve(import.meta.dirname, "../../dist/bin/forge.js"),
+        "config",
+        "show",
+      ],
+      {
+        cwd: root,
+        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 15_000,
+      },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    const envelope = JSON.parse(result.stdout) as ResultEnvelope;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.warnings as readonly unknown[]).toContainEqual(
+      expect.objectContaining({
+        code: "CONFIG_KEY_IGNORED",
+      }),
+    );
+    expect(
+      envelope.warnings.find(({ code }) => code === "CONFIG_KEY_IGNORED"),
+    ).not.toHaveProperty("hint");
+    expect(readFileSync(join(root, ".forge/config.yaml"), "utf8")).toContain(
+      "futureOption: true",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test("unknown commands retain exit 3 unless configuration hides a declared operation", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-unknown-config-"));

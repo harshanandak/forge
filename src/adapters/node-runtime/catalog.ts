@@ -1,9 +1,36 @@
 import { existsSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { BlockCatalog } from "../../core/runtime/catalog.ts";
 import { TrustStore } from "../../core/trust/index.ts";
 import { nodeFileCapture } from "./capture.ts";
 import { nodeRunIsolation } from "./isolation.ts";
+import { fileURLToPath } from "node:url";
+
+/** Derive the repair from the running artifact, never the user's current directory. */
+export function localUpgradeCommand(
+  packageRoot: URL,
+  version: string,
+): { cwd: string | null; command: string } {
+  const root = fileURLToPath(packageRoot).replace(/[\\/]$/, "");
+  if (existsSync(join(root, ".git"))) {
+    return {
+      cwd: root,
+      command: "bun install --frozen-lockfile && bun run build",
+    };
+  }
+  const target = `forge-workflow@${version.includes("-") ? "beta" : "latest"}`;
+  const modules = dirname(root);
+  if (
+    basename(modules) === "node_modules" &&
+    dirname(modules).split(/[\\/]/).at(-1) !== "lib" &&
+    !existsSync(join(dirname(modules), "forge.cmd"))
+  )
+    return {
+      cwd: dirname(modules),
+      command: `npm install --save-dev ${target}`,
+    };
+  return { cwd: null, command: `npm install --global ${target}` };
+}
 
 /** Command hint for the locally installed package; never installs or executes code. */
 export function localForgeCommand(args: readonly string[]): string {

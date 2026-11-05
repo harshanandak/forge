@@ -14,6 +14,7 @@
     "expected": {},
     "observed": {},
     "repair": { "type": "string", "maxLength": 2000 },
+    "hint": { "$ref": "#/$defs/UpgradeHint" },
     "suggest": {
       "type": "array",
       "maxItems": 8,
@@ -56,6 +57,26 @@
     }
   ],
   "$defs": {
+    "UpgradeHint": {
+      "type": "object",
+      "required": ["running", "required", "cwd", "command"],
+      "properties": {
+        "running": {
+          "type": "object",
+          "required": ["version", "commit", "dirty"],
+          "properties": {
+            "version": { "type": "string" },
+            "commit": { "type": ["string", "null"] },
+            "dirty": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "required": { "type": "string" },
+        "cwd": { "type": ["string", "null"] },
+        "command": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
     "CoreErrorCode": {
       "description": "Error codes core itself returns; blocks add their own UPPER_SNAKE codes.",
       "enum": [
