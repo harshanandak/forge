@@ -49,6 +49,7 @@ for (const [name, config, refused] of [
                   JSON.stringify({
                     type: "object",
                     properties: {
+                      idPrefix: { type: "string" },
                       labels: { type: "array", items: { type: "string" } },
                       settings: {
                         type: "object",
