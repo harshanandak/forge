@@ -21,6 +21,7 @@ import { laneRun, runClaude, runCodex } from "../../tools/lane-run.ts";
 import { scriptFixture } from "../script-fixture.ts";
 import { cliTopologyFixture } from "./cli-topology-fixture.ts";
 import { RepositoryFixtures } from "./lane-fixture.ts";
+import { FixtureChildren } from "../fixture-children.ts";
 
 setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<boolean>();
@@ -39,6 +40,7 @@ const sections = [
   "Prior art",
 ];
 const roots: string[] = [];
+const children = new FixtureChildren();
 let childLaunches = 0;
 let avoidedIssueChildren = 0;
 const caseNames: string[] = [];
@@ -70,15 +72,17 @@ async function withEnvironment<T>(
     }
   }
 }
-afterEach(() => {
-  for (const root of roots.splice(0)) {
-    const calls = join(root, "issue-calls");
-    if (existsSync(calls))
-      avoidedIssueChildren += readFileSync(calls, "utf8")
-        .trim()
-        .split("\n").length;
-    rmSync(root, { recursive: true, force: true });
-  }
+afterEach(async () => {
+  await children.cleanup(() => {
+    for (const root of roots.splice(0)) {
+      const calls = join(root, "issue-calls");
+      if (existsSync(calls))
+        avoidedIssueChildren += readFileSync(calls, "utf8")
+          .trim()
+          .split("\n").length;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 afterAll(() => {
   console.info(
@@ -346,13 +350,16 @@ await import(${JSON.stringify(script)});`,
     args = ["run", "one", "--role", "builder"],
   ) {
     childLaunches++;
-    const child = spawn(process.execPath, [entry, ...args], {
-      cwd: caller,
-      env,
-      windowsHide: true,
-      timeout: 20_000,
-      detached: args.includes("--detach"),
-    });
+    const child = children.own(
+      spawn(process.execPath, [entry, ...args], {
+        cwd: caller,
+        env,
+        windowsHide: true,
+        timeout: 20_000,
+        detached: args.includes("--detach"),
+      }),
+    );
+    child.stderr.resume();
     return Object.assign(
       new Promise<{ code: number | null; output: Verdict }>((done, fail) => {
         let stdout = "";

@@ -67,6 +67,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Conservatively retains Node command/configuration literals.",
   "test/core/l4-config/template-summary.test.ts":
     "Conservatively retains Node command/configuration literals.",
+  "test/fixture-children.integration.test.ts":
+    "Launches selected Node and an inherited-pipe descendant for cleanup ordering.",
   "test/integration/agent/memory.integration.test.ts":
     "Launches selected Node for memory coverage.",
   "test/integration/agent/route.integration.test.ts":
