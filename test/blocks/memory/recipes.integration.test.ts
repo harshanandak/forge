@@ -231,7 +231,7 @@ test("startup renderer explains the agent-block prerequisite and user-level alte
 
 test("recipe gives a valid on-demand search and forge-loop requires it", () => {
   const loop = readFileSync(
-    resolve(repo, "templates/delivery/skills/forge-loop/SKILL.md"),
+    resolve(repo, "templates/delivery/skills/forge-loop/memory.md"),
     "utf8",
   );
   expect(recipe).toContain('forge memory search "<topic>"');

@@ -181,11 +181,7 @@ test("command guard recipe explains both hooks and its limits", () => {
     expect(recipe).toContain(text);
 }, 30_000);
 
-test.each([
-  "forge-loop/SKILL.md",
-  "forge-build/pull-request.md",
-  "forge-review/SKILL.md",
-])(
+test.each(["forge-build/pull-request.md", "forge-review/SKILL.md"])(
   "rendered %s honors the worker brief's stop point before PR handoff",
   async (file) => {
     await withDelivery(async (root, call) => {
@@ -250,24 +246,6 @@ test("rendered resume waits for another chat's orphaned t3 claim to go stale", a
     expect(step).toContain(
       "Another chat waits until it goes stale, then claims with `<slice>-worker`.",
     );
-  });
-}, 30_000);
-
-test("rendered loop keeps adopted decision titles with the pagination rules", async () => {
-  await withDelivery(async (root, call, lint) => {
-    expect(await call("skills.sync")).toMatchObject({ ok: true });
-    const loop = readFileSync(join(root, rendered("forge-loop")), "utf8");
-    expect(lint(loop)).toEqual([]);
-    expect(loop).not.toContain(
-      "Adopted decision titles: see below for pagination.",
-    );
-    const paragraph = loop
-      .split("\n\n")
-      .find((text) => text.startsWith("Standing rules"));
-    expect(paragraph).toContain("adopted decision titles");
-    expect(paragraph).toContain("`truncated` is true");
-    expect(paragraph).toContain('"after":<next>');
-    expect(paragraph).toContain("even if a page is empty");
   });
 }, 30_000);
 
@@ -422,7 +400,7 @@ test("performance PR handoff scopes measured gains and regression guards", async
 test("every harness wake reads the shared verdict and the owning session holds watches", async () => {
   await withDelivery(async (root, call, lint) => {
     await call("skills.sync");
-    const texts = ["forge-build", "forge-review", "forge-loop"].map((name) => {
+    const texts = ["forge-build", "forge-review"].map((name) => {
       const text = readFileSync(join(root, rendered(name)), "utf8");
       expect(lint(text)).toEqual([]);
       expect(text).toContain("forge pr state <n>");
@@ -726,7 +704,7 @@ test("delivery sync replaces loop with forge-loop and forge-intake", async () =>
     expect(router).toContain("vague intent");
     expect(router).toContain("`forge-intake`");
     expect(intake).toContain("disable-model-invocation: false");
-    expect(intake).toContain("forge route get <role> --text");
+    expect(intake).toContain("../forge-loop/dispatch.md");
     expect(lint(router)).toEqual([]);
     expect(lint(intake)).toEqual([]);
     const credits = readFileSync(join(repo, "CREDITS"), "utf8");
@@ -838,8 +816,6 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
       join(root, ".agents/skills/forge-build/pull-request.md"),
       "utf8",
     );
-    expect(text["forge-loop"]).toContain("At most 3 workers at once");
-    expect(text["forge-loop"]).toContain("publish, force-push, prod-write");
     expect(text["forge-cut"]).toContain(
       "Route open decisions to `forge-intake`",
     );
@@ -853,15 +829,6 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-cut"]).toContain("p0, p1, p2, p3, p4");
     expect(text["forge-build"]).toContain("forge issue claim <slice>");
     expect(text["forge-build"]).toContain("forge issue renew <slice>");
-    expect(text["forge-loop"]).toContain("t3_thread_configuration");
-    expect(text["forge-loop"]).toContain("FORGE_SESSION=t3:<threadId>");
-    expect(text["forge-loop"]).toContain("every forge command");
-    expect(text["forge-loop"]).toContain(
-      "Workers you launch keep their own task session",
-    );
-    expect(text["forge-loop"]).toContain(
-      'Session: POSIX `export FORGE_SESSION="<slice>-worker"`; PowerShell `$env:FORGE_SESSION="<slice>-worker"` before any claim; never use the chat\'s t3: session.',
-    );
     expect(text["forge-build"]).not.toContain("`forge-loop`");
     expect(text["forge-build"]).toContain("t3_thread_configuration");
     expect(text["forge-build"]).toContain("FORGE_SESSION=t3:<threadId>");
@@ -894,24 +861,13 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     expect(text["forge-review"]).toContain(
       "run `forge pr state <n>` and act on `verdict`",
     );
-    for (const name of ["forge-review", "forge-loop"]) {
+    for (const name of ["forge-review"]) {
       expect(text[name]).toContain(
         "After each push, run `forge agent wait <n>`",
       );
       expect(text[name]).toContain("`t3-tool`, skip its steps");
     }
-    expect(text["forge-loop"]).toContain(
-      "Only when resuming a session with existing PR work",
-    );
-    expect(text["forge-loop"]).toContain(
-      "Use `--fallback` only if a plain opening wait's link or watch step fails.",
-    );
-    expect(text["forge-loop"]).toContain(
-      "Report and skip a failed `--sweep` or `--done` step.",
-    );
-    expect(text["forge-loop"]).toContain("act without re-arming event watches");
-    expect(text["forge-loop"]).toContain("unmerged close or handback");
-    for (const name of ["forge-land", "forge-loop"])
+    for (const name of ["forge-land"])
       expect(text[name]).toContain("forge agent wait <n> --done");
     expect(
       existsSync(join(root, ".agents/skills/forge-build/done-claim.mjs")),
@@ -1067,22 +1023,9 @@ test("rendered delivery skills do not give rule tags standing authority", async 
   });
 }, 30_000);
 
-test("the rendered forge-loop pages through adopted decision titles and proposals handle missing format", async () => {
+test("unmigrated decision proposals handle missing format", async () => {
   await withDelivery(async (root, call) => {
     expect(await call("skills.sync")).toMatchObject({ ok: true });
-    const loop = readFileSync(join(root, rendered("forge-loop")), "utf8");
-    expect(loop).toContain("forge memory rules");
-    expect(loop).toContain("unless a hook supplied it");
-    expect(loop).toContain(
-      `forge decision list --input '{"status":"adopted"}'`,
-    );
-    expect(loop).toContain('"after":<next>');
-    expect(loop).toContain("`truncated` is true");
-    expect(loop).toContain("even if a page is empty");
-    expect(loop).toContain("titles only");
-    expect(loop).toContain("no decision text");
-    expect(loop).toContain("`forge-build`'s Worker brief");
-    expect(loop).not.toContain("End state:");
     for (const name of ["forge-land", "forge-cut"]) {
       const text = readFileSync(
         join(
@@ -1136,18 +1079,10 @@ const GUIDANCE = [
   ["merge.by", "forge-land", "Merge by: agent"],
   ["merge.method", "forge-land", "gh pr merge <n> --squash"],
   [
-    "doors",
-    "forge-loop",
-    "publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config",
-  ],
-  [
     "fixes.maxFailedPerCheck",
     "forge-build",
     "After 2 failed fixes on the same check",
   ],
-  ["lanes.max", "forge-loop", "At most 3 workers at once"],
-  ["lanes.fullSuiteRuns", "forge-loop", "1 full-suite run at a time"],
-  ["lanes.stallMinutes", "forge-loop", "silent for 10 minutes"],
   [
     "labels.priority",
     "forge-cut",
@@ -1155,10 +1090,6 @@ const GUIDANCE = [
   ],
   ["labels.deferred", "forge-review", '"review-deferred"'],
   ["labels.gap", "forge-build", "`contract-gap` issue"],
-  ["roles.orchestrator", "forge-loop", "orchestrator strong"],
-  ["roles.implementer", "forge-loop", "implementer fast"],
-  ["roles.reviewer", "forge-loop", "reviewer other-family"],
-  ["roles.housekeeping", "forge-loop", "housekeeping cheapest"],
   [
     "pr.models",
     "forge-build",
