@@ -63,7 +63,9 @@
   [
     "in.call.count",
     "forge-loop/dispatch.md",
-    "run `forge issue call <slice> --role <role>`"
+    "run `forge issue call <slice> --role <role>`",
+    null,
+    ["forge-build/SKILL.md"]
   ],
   [
     "in.call.limit",
@@ -308,9 +310,19 @@
     "forge-loop/watching.md",
     "Only when resuming a session with existing PR work"
   ],
-  ["lp.ready", "forge-loop/SKILL.md", "forge issue ready --input '{}'"],
+  [
+    "lp.ready",
+    "forge-loop/SKILL.md",
+    "forge issue ready --input '{}'",
+    null,
+    ["forge-land/SKILL.md"]
+  ],
   ["lp.stale", "forge-loop/SKILL.md", "forge issue stale --input '{}'"],
-  ["lp.show", "forge-loop/SKILL.md", "forge issue show"],
+  [
+    "lp.show",
+    "forge-loop/SKILL.md",
+    "forge issue show --input '{\"id\":\"<id>\"}'"
+  ],
   [
     "lp.changed",
     "forge-loop/SKILL.md",
@@ -362,7 +374,7 @@
   [
     "res.follow",
     "forge-loop/resume.md",
-    "Existing PR work also follows forge-loop's sweep."
+    "Existing PR work also follows forge-loop's sweep"
   ],
   ["res.record", "forge-loop/resume.md", "seconds to first productive action"],
   [
@@ -371,5 +383,27 @@
     "Save future-session facts:",
     null,
     ["forge-land/SKILL.md"]
+  ],
+  [
+    "b.brief.timebox",
+    "forge-loop/SKILL.md",
+    "timeboxMinutes expire, never later than stopBy.",
+    null,
+    ["forge-build/SKILL.md", "forge-review/SKILL.md", "forge-intake/SKILL.md"]
+  ],
+  [
+    "b.brief.forbidden",
+    "forge-loop/dispatch.md",
+    "pass named environment variables only, never the whole environment or secret values",
+    null,
+    ["forge-build/SKILL.md"]
+  ],
+  ["lp.claimed", "forge-loop/SKILL.md", "one claimed slice"],
+  [
+    "sh.no-sleep",
+    "forge-loop/watching.md",
+    "No sleep loop.",
+    null,
+    ["forge-review/SKILL.md"]
   ]
 ]

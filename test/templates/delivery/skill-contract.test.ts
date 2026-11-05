@@ -138,7 +138,7 @@ test("delivery skill contracts: shape, links, rules, budgets, lint and mirrors",
         ...checkNeutral(rendered),
       ];
       expect(problems, problems.join("\n")).toEqual([]);
-      expect(inventory).toHaveLength(82);
+      expect(inventory).toHaveLength(86);
       expect(rendered["forge-loop/dispatch.md"]).toMatch(DISPATCH_ORDER);
       expect(Object.keys(shipped).sort()).toEqual(Object.keys(source).sort());
       expect(
