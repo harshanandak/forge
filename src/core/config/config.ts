@@ -403,6 +403,7 @@ export function planBytes(
         config,
         schema.check(config),
         env.warnUnknownConfig,
+        (value) => schema.check(value),
       ).problems,
       repair,
     );

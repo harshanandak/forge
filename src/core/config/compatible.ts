@@ -8,7 +8,27 @@ export function compatibleConfig<T>(
   config: T,
   problems: readonly SchemaProblem[],
   warn?: (name: string, paths: readonly string[]) => void,
+  check?: (config: T) => readonly SchemaProblem[],
 ): { config: T; problems: readonly SchemaProblem[] } {
+  if (
+    check !== undefined &&
+    problems.some((problem) => problem.alternatives !== undefined)
+  ) {
+    for (const candidate of alternativeCopies(name, config, problems)) {
+      const retried = compatibleConfig(
+        name,
+        candidate.config,
+        check(candidate.config),
+        (_name, dropped) => candidate.paths.push(...dropped),
+        check,
+      );
+      if (retried.problems.length === 0 && check(retried.config).length === 0) {
+        warn?.(name, candidate.paths);
+        return retried;
+      }
+    }
+    return { config: clone(config), problems };
+  }
   const sanitized = clone(config);
   const paths: string[] = [];
   const remaining = problems.flatMap((problem) => {
@@ -20,6 +40,7 @@ export function compatibleConfig<T>(
       problem.knownProperties === undefined
     )
       return [problem];
+    if (problem.knownProperties.includes(key)) return [problem];
     const caseMatch = problem.knownProperties.find(
       (known) => known.toLowerCase() === key.toLowerCase(),
     );
@@ -39,11 +60,36 @@ export function compatibleConfig<T>(
         return [problem];
       parent = (parent as Record<string, unknown>)[part];
     }
-    if (typeof parent !== "object" || parent === null) return [problem];
+    if (
+      typeof parent !== "object" ||
+      parent === null ||
+      !Object.hasOwn(parent, key)
+    )
+      return [problem];
     delete (parent as Record<string, unknown>)[key];
     paths.push(`blocks.${name}.config.${parts.join(".")}`);
     return [];
   });
   if (paths.length) warn?.(name, paths);
   return { config: sanitized, problems: remaining };
+}
+
+/** Each retry must remove a key; a union's original errors survive unless the whole config validates. */
+function* alternativeCopies<T>(
+  name: string,
+  config: T,
+  problems: readonly SchemaProblem[],
+): Generator<{ config: T; paths: string[] }> {
+  const problem = problems.find((entry) => entry.alternatives !== undefined);
+  for (const alternative of problem?.alternatives ?? []) {
+    const paths: string[] = [];
+    const candidate = compatibleConfig(
+      name,
+      config,
+      alternative,
+      (_name, dropped) => paths.push(...dropped),
+    );
+    if (paths.length) yield { config: candidate.config, paths };
+    yield* alternativeCopies(name, candidate.config, candidate.problems);
+  }
 }
