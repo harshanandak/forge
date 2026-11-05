@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "required": ["id", "pr"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "pr": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "receipt": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "dropped": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "keepOpen": { "type": "boolean" },
+    "discardIgnored": { "type": "boolean" }
+  },
+  "oneOf": [
+    { "required": ["receipt"], "not": { "required": ["dropped"] } },
+    { "required": ["dropped"], "not": { "required": ["receipt"] } }
+  ],
+  "additionalProperties": false
+}

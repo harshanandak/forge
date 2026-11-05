@@ -24,6 +24,7 @@ const builtins = discoveryOperations.map((entry) => entry.op);
 
 function inputPropertyNames(schema: unknown): Set<string> {
   const names = new Set<string>();
+  const refs = new Set<string>();
   const visit = (value: unknown): void => {
     const node = record(value);
     const type = node?.type;
@@ -34,6 +35,19 @@ function inputPropertyNames(schema: unknown): Set<string> {
       return;
     for (const name of Object.keys(record(node?.properties) ?? {}))
       names.add(name);
+    const ref = node?.$ref;
+    if (typeof ref === "string" && ref.startsWith("#/") && !refs.has(ref)) {
+      refs.add(ref);
+      const target = ref
+        .slice(2)
+        .split("/")
+        .reduce<unknown>((value, segment) => {
+          const key = segment.replaceAll("~1", "/").replaceAll("~0", "~");
+          const object = record(value);
+          return object && Object.hasOwn(object, key) ? object[key] : undefined;
+        }, schema);
+      visit(target);
+    }
     for (const keyword of ["allOf", "anyOf", "oneOf"]) {
       const branches = node?.[keyword];
       if (Array.isArray(branches)) branches.forEach(visit);
