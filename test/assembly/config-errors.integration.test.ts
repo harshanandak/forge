@@ -11,13 +11,26 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { ResultEnvelope } from "../../src/generated/types.ts";
+import type {
+  FailureEnvelope,
+  ResultEnvelope,
+  UpgradeHint,
+} from "../../src/generated/types.ts";
 import { counterfactuals } from "../node-fixtures/check/counterfactuals.ts";
 import { localUpgradeCommand } from "../../src/adapters/node-runtime/catalog.ts";
 import { pathToFileURL } from "node:url";
 import { GENERATED_MARKER, renderSkills } from "../../src/surface/skills.ts";
 import { version } from "../../src/version.ts";
 import { candidate } from "../surface/fixtures/catalog.ts";
+
+type HintedFailure = FailureEnvelope & {
+  readonly error: FailureEnvelope["error"] & {
+    readonly hint: UpgradeHint & {
+      readonly cwd: string;
+      readonly running: UpgradeHint["running"] & { readonly commit: string };
+    };
+  };
+};
 
 const futureSkill = (
   op: string,
@@ -69,9 +82,11 @@ test("generated builtin skills record the generator version and block provenance
 
 test("repo-declared missing operations carry a build hint while unknown names stay plain", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-stale-command-"));
-  const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
-  const cli = (args: string[], status: number) => {
-    const result = spawnSync("node", [bin, ...args], {
+  const repo = resolve(import.meta.dirname, "../..");
+  const privateBuild = join(root, "build");
+  const privateBin = join(privateBuild, "dist/bin/forge.js");
+  function invokePrivateCli(args: string[], status: number): string {
+    const result = spawnSync("node", [privateBin, ...args], {
       cwd: root,
       env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
       encoding: "utf8",
@@ -81,21 +96,30 @@ test("repo-declared missing operations carry a build hint while unknown names st
     expect(result.error).toBeUndefined();
     expect(result.status, result.stdout + result.stderr).toBe(status);
     return result.stdout;
-  };
+  }
   try {
+    cpSync(join(repo, "dist"), join(privateBuild, "dist"), { recursive: true });
+    cpSync(join(repo, "templates"), join(privateBuild, "templates"), {
+      recursive: true,
+    });
+    cpSync(join(repo, "package.json"), join(privateBuild, "package.json"));
+    symlinkSync(
+      join(repo, "node_modules"),
+      join(privateBuild, "node_modules"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    mkdirSync(join(privateBuild, ".git"));
     mkdirSync(join(root, ".forge"));
     writeFileSync(
       join(root, ".forge/config.yaml"),
       "blocks:\n  check:\n    commands: {}\n",
     );
     mkdirSync(join(root, ".agents/skills/check"), { recursive: true });
-    const skill = join(root, ".agents/skills/check/SKILL.md");
-    writeFileSync(skill, futureSkill("check.future"));
-    const missing = JSON.parse(cli(["check", "future"], 3)) as {
-      error: {
-        hint: { cwd: string; command: string; running: { commit: string } };
-      };
-    };
+    const privateSkillFile = join(root, ".agents/skills/check/SKILL.md");
+    writeFileSync(privateSkillFile, futureSkill("check.future"));
+    const missing = JSON.parse(
+      invokePrivateCli(["check", "future"], 3),
+    ) as HintedFailure;
     expect(typeof missing.error.hint.command).toBe("string");
     // Bun's asymmetric object matcher replaces fields on its received object.
     expect(structuredClone(missing)).toMatchObject({
@@ -111,7 +135,7 @@ test("repo-declared missing operations carry a build hint while unknown names st
             dirty: expect.any(Boolean) as unknown,
           },
           required: expect.stringContaining("check.future") as unknown,
-          cwd: resolve(import.meta.dirname, "../.."),
+          cwd: privateBuild,
           command: expect.stringContaining(
             "bun install --frozen-lockfile && bun run build",
           ) as unknown,
@@ -121,38 +145,56 @@ test("repo-declared missing operations carry a build hint while unknown names st
     expect(missing.error.hint.command).toBe(
       "bun install --frozen-lockfile && bun run build",
     );
-    expect(missing.error.hint.cwd).toContain(
-      resolve(import.meta.dirname, "../.."),
-    );
-    const text = cli(["check", "future", "--text"], 3);
+    expect(missing.error.hint.cwd).toContain(privateBuild);
+    const text = invokePrivateCli(["check", "future", "--text"], 3);
     expect(text).toContain("Unknown operation: check.future");
     expect(
       text.split("\n").filter((line) => line.includes("bun install")),
     ).toHaveLength(1);
     expect(text).toContain(missing.error.hint.running.commit);
     expect(
-      (JSON.parse(cli(["check", "unmentioned"], 3)) as { error: unknown })
-        .error,
+      (
+        JSON.parse(invokePrivateCli(["check", "unmentioned"], 3)) as {
+          error: unknown;
+        }
+      ).error,
     ).not.toHaveProperty("hint");
     writeFileSync(
-      skill,
+      join(root, ".forge/config.yaml"),
+      "blocks:\n  check:\n    enabled: false\n",
+    );
+    writeFileSync(
+      privateSkillFile,
       "<!-- Generated by forge skills sync from the catalog; edits are overwritten. -->\n## `check.list`\n",
     );
     expect(
-      (JSON.parse(cli(["check", "list"], 3)) as { error: unknown }).error,
+      (JSON.parse(invokePrivateCli(["check", "list"], 3)) as { error: unknown })
+        .error,
     ).not.toHaveProperty("hint");
-    writeFileSync(skill, "## `check.future`\n");
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      "blocks:\n  check:\n    commands: {}\n",
+    );
+    writeFileSync(privateSkillFile, "## `check.future`\n");
     expect(
-      (JSON.parse(cli(["check", "future"], 3)) as { error: unknown }).error,
+      (
+        JSON.parse(invokePrivateCli(["check", "future"], 3)) as {
+          error: unknown;
+        }
+      ).error,
     ).not.toHaveProperty("hint");
     for (const evidence of [
       futureSkill("check.future", "custom/check"),
       futureSkill("check.future", "forge/check", version),
       `${GENERATED_MARKER}\n## \`check.future\`\n`,
     ]) {
-      writeFileSync(skill, evidence);
+      writeFileSync(privateSkillFile, evidence);
       expect(
-        (JSON.parse(cli(["check", "future"], 3)) as { error: unknown }).error,
+        (
+          JSON.parse(invokePrivateCli(["check", "future"], 3)) as {
+            error: unknown;
+          }
+        ).error,
       ).not.toHaveProperty("hint");
     }
   } finally {
