@@ -22,6 +22,21 @@ import { renderHelp } from "./help.ts";
 
 const builtins = discoveryOperations.map((entry) => entry.op);
 
+function inputPropertyNames(schema: unknown): Set<string> {
+  const names = new Set<string>();
+  const visit = (value: unknown): void => {
+    const node = record(value);
+    for (const name of Object.keys(record(node?.properties) ?? {}))
+      names.add(name);
+    for (const keyword of ["allOf", "anyOf", "oneOf"]) {
+      const branches = node?.[keyword];
+      if (Array.isArray(branches)) branches.forEach(visit);
+    }
+  };
+  visit(schema);
+  return names;
+}
+
 function help(catalog: SurfaceCatalog, options: CallOptions, op?: string) {
   const entries = visible(catalog, options.caller);
   return {
@@ -251,10 +266,11 @@ export async function runCli(
         throw new Error("Do not mix --input with operation arguments.");
       input = JSON.parse(rawInput);
     } else {
-      const properties =
-        record((entry?.argumentSchema ?? entry?.inputSchema)?.properties) ?? {};
+      const properties = inputPropertyNames(
+        entry?.argumentSchema ?? entry?.inputSchema,
+      );
       for (const name of outputFlags) {
-        if (Object.hasOwn(properties, name))
+        if (properties.has(name))
           throw new Error(
             `--${name} is reserved for output formatting and cannot supply the ${name} input of ${op}; use --input JSON to supply operation inputs.`,
           );
