@@ -51,6 +51,25 @@ for (const name of ["text", "json"]) {
   }, 30_000);
 
   for (const composition of ["allOf", "anyOf", "oneOf"]) {
+    test(`CLI refuses --${name} declared through a local ref in ${composition}`, async () => {
+      const entry = {
+        ...candidate("sample.capture", { args: [] }),
+        inputSchema: {
+          type: "object",
+          [composition]: [{ $ref: "#/$defs/flags" }],
+          $defs: { flags: { properties: { [name]: { type: "boolean" } } } },
+        },
+      };
+      const catalog = fakeCatalog([entry]);
+      const response = await runCli(catalog, [entry.op, `--${name}`]);
+      expect(response.exitCode).toBe(6);
+      expect(response.envelope).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_INVALID" },
+      });
+      expect(catalog.calls).toHaveLength(0);
+    }, 30_000);
+
     test(`CLI refuses an ambiguous --${name} input declared through ${composition}`, async () => {
       const entry = {
         ...candidate("sample.capture", { args: [] }),
@@ -148,3 +167,21 @@ for (const name of ["text", "json"]) {
     }
   }, 30_000);
 }
+
+test("CLI preserves --text formatting with a cyclic composition ref", async () => {
+  const entry = {
+    ...candidate("sample.capture", { args: [] }),
+    inputSchema: {
+      type: "object",
+      allOf: [{ $ref: "#/$defs/a" }],
+      $defs: { a: { allOf: [{ $ref: "#/$defs/a" }] } },
+    },
+  };
+  const catalog = fakeCatalog([entry]);
+  const response = await runCli(catalog, [entry.op, "--text"]);
+  expect(response.exitCode).toBe(0);
+  expect(response.envelope).toMatchObject({ ok: true, result: {} });
+  expect(catalog.calls).toHaveLength(1);
+  expect(catalog.calls[0]?.input).toEqual({});
+  expect(response.stdout).toContain("ok: true\n");
+}, 30_000);
