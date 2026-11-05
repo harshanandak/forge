@@ -9,6 +9,9 @@
   "nouns": {
     "issue": {
       "interface": "1.0.0"
+    },
+    "lane": {
+      "interface": "1.0.0"
     }
   },
   "provides": [
@@ -18,6 +21,7 @@
     }
   ],
   "requires": [
+    { "slot": "crypto", "interface": "forge.crypto@1", "optional": true },
     {
       "slot": "state",
       "interface": "forge.state@1"
@@ -35,6 +39,11 @@
     {
       "slot": "environment",
       "interface": "forge.environment@1",
+      "optional": true
+    },
+    {
+      "slot": "files",
+      "interface": "forge.files@1",
       "optional": true
     }
   ],
@@ -282,6 +291,34 @@
       "context": "project",
       "timeoutMs": 5000,
       "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "lane.start": {
+      "input": "schemas/lane-start.input.json",
+      "output": "schemas/lane.output.json",
+      "context": "project",
+      "timeoutMs": 120000,
+      "effects": [
+        "files:read",
+        "files:write",
+        "external:process",
+        "external:network",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "lane.show": {
+      "input": "schemas/ItemRef.json",
+      "output": "schemas/lane.output.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": ["files:read"],
       "idempotent": true,
       "callers": ["agent", "human"],
       "stability": "experimental",
