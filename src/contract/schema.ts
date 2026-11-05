@@ -13,7 +13,10 @@ export interface SchemaProblem {
   readonly expected?: string;
   readonly received?: string;
   readonly suggestion?: string;
+  /** Names declared at this object position across reachable schema branches. */
   readonly knownProperties?: readonly string[];
+  /** Failed object alternatives, retained for config compatibility without changing diagnostics. */
+  readonly alternatives?: readonly (readonly SchemaProblem[])[];
 }
 
 /** Closest declared spelling; the schema, rather than a list of special cases, owns the names. */
@@ -309,7 +312,108 @@ export class SchemaRegistry {
     if (located === undefined) throw new Error(`no schema at ${uri}`);
     const outside = findNonJson(value);
     if (outside !== undefined) return [outside];
-    return this.#evaluate(located.schema, located.base, value, "", detailed);
+    const problems = this.#evaluate(
+      located.schema,
+      located.base,
+      value,
+      "",
+      detailed,
+    );
+    if (problems.length === 0) return problems;
+    const declared = this.#declaredProperties(
+      located.schema,
+      located.base,
+      value,
+    );
+    const protect = (entries: readonly SchemaProblem[]): SchemaProblem[] =>
+      entries.map((problem) => {
+        const alternatives = problem.alternatives?.map(protect);
+        if (problem.knownProperties === undefined)
+          return alternatives === undefined
+            ? problem
+            : { ...problem, alternatives };
+        const parent = problem.pointer.slice(
+          0,
+          problem.pointer.lastIndexOf("/"),
+        );
+        const names = [
+          ...new Set([
+            ...problem.knownProperties,
+            ...(declared.get(parent) ?? []),
+          ]),
+        ];
+        const key = unescapePointer(
+          problem.pointer.slice(problem.pointer.lastIndexOf("/") + 1),
+        );
+        const caseMatch = names.find(
+          (name) => name.toLowerCase() === key.toLowerCase(),
+        );
+        const suggestion = names.includes(key)
+          ? undefined
+          : (caseMatch ??
+            (detailed ? closestName(key, names) : closestNames(key, names)[0]));
+        const { suggestion: _suggestion, ...rest } = problem;
+        return {
+          ...rest,
+          knownProperties: names,
+          ...(suggestion === undefined ? {} : { suggestion }),
+          ...(alternatives === undefined ? {} : { alternatives }),
+        };
+      });
+    return protect(problems);
+  }
+
+  /** All declarations at each value position, including sibling alternatives and referenced branches. */
+  #declaredProperties(
+    schema: JsonSchema,
+    base: string,
+    value: unknown,
+  ): ReadonlyMap<string, ReadonlySet<string>> {
+    const declared = new Map<string, Set<string>>();
+    const seen = new Set<string>();
+    const visit = (
+      node: unknown,
+      uri: string,
+      current: unknown,
+      at: string,
+    ): void => {
+      if (!isObject(node)) return;
+      if (typeof node.$ref === "string") {
+        const reference = this.resolve(node.$ref, uri);
+        const key = JSON.stringify([reference, at]);
+        if (!seen.has(key)) {
+          seen.add(key);
+          const target = this.#locate(reference);
+          if (target) visit(target.schema, target.base, current, at);
+        }
+      }
+      if (isObject(current)) {
+        const properties = isObject(node.properties) ? node.properties : {};
+        const names = declared.get(at) ?? new Set<string>();
+        for (const name of Object.keys(properties)) names.add(name);
+        declared.set(at, names);
+        for (const [key, child] of Object.entries(current))
+          visit(
+            Object.hasOwn(properties, key)
+              ? properties[key]
+              : node.additionalProperties,
+            uri,
+            child,
+            `${at}/${escapePointer(key)}`,
+          );
+      } else if (Array.isArray(current)) {
+        current.forEach((child, index) =>
+          visit(node.items, uri, child, `${at}/${index}`),
+        );
+      }
+      for (const keyword of ["allOf", "oneOf", "anyOf"])
+        if (Array.isArray(node[keyword]))
+          for (const branch of node[keyword]) visit(branch, uri, current, at);
+      for (const keyword of ["if", "then", "else", "not"])
+        visit(node[keyword], uri, current, at);
+    };
+    visit(schema, base, value, "");
+    return declared;
   }
 
   validator<T>(reference: string): Validator<T> {
@@ -508,6 +612,7 @@ export class SchemaRegistry {
       received = detailed ? (JSON.stringify(value) ?? "missing") : "",
       suggestion?: string,
       knownProperties?: readonly string[],
+      alternatives?: readonly (readonly SchemaProblem[])[],
     ): void => {
       problems.push({
         pointer,
@@ -515,6 +620,7 @@ export class SchemaRegistry {
         message,
         ...(suggestion === undefined ? {} : { suggestion }),
         ...(knownProperties === undefined ? {} : { knownProperties }),
+        ...(alternatives === undefined ? {} : { alternatives }),
         ...(detailed
           ? {
               expected,
@@ -724,7 +830,16 @@ export class SchemaRegistry {
     if (Array.isArray(schema.anyOf)) {
       const results = schema.anyOf.map((part) => sub(part, value, at));
       if (!results.some((r) => r.length === 0)) {
-        add("anyOf", "matches none of the allowed alternatives");
+        add(
+          "anyOf",
+          "matches none of the allowed alternatives",
+          at,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          isObject(value) ? results : undefined,
+        );
         problems.push(...closest(results));
       }
     }
@@ -732,7 +847,16 @@ export class SchemaRegistry {
       const results = schema.oneOf.map((part) => sub(part, value, at));
       const matches = results.filter((r) => r.length === 0).length;
       if (matches === 0) {
-        add("oneOf", "matches none of the allowed alternatives");
+        add(
+          "oneOf",
+          "matches none of the allowed alternatives",
+          at,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          isObject(value) ? results : undefined,
+        );
         problems.push(...closest(results));
       } else if (matches > 1) {
         add("oneOf", `matches ${matches} alternatives; exactly one is allowed`);

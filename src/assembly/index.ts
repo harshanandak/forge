@@ -262,6 +262,7 @@ export async function createAssembly(
   type CallScope = {
     inProject: boolean;
     warnings: Array<ResultEnvelope["warnings"][number]>;
+    configWarningsCollected: boolean;
     warnUnknownConfig: (name: string, paths: readonly string[]) => void;
     captured(source: BlockSource): CapturedBlock;
     shipped: ReturnType<typeof shippedTemplates>;
@@ -304,9 +305,33 @@ export async function createAssembly(
           ignoredConfig.set(name, ignored);
         }
         for (const path of paths) ignored.paths.add(path);
+        const all = [...ignored.paths].sort();
+        const prefix = ".forge/config.yaml: unknown properties ";
+        const suffix =
+          " may come from a newer Forge version; upgrade to use them. They are ignored by this version.";
+        const listed: string[] = [];
+        for (const path of all) {
+          if (
+            (
+              prefix +
+              [...listed, path].join(", ") +
+              `, and ${all.length} more` +
+              suffix
+            ).length > 1600
+          )
+            break;
+          listed.push(path);
+        }
+        const remaining = all.length - listed.length;
         warnings[ignored.index] = {
           code: "CONFIG_KEY_IGNORED",
-          message: `.forge/config.yaml: unknown properties ${[...ignored.paths].sort().join(", ")} may come from a newer Forge version; upgrade to use them. They are ignored by this version.`,
+          message:
+            prefix +
+            listed.join(", ") +
+            (remaining
+              ? `${listed.length ? ", " : ""}and ${remaining} more`
+              : "") +
+            suffix,
         };
       },
       warn: (message: string) =>
@@ -349,6 +374,7 @@ export async function createAssembly(
       inProject:
         options.project ?? existsSync(join(root, ".forge", "config.yaml")),
       warnings,
+      configWarningsCollected: false,
       warnUnknownConfig: environment.warnUnknownConfig,
       captured,
       shipped,
@@ -385,6 +411,13 @@ export async function createAssembly(
     call: CallScope,
     result: ResultEnvelope,
   ): ResultEnvelope {
+    if (!call.configWarningsCollected) {
+      try {
+        collectCompatibilityWarnings(call, call.config.show());
+      } catch {
+        // Preserve recovery operations when the project file is unreadable.
+      }
+    }
     return {
       ...result,
       warnings: [
@@ -399,6 +432,30 @@ export async function createAssembly(
         ),
       ],
     };
+  }
+  function collectCompatibilityWarnings(
+    call: CallScope,
+    show: ShowResult,
+  ): void {
+    call.configWarningsCollected = true;
+    const blocks = record(show.effective.blocks);
+    for (const instance of show.instances) {
+      try {
+        const block = call.captured(instance.source);
+        const schema = block.manifest.configSchema;
+        if (schema === undefined) continue;
+        const config = record(blocks?.[instance.name])?.config ?? {};
+        compatibleConfig(
+          instance.name,
+          config,
+          block.problems(schema, config),
+          call.warnUnknownConfig,
+          (value) => block.problems(schema, value),
+        );
+      } catch {
+        // Existing handlers own unavailable-source and invalid-schema refusals.
+      }
+    }
   }
   function availableComposition(
     document: ConfigDocument,
@@ -449,6 +506,7 @@ export async function createAssembly(
         config,
         block.problems(block.manifest.configSchema, config),
         call.warnUnknownConfig,
+        (value) => block.problems(block.manifest.configSchema!, value),
       );
       const { problems } = checked;
       if (problems.length)
@@ -674,6 +732,7 @@ export async function createAssembly(
             instance.config ?? {},
             block.problems(block.manifest.configSchema, instance.config ?? {}),
             call.warnUnknownConfig,
+            (value) => block.problems(block.manifest.configSchema!, value),
           ).problems.length > 0
         )
           return snapshot(call, true, true);
@@ -937,12 +996,13 @@ export async function createAssembly(
           .some((entry) => entry.op === request.op);
         if (core) derived.push(...(await prefix()));
         let workEnabled = false;
-        for (const instance of (deviceMemory
+        const loaded = deviceMemory
           ? snapshot(call, true).show
           : preview
             ? (call.configOperations[request.op]!(request.input) as ShowResult)
-            : call.config.show()
-        ).instances) {
+            : call.config.show();
+        collectCompatibilityWarnings(call, loaded);
+        for (const instance of loaded.instances) {
           workEnabled ||= instance.enabled && instance.name === "work";
           if (
             instance.enabled &&
