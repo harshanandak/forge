@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -404,6 +405,78 @@ test("lane CLI recovers a registry lock left by a dead helper owner", () => {
   expect(crashed.status, crashed.stderr).toBe(0);
   const result = start(issue());
   expect(result.ok, JSON.stringify(result)).toBe(true);
+}, 30000);
+
+function currentStartTime(): string {
+  if (process.platform === "linux") {
+    const stat = readFileSync(`/proc/${process.pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]!;
+  }
+  const result = spawnSync(
+    process.platform === "win32" ? "powershell.exe" : "ps",
+    process.platform === "win32"
+      ? [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-Process -Id ${process.pid}).StartTime.ToFileTimeUtc().ToString()`,
+        ]
+      : ["-p", String(process.pid), "-o", "lstart="],
+    { encoding: "utf8", windowsHide: true, timeout: 10000 },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout.trim()).not.toBe("");
+  return result.stdout.trim();
+}
+
+test.each(["matching", "different"])(
+  "lane CLI checks a live registry owner's %s start time",
+  (identity) => {
+    configure(30);
+    const id = issue();
+    const lock = join(repo, ".git/forge-lanes-registry.lock");
+    const marker = `owner-${process.pid}-${randomUUID()}`;
+    const startTime = currentStartTime();
+    mkdirSync(lock);
+    writeFileSync(
+      join(lock, marker),
+      JSON.stringify({
+        startTime:
+          identity === "matching" ? startTime : `different-${startTime}`,
+      }),
+    );
+    try {
+      const result = start(id);
+      if (identity === "matching") {
+        expect(result.error?.code, JSON.stringify(result)).toBe(
+          "INPUT_CONFLICT",
+        );
+        expect(git(["branch", "--list", `feat/${id}`])).toBe("");
+        expect(readdirSync(lock)).toEqual([marker]);
+      } else {
+        expect(result.ok, JSON.stringify(result)).toBe(true);
+        expect(existsSync(lock)).toBe(false);
+      }
+    } finally {
+      rmSync(lock, { recursive: true, force: true });
+    }
+  },
+  30000,
+);
+
+test("lane CLI reclaims a legacy registry marker with a dead PID", () => {
+  configure(30);
+  const deadPid = 2147483647;
+  expect(() => process.kill(deadPid, 0)).toThrow(/ESRCH/);
+  const lock = join(repo, ".git/forge-lanes-registry.lock");
+  mkdirSync(lock);
+  writeFileSync(join(lock, `owner-${deadPid}-${randomUUID()}`), "");
+  try {
+    const result = start(issue());
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
 }, 30000);
 
 function closeFixture() {
