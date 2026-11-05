@@ -199,9 +199,8 @@ test("fixture command capture preserves output, exit status and spawn errors", a
   expect(existsSync(root)).toBe(false);
 }, 10_000);
 
-test.skipIf(process.platform === "win32")(
-  "fixture cleanup forgets an empty process group and leaves a later sibling alive",
-  async () => {
+if (process.platform !== "win32") {
+  test("fixture cleanup forgets an empty process group and leaves a later sibling alive", async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-stale-group-"));
     const owner = new FixtureChildren();
     const leader = owner.spawn(Bun.which("node")!, ["-e", ""], { cwd: root });
@@ -233,6 +232,5 @@ test.skipIf(process.platform === "win32")(
       await siblingClosed;
       if (existsSync(root)) rmSync(root, { recursive: true });
     }
-  },
-  10_000,
-);
+  }, 10_000);
+}
