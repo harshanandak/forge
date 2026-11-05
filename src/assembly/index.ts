@@ -262,6 +262,7 @@ export async function createAssembly(
   type CallScope = {
     inProject: boolean;
     warnings: Array<ResultEnvelope["warnings"][number]>;
+    configWarningsCollected: boolean;
     warnUnknownConfig: (name: string, paths: readonly string[]) => void;
     captured(source: BlockSource): CapturedBlock;
     shipped: ReturnType<typeof shippedTemplates>;
@@ -373,6 +374,7 @@ export async function createAssembly(
       inProject:
         options.project ?? existsSync(join(root, ".forge", "config.yaml")),
       warnings,
+      configWarningsCollected: false,
       warnUnknownConfig: environment.warnUnknownConfig,
       captured,
       shipped,
@@ -409,6 +411,13 @@ export async function createAssembly(
     call: CallScope,
     result: ResultEnvelope,
   ): ResultEnvelope {
+    if (!call.configWarningsCollected) {
+      try {
+        collectCompatibilityWarnings(call, call.config.show());
+      } catch {
+        // Preserve recovery operations when the project file is unreadable.
+      }
+    }
     return {
       ...result,
       warnings: [
@@ -423,6 +432,30 @@ export async function createAssembly(
         ),
       ],
     };
+  }
+  function collectCompatibilityWarnings(
+    call: CallScope,
+    show: ShowResult,
+  ): void {
+    call.configWarningsCollected = true;
+    const blocks = record(show.effective.blocks);
+    for (const instance of show.instances) {
+      try {
+        const block = call.captured(instance.source);
+        const schema = block.manifest.configSchema;
+        if (schema === undefined) continue;
+        const config = record(blocks?.[instance.name])?.config ?? {};
+        compatibleConfig(
+          instance.name,
+          config,
+          block.problems(schema, config),
+          call.warnUnknownConfig,
+          (value) => block.problems(schema, value),
+        );
+      } catch {
+        // Existing handlers own unavailable-source and invalid-schema refusals.
+      }
+    }
   }
   function availableComposition(
     document: ConfigDocument,
@@ -912,30 +945,6 @@ export async function createAssembly(
       const derived: DetectionObservation[] = [];
       const deviceMemory = deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived);
-      // Collect once even when a core handler or input refusal never prepares a block.
-      try {
-        const show = call.config.show();
-        const blocks = record(show.effective.blocks);
-        for (const instance of show.instances) {
-          try {
-            const block = call.captured(instance.source);
-            const schema = block.manifest.configSchema;
-            if (schema === undefined) continue;
-            const config = record(blocks?.[instance.name])?.config ?? {};
-            compatibleConfig(
-              instance.name,
-              config,
-              block.problems(schema, config),
-              call.warnUnknownConfig,
-              (value) => block.problems(schema, value),
-            );
-          } catch {
-            // Existing handlers own unavailable-source and invalid-schema refusals.
-          }
-        }
-      } catch {
-        // Preserve existing recovery operations when the project file is unreadable.
-      }
       try {
         const preview = configCandidates.find(
           (entry) => entry.op === request.op && entry.op === "config.show",
@@ -987,12 +996,13 @@ export async function createAssembly(
           .some((entry) => entry.op === request.op);
         if (core) derived.push(...(await prefix()));
         let workEnabled = false;
-        for (const instance of (deviceMemory
+        const loaded = deviceMemory
           ? snapshot(call, true).show
           : preview
             ? (call.configOperations[request.op]!(request.input) as ShowResult)
-            : call.config.show()
-        ).instances) {
+            : call.config.show();
+        collectCompatibilityWarnings(call, loaded);
+        for (const instance of loaded.instances) {
           workEnabled ||= instance.enabled && instance.name === "work";
           if (
             instance.enabled &&

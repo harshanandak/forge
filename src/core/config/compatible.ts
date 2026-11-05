@@ -40,6 +40,7 @@ export function compatibleConfig<T>(
       problem.knownProperties === undefined
     )
       return [problem];
+    if (problem.knownProperties.includes(key)) return [problem];
     const caseMatch = problem.knownProperties.find(
       (known) => known.toLowerCase() === key.toLowerCase(),
     );

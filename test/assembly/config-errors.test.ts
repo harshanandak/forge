@@ -217,6 +217,20 @@ test("core config reads and refusals carry one ignored-key warning per block", a
     },
   });
   writeFileSync(file, text);
+  const open = blockCapture.open.bind(blockCapture);
+  const capture = spyOn(blockCapture, "open").mockImplementation((path) => {
+    const handle = open(path);
+    return {
+      ...handle,
+      value: {
+        ...handle.value,
+        read: (name, budget) =>
+          name.endsWith(".cjs")
+            ? new TextEncoder().encode("module.exports={};")
+            : handle.value.read(name, budget),
+      },
+    };
+  });
   const assembly = await createAssembly({
     root,
     deviceRoot: join(root, "device"),
@@ -234,7 +248,10 @@ test("core config reads and refusals carry one ignored-key warning per block", a
         localCall(assembly),
       );
       expect(envelope.ok).toBe(args.length === 3);
-      expect(envelope.warnings).toHaveLength(2);
+      expect(
+        envelope.warnings,
+        JSON.stringify({ args, envelope }),
+      ).toHaveLength(2);
       for (const block of ["work", "check"])
         expect(
           envelope.warnings.some(
@@ -262,6 +279,7 @@ test("core config reads and refusals carry one ignored-key warning per block", a
     expect(readFileSync(file, "utf8")).toBe(text);
   } finally {
     await assembly.close();
+    capture.mockRestore();
     rmSync(root, { recursive: true, force: true });
   }
 });
