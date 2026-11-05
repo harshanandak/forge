@@ -840,12 +840,25 @@ export async function createAssembly(
         if (parsed === undefined) return undefined;
         const call = callScope();
         const current = snapshot(call);
+        if (
+          current.candidates.some(
+            (entry) =>
+              entry.builtin === true &&
+              (entry.op === op || entry.declaredOp === op),
+          )
+        )
+          return undefined;
         for (const instance of current.show.instances) {
           if (!instance.enabled || !("builtin" in instance.source)) continue;
           const builtin = instance.source.builtin;
           if (
             firstPartyBlocks[builtin] === undefined ||
             !current.blocks.has(instance.name)
+          )
+            continue;
+          if (
+            Object.keys(current.document.blocks[instance.name]?.rename ?? {})
+              .length > 0
           )
             continue;
           const hint = missingOperationHint(root, op, builtin);

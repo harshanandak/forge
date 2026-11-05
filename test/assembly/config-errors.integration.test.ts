@@ -203,6 +203,55 @@ test("repo-declared missing operations carry a build hint while unknown names st
   }
 }, 110_000);
 
+test("a retained newer skill cannot suggest rebuilding an operation exposed under a config rename", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-renamed-hint-"));
+  try {
+    mkdirSync(join(root, ".forge"));
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      JSON.stringify({
+        blocks: {
+          check: {
+            source: { builtin: "forge/check" },
+            rename: { check: "verify" },
+            config: { commands: {} },
+          },
+        },
+      }),
+    );
+    mkdirSync(join(root, ".agents/skills/check"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents/skills/check/SKILL.md"),
+      futureSkill("check.run"),
+    );
+    const result = spawnSync(
+      "node",
+      [resolve(import.meta.dirname, "../../dist/bin/forge.js"), "check", "run"],
+      {
+        cwd: root,
+        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 15_000,
+      },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(3);
+    const envelope = JSON.parse(result.stdout) as FailureEnvelope;
+    expect(envelope).toMatchObject({
+      ok: false,
+      error: {
+        code: "UNKNOWN_COMMAND",
+        message: "Unknown operation: check.run",
+        retry: "never",
+      },
+    });
+    expect(envelope.error).not.toHaveProperty("hint");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("newer generated skills for disabled builtin and custom blocks do not suggest rebuilding", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-disabled-hint-"));
   try {
