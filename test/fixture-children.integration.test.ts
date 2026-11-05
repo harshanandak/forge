@@ -130,15 +130,19 @@ if (process.platform === "win32") {
       clearTimeout(timer);
       forcedStop.mockRestore();
       if (existsSync(root)) writeFileSync(join(root, "release"), "release");
-      await job?.stop();
+      // Closing the kill-on-close job is the fallback if real termination fails.
+      await job?.stop().catch(() => {});
       finishStop?.();
-      job?.close();
-      if (descendantPid && alive(descendantPid))
-        process.kill(descendantPid, "SIGKILL");
-      if (child && child.exitCode === null) child.kill("SIGKILL");
-      await closed;
-      await pending?.catch(() => {});
-      if (existsSync(root)) rmSync(root, { recursive: true });
+      try {
+        job?.close();
+      } finally {
+        if (descendantPid && alive(descendantPid))
+          process.kill(descendantPid, "SIGKILL");
+        if (child && child.exitCode === null) child.kill("SIGKILL");
+        await closed;
+        await pending?.catch(() => {});
+        if (existsSync(root)) rmSync(root, { recursive: true });
+      }
     }
   }, 10_000);
 

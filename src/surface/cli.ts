@@ -7,7 +7,7 @@ import {
   RESERVED_FLAGS,
 } from "../contract/naming.ts";
 import { renderExample } from "../contract/example.ts";
-import { validateWithSchema } from "../contract/schema.ts";
+import { pointerFragment, validateWithSchema } from "../contract/schema.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import {
   dispatch,
@@ -36,16 +36,15 @@ function inputPropertyNames(schema: unknown): Set<string> {
     for (const name of Object.keys(record(node?.properties) ?? {}))
       names.add(name);
     const ref = node?.$ref;
-    if (typeof ref === "string" && ref.startsWith("#/") && !refs.has(ref)) {
+    if (typeof ref === "string" && ref.startsWith("#") && !refs.has(ref)) {
       refs.add(ref);
-      const target = ref
-        .slice(2)
-        .split("/")
-        .reduce<unknown>((value, segment) => {
-          const key = segment.replaceAll("~1", "/").replaceAll("~0", "~");
+      const target = pointerFragment(ref.slice(1))?.reduce<unknown>(
+        (value, key) => {
           const object = record(value);
           return object && Object.hasOwn(object, key) ? object[key] : undefined;
-        }, schema);
+        },
+        schema,
+      );
       visit(target);
     }
     for (const keyword of ["allOf", "anyOf", "oneOf"]) {

@@ -147,6 +147,14 @@ function unescapePointer(segment: string): string {
   return segment.replaceAll("~1", "/").replaceAll("~0", "~");
 }
 
+/** Decode a URI fragment before interpreting its JSON Pointer separators and escapes. */
+export function pointerFragment(fragment: string): string[] | undefined {
+  const decoded = decodeURIComponent(fragment);
+  if (decoded === "") return [];
+  if (!decoded.startsWith("/")) return undefined;
+  return decoded.slice(1).split("/").map(unescapePointer);
+}
+
 /** Structural equality for JSON values. */
 export function jsonEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -436,12 +444,10 @@ export class SchemaRegistry {
     const document = this.#documents.get(base);
     if (document === undefined) return undefined;
     const hash = uri.indexOf("#");
-    const fragment = hash === -1 ? "" : decodeURIComponent(uri.slice(hash + 1));
-    if (fragment === "") return { schema: document, base };
-    if (!fragment.startsWith("/")) return undefined;
+    const segments = pointerFragment(hash === -1 ? "" : uri.slice(hash + 1));
+    if (segments === undefined) return undefined;
     let node: unknown = document;
-    for (const raw of fragment.slice(1).split("/")) {
-      const segment = unescapePointer(raw);
+    for (const segment of segments) {
       if (!isObject(node) || !Object.hasOwn(node, segment)) return undefined;
       node = node[segment];
     }

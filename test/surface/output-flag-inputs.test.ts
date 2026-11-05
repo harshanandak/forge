@@ -8,6 +8,7 @@ for (const name of ["text", "json"]) {
     ["flags/~", "#/$defs/flags~1~0", { properties: { [name]: {} } }],
     ["flags/~", "#/$defs/flags%7E1%7E0", { properties: { [name]: {} } }],
     ["flags", "#/%24defs%2Fflags", { properties: { [name]: {} } }],
+    ["flags", "#%2F%24defs%2Fflags", { properties: { [name]: {} } }],
   ] as const) {
     test(`CLI refuses --${name} declared through escaped ref ${ref}`, async () => {
       const entry = {
