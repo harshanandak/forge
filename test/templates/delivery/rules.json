@@ -120,7 +120,7 @@
   ],
   [
     "guidance.doors",
-    "forge-loop/doors.md",
+    "forge-loop/SKILL.md",
     "publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config",
     "owner reply",
     ["forge-cut/SKILL.md", "forge-land/SKILL.md"]
@@ -347,7 +347,7 @@
   [
     "lp.stops",
     "forge-loop/SKILL.md",
-    "Stop for a one-way door, a scope change beyond the done boundary, or a blocked guard or hook. Never route around a block."
+    "Stop for scope beyond the done boundary or a blocked guard/hook; never route around a block."
   ],
   [
     "lp.stall",
@@ -405,5 +405,15 @@
     "No sleep loop.",
     null,
     ["forge-review/SKILL.md"]
+  ],
+  [
+    "sh.door-authorization",
+    "forge-loop/SKILL.md",
+    "Require the owner's explicit reply naming that action; silence, \"continue\" or \"fix all\" never counts."
+  ],
+  [
+    "sh.session-trigger",
+    "forge-loop/SKILL.md",
+    "on session start/restart or harness switch, before the first Forge command"
   ]
 ]
