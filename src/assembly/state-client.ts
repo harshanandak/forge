@@ -16,6 +16,7 @@ import type {
   StateClient,
 } from "../ports/state.ts";
 import { refuse } from "../core/trust/index.ts";
+import { jsonEqual } from "../contract/schema.ts";
 
 type ClientPutOptions = PutOptions &
   Pick<WriteOptions, "readSet"> & { readonly subject?: string };
@@ -160,7 +161,7 @@ export function createStateClient(options: {
           ],
         },
       );
-      if (JSON.stringify(state.get(namespace, key)) !== JSON.stringify(written))
+      if (!jsonEqual(state.get(namespace, key), written))
         refuse(
           "INTERNAL",
           "Accepted landing comment did not match its readback",

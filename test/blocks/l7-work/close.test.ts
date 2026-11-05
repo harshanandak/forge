@@ -78,6 +78,17 @@ test("lane close retries an injected landing-comment write failure exactly once"
         [...rows.values()].filter((row) => row.key.startsWith(prefix)),
       count: (prefix: string) =>
         [...rows.keys()].filter((key) => key.startsWith(prefix)).length,
+      appendLandingComment: (input: { id: string; pr: number }) => {
+        const note = rows.get(`landing:${input.id}:${input.pr}`)!.value.note;
+        const prefix = `comment:${input.id}:`;
+        const comments = [...rows.values()].filter((row) =>
+          row.key.startsWith(prefix),
+        );
+        return (
+          comments.find((row) => row.value.body === note) ??
+          put(prefix + (comments.length + 1), { id: input.id, body: note })
+        );
+      },
       put: (key: string, value: Record<string, unknown>) => {
         if (key.startsWith("comment:") && flags.fail) {
           flags.fail = false;
