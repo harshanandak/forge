@@ -9,6 +9,7 @@ export function approvalReply(
   assert.equal(result.error?.code, "APPROVAL_REQUIRED");
   const request = result.result?.request?.id;
   assert.equal(typeof request, "string");
+  assert.ok(request.length > 0);
   return { request, quote: "yes", source };
 }
 
@@ -21,17 +22,18 @@ export function withCliOwnerApproval(call) {
         : { digest: args[2] };
       if (!input.approval) {
         const first = call(args, 1, ...rest);
-        if (!first.ok && first.error.code === "APPROVAL_REQUIRED")
-          return call(
-            [
-              ...args.slice(0, 2),
-              "--input",
-              JSON.stringify({ ...input, approval: approvalReply(first) }),
-            ],
-            expected,
-            ...rest,
-          );
-        return first;
+        const approval = approvalReply(first);
+        const retried = call(
+          [
+            ...args.slice(0, 2),
+            "--input",
+            JSON.stringify({ ...input, approval }),
+          ],
+          expected,
+          ...rest,
+        );
+        assert.equal(retried.ok, true);
+        return retried;
       }
     }
     return call(args, expected, ...rest);

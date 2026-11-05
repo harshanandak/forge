@@ -102,7 +102,7 @@ for (const args of [
   test(`${args.slice(0, 2).join(" ")} refuses an outside .forge before creating state`, () => {
     const f = fixture("outside");
     try {
-      expect(f.call(args)).toMatchObject({
+      expect(f.call(args, 1)).toMatchObject({
         ok: false,
         error: {
           code: "INTERNAL",
@@ -139,7 +139,7 @@ for (const kind of ["internal", "plain", "missing"] as const) {
 test("invalid reinit returns its validation error without creating an approval request", () => {
   const f = fixture("outside");
   try {
-    const result = f.call(["store", "reinit"]);
+    const result = f.call(["store", "reinit"], 1);
     expect(result).toMatchObject({ ok: false, error: { code: "INTERNAL" } });
     expect(result.result).toBeUndefined();
     expect(existsSync(f.device)).toBe(false);
