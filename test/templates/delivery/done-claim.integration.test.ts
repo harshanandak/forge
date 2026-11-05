@@ -376,7 +376,10 @@ test("delivery skills leave watches armed across wakes", () => {
     "forge-loop",
   ]) {
     const text = readFileSync(
-      join(repo, `templates/delivery/skills/${name}/SKILL.md`),
+      join(
+        repo,
+        `templates/delivery/skills/${name}/${name === "forge-loop" ? "watching.md" : "SKILL.md"}`,
+      ),
       "utf8",
     );
     if (name === "forge-review" || name === "forge-loop") {

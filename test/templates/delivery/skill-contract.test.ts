@@ -44,7 +44,7 @@ const inventory: Rule[] = (
   ...(copies ? { copies } : {}),
 }));
 const limits: Budgets = budgets;
-const INTAKE_ORDER =
+const DISPATCH_ORDER =
   /Before dispatch,[^\n]+forge issue call[^\n]+Retry REVISION_CONFLICT[^\n]+Then dispatch the subagent\./;
 
 function tree(root: string, prefix = ""): Record<string, Buffer> {
@@ -138,8 +138,8 @@ test("delivery skill contracts: shape, links, rules, budgets, lint and mirrors",
         ...checkNeutral(rendered),
       ];
       expect(problems, problems.join("\n")).toEqual([]);
-      expect(inventory).toHaveLength(47);
-      expect(rendered["forge-intake/SKILL.md"]).toMatch(INTAKE_ORDER);
+      expect(inventory).toHaveLength(88);
+      expect(rendered["forge-loop/dispatch.md"]).toMatch(DISPATCH_ORDER);
       expect(Object.keys(shipped).sort()).toEqual(Object.keys(source).sort());
       expect(
         Object.keys(other)
@@ -230,8 +230,8 @@ test("intake contracts reject removed call, limit, prototype isolation and repor
       `rule ${id}: not found in ${rule.home}`,
     );
   }
-  const intake = source["forge-intake/SKILL.md"]!;
-  expect(intake).toMatch(INTAKE_ORDER);
+  const intake = source["forge-loop/dispatch.md"]!;
+  expect(intake).toMatch(DISPATCH_ORDER);
   const call = inventory.find((rule) => rule.id === "in.call.count")!.anchor;
   for (const instruction of [
     "Retry REVISION_CONFLICT.",
@@ -240,7 +240,7 @@ test("intake contracts reject removed call, limit, prototype isolation and repor
     const reordered = intake
       .replace(instruction, "")
       .replace(call, `${instruction} ${call}`);
-    expect(reordered).not.toMatch(INTAKE_ORDER);
+    expect(reordered).not.toMatch(DISPATCH_ORDER);
   }
 }, 5_000);
 
