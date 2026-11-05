@@ -62,6 +62,7 @@ export interface FilesService extends CloneFilesService {
 export interface EnvironmentService {
   readonly platform: NodeJS.Platform;
   readonly packageRoot: string;
+  inherit(): Readonly<Record<string, string>>;
   select(names: readonly string[]): Readonly<Record<string, string>>;
 }
 export interface CryptoService {
@@ -440,6 +441,15 @@ export function createAssemblyProviders(
     },
     environment(scope: ServiceScope): EnvironmentService {
       return {
+        inherit() {
+          active(scope);
+          if (!scope.effects.includes("environment:read"))
+            refuse(
+              "EFFECT_UNDECLARED",
+              "Inheriting the caller environment requires environment:read",
+            );
+          return env;
+        },
         get packageRoot(): string {
           active(scope);
           return realpathSync(

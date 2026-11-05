@@ -17,6 +17,7 @@ interface Services {
   device: DeviceFiles;
   environment: {
     platform: NodeJS.Platform;
+    inherit(): Readonly<Record<string, string>>;
     select(names: readonly string[]): Readonly<Record<string, string>>;
   };
   crypto: { sha256(text: string): string; randomUUID(): string };
@@ -81,16 +82,6 @@ async function contact(
     refuse(
       "APPROVAL_REQUIRED",
       "Relay the owner's chat reply with approval: {quote, source}",
-    );
-  if (
-    action === "use" &&
-    /^(?:(?:please|thanks)[,\s]+)?(?:no\b|nope\b|not\b|never\b|decline\b|refuse\b|do\s+not\b|don['’]t\b)/i.test(
-      input.approval!.quote.trim(),
-    )
-  )
-    refuse(
-      "APPROVAL_REQUIRED",
-      "A refusal is not approval; relay it through accounts decline",
     );
   const env: Record<string, string> = {
     ...s.environment.select([
@@ -402,36 +393,26 @@ async function contact(
     }
   }
   const verifyIdentity = async (account: Account) => {
+    const callerEnv = s.environment.inherit();
     for (const role of ["AUTHOR", "COMMITTER"] as const) {
       const prefix = `GIT_${role}`;
-      // Observe caller identity overrides only for these probes, never in gh discovery.
-      const identityEnv = Object.fromEntries(
-        Object.entries(
-          s.environment.select([
-            `${prefix}_NAME`,
-            `${prefix}_EMAIL`,
-            `${prefix}_DATE`,
-          ]),
-        ).map(([key, value]) => [key.toUpperCase(), value]),
-      );
-      const ident = await run(
-        git,
-        ["-c", "core.fsmonitor=false", "var", `${prefix}_IDENT`],
-        true,
-        { ...env, ...identityEnv },
-      );
+      const ident = await run(git, ["var", `${prefix}_IDENT`], true, callerEnv);
       const roleKey = `${role.toLowerCase()}.email`;
       if (!ident.ok)
         integrity(
-          `Cannot verify ${prefix}_IDENT; inspect ${Object.keys(identityEnv).join(", ") || `${roleKey}, user.email`}`,
+          `Cannot verify ${prefix}_IDENT in the caller environment; inspect ${roleKey} and inherited Git overrides`,
         );
       const effectiveEmail = / <([^<>\r\n]*)> -?\d+ [+-]\d{4}$/.exec(
         ident.text,
       )?.[1];
       if (!effectiveEmail || !account.commitEmails.includes(effectiveEmail)) {
-        const overridingKey = Object.hasOwn(identityEnv, `${prefix}_EMAIL`)
+        const overridingKey = Object.keys(callerEnv).some(
+          (key) =>
+            (s.environment.platform === "win32" ? key.toUpperCase() : key) ===
+            `${prefix}_EMAIL`,
+        )
           ? `${prefix}_EMAIL`
-          : (await g(["config", roleKey], true)).ok
+          : (await run(git, ["config", roleKey], true, callerEnv)).ok
             ? roleKey
             : "user.email";
         integrity(
@@ -484,14 +465,6 @@ async function contact(
       const login = input.login ?? pick?.login;
       if (!login || !candidates.some((c) => c.login === login))
         refuse("ACCOUNT_UNKNOWN", "Name a signed-in GitHub account");
-      if (
-        login !== pick?.login &&
-        !input.approval!.quote.toLowerCase().includes(login.toLowerCase())
-      )
-        refuse(
-          "APPROVAL_REQUIRED",
-          "The reply must name the revised account choice",
-        );
       const info = parse<{ id?: number; name?: string | null }>(
         (await run(gh, ["api", `users/${login}`], false, ghEnv)).text,
         {},

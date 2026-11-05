@@ -29,7 +29,7 @@ Standing rules: <adopted rules; layer 1 passes the memory packet>
 
 ## Red, then green
 
-Before first commit/push: `forge accounts plan`; if unbound, relay ask, await chat approval, then use/decline with quote/source. Bound/declined: continue.
+Before first commit/push: `forge accounts plan`; relay ask and wait. Clear yes/named account: use; otherwise decline; unsure: ask again. Pass quote/source. Bound/declined: continue.
 
 1. Read `forge issue resume <slice>` and every Touches file before editing; later comments override the body. Read `forge issue comments <slice>` once before acting if a checkpoint exists or `more` is true. forge-cut risk: light 0-1, standard 2-3, heavy 4-5.
 2. Reproduce the issue (or read the code named) before editing. Log: `forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'` or `premise does not hold: <evidence>`; if false, stop and report; change no code.
@@ -43,7 +43,7 @@ Three proof levels:
 - **User-visible, including standard slices** (UI, CLI output, API response, published package): Save one scenario on the built artifact as users get it, with a pass predicate and output; if `.forge/verify.md` exists, take that scenario from it, run its declared check with `forge check run`, save its named evidence and list the evidence paths in a slice comment.
 - **Heavy or critical**: always run that scenario on trunk and head, even without a user-visible change, and get a fresh-context review against every acceptance item through `forge-review` before opening.
 
-Receipts are evidence, not "should pass" or "was passing". Unknown, truncated or zero-test output never passes.
+Receipts are evidence. Unknown, truncated or zero-test output never passes.
 
 ## Boundary and stuck checks
 

@@ -24,7 +24,12 @@ type Reply = {
   };
   error: { code: string; message: string };
 };
-type Audit = { id: string; approval?: { quote: string; source: string } };
+type Audit = {
+  id: string;
+  kind: string;
+  repo: string;
+  approval?: { quote: string; source: string };
+};
 
 test("installed accounts: one approval catches wrong authors and binds every clone", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-accounts-"));
@@ -56,7 +61,7 @@ test("installed accounts: one approval catches wrong authors and binds every clo
     fake,
     `
 const a = process.argv.slice(2);
-if (Object.keys(process.env).some(k => /^(GH_TOKEN|GITHUB_TOKEN|NODE_OPTIONS|GIT_AUTHOR_EMAIL)$/i.test(k))) process.exit(9);
+if (Object.keys(process.env).some(k => /^(GH_TOKEN|GITHUB_TOKEN|NODE_OPTIONS|GIT_AUTHOR_EMAIL|GIT_CONFIG_COUNT)$/i.test(k))) process.exit(9);
 for (const key of ['APPDATA','GH_CONFIG_DIR','XDG_CONFIG_HOME']) if (!process.env[key]?.startsWith(process.env.HOME)) process.exit(7);
 if (a[0] === 'auth' && a[1] === 'status') {
   if (require('node:fs').existsSync(require('node:path').join(__dirname, 'text')) && a.includes('--json')) { process.stderr.write('unknown flag: --json'); process.exit(1); }
@@ -108,6 +113,11 @@ if (a[0] === 'auth' && a[1] === 'status') {
     );
     return { status: out.status, ...(JSON.parse(out.stdout) as Reply) };
   }
+  const readAudit = (): Audit[] =>
+    readFileSync(join(home, ".forge/accounts/audit.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Audit);
   function clone(name: string) {
     const path = join(root, name);
     mkdirSync(path);
@@ -173,21 +183,31 @@ if (a[0] === 'auth' && a[1] === 'status') {
       cli(repo, "use", { login: "alice", approval: { quote: "yes" } }).ok,
     ).toBe(false);
     const approval = { quote: "yes", source: "t3:fixture/message:1" };
-    for (const quote of ["no", "no thanks", "do not bind this repo"]) {
-      expect(
-        cli(repo, "use", { login: "alice", approval: { ...approval, quote } })
-          .error.code,
-      ).toBe("APPROVAL_REQUIRED");
-    }
+    // The agent chooses use/decline; Forge treats the supplied quote as opaque evidence.
+    const opaqueRepo = clone("opaque-reply");
+    git(
+      opaqueRepo,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/alice/opaque-reply.git",
+    );
+    const opaqueApproval = {
+      quote: "  no thanks  ",
+      source: "t3:fixture/message:opaque",
+    };
+    const opaqueUse = cli(opaqueRepo, "use", {
+      login: "alice",
+      approval: opaqueApproval,
+    });
+    expect(opaqueUse.ok).toBe(true);
+    expect(
+      readAudit().find((row) => row.id === opaqueUse.result.appliedFrom)
+        ?.approval,
+    ).toEqual(opaqueApproval);
     const used = cli(repo, "use", { login: "alice", approval });
     expect(used.ok, JSON.stringify(used)).toBe(true);
-    const audit = readFileSync(
-      join(home, ".forge/accounts/audit.jsonl"),
-      "utf8",
-    )
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as Audit);
+    const audit = readAudit();
     expect(
       audit.some(
         (row) =>
@@ -273,6 +293,19 @@ if (a[0] === 'auth' && a[1] === 'status') {
       code: "ACCOUNT_INTEGRITY",
       namesAuthorOverride: true,
     });
+    git(authorOverride, "config", "--unset", "author.email");
+    expect(
+      cli(
+        authorOverride,
+        "use",
+        { login: "alice", approval },
+        {
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "author.email",
+          GIT_CONFIG_VALUE_0: "202+bob@users.noreply.github.com",
+        },
+      ),
+    ).toMatchObject({ ok: false, error: { code: "ACCOUNT_INTEGRITY" } });
     const inheritedKey = clone("inherited-key");
     git(
       inheritedKey,
@@ -291,7 +324,13 @@ if (a[0] === 'auth' && a[1] === 'status') {
     const other = clone("other");
     git(other, "remote", "set-url", "origin", "git@github.com:bob/other.git");
     expect(cli(other, "decline", {}).ok).toBe(false);
-    expect(cli(other, "decline", { approval }).ok).toBe(true);
+    const declineApproval = { ...approval, quote: "no" };
+    expect(cli(other, "decline", { approval: declineApproval }).ok).toBe(true);
+    expect(
+      readAudit().find(
+        (row) => row.kind === "decline" && row.repo === "github.com/bob/other",
+      )?.approval,
+    ).toEqual(declineApproval);
     expect(cli(other, "plan").result.declined).toBe(true);
     writeFileSync(
       join(repo, ".git/forge/accounts.gitconfig"),
