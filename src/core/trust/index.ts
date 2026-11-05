@@ -23,17 +23,32 @@ export interface TrustRecords {
   delete(digest: string): void;
 }
 
-/** Owned by the embedding's human-authenticated control surface, never by block services. */
+declare const ownerApproval: unique symbol;
+export interface OwnerApproval {
+  readonly [ownerApproval]: true;
+}
+export type ApprovalValidator = (
+  approval: OwnerApproval,
+  op: string,
+  input: unknown,
+) => boolean;
+
+/** The embedding owns approval evidence; block services never receive this store. */
 export class TrustStore {
   readonly #records: TrustRecords;
+  readonly #approve: ApprovalValidator;
 
-  constructor(records: TrustRecords = new Map<string, TrustRecord>()) {
+  constructor(
+    records: TrustRecords = new Map<string, TrustRecord>(),
+    approve: ApprovalValidator = () => false,
+  ) {
     this.#records = records;
+    this.#approve = approve;
   }
 
-  admit(caller: Caller, capturedDigest: string): void {
-    if (caller !== "human")
-      refuse("ADMISSION_REQUIRED", "only a human may admit code");
+  admit(approval: OwnerApproval, capturedDigest: string): void {
+    if (!this.#approve(approval, "block.admit", { digest: capturedDigest }))
+      refuse("APPROVAL_REQUIRED", "Admission requires an owner approval proof");
     this.#records.set(capturedDigest, {
       admitted: true,
       effects: this.#records.get(capturedDigest)?.effects ?? [],
@@ -47,12 +62,17 @@ export class TrustStore {
   }
 
   grant(
-    caller: Caller,
+    approval: OwnerApproval,
     capturedDigest: string,
     effects: readonly string[],
   ): void {
-    if (caller !== "human")
-      refuse("GRANT_REQUIRED", "only a human may grant effects");
+    if (
+      !this.#approve(approval, "config.grant", {
+        digest: capturedDigest,
+        effects,
+      })
+    )
+      refuse("APPROVAL_REQUIRED", "Grant requires an owner approval proof");
     const previous = this.#records.get(capturedDigest);
     this.#records.set(capturedDigest, {
       admitted: previous?.admitted ?? false,

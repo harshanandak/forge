@@ -452,8 +452,9 @@ async function declaredDeadline() {
     },
     new Map([["clock", captured]]),
   );
-  const trust = new TrustStore();
-  trust.admit("human", captured.digest);
+  const trustRecords = new Map();
+  const trust = new TrustStore(trustRecords);
+  trustRecords.set(captured.digest, { admitted: true, effects: [] });
   let now = 0;
   const runtime = new Runtime(catalog, trust, {
     clock: { now: () => now },

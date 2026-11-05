@@ -1,3 +1,4 @@
+import { grant } from "../../fixtures/owner-approval.ts";
 import { test, expect, spyOn } from "bun:test";
 import {
   existsSync,
@@ -31,7 +32,7 @@ test("a snapshot refusal reaches the handler immediately, before its operation d
     `({ services }) => services.files.snapshot({ paths: ['missing'], maxBytes: 100, timeoutMs: 5000, maxOutputBytes: 66 })`,
     { effects: ["files:read"], timeoutMs: 2000 },
   );
-  f.trust.grant("human", f.block.digest, ["files:read"]);
+  grant(f.trust, f.block.digest, ["files:read"]);
   try {
     const started = performance.now();
     const response = await f

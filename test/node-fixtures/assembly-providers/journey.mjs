@@ -144,7 +144,29 @@ const context = {
   session: { id: "fixture" },
 };
 let sequence = 0;
-const invoke = (op, input = {}) =>
+const invoke = async (op, input = {}, ...rest) => {
+  const first = await invokeRaw(op, input, ...rest);
+  if (
+    !first.ok &&
+    first.error.code === "APPROVAL_REQUIRED" &&
+    first.result?.request &&
+    !input.approval
+  )
+    return invokeRaw(
+      op,
+      {
+        ...input,
+        approval: {
+          request: first.result.request.id,
+          quote: "yes",
+          source: { harness: "packed-fixture", thread: "packed-owner-chat" },
+        },
+      },
+      ...rest,
+    );
+  return first;
+};
+const invokeRaw = (op, input = {}) =>
   assembly.catalog.invoke({
     schemaVersion: "forge.invocation/1",
     requestId: `provider-${++sequence}`,

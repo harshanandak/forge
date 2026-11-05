@@ -81,7 +81,27 @@ for (const command of commands) {
     .replace("<digest>", digest ?? "")
     .split(" ")
     .slice(1);
-  const envelope = JSON.parse(run(process.execPath, [npx, ...args]));
+  let envelope = JSON.parse(
+    run(process.execPath, [npx, ...args], args[2] === "admit" ? 1 : 0),
+  );
+  if (args[2] === "admit") {
+    assert.equal(envelope.error.code, "APPROVAL_REQUIRED");
+    const approval = {
+      request: envelope.result.request.id,
+      quote: "yes",
+      source: { harness: "packed-fixture", thread: "packed-owner-chat" },
+    };
+    envelope = JSON.parse(
+      run(process.execPath, [
+        npx,
+        "forge",
+        "block",
+        "admit",
+        "--input",
+        JSON.stringify({ digest, approval }),
+      ]),
+    );
+  }
   assert.equal(envelope.ok, true);
   if (args[2] === "check") {
     assert.equal(envelope.result.admitted, false);

@@ -18,7 +18,12 @@ import {
   type CapturedBlock,
   type FileCapturePort,
 } from "../catalog/index.ts";
-import { TrustStore, refuse, digest } from "../trust/index.ts";
+import {
+  TrustStore,
+  refuse,
+  digest,
+  type OwnerApproval,
+} from "../trust/index.ts";
 import { Runtime, type RuntimeOptions } from "./index.ts";
 import { version } from "../../version.ts";
 
@@ -32,17 +37,21 @@ export class BlockCatalog {
   readonly #trust: TrustStore;
   readonly #options: RuntimeOptions;
   readonly #version: string;
+  readonly #approval:
+    ((request: InvocationRequest) => OwnerApproval) | undefined;
 
   constructor(
     capture: FileCapturePort,
     trust: TrustStore,
     options: RuntimeOptions = {},
     forgeVersion: string = version,
+    approval?: (request: InvocationRequest) => OwnerApproval,
   ) {
     this.#capture = capture;
     this.#trust = trust;
     this.#options = options;
     this.#version = forgeVersion;
+    this.#approval = approval;
   }
 
   #catalog(candidates = this.#candidates): Catalog {
@@ -152,7 +161,12 @@ export class BlockCatalog {
               "candidate bytes changed since capture; add again before admission",
             );
         }
-        this.#trust.admit(request.caller, digest);
+        if (!this.#approval)
+          refuse(
+            "APPROVAL_REQUIRED",
+            "The embedding must supply owner approval evidence",
+          );
+        this.#trust.admit(this.#approval(request), digest);
         return {
           ok: true,
           op: request.op,

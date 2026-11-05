@@ -1,5 +1,6 @@
 import { spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
+import { relay } from "../../fixtures/owner-approval.ts";
 
 import {
   cpSync,
@@ -204,8 +205,8 @@ export async function openHarness(
     stageBlock(name, stage);
     const added = await call("block.add", { path: `./blocks/${name}` });
     const { digest } = done(added) as { digest: string };
-    done(await call("block.admit", { digest }));
-    done(await call("config.grant", { digest, effects: effects[name] }));
+    done(await relay(call, "block.admit", { digest }));
+    done(await relay(call, "config.grant", { digest, effects: effects[name] }));
   }
   for (const [path, value] of Object.entries(settings)) {
     const shown = done(await call("config.show", {})) as { revision: string };

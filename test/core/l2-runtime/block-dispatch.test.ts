@@ -4,7 +4,8 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNodeBlockCatalog } from "../../../src/adapters/node-runtime/catalog.ts";
-import { TrustStore, type TrustRecord } from "../../../src/core/trust/index.ts";
+import { type TrustRecord } from "../../../src/core/trust/index.ts";
+import { TrustStore, approval } from "../../fixtures/owner-approval.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 
@@ -58,7 +59,9 @@ for (const blockName of ["sample", "a".repeat(41)])
       );
       const records = new Map<string, TrustRecord>();
       const trust = new TrustStore(records);
-      const catalog = createNodeBlockCatalog(root, trust);
+      const catalog = createNodeBlockCatalog(root, trust, (request) =>
+        approval(request.op, request.input as Record<string, unknown>),
+      );
       const cli = async (args: string[], human = false) =>
         (
           await runCli(catalog, args, {

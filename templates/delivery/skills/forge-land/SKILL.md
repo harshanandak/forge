@@ -5,9 +5,9 @@ description: "Use when a PR may be ready to merge, or after it merged."
 
 # forge-land
 
-Orchestrator only. A worker never merges. Merge by: agent.
+Orchestrator only. A worker never merges. Merge by: agent. Read [owner-approval.md](owner-approval.md) on `APPROVAL_REQUIRED`.
 
-## Merge conditions: all of them, read fresh
+## Merge conditions
 
 Preview: `forge check gate --pr <n>`. The merge below must return exit 0, `ok:true` and `result.outcome` MERGED. Keep `result.head` as `<head>` and `result.receipt` as `<id>`.
 
@@ -17,7 +17,7 @@ A matched door path always refuses: the owner merges that PR by hand. A merge th
 
 ## Merge, pinned and serial
 
-Merge one PR at a time after combined-code CI, with zero red checks, open threads and open doors.
+Merge serially after combined-code CI, with zero red checks, open threads and open doors.
 
 ```
 forge pr merge <n>

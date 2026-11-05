@@ -32,6 +32,37 @@ function project() {
     root,
     device,
     cli(args: string[], status: number): ResultEnvelope {
+      if (
+        args[0] === "store" &&
+        args[1] === "reinit" &&
+        !args.includes("--input")
+      ) {
+        const first = this.cli(args.concat("--input", "{}"), 1);
+        expect(first).toMatchObject({
+          ok: false,
+          error: { code: "APPROVAL_REQUIRED" },
+        });
+        const request = (first.result as { request: { id: string } }).request
+          .id;
+        return this.cli(
+          [
+            "store",
+            "reinit",
+            "--input",
+            JSON.stringify({
+              approval: {
+                request,
+                quote: "yes",
+                source: {
+                  harness: "packed-fixture",
+                  thread: "packed-owner-chat",
+                },
+              },
+            }),
+          ],
+          status,
+        );
+      }
       const result = spawnSync("node", [bin, ...args], {
         cwd: root,
         env: {

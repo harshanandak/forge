@@ -97,9 +97,16 @@ nothing. `add` writes the block source to `.forge/config.yaml`, then returns
 `admitted: false` and `next: npx forge block admit <digest>`. Human-readable
 output (`--text`) shows that exact `next` command too. Replace `<digest>` with
 the same digest returned by `check`.
-Admission is a human decision to execute these captured bytes; the local CLI
-authenticates the human, while MCP cannot admit code. `admit` returns
-`admitted: true`. The final command returns `ok: true` and
+The first `admit` refuses with `APPROVAL_REQUIRED` (exit 1), returning
+`result.request` with an `id`, `ask` and `binding`. Ask the owner `ask` in chat and
+wait for their reply. Retry `npx forge block admit --input` with JSON containing
+the same `digest` plus `approval: {request, quote, source: {harness, thread}}`.
+Use the request id and the owner's verbatim reply; add a source message id or link
+when available. Requests expire after 24 hours and can be used once for the exact
+operation and arguments. `config grant` and `store reinit` use the same flow.
+The CLI caller `human` means local CLI process; it does not authenticate consent.
+MCP cannot admit code. An approved retry returns `admitted: true`.
+The final command returns `ok: true` and
 `result: {"message":"Hello, World!"}`. Each command runs in a fresh process.
 
 Changing captured files changes the digest: check, add and admit again after

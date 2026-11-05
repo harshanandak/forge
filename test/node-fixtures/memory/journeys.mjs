@@ -476,7 +476,24 @@ async function host(at) {
       }),
     });
   const ok = async (op, input, caller) => {
-    const result = await call(op, input, caller);
+    let result = await call(op, input, caller);
+    if (
+      !result.ok &&
+      result.error.code === "APPROVAL_REQUIRED" &&
+      result.result?.request
+    )
+      result = await call(
+        op,
+        {
+          ...input,
+          approval: {
+            request: result.result.request.id,
+            quote: "yes",
+            source: { harness: "packed-fixture", thread: "packed-owner-chat" },
+          },
+        },
+        caller,
+      );
     assert.equal(result.ok, true, `${op}: ${JSON.stringify(result)}`);
     return result.result;
   };

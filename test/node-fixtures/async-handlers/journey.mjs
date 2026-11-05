@@ -97,8 +97,9 @@ function fixture(source, timeoutMs = 3000, effects = [], processContainment) {
     },
     new Map([["sample", block]]),
   );
-  const trust = new TrustStore();
-  trust.admit("human", block.digest);
+  const trustRecords = new Map();
+  const trust = new TrustStore(trustRecords);
+  trustRecords.set(block.digest, { admitted: true, effects: [] });
   const request = {
     schemaVersion: "forge.invocation/1",
     requestId: "packed-async",
@@ -112,6 +113,7 @@ function fixture(source, timeoutMs = 3000, effects = [], processContainment) {
     block,
     catalog,
     trust,
+    trustRecords,
     request,
     runtime: (services, isolation = nodeRunIsolation) =>
       new Runtime(catalog, trust, {
@@ -440,7 +442,10 @@ try {
       "async effect needs human grant",
     );
     assert.equal(writes, 0);
-    f.trust.grant("human", f.block.digest, ["sample:write"]);
+    f.trustRecords.set(f.block.digest, {
+      admitted: true,
+      effects: ["sample:write"],
+    });
     assert.equal((await runtime.invoke(f.request)).result, "written");
     assert.equal(writes, 1);
   }
@@ -448,7 +453,43 @@ try {
     const f = fixture(
       "async ({ input }) => { await Promise.resolve(); return input.value; }",
     );
-    function cli(args, expected = 0) {
+    function cli(args, expected = 0, ...rest) {
+      if (
+        expected === 0 &&
+        ["block.admit", "config.grant", "store.reinit"].includes(
+          args.slice(0, 2).join("."),
+        )
+      ) {
+        const input = args.includes("--input")
+          ? JSON.parse(args[args.indexOf("--input") + 1])
+          : { digest: args[2] };
+        if (!input.approval) {
+          const first = cliRaw(args, 1, ...rest);
+          assert.equal(first.error.code, "APPROVAL_REQUIRED");
+          return cliRaw(
+            [
+              ...args.slice(0, 2),
+              "--input",
+              JSON.stringify({
+                ...input,
+                approval: {
+                  request: first.result.request.id,
+                  quote: "yes",
+                  source: {
+                    harness: "packed-fixture",
+                    thread: "packed-owner-chat",
+                  },
+                },
+              }),
+            ],
+            expected,
+            ...rest,
+          );
+        }
+      }
+      return cliRaw(args, expected, ...rest);
+    }
+    function cliRaw(args, expected = 0) {
       const child = spawnSync(process.execPath, [bin, ...args], {
         cwd: root,
         env: { ...env, FORGE_DEVICE_ROOT: device },
@@ -581,7 +622,10 @@ try {
       3000,
       ["sample:write"],
     );
-    f.trust.grant("human", f.block.digest, ["sample:write"]);
+    f.trustRecords.set(f.block.digest, {
+      admitted: true,
+      effects: ["sample:write"],
+    });
     let retained, cached;
     try {
       const result = await f
@@ -682,7 +726,32 @@ try {
       device: { id: join(assemblyRoot, "device") },
     };
     let sequence = 0;
-    const invoke = (op, input = {}, context = ctx, caller = "agent") =>
+    const invoke = async (op, input = {}, ...rest) => {
+      const first = await invokeRaw(op, input, ...rest);
+      if (
+        !first.ok &&
+        first.error.code === "APPROVAL_REQUIRED" &&
+        first.result?.request &&
+        !input.approval
+      )
+        return invokeRaw(
+          op,
+          {
+            ...input,
+            approval: {
+              request: first.result.request.id,
+              quote: "yes",
+              source: {
+                harness: "packed-fixture",
+                thread: "packed-owner-chat",
+              },
+            },
+          },
+          ...rest,
+        );
+      return first;
+    };
+    const invokeRaw = (op, input = {}, context = ctx, caller = "agent") =>
       assembly.catalog.invoke({
         schemaVersion: "forge.invocation/1",
         requestId: `assembled-${++sequence}`,

@@ -6,6 +6,7 @@ description: "Build a claimed slice: red/green receipts, risk-scaled proof, read
 # forge-build
 
 Read [pull-request.md](pull-request.md) for setup and PR handoff.
+On `APPROVAL_REQUIRED`, read [owner-approval.md](../forge-land/owner-approval.md).
 
 Every wake runs `forge pr state <n>` and acts on `verdict`.
 

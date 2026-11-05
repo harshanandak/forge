@@ -1,3 +1,4 @@
+import { grant } from "../../fixtures/owner-approval.ts";
 import { expect, test } from "bun:test";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { fixture } from "./fixture.ts";
@@ -231,7 +232,7 @@ test("async effects still need human admission and exact operation grants", asyn
   });
   expect(opens).toBe(0);
   expect(writes).toBe(0);
-  f.trust.grant("human", f.block.digest, ["sample:write"]);
+  grant(f.trust, f.block.digest, ["sample:write"]);
   expect(await runtime.invoke(f.request)).toMatchObject({ ok: true });
   expect(writes).toBe(1);
   f.trust.revoke("human", f.block.digest);
@@ -316,7 +317,7 @@ test("revoking trust while an async handler waits prevents its next service writ
     "async ({services}) => { await services.wait(); return services.write(); }",
     { effects: ["sample:write"] },
   );
-  f.trust.grant("human", f.block.digest, ["sample:write"]);
+  grant(f.trust, f.block.digest, ["sample:write"]);
   let writes = 0;
   const result = await f
     .runtime({

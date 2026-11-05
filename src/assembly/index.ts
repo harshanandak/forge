@@ -78,6 +78,11 @@ import {
 } from "./declarations.ts";
 import { LocalState } from "./state.ts";
 import {
+  ApprovalRequired,
+  consumeOwnerApproval,
+  ownerApproval,
+} from "./approval.ts";
+import {
   harnessIdentity,
   localIdentityResolver,
   sessionIdentity,
@@ -144,6 +149,7 @@ const grantCandidate: McpCandidate = {
         items: { type: "string", minLength: 1 },
         uniqueItems: true,
       },
+      approval: {},
     },
   },
   outputSchema: {
@@ -213,6 +219,9 @@ function failure(op: string, error: unknown): ResultEnvelope {
             retry: "never",
           },
     warnings: [],
+    ...(error instanceof ApprovalRequired && error.request
+      ? { result: { request: error.request } }
+      : {}),
   };
 }
 function success(op: string, result: unknown): ResultEnvelope {
@@ -239,21 +248,46 @@ export async function createAssembly(
     stateRoot,
   );
   let trustActor: Actor | undefined;
-  const trust = new TrustStore({
-    get: (digest) =>
-      trustRecord(trustState.current?.get(TRUST_NAMESPACE, digest)?.value),
-    set(digest, record) {
-      const owner = trustState.current;
-      if (!owner || !trustActor)
-        refuse("CONTEXT_MISSING", "Human trust writer is not open");
-      owner.put(TRUST_NAMESPACE, digest, record, trustActor, {
-        expectRevision: owner.get(TRUST_NAMESPACE, digest)?.revision ?? 0,
-      });
+  const trust = new TrustStore(
+    {
+      get: (digest) =>
+        trustRecord(trustState.current?.get(TRUST_NAMESPACE, digest)?.value),
+      set(digest, record) {
+        const owner = trustState.current;
+        if (!owner || !trustActor)
+          refuse("CONTEXT_MISSING", "Human trust writer is not open");
+        owner.put(TRUST_NAMESPACE, digest, record, trustActor, {
+          expectRevision: owner.get(TRUST_NAMESPACE, digest)?.revision ?? 0,
+        });
+      },
+      delete() {
+        refuse("UNAVAILABLE", "Trust removal is not assembled");
+      },
     },
-    delete() {
-      refuse("UNAVAILABLE", "Trust removal is not assembled");
-    },
-  });
+    consumeOwnerApproval,
+  );
+  async function approve(
+    request: Parameters<Assembly["catalog"]["invoke"]>[0],
+    ask: string,
+  ) {
+    const owner = (await trustState.open(true))!;
+    return ownerApproval({
+      state: owner.client("forge/core-approvals", request.context.actor!),
+      op: request.op,
+      input: request.input as Record<string, unknown>,
+      deviceRoot,
+      projectRoot: root,
+      ask,
+      relay: {
+        harness: harnessIdentity(process.env),
+        id: sessionIdentity(
+          process.env,
+          request.context.session?.id ?? "local-cli",
+        ),
+        pid: process.pid,
+      },
+    });
+  }
   // Each block is captured once per call: config reads its schema from the same capture the
   // catalog runs. The cache belongs to one call and is passed down it, so overlapping calls
   // never share or clear each other's captures, and nothing is kept once the call ends.
@@ -1087,6 +1121,10 @@ export async function createAssembly(
             if (bound.context.variant !== "project")
               refuse("CONTEXT_MISSING", "Store recovery requires a project");
             const actor = bound.context.actor;
+            await approve(
+              request,
+              `Start a new empty Forge store for ${stateRoot}. Existing records will not be recovered.`,
+            );
             const recovery = new LocalState(
               join(stateRoot, ".forge", "state.sqlite"),
               undefined,
@@ -1381,27 +1419,31 @@ export async function createAssembly(
                 "NOT_FOUND",
                 "No current block has this digest; add again before admission",
               );
-            await trustState.open(true);
+            const effects =
+              request.op === "config.grant" ? (input.effects as string[]) : [];
+            const declared = new Set(
+              candidates.flatMap((block) =>
+                Object.values(block.manifest.operations).flatMap(
+                  (operation) => operation.effects,
+                ),
+              ),
+            );
+            if (request.op === "config.grant") {
+              trust.check(digest, []);
+              if (effects.some((effect) => !declared.has(effect)))
+                refuse("INPUT_INVALID", "Grant contains an undeclared effect");
+            }
+            const approval = await approve(
+              request,
+              request.op === "block.admit"
+                ? `Admit block ${candidates.map((block) => block.manifest.id).join(", ")} at ${digest} so its captured code can run. Declared effects: ${[...declared].join(", ") || "none"}.`
+                : `Grant effects ${effects.join(", ") || "none"} to block ${candidates.map((block) => block.manifest.id).join(", ")} at ${digest}.`,
+            );
             trustActor = request.context.actor;
             try {
-              if (request.op === "block.admit")
-                trust.admit(request.caller, digest);
+              if (request.op === "block.admit") trust.admit(approval, digest);
               else {
-                trust.check(digest, []);
-                const effects = input.effects as string[];
-                const declared = new Set(
-                  candidates.flatMap((block) =>
-                    Object.values(block.manifest.operations).flatMap(
-                      (operation) => operation.effects,
-                    ),
-                  ),
-                );
-                if (effects.some((effect) => !declared.has(effect)))
-                  refuse(
-                    "INPUT_INVALID",
-                    "Grant contains an undeclared effect",
-                  );
-                trust.grant(request.caller, digest, effects);
+                trust.grant(approval, digest, effects);
               }
             } finally {
               trustActor = undefined;
@@ -1768,6 +1810,7 @@ export function localCall(
   assembly: Assembly,
 ): import("../surface/dispatch.ts").CallOptions {
   return {
+    // "human" identifies the local CLI process; owner operations require separate evidence.
     caller: "human",
     confirmHuman: (op, _input) => {
       if (
