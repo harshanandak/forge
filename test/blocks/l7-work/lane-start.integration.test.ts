@@ -38,7 +38,7 @@ function git(args: string[], cwd = repo) {
   return result.stdout.trim();
 }
 function cli(args: string[], cwd = repo) {
-  const result = spawnSync(process.execPath, [bin, ...args], {
+  const result = spawnSync("node", [bin, ...args], {
     cwd,
     env: {
       ...process.env,
@@ -122,6 +122,18 @@ test("lane CLI starts and shows a recorded worktree and deduplicates the issue",
     readFileSync(join(repo, ".git/forge-lanes.json"), "utf8"),
   ) as unknown[];
   expect(registry).toHaveLength(1);
+  if (process.platform === "win32") {
+    writeFileSync(
+      join(repo, ".git/forge-lanes.json"),
+      JSON.stringify([
+        {
+          ...started.result,
+          worktree: String(started.result.worktree).toUpperCase(),
+        },
+      ]),
+    );
+    expect(start(id).ok).toBe(true);
+  }
 }, 30000);
 
 test("lane CLI enforces the active lane cap", () => {
@@ -194,4 +206,27 @@ test("lane CLI refuses a held registry lock without creating a branch", () => {
   } finally {
     rmSync(lock);
   }
+}, 30000);
+
+// The publication lock injects failure after checkout, without changing the block.
+test("lane CLI preserves and adopts work after registry publication fails", () => {
+  configure(4);
+  const id = issue();
+  const lock = join(repo, ".git/forge-lanes.json.lock");
+  writeFileSync(lock, "held", { flag: "wx" });
+  try {
+    const failed = start(id);
+    expect(failed.error?.code).toBe("INPUT_CONFLICT");
+    expect(failed.error?.message).toContain("Worktree preserved");
+    expect(git(["branch", "--list", `feat/${id}`])).toContain(id);
+    writeFileSync(join(repo, ".worktrees", id, "kept"), "user work");
+  } finally {
+    rmSync(lock);
+  }
+  const adopted = start(id);
+  expect(adopted.ok, JSON.stringify(adopted)).toBe(true);
+  expect(
+    readFileSync(join(String(adopted.result.worktree), "kept"), "utf8"),
+  ).toBe("user work");
+  expect(call("lane.show", { id }).result).toMatchObject(adopted.result);
 }, 30000);

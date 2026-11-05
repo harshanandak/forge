@@ -39,6 +39,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { interruptLaneRuns, laneHistory, laneRun } from "./lane-run.ts";
 import { laneTier } from "./lane-tier.ts";
 import { laneClose } from "./lane-close.ts";
+import { lockLaneRegistry } from "./lane-registry.ts";
 import { runCommand } from "./run-command.ts";
 
 type Lane = { issue: string; worktree: string; branch: string; brief: string };
@@ -634,6 +635,7 @@ async function main(): Promise<number> {
   let staged: string | undefined;
   const owner = laneOwner;
   let held = false;
+  let unlockRegistry: (() => void) | undefined;
   try {
     const context = () => {
       const common = resolve(
@@ -778,6 +780,7 @@ async function main(): Promise<number> {
         Atomics.wait(pause, 0, 0, 50);
       }
     }
+    unlockRegistry = lockLaneRegistry(root, common);
     const lanes = active(registry, root);
     if (lanes.length >= parsed.max)
       return reply(
@@ -824,6 +827,7 @@ async function main(): Promise<number> {
   } catch (error) {
     return reply(error instanceof Error ? error.message : "lane start failed");
   } finally {
+    unlockRegistry?.();
     if (held && lock) release(lock, owner);
     else if (staged) release(staged, owner);
   }

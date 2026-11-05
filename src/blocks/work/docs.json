@@ -1,5 +1,29 @@
 {
   "operations": {
+    "lane.start": {
+      "title": "Start lane",
+      "summary": "Start a capped worktree for an open issue. Brief must be in the project with Goal, Acceptance test, Files, Forbidden actions, Stop point and Prior art sections. Repeating the same arguments adopts a preserved worktree.",
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1",
+            "branch": "feat/example",
+            "brief": ".worktrees/briefs/demo-1.md"
+          }
+        }
+      ]
+    },
+    "lane.show": {
+      "title": "Show lane",
+      "summary": "Read the recorded lane and issue lease without changing either.",
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1"
+          }
+        }
+      ]
+    },
     "issue.create": {
       "title": "Issue create",
       "summary": "Create with title and kind.",

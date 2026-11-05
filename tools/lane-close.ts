@@ -1,3 +1,4 @@
+import { lockLaneRegistry } from "./lane-registry.ts";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -71,6 +72,7 @@ export function laneClose(
     mergeCommit = "";
   let status: "open" | "closed" = "open",
     stage = "input";
+  let unlockRegistry: (() => void) | undefined;
   let lock: string | undefined;
   let unlock: ((pid?: number) => void) | undefined;
   let ignored: string[] = [],
@@ -387,6 +389,7 @@ export function laneClose(
     }
     if (!commented) forge("issue", "comment", { id: issue, body: note });
     stage = "cleanup";
+    unlockRegistry = lockLaneRegistry(ctx.root, ctx.common);
     if (
       (hasBranch && git(["rev-parse", ref]) !== head) ||
       (existsSync(lane.worktree) &&
@@ -432,6 +435,7 @@ export function laneClose(
         rmdirSync(lock);
       }
     } finally {
+      unlockRegistry?.();
       unlock?.();
     }
   }
