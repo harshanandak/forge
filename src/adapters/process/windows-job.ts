@@ -7,6 +7,7 @@ const JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9;
 const PROCESS_SET_QUOTA = 0x0100;
 const PROCESS_TERMINATE = 0x0001;
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const ERROR_INSUFFICIENT_BUFFER = 122;
 const ERROR_MORE_DATA = 234;
 const MAX_ASSOCIATED_PROCESSES = 4096;
@@ -31,6 +32,10 @@ interface KoffiBoundary {
 }
 
 interface NativeApi {
+  readonly getProcessTimes: NativeFunction<
+    readonly [bigint, Buffer, Buffer, Buffer, Buffer],
+    number
+  >;
   readonly createJobObject: NativeFunction<readonly [null, null], unknown>;
   readonly setInformationJobObject: NativeFunction<
     readonly [bigint, number, Readonly<Record<string, unknown>>, number],
@@ -147,6 +152,15 @@ function loadNativeApi(): NativeApi {
   const byteOutput = koffi.out(koffi.pointer("uint8_t"));
 
   nativeApi = {
+    getProcessTimes: asNativeFunction(
+      kernel32.func("__stdcall", "GetProcessTimes", "int", [
+        handle,
+        byteOutput,
+        byteOutput,
+        byteOutput,
+        byteOutput,
+      ]),
+    ),
     createJobObject: asNativeFunction(
       kernel32.func("__stdcall", "CreateJobObjectW", handle, [
         "void *",
@@ -203,6 +217,29 @@ function loadNativeApi(): NativeApi {
 
 function isHandle(value: unknown): value is bigint {
   return typeof value === "bigint" && value !== 0n;
+}
+
+/** Creation FILETIME identifies an owner even after Windows reuses its PID. */
+export function windowsProcessStartTime(pid: number): string | undefined {
+  const api = loadNativeApi();
+  const handle = api.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+  if (!isHandle(handle)) return undefined;
+  try {
+    const created = Buffer.alloc(8);
+    if (
+      api.getProcessTimes(
+        handle,
+        created,
+        Buffer.alloc(8),
+        Buffer.alloc(8),
+        Buffer.alloc(8),
+      ) === 0
+    )
+      return undefined;
+    return created.readBigUInt64LE().toString();
+  } finally {
+    api.closeHandle(handle);
+  }
 }
 
 function nativeError(api: NativeApi, operation: string): Error {

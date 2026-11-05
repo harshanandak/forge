@@ -1,4 +1,6 @@
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { windowsProcessStartTime } from "./windows-job.ts";
 import type { Unavailable } from "../../generated/types.ts";
 import type { ResolvedExecutable } from "../../ports/process.ts";
 import { envValue } from "./env.ts";
@@ -27,6 +29,52 @@ export const realFileProbe: FileProbe = {
     }
   },
 };
+
+/** Unknown identities preserve the lock; only two observed start times can prove reuse. */
+export function processStartTime(pid: number): string | undefined {
+  if (!Number.isSafeInteger(pid) || pid < 1) return undefined;
+  try {
+    if (process.platform === "win32") {
+      const value = windowsProcessStartTime(pid);
+      return value ? `win32-filetime-v1:${value}` : undefined;
+    }
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const value = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+      return value && /^[1-9]\d*$/.test(value)
+        ? `linux-starttime-v1:${value}`
+        : undefined;
+    }
+    if (process.platform === "darwin") {
+      const result = spawnSync(
+        "/bin/ps",
+        ["-p", String(pid), "-o", "lstart="],
+        {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 1000,
+          maxBuffer: 1024,
+          env: { LC_ALL: "C", TZ: "UTC0" },
+        },
+      );
+      if (result.status !== 0) return undefined;
+      const value = result.stdout.trim();
+      if (
+        !/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) +\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(
+          value,
+        )
+      )
+        return undefined;
+      const instant = Date.parse(value + " UTC");
+      return Number.isFinite(instant)
+        ? `darwin-lstart-utc-v1:${new Date(instant).toISOString()}`
+        : undefined;
+    }
+  } catch {
+    // Permission failures and unavailable platform probes never authorize reclamation.
+  }
+  return undefined;
+}
 
 /**
  * Extensions Windows can start. PATHEXT also lists `.VBS`, `.JS` and friends, which CreateProcess
