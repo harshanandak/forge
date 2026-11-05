@@ -946,7 +946,14 @@ export async function createAssembly(
         ...result,
         warnings: [
           ...call.warnings.filter(
-            (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
+            (warning) =>
+              warning.code === "PROJECT_CONFIG_UNAVAILABLE" ||
+              (warning.code === "CONFIG_KEY_IGNORED" &&
+                !result.warnings.some(
+                  (existing) =>
+                    existing.code === warning.code &&
+                    existing.message === warning.message,
+                )),
           ),
           ...result.warnings,
         ],

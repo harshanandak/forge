@@ -82,6 +82,8 @@ for (const [name, config, refused] of [
         : [
             ["config", "show"],
             ["check", "list"],
+            ["check", "list"],
+            ["config", "show"],
           ]) {
         const { envelope } = await runCli(
           assembly.catalog,
@@ -99,7 +101,7 @@ for (const [name, config, refused] of [
             expect(envelope.error.message).toContain("did you mean labels?");
         } else {
           expect(envelope.ok, JSON.stringify(envelope)).toBe(true);
-          expect(envelope.warnings).toHaveLength(1);
+          expect(envelope.warnings, args.join(" ")).toHaveLength(1);
           expect(envelope.warnings[0]?.message).toContain(
             `blocks.work.config.${name === "nested newer key" ? "settings." : ""}lanes`,
           );
