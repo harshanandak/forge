@@ -70,8 +70,8 @@ test("lane close retries an injected landing-comment write failure exactly once"
   const services = {
     state: {
       acquire() {},
-      renew() {},
-      lease() {},
+      putMany() {},
+      lease: () => ({ generation: 1 }),
       now: () => 0,
       get: (key: string) => rows.get(key),
       list: (prefix: string) =>

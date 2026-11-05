@@ -22,7 +22,7 @@ beforeAll(() => {
   };
   operations = require(
     resolve(import.meta.dirname, "../../../src/blocks/work/entry.cts"),
-  );
+  ) as typeof operations;
 });
 afterAll(() => {
   if (previousFail === undefined) delete globals.fail;
@@ -189,8 +189,9 @@ async function fixture() {
     close,
     comments,
     expire: () => {
-      now += 60001;
+      now = Date.parse(state.lease(`issue:${id}`)!.expiresAt) + 1;
     },
+    now: () => now,
     dispose: () => opened.handle.close(),
   };
 }
@@ -224,10 +225,20 @@ test("a forged close journal without a fenced landing record cannot authorize cl
       }),
     );
     f.state.release(`issue:${id}`);
+    f.owner.put(
+      namespace,
+      `comment:${id}:1`,
+      {
+        id,
+        body: `PR #1 landed: ${url}\nMerge commit: ${merge}\nReceipt: proof`,
+      },
+      f.holder.actor,
+      { expectRevision: 0 },
+    );
     await expect(f.close()).rejects.toThrow();
     expect(f.flags.present).toBe(true);
     expect(f.flags.branch).toBe(true);
-    expect(f.comments()).toHaveLength(0);
+    expect(f.comments()).toHaveLength(1);
   } finally {
     await f.dispose();
   }
@@ -246,16 +257,21 @@ for (const end of ["release", "expire"] as const) {
       });
       expect(f.comments()).toHaveLength(0);
       if (end === "release") f.state.release(`issue:${id}`);
-      else f.expire();
+      else {
+        f.expire();
+        expect(
+          Date.parse(f.state.lease(`issue:${id}`)!.expiresAt),
+        ).toBeLessThan(f.now());
+      }
       f.flags.failCleanup = true;
       await expect(f.close()).rejects.toThrow();
       expect(f.comments()).toHaveLength(1);
       f.flags.failCleanup = false;
       await f.close();
       expect(f.comments()).toHaveLength(1);
-      expect(f.comments()[0]!.value).toMatchObject({
-        body: expect.stringContaining("PR #1 landed:"),
-      });
+      expect((f.comments()[0]!.value as { body: string }).body).toContain(
+        "PR #1 landed:",
+      );
       expect(f.flags.present).toBe(false);
       expect(f.flags.branch).toBe(false);
     } finally {
@@ -279,6 +295,41 @@ test("receipt refusal leaves lease expiry and renewal events unchanged", async (
         .filter((event) => event.type.startsWith("lease.")),
     ).toEqual(events.filter((event) => event.type.startsWith("lease.")));
     expect(f.flags.present).toBe(true);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("landing comment recovery rejects mismatched authority and cannot mutate issue or claim", async () => {
+  const f = await fixture();
+  try {
+    f.flags.failComment = true;
+    await expect(f.close()).rejects.toThrow("injected landing comment failure");
+    f.state.release(`issue:${id}`);
+    const issue = f.state.get(`issue:${id}`),
+      lease = f.state.lease(`issue:${id}`);
+    const input = { id, pr: 1, receipt: "proof", generation: 1 };
+    for (const mismatch of [
+      { id: "work-2" },
+      { pr: 2 },
+      { receipt: "other" },
+      { generation: 2 },
+    ]) {
+      expect(() =>
+        f.state.appendLandingComment({ ...input, ...mismatch }),
+      ).toThrow();
+    }
+    expect(f.comments()).toHaveLength(0);
+    const written = f.state.appendLandingComment(input);
+    const events = f.owner.events(namespace);
+    expect(f.state.appendLandingComment(input)).toEqual(written);
+    expect(f.owner.events(namespace)).toEqual(events);
+    expect(f.comments()).toHaveLength(1);
+    expect(f.state.get(`issue:${id}`)).toEqual(issue);
+    expect(f.state.lease(`issue:${id}`)).toEqual(lease);
+    expect(() =>
+      f.state.put(`issue:${id}`, {}, { expectRevision: issue!.revision }),
+    ).toThrow();
   } finally {
     await f.dispose();
   }

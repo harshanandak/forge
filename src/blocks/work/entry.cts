@@ -787,13 +787,24 @@ const operations: Operations<WorkOperations> = {
         brief: "",
       };
     if (!lane) fail("NOT_FOUND", `No recorded lane for ${issue.id}`);
-    // A historical generation admits cleanup context only; issue writes remain lease-fenced.
+    const accepted =
+      journal && typeof journal.pr === "number"
+        ? (state.get(`landing:${identity}:${journal.pr}`)?.value as
+            Record<string, unknown> | undefined)
+        : undefined;
+    // Only an accepted landing admits historical context; ordinary issue writes stay fenced.
     const lease =
       issue.lease ??
       (issue.status === "closed" &&
       journal?.receipt === issue.receipt &&
       journal?.keepOpen === false &&
-      !journal?.dropped
+      !journal?.dropped &&
+      accepted?.id === identity &&
+      accepted.pr === journal.pr &&
+      accepted.receipt === journal.receipt &&
+      accepted.branch === lane.branch &&
+      accepted.worktree === lane.worktree &&
+      accepted.generation === state.lease(key(identity))?.generation
         ? state.lease(key(identity))
         : undefined);
     return {
@@ -1331,9 +1342,17 @@ const operations: Operations<WorkOperations> = {
           (!linked || current.receipt !== receipt))
       )
         refuse("INPUT_CONFLICT", "Issue was closed by another landing");
+      const archive =
+        progress?.archive ??
+        `close-${input.pr ?? `no-pr-${bound.crypto?.randomUUID() ?? fail("UNAVAILABLE", "No-PR close requires crypto")}`}.json`;
+      if (
+        typeof archive !== "string" ||
+        !/^close-(?:[1-9]\d*|no-pr-[0-9a-f-]{36})\.json$/i.test(archive)
+      )
+        return refuse("INPUT_INVALID", "Invalid close archive name in journal");
       const note =
         (dropped
-          ? `${noPr ? "Lane dropped without a PR" : `PR #${input.pr} dropped: ${pull.url}`}\nReason: ${dropped}`
+          ? `${noPr ? `Lane dropped without a PR\nArchive: ${archive}` : `PR #${input.pr} dropped: ${pull.url}`}\nReason: ${dropped}`
           : `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}`) +
         (ahead
           ? `\nBranch retained: ${branch}\nCommits preserved:\n${ahead}`
@@ -1344,19 +1363,30 @@ const operations: Operations<WorkOperations> = {
           body === note || (!dropped && body?.startsWith(note + "\nChecks: "))
         );
       });
-      if (dropped || !progress)
-        state.renew(
-          key(id),
-          ((config as WorkConfig | undefined)?.claimTtlSeconds ?? 3600) * 1000,
-        );
-      const archive =
-        progress?.archive ??
-        `close-${input.pr ?? `no-pr-${bound.crypto?.randomUUID() ?? fail("UNAVAILABLE", "No-PR close requires crypto")}`}.json`;
-      if (
-        typeof archive !== "string" ||
-        !/^close-(?:[1-9]\d*|no-pr-[0-9a-f-]{36})\.json$/i.test(archive)
-      )
-        return refuse("INPUT_INVALID", "Invalid close archive name in journal");
+      const landingKey = `landing:${id}:${input.pr}`;
+      const accepted = state.get(landingKey);
+      const generation = state.lease(key(id))?.generation;
+      const landing = {
+        id,
+        pr: input.pr,
+        receipt,
+        branch,
+        worktree,
+        generation,
+        head,
+        mergeCommit,
+        note,
+      };
+      const recovering =
+        !dropped &&
+        !keepOpen &&
+        current.status === "closed" &&
+        accepted !== undefined &&
+        canonical(accepted.value) === canonical(landing);
+      if (!recovering) {
+        // An empty batch asserts the caller's holder and generation without recording a write.
+        state.putMany([], { subject: key(id) });
+      }
       const progressState = {
         ...progress,
         pr: input.pr,
@@ -1395,6 +1425,8 @@ const operations: Operations<WorkOperations> = {
           true,
           pull.url,
         );
+        if (!keepOpen && !recovering)
+          persist(state, landingKey, landing, accepted?.revision ?? 0, key(id));
       }
       save();
       if (!keepOpen && current.status !== "closed")
@@ -1406,10 +1438,18 @@ const operations: Operations<WorkOperations> = {
       if (!matching) {
         const prefix = `comment:${id}:`,
           commentId = prefix + (state.count(prefix) + 1);
-        persist(state, commentId, { id, body: note }, 0, key(id));
-        Object.assign(progressState, { commentId });
+        const written = recovering
+          ? state.appendLandingComment({
+              id,
+              pr: input.pr!,
+              receipt,
+              generation: generation!,
+            })
+          : persist(state, commentId, { id, body: note }, 0, key(id));
+        Object.assign(progressState, { commentId: written.key });
         save();
       }
+      if (dropped || keepOpen) state.putMany([], { subject: key(id) });
       if (hasBranch && (await run(["rev-parse", ref])) !== head)
         refuse("INPUT_CONFLICT", "Lane head changed during close");
       if (await exists()) {
