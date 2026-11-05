@@ -6,6 +6,7 @@
   "config": {
     "schemaVersion": "forge.config/1",
     "blocks": {
+      "accounts": { "source": { "builtin": "forge/accounts" } },
       "agent": {
         "source": {
           "builtin": "forge/agent"

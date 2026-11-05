@@ -121,7 +121,7 @@ async function contact(
     if (out.timedOut || out.truncated || (out.exitCode !== 0 && !optional))
       refuse(
         "ACCOUNT_UNAVAILABLE",
-        "Account discovery failed; no account was changed",
+        "Account operation failed; verify the binding before continuing",
       );
     return {
       ok: out.exitCode === 0,
@@ -378,6 +378,14 @@ async function contact(
       }
     }
   }
+  async function verifyIdentity(account: Account) {
+    if (
+      (await g(["config", "user.email"])).text !== account.commitEmails[0] ||
+      (await g(["config", "--bool", "user.useConfigOnly"])).text !== "true" ||
+      (await g(["config", "user.name"])).text !== account.commitName
+    )
+      integrity("Effective Git identity overrides the approved include");
+  }
   const lock = s.device.lock();
   try {
     if (
@@ -399,8 +407,20 @@ async function contact(
       return { repo, declined: true };
     }
     if (action === "use") {
-      if (applied)
-        refuse("ACCOUNT_BOUND", "This clone already has an approved binding");
+      if (selected && binding) {
+        if (input.login && input.login !== selected.login)
+          refuse(
+            "ACCOUNT_BOUND",
+            "Rebinding requires explicit revocation first",
+          );
+        apply(selected, binding);
+        await verifyIdentity(selected);
+        return {
+          repo,
+          login: selected.login,
+          appliedFrom: binding.appliedFrom,
+        };
+      }
       const login = input.login ?? pick?.login;
       if (!login || !candidates.some((c) => c.login === login))
         refuse("ACCOUNT_UNKNOWN", "Name a signed-in GitHub account");
@@ -421,7 +441,19 @@ async function contact(
           "ACCOUNT_VERIFY_FAILED",
           "GitHub did not return a public account id",
         );
-      const account: Account = {
+      const existing = accounts[login];
+      if (
+        existing &&
+        (existing.userId !== info.id ||
+          JSON.stringify(existing.gh) !== JSON.stringify(pin) ||
+          Object.values(bindings).some(
+            (b) => b.login === login && b.fingerprint !== hash(existing),
+          ))
+      )
+        integrity(
+          "Existing account identity or pin changed; preserve its approved definitions",
+        );
+      const account: Account = existing ?? {
         login,
         userId: info.id,
         commitName: info.name?.trim() || login,
@@ -447,17 +479,13 @@ async function contact(
       s.device.write("accounts.json", JSON.stringify(accounts));
       s.device.write("bindings.json", JSON.stringify(bindings));
       apply(account, approved);
+      await verifyIdentity(account);
       return { repo, login, appliedFrom: approved.appliedFrom };
     }
     if (binding?.declined) return { repo, declined: true };
     if (selected && binding) {
       apply(selected, binding);
-      if (
-        (await g(["config", "user.email"])).text !== selected.commitEmails[0] ||
-        (await g(["config", "--bool", "user.useConfigOnly"])).text !== "true" ||
-        (await g(["config", "user.name"])).text !== selected.commitName
-      )
-        integrity("Effective Git identity overrides the approved include");
+      await verifyIdentity(selected);
     }
     if (!selected) audit({ kind: "ask", ask });
     return {

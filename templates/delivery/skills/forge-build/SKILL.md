@@ -1,6 +1,6 @@
 ---
 name: forge-build
-description: "Build a claimed slice: red/green receipts, risk-scaled proof, ready PR; stop at push; never merge."
+description: "Build with receipts and proof; stop at push; never merge."
 ---
 
 # forge-build

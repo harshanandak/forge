@@ -59,7 +59,7 @@ if (a[0] === 'auth' && a[1] === 'status') {
   if (!a.includes('--json')) process.stderr.write('github.com\\n  ✓ Logged in to github.com account alice (keyring)\\n  - Active account: false\\n  ✓ Logged in to github.com account bob (keyring)\\n  - Active account: true\\n');
   else console.log(JSON.stringify({hosts:{'github.com':[{state:'success',active:false,host:'github.com',login:'alice',tokenSource:'keyring',gitProtocol:'https'},{state:'success',active:true,host:'github.com',login:'bob',tokenSource:'keyring',gitProtocol:'https'}]}}));
 } else if (a[0] === 'api' && /^users\\/(alice|bob)$/.test(a[1])) {
-  console.log(JSON.stringify({id:a[1].endsWith('alice')?101:202,name:a[1].slice(6)}));
+  console.log(JSON.stringify({id:a[1].endsWith('alice')?101:202,name:a[1].slice(6)+(require('node:fs').existsSync(require('node:path').join(__dirname,'renamed'))?' updated':'')}));
 } else process.exit(8);
 `,
   );
@@ -199,6 +199,39 @@ if (a[0] === 'auth' && a[1] === 'status') {
     expect(git(second, "config", "user.email")).toBe(
       "101+alice@users.noreply.github.com",
     );
+    expect(
+      cli(second, "use", { login: "alice", approval }).result.appliedFrom,
+    ).toBe(used.result.appliedFrom);
+    writeFileSync(join(bin, "renamed"), "");
+    const renamed = clone("renamed");
+    git(
+      renamed,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/alice/another.git",
+    );
+    expect(cli(renamed, "use", { login: "alice", approval }).ok).toBe(true);
+    expect(cli(repo, "plan").ok).toBe(true);
+    const overridden = clone("overridden");
+    git(
+      overridden,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/alice/override.git",
+    );
+    git(overridden, "config", "extensions.worktreeConfig", "true");
+    git(
+      overridden,
+      "config",
+      "--worktree",
+      "user.email",
+      "202+bob@users.noreply.github.com",
+    );
+    const refused = cli(overridden, "use", { login: "alice", approval });
+    expect(refused.ok).toBe(false);
+    expect(refused.error.code).toBe("ACCOUNT_INTEGRITY");
     const other = clone("other");
     git(other, "remote", "set-url", "origin", "git@github.com:bob/other.git");
     expect(cli(other, "decline", {}).ok).toBe(false);
