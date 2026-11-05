@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FixtureChildren } from "./fixture-children.ts";
@@ -48,3 +48,116 @@ test("fixture cleanup waits for its owned child and descendant stream before rem
     if (existsSync(root)) rmSync(root, { recursive: true });
   }
 }, 15_000);
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("fixture cleanup ends an orphan holding a file and inherited pipe after its leader exits", async () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-orphan-child-"));
+  const owner = new FixtureChildren();
+  const descendant = `const fs=require('node:fs'); const fd=fs.openSync('held.txt','w'); const watcher=fs.watch('.',()=>{if(fs.existsSync('release')){watcher.close();fs.closeSync(fd);process.exit(0)}}); process.stdout.write(JSON.stringify({pid:process.pid}));`;
+  // Gate the fork until ownership is installed, then let the leader exit first.
+  const source = `process.stdin.once('data',()=>{const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{detached:process.platform==='win32',stdio:['ignore',1,2]});c.unref();process.stdin.destroy()});`;
+  const child = owner.own(
+    spawn(Bun.which("node")!, ["-e", source], {
+      cwd: root,
+      windowsHide: true,
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"],
+    }),
+  );
+  const exited = once(child, "exit");
+  const closed = once(child, "close");
+  const ready = once(child.stdout, "data");
+  let descendantPid: number | undefined;
+  let pending: Promise<void> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    child.stdin.end("start");
+    const [data] = await ready;
+    descendantPid = (JSON.parse(String(data)) as { pid: number }).pid;
+    await exited;
+    expect(alive(descendantPid)).toBe(true);
+    expect(child.stdout.closed).toBe(false);
+    pending = owner.cleanup(() => rmSync(root, { recursive: true }));
+    await Promise.race([
+      pending,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("orphan cleanup did not finish")),
+          3_000,
+        );
+      }),
+    ]);
+    expect(alive(descendantPid)).toBe(false);
+    expect(child.stdout.closed).toBe(true);
+    expect(child.stderr.closed).toBe(true);
+    expect(existsSync(root)).toBe(false);
+  } finally {
+    clearTimeout(timer);
+    if (existsSync(root)) writeFileSync(join(root, "release"), "release");
+    if (descendantPid && alive(descendantPid))
+      process.kill(descendantPid, "SIGKILL");
+    if (child.exitCode === null) child.kill("SIGKILL");
+    await closed;
+    await pending?.catch(() => {});
+    if (existsSync(root)) rmSync(root, { recursive: true });
+  }
+}, 10_000);
+
+test("fixture cleanup bounds ignored shutdown and names the child and open streams", async () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-ignored-shutdown-"));
+  const owner = new FixtureChildren();
+  const child = spawn(
+    Bun.which("node")!,
+    ["-e", "process.stdin.on('data',()=>{});process.stdout.write('ready');"],
+    {
+      cwd: root,
+      windowsHide: true,
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  owner.own(child, () => child.stdin.write("ignored"));
+  const closed = once(child, "close");
+  let pending: Promise<void> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let removed = false;
+  try {
+    await once(child.stdout, "data");
+    const started = performance.now();
+    pending = owner.cleanup(() => {
+      removed = true;
+      rmSync(root, { recursive: true });
+    });
+    const bounded = Promise.race([
+      pending,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("cleanup had no internal deadline")),
+          3_000,
+        );
+      }),
+    ]);
+    await expect(bounded).rejects.toThrow(
+      `Fixture cleanup deadline: PID ${child.pid}`,
+    );
+    await expect(pending).rejects.toThrow("stdout");
+    await expect(pending).rejects.toThrow("stderr");
+    expect(performance.now() - started).toBeLessThan(2_500);
+    expect(removed).toBe(false);
+    expect(existsSync(root)).toBe(true);
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null) child.kill("SIGKILL");
+    await closed;
+    await pending?.catch(() => {});
+    if (existsSync(root)) rmSync(root, { recursive: true });
+  }
+}, 10_000);
