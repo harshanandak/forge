@@ -35,12 +35,12 @@ const success: CiJob = {
     { name: "Complete job", conclusion: "success" },
   ],
 };
-const realFailure: CiJob = {
+const realFailure = {
   ...unacquired,
   conclusion: "failure",
   runner_name: "GitHub Actions runner",
   steps: [{ name: "Unit tests", conclusion: "failure" }],
-};
+} satisfies CiJob;
 const run: CiRun = {
   conclusion: "failure",
   run_attempt: 2,
