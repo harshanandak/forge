@@ -80,7 +80,7 @@ test("fixture cleanup ends an orphan holding a file and inherited pipe after its
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     child.stdin.end("start");
-    const [data] = await ready;
+    const [data] = (await ready) as unknown[];
     descendantPid = (JSON.parse(String(data)) as { pid: number }).pid;
     await exited;
     expect(alive(descendantPid)).toBe(true);
@@ -160,4 +160,34 @@ test("fixture cleanup bounds ignored shutdown and names the child and open strea
     await pending?.catch(() => {});
     if (existsSync(root)) rmSync(root, { recursive: true });
   }
+}, 10_000);
+
+test("fixture command capture preserves output, exit status and spawn errors", async () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-command-capture-"));
+  const owner = new FixtureChildren();
+  try {
+    const result = await owner.run(
+      Bun.which("node")!,
+      [
+        "-e",
+        "process.stdout.write('out');process.stderr.write('err');process.exitCode=7;",
+      ],
+      { cwd: root, windowsHide: true },
+    );
+    expect(result).toEqual({
+      status: 7,
+      stdout: "out",
+      stderr: "err",
+      error: undefined,
+    });
+    const missing = await owner.run(join(root, "missing-command"), [], {
+      cwd: root,
+      windowsHide: true,
+    });
+    expect(missing.error).toBeInstanceOf(Error);
+    expect((missing.error as NodeJS.ErrnoException).code).toBe("ENOENT");
+  } finally {
+    await owner.cleanup(() => rmSync(root, { recursive: true }));
+  }
+  expect(existsSync(root)).toBe(false);
 }, 10_000);
