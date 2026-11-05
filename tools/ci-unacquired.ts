@@ -1,7 +1,7 @@
 export type CiJob = {
   name: string;
   conclusion: string | null;
-  runner_name: string;
+  runner_name: string | null;
   steps: readonly unknown[];
 };
 export type CiRun = {
@@ -37,7 +37,7 @@ export function decideRerun(
   const unacquired = (job: CiJob) =>
     (job.conclusion === "cancelled" || job.conclusion === null) &&
     job.steps.length === 0 &&
-    job.runner_name === "";
+    (job.runner_name === "" || job.runner_name === null);
   const rerun =
     run.jobs.some(unacquired) &&
     run.jobs.every(

@@ -56,6 +56,18 @@ const queued = {
   status: "queued",
   conclusion: null,
 };
+const queuedNullRunner = { ...queued, runner_name: null };
+
+test("reruns a queued never-acquired job with a null runner name", () => {
+  for (const run_attempt of [1, 2]) {
+    expect(
+      decideRerun(
+        { ...run, run_attempt, jobs: [success, queuedNullRunner, gate] },
+        { ...current, run_attempt },
+      ).rerun,
+    ).toBe(true);
+  }
+});
 
 test("reruns a queued never-acquired job and failed gate on a completed run", () => {
   for (const run_attempt of [1, 2]) {
@@ -70,6 +82,10 @@ test("reruns a queued never-acquired job and failed gate on a completed run", ()
 
 for (const [name, input] of [
   ["real test failure", { ...run, jobs: [queued, realFailure, gate] }],
+  [
+    "null runner name and real test failure",
+    { ...run, jobs: [queuedNullRunner, realFailure, gate] },
+  ],
   [
     "assigned runner",
     { ...run, jobs: [{ ...queued, runner_name: "assigned runner" }, gate] },
