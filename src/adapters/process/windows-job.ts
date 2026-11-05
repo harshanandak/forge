@@ -65,6 +65,7 @@ interface NativeApi {
 
 export interface WindowsJob {
   attach(pid: number): void;
+  members(): readonly number[];
   stop(): Promise<readonly number[]>;
   close(): void;
 }
@@ -465,6 +466,10 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
       } finally {
         api.closeHandle(processHandle);
       }
+    },
+
+    members(): readonly number[] {
+      return processIds(api, currentJob());
     },
 
     stop(): Promise<readonly number[]> {

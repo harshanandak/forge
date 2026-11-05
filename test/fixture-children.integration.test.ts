@@ -1,11 +1,12 @@
 // [integration] Real child owns a descendant holding a fixture file and private pipes.
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FixtureChildren } from "./fixture-children.ts";
+import * as windowsJobs from "../src/adapters/process/windows-job.ts";
 
 test("fixture cleanup waits for its owned child and descendant stream before removal", async () => {
   const root = mkdtempSync(join(tmpdir(), "forge-owned-child-"));
@@ -59,6 +60,92 @@ function alive(pid: number): boolean {
 }
 
 if (process.platform === "win32") {
+  test("fixture cleanup deadline names the live descendant when forced termination stalls", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-stalled-cleanup-"));
+    const owner = new FixtureChildren();
+    const openJob = windowsJobs.openWindowsJob;
+    let job: windowsJobs.WindowsJob | undefined;
+    let finishStop: (() => void) | undefined;
+    const forcedStop = spyOn(windowsJobs, "openWindowsJob").mockImplementation(
+      (options) => {
+        job = openJob(options);
+        return {
+          ...job,
+          stop: () =>
+            new Promise<readonly number[]>((resolve) => {
+              finishStop = () => resolve([]);
+            }),
+        };
+      },
+    );
+    const descendant = `const fs=require('node:fs'); const fd=fs.openSync('held.txt','w'); const watcher=fs.watch('.',()=>{if(fs.existsSync('release')){watcher.close();fs.closeSync(fd);process.exit(0)}}); process.stdout.write(JSON.stringify({pid:process.pid}));`;
+    const source = `process.stdin.once('data',()=>{const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{detached:true,stdio:['ignore',1,2]});c.unref();process.stdin.destroy()});`;
+    let child: ReturnType<FixtureChildren["spawn"]> | undefined;
+    let closed: Promise<unknown> | undefined;
+    let pending: Promise<void> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let descendantPid: number | undefined;
+    let removed = false;
+    try {
+      child = owner.spawn(Bun.which("node")!, ["-e", source], {
+        cwd: root,
+        windowsHide: true,
+      });
+      const exited = once(child, "exit");
+      closed = once(child, "close");
+      const ready = once(child.stdout, "data");
+      child.stdin.end("start");
+      const [data] = (await ready) as unknown[];
+      descendantPid = (JSON.parse(String(data)) as { pid: number }).pid;
+      await exited;
+      expect(alive(descendantPid)).toBe(true);
+      expect(child.stdout.closed).toBe(false);
+      const started = performance.now();
+      pending = owner.cleanup(() => {
+        removed = true;
+      });
+      const bounded = Promise.race([
+        pending,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("cleanup had no internal deadline")),
+            3_000,
+          );
+        }),
+      ]);
+      await expect(bounded).rejects.toThrow("Fixture cleanup deadline");
+      const elapsed = performance.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(1_900);
+      expect(elapsed).toBeLessThan(2_500);
+      expect(finishStop).toBeDefined();
+      expect(alive(descendantPid)).toBe(true);
+      expect(child.stdout.closed).toBe(false);
+      expect(child.stderr.closed).toBe(false);
+      expect(removed).toBe(false);
+      expect(existsSync(join(root, "held.txt"))).toBe(true);
+      await expect(pending).rejects.toThrow(`live members: ${descendantPid}`);
+      await expect(pending).rejects.toThrow("stdout");
+      await expect(pending).rejects.toThrow("stderr");
+    } finally {
+      clearTimeout(timer);
+      forcedStop.mockRestore();
+      if (existsSync(root)) writeFileSync(join(root, "release"), "release");
+      // Closing the kill-on-close job is the fallback if real termination fails.
+      await job?.stop().catch(() => {});
+      finishStop?.();
+      try {
+        job?.close();
+      } finally {
+        if (descendantPid && alive(descendantPid))
+          process.kill(descendantPid, "SIGKILL");
+        if (child && child.exitCode === null) child.kill("SIGKILL");
+        await closed;
+        await pending?.catch(() => {});
+        if (existsSync(root)) rmSync(root, { recursive: true });
+      }
+    }
+  }, 10_000);
+
   test("fixture cleanup ends an orphan holding a file and inherited pipe after its leader exits", async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-orphan-child-"));
     const owner = new FixtureChildren();

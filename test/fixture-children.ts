@@ -20,6 +20,7 @@ interface OwnedChild {
   isClosed: boolean;
   stop: (() => void) | undefined;
   job: WindowsJob | undefined;
+  members: readonly number[];
 }
 
 async function within<T>(
@@ -40,13 +41,27 @@ async function within<T>(
   }
 }
 
-function holder({ child }: OwnedChild): string {
+function holder(entry: OwnedChild): string {
+  const { child } = entry;
+  try {
+    if (entry.job) entry.members = entry.job.members();
+  } catch {
+    // Keep the last snapshot if the job handle cannot be queried during shutdown.
+  }
+  const live = entry.members.filter((pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
   const open = [
     child.exitCode === null && child.signalCode === null ? "process exit" : "",
     child.stdout && !child.stdout.closed ? "stdout" : "",
     child.stderr && !child.stderr.closed ? "stderr" : "",
   ].filter(Boolean);
-  return `PID ${child.pid ?? "unspawned"} (${child.spawnargs[0]}): ${open.join(", ") || "child close"}`;
+  return `PID ${child.pid ?? "unspawned"} (${child.spawnargs[0]})${live.length ? `; live members: ${live.join(", ")}` : ""}: ${open.join(", ") || "child close"}`;
 }
 
 export class FixtureChildren {
@@ -60,6 +75,7 @@ export class FixtureChildren {
       isClosed: false,
       stop,
       job: undefined,
+      members: [],
     };
     this.pending.add(entry);
     void entry.closed.then(() => {
@@ -74,6 +90,7 @@ export class FixtureChildren {
   private async endJob(entry: OwnedChild): Promise<void> {
     if (!entry.job) return;
     try {
+      entry.members = entry.job.members();
       await entry.job.stop();
     } finally {
       entry.job.close();
