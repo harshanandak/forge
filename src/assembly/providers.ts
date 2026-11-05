@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import {
   createProcessPort,
+  processStartTime,
   ProcessSpawnError,
 } from "../adapters/process/index.ts";
 import { createRunnerOutput } from "../adapters/runner-output/index.ts";
@@ -596,6 +597,7 @@ export function createAssemblyProviders(
         refuse("UNAVAILABLE", "Git did not return clone directories");
       active(scope);
       const fileOptions = {
+        processStartTime,
         projectRoot: realpathSync.native(root),
         gitDirectory: realpathSync.native(paths[0]),
         commonDirectory: realpathSync.native(paths[1]),

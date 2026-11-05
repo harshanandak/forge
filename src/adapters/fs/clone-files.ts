@@ -7,6 +7,7 @@ import {
   opendirSync,
   openSync,
   readSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   writeFileSync,
@@ -36,6 +37,7 @@ import {
 
 export type CloneFileArea = "project" | "git" | "common";
 export interface CloneFilesOptions {
+  readonly processStartTime?: (pid: number) => string | undefined;
   readonly projectRoot: string;
   readonly gitDirectory: string;
   readonly commonDirectory: string;
@@ -99,8 +101,26 @@ function failure(code: string, message: string): never {
     retry: code === "INPUT_CONFLICT" ? "reconcile_first" : "never",
   });
 }
+/** Untagged times may depend on locale or timezone and cannot prove PID reuse. */
+function startTimeFormat(value: string | undefined): string | undefined {
+  const match = value?.match(
+    /^(linux-starttime-v1|win32-filetime-v1|darwin-lstart-utc-v1):(.+)$/,
+  );
+  if (!match) return undefined;
+  const format = match[1]!,
+    time = match[2]!;
+  if (format !== "darwin-lstart-utc-v1")
+    return /^[1-9]\d*$/.test(time) ? format : undefined;
+  const instant = Date.parse(time);
+  return Number.isFinite(instant) && new Date(instant).toISOString() === time
+    ? format
+    : undefined;
+}
 /** Owner filenames make dead-owner cleanup generation-specific; unknown locks stay untouched. */
-function recoverableLock(target: string): CloneFileLock {
+function recoverableLock(
+  target: string,
+  startTime?: (pid: number) => string | undefined,
+): CloneFileLock {
   const owner = "owner-" + process.pid + "-" + randomUUID();
   const conflict = () =>
     failure(
@@ -141,6 +161,34 @@ function recoverableLock(target: string): CloneFileLock {
     let dead = false;
     try {
       process.kill(Number(match![1]), 0);
+      const marker = join(target, name!);
+      const info = stat(marker);
+      if (
+        startTime &&
+        info?.isFile() &&
+        !info.isSymbolicLink() &&
+        info.size <= 512n
+      ) {
+        try {
+          const record: unknown = JSON.parse(readFileSync(marker, "utf8"));
+          if (
+            typeof record === "object" &&
+            record !== null &&
+            "startTime" in record &&
+            typeof record.startTime === "string" &&
+            record.startTime !== ""
+          ) {
+            const current = startTime(Number(match![1]));
+            const format = startTimeFormat(record.startTime);
+            dead =
+              format !== undefined &&
+              format === startTimeFormat(current) &&
+              current !== record.startTime;
+          }
+        } catch {
+          // Empty legacy markers and unreadable identities retain PID-only handling.
+        }
+      }
     } catch (error) {
       dead = errorCode(error) === "ESRCH";
     }
@@ -157,7 +205,16 @@ function recoverableLock(target: string): CloneFileLock {
   }
   const identity = stat(target)!;
   try {
-    closeSync(createPrivateFile(join(target, owner), false));
+    const fd = createPrivateFile(join(target, owner), false);
+    try {
+      const created = startTime?.(process.pid);
+      if (created !== undefined) {
+        writeFileSync(fd, JSON.stringify({ startTime: created }));
+        fsyncSync(fd);
+      }
+    } finally {
+      closeSync(fd);
+    }
   } catch (error) {
     const current = stat(target);
     if (current && sameFile(current, identity)) removeEmpty();
@@ -766,7 +823,7 @@ function createCloneFilesAccess(
       try {
         for (const plan of plans) {
           targetFor(plan.area, plan.path, true, true);
-          const lock = recoverableLock(plan.target);
+          const lock = recoverableLock(plan.target, options.processStartTime);
           held.push(lock);
           recoverable.add(lock);
         }
