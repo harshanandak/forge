@@ -3,12 +3,14 @@ import type {
   ForgeError,
   InvocationRequest,
   ResultEnvelope,
+  UpgradeHint,
 } from "../generated/types.ts";
 
 /** Metadata only: discovery must never load an operation's executable code. */
 export interface SurfaceCatalog {
   list(): readonly McpCandidate[];
   diagnose?(op: string): ForgeError | undefined;
+  upgradeHint?(op: string): UpgradeHint | undefined;
   invoke(request: InvocationRequest): Promise<ResultEnvelope>;
 }
 

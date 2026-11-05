@@ -4,6 +4,20 @@ import { BlockCatalog } from "../../core/runtime/catalog.ts";
 import { TrustStore } from "../../core/trust/index.ts";
 import { nodeFileCapture } from "./capture.ts";
 import { nodeRunIsolation } from "./isolation.ts";
+import { fileURLToPath } from "node:url";
+
+/** Derive the repair from the running artifact, never the user's current directory. */
+export function localUpgradeCommand(packageRoot: URL): string {
+  const root = fileURLToPath(packageRoot).replace(/[\\/]$/, "");
+  if (existsSync(join(root, ".git"))) {
+    const quoted =
+      process.platform === "win32"
+        ? `"${root.replaceAll('"', '""')}"`
+        : `'${root.replaceAll("'", "'\\''")}'`;
+    return `cd ${quoted} && bun install --frozen-lockfile && bun run build`;
+  }
+  return "npm install --global forge-workflow@latest";
+}
 
 /** Command hint for the locally installed package; never installs or executes code. */
 export function localForgeCommand(args: readonly string[]): string {

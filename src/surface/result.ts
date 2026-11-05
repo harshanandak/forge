@@ -1,4 +1,32 @@
-import type { FailureEnvelope, ResultEnvelope } from "../generated/types.ts";
+import type {
+  FailureEnvelope,
+  ResultEnvelope,
+  UpgradeHint,
+} from "../generated/types.ts";
+
+function isUpgradeHint(value: unknown): value is UpgradeHint {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("running" in value) ||
+    !("required" in value) ||
+    typeof value.required !== "string" ||
+    !("command" in value) ||
+    typeof value.command !== "string"
+  )
+    return false;
+  const running = value.running;
+  return (
+    typeof running === "object" &&
+    running !== null &&
+    "version" in running &&
+    typeof running.version === "string" &&
+    "commit" in running &&
+    (running.commit === null || typeof running.commit === "string") &&
+    "dirty" in running &&
+    typeof running.dirty === "boolean"
+  );
+}
 
 function displayText(text: string): string {
   return text.replace(
@@ -66,6 +94,14 @@ export function renderText(value: unknown, depth = 0): string {
   const indent = "  ".repeat(depth);
   return Object.entries(value)
     .map(([key, child]) => {
+      if (key === "hint" && isUpgradeHint(child)) {
+        const hint = child;
+        return `${indent}hint: ${displayText(
+          `Running Forge ${hint.running.version} (${hint.running.commit ?? "unbuilt"}${hint.running.dirty ? "+dirty" : ""}); repo needs ${hint.required}; run: ${hint.command}`,
+        )
+          .replaceAll("\n", "\\n")
+          .replaceAll("\t", "\\t")}`;
+      }
       const nested = child !== null && typeof child === "object";
       return `${indent}${displayText(key)}:${nested ? "\n" : " "}${renderText(child, nested ? depth + 1 : 0)}`;
     })

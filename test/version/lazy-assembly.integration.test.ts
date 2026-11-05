@@ -66,12 +66,12 @@ for (const entry of ["bin/forge.ts", "dist/bin/forge.js"]) {
         expect(result.assembly).toEqual([]);
       }
       const identity = run(["--version", "--json"]);
-      expect(JSON.parse(identity.stdout)).toMatchObject({
+      expect(JSON.parse(identity.stdout) as unknown).toMatchObject({
         version,
         commit: entry.startsWith("dist/")
-          ? expect.stringMatching(/^[a-f0-9]{40}$/)
+          ? (expect.stringMatching(/^[a-f0-9]{40}$/) as unknown)
           : null,
-        dirty: expect.any(Boolean),
+        dirty: expect.any(Boolean) as unknown,
       });
       expect(identity.assembly).toEqual([]);
       const help = run(["--help"]);

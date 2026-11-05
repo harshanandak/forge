@@ -61,6 +61,7 @@ import { record } from "../surface/dispatch.ts";
 import { discoveryOperations } from "../generated/core-discovery.ts";
 import { createStateClient } from "./state-client.ts";
 import { version } from "../version.ts";
+import { missingOperationHint, upgradeHint } from "./stale-build.ts";
 import { withCheckRunBudget } from "./check-budget.ts";
 import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
@@ -325,6 +326,9 @@ export async function createAssembly(
         const remaining = all.length - listed.length;
         warnings[ignored.index] = {
           code: "CONFIG_KEY_IGNORED",
+          hint: upgradeHint(
+            `config keys ${listed.join(", ")}; this build ignores them`,
+          ),
           message:
             prefix +
             listed.join(", ") +
@@ -832,6 +836,25 @@ export async function createAssembly(
     };
   }
   const catalog: Assembly["catalog"] = {
+    upgradeHint(op) {
+      const parsed = parseOperationName(op);
+      if (parsed === undefined) return undefined;
+      const builtin = `forge/${parsed.noun}`;
+      if (firstPartyBlocks[builtin] !== undefined) {
+        try {
+          if (
+            Object.hasOwn(
+              callScope().captured({ builtin }).manifest.operations,
+              op,
+            )
+          )
+            return undefined;
+        } catch {
+          return undefined;
+        }
+      }
+      return missingOperationHint(root, op);
+    },
     unavailable: () => snapshot(callScope()).unavailable,
     diagnose(op) {
       if (parseOperationName(op) === undefined) return undefined;

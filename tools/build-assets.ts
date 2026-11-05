@@ -1,6 +1,7 @@
 ﻿import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { writeGenerated } from "./gen/write.ts";
+import { execFileSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 function copyJson(directory: string): void {
@@ -16,3 +17,21 @@ function copyJson(directory: string): void {
 }
 copyJson(join(root, "src"));
 copyJson(join(root, "schemas"));
+const git = (args: string[]): string =>
+  execFileSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 5000,
+    windowsHide: true,
+  }).trim();
+const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+  version: string;
+};
+writeGenerated(
+  join(root, "dist/build.json"),
+  JSON.stringify({
+    version: pkg.version,
+    commit: git(["rev-parse", "HEAD"]),
+    dirty: git(["status", "--porcelain"]).length > 0,
+  }) + "\n",
+);

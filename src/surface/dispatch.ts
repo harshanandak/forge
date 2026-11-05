@@ -192,11 +192,15 @@ async function dispatchRaw(
   ) {
     const error = catalog.diagnose?.(op);
     if (error) return { ok: false, op, status: "FAIL", error, warnings: [] };
-    return failure(
+    const result = failure(
       "UNKNOWN_COMMAND",
       `Unknown operation: ${op}`,
       suggestions(op, catalog, options.caller),
     );
+    const hint = entry === undefined ? catalog.upgradeHint?.(op) : undefined;
+    return hint === undefined
+      ? result
+      : { ...result, error: { ...result.error, hint } };
   }
   try {
     const context =
