@@ -315,7 +315,7 @@
     "forge-loop/SKILL.md",
     "forge issue ready --input '{}'",
     null,
-    ["forge-land/SKILL.md"]
+    ["forge-land/SKILL.md", "forge-cut/SKILL.md"]
   ],
   ["lp.stale", "forge-loop/SKILL.md", "forge issue stale --input '{}'"],
   [
