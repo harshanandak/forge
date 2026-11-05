@@ -73,6 +73,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for memory coverage.",
   "test/integration/agent/route.integration.test.ts":
     "Launches selected Node for route coverage.",
+  "test/integration/fixtures/run.test.ts":
+    "Runs fixture commands through the selected Node leader on Windows.",
   "test/integration/pr-state/pr-state.integration.test.ts":
     "Launches selected Node for pr state coverage.",
   "test/node-fixtures/async-handlers/cleanup.integration.test.ts":
@@ -113,8 +115,12 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for thread helpers coverage.",
   "test/tools/check-admit.integration.test.ts":
     "Launches selected Node for check admit coverage.",
+  "test/tools/ci-windows-time/first-slice.integration.test.ts":
+    "Runs first-slice fixture commands through the selected Node leader on Windows.",
   "test/tools/ci-windows-time/shards.test.ts":
     "Conservatively retains Node command/configuration literals.",
+  "test/tools/lane-close.integration.test.ts":
+    "Imports fixture process ownership and its selected Node launch path.",
   "test/tools/lane-run.integration.test.ts":
     "Launches selected Node for lane run coverage.",
   "test/tools/lane.integration.test.ts":
