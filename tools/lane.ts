@@ -193,14 +193,19 @@ function load(file: string): Lane[] {
   return value as Lane[];
 }
 function active(file: string, root: string): Lane[] {
+  const pathKey = (path: string) => {
+    const native = resolve(path);
+    return process.platform === "win32" ? native.toLowerCase() : native;
+  };
   const registered = new Set(
     run("git", ["worktree", "list", "--porcelain", "-z"], root)
       .split("\0")
       .filter((part) => part.startsWith("worktree "))
-      .map((part) => resolve(part.slice(9))),
+      .map((part) => pathKey(part.slice(9))),
   );
   return load(file).filter(
-    (lane) => existsSync(lane.worktree) && registered.has(lane.worktree),
+    (lane) =>
+      existsSync(lane.worktree) && registered.has(pathKey(lane.worktree)),
   );
 }
 function removeEmpty(lock: string): void {
@@ -780,6 +785,7 @@ async function main(): Promise<number> {
         Atomics.wait(pause, 0, 0, 50);
       }
     }
+    run("git", ["fetch", "origin", "main"], root);
     unlockRegistry = lockLaneRegistry(root, common);
     const lanes = active(registry, root);
     if (lanes.length >= parsed.max)
@@ -788,7 +794,6 @@ async function main(): Promise<number> {
         1,
         "wait for a lane to finish or remove one",
       );
-    run("git", ["fetch", "origin", "main"], root);
     mkdirSync(join(root, ".worktrees"), { recursive: true });
     run(
       "git",

@@ -7,6 +7,7 @@ import {
   opendirSync,
   openSync,
   readSync,
+  readdirSync,
   realpathSync,
   writeFileSync,
   writeSync,
@@ -67,8 +68,11 @@ export interface CloneFilesService {
     maxEntries: number,
     area?: CloneFileArea,
   ): readonly string[];
-  /** Relative lock paths are rooted at common; absolute paths stay inside git/common metadata. */
-  lock(paths: readonly string[]): CloneFileLock;
+  /** Relative paths use common. Recoverable locks use owner-marked directories, never Git lock files. */
+  lock(
+    paths: readonly string[],
+    options?: { readonly recoverDeadOwner?: boolean },
+  ): CloneFileLock;
 }
 export interface CloneFileLock {
   release(): void;
@@ -94,6 +98,72 @@ function failure(code: string, message: string): never {
     message,
     retry: code === "INPUT_CONFLICT" ? "reconcile_first" : "never",
   });
+}
+/** Owner filenames make dead-owner cleanup generation-specific; unknown locks stay untouched. */
+function recoverableLock(target: string): CloneFileLock {
+  const owner = "owner-" + process.pid + "-" + randomUUID();
+  const pending = target + "." + randomUUID();
+  const removeEmpty = (path: string) => {
+    try {
+      removePrivateDirectory(path);
+    } catch (error) {
+      if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(errorCode(error) ?? ""))
+        throw error;
+    }
+  };
+  const release = (path: string, name: string) => {
+    const info = stat(path);
+    if (!info?.isDirectory() || info.isSymbolicLink()) return;
+    try {
+      removeDurable(join(path, name));
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") throw error;
+    }
+    removeEmpty(path);
+  };
+  const existing = stat(target);
+  if (existing?.isDirectory() && !existing.isSymbolicLink()) {
+    const names = readdirSync(target),
+      name = names.length === 1 ? names[0] : undefined;
+    const match = name?.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}$/);
+    if (match) {
+      let dead = false;
+      try {
+        process.kill(Number(match[1]), 0);
+      } catch (error) {
+        dead = errorCode(error) === "ESRCH";
+      }
+      if (dead) release(target, name!);
+    } else if (names.length === 0) removeEmpty(target);
+  }
+  createPrivateDirectory(pending);
+  try {
+    closeSync(createPrivateFile(join(pending, owner), false));
+    try {
+      replaceDurable(pending, target);
+    } catch (error) {
+      if (
+        ["EEXIST", "ENOTEMPTY", "EPERM", "EACCES", "ENOTDIR"].includes(
+          errorCode(error) ?? "",
+        )
+      )
+        failure(
+          "INPUT_CONFLICT",
+          "Recoverable exclusion lock is held; inspect its owner before retrying",
+        );
+      throw error;
+    }
+    const identity = stat(target)!;
+    return {
+      release() {
+        const current = stat(target);
+        if (current && sameFile(current, identity)) release(target, owner);
+      },
+    };
+  } finally {
+    release(pending, owner);
+    removeEmpty(pending);
+  }
 }
 function active(options: CloneFilesOptions): void {
   options.signal.throwIfAborted();
@@ -252,6 +322,7 @@ function createCloneFilesAccess(
     released: boolean;
   }
   const locks = new Set<OwnedLock>();
+  const recoverable = new Set<CloneFileLock>();
   function checkActive(): void {
     if (closed) failure("SERVICE_EXPIRED", "Clone file service has closed");
     active(options);
@@ -620,14 +691,17 @@ function createCloneFilesAccess(
     if (errors.length > 0)
       throw new AggregateError(errors, "Clone lock cleanup failed");
   }
-  function acquire(paths: readonly string[]): CloneFileLock {
+  function acquire(
+    paths: readonly string[],
+    lockOptions?: { readonly recoverDeadOwner?: boolean },
+  ): CloneFileLock {
     checkActive();
     if (!options.write)
       failure(
         "EFFECT_UNDECLARED",
         "Clone lock acquisition requires the declared files:write effect",
       );
-    if (paths.length > 3 || locks.size + paths.length > 3)
+    if (paths.length > 3 || locks.size + recoverable.size + paths.length > 3)
       failure(
         "LIMIT_EXCEEDED",
         "Clone service may hold at most three exclusion locks",
@@ -662,7 +736,12 @@ function createCloneFilesAccess(
           "INPUT_INVALID",
           "Clone exclusion paths must name native .lock files",
         );
-      const target = targetFor(area, local);
+      const target = targetFor(
+        area,
+        local,
+        false,
+        lockOptions?.recoverDeadOwner,
+      );
       const identity =
         process.platform === "win32" ? target.toLowerCase() : target;
       if (seen.has(identity))
@@ -670,6 +749,29 @@ function createCloneFilesAccess(
       seen.add(identity);
       return { area, path: local, target };
     });
+    if (lockOptions?.recoverDeadOwner) {
+      const held: CloneFileLock[] = [];
+      const result = {
+        release() {
+          for (const lock of held) {
+            lock.release();
+            recoverable.delete(lock);
+          }
+        },
+      };
+      try {
+        for (const plan of plans) {
+          targetFor(plan.area, plan.path, true, true);
+          const lock = recoverableLock(plan.target);
+          held.push(lock);
+          recoverable.add(lock);
+        }
+        return result;
+      } catch (error) {
+        result.release();
+        throw error;
+      }
+    }
     const acquired: OwnedLock[] = [];
     try {
       for (const plan of plans) {
@@ -830,6 +932,7 @@ function createCloneFilesAccess(
     close(): void {
       if (closed) return;
       closed = true;
+      for (const lock of recoverable) lock.release();
       releaseAll([...locks]);
     },
     readBytes(path: string, maxBytes: number): Uint8Array | undefined {

@@ -105,7 +105,7 @@ async function withProject(
 
 test("skills.sync writes one linted skill per block noun, deterministically, from CLI and catalog.call", async () => {
   await withProject(async (assembly, root) => {
-    const paths = ["decision", "issue", "memory"].map(
+    const paths = ["decision", "issue", "lane", "memory"].map(
       (noun) => `.agents/skills/${noun}/SKILL.md`,
     );
     const first = { dir: ".agents/skills", written: paths, unchanged: [] };
@@ -163,6 +163,7 @@ test("a fresh assembly loads persisted admission only when syncing skills", asyn
           written: [
             ".agents/skills/decision/SKILL.md",
             ".agents/skills/issue/SKILL.md",
+            ".agents/skills/lane/SKILL.md",
             ".agents/skills/memory/SKILL.md",
           ],
         },
@@ -231,7 +232,10 @@ test("an enabled but unadmitted block gets no skill and none of its text reaches
       expect(sync).toMatchObject({
         ok: true,
         result: {
-          written: [".agents/skills/issue/SKILL.md"],
+          written: [
+            ".agents/skills/issue/SKILL.md",
+            ".agents/skills/lane/SKILL.md",
+          ],
         },
       });
       const text = readFileSync(

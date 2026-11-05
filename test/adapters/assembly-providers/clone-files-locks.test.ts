@@ -221,3 +221,18 @@ test("absolute lock aliases resolve to canonical metadata before confinement, in
   expect(readdirSync(outside)).toEqual([]);
   lease.close();
 });
+
+test("recoverable locks preserve live owners and replacement directory generations", () => {
+  const { files, commonDirectory, lease } = fixture();
+  const path = join(commonDirectory, "coordination.lock");
+  const held = files.lock(["coordination.lock"], { recoverDeadOwner: true });
+  expect(() =>
+    files.lock(["coordination.lock"], { recoverDeadOwner: true }),
+  ).toThrow(/INPUT_CONFLICT/);
+  renameSync(path, path + ".moved");
+  mkdirSync(path);
+  writeFileSync(join(path, "other-owner"), "");
+  held.release();
+  lease.close();
+  expect(readdirSync(path)).toEqual(["other-owner"]);
+});

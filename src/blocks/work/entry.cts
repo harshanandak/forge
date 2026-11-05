@@ -5,6 +5,7 @@ import type {
   ProcessService,
   EnvironmentService,
   FilesService,
+  CryptoService,
 } from "../../assembly/providers.ts";
 import type {
   StateRecord,
@@ -722,11 +723,12 @@ const operations: Operations<WorkOperations> = {
     const bound = services as {
       process?: ProcessService;
       environment?: EnvironmentService;
+      crypto?: CryptoService;
     };
-    if (!bound.process || !bound.environment)
+    if (!bound.process || !bound.environment || !bound.crypto)
       fail(
         "UNAVAILABLE",
-        "Starting a lane requires process and environment services",
+        "Starting a lane requires process, environment and crypto services",
       );
     const windows = bound.environment.platform === "win32";
     const pathKey = (path: string) =>
@@ -792,11 +794,21 @@ const operations: Operations<WorkOperations> = {
         "main");
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(remoteHead))
       fail("INPUT_INVALID", "Invalid lane base");
-    await run(["fetch", "origin", remoteHead]);
-    const base = await run(["rev-parse", "--verify", "FETCH_HEAD^{commit}"]);
+    const baseRef = "refs/forge/lane-base/" + bound.crypto.randomUUID();
+    let base: string;
+    try {
+      await run([
+        "fetch",
+        "origin",
+        "+refs/heads/" + remoteHead + ":" + baseRef,
+      ]);
+      base = await run(["rev-parse", "--verify", baseRef + "^{commit}"]);
+    } finally {
+      await run(["update-ref", "-d", baseRef]);
+    }
     let lock: ReturnType<FilesService["lock"]>;
     try {
-      lock = files.lock([registryLock]);
+      lock = files.lock([registryLock], { recoverDeadOwner: true });
     } catch {
       fail(
         "INPUT_CONFLICT",
@@ -818,14 +830,24 @@ const operations: Operations<WorkOperations> = {
               "",
           };
         });
-      const lanes = saved.lanes.filter((lane) =>
-        trees.some((tree) => pathKey(tree.path) === pathKey(lane.worktree)),
-      );
+      const lanes: Lane[] = [];
+      for (const lane of saved.lanes)
+        if (
+          trees.some((tree) => pathKey(tree.path) === pathKey(lane.worktree)) &&
+          (await run(
+            ["-C", lane.worktree, "rev-parse", "--is-inside-work-tree"],
+            true,
+          )) === "true"
+        )
+          lanes.push(lane);
       const existing = lanes.find((lane) => ids.stored(lane.issue) === issueId);
       const worktree = `${slash(trees[0]!.path)}/.worktrees/${issue.id}`;
       const briefFile = `${slash(files.root)}/${relativeBrief}`;
       if (existing) {
         if (
+          trees.find(
+            (tree) => pathKey(tree.path) === pathKey(existing.worktree),
+          )?.branch !== `refs/heads/${input.branch}` ||
           existing.branch !== input.branch ||
           pathKey(existing.brief) !== pathKey(briefFile)
         )

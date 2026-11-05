@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 
 const bin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 let root: string;
@@ -54,6 +55,29 @@ function cli(args: string[], cwd = repo) {
     ok: boolean;
     result: Record<string, unknown>;
     error?: { code: string; message: string };
+  };
+}
+function helper(args: string[]) {
+  const result = spawnSync(
+    process.execPath,
+    [resolve(import.meta.dirname, "../../../tools/lane.ts"), ...args],
+    {
+      cwd: repo,
+      env: {
+        ...process.env,
+        PATH: join(root, "bin") + delimiter + process.env.PATH,
+        FORGE_DEVICE_ROOT: join(root, "device"),
+        FORGE_SESSION: "lane-acceptance",
+      },
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 20000,
+    },
+  );
+  expect(result.error).toBeUndefined();
+  return JSON.parse(result.stdout) as {
+    verdict: string;
+    lanes: { issue: string }[];
   };
 }
 function call(op: string, input: unknown) {
@@ -101,6 +125,12 @@ beforeAll(() => {
   );
   mkdirSync(join(repo, ".worktrees/briefs"), { recursive: true });
   writeFileSync(join(repo, brief), text);
+  mkdirSync(join(root, "bin"));
+  writeFileSync(
+    join(root, "bin/forge"),
+    `#!/bin/sh\nexec node "${bin.replaceAll("\\", "/")}" "$@"\n`,
+  );
+  chmodSync(join(root, "bin/forge"), 0o755);
 }, 30000);
 afterAll(() => rmSync(root, { recursive: true, force: true }), 30000);
 
@@ -134,6 +164,20 @@ test("lane CLI starts and shows a recorded worktree and deduplicates the issue",
     );
     expect(start(id).ok).toBe(true);
   }
+  expect(helper(["list"]).lanes.map((lane) => lane.issue)).toEqual([id]);
+  expect(
+    helper([
+      "start",
+      issue(),
+      "--branch",
+      "feat/helper",
+      "--brief",
+      join(repo, brief),
+      "--max",
+      "1",
+    ]).verdict,
+  ).toBe("refused");
+  expect(helper(["list"]).lanes.map((lane) => lane.issue)).toEqual([id]);
 }, 30000);
 
 test("lane CLI enforces the active lane cap", () => {
@@ -229,4 +273,133 @@ test("lane CLI preserves and adopts work after registry publication fails", () =
     readFileSync(join(String(adopted.result.worktree), "kept"), "utf8"),
   ).toBe("user work");
   expect(call("lane.show", { id }).result).toMatchObject(adopted.result);
+}, 30000);
+
+test("lane CLI refuses a recorded checkout on a different branch or detached HEAD", () => {
+  configure(5);
+  const id = issue(),
+    lane = start(id);
+  expect(lane.ok, JSON.stringify(lane)).toBe(true);
+  const cwd = String(lane.result.worktree);
+  git(["switch", "--detach"], cwd);
+  expect(start(id).error?.code).toBe("INPUT_CONFLICT");
+  git(["switch", "-c", "feat/other"], cwd);
+  expect(start(id).error?.code).toBe("INPUT_CONFLICT");
+  git(["switch", `feat/${id}`], cwd);
+}, 30000);
+
+test("lane CLI excludes a missing locked checkout from the active cap", () => {
+  const lanes = JSON.parse(
+    readFileSync(join(repo, ".git/forge-lanes.json"), "utf8"),
+  ) as { worktree: string }[];
+  const missing = lanes.at(-1)!.worktree;
+  git(["worktree", "lock", missing]);
+  rmSync(missing, { recursive: true, force: true });
+  expect(git(["worktree", "list", "--porcelain"])).toContain(missing);
+  const result = start(issue());
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+}, 30000);
+
+test("lane fetch uses its own ref despite another fetch replacing FETCH_HEAD", async () => {
+  const globals = globalThis as Record<string, unknown>,
+    previous = globals.fail;
+  globals.fail = (code: string, message: string) => {
+    throw new Error(`${code}: ${message}`);
+  };
+  try {
+    const operations = require("../../../src/blocks/work/entry.cts") as Record<
+      string,
+      (call: unknown) => Promise<{ base: string }>
+    >;
+    const recorded: string[][] = [];
+    let held = false,
+      pinned: string | undefined,
+      checkout: string | undefined;
+    const services = {
+      state: {
+        acquire() {},
+        lease() {},
+        get: () => ({ value: { id: "work-1", status: "open", dependsOn: [] } }),
+      },
+      files: {
+        root: "/project",
+        read: (path: string) =>
+          path === "forge-lanes.json" ? undefined : text,
+        write() {},
+        lock: () => {
+          held = true;
+          return {
+            release: () => {
+              held = false;
+            },
+          };
+        },
+      },
+      environment: { platform: "linux", select: () => ({}) },
+      crypto: { randomUUID: () => "invocation-1" },
+      process: {
+        resolve: () => ({ kind: "resolved", path: "git" }),
+        run: (_git: unknown, args: string[]) => {
+          recorded.push(args);
+          let stdout = "";
+          if (args[0] === "fetch") {
+            expect(held).toBe(false);
+            pinned = args[2]!.split(":")[1];
+          }
+          if (args[0] === "check-ref-format") stdout = "feat/test";
+          if (args[0] === "rev-parse")
+            stdout =
+              args[2] === pinned + "^{commit}"
+                ? "a".repeat(40)
+                : "b".repeat(40);
+          if (args[0] === "worktree" && args[1] === "list")
+            stdout = "worktree /project\0branch refs/heads/main\0\0";
+          if (args[0] === "worktree" && args[1] === "add")
+            checkout = args.at(-1);
+          return Promise.resolve({
+            exitCode: 0,
+            stdout,
+            stderr: "",
+            timedOut: false,
+            truncated: false,
+          });
+        },
+      },
+    };
+    const result = await operations["lane.start"]!({
+      input: { id: "work-1", branch: "feat/test", brief: "brief.md" },
+      config: { lanes: { base: "main" } },
+      services,
+      signal: new AbortController().signal,
+      deadline: Number.MAX_SAFE_INTEGER,
+    });
+    expect(result.base).toBe("a".repeat(40));
+    expect(checkout).toBe(result.base);
+    expect(recorded).toContainEqual(["update-ref", "-d", pinned!]);
+    expect(
+      recorded.some((args) => args.some((arg) => arg.includes("FETCH_HEAD"))),
+    ).toBe(false);
+  } finally {
+    if (previous === undefined) delete globals.fail;
+    else globals.fail = previous;
+  }
+}, 30000);
+
+test("lane CLI recovers a registry lock left by a dead helper owner", () => {
+  configure(6);
+  const source = resolve(
+    import.meta.dirname,
+    "../../../tools/lane-registry.ts",
+  );
+  const crashed = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `const {lockLaneRegistry}=require(${JSON.stringify(source)});lockLaneRegistry(${JSON.stringify(repo)},${JSON.stringify(join(repo, ".git"))});process.exit(0);`,
+    ],
+    { encoding: "utf8", windowsHide: true, timeout: 10000 },
+  );
+  expect(crashed.status, crashed.stderr).toBe(0);
+  const result = start(issue());
+  expect(result.ok, JSON.stringify(result)).toBe(true);
 }, 30000);
