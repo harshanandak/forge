@@ -14,6 +14,8 @@ export interface SchemaProblem {
   readonly received?: string;
   readonly suggestion?: string;
   readonly knownProperties?: readonly string[];
+  /** Failed object alternatives, retained for config compatibility without changing diagnostics. */
+  readonly alternatives?: readonly (readonly SchemaProblem[])[];
 }
 
 /** Closest declared spelling; the schema, rather than a list of special cases, owns the names. */
@@ -508,6 +510,7 @@ export class SchemaRegistry {
       received = detailed ? (JSON.stringify(value) ?? "missing") : "",
       suggestion?: string,
       knownProperties?: readonly string[],
+      alternatives?: readonly (readonly SchemaProblem[])[],
     ): void => {
       problems.push({
         pointer,
@@ -515,6 +518,7 @@ export class SchemaRegistry {
         message,
         ...(suggestion === undefined ? {} : { suggestion }),
         ...(knownProperties === undefined ? {} : { knownProperties }),
+        ...(alternatives === undefined ? {} : { alternatives }),
         ...(detailed
           ? {
               expected,
@@ -724,7 +728,16 @@ export class SchemaRegistry {
     if (Array.isArray(schema.anyOf)) {
       const results = schema.anyOf.map((part) => sub(part, value, at));
       if (!results.some((r) => r.length === 0)) {
-        add("anyOf", "matches none of the allowed alternatives");
+        add(
+          "anyOf",
+          "matches none of the allowed alternatives",
+          at,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          isObject(value) ? results : undefined,
+        );
         problems.push(...closest(results));
       }
     }
@@ -732,7 +745,16 @@ export class SchemaRegistry {
       const results = schema.oneOf.map((part) => sub(part, value, at));
       const matches = results.filter((r) => r.length === 0).length;
       if (matches === 0) {
-        add("oneOf", "matches none of the allowed alternatives");
+        add(
+          "oneOf",
+          "matches none of the allowed alternatives",
+          at,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          isObject(value) ? results : undefined,
+        );
         problems.push(...closest(results));
       } else if (matches > 1) {
         add("oneOf", `matches ${matches} alternatives; exactly one is allowed`);

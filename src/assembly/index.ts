@@ -304,9 +304,33 @@ export async function createAssembly(
           ignoredConfig.set(name, ignored);
         }
         for (const path of paths) ignored.paths.add(path);
+        const all = [...ignored.paths].sort();
+        const prefix = ".forge/config.yaml: unknown properties ";
+        const suffix =
+          " may come from a newer Forge version; upgrade to use them. They are ignored by this version.";
+        const listed: string[] = [];
+        for (const path of all) {
+          if (
+            (
+              prefix +
+              [...listed, path].join(", ") +
+              `, and ${all.length} more` +
+              suffix
+            ).length > 1600
+          )
+            break;
+          listed.push(path);
+        }
+        const remaining = all.length - listed.length;
         warnings[ignored.index] = {
           code: "CONFIG_KEY_IGNORED",
-          message: `.forge/config.yaml: unknown properties ${[...ignored.paths].sort().join(", ")} may come from a newer Forge version; upgrade to use them. They are ignored by this version.`,
+          message:
+            prefix +
+            listed.join(", ") +
+            (remaining
+              ? `${listed.length ? ", " : ""}and ${remaining} more`
+              : "") +
+            suffix,
         };
       },
       warn: (message: string) =>
@@ -449,6 +473,7 @@ export async function createAssembly(
         config,
         block.problems(block.manifest.configSchema, config),
         call.warnUnknownConfig,
+        (value) => block.problems(block.manifest.configSchema!, value),
       );
       const { problems } = checked;
       if (problems.length)
@@ -674,6 +699,7 @@ export async function createAssembly(
             instance.config ?? {},
             block.problems(block.manifest.configSchema, instance.config ?? {}),
             call.warnUnknownConfig,
+            (value) => block.problems(block.manifest.configSchema!, value),
           ).problems.length > 0
         )
           return snapshot(call, true, true);
@@ -886,6 +912,30 @@ export async function createAssembly(
       const derived: DetectionObservation[] = [];
       const deviceMemory = deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived);
+      // Collect once even when a core handler or input refusal never prepares a block.
+      try {
+        const show = call.config.show();
+        const blocks = record(show.effective.blocks);
+        for (const instance of show.instances) {
+          try {
+            const block = call.captured(instance.source);
+            const schema = block.manifest.configSchema;
+            if (schema === undefined) continue;
+            const config = record(blocks?.[instance.name])?.config ?? {};
+            compatibleConfig(
+              instance.name,
+              config,
+              block.problems(schema, config),
+              call.warnUnknownConfig,
+              (value) => block.problems(schema, value),
+            );
+          } catch {
+            // Existing handlers own unavailable-source and invalid-schema refusals.
+          }
+        }
+      } catch {
+        // Preserve existing recovery operations when the project file is unreadable.
+      }
       try {
         const preview = configCandidates.find(
           (entry) => entry.op === request.op && entry.op === "config.show",

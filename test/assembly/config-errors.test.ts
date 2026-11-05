@@ -119,7 +119,7 @@ for (const [name, config, refused] of [
           expect(envelope.ok, JSON.stringify(envelope)).toBe(true);
           expect(envelope.warnings, args.join(" ")).toHaveLength(1);
           expect(envelope.warnings[0]?.message).toContain(
-            `blocks.work.config.${name === "nested newer key" ? "settings." : ""}lanes`,
+            `blocks.work.config.${name === "many newer keys" ? "futureOption0" : name === "nested newer key" ? "settings.lanes" : "lanes"}`,
           );
           expect(envelope.warnings[0]?.message).toContain(
             "newer Forge version",
@@ -235,20 +235,14 @@ test("core config reads and refusals carry one ignored-key warning per block", a
       );
       expect(envelope.ok).toBe(args.length === 3);
       expect(envelope.warnings).toHaveLength(2);
-      expect(envelope.warnings).toEqual(
-        expect.arrayContaining([
-          {
-            code: "CONFIG_KEY_IGNORED",
-            message: expect.stringContaining("blocks.work.config.futureOption"),
-          },
-          {
-            code: "CONFIG_KEY_IGNORED",
-            message: expect.stringContaining(
-              "blocks.check.config.futureOption",
-            ),
-          },
-        ]),
-      );
+      for (const block of ["work", "check"])
+        expect(
+          envelope.warnings.some(
+            ({ code, message }) =>
+              code === "CONFIG_KEY_IGNORED" &&
+              message.includes(`blocks.${block}.config.futureOption`),
+          ),
+        ).toBe(true);
     }
     const { caller, context } = localCall(assembly);
     for (const input of [{ path: "work.futureOption" }, { path: 42 }]) {
@@ -273,9 +267,9 @@ test("core config reads and refusals carry one ignored-key warning per block", a
 });
 
 for (const [name, command, refused] of [
-  ["newer key", { argv: ["node", "--version"], futureOption: true }, false],
-  ["typo", { argv: ["node", "--version"], argvv: ["node"] }, true],
-  ["case typo", { argv: ["node", "--version"], ARGV: ["node"] }, true],
+  ["newer key", { argv: ["tool", "--version"], futureOption: true }, false],
+  ["typo", { argv: ["tool", "--version"], argvv: ["tool"] }, true],
+  ["case typo", { argv: ["tool", "--version"], ARGV: ["tool"] }, true],
   ["wrong type", { argv: 42, futureOption: true }, true],
 ] as const) {
   test(`object command alternative handles ${name}`, async () => {
@@ -321,18 +315,15 @@ for (const [name, command, refused] of [
         if (refused)
           expect(envelope).toMatchObject({ error: { code: "INPUT_INVALID" } });
         else {
-          expect(envelope.warnings).toEqual([
-            {
-              code: "CONFIG_KEY_IGNORED",
-              message: expect.stringContaining(
-                "blocks.check.config.commands.test.futureOption",
-              ),
-            },
-          ]);
+          expect(envelope.warnings).toHaveLength(1);
+          expect(envelope.warnings[0]?.code).toBe("CONFIG_KEY_IGNORED");
+          expect(envelope.warnings[0]?.message).toContain(
+            "blocks.check.config.commands.test.futureOption",
+          );
           if (args[0] === "config")
             expect(envelope.result).toHaveProperty(
               "effective.blocks.check.config.commands.test",
-              { argv: ["node", "--version"] },
+              { argv: ["tool", "--version"] },
             );
         }
       }
