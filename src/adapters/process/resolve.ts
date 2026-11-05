@@ -34,11 +34,16 @@ export const realFileProbe: FileProbe = {
 export function processStartTime(pid: number): string | undefined {
   if (!Number.isSafeInteger(pid) || pid < 1) return undefined;
   try {
-    if (process.platform === "win32") return windowsProcessStartTime(pid);
+    if (process.platform === "win32") {
+      const value = windowsProcessStartTime(pid);
+      return value ? `win32-filetime-v1:${value}` : undefined;
+    }
     if (process.platform === "linux") {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
       const value = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-      return value && /^\d+$/.test(value) ? value : undefined;
+      return value && /^[1-9]\d*$/.test(value)
+        ? `linux-starttime-v1:${value}`
+        : undefined;
     }
     if (process.platform === "darwin") {
       const result = spawnSync(
@@ -49,11 +54,20 @@ export function processStartTime(pid: number): string | undefined {
           windowsHide: true,
           timeout: 1000,
           maxBuffer: 1024,
-          env: { LC_ALL: "C" },
+          env: { LC_ALL: "C", TZ: "UTC0" },
         },
       );
-      return result.status === 0
-        ? result.stdout.trim() || undefined
+      if (result.status !== 0) return undefined;
+      const value = result.stdout.trim();
+      if (
+        !/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) +\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(
+          value,
+        )
+      )
+        return undefined;
+      const instant = Date.parse(value + " UTC");
+      return Number.isFinite(instant)
+        ? `darwin-lstart-utc-v1:${new Date(instant).toISOString()}`
         : undefined;
     }
   } catch {

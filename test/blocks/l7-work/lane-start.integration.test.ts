@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { processStartTime } from "../../../src/adapters/process/index.ts";
 import {
   chmodSync,
   existsSync,
@@ -415,33 +416,31 @@ test("lane CLI recovers a registry lock left by a dead helper owner", () => {
 }, 30000);
 
 function currentStartTime(): string {
-  if (process.platform === "linux") {
-    const stat = readFileSync(`/proc/${process.pid}/stat`, "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]!;
-  }
-  const result = spawnSync(
-    process.platform === "win32" ? "powershell.exe" : "ps",
-    process.platform === "win32"
-      ? [
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          `(Get-Process -Id ${process.pid}).StartTime.ToFileTimeUtc().ToString()`,
-        ]
-      : ["-p", String(process.pid), "-o", "lstart="],
-    {
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 10000,
-      env: { ...process.env, LC_ALL: "C" },
-    },
-  );
-  expect(result.status, result.stderr).toBe(0);
-  expect(result.stdout.trim()).not.toBe("");
-  return result.stdout.trim();
+  const value = processStartTime(process.pid);
+  expect(value).toBeDefined();
+  return value!;
 }
 
-test.each(["matching", "different"])(
+test("registry owner identity stays stable across caller timezones", () => {
+  const previous = process.env.TZ;
+  try {
+    process.env.TZ = "EST5";
+    const first = currentStartTime();
+    process.env.TZ = "JST-9";
+    expect(currentStartTime()).toBe(first);
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}, 30000);
+
+test.each([
+  "matching",
+  "different",
+  "different format",
+  "unparsable",
+  "untagged",
+])(
   "lane CLI checks a live registry owner's %s start time",
   (identity) => {
     configure(30);
@@ -449,17 +448,33 @@ test.each(["matching", "different"])(
     const lock = join(repo, ".git/forge-lanes-registry.lock");
     const marker = `owner-${process.pid}-${randomUUID()}`;
     const startTime = currentStartTime();
+    const separator = startTime.indexOf(":"),
+      format = startTime.slice(0, separator),
+      value = startTime.slice(separator + 1);
+    const different =
+      format === "darwin-lstart-utc-v1"
+        ? `${format}:${new Date(Date.parse(value) - 60000).toISOString()}`
+        : `${format}:${BigInt(value) + 1n}`;
+    const stored =
+      identity === "matching"
+        ? startTime
+        : identity === "different"
+          ? different
+          : identity === "different format"
+            ? "other-format-v1:123"
+            : identity === "untagged"
+              ? value
+              : `${format}:unparsable`;
     mkdirSync(lock);
     writeFileSync(
       join(lock, marker),
       JSON.stringify({
-        startTime:
-          identity === "matching" ? startTime : `different-${startTime}`,
+        startTime: stored,
       }),
     );
     try {
       const result = start(id);
-      if (identity === "matching") {
+      if (identity !== "different") {
         expect(result.error?.code, JSON.stringify(result)).toBe(
           "INPUT_CONFLICT",
         );

@@ -101,6 +101,21 @@ function failure(code: string, message: string): never {
     retry: code === "INPUT_CONFLICT" ? "reconcile_first" : "never",
   });
 }
+/** Untagged times may depend on locale or timezone and cannot prove PID reuse. */
+function startTimeFormat(value: string | undefined): string | undefined {
+  const match = value?.match(
+    /^(linux-starttime-v1|win32-filetime-v1|darwin-lstart-utc-v1):(.+)$/,
+  );
+  if (!match) return undefined;
+  const format = match[1]!,
+    time = match[2]!;
+  if (format !== "darwin-lstart-utc-v1")
+    return /^[1-9]\d*$/.test(time) ? format : undefined;
+  const instant = Date.parse(time);
+  return Number.isFinite(instant) && new Date(instant).toISOString() === time
+    ? format
+    : undefined;
+}
 /** Owner filenames make dead-owner cleanup generation-specific; unknown locks stay untouched. */
 function recoverableLock(
   target: string,
@@ -164,7 +179,11 @@ function recoverableLock(
             record.startTime !== ""
           ) {
             const current = startTime(Number(match![1]));
-            dead = current !== undefined && current !== record.startTime;
+            const format = startTimeFormat(record.startTime);
+            dead =
+              format !== undefined &&
+              format === startTimeFormat(current) &&
+              current !== record.startTime;
           }
         } catch {
           // Empty legacy markers and unreadable identities retain PID-only handling.

@@ -237,52 +237,76 @@ test("recoverable locks preserve live owners and replacement directory generatio
   expect(readdirSync(path)).toEqual(["other-owner"]);
 });
 
-test.each(["matching", "different", "unavailable", "legacy"])(
-  "recoverable locks compare start times conservatively: %s",
-  (kind) => {
-    const { options, commonDirectory, lease } = fixture();
-    const owner = createCloneFilesLease({
-      ...options,
-      processStartTime: () => "original",
-    });
-    const held = owner.service.lock(["identity.lock"], {
-      recoverDeadOwner: true,
-    });
-    const path = join(commonDirectory, "identity.lock");
-    const marker = readdirSync(path)[0]!;
-    expect(JSON.parse(readFileSync(join(path, marker), "utf8"))).toEqual({
-      startTime: "original",
-    });
-    if (kind === "legacy") writeFileSync(join(path, marker), "");
-    const contender = createCloneFilesLease({
-      ...options,
-      processStartTime: () =>
-        kind === "unavailable"
-          ? undefined
+test.each([
+  "matching",
+  "different",
+  "unavailable",
+  "legacy",
+  "different format",
+  "unparsable",
+  "untagged",
+  "unparsable current",
+])("recoverable locks compare start times conservatively: %s", (kind) => {
+  const { options, commonDirectory, lease } = fixture();
+  const owner = createCloneFilesLease({
+    ...options,
+    processStartTime: () => "linux-starttime-v1:100",
+  });
+  const held = owner.service.lock(["identity.lock"], {
+    recoverDeadOwner: true,
+  });
+  const path = join(commonDirectory, "identity.lock");
+  const marker = readdirSync(path)[0]!;
+  expect(JSON.parse(readFileSync(join(path, marker), "utf8"))).toEqual({
+    startTime: "linux-starttime-v1:100",
+  });
+  if (kind === "legacy") writeFileSync(join(path, marker), "");
+  if (
+    kind === "different format" ||
+    kind === "unparsable" ||
+    kind === "untagged"
+  )
+    writeFileSync(
+      join(path, marker),
+      JSON.stringify({
+        startTime:
+          kind === "different format"
+            ? "win32-filetime-v1:100"
+            : kind === "untagged"
+              ? "100"
+              : "linux-starttime-v1:unparsable",
+      }),
+    );
+  const contender = createCloneFilesLease({
+    ...options,
+    processStartTime: () =>
+      kind === "unavailable"
+        ? undefined
+        : kind === "unparsable current"
+          ? "linux-starttime-v1:unparsable"
           : kind === "matching"
-            ? "original"
-            : "replacement",
-    });
-    try {
-      const acquire = () =>
-        contender.service.lock(["identity.lock"], { recoverDeadOwner: true });
-      if (kind === "different") {
-        const replacement = acquire();
-        held.release();
-        expect(readdirSync(path)).not.toEqual([marker]);
-        replacement.release();
-        expect(existsSync(path)).toBe(false);
-      } else {
-        expect(acquire).toThrow(/INPUT_CONFLICT/);
-        expect(readdirSync(path)).toEqual([marker]);
-      }
-    } finally {
-      contender.close();
-      owner.close();
-      lease.close();
+            ? "linux-starttime-v1:100"
+            : "linux-starttime-v1:101",
+  });
+  try {
+    const acquire = () =>
+      contender.service.lock(["identity.lock"], { recoverDeadOwner: true });
+    if (kind === "different") {
+      const replacement = acquire();
+      held.release();
+      expect(readdirSync(path)).not.toEqual([marker]);
+      replacement.release();
+      expect(existsSync(path)).toBe(false);
+    } else {
+      expect(acquire).toThrow(/INPUT_CONFLICT/);
+      expect(readdirSync(path)).toEqual([marker]);
     }
-  },
-);
+  } finally {
+    contender.close();
+    owner.close();
+    lease.close();
+  }
+});
 
 test.each(["file", "empty directory", "unknown marker"])(
   "recoverable locks preserve an unproven owner: %s",
