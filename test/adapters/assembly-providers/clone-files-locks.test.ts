@@ -237,6 +237,53 @@ test("recoverable locks preserve live owners and replacement directory generatio
   expect(readdirSync(path)).toEqual(["other-owner"]);
 });
 
+test.each(["matching", "different", "unavailable", "legacy"])(
+  "recoverable locks compare start times conservatively: %s",
+  (kind) => {
+    const { options, commonDirectory, lease } = fixture();
+    const owner = createCloneFilesLease({
+      ...options,
+      processStartTime: () => "original",
+    });
+    const held = owner.service.lock(["identity.lock"], {
+      recoverDeadOwner: true,
+    });
+    const path = join(commonDirectory, "identity.lock");
+    const marker = readdirSync(path)[0]!;
+    expect(JSON.parse(readFileSync(join(path, marker), "utf8"))).toEqual({
+      startTime: "original",
+    });
+    if (kind === "legacy") writeFileSync(join(path, marker), "");
+    const contender = createCloneFilesLease({
+      ...options,
+      processStartTime: () =>
+        kind === "unavailable"
+          ? undefined
+          : kind === "matching"
+            ? "original"
+            : "replacement",
+    });
+    try {
+      const acquire = () =>
+        contender.service.lock(["identity.lock"], { recoverDeadOwner: true });
+      if (kind === "different") {
+        const replacement = acquire();
+        held.release();
+        expect(readdirSync(path)).not.toEqual([marker]);
+        replacement.release();
+        expect(existsSync(path)).toBe(false);
+      } else {
+        expect(acquire).toThrow(/INPUT_CONFLICT/);
+        expect(readdirSync(path)).toEqual([marker]);
+      }
+    } finally {
+      contender.close();
+      owner.close();
+      lease.close();
+    }
+  },
+);
+
 test.each(["file", "empty directory", "unknown marker"])(
   "recoverable locks preserve an unproven owner: %s",
   (kind) => {

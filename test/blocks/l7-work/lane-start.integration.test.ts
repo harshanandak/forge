@@ -403,6 +403,13 @@ test("lane CLI recovers a registry lock left by a dead helper owner", () => {
     { encoding: "utf8", windowsHide: true, timeout: 10000 },
   );
   expect(crashed.status, crashed.stderr).toBe(0);
+  const lock = join(repo, ".git/forge-lanes-registry.lock");
+  const marker = readdirSync(lock)[0]!;
+  const record = JSON.parse(readFileSync(join(lock, marker), "utf8")) as {
+    startTime?: unknown;
+  };
+  expect(typeof record.startTime).toBe("string");
+  expect(record.startTime).not.toBe("");
   const result = start(issue());
   expect(result.ok, JSON.stringify(result)).toBe(true);
 }, 30000);
@@ -422,7 +429,12 @@ function currentStartTime(): string {
           `(Get-Process -Id ${process.pid}).StartTime.ToFileTimeUtc().ToString()`,
         ]
       : ["-p", String(process.pid), "-o", "lstart="],
-    { encoding: "utf8", windowsHide: true, timeout: 10000 },
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10000,
+      env: { ...process.env, LC_ALL: "C" },
+    },
   );
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout.trim()).not.toBe("");

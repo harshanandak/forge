@@ -1,4 +1,6 @@
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { windowsProcessStartTime } from "./windows-job.ts";
 import type { Unavailable } from "../../generated/types.ts";
 import type { ResolvedExecutable } from "../../ports/process.ts";
 import { envValue } from "./env.ts";
@@ -27,6 +29,38 @@ export const realFileProbe: FileProbe = {
     }
   },
 };
+
+/** Unknown identities preserve the lock; only two observed start times can prove reuse. */
+export function processStartTime(pid: number): string | undefined {
+  if (!Number.isSafeInteger(pid) || pid < 1) return undefined;
+  try {
+    if (process.platform === "win32") return windowsProcessStartTime(pid);
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const value = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+      return value && /^\d+$/.test(value) ? value : undefined;
+    }
+    if (process.platform === "darwin") {
+      const result = spawnSync(
+        "/bin/ps",
+        ["-p", String(pid), "-o", "lstart="],
+        {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 1000,
+          maxBuffer: 1024,
+          env: { LC_ALL: "C" },
+        },
+      );
+      return result.status === 0
+        ? result.stdout.trim() || undefined
+        : undefined;
+    }
+  } catch {
+    // Permission failures and unavailable platform probes never authorize reclamation.
+  }
+  return undefined;
+}
 
 /**
  * Extensions Windows can start. PATHEXT also lists `.VBS`, `.JS` and friends, which CreateProcess
