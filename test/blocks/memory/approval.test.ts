@@ -396,6 +396,39 @@ test("approval schemas accept only bounded owner quotes or agent reasons and und
   ).toEqual([]);
 });
 
+test("forget, adopt and restore also accept a relayed owner reply, and add does not", () => {
+  const relayed = {
+    request: "request-1",
+    quote: "yes",
+    source: { harness: "codex", thread: "chat", message: "m1", link: "l" },
+  };
+  for (const file of [
+    "forget.input.json",
+    "adopt.input.json",
+    "restore.input.json",
+  ]) {
+    const validate = blockSchema("memory", file);
+    const input =
+      file === "restore.input.json"
+        ? { format: "forge.memory.export/1", notes: [] }
+        : { id: "note-1" };
+    expect(validate({ ...input, approval: relayed })).toEqual([]);
+    for (const approval of [
+      { ...relayed, source: { harness: "codex" } },
+      { ...relayed, quote: "" },
+      { ...relayed, by: "owner" },
+      { quote: "yes", source: relayed.source },
+    ])
+      expect(validate({ ...input, approval }).length).toBeGreaterThan(0);
+  }
+  expect(
+    blockSchema(
+      "memory",
+      "add.input.json",
+    )({ text: "remember", approval: relayed }).length,
+  ).toBeGreaterThan(0);
+});
+
 test("undo keeps the current text revision from an ordinary add and edit", async () => {
   const { entry, services } = setup([]);
   await entry["memory.add"]!({

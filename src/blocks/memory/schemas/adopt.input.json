@@ -12,7 +12,11 @@
       "minimum": 1
     },
     "approval": {
-      "$ref": "defs.json#/$defs/Approval"
+      "type": "object",
+      "anyOf": [
+        { "$ref": "defs.json#/$defs/Approval" },
+        { "$ref": "defs.json#/$defs/RelayedApproval" }
+      ]
     }
   },
   "additionalProperties": false,
