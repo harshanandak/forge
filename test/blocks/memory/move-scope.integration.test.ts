@@ -6,6 +6,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { createAssembly as AssemblyFactory } from "../../../src/assembly/index.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
+import { approvalReply } from "../../fixtures/owner-approval.mjs";
 
 test("integration: built CLI scope batches resume until all 100 notes move in isolated stores", async () => {
   const { createAssembly } = (await import(
@@ -63,8 +64,8 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
     // Seed through the same API in one process; measured moves launch the CLI.
     assembly = await createAssembly({ root: project, deviceRoot: device });
     let request = 0;
-    const call = async (op: string, input: object) => {
-      const response = await assembly!.catalog.invoke({
+    const invoke = (op: string, input: object) =>
+      assembly!.catalog.invoke({
         schemaVersion: "forge.invocation/1",
         requestId: `scope-${++request}`,
         op,
@@ -76,6 +77,18 @@ test("integration: built CLI scope batches resume until all 100 notes move in is
           device: { id: device },
         },
       });
+    const call = async (op: string, input: object) => {
+      let response = await invoke(op, input);
+      // The owner's words are relayed: the claim gets a request, the retry carries it.
+      if (!response.ok && response.error.code === "APPROVAL_REQUIRED")
+        response = await invoke(op, {
+          ...input,
+          approval: approvalReply(
+            response,
+            { harness: "fixture", thread: "fixture" },
+            (input as { approval?: { quote?: string } }).approval?.quote,
+          ),
+        });
       if (!response.ok) throw new Error(JSON.stringify(response.error));
       return response.result;
     };

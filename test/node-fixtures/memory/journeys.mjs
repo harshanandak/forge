@@ -1,4 +1,7 @@
-import { withOwnerApproval } from "../../fixtures/owner-approval.mjs";
+import {
+  approvalReply,
+  withOwnerApproval,
+} from "../../fixtures/owner-approval.mjs";
 // Runs under plain Node against the installed package: node journeys.mjs <package dir> [journey].
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -425,9 +428,19 @@ async function fence() {
       );
     }
     const approval = { by: "owner", quote: "Please forget this rule." };
+    // The owner's words are relayed: the bare claim gets a request, the retry carries it.
+    const asked = await server.call("memory_forget", {
+      id: "device/note-1",
+      approval,
+    });
+    assert.equal(asked.error.code, "APPROVAL_REQUIRED");
     assert.equal(
-      (await server.call("memory_forget", { id: "device/note-1", approval }))
-        .result.status,
+      (
+        await server.call("memory_forget", {
+          id: "device/note-1",
+          approval: approvalReply(asked, undefined, approval.quote),
+        })
+      ).result.status,
       "forgotten",
     );
     const forgotten = await server.call("memory_show", { id: "device/note-1" });

@@ -14,6 +14,10 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { done } from "../blocks/memory/lib.ts";
+import {
+  claimsOwner,
+  relayedMemoryInput,
+} from "../fixtures/owner-approval.mjs";
 
 const { createAssembly, localCall } = (await import(
   pathToFileURL(resolve("dist/src/assembly/index.js")).href
@@ -36,6 +40,8 @@ function snapshot(root: string): Record<string, string> {
   const scan = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
+      // Approval requests live in the device trust store; the note state is what must not change.
+      if (entry.name.startsWith("trust.sqlite")) continue;
       if (entry.isDirectory()) scan(path);
       else
         files[path] = createHash("sha256")
@@ -73,7 +79,7 @@ async function fixture(
     { budget: 100 },
     options,
   );
-  const call = async (
+  const once = async (
     op: string,
     input: Record<string, unknown>,
   ): Promise<ResultEnvelope> => {
@@ -106,6 +112,24 @@ async function fixture(
     const envelope = JSON.parse(result.stdout) as ResultEnvelope;
     expect(result.status).toBe(envelope.ok ? 0 : 1);
     return envelope;
+  };
+  // An owner claim is relayed: Forge asks, then the retry carries its request, quote and source.
+  const call = async (
+    op: string,
+    input: Record<string, unknown>,
+  ): Promise<ResultEnvelope> => {
+    const first = await once(op, input);
+    return !first.ok &&
+      first.error.code === "APPROVAL_REQUIRED" &&
+      claimsOwner(op, input)
+      ? once(
+          op,
+          relayedMemoryInput(input as { approval?: unknown }, first, {
+            harness: "fixture",
+            thread: "fixture",
+          }) as Record<string, unknown>,
+        )
+      : first;
   };
   return {
     root,
