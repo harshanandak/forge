@@ -2,15 +2,22 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { selectSourceFiles } from "./source-selection.ts";
 
+// Parallel files overlap on the runner while serial files run alone, so a serial
+// file costs more shard wall time than its own duration. Across 72 Windows job
+// records, wall time fit about 20 s + parallel sum / 2.5 + serial sum.
+export const SERIAL_WEIGHT = 2.5;
+
 // Timings are whole-file milliseconds; unmeasured files get one second.
 export function assignShards(
   files: string[],
   timings: Record<string, number>,
   count: number,
+  serial: ReadonlySet<string> = new Set(),
 ): string[][] {
   const shards = Array.from({ length: count }, () => [] as string[]);
   const loads = Array<number>(count).fill(0);
-  const weight = (file: string) => timings[file] ?? 1000;
+  const weight = (file: string) =>
+    (timings[file] ?? 1000) * (serial.has(file) ? SERIAL_WEIGHT : 1);
   for (const file of files.toSorted(
     (a, b) => weight(b) - weight(a) || a.localeCompare(b),
   )) {
@@ -42,13 +49,21 @@ if (import.meta.main) {
     files,
     options.includes("--node26") ? "26" : "24",
   );
-  const assigned = assignShards(selectedFiles, timings, count)[index - 1]!;
-  console.log(
-    `Source selection: ${selectedFiles.length}/${files.length} files, shard ${shard}`,
-  );
   const { scripts } = JSON.parse(readFileSync("package.json", "utf8")) as {
     scripts: Record<string, string>;
   };
+  // The integration script names its serial files; one assignment serves both suites.
+  const serial = new Set(
+    scripts["test:integration"]!.split(" && ").flatMap(
+      (command) => command.match(/test\/\S+\.test\.ts/g) ?? [],
+    ),
+  );
+  const assigned = assignShards(selectedFiles, timings, count, serial)[
+    index - 1
+  ]!;
+  console.log(
+    `Source selection: ${selectedFiles.length}/${files.length} files, shard ${shard}`,
+  );
   const run = (args: string[]) => {
     const result = spawnSync(process.execPath, args, { stdio: "inherit" });
     if (result.status !== 0) process.exit(result.status ?? 1);

@@ -5,19 +5,19 @@ description: "Use when a PR may be ready to merge, or after it merged."
 
 # forge-land
 
-Orchestrator only. A worker never merges. Merge by: agent.
+Orchestrator only. A worker never merges. Merge by: agent. Read [owner-approval.md](owner-approval.md) on `APPROVAL_REQUIRED`.
 
-## Merge conditions: all of them, read fresh
+## Merge conditions
 
-Preview: `forge check gate --pr <n>`. The merge below must return exit 0, `ok:true` and `result.outcome` MERGED. Keep `result.head` as `<head>` and `result.receipt` as `<id>`.
+Preview: `forge check gate --pr <n>`. Merge requires exit 0, `ok:true` and `result.outcome` MERGED. Keep `result.head` as `<head>` and `result.receipt` as `<id>`.
 
-The gate requires an open, clean PR, a verified current-head PASS receipt covering `receiptChecks`, successful required CI checks, no unresolved threads across every page, and no changed file matching `doorPaths`. It re-reads the head before returning. REFUSED exits 1 with reasons; fix through `forge-review` and rerun the gate.
+The gate requires an open, clean PR, a current-head PASS receipt covering `receiptChecks`, successful required CI, no unresolved threads across every page, and no changed file matching `doorPaths`. It re-reads the head before returning. REFUSED exits 1; fix through `forge-review` and rerun.
 
 A matched door path always refuses: the owner merges that PR by hand. A merge that deploys, publishes or migrates is also a door (publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config): it needs the owner's reply naming that action. Silence, "continue" or "fix all" never counts as approval.
 
 ## Merge, pinned and serial
 
-Merge one PR at a time after combined-code CI, with zero red checks, open threads and open doors.
+Merge serially after combined-code CI, with zero red checks, open threads and open doors.
 
 ```
 forge pr merge <n>
@@ -39,11 +39,11 @@ A refused merge because the head moved means run the gate again. Never merge wit
 
 - Save future-session facts: `forge memory add --input '{"text":"...","level":"device","scope":"<name>","tags":["..."]}'`. Use the lowercase repo name from `gh repo view --json name --jq '.name|ascii_downcase'` as `<name>`.
 - Propose a standing rule: `forge decision propose --input '{"title":"...","text":"..."}'`. On `format_missing`, follow the returned `repair`, then propose again. Only after `proposed`, hand it to a human for `decision.adopt`; adoption makes it binding.
-- A mistake that repeated: fix it with a test or lint first, a skill line second, an AGENTS.md line last.
+- Repeated mistakes: test or lint first, a skill line second, AGENTS.md last.
 
 ## Re-plan
 
-Take the next ready slice (`forge issue ready --input '{}'`), re-slice, re-frame, or mark the epic done and close slices this one superseded.
+Take the next ready slice (`forge issue ready --input '{}'`), re-slice, or finish the epic and close superseded slices.
 
 ## Rollback
 

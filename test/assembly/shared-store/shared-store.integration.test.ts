@@ -1,3 +1,4 @@
+import { relay } from "../../fixtures/owner-approval.ts";
 // [integration] Real git worktrees: every worktree of one repository reads and writes one project store.
 import {
   afterAll,
@@ -137,21 +138,21 @@ async function enableWork(root: string): Promise<void> {
   const { digest } = done(
     await call("block.check", { path: "./blocks/work" }, "human"),
   );
-  done(await call("block.admit", { digest }, "human"));
   done(
-    await call(
-      "config.grant",
-      {
-        digest,
-        effects: [
-          "issue:write",
-          "external:process",
-          "external:network",
-          "environment:read",
-        ],
-      },
-      "human",
-    ),
+    await relay((op, input) => call(op, input, "human"), "block.admit", {
+      digest,
+    }),
+  );
+  done(
+    await relay((op, input) => call(op, input, "human"), "config.grant", {
+      digest,
+      effects: [
+        "issue:write",
+        "external:process",
+        "external:network",
+        "environment:read",
+      ],
+    }),
   );
 }
 
@@ -567,24 +568,24 @@ test("assembled close verifies stored receipts and exposes no write capability",
   const { digest } = done(
     await call("block.check", { path: "./quality" }, "human"),
   );
-  done(await call("block.admit", { digest }, "human"));
   done(
-    await call(
-      "config.grant",
-      {
-        digest,
-        effects: [
-          "proof:write",
-          "check:write",
-          "process:write",
-          "external:process",
-          "external:write",
-          "files:read",
-          "environment:read",
-        ],
-      },
-      "human",
-    ),
+    await relay((op, input) => call(op, input, "human"), "block.admit", {
+      digest,
+    }),
+  );
+  done(
+    await relay((op, input) => call(op, input, "human"), "config.grant", {
+      digest,
+      effects: [
+        "proof:write",
+        "check:write",
+        "process:write",
+        "external:process",
+        "external:write",
+        "files:read",
+        "environment:read",
+      ],
+    }),
   );
   expect(await call("proof.inspect", {})).toMatchObject({
     ok: true,

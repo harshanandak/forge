@@ -1,3 +1,4 @@
+import { withOwnerApproval } from "../../fixtures/owner-approval.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -144,7 +145,8 @@ const context = {
   session: { id: "fixture" },
 };
 let sequence = 0;
-const invoke = (op, input = {}) =>
+const invoke = withOwnerApproval((...args) => invokeRaw(...args));
+const invokeRaw = (op, input = {}) =>
   assembly.catalog.invoke({
     schemaVersion: "forge.invocation/1",
     requestId: `provider-${++sequence}`,

@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../../fixtures/owner-approval.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
@@ -12,7 +13,8 @@ assert.ok(
   "installed CLI must run without Bun on PATH",
 );
 let seq = 0;
-function cli(args, expected = 0) {
+const cli = withCliOwnerApproval(cliRaw);
+function cliRaw(args, expected = 0) {
   const result = spawnSync(process.execPath, [bin, ...args], {
     cwd: root,
     env,

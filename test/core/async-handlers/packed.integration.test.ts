@@ -1,10 +1,10 @@
+import { stageOwnerApprovalFixture } from "../../fixtures/stage-owner-approval.ts";
 import { test, expect } from "bun:test";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   cpSync,
-  copyFileSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -92,7 +92,7 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
       ["test/node-fixtures/async-handlers/deadline.mjs", "deadline.mjs"],
       ["test/integration/fixtures/mutation-proof.mjs", "mutation-proof.mjs"],
     ] as const)
-      copyFileSync(join(root, source), join(privateCopy, target));
+      stageOwnerApprovalFixture(join(root, source), join(privateCopy, target));
     // Run the same state-aware probe tested by the source fixtures, as plain JS
     // inside the installed package where Node cannot strip TypeScript.
     writeFileSync(

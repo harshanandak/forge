@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { Runtime } from "../../../src/core/runtime/index.ts";
 import { invocationDeadline } from "../../../src/core/runtime/deadline.ts";
 import { Catalog, captureBlock } from "../../../src/core/catalog/index.ts";
-import { TrustStore } from "../../../src/core/trust/index.ts";
+import { TrustStore, admit } from "../../fixtures/owner-approval.ts";
 import {
   validateConfigDocument,
   validateOperationDeclaration,
@@ -56,7 +56,7 @@ function fixture(timeoutMs?: number, config?: ConfigDocument) {
     new Map([["sample", block]]),
   );
   const trust = new TrustStore();
-  trust.admit("human", block.digest);
+  admit(trust, block.digest);
   const request: InvocationRequest = {
     schemaVersion: "forge.invocation/1",
     requestId: "deadline",

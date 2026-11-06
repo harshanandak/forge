@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../../fixtures/owner-approval.mjs";
 // A user's journey with the shipped delivery template, against the npm-installed package only:
 // import it by name, render its skills, and run the project's own (npm) test command through check.
 import assert from "node:assert/strict";
@@ -67,7 +68,8 @@ function project(files) {
     });
     assert.equal(git.status, 0, git.stderr);
   }
-  const cli = (args, expected = 0, detect = {}) => {
+  const cli = withCliOwnerApproval((...args) => cliRaw(...args));
+  const cliRaw = (args, expected = 0, detect = {}) => {
     const result = spawnSync(process.execPath, [bin, ...args], {
       cwd: root,
       env: { ...env, ...detect },
