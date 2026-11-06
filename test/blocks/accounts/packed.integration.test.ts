@@ -71,7 +71,8 @@ if (Object.keys(e).some(k => /^(GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRI
 if (a[0] === 'api') {
   const who = /^ghp_fixture_(alice|bob|constructor)_9d3f1c$/.exec(e.GH_TOKEN || '')?.[1];
   const dir = e.GH_CONFIG_DIR && path.resolve(e.GH_CONFIG_DIR);
-  if (!who || e.GH_HOST !== 'github.com' || e.GH_PROMPT_DISABLED !== '1' || !dir || dir === path.resolve(e.HOME, 'gh') || !fs.existsSync(dir) || fs.existsSync(path.join(dir, 'hosts.yml'))) process.exit(7);
+  const why = [!who && 'token=' + e.GH_TOKEN, e.GH_HOST !== 'github.com' && 'host=' + e.GH_HOST, e.GH_PROMPT_DISABLED !== '1' && 'prompt', !dir && 'nodir', dir && dir === path.resolve(e.HOME, 'gh') && 'ambientdir', dir && !fs.existsSync(dir) && 'dirmissing=' + dir, dir && fs.existsSync(path.join(dir, 'hosts.yml')) && 'hosts'].filter(Boolean);
+  if (why.length) { fs.appendFileSync(path.join(__dirname, 'gh.log'), a.join(' ') + ' ' + why.join(',') + ';'); process.exit(7); }
   process.stderr.write('debug ' + e.GH_TOKEN + '\\n');
   const route = a[1];
   let m;
@@ -666,7 +667,10 @@ test("installed accounts: plan picks the only account that can push and use veri
     git(repo, "remote", "set-url", "origin", "https://github.com/org/app.git");
     const plan = cli(repo, "plan");
     expect(plan.ok, JSON.stringify(plan)).toBe(true);
-    expect(plan.result.proposal.login).toBe("bob");
+    expect(
+      plan.result.proposal.login,
+      `${plan.result.ask} ${existsSync(join(bin, "gh.log")) ? readFileSync(join(bin, "gh.log"), "utf8") : ""}`,
+    ).toBe("bob");
     expect(plan.result.reason).toContain("push access");
     const approval = { quote: "yes", source: "t3:fixture/message:push" };
     expect(cli(repo, "use", { login: "bob", approval }).ok).toBe(true);

@@ -222,6 +222,14 @@ export function createProcessService(
   };
 }
 
+function real(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
 /** The first PATH entry outside the project that holds `name`, so a planted executable never runs. */
 function resolveOutside(
   executor: ProcessPort,
@@ -234,7 +242,8 @@ function resolveOutside(
   for (const entry of (env[pathKey] ?? "").split(delimiter)) {
     const directory = entry.trim().replace(/^"(.*)"$/, "$1");
     if (!directory || !isAbsolute(directory)) continue;
-    const from = relative(resolve(root), resolve(directory));
+    // Compare real paths: temp roots such as /var on macOS are symlinks.
+    const from = relative(real(root), real(directory));
     if (
       from === "" ||
       (!from.startsWith(".." + sep) && from !== ".." && !isAbsolute(from))

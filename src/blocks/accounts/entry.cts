@@ -666,7 +666,7 @@ async function contact(
       if (!login || !candidates.some((c) => c.login === login))
         refuse("ACCOUNT_UNKNOWN", "Name a signed-in GitHub account");
       const info = parse<{ id?: number; name?: string | null }>(
-        (await run(gh, ["api", `users/${login}`], false, ghEnv)).text,
+        (await api(login, [`users/${login}`])).text,
         {},
       );
       if (!Number.isSafeInteger(info.id) || !info.id || info.id < 1)
