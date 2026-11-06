@@ -366,6 +366,62 @@ if (a[0] === 'auth' && a[1] === 'status') {
       ok: false,
       error: { code: "ACCOUNT_SHALLOW_HISTORY" },
     });
+    const zeroBase = boundClone("check-zero-base");
+    git(
+      zeroBase,
+      "-c",
+      "user.email=202+bob@users.noreply.github.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "bob on another remote",
+    );
+    git(zeroBase, "update-ref", "refs/remotes/other/topic", "HEAD");
+    expect(cli(zeroBase, "check")).toMatchObject({
+      ok: true,
+      result: { checked: 0 },
+    });
+    expect(
+      cli(zeroBase, "check", { base: "0".repeat(40), tip: "HEAD" }),
+    ).toMatchObject({ ok: false, error: { code: "ACCOUNT_COMMIT_IDENTITY" } });
+    const signed = boundClone("check-show-signature");
+    git(signed, "commit", "--allow-empty", "-m", "carries a signature header");
+    const signedObject = git(signed, "cat-file", "-p", "HEAD").replace(
+      /\n\n/,
+      "\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n abc\n -----END PGP SIGNATURE-----\n\n",
+    );
+    const written = spawnSync(
+      "git",
+      ["hash-object", "-t", "commit", "-w", "--stdin"],
+      { cwd: signed, env, encoding: "utf8", input: signedObject },
+    );
+    expect(written.status, written.stderr).toBe(0);
+    git(signed, "update-ref", "HEAD", written.stdout.trim());
+    git(signed, "config", "log.showSignature", "true");
+    expect(cli(signed, "check")).toMatchObject({
+      ok: true,
+      result: { checked: 1 },
+    });
+    const grafted = boundClone("check-grafts");
+    git(
+      grafted,
+      "-c",
+      "user.email=202+bob@users.noreply.github.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "bob ancestor",
+    );
+    git(grafted, "commit", "--allow-empty", "-m", "alice tip");
+    mkdirSync(join(grafted, ".git/info"), { recursive: true });
+    writeFileSync(
+      join(grafted, ".git/info/grafts"),
+      git(grafted, "rev-parse", "HEAD") + "\n",
+    );
+    expect(cli(grafted, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_GRAFTED_HISTORY" },
+    });
     const unborn = join(root, "check-unborn");
     mkdirSync(unborn);
     git(unborn, "init", "-b", "main");

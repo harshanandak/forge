@@ -25,6 +25,7 @@ Interrupted writes and concurrent use refuse; inspect the private lock before re
 one of the bound account's `commitEmails`, and names each wrong commit, field and email. Pass `--input '{"base":"<sha>","tip":"<sha>"}'`
 for an exact range (a pre-push hook passes the remote and local sha); with no input it checks every commit reachable from HEAD and
 not from a remote-tracking ref. More than `maxCommits` (config, default 500) commits fails closed.
+An all-zero `base` means a new branch and checks the tip's full history. Shallow history (`ACCOUNT_SHALLOW_HISTORY`) and a non-empty `info/grafts` file (`ACCOUNT_GRAFTED_HISTORY`) are refused, because they can hide commits.
 An unbound repo returns `ACCOUNT_UNBOUND`, a missing or changed include `ACCOUNT_INTEGRITY`, and a declined repo passes with a note.
 The check runs Git only, with the same pinned environment, and never calls gh.
 S1 verifies identity at bind time and reports unpushed email hazards in the ask. Deliberately wrong reply relay is outside S1 (forge-886).

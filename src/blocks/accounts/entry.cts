@@ -307,6 +307,11 @@ async function contact(
     const limit = settings?.maxCommits ?? MAX_COMMITS;
     if (!Number.isSafeInteger(limit) || limit < 1)
       refuse("INPUT_INVALID", "maxCommits must be a positive integer");
+    if (s.files.read("info/grafts", LIMIT, "common"))
+      refuse(
+        "ACCOUNT_GRAFTED_HISTORY",
+        "Git grafts can hide commits from the check; remove the info/grafts file in the common git directory and retry",
+      );
     const resolve = async (name: string) => {
       if (!REF.test(name)) refuse("INPUT_INVALID", `Invalid revision ${name}`);
       const out = await g(
@@ -323,17 +328,18 @@ async function contact(
         "Shallow history hides commits from the check; run git fetch --unshallow and retry",
       );
     const tip = await resolve(input.tip ?? "HEAD");
-    const base =
-      input.base && !/^0+$/.test(input.base) ? await resolve(input.base) : "";
+    // An explicit all-zero base is a new-branch push: check the tip's full history.
+    const newBranch = Boolean(input.base && /^0+$/.test(input.base));
+    const base = input.base && !newBranch ? await resolve(input.base) : "";
     const rows = (
       await g([
         "--no-replace-objects",
         "log",
+        "--no-show-signature",
         `--max-count=${limit + 1}`,
         "--format=%H%x00%ae%x00%ce",
         tip,
-        "--not",
-        ...(base ? [base] : ["--remotes"]),
+        ...(newBranch ? [] : ["--not", ...(base ? [base] : ["--remotes"])]),
       ])
     ).text
       .split(/\r?\n/)
