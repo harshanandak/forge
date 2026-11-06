@@ -44,10 +44,13 @@ interface Applied {
 interface Input {
   login?: string;
   approval?: { quote: string; source: string };
+  base?: string;
+  tip?: string;
 }
 interface Call {
   input: Input;
   services: Services;
+  config?: { maxCommits?: number };
 }
 interface ApprovalRecord {
   id?: string;
@@ -57,6 +60,8 @@ interface ApprovalRecord {
   approval?: { quote?: string; source?: string };
 }
 const LIMIT = 1048576,
+  MAX_COMMITS = 500,
+  REF = /^[A-Za-z0-9_][A-Za-z0-9._/@{}^~-]{0,255}$/,
   OWNED = "forge/accounts.gitconfig",
   MARK = "# forge accounts owned include";
 function refuse(code: string, message: string): never {
@@ -88,8 +93,8 @@ function parseObject<T extends object>(
   return value as T;
 }
 async function contact(
-  { input, services: s }: Call,
-  action: "plan" | "use" | "decline",
+  { input, services: s, config: settings }: Call,
+  action: "plan" | "use" | "decline" | "check",
 ) {
   if (
     (action === "use" || action === "decline") &&
@@ -168,7 +173,13 @@ async function contact(
   const accounts = parseObject<Record<string, Account>>(accountText, {});
   const binding = Object.hasOwn(bindings, repo) ? bindings[repo] : undefined;
   if (binding?.declined && action !== "use" && action !== "decline")
-    return { repo, declined: true };
+    return action === "check"
+      ? {
+          repo,
+          declined: true,
+          note: "The owner declined account management for this repo; no commit identity check ran",
+        }
+      : { repo, declined: true };
   const applied = parse<Applied | null>(
     s.files.read("forge/accounts.applied.json", LIMIT, "common"),
     null,
@@ -271,6 +282,91 @@ async function contact(
         applied.includeHash !== s.crypto.sha256(owned!))
     )
       integrity("Owned Git include or its fingerprint changed");
+  }
+  const includeFor = (account: Account) => ({
+    content: `# forge accounts ${hash(account)}\n[user]\n\tname = ${JSON.stringify(account.commitName)}\n\temail = ${JSON.stringify(account.commitEmails[0])}\n\tuseConfigOnly = true\n`,
+    include: `${MARK}\n[include]\n\tpath = "forge/accounts.gitconfig"\n# end forge accounts owned include\n`,
+  });
+  const validateInclude = (account: Account) => {
+    const expected = includeFor(account);
+    if (
+      !applied ||
+      owned !== expected.content ||
+      !config.includes(expected.include) ||
+      applied.includeHash !== s.crypto.sha256(expected.content)
+    )
+      integrity("Owned Git include was changed or is missing");
+  };
+  if (action === "check") {
+    if (!selected || !binding)
+      return refuse(
+        "ACCOUNT_UNBOUND",
+        "No approved GitHub account for this repo; run forge accounts plan --json and relay result.ask",
+      );
+    validateInclude(selected);
+    const limit = settings?.maxCommits ?? MAX_COMMITS;
+    if (!Number.isSafeInteger(limit) || limit < 1)
+      refuse("INPUT_INVALID", "maxCommits must be a positive integer");
+    if (s.files.read("info/grafts", LIMIT, "common"))
+      refuse(
+        "ACCOUNT_GRAFTED_HISTORY",
+        "Git grafts can hide commits from the check; remove the info/grafts file in the common git directory and retry",
+      );
+    const resolve = async (name: string) => {
+      if (!REF.test(name)) refuse("INPUT_INVALID", `Invalid revision ${name}`);
+      const out = await g(
+        ["rev-parse", "--verify", "--quiet", `${name}^{commit}`],
+        true,
+      );
+      if (!out.ok || !out.text)
+        refuse("INPUT_INVALID", `Unknown revision ${name}`);
+      return out.text;
+    };
+    if ((await g(["rev-parse", "--is-shallow-repository"])).text !== "false")
+      refuse(
+        "ACCOUNT_SHALLOW_HISTORY",
+        "Shallow history hides commits from the check; run git fetch --unshallow and retry",
+      );
+    const tip = await resolve(input.tip ?? "HEAD");
+    // An explicit all-zero base is a new-branch push: check the tip's full history.
+    const newBranch = Boolean(input.base && /^0+$/.test(input.base));
+    const base = input.base && !newBranch ? await resolve(input.base) : "";
+    const rows = (
+      await g([
+        "--no-replace-objects",
+        "log",
+        "--no-show-signature",
+        `--max-count=${limit + 1}`,
+        "--format=%H%x00%ae%x00%ce",
+        tip,
+        ...(newBranch ? [] : ["--not", ...(base ? [base] : ["--remotes"])]),
+      ])
+    ).text
+      .split(/\r?\n/)
+      .filter(Boolean);
+    if (rows.length > limit)
+      refuse(
+        "ACCOUNT_RANGE_TOO_LARGE",
+        `More than ${limit} commits to check; push a smaller range or raise maxCommits`,
+      );
+    const allowed = selected.commitEmails.map((e) => e.toLowerCase());
+    const wrong = rows.flatMap((line) => {
+      const [commit, author, committer] = line.split("\0");
+      return (
+        [
+          ["author", author],
+          ["committer", committer],
+        ] as const
+      )
+        .filter(([, e]) => !allowed.includes((e ?? "").toLowerCase()))
+        .map(([field, e]) => `${commit} ${field}=${e}`);
+    });
+    if (wrong.length)
+      refuse(
+        "ACCOUNT_COMMIT_IDENTITY",
+        `Push refused: ${wrong.length} commit field(s) do not use GitHub ${selected.login}'s email (${selected.commitEmails.join(", ")}): ${wrong.slice(0, 20).join("; ")}. Rewrite those commits with the bound identity, then check again.`,
+      );
+    return { repo, login: selected.login, checked: rows.length };
   }
   const pin = ghPin(selected?.gh);
   const gh: ResolvedExecutable = { kind: "resolved", path: pin.path };
@@ -404,12 +500,9 @@ async function contact(
   }
   function apply(account: Account, approved: Binding) {
     const fingerprint = hash(account);
-    const content = `# forge accounts ${fingerprint}\n[user]\n\tname = ${JSON.stringify(account.commitName)}\n\temail = ${JSON.stringify(account.commitEmails[0])}\n\tuseConfigOnly = true\n`;
-    const include = `${MARK}\n[include]\n\tpath = "forge/accounts.gitconfig"\n# end forge accounts owned include\n`;
-    if (applied) {
-      if (!config.includes(include) || owned !== content)
-        integrity("Owned Git include was changed");
-    } else {
+    const { content, include } = includeFor(account);
+    if (applied) validateInclude(account);
+    else {
       const lease = s.files.lock(["forge/accounts.apply.lock"]);
       try {
         s.files.write(OWNED, content, { area: "common", expected: null });
@@ -573,4 +666,5 @@ module.exports = {
   "accounts.plan": (call: Call) => contact(call, "plan"),
   "accounts.use": (call: Call) => contact(call, "use"),
   "accounts.decline": (call: Call) => contact(call, "decline"),
+  "accounts.check": (call: Call) => contact(call, "check"),
 };

@@ -29,6 +29,8 @@ blocks:
   accounts:
     source:
       builtin: forge/accounts
+    config:
+      maxCommits: 500
   agent:
     source:
       builtin: forge/agent

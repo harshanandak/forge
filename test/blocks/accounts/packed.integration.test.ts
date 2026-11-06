@@ -235,6 +235,216 @@ if (a[0] === 'auth' && a[1] === 'status') {
     expect(
       cli(second, "use", { login: "alice", approval }).result.appliedFrom,
     ).toBe(used.result.appliedFrom);
+    // forge-228: accounts check refuses a push range with another account's email.
+    const guarded = clone("guarded");
+    git(
+      guarded,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/alice/guarded.git",
+    );
+    expect(cli(guarded, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_UNBOUND" },
+    });
+    expect(cli(guarded, "use", { login: "alice", approval }).ok).toBe(true);
+    git(
+      guarded,
+      "-c",
+      "user.email=202+bob@users.noreply.github.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "bob author",
+    );
+    const bobCommit = git(guarded, "rev-parse", "HEAD");
+    const authorRefused = cli(guarded, "check");
+    expect(authorRefused.ok).toBe(false);
+    expect(authorRefused.error.code).toBe("ACCOUNT_COMMIT_IDENTITY");
+    for (const part of [
+      bobCommit,
+      "author",
+      "202+bob@users.noreply.github.com",
+      "alice",
+    ])
+      expect(authorRefused.error.message).toContain(part);
+    git(
+      guarded,
+      "commit",
+      "--amend",
+      "--allow-empty",
+      "--reset-author",
+      "-C",
+      "HEAD",
+    );
+    expect(git(guarded, "log", "-1", "--format=%ae")).toBe(
+      "101+alice@users.noreply.github.com",
+    );
+    expect(cli(guarded, "check")).toMatchObject({ ok: true });
+    expect(cli(guarded, "check", { base: "origin/main", tip: "HEAD" }).ok).toBe(
+      true,
+    );
+    const committerOut = run(
+      "git",
+      ["commit", "--allow-empty", "-m", "bob committer"],
+      guarded,
+      { GIT_COMMITTER_EMAIL: "202+bob@users.noreply.github.com" },
+    );
+    expect(committerOut.status, committerOut.stderr).toBe(0);
+    const committerCommit = git(guarded, "rev-parse", "HEAD");
+    const committerRefused = cli(guarded, "check");
+    expect(committerRefused.ok).toBe(false);
+    expect(committerRefused.error.code).toBe("ACCOUNT_COMMIT_IDENTITY");
+    expect(committerRefused.error.message).toContain(committerCommit);
+    expect(committerRefused.error.message).toContain(
+      "202+bob@users.noreply.github.com",
+    );
+    expect(committerRefused.error.message).toContain("committer");
+    expect(committerRefused.error.message).not.toContain("author=");
+    expect(
+      cli(guarded, "check", { base: committerCommit, tip: "HEAD" }).ok,
+    ).toBe(true);
+    // A second clone of the same remote inherits the approval and passes.
+    git(second, "commit", "--allow-empty", "-m", "second clone work");
+    expect(cli(second, "check")).toMatchObject({
+      ok: true,
+      result: { login: "alice" },
+    });
+    // Check fails closed whenever it cannot examine every commit or trust the include.
+    function boundClone(name: string) {
+      const path = clone(name);
+      git(
+        path,
+        "remote",
+        "set-url",
+        "origin",
+        `https://github.com/alice/${name}.git`,
+      );
+      expect(cli(path, "use", { login: "alice", approval }).ok).toBe(true);
+      return path;
+    }
+    const missingInclude = boundClone("check-missing-include");
+    rmSync(join(missingInclude, ".git/forge/accounts.gitconfig"));
+    expect(cli(missingInclude, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_INTEGRITY" },
+    });
+    const changedInclude = boundClone("check-changed-include");
+    writeFileSync(
+      join(changedInclude, ".git/forge/accounts.gitconfig"),
+      "[user]\nemail=changed@example.test\n",
+    );
+    expect(cli(changedInclude, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_INTEGRITY" },
+    });
+    const redirected = boundClone("check-redirected-include");
+    const redirectedConfig = join(redirected, ".git/config");
+    const configText = readFileSync(redirectedConfig, "utf8");
+    expect(configText).toContain('path = "forge/accounts.gitconfig"');
+    writeFileSync(
+      redirectedConfig,
+      configText.replace(
+        'path = "forge/accounts.gitconfig"',
+        'path = "elsewhere.gitconfig"',
+      ),
+    );
+    expect(cli(redirected, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_INTEGRITY" },
+    });
+    const shallow = boundClone("check-shallow");
+    git(shallow, "commit", "--allow-empty", "-m", "below the boundary");
+    git(shallow, "commit", "--allow-empty", "-m", "above the boundary");
+    writeFileSync(
+      join(shallow, ".git/shallow"),
+      git(shallow, "rev-parse", "HEAD") + "\n",
+    );
+    expect(git(shallow, "rev-parse", "--is-shallow-repository")).toBe("true");
+    expect(cli(shallow, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_SHALLOW_HISTORY" },
+    });
+    const zeroBase = boundClone("check-zero-base");
+    git(
+      zeroBase,
+      "-c",
+      "user.email=202+bob@users.noreply.github.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "bob on another remote",
+    );
+    git(zeroBase, "update-ref", "refs/remotes/other/topic", "HEAD");
+    expect(cli(zeroBase, "check")).toMatchObject({
+      ok: true,
+      result: { checked: 0 },
+    });
+    expect(
+      cli(zeroBase, "check", { base: "0".repeat(40), tip: "HEAD" }),
+    ).toMatchObject({ ok: false, error: { code: "ACCOUNT_COMMIT_IDENTITY" } });
+    const signed = boundClone("check-show-signature");
+    git(signed, "commit", "--allow-empty", "-m", "carries a signature header");
+    const signedObject = git(signed, "cat-file", "-p", "HEAD").replace(
+      /\n\n/,
+      "\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n abc\n -----END PGP SIGNATURE-----\n\n",
+    );
+    const written = spawnSync(
+      "git",
+      ["hash-object", "-t", "commit", "-w", "--stdin"],
+      { cwd: signed, env, encoding: "utf8", input: signedObject },
+    );
+    expect(written.status, written.stderr).toBe(0);
+    git(signed, "update-ref", "HEAD", written.stdout.trim());
+    git(signed, "config", "log.showSignature", "true");
+    expect(cli(signed, "check")).toMatchObject({
+      ok: true,
+      result: { checked: 1 },
+    });
+    const grafted = boundClone("check-grafts");
+    git(
+      grafted,
+      "-c",
+      "user.email=202+bob@users.noreply.github.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "bob ancestor",
+    );
+    git(grafted, "commit", "--allow-empty", "-m", "alice tip");
+    mkdirSync(join(grafted, ".git/info"), { recursive: true });
+    writeFileSync(
+      join(grafted, ".git/info/grafts"),
+      git(grafted, "rev-parse", "HEAD") + "\n",
+    );
+    expect(cli(grafted, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_GRAFTED_HISTORY" },
+    });
+    const unborn = join(root, "check-unborn");
+    mkdirSync(unborn);
+    git(unborn, "init", "-b", "main");
+    git(
+      unborn,
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/alice/check-unborn.git",
+    );
+    mkdirSync(join(unborn, ".forge"));
+    writeFileSync(
+      join(unborn, ".forge/config.yaml"),
+      JSON.stringify({
+        schemaVersion: "forge.config/1",
+        blocks: { accounts: { source: { builtin: "forge/accounts" } } },
+      }),
+    );
+    expect(cli(unborn, "use", { login: "alice", approval }).ok).toBe(true);
+    expect(cli(unborn, "check")).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_INVALID" },
+    });
     writeFileSync(join(bin, "renamed"), "");
     const renamed = clone("renamed");
     git(
