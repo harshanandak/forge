@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { resolve } from "node:path";
 
+setDefaultTimeout(30_000);
 type Action = {
   lane: string;
   step: string;

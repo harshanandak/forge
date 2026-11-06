@@ -47,6 +47,10 @@ type WorkConfig = {
     readonly max?: number;
     readonly base?: string;
     readonly discardIgnored?: readonly string[];
+    readonly autopilot?: {
+      readonly receiptChecks?: readonly string[];
+      readonly rebuild?: { readonly argv: readonly string[] };
+    };
   };
   readonly labelOrder?: readonly string[];
   readonly idPrefix?: string;
@@ -110,7 +114,26 @@ type CloseLaneInput = ItemRef & {
   keepOpen?: boolean;
   discardIgnored?: boolean;
 };
+type TailInput = ItemRef & { pr?: number; head?: string };
+type TailRecordInput = ItemRef & { action: number; result: string };
+type TailAction = {
+  lane: string;
+  step: string;
+  n: number;
+  kind: "forge" | "run" | "harness" | "wait" | "pause" | "done";
+  why: string;
+  expect: string;
+  budget: { actions: number; records: number };
+  argv?: string[];
+  ask?: string;
+  raw?: string;
+};
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "lane.next": readonly [TailInput, TailAction];
+  readonly "lane.record": readonly [
+    TailRecordInput,
+    { lane: string; step: string; n: number; recorded: true },
+  ];
   readonly "lane.start": readonly [LaneInput, LaneOutput];
   readonly "lane.show": readonly [ItemRef, LaneOutput];
   readonly "lane.close": readonly [
@@ -763,7 +786,540 @@ function briefPath(
     ? given.slice(root.length + 1)
     : given;
 }
+/*
+ * Lane autopilot, post-merge tail (forge-885 S1). A block runs as one source file with no require,
+ * so this lives here rather than in its own module. `lane.next` rebuilds its view from primary
+ * facts (GitHub, the lane registry, receipts, issues) plus the journal at `autopilot:<id>`; it
+ * never trusts the journal for a gate. The journal only remembers what Forge cannot read itself.
+ */
+type ActionStep = "receipt" | "close" | "issues" | "rebuild" | "unwatch";
+type Journal = {
+  id: string;
+  pr: number;
+  url: string;
+  head: string;
+  mergeCommit: string;
+  branch: string;
+  named: string[];
+  step: ActionStep | "done";
+  action?: { n: number; step: ActionStep; target?: string };
+  receipt?: string;
+  recorded: {
+    rebuild?: { exitCode: number };
+    unwatch?: { done: true };
+  };
+  counters: { actions: number; records: number };
+};
+type TailPull = {
+  state: "OPEN" | "CLOSED" | "MERGED";
+  headRefOid: string;
+  headRefName: string;
+  mergeCommit: string | null;
+  url: string;
+};
+const isCommit = (value: unknown): value is string =>
+  typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
+const journalKey = (id: string): string => `autopilot:${id}`;
+/** Append-only history; a repeat of the newest event is not written again. */
+function emit(
+  state: LeaseStateClient,
+  id: string,
+  type: string,
+  detail: unknown,
+): void {
+  const prefix = `autopilot-event:${id}:`;
+  const all = appended(state, prefix);
+  const last = all.at(-1)?.value as
+    { type?: string; detail?: unknown } | undefined;
+  if (last?.type === type && canonical(last.detail) === canonical(detail))
+    return;
+  persist(
+    state,
+    `${prefix}${all.length + 1}`,
+    { id, type, at: new Date(state.now()).toISOString(), detail },
+    0,
+  );
+}
+async function readPull(
+  call: { signal: AbortSignal; deadline: number },
+  bound: { process?: ProcessService; environment?: EnvironmentService },
+  cwd: string,
+  pr: number,
+): Promise<TailPull | string> {
+  if (!bound.process || !bound.environment)
+    fail("UNAVAILABLE", "Lane next needs process and environment services");
+  const env = bound.environment.select([
+    "PATH",
+    "PATHEXT",
+    "SystemRoot",
+    "windir",
+    "ComSpec",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "GH_TOKEN",
+    "GH_HOST",
+    "GH_ENTERPRISE_TOKEN",
+  ]);
+  const gh = bound.process.resolve("gh", env);
+  if (gh.kind !== "resolved")
+    fail("UNAVAILABLE", "Install gh and put it on PATH");
+  const remaining = call.deadline - Date.now();
+  if (remaining <= 0) fail("INVOCATION_TIMEOUT", "Lane next deadline expired");
+  const result = await bound.process.run(
+    gh,
+    [
+      "pr",
+      "view",
+      String(pr),
+      "--json",
+      "state,headRefName,headRefOid,mergeCommit,url",
+    ],
+    {
+      cwd,
+      env,
+      signal: call.signal,
+      timeoutMs: Math.min(20000, remaining),
+      maxOutputBytes: 65536,
+    },
+  );
+  if (result.exitCode !== 0 || result.timedOut || result.truncated)
+    fail("UNAVAILABLE", "Could not read the PR from GitHub; retry");
+  let value: unknown;
+  try {
+    value = JSON.parse(result.stdout);
+  } catch {
+    return result.stdout.slice(0, 500);
+  }
+  const row = value as Record<string, unknown> | null;
+  const merge = row?.mergeCommit as { oid?: unknown } | null | undefined;
+  if (
+    typeof row !== "object" ||
+    row === null ||
+    !["OPEN", "CLOSED", "MERGED"].includes(row.state as string) ||
+    typeof row.headRefName !== "string" ||
+    !isCommit(row.headRefOid) ||
+    typeof row.url !== "string" ||
+    !(merge === null || merge === undefined || isCommit(merge.oid))
+  )
+    return result.stdout.slice(0, 500);
+  return {
+    state: row.state as TailPull["state"],
+    headRefOid: row.headRefOid,
+    headRefName: row.headRefName,
+    mergeCommit: merge?.oid === undefined ? null : (merge.oid as string),
+    url: row.url,
+  };
+}
+async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
+  const { input, services, config } = call;
+  const state = client(services),
+    ids = idsFor(state, config),
+    id = ids.stored(input.id);
+  const issue = item(state, get(state, id, input.id), ids);
+  const files = laneFiles(services);
+  const bound = services as {
+    process?: ProcessService;
+    environment?: EnvironmentService;
+    receipts?: ReceiptsService;
+  };
+  const settings = (config as WorkConfig | undefined)?.lanes?.autopilot;
+  const record = state.get(journalKey(id));
+  const saved = record?.value as Journal | undefined;
+  const budget = () => ({
+    actions: saved?.counters.actions ?? 0,
+    records: saved?.counters.records ?? 0,
+  });
+  const pause = (why: string, ask: string, raw: unknown): TailAction => {
+    const quoted = typeof raw === "string" ? raw : JSON.stringify(raw);
+    emit(state, id, "pause", { why, raw: quoted });
+    return {
+      lane: issue.id,
+      step: saved?.step ?? "receipt",
+      n: saved?.action?.n ?? 0,
+      kind: "pause",
+      why,
+      expect: "an owner reply; Forge guesses nothing",
+      budget: budget(),
+      ask,
+      raw: quoted,
+    };
+  };
+  const links = appended(state, `link:${id}:`)
+    .map((row) => row.value as LinkInput)
+    .filter((link) => link.relation === "delivers");
+  const linked = Number(
+    /\/pull\/(\d+)\/?$/.exec(links.at(-1)?.url ?? "")?.[1] ?? 0,
+  );
+  if (saved && input.pr !== undefined && input.pr !== saved.pr)
+    return pause(
+      `Journal is for PR #${saved.pr} but PR #${input.pr} was given`,
+      "Which PR landed this lane? Forge keeps the journaled one until you say otherwise.",
+      { journal: saved.pr, given: input.pr },
+    );
+  const pr = saved?.pr ?? input.pr ?? linked;
+  if (!pr)
+    return pause(
+      `${issue.id} has no delivers link and no --pr was given`,
+      "Which PR landed this lane? Run lane next again with --pr <n>.",
+      { links: links.length },
+    );
+  const pull = await readPull(call, bound, files.root, pr);
+  if (typeof pull === "string")
+    return pause(
+      `GitHub returned data for PR #${pr} that Forge cannot read`,
+      "Check the PR by hand and tell me what to do.",
+      pull,
+    );
+  if (pull.state === "OPEN")
+    return {
+      lane: issue.id,
+      step: saved?.step ?? "receipt",
+      n: saved?.action?.n ?? 0,
+      kind: "wait",
+      why: `PR #${pr} is still OPEN; the tail starts after the merge`,
+      expect: `PR #${pr} state MERGED`,
+      budget: budget(),
+    };
+  if (pull.state !== "MERGED" || pull.mergeCommit === null)
+    return pause(
+      `PR #${pr} is ${pull.state} without a merge commit`,
+      "This PR did not merge. Close the lane as dropped, or tell me what to do.",
+      pull,
+    );
+  if (input.head !== undefined && input.head !== pull.headRefOid)
+    return pause(
+      `Pinned head ${input.head} but GitHub shows ${pull.headRefOid}`,
+      "The PR head moved after the merge gate. Check what landed and tell me how to go on.",
+      { pinned: input.head, readback: pull.headRefOid },
+    );
+  let journal: Journal;
+  if (saved) {
+    if (
+      saved.head !== pull.headRefOid ||
+      saved.mergeCommit !== pull.mergeCommit ||
+      saved.url !== pull.url
+    )
+      return pause(
+        `GitHub readback differs from the journal for PR #${pr}`,
+        "The merged PR no longer matches what this lane recorded. Check it and tell me how to go on.",
+        {
+          journal: { head: saved.head, mergeCommit: saved.mergeCommit },
+          readback: { head: pull.headRefOid, mergeCommit: pull.mergeCommit },
+        },
+      );
+    journal = structuredClone(saved);
+  } else {
+    const lane = laneRegistry(files).lanes.find(
+      (row) => laneIdentity(row) === id,
+    );
+    if (!lane)
+      return pause(
+        `No recorded lane for ${issue.id}`,
+        "This lane has no registry entry, so Forge cannot tell what to finish. Tell me what to do.",
+        { issue: issue.id },
+      );
+    if (lane.branch !== pull.headRefName)
+      return pause(
+        `PR #${pr} is on ${pull.headRefName} but the lane is on ${lane.branch}`,
+        "The PR is on a different branch than the lane. Check it and tell me what to do.",
+        { lane: lane.branch, pr: pull.headRefName },
+      );
+    const windows =
+      (bound.environment as { platform?: string } | undefined)?.platform ===
+      "win32";
+    const text = files.read(briefPath(files, lane.brief, windows), 262144);
+    if (text === undefined)
+      return pause(
+        `The brief for ${issue.id} cannot be read`,
+        "Forge reads the brief for issues to close with this lane. Restore it or tell me to skip.",
+        { brief: lane.brief },
+      );
+    const named: string[] = [];
+    for (const line of text.matchAll(/^\s*(?:also\s+)?closes?\s*:\s*(.+)$/gim))
+      for (const token of line[1]!.split(/[\s,]+/).filter(Boolean)) {
+        if (/^(?:none|n\/a)$/i.test(token)) continue;
+        if (!QUALIFIED.test(token))
+          return pause(
+            `The brief names ${JSON.stringify(token)}, which is not an issue id`,
+            "Fix the Closes line in the brief, or tell me which issues to close.",
+            token,
+          );
+        const other = ids.stored(token);
+        if (other !== id && !named.includes(other)) named.push(other);
+      }
+    journal = {
+      id,
+      pr,
+      url: pull.url,
+      head: pull.headRefOid,
+      mergeCommit: pull.mergeCommit,
+      branch: lane.branch,
+      named,
+      step: "receipt",
+      recorded: {},
+      counters: { actions: 0, records: 0 },
+    };
+  }
+  const merge7 = journal.mergeCommit.slice(0, 7);
+  const save = () => {
+    if (canonical(journal) !== canonical(saved))
+      persist(state, journalKey(id), journal, record?.revision ?? 0);
+  };
+  const give = (
+    step: ActionStep,
+    target: string | undefined,
+    kind: "forge" | "run" | "harness",
+    why: string,
+    expect: string,
+    argv: string[],
+  ): TailAction => {
+    const same =
+      journal.action?.step === step && journal.action.target === target;
+    const n = same ? journal.action!.n : (journal.action?.n ?? 0) + 1;
+    if (!same) {
+      journal.action = { n, step, ...(target ? { target } : {}) };
+      journal.counters.actions = n;
+      emit(state, id, "action", { step, n, ...(target ? { target } : {}) });
+    }
+    journal.step = step;
+    save();
+    return {
+      lane: issue.id,
+      step,
+      n,
+      kind,
+      why,
+      expect,
+      budget: { ...journal.counters },
+      argv,
+    };
+  };
+  // Verify each step from primary facts before offering the next action.
+  if (journal.receipt === undefined) {
+    const checks = settings?.receiptChecks ?? [];
+    if (!checks.length)
+      return pause(
+        "No receipt checks are configured",
+        "Set blocks.work.config.lanes.autopilot.receiptChecks to the check names the gate requires, then run lane next again.",
+        { receiptChecks: checks },
+      );
+    return give(
+      "receipt",
+      undefined,
+      "forge",
+      `In a verify checkout, run git fetch origin and git checkout --detach ${journal.mergeCommit}, then run the configured checks at the merge commit. Record the receipt id it prints.`,
+      `a PASS receipt whose subject is ${journal.mergeCommit}`,
+      ["forge", "check", "run", "--input", JSON.stringify({ checks })],
+    );
+  }
+  let proof: ReturnType<ReceiptsService["get"]>;
+  try {
+    proof = bound.receipts?.get(journal.receipt);
+  } catch (error) {
+    return pause(
+      `Receipt ${journal.receipt} failed its integrity check`,
+      "The recorded receipt is damaged. Run the checks again at the merge commit and record the new id.",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  if (
+    !proof ||
+    proof.status !== "PASS" ||
+    proof.subject !== journal.mergeCommit
+  )
+    return pause(
+      `Receipt ${journal.receipt} is not a PASS at merge commit ${merge7}`,
+      "Run the checks again at the merge commit and record the new receipt id.",
+      proof ?? { receipt: journal.receipt, found: false },
+    );
+  const registered = laneRegistry(files).lanes.some(
+    (row) => laneIdentity(row) === id,
+  );
+  if (
+    issue.status === "closed" &&
+    issue.receipt !== undefined &&
+    issue.receipt !== journal.receipt
+  )
+    return pause(
+      `${issue.id} is closed with receipt ${issue.receipt}, not ${journal.receipt}`,
+      "The issue was closed by something else. Check it and tell me how to go on.",
+      { closedWith: issue.receipt, expected: journal.receipt },
+    );
+  if (issue.status !== "closed" || registered)
+    return give(
+      "close",
+      undefined,
+      "forge",
+      `Claim the issue first with forge issue claim ${issue.id}. Lane close links the PR, closes the issue and removes the lane.`,
+      `${issue.id} closed with receipt ${journal.receipt} and its lane registry entry gone`,
+      [
+        "forge",
+        "lane",
+        "close",
+        issue.id,
+        "--pr",
+        String(pr),
+        "--receipt",
+        journal.receipt,
+      ],
+    );
+  const targets = [
+    ...new Set([
+      ...state
+        .list("link:")
+        .map((row) => row.value as LinkInput)
+        .filter(
+          (link) =>
+            link.relation === "delivers" &&
+            link.url === journal.url &&
+            link.id !== id,
+        )
+        .map((link) => link.id),
+      ...journal.named,
+    ]),
+  ];
+  for (const target of targets) {
+    const other = state.get(key(target));
+    if (!other)
+      return pause(
+        `${ids.shown(target)} is named for closing but does not exist`,
+        "Fix the brief or the link, or tell me to skip it.",
+        target,
+      );
+    if (stored(other).status === "open")
+      return give(
+        "issues",
+        target,
+        "forge",
+        `Claim ${ids.shown(target)} first. If it has no delivers link to ${journal.url}, add one with forge issue link ${ids.shown(target)} --relation delivers --url ${journal.url}.`,
+        `${ids.shown(target)} closed`,
+        [
+          "forge",
+          "issue",
+          "close",
+          ids.shown(target),
+          "--receipt",
+          journal.receipt,
+          "--reason",
+          `PR #${pr} merged as ${merge7}`,
+        ],
+      );
+  }
+  const rebuild = settings?.rebuild;
+  if (rebuild) {
+    const built = journal.recorded.rebuild;
+    if (built && built.exitCode !== 0)
+      return pause(
+        `The runtime rebuild exited with ${built.exitCode}`,
+        "The rebuild failed. Fix it and rerun, or tell me to skip it.",
+        built,
+      );
+    if (!built)
+      return give(
+        "rebuild",
+        undefined,
+        "run",
+        "Run the configured runtime rebuild, then record its exit code.",
+        "recorded, not verified",
+        [...rebuild.argv],
+      );
+  }
+  if (!journal.recorded.unwatch)
+    return give(
+      "unwatch",
+      undefined,
+      "harness",
+      `Run this and do the steps it returns, so the harness stops watching PR #${pr}.`,
+      "recorded, not verified",
+      ["forge", "agent", "wait", "--pr", String(pr), "--done"],
+    );
+  journal.step = "done";
+  if (canonical(journal) !== canonical(saved)) {
+    save();
+    emit(state, id, "done", { pr });
+  }
+  return {
+    lane: issue.id,
+    step: "done",
+    n: journal.action?.n ?? 0,
+    kind: "done",
+    why: `PR #${pr} is merged and the tail is finished. Verified from facts: receipt, close${targets.length ? ", other issues" : ""}. Recorded, not verified: ${rebuild ? "rebuild, " : ""}unwatch.`,
+    expect: "nothing further",
+    budget: { ...journal.counters },
+  };
+}
+function laneRecord(call: HandlerCall<TailRecordInput>): {
+  lane: string;
+  step: string;
+  n: number;
+  recorded: true;
+} {
+  const { input, services, config } = call;
+  const state = client(services),
+    ids = idsFor(state, config),
+    id = ids.stored(input.id);
+  get(state, id, input.id);
+  const record = state.get(journalKey(id));
+  const saved = record?.value as Journal | undefined;
+  if (!record || !saved)
+    return fail(
+      "NOT_FOUND",
+      `No autopilot journal for ${input.id}; run lane next first`,
+    );
+  const open = saved.action;
+  if (!open || open.n !== input.action)
+    return fail(
+      "INPUT_CONFLICT",
+      `Action ${input.action} is not the open action (${open ? `${open.n}, step ${open.step}` : "none"}); run lane next again`,
+    );
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input.result);
+  } catch {
+    return fail("INPUT_INVALID", "result must be JSON");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    return fail("INPUT_INVALID", "result must be a JSON object");
+  const result = parsed as Record<string, unknown>;
+  const journal = structuredClone(saved);
+  journal.counters.records += 1;
+  if (open.step === "receipt") {
+    if (
+      typeof result.receipt !== "string" ||
+      !result.receipt ||
+      result.receipt.length > 200
+    )
+      return fail("INPUT_INVALID", 'receipt step needs {"receipt":"<id>"}');
+    journal.receipt = result.receipt;
+  } else if (open.step === "rebuild") {
+    if (
+      typeof result.exitCode !== "number" ||
+      !Number.isInteger(result.exitCode)
+    )
+      return fail("INPUT_INVALID", 'rebuild step needs {"exitCode":<integer>}');
+    journal.recorded.rebuild = { exitCode: result.exitCode };
+  } else if (open.step === "unwatch") {
+    if (result.done !== true)
+      return fail("INPUT_INVALID", 'unwatch step needs {"done":true}');
+    journal.recorded.unwatch = { done: true };
+  }
+  // close and issues are verified from facts on the next lane.next; recording only acknowledges them.
+  persist(state, journalKey(id), journal, record.revision);
+  emit(state, id, "record", {
+    step: open.step,
+    n: open.n,
+    result: input.result.slice(0, 2000),
+  });
+  return { lane: ids.shown(id), step: open.step, n: open.n, recorded: true };
+}
 const operations: Operations<WorkOperations> = {
+  "lane.next": (call) => laneNext(call),
+  "lane.record": (call) => laneRecord(call),
   "lane.show": ({ input, services, config }) => {
     const state = client(services),
       ids = idsFor(state, config);
