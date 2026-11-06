@@ -805,7 +805,7 @@ type Journal = {
   action?: { n: number; step: ActionStep; target?: string };
   receipt?: string;
   recorded: {
-    rebuild?: { exitCode: number };
+    rebuild?: { exitCode: number; argv?: string[] };
     unwatch?: { done: true };
   };
   counters: { actions: number; records: number };
@@ -844,7 +844,7 @@ async function readPull(
   call: { signal: AbortSignal; deadline: number },
   bound: { process?: ProcessService; environment?: EnvironmentService },
   cwd: string,
-  pr: number,
+  target: string,
 ): Promise<TailPull | string> {
   if (!bound.process || !bound.environment)
     fail("UNAVAILABLE", "Lane next needs process and environment services");
@@ -875,7 +875,7 @@ async function readPull(
     [
       "pr",
       "view",
-      String(pr),
+      target,
       "--json",
       "state,headRefName,headRefOid,mergeCommit,url",
     ],
@@ -968,7 +968,14 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
       "Which PR landed this lane? Run lane next again with --pr <n>.",
       { links: links.length },
     );
-  const pull = await readPull(call, bound, files.root, pr);
+  const linkUrl = links.at(-1)?.url;
+  const pull = await readPull(
+    call,
+    bound,
+    files.root,
+    saved?.url ??
+      (linkUrl !== undefined && linked === pr ? linkUrl : String(pr)),
+  );
   if (typeof pull === "string")
     return pause(
       `GitHub returned data for PR #${pr} that Forge cannot read`,
@@ -1220,7 +1227,7 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
         .filter(
           (link) =>
             link.relation === "delivers" &&
-            link.url === journal.url &&
+            link.url.replace(/\/+$/, "") === journal.url.replace(/\/+$/, "") &&
             link.id !== id,
         )
         .map((link) => link.id),
@@ -1264,6 +1271,12 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
         `The runtime rebuild exited with ${built.exitCode}`,
         "The rebuild failed. Fix it and rerun, or tell me to skip it.",
         built,
+      );
+    if (built && canonical(built.argv ?? null) !== canonical(rebuild.argv))
+      return pause(
+        "The rebuild command changed after it was recorded",
+        "Run the configured rebuild again and record its exit code.",
+        { recorded: built.argv ?? null, configured: rebuild.argv },
       );
     if (!built)
       return give(
@@ -1316,6 +1329,11 @@ function laneRecord(call: HandlerCall<TailRecordInput>): {
     return fail(
       "NOT_FOUND",
       `No autopilot journal for ${input.id}; run lane next first`,
+    );
+  if (saved.step === "done")
+    return fail(
+      "INPUT_CONFLICT",
+      "The tail is done; there is nothing to record",
     );
   let parsed: unknown;
   try {
@@ -1389,7 +1407,12 @@ function laneRecord(call: HandlerCall<TailRecordInput>): {
       !Number.isInteger(result.exitCode)
     )
       return fail("INPUT_INVALID", 'rebuild step needs {"exitCode":<integer>}');
-    journal.recorded.rebuild = { exitCode: result.exitCode };
+    const argv = (config as WorkConfig | undefined)?.lanes?.autopilot?.rebuild
+      ?.argv;
+    journal.recorded.rebuild = {
+      exitCode: result.exitCode,
+      ...(argv ? { argv: [...argv] } : {}),
+    };
   } else if (open.step === "unwatch") {
     if (result.done !== true)
       return fail("INPUT_INVALID", 'unwatch step needs {"done":true}');

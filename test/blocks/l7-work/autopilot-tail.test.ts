@@ -145,6 +145,7 @@ function fixture(checks = ["typecheck"]) {
       url,
     } as Record<string, unknown> | string,
     calls: 0,
+    args: [] as string[][],
   };
   const covers = (...names: string[]) =>
     names.map((name) => ({ name, status: "PASS" }));
@@ -192,8 +193,9 @@ function fixture(checks = ["typecheck"]) {
     environment: { select: () => ({}) },
     process: {
       resolve: (path: string) => ({ kind: "resolved", path }),
-      run: () => {
+      run: (_executable: unknown, args: string[]) => {
         gh.calls++;
+        gh.args.push(args);
         return Promise.resolve({
           stdout:
             typeof gh.reply === "string" ? gh.reply : JSON.stringify(gh.reply),
@@ -216,6 +218,7 @@ function fixture(checks = ["typecheck"]) {
     records,
     files,
     gh,
+    config,
     brief,
     close,
     checkpoint: (value: string) =>
@@ -292,6 +295,9 @@ test("repeated lane.next and lane.record walk receipt, close, issues, rebuild, u
   await f.record(action.n, { done: true });
   action = await step();
   expect(action).toMatchObject({ step: "done", kind: "done" });
+  await expect(f.record(action.n, { done: true })).rejects.toThrow(
+    /INPUT_CONFLICT/,
+  );
   const order = seen
     .map((row) => row.step)
     .filter((name, index, all) => name !== all[index - 1]);
@@ -463,4 +469,55 @@ test("a wrong closing target pauses, a recorded correction replaces it, and the 
         JSON.stringify(row.value.detail).includes("typo in the brief"),
     ),
   ).toBe(true);
+});
+
+async function reachIssues(f: ReturnType<typeof fixture>) {
+  await f.next();
+  await f.record(1, { receipt: "r1" });
+  await f.next();
+  f.close("work-1", "r1");
+  f.removeLane();
+}
+
+test("a delivers link with a trailing slash still names its issue", async () => {
+  const f = fixture();
+  const link = f.records.get("link:work-2:1")!;
+  f.records.set("link:work-2:1", {
+    ...link,
+    value: { ...link.value, url: `${url}/` },
+  });
+  await reachIssues(f);
+  const action = await f.next();
+  expect(action).toMatchObject({ step: "issues" });
+  expect(action.argv).toContain("work-2");
+});
+
+test("a rebuild result is bound to the command that ran", async () => {
+  const f = fixture();
+  await reachIssues(f);
+  f.close("work-2", "r1");
+  f.close("work-3", "r1");
+  const rebuild = await f.next();
+  expect(rebuild).toMatchObject({ step: "rebuild", kind: "run" });
+  await f.record(rebuild.n, { exitCode: 0 });
+  expect(await f.next()).toMatchObject({ step: "unwatch" });
+  f.config.lanes.autopilot.rebuild.argv = ["bun", "run", "other"];
+  const paused = await f.next();
+  expect(paused.kind).toBe("pause");
+  expect(paused.raw).toContain("other");
+});
+
+test("the PR is read from the linked URL, and from the journaled URL on resume", async () => {
+  const f = fixture();
+  const other = "https://github.com/other/repo/pull/7";
+  f.records.set("link:work-1:1", {
+    key: "link:work-1:1",
+    revision: 1,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    value: { id: "work-1", relation: "delivers", url: other },
+  });
+  await f.next({ pr: undefined });
+  expect(f.gh.args.at(-1)).toContain(other);
+  await f.next({ pr: undefined });
+  expect(f.gh.args.at(-1)).toContain(url);
 });
