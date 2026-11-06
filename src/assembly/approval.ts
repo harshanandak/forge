@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { ForgeFailure } from "../contract/failure.ts";
 import { digest, type OwnerApproval } from "../core/trust/index.ts";
 import type { DeletableStateClient } from "../ports/state.ts";
@@ -163,7 +161,7 @@ export function ownerApproval(options: {
 /** An agent session is any harness marker the memory guard already honored. */
 export function agentSession(
   env: Readonly<Record<string, string | undefined>>,
-) {
+): boolean {
   return harnessIdentity(env) !== "local-cli" || !!env.FORGE_AGENT?.trim();
 }
 /** A person is typing: both ends are terminals and no agent session is running. */
@@ -179,12 +177,10 @@ export const POLICY_OPS: ReadonlySet<string> = new Set([
   "block.admit",
   "config.grant",
 ]);
-/** The operations `<deviceRoot>/owner.json` lets unattended calls run; unreadable means none. */
-export function unattendedOps(deviceRoot: string): ReadonlySet<string> {
+/** The operations an owner.json text lets unattended calls run; unreadable text means none. */
+export function unattendedOps(text: string | undefined): ReadonlySet<string> {
   try {
-    const listed = object(
-      JSON.parse(readFileSync(join(deviceRoot, "owner.json"), "utf8")),
-    )?.unattended;
+    const listed = object(JSON.parse(text ?? ""))?.unattended;
     return new Set(
       Array.isArray(listed)
         ? listed.filter((op) => typeof op === "string" && POLICY_OPS.has(op))

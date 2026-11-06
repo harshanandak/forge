@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   createConfig,
@@ -311,7 +311,7 @@ export async function createAssembly(
           return directApproval({ ...direct, method: "attended" });
       } else if (
         !agentSession(process.env) &&
-        unattendedOps(deviceRoot).has(request.op)
+        unattendedOps(ownerPolicyText(deviceRoot)).has(request.op)
       )
         return directApproval({ ...direct, method: "scripts-policy" });
     }
@@ -1919,6 +1919,13 @@ export function localContext(
 /** Each native harness session contributes to one tagged, ordered identity. */
 export function localSession(fallback: string): string {
   return sessionIdentity(process.env, fallback);
+}
+function ownerPolicyText(deviceRoot: string): string | undefined {
+  try {
+    return readFileSync(join(deviceRoot, "owner.json"), "utf8");
+  } catch {
+    return undefined;
+  }
 }
 /** The person types the exact phrase on this terminal; end of input or any other text refuses. */
 function typedConfirmation(op: string, ask?: string): Promise<boolean> {
