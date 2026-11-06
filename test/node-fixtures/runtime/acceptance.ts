@@ -79,7 +79,8 @@ try {
       },
       new Map([["sample", block]]),
     );
-    const trust = new TrustStore();
+    const trustRecords = new Map();
+    const trust = new TrustStore(trustRecords);
     let invoked = 0;
     let closed = 0;
     const saved = new Map<string, unknown>();
@@ -111,8 +112,11 @@ try {
     assert.equal(invoked, 0);
     assert.partialDeepStrictEqual(await runtime.invoke(request), { ok: false });
     assert.equal(invoked, 0);
-    trust.admit("human", block.digest);
-    trust.grant("human", block.digest, declaration.effects ?? []);
+    trustRecords.set(block.digest, { admitted: true, effects: [] });
+    trustRecords.set(block.digest, {
+      admitted: true,
+      effects: declaration.effects ?? [],
+    });
     assert.equal(addBlock(root, trust).admitted, true);
     const result = await runtime.invoke(request);
     if (declaration.context === "device" || declaration.context === "project")
@@ -225,9 +229,13 @@ try {
     },
     new Map([["sample", scopedBlock]]),
   );
-  const scopedTrust = new TrustStore();
-  scopedTrust.admit("human", scopedBlock.digest);
-  scopedTrust.grant("human", scopedBlock.digest, ["sample:write"]);
+  const scopedTrustRecords = new Map();
+  const scopedTrust = new TrustStore(scopedTrustRecords);
+  scopedTrustRecords.set(scopedBlock.digest, { admitted: true, effects: [] });
+  scopedTrustRecords.set(scopedBlock.digest, {
+    admitted: true,
+    effects: ["sample:write"],
+  });
   let writes = 0;
   const scopedRuntime = new Runtime(scopedCatalog, scopedTrust, {
     isolation: nodeRunIsolation,
@@ -262,8 +270,9 @@ try {
   const before = captureBlock(root);
   writeFileSync(join(root, "index.cjs"), "module.exports = {};\n");
   const changed = captureBlock(root);
-  const trust = new TrustStore();
-  trust.admit("human", before.digest);
+  const trustRecords = new Map();
+  const trust = new TrustStore(trustRecords);
+  trustRecords.set(before.digest, { admitted: true, effects: [] });
   assert.throws(() => trust.check(changed.digest, []), /ADMISSION_REQUIRED/);
   assert.throws(
     () =>

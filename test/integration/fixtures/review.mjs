@@ -1,4 +1,5 @@
-﻿import assert from "node:assert/strict";
+import { withCliOwnerApproval } from "../../fixtures/owner-approval.mjs";
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -31,7 +32,9 @@ function project(name) {
   );
   return root;
 }
-function cli(root, args, expected = 0) {
+const cli = (root, ...args) =>
+  withCliOwnerApproval(cliRaw.bind(null, root))(...args);
+function cliRaw(root, args, expected = 0) {
   const result = spawnSync(process.execPath, [bin, ...args], {
     cwd: root,
     env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { nodeFileCapture } from "../../../src/adapters/node-runtime/capture.ts";
 import { Catalog, captureBlock } from "../../../src/core/catalog/index.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
-import { TrustStore } from "../../../src/core/trust/index.ts";
+import { TrustStore, admit } from "../../fixtures/owner-approval.ts";
 import type { InvocationRequest } from "../../../src/generated/types.ts";
 
 // The operation deadline measures the handler's own work. Opening the store (directories, fsyncs,
@@ -53,7 +53,7 @@ function fixture(timeoutMs = 15000) {
     new Map([["sample", block]]),
   );
   const trust = new TrustStore();
-  trust.admit("human", block.digest);
+  admit(trust, block.digest);
   const request: InvocationRequest = {
     schemaVersion: "forge.invocation/1",
     requestId: "request-1",

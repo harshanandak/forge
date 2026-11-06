@@ -1,3 +1,4 @@
+import { relay } from "../../fixtures/owner-approval.ts";
 import { expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -97,7 +98,9 @@ test("assembled pure crypto never opens the block's unused file service", async 
     expect(checked.ok).toBe(true);
     if (!checked.ok) throw Error(JSON.stringify(checked));
     const digest = (checked.result as { digest: string }).digest;
-    expect(await invoke("block.admit", { digest })).toMatchObject({ ok: true });
+    expect(await relay(invoke, "block.admit", { digest })).toMatchObject({
+      ok: true,
+    });
     expect(await invoke("probe.crypto", "fixture")).toMatchObject({
       ok: true,
       result: providers

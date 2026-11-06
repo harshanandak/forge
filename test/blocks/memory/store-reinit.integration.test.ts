@@ -1,3 +1,4 @@
+import { withOwnerApproval } from "../../fixtures/owner-approval.mjs";
 import { expect, spyOn, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -5,9 +6,14 @@ import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import { done, openHarness } from "./lib.ts";
 
+async function recoveryHarness(...args: Parameters<typeof openHarness>) {
+  const h = await openHarness(...args);
+  return { ...h, call: withOwnerApproval(h.call.bind(h)) };
+}
+
 test("reinit retires the old registration so a peer resolves the new identity by name", async () => {
-  const own = await openHarness(["memory"], {}, { project: "recovered" });
-  const peer = await openHarness(
+  const own = await recoveryHarness(["memory"], {}, { project: "recovered" });
+  const peer = await recoveryHarness(
     ["memory"],
     {},
     { deviceRoot: own.deviceRoot },
@@ -55,7 +61,7 @@ test("reinit retires the old registration so a peer resolves the new identity by
 }, 60_000);
 
 test("one MCP session has no standing recovery permission after reinit", async () => {
-  const h = await openHarness(["memory"]);
+  const h = await recoveryHarness(["memory"]);
   const path = join(h.root, ".forge/state.sqlite");
   const handlers = createMcpHandlers(
     h.assembly.catalog,
@@ -69,8 +75,9 @@ test("one MCP session has no standing recovery permission after reinit", async (
       },
     },
   );
-  const call = (op: string, input: unknown) =>
-    handlers.callTool("catalog_call", { op, input });
+  const call = withOwnerApproval((op: string, input: unknown) =>
+    handlers.callTool("catalog_call", { op, input }),
+  );
   try {
     expect(
       handlers.listTools().filter((tool) => tool.name === "store_reinit"),
@@ -119,7 +126,7 @@ test("one MCP session has no standing recovery permission after reinit", async (
 
 for (const step of ["initialize", "register"] as const) {
   test(`failed reinit during ${step} removes its reservation and allows retry`, async () => {
-    const h = await openHarness([]);
+    const h = await recoveryHarness([]);
     const path = join(h.root, ".forge/state.sqlite");
     try {
       done(await h.call("store.reinit", {}));

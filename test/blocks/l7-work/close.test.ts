@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { captureBlock, Catalog } from "../../../src/core/catalog/index.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
-import { TrustStore } from "../../../src/core/trust/index.ts";
+import { TrustStore, admit, grant } from "../../fixtures/owner-approval.ts";
 import { nodeRunIsolation } from "../../../src/adapters/node-runtime/isolation.ts";
 import type { ProcessService } from "../../../src/assembly/providers.ts";
 import type { ProcessResult } from "../../../src/ports/process.ts";
@@ -531,8 +531,8 @@ function stateOnlyRuntime() {
   ]);
   const harness = project();
   const trust = new TrustStore();
-  trust.admit("human", block.digest);
-  trust.grant("human", block.digest, [
+  admit(trust, block.digest);
+  grant(trust, block.digest, [
     "issue:write",
     "external:process",
     "external:network",

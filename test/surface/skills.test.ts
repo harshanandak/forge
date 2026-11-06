@@ -1,3 +1,4 @@
+import { relay } from "../fixtures/owner-approval.ts";
 import { expect, test } from "bun:test";
 import {
   cpSync,
@@ -91,7 +92,11 @@ async function withProject(
           record(checked.ok ? checked.result : undefined)?.digest,
         );
         expect(
-          await dispatch(assembly.catalog, "block.admit", { digest }, call),
+          await relay(
+            (op, input) => dispatch(assembly.catalog, op, input, call),
+            "block.admit",
+            { digest },
+          ),
         ).toMatchObject({ ok: true });
       }
       await run(assembly, root);

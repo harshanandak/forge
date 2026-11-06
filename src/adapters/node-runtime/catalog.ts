@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { BlockCatalog } from "../../core/runtime/catalog.ts";
-import { TrustStore } from "../../core/trust/index.ts";
+import { TrustStore, type OwnerApproval } from "../../core/trust/index.ts";
+import type { InvocationRequest } from "../../generated/types.ts";
 import { nodeFileCapture } from "./capture.ts";
 import { nodeRunIsolation } from "./isolation.ts";
 import { fileURLToPath } from "node:url";
@@ -41,6 +42,7 @@ export function localForgeCommand(args: readonly string[]): string {
 export function createNodeBlockCatalog(
   baseDirectory: string,
   trust: TrustStore = new TrustStore(),
+  approval?: (request: InvocationRequest) => OwnerApproval,
 ): BlockCatalog {
   return new BlockCatalog(
     {
@@ -63,5 +65,7 @@ export function createNodeBlockCatalog(
     },
     trust,
     { isolation: nodeRunIsolation },
+    undefined,
+    approval,
   );
 }

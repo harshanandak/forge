@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../../fixtures/owner-approval.mjs";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -27,7 +28,8 @@ const env = { ...process.env, FORGE_DEVICE_ROOT: deviceRoot };
 assert.equal(process.versions.bun, undefined);
 const bun = spawnSync("bun", ["--version"], { env, windowsHide: true });
 assert.ok(bun.error, "Bun must not resolve on PATH");
-function cli(args, expected = 0) {
+const cli = withCliOwnerApproval(cliRaw);
+function cliRaw(args, expected = 0) {
   const result = spawnSync(process.execPath, [bin, ...args], {
     cwd: root,
     env,

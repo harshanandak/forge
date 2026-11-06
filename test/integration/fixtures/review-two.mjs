@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../../fixtures/owner-approval.mjs";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import { spawnSync } from "node:child_process";
@@ -94,7 +95,9 @@ function phase(name) {
       `Second review ${name}: ${Math.round(performance.now() - started)} ms; ${cliCalls - calls} CLI calls, ${Math.round(cliTime - time)} ms in CLI`,
     );
 }
-function cli(root, args, expected = 0) {
+const cli = (root, ...args) =>
+  withCliOwnerApproval(cliRaw.bind(null, root))(...args);
+function cliRaw(root, args, expected = 0) {
   const result = spawnCli(args, {
     cwd: root,
     env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
@@ -452,8 +455,9 @@ async function declaredDeadline() {
     },
     new Map([["clock", captured]]),
   );
-  const trust = new TrustStore();
-  trust.admit("human", captured.digest);
+  const trustRecords = new Map();
+  const trust = new TrustStore(trustRecords);
+  trustRecords.set(captured.digest, { admitted: true, effects: [] });
   let now = 0;
   const runtime = new Runtime(catalog, trust, {
     clock: { now: () => now },

@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../fixtures/owner-approval.mjs";
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -31,7 +32,7 @@ function project() {
     work,
     root,
     device,
-    cli(args: string[], status: number): ResultEnvelope {
+    cli: withCliOwnerApproval((args: string[], status = 0): ResultEnvelope => {
       const result = spawnSync("node", [bin, ...args], {
         cwd: root,
         env: {
@@ -46,7 +47,7 @@ function project() {
       expect(result.error).toBeUndefined();
       expect(result.status, result.stdout + result.stderr).toBe(status);
       return JSON.parse(result.stdout) as ResultEnvelope;
-    },
+    }),
   };
 }
 

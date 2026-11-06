@@ -2,7 +2,8 @@
   "type": "object",
   "required": ["digest"],
   "properties": {
-    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "approval": {}
   },
   "additionalProperties": false
 }

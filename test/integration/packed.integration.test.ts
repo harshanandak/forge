@@ -1,9 +1,9 @@
+import { stageOwnerApprovalFixture } from "../fixtures/stage-owner-approval.ts";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { test, expect } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
-  copyFileSync,
   cpSync,
   existsSync,
   mkdtempSync,
@@ -77,7 +77,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       "review-two",
     ];
     for (const name of fixtures)
-      copyFileSync(
+      stageOwnerApprovalFixture(
         join(import.meta.dirname, `fixtures/${name}.mjs`),
         join(consumer, `${name}.mjs`),
       );
@@ -96,7 +96,10 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       ].map((fixture) => {
         const cwd = mkdtempSync(join(consumer, "p-"));
         for (const name of fixtures)
-          copyFileSync(join(consumer, `${name}.mjs`), join(cwd, `${name}.mjs`));
+          stageOwnerApprovalFixture(
+            join(consumer, `${name}.mjs`),
+            join(cwd, `${name}.mjs`),
+          );
         return {
           ...fixture,
           label: `${fixture.name} (${runtime})`,
@@ -130,7 +133,7 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
     // Package self-references resolve from each fixture's location. Keep fixtures
     // inside the private copy so imports, CLI and writer children load that copy.
     for (const name of fixtures)
-      copyFileSync(
+      stageOwnerApprovalFixture(
         join(consumer, `${name}.mjs`),
         join(isolated, `${name}.mjs`),
       );
