@@ -991,7 +991,10 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
       "This PR did not merge. Close the lane as dropped, or tell me what to do.",
       pull,
     );
-  if (input.head !== undefined && input.head !== pull.headRefOid)
+  if (
+    input.head !== undefined &&
+    input.head.toLowerCase() !== pull.headRefOid.toLowerCase()
+  )
     return pause(
       `Pinned head ${input.head} but GitHub shows ${pull.headRefOid}`,
       "The PR head moved after the merge gate. Check what landed and tell me how to go on.",
@@ -1014,6 +1017,34 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
       );
     journal = structuredClone(saved);
   } else {
+    const checkpointHead = recovery(appended(state, `comment:${id}:`))?.head;
+    const expected = input.head ?? checkpointHead;
+    if (expected === undefined)
+      return pause(
+        `No expected head is recorded for ${issue.id}`,
+        "Which head did the merge gate review? Run lane next again with --head <sha>.",
+        { readback: pull.headRefOid, checkpoint: null },
+      );
+    if (expected.toLowerCase() !== pull.headRefOid.toLowerCase())
+      return pause(
+        `Expected head ${expected} but GitHub shows ${pull.headRefOid}`,
+        "A different head merged than the one recorded. Check what landed and tell me how to go on.",
+        {
+          expected,
+          source: input.head === undefined ? "checkpoint" : "--head",
+          readback: pull.headRefOid,
+        },
+      );
+    if (
+      input.head !== undefined &&
+      checkpointHead !== undefined &&
+      input.head.toLowerCase() !== checkpointHead.toLowerCase()
+    )
+      return pause(
+        `--head ${input.head} differs from the checkpoint head ${checkpointHead}`,
+        "Which head did the merge gate review? Tell me which one is right.",
+        { head: input.head, checkpoint: checkpointHead },
+      );
     const lane = laneRegistry(files).lanes.find(
       (row) => laneIdentity(row) === id,
     );
@@ -1032,12 +1063,18 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
     const windows =
       (bound.environment as { platform?: string } | undefined)?.platform ===
       "win32";
-    const text = files.read(briefPath(files, lane.brief, windows), 262144);
+    let text: string | undefined;
+    let unreadable = "the file does not exist";
+    try {
+      text = files.read(briefPath(files, lane.brief, windows), 262144);
+    } catch (error) {
+      unreadable = error instanceof Error ? error.message : String(error);
+    }
     if (text === undefined)
       return pause(
-        `The brief for ${issue.id} cannot be read`,
-        "Forge reads the brief for issues to close with this lane. Restore it or tell me to skip.",
-        { brief: lane.brief },
+        `The brief for ${issue.id} cannot be read: ${unreadable}`,
+        "Forge reads the brief for issues to close with this lane. Run lane next from the main checkout, where the brief is readable, or restore the file.",
+        { brief: lane.brief, reason: unreadable },
       );
     const named: string[] = [];
     for (const line of text.matchAll(/^\s*(?:also\s+)?closes?\s*:\s*(.+)$/gim))
@@ -1100,14 +1137,14 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
     };
   };
   // Verify each step from primary facts before offering the next action.
+  const checks = settings?.receiptChecks ?? [];
+  if (!checks.length)
+    return pause(
+      "No receipt checks are configured",
+      "Set blocks.work.config.lanes.autopilot.receiptChecks to the check names the gate requires, then run lane next again.",
+      { receiptChecks: checks },
+    );
   if (journal.receipt === undefined) {
-    const checks = settings?.receiptChecks ?? [];
-    if (!checks.length)
-      return pause(
-        "No receipt checks are configured",
-        "Set blocks.work.config.lanes.autopilot.receiptChecks to the check names the gate requires, then run lane next again.",
-        { receiptChecks: checks },
-      );
     return give(
       "receipt",
       undefined,
@@ -1137,18 +1174,25 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
       "Run the checks again at the merge commit and record the new receipt id.",
       proof ?? { receipt: journal.receipt, found: false },
     );
+  const covered = proof.checked ?? [];
+  const missing = checks.filter(
+    (name) =>
+      !covered.some((row) => row.name === name && row.status === "PASS"),
+  );
+  if (missing.length)
+    return pause(
+      `Receipt ${journal.receipt} does not pass every configured check: missing ${missing.join(", ")}`,
+      "Run all the configured checks at the merge commit and record the new receipt id.",
+      { receipt: journal.receipt, covers: covered, missing },
+    );
   const registered = laneRegistry(files).lanes.some(
     (row) => laneIdentity(row) === id,
   );
-  if (
-    issue.status === "closed" &&
-    issue.receipt !== undefined &&
-    issue.receipt !== journal.receipt
-  )
+  if (issue.status === "closed" && issue.receipt !== journal.receipt)
     return pause(
-      `${issue.id} is closed with receipt ${issue.receipt}, not ${journal.receipt}`,
+      `${issue.id} is closed with receipt ${issue.receipt ?? "none"}, not ${journal.receipt}`,
       "The issue was closed by something else. Check it and tell me how to go on.",
-      { closedWith: issue.receipt, expected: journal.receipt },
+      { closedWith: issue.receipt ?? null, expected: journal.receipt },
     );
   if (issue.status !== "closed" || registered)
     return give(
@@ -1188,7 +1232,9 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
     if (!other)
       return pause(
         `${ids.shown(target)} is named for closing but does not exist`,
-        "Fix the brief or the link, or tell me to skip it.",
+        journal.named.includes(target)
+          ? `Correct it with: forge lane record ${issue.id} --action ${journal.action?.n ?? 1} --result '{"drop":"${ids.shown(target)}","reason":"<why>"}' (or {"replace":{"from":"${ids.shown(target)}","to":"<id>"},"reason":"<why>"}), then run lane next again.`
+          : "A delivers link names an issue that does not exist. Fix the link, then run lane next again.",
         target,
       );
     if (stored(other).status === "open")
@@ -1271,12 +1317,6 @@ function laneRecord(call: HandlerCall<TailRecordInput>): {
       "NOT_FOUND",
       `No autopilot journal for ${input.id}; run lane next first`,
     );
-  const open = saved.action;
-  if (!open || open.n !== input.action)
-    return fail(
-      "INPUT_CONFLICT",
-      `Action ${input.action} is not the open action (${open ? `${open.n}, step ${open.step}` : "none"}); run lane next again`,
-    );
   let parsed: unknown;
   try {
     parsed = JSON.parse(input.result);
@@ -1288,6 +1328,44 @@ function laneRecord(call: HandlerCall<TailRecordInput>): {
   const result = parsed as Record<string, unknown>;
   const journal = structuredClone(saved);
   journal.counters.records += 1;
+  const open = saved.action;
+  // A correction to a named target applies even when no action is open yet.
+  if ("drop" in result || "replace" in result) {
+    if (typeof result.reason !== "string" || !result.reason.trim())
+      return fail("INPUT_INVALID", "A correction needs a nonempty reason");
+    const replace = result.replace as
+      { from?: unknown; to?: unknown } | undefined;
+    const from = ids.stored(
+      String(replace === undefined ? result.drop : replace.from),
+    );
+    if (!journal.named.includes(from))
+      return fail(
+        "INPUT_INVALID",
+        `${ids.shown(from)} is not a named closing target for ${input.id}`,
+      );
+    journal.named = journal.named.filter((name) => name !== from);
+    const to =
+      replace === undefined ? undefined : ids.stored(String(replace.to));
+    if (to !== undefined && to !== id && !journal.named.includes(to))
+      journal.named.push(to);
+    persist(state, journalKey(id), journal, record.revision);
+    emit(state, id, "correct", {
+      dropped: ids.shown(from),
+      ...(to === undefined ? {} : { replacedBy: ids.shown(to) }),
+      reason: result.reason.slice(0, 500),
+    });
+    return {
+      lane: ids.shown(id),
+      step: saved.step,
+      n: input.action,
+      recorded: true,
+    };
+  }
+  if (!open || open.n !== input.action)
+    return fail(
+      "INPUT_CONFLICT",
+      `Action ${input.action} is not the open action (${open ? `${open.n}, step ${open.step}` : "none"}); run lane next again`,
+    );
   if (open.step === "receipt") {
     if (
       typeof result.receipt !== "string" ||

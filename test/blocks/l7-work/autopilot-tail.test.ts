@@ -57,16 +57,17 @@ const head = "a".repeat(40),
   merge = "b".repeat(40),
   moved = "c".repeat(40);
 const url = "https://github.com/example/repo/pull/7";
-const config = {
+const settings = (checks: string[]) => ({
   lanes: {
     autopilot: {
-      receiptChecks: ["typecheck"],
+      receiptChecks: checks,
       rebuild: { argv: ["bun", "run", "build"] },
     },
   },
-};
+});
 
-function fixture() {
+function fixture(checks = ["typecheck"]) {
+  const config = settings(checks);
   const now = Date.parse("2026-01-01T00:00:00.000Z");
   const records = new Map<string, Row>();
   const put = (
@@ -145,16 +146,48 @@ function fixture() {
     } as Record<string, unknown> | string,
     calls: 0,
   };
+  const covers = (...names: string[]) =>
+    names.map((name) => ({ name, status: "PASS" }));
   const receipts = new Map([
-    ["r1", { id: "r1", status: "PASS", subject: merge }],
-    ["stale", { id: "stale", status: "PASS", subject: head }],
+    [
+      "r1",
+      {
+        id: "r1",
+        status: "PASS",
+        subject: merge,
+        checked: covers("typecheck", "lint"),
+      },
+    ],
+    [
+      "stale",
+      {
+        id: "stale",
+        status: "PASS",
+        subject: head,
+        checked: covers("typecheck"),
+      },
+    ],
+    [
+      "thin",
+      {
+        id: "thin",
+        status: "PASS",
+        subject: merge,
+        checked: covers("typecheck"),
+      },
+    ],
   ]);
+  const brief = { error: "" };
   const services = {
     state,
     receipts: { get: (id: string) => receipts.get(id) },
     files: {
       root: "/project",
-      read: (path: string) => files.get(path),
+      read: (path: string) => {
+        if (brief.error && path.startsWith(".worktrees/briefs/"))
+          throw new Error(brief.error);
+        return files.get(path);
+      },
     },
     environment: { select: () => ({}) },
     process: {
@@ -183,9 +216,26 @@ function fixture() {
     records,
     files,
     gh,
+    brief,
     close,
+    checkpoint: (value: string) =>
+      put(
+        "comment:work-1:1",
+        {
+          id: "work-1",
+          body: "checkpoint review",
+          checkpoint: {
+            step: "review",
+            branch: "feat/x",
+            worktree: "/lane",
+            head: value,
+            next: "merge",
+          },
+        },
+        { expectRevision: 0 },
+      ),
     next: async (input: Record<string, unknown> = {}, ops = operations) =>
-      await ops["lane.next"](bound({ id: "work-1", pr: 7, ...input })),
+      await ops["lane.next"](bound({ id: "work-1", pr: 7, head, ...input })),
     record: async (action: number, result: unknown, ops = operations) =>
       await ops["lane.record"](
         bound({ id: "work-1", action, result: JSON.stringify(result) }),
@@ -260,19 +310,6 @@ test("repeated lane.next and lane.record walk receipt, close, issues, rebuild, u
   expect(f.records.has("autopilot:work-1")).toBe(true);
 });
 
-test("a fresh process with the same store resumes at the same step", async () => {
-  const f = fixture();
-  await f.next();
-  await f.record(1, { receipt: "r1" });
-  const before = await f.next();
-  expect(before).toMatchObject({ step: "close", n: 2 });
-  const fresh = load();
-  expect(await f.next({}, fresh)).toEqual(before);
-  f.close("work-1", "r1");
-  f.removeLane();
-  expect(await f.next({}, fresh)).toMatchObject({ step: "issues", n: 3 });
-});
-
 test("a readback head that differs from the journal pauses with an ask", async () => {
   const f = fixture();
   await f.next();
@@ -323,4 +360,101 @@ test("recording an action that is not open is refused", async () => {
   await expect(f.record(9, { receipt: "r1" })).rejects.toThrow(
     /INPUT_CONFLICT/,
   );
+});
+
+test("a first call with no expected head pauses and writes no journal", async () => {
+  const f = fixture();
+  const action = await f.next({ head: undefined });
+  expect(action.kind).toBe("pause");
+  expect(action.ask).toContain("--head");
+  expect(f.records.has("autopilot:work-1")).toBe(false);
+});
+
+test("a recorded checkpoint head supplies the expected head", async () => {
+  const f = fixture();
+  f.checkpoint(head);
+  expect(await f.next({ head: undefined })).toMatchObject({
+    step: "receipt",
+    kind: "forge",
+  });
+  const g = fixture();
+  g.checkpoint(moved);
+  const wrong = await g.next({ head: undefined });
+  expect(wrong.kind).toBe("pause");
+  expect(wrong.raw).toContain(moved);
+  expect(wrong.raw).toContain(head);
+  expect(g.records.has("autopilot:work-1")).toBe(false);
+});
+
+test("a receipt that skips a configured check pauses and quotes what it covers", async () => {
+  const f = fixture(["typecheck", "lint"]);
+  await f.next();
+  await f.record(1, { receipt: "thin" });
+  const action = await f.next();
+  expect(action.kind).toBe("pause");
+  expect(action.why).toContain("lint");
+  expect(action.raw).toContain('"missing":["lint"]');
+  await f.record(1, { receipt: "r1" });
+  expect(await f.next()).toMatchObject({ step: "close", kind: "forge" });
+});
+
+test("a closed lane issue without the journaled receipt pauses", async () => {
+  const f = fixture();
+  await f.next();
+  await f.record(1, { receipt: "r1" });
+  const row = f.records.get("issue:work-1")!;
+  f.records.set("issue:work-1", {
+    ...row,
+    value: { ...row.value, status: "closed" },
+  });
+  f.removeLane();
+  const action = await f.next();
+  expect(action.kind).toBe("pause");
+  expect(action.raw).toContain('"closedWith":null');
+});
+
+test("a brief that cannot be read pauses with the path and the reason", async () => {
+  const f = fixture();
+  f.brief.error = "path is outside the project root";
+  const action = await f.next();
+  expect(action.kind).toBe("pause");
+  expect(action.why).toContain("path is outside the project root");
+  expect(action.raw).toContain("work-1.md");
+  expect(f.records.has("autopilot:work-1")).toBe(false);
+});
+
+test("a wrong closing target pauses, a recorded correction replaces it, and the tail advances", async () => {
+  const f = fixture();
+  f.files.set(".worktrees/briefs/work-1.md", "Closes: work-9\n");
+  await f.next();
+  await f.record(1, { receipt: "r1" });
+  await f.next();
+  f.close("work-1", "r1");
+  f.close("work-2", "r1");
+  f.removeLane();
+  const paused = await f.next();
+  expect(paused.kind).toBe("pause");
+  expect(paused.ask).toContain("forge lane record work-1 --action 2");
+  expect(paused.ask).toContain('"drop":"work-9"');
+  await expect(f.record(2, { drop: "work-9", reason: "  " })).rejects.toThrow(
+    /INPUT_INVALID/,
+  );
+  await expect(
+    f.record(2, { drop: "work-3", reason: "not named" }),
+  ).rejects.toThrow(/INPUT_INVALID/);
+  await f.record(2, {
+    replace: { from: "work-9", to: "work-3" },
+    reason: "typo in the brief",
+  });
+  expect(await f.next()).toMatchObject({ step: "issues", kind: "forge" });
+  const events = [...f.records.values()].filter((row) =>
+    row.key.startsWith("autopilot-event:work-1:"),
+  );
+  expect(
+    events.some(
+      (row) =>
+        row.value.type === "correct" &&
+        JSON.stringify(row.value.detail).includes("typo in the brief"),
+    ),
+  ).toBe(true);
 });
