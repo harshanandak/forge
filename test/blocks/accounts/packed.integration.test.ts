@@ -295,7 +295,11 @@ if (a[0] === 'auth' && a[1] === 'status') {
     const committerCommit = git(guarded, "rev-parse", "HEAD");
     const committerRefused = cli(guarded, "check");
     expect(committerRefused.ok).toBe(false);
+    expect(committerRefused.error.code).toBe("ACCOUNT_COMMIT_IDENTITY");
     expect(committerRefused.error.message).toContain(committerCommit);
+    expect(committerRefused.error.message).toContain(
+      "202+bob@users.noreply.github.com",
+    );
     expect(committerRefused.error.message).toContain("committer");
     expect(committerRefused.error.message).not.toContain("author=");
     expect(
@@ -306,6 +310,84 @@ if (a[0] === 'auth' && a[1] === 'status') {
     expect(cli(second, "check")).toMatchObject({
       ok: true,
       result: { login: "alice" },
+    });
+    // Check fails closed whenever it cannot examine every commit or trust the include.
+    function boundClone(name: string) {
+      const path = clone(name);
+      git(
+        path,
+        "remote",
+        "set-url",
+        "origin",
+        `https://github.com/alice/${name}.git`,
+      );
+      expect(cli(path, "use", { login: "alice", approval }).ok).toBe(true);
+      return path;
+    }
+    const missingInclude = boundClone("check-missing-include");
+    rmSync(join(missingInclude, ".git/forge/accounts.gitconfig"));
+    expect(cli(missingInclude, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_INTEGRITY" },
+    });
+    const changedInclude = boundClone("check-changed-include");
+    writeFileSync(
+      join(changedInclude, ".git/forge/accounts.gitconfig"),
+      "[user]\nemail=changed@example.test\n",
+    );
+    expect(cli(changedInclude, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_INTEGRITY" },
+    });
+    const redirected = boundClone("check-redirected-include");
+    const redirectedConfig = join(redirected, ".git/config");
+    const configText = readFileSync(redirectedConfig, "utf8");
+    expect(configText).toContain('path = "forge/accounts.gitconfig"');
+    writeFileSync(
+      redirectedConfig,
+      configText.replace(
+        'path = "forge/accounts.gitconfig"',
+        'path = "elsewhere.gitconfig"',
+      ),
+    );
+    expect(cli(redirected, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_INTEGRITY" },
+    });
+    const shallow = boundClone("check-shallow");
+    git(shallow, "commit", "--allow-empty", "-m", "below the boundary");
+    git(shallow, "commit", "--allow-empty", "-m", "above the boundary");
+    writeFileSync(
+      join(shallow, ".git/shallow"),
+      git(shallow, "rev-parse", "HEAD") + "\n",
+    );
+    expect(git(shallow, "rev-parse", "--is-shallow-repository")).toBe("true");
+    expect(cli(shallow, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_SHALLOW_HISTORY" },
+    });
+    const unborn = join(root, "check-unborn");
+    mkdirSync(unborn);
+    git(unborn, "init", "-b", "main");
+    git(
+      unborn,
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/alice/check-unborn.git",
+    );
+    mkdirSync(join(unborn, ".forge"));
+    writeFileSync(
+      join(unborn, ".forge/config.yaml"),
+      JSON.stringify({
+        schemaVersion: "forge.config/1",
+        blocks: { accounts: { source: { builtin: "forge/accounts" } } },
+      }),
+    );
+    expect(cli(unborn, "use", { login: "alice", approval }).ok).toBe(true);
+    expect(cli(unborn, "check")).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_INVALID" },
     });
     writeFileSync(join(bin, "renamed"), "");
     const renamed = clone("renamed");
