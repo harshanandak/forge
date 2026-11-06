@@ -184,7 +184,17 @@ test("a dry run neither burns a valid relayed approval nor writes a request", as
   const trust = new LocalState(join(h.deviceRoot, "trust.sqlite"));
   try {
     const owner = await trust.open(false);
-    expect(owner?.list("forge/core-approvals")).toHaveLength(1);
+    // Harness setup relayed one admit and one grant approval; this test adds exactly one request.
+    // No pending row may remain, so neither dry run created one, and the request was used once.
+    const rows = owner?.list("forge/core-approvals") ?? [];
+    expect(rows).toHaveLength(3);
+    expect(
+      rows.filter((row) => record(row.value)?.status === "pending"),
+    ).toEqual([]);
+    expect(rows.find((row) => row.key === request)?.value).toMatchObject({
+      status: "used",
+      method: "relayed",
+    });
   } finally {
     await trust.close();
   }
