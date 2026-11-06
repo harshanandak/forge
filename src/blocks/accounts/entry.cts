@@ -44,10 +44,13 @@ interface Applied {
 interface Input {
   login?: string;
   approval?: { quote: string; source: string };
+  base?: string;
+  tip?: string;
 }
 interface Call {
   input: Input;
   services: Services;
+  config?: { maxCommits?: number };
 }
 interface ApprovalRecord {
   id?: string;
@@ -57,6 +60,8 @@ interface ApprovalRecord {
   approval?: { quote?: string; source?: string };
 }
 const LIMIT = 1048576,
+  MAX_COMMITS = 500,
+  REF = /^[A-Za-z0-9_][A-Za-z0-9._/@{}^~-]{0,255}$/,
   OWNED = "forge/accounts.gitconfig",
   MARK = "# forge accounts owned include";
 function refuse(code: string, message: string): never {
@@ -88,8 +93,8 @@ function parseObject<T extends object>(
   return value as T;
 }
 async function contact(
-  { input, services: s }: Call,
-  action: "plan" | "use" | "decline",
+  { input, services: s, config: settings }: Call,
+  action: "plan" | "use" | "decline" | "check",
 ) {
   if (
     (action === "use" || action === "decline") &&
@@ -168,7 +173,13 @@ async function contact(
   const accounts = parseObject<Record<string, Account>>(accountText, {});
   const binding = Object.hasOwn(bindings, repo) ? bindings[repo] : undefined;
   if (binding?.declined && action !== "use" && action !== "decline")
-    return { repo, declined: true };
+    return action === "check"
+      ? {
+          repo,
+          declined: true,
+          note: "The owner declined account management for this repo; no commit identity check ran",
+        }
+      : { repo, declined: true };
   const applied = parse<Applied | null>(
     s.files.read("forge/accounts.applied.json", LIMIT, "common"),
     null,
@@ -271,6 +282,73 @@ async function contact(
         applied.includeHash !== s.crypto.sha256(owned!))
     )
       integrity("Owned Git include or its fingerprint changed");
+  }
+  if (action === "check") {
+    if (!selected || !binding)
+      return refuse(
+        "ACCOUNT_UNBOUND",
+        "No approved GitHub account for this repo; run forge accounts plan --json and relay result.ask",
+      );
+    if (!applied || !owned || !config.includes(MARK))
+      integrity(
+        "Owned Git include is missing; run forge accounts plan --json to restore it",
+      );
+    const limit = settings?.maxCommits ?? MAX_COMMITS;
+    if (!Number.isSafeInteger(limit) || limit < 1)
+      refuse("INPUT_INVALID", "maxCommits must be a positive integer");
+    const resolve = async (name: string) => {
+      if (!REF.test(name)) refuse("INPUT_INVALID", `Invalid revision ${name}`);
+      const out = await g(
+        ["rev-parse", "--verify", "--quiet", `${name}^{commit}`],
+        true,
+      );
+      if (!out.ok || !out.text)
+        refuse("INPUT_INVALID", `Unknown revision ${name}`);
+      return out.text;
+    };
+    const tip = input.tip
+      ? await resolve(input.tip)
+      : (await g(["rev-parse", "--verify", "--quiet", "HEAD"], true)).text;
+    const base =
+      input.base && !/^0+$/.test(input.base) ? await resolve(input.base) : "";
+    const rows = tip
+      ? (
+          await g([
+            "--no-replace-objects",
+            "log",
+            `--max-count=${limit + 1}`,
+            "--format=%H%x00%ae%x00%ce",
+            tip,
+            "--not",
+            ...(base ? [base] : ["--remotes"]),
+          ])
+        ).text
+          .split(/\r?\n/)
+          .filter(Boolean)
+      : [];
+    if (rows.length > limit)
+      refuse(
+        "ACCOUNT_RANGE_TOO_LARGE",
+        `More than ${limit} commits to check; push a smaller range or raise maxCommits`,
+      );
+    const allowed = selected.commitEmails.map((e) => e.toLowerCase());
+    const wrong = rows.flatMap((line) => {
+      const [commit, author, committer] = line.split("\0");
+      return (
+        [
+          ["author", author],
+          ["committer", committer],
+        ] as const
+      )
+        .filter(([, e]) => !allowed.includes((e ?? "").toLowerCase()))
+        .map(([field, e]) => `${commit} ${field}=${e}`);
+    });
+    if (wrong.length)
+      refuse(
+        "ACCOUNT_COMMIT_IDENTITY",
+        `Push refused: ${wrong.length} commit field(s) do not use GitHub ${selected.login}'s email (${selected.commitEmails.join(", ")}): ${wrong.slice(0, 20).join("; ")}. Rewrite those commits with the bound identity, then check again.`,
+      );
+    return { repo, login: selected.login, checked: rows.length };
   }
   const pin = ghPin(selected?.gh);
   const gh: ResolvedExecutable = { kind: "resolved", path: pin.path };
@@ -573,4 +651,5 @@ module.exports = {
   "accounts.plan": (call: Call) => contact(call, "plan"),
   "accounts.use": (call: Call) => contact(call, "use"),
   "accounts.decline": (call: Call) => contact(call, "decline"),
+  "accounts.check": (call: Call) => contact(call, "check"),
 };

@@ -21,7 +21,12 @@ common Git config, a hashed owned identity file and an applied record referring 
 Another clone of the exact origin inherits the same approval. A changed or orphaned include refuses.
 Interrupted writes and concurrent use refuse; inspect the private lock before recovering it.
 
-Commit-time authors are enforced at push by forge-228 accounts check; S1 verifies identity at bind time.
-S1 also reports unpushed email hazards in the ask. Deliberately wrong reply relay is outside S1 (forge-886).
-Forge installs no hook.
+`forge accounts check --json` refuses a push range holding any commit whose author or committer email is not
+one of the bound account's `commitEmails`, and names each wrong commit, field and email. Pass `--input '{"base":"<sha>","tip":"<sha>"}'`
+for an exact range (a pre-push hook passes the remote and local sha); with no input it checks every commit reachable from HEAD and
+not from a remote-tracking ref. More than `maxCommits` (config, default 500) commits fails closed.
+An unbound repo returns `ACCOUNT_UNBOUND`, a missing or changed include `ACCOUNT_INTEGRITY`, and a declined repo passes with a note.
+The check runs Git only, with the same pinned environment, and never calls gh.
+S1 verifies identity at bind time and reports unpushed email hazards in the ask. Deliberately wrong reply relay is outside S1 (forge-886).
+Forge installs no hook: the git block's hook install owns hook files and runs the check at pre-push.
 Credential routing, push access verification, revocation and author rewriting ship in later slices.

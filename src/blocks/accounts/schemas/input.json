@@ -1,15 +1,34 @@
 {
   "type": "object",
   "properties": {
-    "login": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$" },
+    "login": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$"
+    },
     "approval": {
       "type": "object",
       "properties": {
-        "quote": { "type": "string", "minLength": 1, "maxLength": 8192 },
-        "source": { "type": "string", "minLength": 1, "maxLength": 2048 }
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
       },
       "required": ["quote", "source"],
       "additionalProperties": false
+    },
+    "base": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9._/@{}^~-]{0,255}$"
+    },
+    "tip": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9._/@{}^~-]{0,255}$"
     }
   },
   "additionalProperties": false
