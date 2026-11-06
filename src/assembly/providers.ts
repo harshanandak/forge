@@ -1,5 +1,12 @@
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
-import { basename } from "node:path";
+import {
+  basename,
+  delimiter,
+  isAbsolute,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -213,6 +220,30 @@ export function createProcessService(
       });
     },
   };
+}
+
+/** The first PATH entry outside the project that holds `name`, so a planted executable never runs. */
+function resolveOutside(
+  executor: ProcessPort,
+  name: string,
+  env: Readonly<Record<string, string>>,
+  root: string,
+): ReturnType<ProcessPort["resolve"]> {
+  const pathKey =
+    Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+  for (const entry of (env[pathKey] ?? "").split(delimiter)) {
+    const directory = entry.trim().replace(/^"(.*)"$/, "$1");
+    if (!directory || !isAbsolute(directory)) continue;
+    const from = relative(resolve(root), resolve(directory));
+    if (
+      from === "" ||
+      (!from.startsWith(".." + sep) && from !== ".." && !isAbsolute(from))
+    )
+      continue;
+    const found = executor.resolve(name, { ...env, [pathKey]: directory });
+    if (found.kind === "resolved") return found;
+  }
+  return executor.resolve(name, { ...env, [pathKey]: "" });
 }
 
 function hostEnv(options: ProviderOptions): Readonly<Record<string, string>> {
@@ -626,7 +657,7 @@ export function createAssemblyProviders(
       );
       discoveryEnv.GIT_OPTIONAL_LOCKS = "0";
       discoveryEnv.GIT_TERMINAL_PROMPT = "0";
-      const git = executor.resolve("git", discoveryEnv);
+      const git = resolveOutside(executor, "git", discoveryEnv, root);
       if (git.kind !== "resolved")
         refuse("UNAVAILABLE", "Clone files require Git on PATH");
       const result = await executor.run(

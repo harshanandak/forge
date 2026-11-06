@@ -11,8 +11,15 @@ No terminal confirmation substitutes for the owner's chat reply.
 The block runs Git and GitHub CLI through the process port. GitHub CLI 2.81.0 introduced
 `auth status --json hosts`; older versions use its text account and active-account lines.
 GitHub's public user lookup supplies the numeric noreply id and display name.
-No tokens are requested or stored. Detection drops ambient token and Git override variables.
-Only gh discovery receives the non-token APPDATA, GH_CONFIG_DIR and XDG_CONFIG_HOME paths.
+Forge stores no tokens. `git` and `gh` run by absolute path, found by skipping project, temp, relative and work-tree
+PATH entries, and children get `PATH` set to the pinned git directory only. Ambient token, `GH_HOST`, `GH_REPO` and `GIT_*`
+variables are dropped. Only `gh auth` calls receive the APPDATA, GH_CONFIG_DIR and XDG_CONFIG_HOME paths.
+Each `gh api` call gets the bound login's token from `gh auth token --hostname github.com --user <login>` in the child
+environment only (never argv), with `GH_HOST=github.com`, an owned GH_CONFIG_DIR in the common Git directory and
+`GH_PROMPT_DISABLED=1`. Captured gh output has the token redacted. Hosts other than github.com fail closed.
+`plan` reads `permissions.push` of the origin for each signed-in account: the remote owner is proposed first, then the only
+account that can push ("push access"), then the commit email. `use` checks that `gh api user` returns the same login and id
+and that paginated `user/emails` lists any custom commit email (the generated noreply address needs no listing).
 Bind-time Git identity probes inherit the caller's full environment, including Git config and identity overrides.
 The approved absolute gh path, size and modification time are checked on later contact.
 
@@ -30,4 +37,4 @@ An unbound repo returns `ACCOUNT_UNBOUND`, a missing or changed include `ACCOUNT
 The check runs Git only, with the same pinned environment, and never calls gh.
 S1 verifies identity at bind time and reports unpushed email hazards in the ask. Deliberately wrong reply relay is outside S1 (forge-886).
 Forge installs no hook: the git block's hook install owns hook files and runs the check at pre-push.
-Credential routing, push access verification, revocation and author rewriting ship in later slices.
+Credential routing (helper and SSH), revocation and author rewriting ship in later slices.

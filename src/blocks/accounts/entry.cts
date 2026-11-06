@@ -104,7 +104,7 @@ async function contact(
       "APPROVAL_REQUIRED",
       "Relay the owner's chat reply with approval: {quote, source}",
     );
-  const env: Record<string, string> = {
+  const ambient: Record<string, string> = {
     ...s.environment.select([
       "PATH",
       "PATHEXT",
@@ -127,8 +127,39 @@ async function contact(
     GIT_TERMINAL_PROMPT: "0",
     GIT_OPTIONAL_LOCKS: "0",
   };
-  const git = s.process.resolve("git", env);
-  if (git.kind !== "resolved") refuse("UNAVAILABLE", "Accounts requires Git");
+  const excluded = [
+    s.files.root,
+    ambient.TEMP ?? "",
+    ambient.TMP ?? "",
+    ambient.TMPDIR ?? "/tmp",
+  ];
+  const pathKey =
+    Object.keys(ambient).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+  const separator = s.environment.platform === "win32" ? ";" : ":";
+  // The first PATH entry that is not a project, temp, relative or work-tree directory wins.
+  function trusted(name: string): ExecutablePin | undefined {
+    for (const directory of (ambient[pathKey] ?? "").split(separator)) {
+      const candidate = s.process.resolve(name, {
+        ...ambient,
+        [pathKey]: directory,
+      });
+      if (candidate.kind !== "resolved") continue;
+      try {
+        return s.device.pin(candidate.path, excluded);
+      } catch {
+        /* Skip untrusted search entries before spawning. */
+      }
+    }
+    return undefined;
+  }
+  const gitPin = trusted("git");
+  if (!gitPin) refuse("UNAVAILABLE", "Accounts requires Git");
+  const git: ResolvedExecutable = { kind: "resolved", path: gitPin.path };
+  // Children see only the pinned git's directory, never the caller's PATH.
+  const env: Record<string, string> = {
+    ...ambient,
+    [pathKey]: gitPin.path.replace(/[\\/][^\\/]*$/, ""),
+  };
   async function run(
     exe: ResolvedExecutable,
     args: string[],
@@ -221,35 +252,14 @@ async function contact(
     }
   }
   function ghPin(pin?: ExecutablePin) {
-    const excluded = [
-      s.files.root,
-      env.TEMP ?? "",
-      env.TMP ?? "",
-      env.TMPDIR ?? "/tmp",
-    ];
-    const pathKey =
-      Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
-    const separator = s.environment.platform === "win32" ? ";" : ":";
-    if (!pin)
-      for (const directory of (env[pathKey] ?? "").split(separator)) {
-        const candidate = s.process.resolve("gh", {
-          ...env,
-          [pathKey]: directory,
-        });
-        if (candidate.kind !== "resolved") continue;
-        try {
-          return s.device.pin(candidate.path, excluded);
-        } catch {
-          /* Skip untrusted search entries before spawning. */
-        }
-      }
-    const resolved = pin
-      ? { kind: "resolved" as const, path: pin.path }
-      : s.process.resolve("gh", { ...env, [pathKey]: "" });
-    if (resolved.kind !== "resolved")
-      refuse("UNAVAILABLE", "Install GitHub CLI to detect accounts");
-    const current = s.device.pin(resolved.path, excluded);
-    if (pin && JSON.stringify(pin) !== JSON.stringify(current))
+    if (!pin) {
+      const found = trusted("gh");
+      if (!found)
+        refuse("UNAVAILABLE", "Install GitHub CLI to detect accounts");
+      return found;
+    }
+    const current = s.device.pin(pin.path, excluded);
+    if (JSON.stringify(pin) !== JSON.stringify(current))
       integrity("Pinned gh changed; ask the owner to approve re-pinning");
     return current;
   }
@@ -374,6 +384,50 @@ async function contact(
     ...env,
     ...s.environment.select(["APPDATA", "GH_CONFIG_DIR", "XDG_CONFIG_HOME"]),
   };
+  // Token-bearing calls only: the bound login's token, in the child env, never argv.
+  const secrets: string[] = [];
+  const redact = (text: string) =>
+    secrets.reduce((out, secret) => out.split(secret).join("[redacted]"), text);
+  async function api(login: string, args: string[], optional = false) {
+    const out = await run(
+      gh,
+      ["auth", "token", "--hostname", "github.com", "--user", login],
+      true,
+      ghEnv,
+    );
+    const token = out.text.split(/\r?\n/)[0]?.trim() ?? "";
+    if (!out.ok || !/^\S{8,512}$/.test(token))
+      return optional
+        ? { ok: false, text: "" }
+        : refuse("ACCOUNT_VERIFY_FAILED", `gh has no token for ${login}`);
+    secrets.push(token);
+    const dir = "forge/accounts-gh";
+    if (s.files.read(`${dir}/.owned`, 1024, "common") === undefined)
+      try {
+        s.files.write(`${dir}/.owned`, "owned by forge accounts\n", {
+          area: "common",
+          expected: null,
+        });
+      } catch {
+        if (s.files.read(`${dir}/.owned`, 1024, "common") === undefined)
+          refuse("ACCOUNT_UNAVAILABLE", "Cannot create the owned gh config");
+      }
+    const result = await run(gh, ["api", ...args], optional, {
+      ...env,
+      GH_TOKEN: token,
+      GH_HOST: "github.com",
+      GH_CONFIG_DIR: `${common}/${dir}`,
+      GH_PROMPT_DISABLED: "1",
+    });
+    return { ok: result.ok, text: redact(result.text) };
+  }
+  const json = <T,>(text: string, fallback: T): T => {
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return fallback;
+    }
+  };
   const status = await run(
     gh,
     ["auth", "status", "--hostname", "github.com", "--json", "hosts"],
@@ -460,16 +514,36 @@ async function contact(
   const emailMatches = candidates.filter((c) =>
     [email, ...recent.split(/[\0\r\n]/)].some((e) => belongs(e, c.login)),
   );
+  const pushers: string[] = [];
+  if (match && !selected)
+    for (const c of candidates) {
+      const row = await api(c.login, [`repos/${match[1]}/${match[2]}`], true);
+      if (
+        row.ok &&
+        json<{ permissions?: { push?: boolean } }>(row.text, {}).permissions
+          ?.push === true
+      )
+        pushers.push(c.login);
+    }
+  const byEmail = emailMatches.filter(
+    (c) => !pushers.length || pushers.includes(c.login),
+  );
+  const onlyPusher =
+    pushers.length === 1
+      ? candidates.find((c) => c.login === pushers[0])
+      : undefined;
   const pick = selected
     ? candidates.find((c) => c.login === selected.login)
-    : (owner ?? (emailMatches.length === 1 ? emailMatches[0] : undefined));
+    : (owner ?? onlyPusher ?? (byEmail.length === 1 ? byEmail[0] : undefined));
   const reason = selected
     ? "previously approved for this repo"
     : owner
       ? "owns the remote"
-      : pick
-        ? "matches the commit email"
-        : "no signal chooses one account";
+      : pick && pick === onlyPusher
+        ? "is the only signed-in account with push access to the remote"
+        : pick
+          ? "matches the commit email"
+          : "no signal chooses one account";
   const hazards: string[] = [];
   const active = candidates.find((c) => c.active);
   if (pick && active && active.login !== pick.login)
@@ -477,6 +551,10 @@ async function contact(
   if (pick && email && !belongs(email, pick.login))
     hazards.push(
       `effective user.email is ${email}, outside ${pick.login}'s noreply identity`,
+    );
+  if (pick && pushers.length && !pushers.includes(pick.login))
+    hazards.push(
+      `${pick.login} cannot push to this remote; ${pushers.join(", ")} can`,
     );
   const wrong = pick
     ? unpushed.filter(
@@ -619,6 +697,38 @@ async function contact(
       };
       if (/[\r\n\0]/.test(account.commitName))
         refuse("INPUT_INVALID", "Invalid GitHub commit name");
+      const me = json<{ login?: string; id?: number }>(
+        (await api(login, ["user"])).text,
+        {},
+      );
+      if (
+        me.login?.toLowerCase() !== login.toLowerCase() ||
+        me.id !== account.userId
+      )
+        refuse(
+          "ACCOUNT_VERIFY_FAILED",
+          `The gh token for ${login} belongs to another GitHub account`,
+        );
+      const listed = new Set(
+        json<{ email?: string }[]>(
+          (await api(login, ["user/emails", "--paginate"], true)).text.replace(
+            /\]\s*\[/g,
+            ",",
+          ),
+          [],
+        ).map((row) => (row.email ?? "").toLowerCase()),
+      );
+      const generated = `${account.userId}+${login}@users.noreply.github.com`;
+      const unlisted = account.commitEmails.filter(
+        (e) =>
+          e.toLowerCase() !== generated.toLowerCase() &&
+          !listed.has(e.toLowerCase()),
+      );
+      if (unlisted.length)
+        refuse(
+          "ACCOUNT_VERIFY_FAILED",
+          `GitHub ${login} does not list these commit emails: ${unlisted.join(", ")}`,
+        );
       const approved: Binding = {
         login,
         fingerprint: hash(account),
