@@ -439,6 +439,12 @@ test("a wrong closing target pauses, a recorded correction replaces it, and the 
   await expect(f.record(2, { drop: "work-9", reason: "  " })).rejects.toThrow(
     /INPUT_INVALID/,
   );
+  await expect(f.record(2, { replace: null, reason: "typo" })).rejects.toThrow(
+    /INPUT_INVALID/,
+  );
+  await expect(
+    f.record(2, { replace: { from: "work-9" }, reason: "typo" }),
+  ).rejects.toThrow(/INPUT_INVALID/);
   await expect(
     f.record(2, { drop: "work-3", reason: "not named" }),
   ).rejects.toThrow(/INPUT_INVALID/);

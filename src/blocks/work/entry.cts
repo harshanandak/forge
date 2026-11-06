@@ -1015,7 +1015,7 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
           readback: { head: pull.headRefOid, mergeCommit: pull.mergeCommit },
         },
       );
-    journal = structuredClone(saved);
+    journal = JSON.parse(JSON.stringify(saved)) as Journal;
   } else {
     const checkpointHead = recovery(appended(state, `comment:${id}:`))?.head;
     const expected = input.head ?? checkpointHead;
@@ -1326,26 +1326,35 @@ function laneRecord(call: HandlerCall<TailRecordInput>): {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     return fail("INPUT_INVALID", "result must be a JSON object");
   const result = parsed as Record<string, unknown>;
-  const journal = structuredClone(saved);
+  const journal = JSON.parse(JSON.stringify(saved)) as Journal;
   journal.counters.records += 1;
   const open = saved.action;
   // A correction to a named target applies even when no action is open yet.
   if ("drop" in result || "replace" in result) {
     if (typeof result.reason !== "string" || !result.reason.trim())
       return fail("INPUT_INVALID", "A correction needs a nonempty reason");
-    const replace = result.replace as
-      { from?: unknown; to?: unknown } | undefined;
-    const from = ids.stored(
-      String(replace === undefined ? result.drop : replace.from),
+    const swap = "replace" in result;
+    const named = (value: unknown, label: string): string => {
+      if (typeof value !== "string" || !value.trim())
+        return fail("INPUT_INVALID", `${label} must be an issue id string`);
+      return ids.stored(value);
+    };
+    if (swap === "drop" in result)
+      return fail("INPUT_INVALID", "Give exactly one of drop or replace");
+    const replace = result.replace as { from?: unknown; to?: unknown };
+    if (swap && (typeof replace !== "object" || replace === null))
+      return fail("INPUT_INVALID", "replace must be {from, to}");
+    const from = named(
+      swap ? replace.from : result.drop,
+      swap ? "from" : "drop",
     );
     if (!journal.named.includes(from))
       return fail(
         "INPUT_INVALID",
         `${ids.shown(from)} is not a named closing target for ${input.id}`,
       );
+    const to = swap ? named(replace.to, "to") : undefined;
     journal.named = journal.named.filter((name) => name !== from);
-    const to =
-      replace === undefined ? undefined : ids.stored(String(replace.to));
     if (to !== undefined && to !== id && !journal.named.includes(to))
       journal.named.push(to);
     persist(state, journalKey(id), journal, record.revision);
