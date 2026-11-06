@@ -2,10 +2,13 @@ import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,7 +34,7 @@ type Audit = {
   approval?: { quote: string; source: string };
 };
 
-test("installed accounts: one approval catches wrong authors and binds every clone", () => {
+function setup() {
   const root = mkdtempSync(join(tmpdir(), "forge-accounts-"));
   const home = join(root, "home"),
     bin = join(home, "bin"),
@@ -60,15 +63,34 @@ test("installed accounts: one approval catches wrong authors and binds every clo
   writeFileSync(
     fake,
     `
-const a = process.argv.slice(2);
-if (Object.keys(process.env).some(k => /^(GH_TOKEN|GITHUB_TOKEN|NODE_OPTIONS|GIT_AUTHOR_EMAIL|GIT_CONFIG_COUNT)$/i.test(k))) process.exit(9);
-for (const key of ['APPDATA','GH_CONFIG_DIR','XDG_CONFIG_HOME']) if (!process.env[key]?.startsWith(process.env.HOME)) process.exit(7);
-if (a[0] === 'auth' && a[1] === 'status') {
-  if (require('node:fs').existsSync(require('node:path').join(__dirname, 'text')) && a.includes('--json')) { process.stderr.write('unknown flag: --json'); process.exit(1); }
+const fs = require('node:fs'), path = require('node:path');
+const a = process.argv.slice(2), e = process.env;
+const flag = (name) => fs.existsSync(path.join(__dirname, name));
+const ids = { alice: 101, bob: 202, constructor: 303, mallory: 404 };
+if (Object.keys(e).some(k => /^(GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|GH_REPO|NODE_OPTIONS|GIT_AUTHOR_EMAIL|GIT_CONFIG_COUNT)$/i.test(k))) process.exit(9);
+if (a[0] === 'api') {
+  const who = /^ghp_fixture_(alice|bob|constructor)_9d3f1c$/.exec(e.GH_TOKEN || '')?.[1];
+  const dir = e.GH_CONFIG_DIR && path.resolve(e.GH_CONFIG_DIR);
+  if (!who || e.GH_HOST !== 'github.com' || e.GH_PROMPT_DISABLED !== '1' || !dir || dir === path.resolve(e.HOME, 'gh') || !fs.existsSync(dir) || fs.existsSync(path.join(dir, 'hosts.yml'))) process.exit(7);
+  process.stderr.write('debug ' + e.GH_TOKEN + '\\n');
+  const route = a[1];
+  let m;
+  if (route === 'user') console.log(JSON.stringify({ login: flag('swapped') ? 'mallory' : who, id: ids[who] }));
+  else if (route === 'user/emails' && a.includes('--paginate')) console.log(JSON.stringify([{ email: ids[who] + '+' + who + '@users.noreply.github.com', primary: true, verified: true }]));
+  else if ((m = /^repos\\/([^/]+)\\/([^/]+)$/.exec(route))) console.log(JSON.stringify({ permissions: { push: who === m[1] || (m[1] === 'org' && who === 'bob') } }));
+  else if ((m = /^users\\/(alice|bob|constructor)$/.exec(route))) console.log(JSON.stringify({ id: ids[m[1]], name: m[1] + (flag('renamed') ? ' updated' : '') + (m[1] === 'constructor' && flag('leaky') ? ' ' + e.GH_TOKEN : '') }));
+  else process.exit(8);
+} else if (a[0] === 'auth' && a[1] === 'token') {
+  if (e.GH_TOKEN || e.GH_HOST || a.join(' ').indexOf('--hostname github.com --user ') < 0) process.exit(9);
+  const who = a[a.indexOf('--user') + 1];
+  if (!ids[who]) process.exit(1);
+  console.log('ghp_fixture_' + who + '_9d3f1c');
+} else if (a[0] === 'auth' && a[1] === 'status') {
+  if (e.GH_TOKEN || e.GH_HOST) process.exit(9);
+  for (const key of ['APPDATA','GH_CONFIG_DIR','XDG_CONFIG_HOME']) if (!e[key]?.startsWith(e.HOME)) process.exit(7);
+  if (flag('text') && a.includes('--json')) { process.stderr.write('unknown flag: --json'); process.exit(1); }
   if (!a.includes('--json')) process.stderr.write('github.com\\n  ✓ Logged in to github.com account alice (keyring)\\n  - Active account: false\\n  ✓ Logged in to github.com account bob (keyring)\\n  - Active account: true\\n');
   else console.log(JSON.stringify({hosts:{'github.com':[{state:'success',active:false,host:'github.com',login:'alice',tokenSource:'keyring',gitProtocol:'https'},{state:'success',active:true,host:'github.com',login:'bob',tokenSource:'keyring',gitProtocol:'https'},{state:'success',active:false,host:'github.com',login:'constructor',tokenSource:'keyring',gitProtocol:'https'}]}}));
-} else if (a[0] === 'api' && /^users\\/(alice|bob|constructor)$/.test(a[1])) {
-  console.log(JSON.stringify({id:a[1].endsWith('alice')?101:a[1].endsWith('bob')?202:303,name:a[1].slice(6)+(require('node:fs').existsSync(require('node:path').join(__dirname,'renamed'))?' updated':'')}));
 } else process.exit(8);
 `,
   );
@@ -145,6 +167,11 @@ if (a[0] === 'auth' && a[1] === 'status') {
     );
     return path;
   }
+  return { root, home, bin, env, node, forge, run, git, cli, readAudit, clone };
+}
+
+test("installed accounts: one approval catches wrong authors and binds every clone", () => {
+  const { root, home, bin, env, run, git, cli, readAudit, clone } = setup();
   try {
     const repo = clone("first");
     git(repo, "config", "user.email", "202+bob@users.noreply.github.com");
@@ -585,6 +612,151 @@ if (a[0] === 'auth' && a[1] === 'status') {
       ok: false,
       error: { code: "ACCOUNT_INTEGRITY" },
     });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+const TOKEN = "ghp_fixture_constructor_9d3f1c";
+
+test("installed accounts: planted gh and git on PATH never run or see the token", () => {
+  const { root, node, env, cli, clone } = setup();
+  try {
+    const repo = clone("spy");
+    const planted = join(repo, ".bin");
+    mkdirSync(planted);
+    const spyLog = join(root, "spy.log");
+    const spy = join(planted, "spy.cjs");
+    writeFileSync(
+      spy,
+      `require('node:fs').appendFileSync(${JSON.stringify(spyLog)}, process.argv.slice(2).join(' ') + ' ' + JSON.stringify(process.env) + '\n');`,
+    );
+    for (const name of ["gh", "git"]) {
+      const file = join(
+        planted,
+        process.platform === "win32" ? `${name}.cmd` : name,
+      );
+      writeFileSync(
+        file,
+        process.platform === "win32"
+          ? ["@echo off", `"${node}" "${spy}" %*`, ""].join("\r\n")
+          : ["#!/bin/sh", `exec '${node}' '${spy}' "$@"`, ""].join("\n"),
+      );
+      chmodSync(file, 0o700);
+    }
+    const hostile = {
+      PATH: planted + delimiter + env.PATH,
+      GH_TOKEN: "caller-token-never-forward",
+    };
+    const approval = { quote: "yes", source: "t3:fixture/message:spy" };
+    const plan = cli(repo, "plan", {}, hostile);
+    expect(plan.ok, JSON.stringify(plan)).toBe(true);
+    const used = cli(repo, "use", { login: "alice", approval }, hostile);
+    expect(used.ok, JSON.stringify(used)).toBe(true);
+    expect(existsSync(spyLog) ? readFileSync(spyLog, "utf8") : "").toBe("");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: plan picks the only account that can push and use verifies the login", () => {
+  const { root, bin, cli, clone, git } = setup();
+  try {
+    const repo = clone("org-app");
+    git(repo, "remote", "set-url", "origin", "https://github.com/org/app.git");
+    const plan = cli(repo, "plan");
+    expect(plan.ok, JSON.stringify(plan)).toBe(true);
+    expect(plan.result.proposal.login).toBe("bob");
+    expect(plan.result.reason).toContain("push access");
+    const approval = { quote: "yes", source: "t3:fixture/message:push" };
+    expect(cli(repo, "use", { login: "bob", approval }).ok).toBe(true);
+    writeFileSync(join(bin, "swapped"), "");
+    const swapped = clone("swapped");
+    git(
+      swapped,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/alice/swapped.git",
+    );
+    expect(cli(swapped, "use", { login: "alice", approval })).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_VERIFY_FAILED" },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a non-github.com host fails closed", () => {
+  const { root, cli, clone, git } = setup();
+  try {
+    const repo = clone("enterprise");
+    git(
+      repo,
+      "remote",
+      "set-url",
+      "origin",
+      "https://ghe.example.test/org/app.git",
+    );
+    const approval = { quote: "yes", source: "t3:fixture/message:ghe" };
+    for (const [verb, input] of [
+      ["plan", {}],
+      ["use", { login: "alice", approval }],
+    ] as const)
+      expect(
+        cli(repo, verb, input, { GH_HOST: "ghe.example.test" }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: "ACCOUNT_HOST_UNSUPPORTED" },
+      });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: the token never reaches stdout, stderr, receipts or the audit", () => {
+  const { root, home, bin, run, node, forge, clone, git } = setup();
+  try {
+    writeFileSync(join(bin, "leaky"), "");
+    const repo = clone("leaky");
+    git(
+      repo,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/constructor/app.git",
+    );
+    const approval = { quote: "yes", source: "t3:fixture/message:leak" };
+    const outputs = ["plan", "use", "plan"].map((verb) => {
+      const out = run(
+        node,
+        [
+          forge,
+          "accounts",
+          verb,
+          "--json",
+          "--input",
+          JSON.stringify(
+            verb === "use" ? { login: "constructor", approval } : {},
+          ),
+        ],
+        repo,
+      );
+      expect(out.status, out.stdout + out.stderr).toBe(0);
+      return out.stdout + out.stderr;
+    });
+    const files = [home, join(repo, ".git")].flatMap((dir) =>
+      readdirSync(dir, { recursive: true, encoding: "utf8" })
+        .map((name) => join(dir, name))
+        .filter((path) => statSync(path).isFile()),
+    );
+    expect(files.some((path) => path.endsWith("audit.jsonl"))).toBe(true);
+    for (const text of [
+      ...outputs,
+      ...files.map((path) => readFileSync(path, "latin1")),
+    ])
+      expect(text).not.toContain(TOKEN);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
