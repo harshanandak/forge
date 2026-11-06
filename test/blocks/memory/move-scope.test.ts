@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { nodeFileCapture } from "../../../src/adapters/node-runtime/capture.ts";
 import { Catalog, captureBlock } from "../../../src/core/catalog/index.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
-import { TrustStore } from "../../../src/core/trust/index.ts";
+import { TrustStore, admit, grant } from "../../fixtures/owner-approval.ts";
 import {
   lintSkill,
   renderSkills,
@@ -117,8 +117,8 @@ for (const budget of [15_000, 30_000]) {
         ["forge.state@1.0.0", "forge.project-state@1.0.0"],
       );
       const trust = new TrustStore();
-      trust.admit("human", block.digest);
-      trust.grant("human", block.digest, ["memory:write"]);
+      admit(trust, block.digest);
+      grant(trust, block.digest, ["memory:write"]);
       const runtime = new Runtime(catalog, trust, {
         clock: { now: () => now },
         services: () =>

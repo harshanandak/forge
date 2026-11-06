@@ -662,7 +662,7 @@ async function withDelivery(
           expectRevision: "",
         }),
       ).toMatchObject({ ok: true });
-      for (const name of ["work", "memory", "check", "agent"]) {
+      for (const name of ["accounts", "work", "memory", "check", "agent"]) {
         const target = join(root, "blocks", name);
         cpSync(join(repo, "src/blocks", name), target, { recursive: true });
         const { entry } = JSON.parse(

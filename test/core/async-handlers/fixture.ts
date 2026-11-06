@@ -1,5 +1,5 @@
 import { captureBlock, Catalog } from "../../../src/core/catalog/index.ts";
-import { TrustStore } from "../../../src/core/trust/index.ts";
+import { TrustStore, admit } from "../../fixtures/owner-approval.ts";
 import {
   Runtime,
   type RuntimeOptions,
@@ -60,7 +60,7 @@ export function fixture(
     new Map([["sample", block]]),
   );
   const trust = new TrustStore();
-  trust.admit("human", block.digest);
+  admit(trust, block.digest);
   const request: InvocationRequest = {
     schemaVersion: "forge.invocation/1",
     requestId: "async-1",

@@ -1,3 +1,4 @@
+import { withCliOwnerApproval } from "../fixtures/owner-approval.mjs";
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -64,7 +65,7 @@ function fixture(kind: "outside" | "internal" | "plain" | "missing") {
       root,
       device,
       target,
-      call(args: string[]): ResultEnvelope {
+      call: withCliOwnerApproval((args: string[]): ResultEnvelope => {
         const result = spawnSync("node", [bin, ...args], {
           cwd: checkout,
           env: {
@@ -83,7 +84,7 @@ function fixture(kind: "outside" | "internal" | "plain" | "missing") {
           envelope.ok ? 0 : 1,
         );
         return envelope;
-      },
+      }),
       close() {
         rmSync(sandbox, { recursive: true, force: true });
       },
@@ -101,7 +102,7 @@ for (const args of [
   test(`${args.slice(0, 2).join(" ")} refuses an outside .forge before creating state`, () => {
     const f = fixture("outside");
     try {
-      expect(f.call(args)).toMatchObject({
+      expect(f.call(args, 1)).toMatchObject({
         ok: false,
         error: {
           code: "INTERNAL",
@@ -134,3 +135,15 @@ for (const kind of ["internal", "plain", "missing"] as const) {
     }
   });
 }
+
+test("invalid reinit returns its validation error without creating an approval request", () => {
+  const f = fixture("outside");
+  try {
+    const result = f.call(["store", "reinit"], 1);
+    expect(result).toMatchObject({ ok: false, error: { code: "INTERNAL" } });
+    expect(result.result).toBeUndefined();
+    expect(existsSync(f.device)).toBe(false);
+  } finally {
+    f.close();
+  }
+});

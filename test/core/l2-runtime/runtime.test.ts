@@ -19,7 +19,8 @@ import {
   addBlock as add,
   assembleCoreManifest,
 } from "../../../src/core/catalog/index.ts";
-import { TrustStore, secretReference } from "../../../src/core/trust/index.ts";
+import { secretReference } from "../../../src/core/trust/index.ts";
+import { TrustStore, admit, grant } from "../../fixtures/owner-approval.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import type { SurfaceCatalog } from "../../../src/surface/catalog.ts";
@@ -97,7 +98,7 @@ test("catalog_call advertises worst-case effects but enforces the target grants"
   });
   let writes = 0;
   try {
-    f.trust.admit("human", f.block.digest);
+    admit(f.trust, f.block.digest);
     const runtime = new Runtime(f.catalog, f.trust, {
       isolation: nodeRunIsolation,
       services: () =>
@@ -132,7 +133,7 @@ test("catalog_call advertises worst-case effects but enforces the target grants"
       { ok: false, error: { code: "GRANT_REQUIRED" } },
     );
     assert.equal(writes, 0);
-    f.trust.grant("human", f.block.digest, ["sample:write"]);
+    grant(f.trust, f.block.digest, ["sample:write"]);
     assert.partialDeepStrictEqual(
       await handlers.callTool("catalog_call", f.request),
       { ok: true, result: "hello" },
@@ -156,8 +157,8 @@ test("catalog_call preserves canonical dry-run, context and request identity wit
   let opened = 0;
   const requests: InvocationRequest[] = [];
   try {
-    f.trust.admit("human", f.block.digest);
-    f.trust.grant("human", f.block.digest, ["sample:write"]);
+    admit(f.trust, f.block.digest);
+    grant(f.trust, f.block.digest, ["sample:write"]);
     const runtime = new Runtime(f.catalog, f.trust, {
       isolation: nodeRunIsolation,
       services: () => {
@@ -229,7 +230,7 @@ test("discovery never activates code and denied admission never opens services",
       error: { code: "ADMISSION_REQUIRED" },
     });
     assert.equal(calls, 0);
-    f.trust.admit("human", f.block.digest);
+    admit(f.trust, f.block.digest);
     assert.partialDeepStrictEqual(await runtime.invoke(f.request), {
       ok: true,
       result: "hello",
@@ -243,7 +244,7 @@ test("discovery never activates code and denied admission never opens services",
 test("changed entry bytes need fresh admission; matching captures reuse it", () => {
   const f = fixture();
   try {
-    f.trust.admit("human", f.block.digest);
+    admit(f.trust, f.block.digest);
     assert.equal(captureBlock(f.root).digest, f.block.digest);
     writeFileSync(join(f.root, "index.cjs"), "module.exports = {};");
     const changed = captureBlock(f.root);
@@ -253,8 +254,12 @@ test("changed entry bytes need fresh admission; matching captures reuse it", () 
       /ADMISSION_REQUIRED/,
     );
     assert.throws(
-      () => f.trust.admit("agent", changed.digest),
-      /ADMISSION_REQUIRED/,
+      () =>
+        f.trust.admit(
+          {} as Parameters<typeof f.trust.admit>[0],
+          changed.digest,
+        ),
+      /APPROVAL_REQUIRED/,
     );
   } finally {
     f.close();
@@ -277,7 +282,7 @@ for (const [name, code, expected] of [
     const f = fixture(code);
     let closed = 0;
     try {
-      f.trust.admit("human", f.block.digest);
+      admit(f.trust, f.block.digest);
       const runtime = new Runtime(f.catalog, f.trust, {
         isolation: nodeRunIsolation,
         limits: {
@@ -316,8 +321,8 @@ for (const variant of ["device", "project", "acquire", "held"] as const)
       effects: ["sample:write"],
     });
     try {
-      f.trust.admit("human", f.block.digest);
-      f.trust.grant("human", f.block.digest, ["sample:write"]);
+      admit(f.trust, f.block.digest);
+      grant(f.trust, f.block.digest, ["sample:write"]);
       const context = {
         actor: { kind: "agent" as const, id: "a" },
         device: { id: "d" },
@@ -381,7 +386,7 @@ test("raw-byte capture includes BOM, docs and schemas and admission is reused on
   const f = fixture();
   try {
     assert.equal(addBlock(f.root, f.trust).admitted, false);
-    f.trust.admit("human", f.block.digest);
+    admit(f.trust, f.block.digest);
     assert.equal(addBlock(f.root, f.trust).admitted, true);
     for (const name of [
       "index.cjs",
@@ -429,7 +434,7 @@ test("discovery does not run a top-level activation spy", async () => {
       error: { code: "ADMISSION_REQUIRED" },
     });
     assert.equal(calls, 0);
-    f.trust.admit("human", block.digest);
+    admit(f.trust, block.digest);
     assert.partialDeepStrictEqual(await runtime.invoke(f.request), {
       ok: true,
     });
@@ -444,7 +449,7 @@ test("revocation during open refuses execution and still closes the owned handle
   let calls = 0;
   let closed = 0;
   try {
-    f.trust.admit("human", f.block.digest);
+    admit(f.trust, f.block.digest);
     const runtime = new Runtime(f.catalog, f.trust, {
       isolation: nodeRunIsolation,
       services: () => {
@@ -478,7 +483,7 @@ test("output structural limits and hostile getters never accept a result", async
   ]) {
     const f = fixture(code);
     try {
-      f.trust.admit("human", f.block.digest);
+      admit(f.trust, f.block.digest);
       const runtime = new Runtime(f.catalog, f.trust, {
         isolation: nodeRunIsolation,
         limits: {
@@ -521,8 +526,13 @@ test("outside text is bounded before validation and SecretRef never accepts plai
     });
     assert.throws(() => secretReference("plaintext"), /INPUT_INVALID/);
     assert.throws(
-      () => f.trust.grant("agent", f.block.digest, ["sample:write"]),
-      /GRANT_REQUIRED/,
+      () =>
+        f.trust.grant(
+          {} as Parameters<typeof f.trust.grant>[0],
+          f.block.digest,
+          ["sample:write"],
+        ),
+      /APPROVAL_REQUIRED/,
     );
   } finally {
     f.close();
@@ -642,7 +652,7 @@ test("captured relative schema dependencies without a suffix validate and void a
     const block = captureBlock(f.root);
     assert.equal(block.validate("input.json", "hello"), true);
     assert.equal(block.validate("input.json", 1), false);
-    f.trust.admit("human", block.digest);
+    admit(f.trust, block.digest);
     writeFileSync(
       join(f.root, "nested.json"),
       JSON.stringify({ type: "number" }),
@@ -669,7 +679,7 @@ test("missing embedding service provider is incomplete and never activates the h
     writeFileSync(join(f.root, "block.json"), JSON.stringify(manifest));
     const block = captureBlock(f.root);
     const catalog = new Catalog(f.catalog.config, new Map([["sample", block]]));
-    f.trust.admit("human", block.digest);
+    admit(f.trust, block.digest);
     assert.partialDeepStrictEqual(
       await new Runtime(catalog, f.trust).invoke(f.request),
       { ok: false, status: "INCOMPLETE", error: { code: "PROVIDER_MISSING" } },
@@ -702,8 +712,8 @@ test("clients are constructed for only the invoked operation effects", async () 
     );
     const block = captureBlock(f.root);
     const catalog = new Catalog(f.catalog.config, new Map([["sample", block]]));
-    f.trust.admit("human", block.digest);
-    f.trust.grant("human", block.digest, ["sample:write"]);
+    admit(f.trust, block.digest);
+    grant(f.trust, block.digest, ["sample:write"]);
     const scopes: import("../../../src/core/runtime/index.ts").ServiceScope[] =
       [];
     const runtime = new Runtime(catalog, f.trust, {
@@ -821,7 +831,7 @@ test("runtime uses the injected evaluator and closes both owned handles on every
     const f = fixture("throw Error('the real handler must not run')");
     const events: string[] = [];
     try {
-      f.trust.admit("human", f.block.digest);
+      admit(f.trust, f.block.digest);
       const runtime = new Runtime(f.catalog, f.trust, {
         clock: { now: () => 0 },
         services: () =>
@@ -895,7 +905,7 @@ test("runtime uses the injected evaluator and closes both owned handles on every
 test("missing evaluator fails closed after admission without activating code", async () => {
   const f = fixture("throw Error('must not run')");
   try {
-    f.trust.admit("human", f.block.digest);
+    admit(f.trust, f.block.digest);
     assert.partialDeepStrictEqual(
       await new Runtime(f.catalog, f.trust).invoke(f.request),
       {

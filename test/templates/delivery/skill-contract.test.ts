@@ -98,7 +98,7 @@ test("delivery skill contracts: shape, links, rules, budgets, lint and mirrors",
         ).toMatchObject({ ok: true });
       };
       await call("template.import", { template: "delivery" });
-      for (const name of ["work", "memory", "check", "agent"]) {
+      for (const name of ["accounts", "work", "memory", "check", "agent"]) {
         const target = join(root, "blocks", name);
         cpSync(join(repo, "src/blocks", name), target, { recursive: true });
         const { entry } = JSON.parse(

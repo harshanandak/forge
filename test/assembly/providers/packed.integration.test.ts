@@ -1,8 +1,8 @@
+import { stageOwnerApprovalFixture } from "../../fixtures/stage-owner-approval.ts";
 import { test, expect } from "bun:test";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
-  copyFileSync,
   cpSync,
   existsSync,
   mkdtempSync,
@@ -101,7 +101,7 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
     const positives = runtimes.map((runtime) => {
       const cwd = mkdtempSync(join(consumer, "p-"));
       for (const file of ["journey.mjs", "entry.cjs"])
-        copyFileSync(
+        stageOwnerApprovalFixture(
           join(root, "test/node-fixtures/assembly-providers", file),
           join(cwd, file),
         );
@@ -129,12 +129,12 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
       filter: (file) => !file.endsWith(".map") && !file.endsWith(".ts"),
     });
     for (const file of ["journey.mjs", "entry.cjs"])
-      copyFileSync(
+      stageOwnerApprovalFixture(
         join(root, "test/node-fixtures/assembly-providers", file),
         join(isolated, file),
       );
     writeFileSync(join(isolated, "liveness.mjs"), liveness);
-    copyFileSync(
+    stageOwnerApprovalFixture(
       join(root, "test/integration/fixtures/mutation-proof.mjs"),
       join(isolated, "mutation-proof.mjs"),
     );

@@ -1,3 +1,7 @@
+import {
+  withCliOwnerApproval,
+  withOwnerApproval,
+} from "../../fixtures/owner-approval.mjs";
 import assert from "node:assert/strict";
 import { awaitDeadline, closeChild } from "./deadline.mjs";
 import { isRunning as alive } from "./liveness.mjs";
@@ -97,8 +101,9 @@ function fixture(source, timeoutMs = 3000, effects = [], processContainment) {
     },
     new Map([["sample", block]]),
   );
-  const trust = new TrustStore();
-  trust.admit("human", block.digest);
+  const trustRecords = new Map();
+  const trust = new TrustStore(trustRecords);
+  trustRecords.set(block.digest, { admitted: true, effects: [] });
   const request = {
     schemaVersion: "forge.invocation/1",
     requestId: "packed-async",
@@ -112,6 +117,7 @@ function fixture(source, timeoutMs = 3000, effects = [], processContainment) {
     block,
     catalog,
     trust,
+    trustRecords,
     request,
     runtime: (services, isolation = nodeRunIsolation) =>
       new Runtime(catalog, trust, {
@@ -440,7 +446,10 @@ try {
       "async effect needs human grant",
     );
     assert.equal(writes, 0);
-    f.trust.grant("human", f.block.digest, ["sample:write"]);
+    f.trustRecords.set(f.block.digest, {
+      admitted: true,
+      effects: ["sample:write"],
+    });
     assert.equal((await runtime.invoke(f.request)).result, "written");
     assert.equal(writes, 1);
   }
@@ -448,7 +457,8 @@ try {
     const f = fixture(
       "async ({ input }) => { await Promise.resolve(); return input.value; }",
     );
-    function cli(args, expected = 0) {
+    const cli = withCliOwnerApproval(cliRaw);
+    function cliRaw(args, expected = 0) {
       const child = spawnSync(process.execPath, [bin, ...args], {
         cwd: root,
         env: { ...env, FORGE_DEVICE_ROOT: device },
@@ -581,7 +591,10 @@ try {
       3000,
       ["sample:write"],
     );
-    f.trust.grant("human", f.block.digest, ["sample:write"]);
+    f.trustRecords.set(f.block.digest, {
+      admitted: true,
+      effects: ["sample:write"],
+    });
     let retained, cached;
     try {
       const result = await f
@@ -682,7 +695,8 @@ try {
       device: { id: join(assemblyRoot, "device") },
     };
     let sequence = 0;
-    const invoke = (op, input = {}, context = ctx, caller = "agent") =>
+    const invoke = withOwnerApproval((...args) => invokeRaw(...args));
+    const invokeRaw = (op, input = {}, context = ctx, caller = "agent") =>
       assembly.catalog.invoke({
         schemaVersion: "forge.invocation/1",
         requestId: `assembled-${++sequence}`,

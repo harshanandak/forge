@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { nodeRunIsolation } from "../../../src/adapters/node-runtime/isolation.ts";
 import type { FileCapturePort } from "../../../src/core/catalog/index.ts";
 import { BlockCatalog } from "../../../src/core/runtime/catalog.ts";
-import { TrustStore } from "../../../src/core/trust/index.ts";
+import { TrustStore, approval } from "../../fixtures/owner-approval.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 
 const authoredDocs = {
@@ -72,13 +72,19 @@ function fixture(blocks: readonly { id: string; noun: string }[]) {
   };
   const trust = new TrustStore();
   const instances = new Map<string, string>();
-  const catalog = new BlockCatalog(capture, trust, {
-    isolation: nodeRunIsolation,
-    services: (instance, _context, scope) => {
-      instances.set(scope.op, instance);
-      return Promise.resolve({ ownership: "borrowed", value: {} });
+  const catalog = new BlockCatalog(
+    capture,
+    trust,
+    {
+      isolation: nodeRunIsolation,
+      services: (instance, _context, scope) => {
+        instances.set(scope.op, instance);
+        return Promise.resolve({ ownership: "borrowed", value: {} });
+      },
     },
-  });
+    undefined,
+    (request) => approval(request.op, request.input as Record<string, unknown>),
+  );
   const cli = (args: string[]) =>
     runCli(catalog, args, {
       caller: "human",

@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "login": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$" },
+    "approval": {
+      "type": "object",
+      "properties": {
+        "quote": { "type": "string", "minLength": 1, "maxLength": 8192 },
+        "source": { "type": "string", "minLength": 1, "maxLength": 2048 }
+      },
+      "required": ["quote", "source"],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

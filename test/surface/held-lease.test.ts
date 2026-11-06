@@ -20,6 +20,8 @@ import { localIdentityResolver } from "../../src/assembly/identity.ts";
 import { createMcpHandlers } from "../../src/surface/mcp.ts";
 import type { SurfaceCatalog } from "../../src/surface/catalog.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { relay } from "../fixtures/owner-approval.ts";
+import { dispatch } from "../../src/surface/dispatch.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
 let work: string;
@@ -69,21 +71,22 @@ beforeEach(async () => {
   });
   const digest = (await forge(["block", "check", "./blocks/work"])).result
     ?.digest as string;
-  expect((await forge(["block", "admit", digest])).ok).toBe(true);
-  const granted = await forge([
-    "config",
-    "grant",
-    "--input",
-    JSON.stringify({
-      digest,
-      effects: [
-        "issue:write",
-        "external:process",
-        "external:network",
-        "environment:read",
-      ],
-    }),
-  ]);
+  const approve = (op: string, input: Record<string, unknown>) =>
+    relay(
+      (op, input) => dispatch(assembly.catalog, op, input, localCall(assembly)),
+      op,
+      input,
+    );
+  expect((await approve("block.admit", { digest })).ok).toBe(true);
+  const granted = await approve("config.grant", {
+    digest,
+    effects: [
+      "issue:write",
+      "external:process",
+      "external:network",
+      "environment:read",
+    ],
+  });
   expect(granted.ok).toBe(true);
 }, 30_000);
 

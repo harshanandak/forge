@@ -1,3 +1,4 @@
+import { stageOwnerApprovalFixture } from "../../fixtures/stage-owner-approval.ts";
 // [integration] Exercise the packed-journey cleanup after its real MCP child already exited.
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -40,7 +41,11 @@ test("MCP journey cleanup completes when the child exited before finally", () =>
     } finally {`,
     );
     const fixture = join(directory, "journey.mjs");
-    writeFileSync(fixture, source);
+    stageOwnerApprovalFixture(
+      join(root, "test/node-fixtures/async-handlers/journey.mjs"),
+      fixture,
+      source,
+    );
     copyFileSync(
       join(root, "test/node-fixtures/async-handlers/deadline.mjs"),
       join(directory, "deadline.mjs"),
