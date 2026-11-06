@@ -1,6 +1,10 @@
 import { spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import { relay } from "../../fixtures/owner-approval.ts";
+import {
+  claimsOwner,
+  relayedMemoryInput,
+} from "../../fixtures/owner-approval.mjs";
 
 import {
   cpSync,
@@ -183,7 +187,7 @@ export async function openHarness(
     project: { id: assembly.root, root: assembly.root },
     device: { id: assembly.deviceRoot },
   });
-  async function call(
+  async function invoke(
     op: string,
     input: unknown,
     options: CallOptions = {},
@@ -198,6 +202,26 @@ export async function openHarness(
       caller,
       context: options.context ?? ambient(caller === "human" ? human : agent),
     });
+  }
+  /** A call that claims the owner's words is relayed: ask, then retry with a request, quote and source. */
+  async function call(
+    op: string,
+    input: unknown,
+    options: CallOptions = {},
+  ): Promise<ResultEnvelope> {
+    const first = await invoke(op, input, options);
+    return !first.ok &&
+      first.error.code === "APPROVAL_REQUIRED" &&
+      claimsOwner(op, input)
+      ? invoke(
+          op,
+          relayedMemoryInput(input as { approval?: unknown }, first, {
+            harness: "fixture",
+            thread: "fixture",
+          }),
+          options,
+        )
+      : first;
   }
   const stage = join(root, "blocks");
   mkdirSync(stage);

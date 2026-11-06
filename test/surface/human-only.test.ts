@@ -77,44 +77,6 @@ test("noninteractive local calls need conversation approval and preserve notes a
   });
 }, 30_000);
 
-test("failed terminal confirmation preserves the operation refusal", async () => {
-  const catalog = fakeCatalog(
-    [
-      {
-        ...candidate("memory.forget"),
-        blockId: "forge/memory",
-        declaredOp: "memory.forget",
-      },
-    ],
-    {
-      ok: false,
-      op: "memory.forget",
-      status: "FAIL",
-      warnings: [],
-      error: {
-        code: "HUMAN_REQUIRED",
-        message: "Approval needed",
-        retry: "never",
-      },
-    },
-  );
-  const result = await dispatch(
-    catalog,
-    "memory.forget",
-    {},
-    {
-      caller: "human",
-      confirmHuman: () => Promise.reject(new Error("terminal closed")),
-    },
-  );
-  expect(result).toMatchObject({
-    ok: false,
-    error: { code: "HUMAN_REQUIRED" },
-  });
-  expect(catalog.calls).toHaveLength(1);
-  expect(catalog.calls[0]?.input).toEqual({});
-}, 30_000);
-
 test("local owner confirmation requires a terminal, an exact answer and no agent harness", async () => {
   h = await openHarness(["memory"]);
   const stdin = Object.getOwnPropertyDescriptor(process, "stdin")!;
@@ -187,45 +149,7 @@ test("an agent cannot use the terminal callback, including through catalog.call"
   }
 }, 30_000);
 
-test("human approval is required on each call and is carried to the catalog target", async () => {
-  h = await openHarness(["memory"]);
-  done(await h.call("memory.add", { level: "device", text: "owner rule" }));
-  const options = localCall(h.assembly);
-  expect(
-    await dispatch(
-      h.assembly.catalog,
-      "memory.forget",
-      { id: "device/note-1" },
-      {
-        ...options,
-        confirmHuman: () => Promise.resolve(false),
-      },
-    ),
-  ).toMatchObject({ ok: false, error: { code: "HUMAN_REQUIRED" } });
-  expect(
-    await dispatch(
-      h.assembly.catalog,
-      "catalog.call",
-      {
-        op: "memory.forget",
-        input: { id: "device/note-1" },
-      },
-      { ...options, confirmHuman: () => Promise.resolve(true) },
-    ),
-  ).toMatchObject({ ok: true, result: { status: "forgotten" } });
-  expect(
-    done(await h.call("memory.show", { id: "device/note-1" })),
-  ).toMatchObject({
-    status: "forgotten",
-    approval: {
-      by: "owner",
-      quote: { text: "confirmed in terminal" },
-      at: expect.any(String) as unknown,
-    },
-  });
-}, 30_000);
-
-test("the memory confirmation guard leaves core admission, grants and recovery unchanged", async () => {
+test("core admission, grants and recovery are not memory operations and reach their handler", async () => {
   for (const op of ["block.admit", "config.grant", "store.reinit"]) {
     const catalog = fakeCatalog([candidate(op, { callers: ["human"] })]);
     expect(await dispatch(catalog, op, {}, { caller: "human" })).toMatchObject({

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { ForgeFailure } from "../contract/failure.ts";
-import type { McpCandidate } from "../contract/mcp.ts";
 import { closestNames, SchemaRegistry } from "../contract/schema.ts";
 import { inputError } from "../contract/input-error.ts";
 import { SCHEMA_DOCUMENTS } from "../generated/schemas.ts";
@@ -30,17 +29,6 @@ export interface CallOptions {
     context: AmbientContext,
     explicitContext: boolean,
   ) => AmbientContext;
-}
-
-export function requiresOwnerConfirmation(
-  candidate: McpCandidate | undefined,
-): boolean {
-  return (
-    candidate?.blockId === "forge/memory" &&
-    ["memory.forget", "memory.restore", "decision.adopt"].includes(
-      candidate.declaredOp ?? "",
-    )
-  );
 }
 
 export function success(op: string, result: unknown): ResultEnvelope {
@@ -220,40 +208,21 @@ async function dispatchRaw(
       context: await heldContext(catalog, op, input, { ...options, context }),
       ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
     } as const;
-    let result = await catalog.invoke(request);
+    const result = await catalog.invoke(request);
     if (
       !result.ok &&
       result.error.code === "HUMAN_REQUIRED" &&
       entry?.blockId === "forge/memory"
-    ) {
-      if (
-        requiresOwnerConfirmation(entry) &&
-        record(input)?.approval === undefined &&
-        options.caller === "human"
-      ) {
-        const confirmed = await Promise.resolve()
-          .then(() => options.confirmHuman?.(op, input))
-          .catch(() => false);
-        if (confirmed)
-          result = await catalog.invoke({
-            ...request,
-            input: {
-              ...record(input),
-              approval: { by: "owner", quote: "confirmed in terminal" },
-            },
-          });
-      }
-      if (!result.ok && result.error.code === "HUMAN_REQUIRED")
-        return {
-          ...result,
-          error: {
-            ...result.error,
-            message: `${op}: ${result.error.message}`,
-            repair:
-              "Ask the owner in the conversation, then retry with approval by owner and their words.",
-          },
-        };
-    }
+    )
+      return {
+        ...result,
+        error: {
+          ...result.error,
+          message: `${op}: ${result.error.message}`,
+          repair:
+            "Ask the owner in the conversation, then retry with approval by owner and their words.",
+        },
+      };
     return result;
   } catch (error) {
     if (error instanceof ForgeFailure)

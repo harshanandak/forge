@@ -81,6 +81,9 @@ import { LocalState } from "./state.ts";
 import {
   ApprovalRequired,
   consumeOwnerApproval,
+  memoryOwnerAsk,
+  memoryOwnerClaim,
+  memoryOwnerOp,
   ownerApproval,
 } from "./approval.ts";
 import {
@@ -1527,6 +1530,38 @@ export async function createAssembly(
             current.unavailable[0]?.error.code ?? "INPUT_INVALID",
             current.problems.join("\n"),
           );
+        // The owner's words for memory forget, restore and adopt are relayed through Forge's own
+        // approval: a request for these exact arguments, then the reply and where it was said.
+        const owned =
+          target && memoryOwnerOp(target)
+            ? memoryOwnerClaim(request.input)
+            : undefined;
+        if (owned) {
+          // The runtime refuses dry runs for these operations; refuse first so a dry run neither
+          // burns a valid approval nor leaves a pending request behind.
+          if (request.dryRun === true)
+            refuse(
+              "UNAVAILABLE",
+              "this profile has no dry-run execution contract",
+            );
+          if (owned.relayed && (owned.quote?.length ?? 0) > 2000)
+            throw new ApprovalRequired(
+              "The owner's reply must be at most 2000 characters; ask again with a shorter reply.",
+            );
+          await approve(
+            { ...request, input: owned.input },
+            memoryOwnerAsk(target!.declaredOp!, request.input),
+          );
+          // The block records the verified quote exactly as it did for a conversation claim.
+          if (owned.relayed)
+            request = {
+              ...request,
+              input: {
+                ...(request.input as Record<string, unknown>),
+                approval: { by: "owner", quote: owned.quote },
+              },
+            };
+        }
         const runtimeCatalog = withCheckRunBudget(
           current.catalog,
           current.blocks,

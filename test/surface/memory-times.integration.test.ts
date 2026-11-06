@@ -5,6 +5,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { done } from "../blocks/memory/lib.ts";
+import type { ResultEnvelope } from "../../src/generated/types.ts";
+import {
+  claimsOwner,
+  relayedMemoryInput,
+} from "../fixtures/owner-approval.mjs";
 
 const { createAssembly, localCall } = (await import(
   pathToFileURL(resolve("dist/src/assembly/index.js")).href
@@ -52,11 +57,14 @@ for (const route of ["cli", "mcp"] as const)
       { budget: 100 },
       localCall(assembly),
     );
-    const call = async (op: string, input: Record<string, unknown> = {}) => {
+    const send = async (
+      op: string,
+      input: Record<string, unknown>,
+    ): Promise<ResultEnvelope> => {
       if (route === "mcp") {
         const result = await handlers.callTool(op.replace(".", "_"), input);
         if (!result) throw new Error(`Missing MCP operation ${op}`);
-        return done(result);
+        return result;
       }
       const result = spawnSync(
         "node",
@@ -74,11 +82,27 @@ for (const route of ["cli", "mcp"] as const)
         },
       );
       if (result.error) throw result.error;
-      expect(result.status, result.stdout + result.stderr).toBe(0);
+      const envelope = JSON.parse(result.stdout) as ResultEnvelope;
+      expect(result.status, result.stdout + result.stderr).toBe(
+        envelope.ok ? 0 : 1,
+      );
+      return envelope;
+    };
+    // An owner claim is relayed: Forge asks, then the retry carries its request, quote and source.
+    const call = async (op: string, input: Record<string, unknown> = {}) => {
+      const first = await send(op, input);
       return done(
-        JSON.parse(
-          result.stdout,
-        ) as import("../../src/generated/types.ts").ResultEnvelope,
+        !first.ok &&
+          first.error.code === "APPROVAL_REQUIRED" &&
+          claimsOwner(op, input)
+          ? await send(
+              op,
+              relayedMemoryInput(input, first, {
+                harness: "fixture",
+                thread: "fixture",
+              }),
+            )
+          : first,
       );
     };
     const add = async (input: Record<string, unknown>) =>

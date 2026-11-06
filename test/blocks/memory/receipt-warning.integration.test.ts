@@ -16,6 +16,7 @@ import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import { done, memoryTimings, ownerApproval, stageBlock } from "./lib.ts";
+import { approvalReply } from "../../fixtures/owner-approval.mjs";
 
 async function warningReceipt(tamper = false, large = false) {
   const work = mkdtempSync(join(tmpdir(), "forge-receipt-warning-"));
@@ -63,8 +64,26 @@ module.exports["memory.rules"] = (args) => {
     ) as { id: string };
     // Restore writes a page of 25 notes in one transaction; 55 single adds outlast the deadline on Windows CI.
     if (large)
-      for (let start = 0; start < 55; start += 25)
-        done(
+      for (let start = 0; start < 55; start += 25) {
+        const page = {
+          format: "forge.memory.export/2",
+          level: "device",
+          notes: Array.from(
+            { length: Math.min(25, 55 - start) },
+            (_, offset) => ({
+              id: `device/note-${start + offset + 100}`,
+              scope: "general",
+              tags: ["rule"],
+              links: [],
+              text: {
+                kind: "untrusted",
+                source: "seed",
+                text: "x".repeat(6000),
+              },
+            }),
+          ),
+        };
+        const restore = async (approval: unknown) =>
           (
             await runCli(
               assembly.catalog,
@@ -72,30 +91,23 @@ module.exports["memory.rules"] = (args) => {
                 "memory",
                 "restore",
                 "--input",
-                JSON.stringify({
-                  approval: ownerApproval,
-                  format: "forge.memory.export/2",
-                  level: "device",
-                  notes: Array.from(
-                    { length: Math.min(25, 55 - start) },
-                    (_, offset) => ({
-                      id: `device/note-${start + offset + 100}`,
-                      scope: "general",
-                      tags: ["rule"],
-                      links: [],
-                      text: {
-                        kind: "untrusted",
-                        source: "seed",
-                        text: "x".repeat(6000),
-                      },
-                    }),
-                  ),
-                }),
+                JSON.stringify({ approval, ...page }),
               ],
               options,
             )
-          ).envelope,
+          ).envelope;
+        // The owner's words are relayed: the claim gets a request, the retry carries it.
+        const asked = await restore(ownerApproval);
+        done(
+          await restore(
+            approvalReply(
+              asked,
+              { harness: "fixture", thread: "fixture" },
+              ownerApproval.quote,
+            ),
+          ),
         );
+      }
     // Broken after seeding: restore refuses an unreadable config, while rules must still answer.
     writeFileSync(join(root, ".forge/config.yaml"), "blocks: [invalid\n");
     const cli = (
