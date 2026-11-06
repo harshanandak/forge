@@ -235,6 +235,78 @@ if (a[0] === 'auth' && a[1] === 'status') {
     expect(
       cli(second, "use", { login: "alice", approval }).result.appliedFrom,
     ).toBe(used.result.appliedFrom);
+    // forge-228: accounts check refuses a push range with another account's email.
+    const guarded = clone("guarded");
+    git(
+      guarded,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/alice/guarded.git",
+    );
+    expect(cli(guarded, "check")).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_UNBOUND" },
+    });
+    expect(cli(guarded, "use", { login: "alice", approval }).ok).toBe(true);
+    git(
+      guarded,
+      "-c",
+      "user.email=202+bob@users.noreply.github.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "bob author",
+    );
+    const bobCommit = git(guarded, "rev-parse", "HEAD");
+    const authorRefused = cli(guarded, "check");
+    expect(authorRefused.ok).toBe(false);
+    expect(authorRefused.error.code).toBe("ACCOUNT_COMMIT_IDENTITY");
+    for (const part of [
+      bobCommit,
+      "author",
+      "202+bob@users.noreply.github.com",
+      "alice",
+    ])
+      expect(authorRefused.error.message).toContain(part);
+    git(
+      guarded,
+      "commit",
+      "--amend",
+      "--allow-empty",
+      "--reset-author",
+      "-C",
+      "HEAD",
+    );
+    expect(git(guarded, "log", "-1", "--format=%ae")).toBe(
+      "101+alice@users.noreply.github.com",
+    );
+    expect(cli(guarded, "check")).toMatchObject({ ok: true });
+    expect(cli(guarded, "check", { base: "origin/main", tip: "HEAD" }).ok).toBe(
+      true,
+    );
+    const committerOut = run(
+      "git",
+      ["commit", "--allow-empty", "-m", "bob committer"],
+      guarded,
+      { GIT_COMMITTER_EMAIL: "202+bob@users.noreply.github.com" },
+    );
+    expect(committerOut.status, committerOut.stderr).toBe(0);
+    const committerCommit = git(guarded, "rev-parse", "HEAD");
+    const committerRefused = cli(guarded, "check");
+    expect(committerRefused.ok).toBe(false);
+    expect(committerRefused.error.message).toContain(committerCommit);
+    expect(committerRefused.error.message).toContain("committer");
+    expect(committerRefused.error.message).not.toContain("author=");
+    expect(
+      cli(guarded, "check", { base: committerCommit, tip: "HEAD" }).ok,
+    ).toBe(true);
+    // A second clone of the same remote inherits the approval and passes.
+    git(second, "commit", "--allow-empty", "-m", "second clone work");
+    expect(cli(second, "check")).toMatchObject({
+      ok: true,
+      result: { login: "alice" },
+    });
     writeFileSync(join(bin, "renamed"), "");
     const renamed = clone("renamed");
     git(
