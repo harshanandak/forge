@@ -124,10 +124,10 @@ async function fixture(
       claimsOwner(op, input)
       ? once(
           op,
-          relayedMemoryInput(input as { approval?: unknown }, first, {
+          relayedMemoryInput(input, first, {
             harness: "fixture",
             thread: "fixture",
-          }) as Record<string, unknown>,
+          }),
         )
       : first;
   };
