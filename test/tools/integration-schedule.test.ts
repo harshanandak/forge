@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { assignShards } from "../../tools/ci/test-shards.ts";
+import { assignShards, SERIAL_WEIGHT } from "../../tools/ci/test-shards.ts";
 
 test("whole-file balancing separates expensive serial files and includes unknown timings", () => {
   const files = ["unit", "parallel", "lane-run", "lane", "unknown"];
@@ -9,6 +9,17 @@ test("whole-file balancing separates expensive serial files and includes unknown
   const shards = assignShards(files, timings, 3);
   expect(shards.flat().sort()).toEqual(files.toSorted());
   expect(shards[0]).toEqual(["lane-run"]);
+}, 1000);
+
+test("serial files weigh more than parallel files of the same measured time", () => {
+  const files = ["serial", "first", "second"];
+  const timings = { serial: 1000, first: 2000, second: 2000 };
+  expect(SERIAL_WEIGHT).toBeGreaterThan(2);
+  expect(assignShards(files, timings, 2)[0]).toEqual(["first", "serial"]);
+  expect(assignShards(files, timings, 2, new Set(["serial"]))).toEqual([
+    ["serial"],
+    ["first", "second"],
+  ]);
 }, 1000);
 
 test.each(["test:integration", "test:changed"])(
