@@ -122,6 +122,7 @@ function fixture() {
       [...records.values()].filter((row) => row.key.startsWith(prefix)),
     put,
     lease: () => undefined,
+    acquire: () => undefined,
   };
   const lane = {
     issue: "work-1",
