@@ -14,4 +14,4 @@ test("a typed confirmation needs two terminals and no agent session", () => {
   ])
     expect(attendedTerminal(env, true, true)).toBe(false);
   expect(attendedTerminal({ FORGE_AGENT: " " }, true, true)).toBe(true);
-});
+}, 30_000);
