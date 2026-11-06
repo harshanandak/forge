@@ -37,6 +37,10 @@ import type { StateClient } from "../ports/state.ts";
 import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
 import { DEFAULT_PARSE_LIMITS } from "../contract/untrusted.ts";
 import { firstPartyBlocks, firstPartyTemplates } from "./first-party.ts";
+import { createDeviceFiles } from "../adapters/fs/device-identity.ts";
+import type { DeviceFiles } from "../ports/device-files.ts";
+import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
+import { privateFileGuard } from "../adapters/store-sqlite/private-files.ts";
 
 export type { CloneFilesService } from "../adapters/fs/clone-files.ts";
 export type {
@@ -58,6 +62,7 @@ export interface FilesService extends CloneFilesService {
 export interface EnvironmentService {
   readonly platform: NodeJS.Platform;
   readonly packageRoot: string;
+  inherit(): Readonly<Record<string, string>>;
   select(names: readonly string[]): Readonly<Record<string, string>>;
 }
 export interface CryptoService {
@@ -107,6 +112,7 @@ export interface ProviderOptions {
   readonly env?: Readonly<Record<string, string>>;
 }
 export interface AssemblyProviders {
+  deviceFiles?(scope: ServiceScope): DeviceFiles;
   process(scope: ServiceScope): ProcessService;
   environment(scope: ServiceScope): EnvironmentService;
   crypto(scope: ServiceScope): CryptoService;
@@ -140,6 +146,7 @@ export const SNAPSHOT_TIMEOUT_MS: number =
 /** An operation wrapping one snapshot also needs time to return its result. */
 export const SNAPSHOT_OPERATION_TIMEOUT_MS: number = SNAPSHOT_TIMEOUT_MS + 1000;
 export const ASSEMBLY_PROVIDES: readonly string[] = [
+  "forge.device-files@1.0.0",
   "forge.state@1.0.0",
   "forge.process@1.0.0",
   "forge.files@1.0.0",
@@ -372,6 +379,50 @@ export function createAssemblyProviders(
       supervision: options.supervision ?? CLEANUP,
     });
   const providers: InternalProviders = {
+    deviceFiles(scope) {
+      const home = env.HOME ?? env.USERPROFILE;
+      if (!home)
+        refuse("UNAVAILABLE", "Private device files require a home directory");
+      let security: ReturnType<typeof privateFileGuard> | undefined;
+      const files = createDeviceFiles(
+        home,
+        process.platform === "win32"
+          ? {
+              directory(path, created) {
+                security ??= privateFileGuard(windowsPrivateFiles());
+                security.directory(path, created);
+              },
+              file(path) {
+                security ??= privateFileGuard(windowsPrivateFiles());
+                security.file(path);
+              },
+            }
+          : undefined,
+      );
+      const requireEffect = (effect: string) => {
+        active(scope);
+        if (!scope.effects.includes(effect))
+          refuse("EFFECT_UNDECLARED", `Private device files require ${effect}`);
+      };
+      return {
+        read(name) {
+          requireEffect("files:read");
+          return files.read(name);
+        },
+        write(name, text) {
+          requireEffect("files:write");
+          files.write(name, text);
+        },
+        lock() {
+          requireEffect("files:write");
+          return files.lock();
+        },
+        pin(path, forbidden) {
+          requireEffect("files:read");
+          return files.pin(path, forbidden);
+        },
+      };
+    },
     runnerOutput(scope: ServiceScope): RunnerOutputPort {
       const output = createRunnerOutput();
       return {
@@ -390,6 +441,15 @@ export function createAssemblyProviders(
     },
     environment(scope: ServiceScope): EnvironmentService {
       return {
+        inherit() {
+          active(scope);
+          if (!scope.effects.includes("environment:read"))
+            refuse(
+              "EFFECT_UNDECLARED",
+              "Inheriting the caller environment requires environment:read",
+            );
+          return env;
+        },
         get packageRoot(): string {
           active(scope);
           return realpathSync(

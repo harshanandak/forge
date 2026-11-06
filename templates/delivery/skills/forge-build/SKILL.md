@@ -1,11 +1,11 @@
 ---
 name: forge-build
-description: "Build a claimed slice: red/green receipts, risk-scaled proof, ready PR; stop at push; never merge."
+description: "Build; stop at push; never merge."
 ---
 
 # forge-build
 
-Read [pull-request.md](pull-request.md) for setup and PR handoff.
+[PR setup](pull-request.md).
 On `APPROVAL_REQUIRED`, read [owner-approval.md](../forge-land/owner-approval.md).
 
 Every wake runs `forge pr state <n>` and acts on `verdict`.
@@ -17,18 +17,20 @@ Before each call run `forge issue call <slice> --role <role>`; LIMIT_REACHED end
 Fill every field before delegating; an empty field blocks the call:
 
 ```
-Goal: <slice id and end state; read forge issue show for the spec>
+Goal: <slice and end state; read forge issue show>
 Scope: <Owns and done boundary>
-Context: <Touches / Needs, adopted decision titles and checkpoint>
+Context: <Touches / Needs, adopted decisions, checkpoint>
 Acceptance: <observable pass predicates>
 Verify: <named red/green check, risk band, scenario and final-head checks>
 Timebox: `forge issue call`'s timeboxMinutes (at most 45 minutes); stop and report the checkpoint when timeboxMinutes expire, never later than stopBy.
 Forbidden: pass named environment variables only, never the whole environment or secret values; stop at push; never merge or merge base unless asked.
-Report: <head, receipts, saved output and not checked>
+Report: <head, receipts, output, not checked>
 Standing rules: <adopted rules; layer 1 passes the memory packet>
 ```
 
 ## Red, then green
+
+First commit/push: `forge accounts plan --json`; relay `result.ask`, wait. Follow [reply routing](accounts.md). Bound/declined: continue.
 
 1. Read `forge issue resume <slice>` and every Touches file before editing; later comments override the body. Read `forge issue comments <slice>` once before acting if a checkpoint exists or `more` is true. forge-cut risk: light 0-1, standard 2-3, heavy 4-5.
 2. Reproduce the issue (or read the code named) before editing. Log: `forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'` or `premise does not hold: <evidence>`; if false, stop and report; change no code.

@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/accounts",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "requires": [
+    { "slot": "process", "interface": "forge.process@1" },
+    { "slot": "files", "interface": "forge.files@1" },
+    { "slot": "device", "interface": "forge.device-files@1" },
+    { "slot": "environment", "interface": "forge.environment@1" },
+    { "slot": "crypto", "interface": "forge.crypto@1" }
+  ],
+  "operations": {
+    "accounts.plan": {
+      "input": "schemas/input.json",
+      "output": "schemas/output.json",
+      "context": "project",
+      "timeoutMs": 120000,
+      "effects": [
+        "files:read",
+        "files:write",
+        "external:process",
+        "external:network",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "accounts.use": {
+      "input": "schemas/input.json",
+      "output": "schemas/output.json",
+      "context": "project",
+      "timeoutMs": 120000,
+      "effects": [
+        "files:read",
+        "files:write",
+        "external:process",
+        "external:network",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
+    "accounts.decline": {
+      "input": "schemas/input.json",
+      "output": "schemas/output.json",
+      "context": "project",
+      "timeoutMs": 120000,
+      "effects": [
+        "files:read",
+        "files:write",
+        "external:process",
+        "external:network",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    }
+  },
+  "docs": "docs.json"
+}
