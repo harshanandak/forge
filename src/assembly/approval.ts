@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { ForgeFailure } from "../contract/failure.ts";
 import { digest, type OwnerApproval } from "../core/trust/index.ts";
 import type { DeletableStateClient } from "../ports/state.ts";
+import { harnessIdentity } from "./identity.ts";
 
 const proofs = new WeakMap<OwnerApproval, string>();
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -33,6 +36,11 @@ export function consumeOwnerApproval(
     return false;
   proofs.delete(approval);
   return true;
+}
+function issueProof(op: string, input: unknown): OwnerApproval {
+  const proof = Object.freeze({}) as OwnerApproval;
+  proofs.set(proof, operationBinding(op, input));
+  return proof;
 }
 export class ApprovalRequired extends ForgeFailure {
   readonly request: { id: string; ask: string; binding: string } | undefined;
@@ -149,9 +157,76 @@ export function ownerApproval(options: {
     },
     { expectRevision: stored.revision },
   );
-  const proof = Object.freeze({}) as OwnerApproval;
-  proofs.set(proof, operationBinding(options.op, input));
-  return proof;
+  return issueProof(options.op, input);
+}
+
+/** An agent session is any harness marker the memory guard already honored. */
+export function agentSession(
+  env: Readonly<Record<string, string | undefined>>,
+) {
+  return harnessIdentity(env) !== "local-cli" || !!env.FORGE_AGENT?.trim();
+}
+/** A person is typing: both ends are terminals and no agent session is running. */
+export function attendedTerminal(
+  env: Readonly<Record<string, string | undefined>>,
+  stdinTTY: boolean,
+  stderrTTY: boolean,
+): boolean {
+  return stdinTTY && stderrTTY && !agentSession(env);
+}
+/** Only these may run unattended from owner.json; recovery, memory and doors never can. */
+export const POLICY_OPS: ReadonlySet<string> = new Set([
+  "block.admit",
+  "config.grant",
+]);
+/** The operations `<deviceRoot>/owner.json` lets unattended calls run; unreadable means none. */
+export function unattendedOps(deviceRoot: string): ReadonlySet<string> {
+  try {
+    const listed = object(
+      JSON.parse(readFileSync(join(deviceRoot, "owner.json"), "utf8")),
+    )?.unattended;
+    return new Set(
+      Array.isArray(listed)
+        ? listed.filter((op) => typeof op === "string" && POLICY_OPS.has(op))
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
+/** Evidence that Forge saw first-hand (a typed phrase, or the owner's own policy file). */
+export function directApproval(options: {
+  state: Pick<DeletableStateClient, "put">;
+  op: string;
+  input: Record<string, unknown>;
+  deviceRoot: string;
+  projectRoot: string;
+  method: "attended" | "scripts-policy";
+  relay: RelayingSession;
+  now?: () => number;
+}): OwnerApproval {
+  const input = { ...options.input };
+  delete input.approval;
+  options.state.put(
+    randomUUID(),
+    {
+      status: "used",
+      method: options.method,
+      op: options.op,
+      binding: digest(
+        canonical({
+          op: options.op,
+          input,
+          deviceRoot: options.deviceRoot,
+          projectRoot: options.projectRoot,
+        }),
+      ),
+      at: new Date((options.now ?? Date.now)()).toISOString(),
+      relay: options.relay,
+    },
+    { expectRevision: 0 },
+  );
+  return issueProof(options.op, input);
 }
 
 const MEMORY_OWNER_OPS = new Set([

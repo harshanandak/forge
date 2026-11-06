@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   createConfig,
@@ -80,7 +80,11 @@ import {
 import { LocalState } from "./state.ts";
 import {
   ApprovalRequired,
+  agentSession,
+  attendedTerminal,
   consumeOwnerApproval,
+  directApproval,
+  unattendedOps,
   memoryOwnerAsk,
   memoryOwnerClaim,
   memoryOwnerOp,
@@ -275,22 +279,43 @@ export async function createAssembly(
     ask: string,
   ) {
     const owner = (await trustState.open(true))!;
-    return ownerApproval({
-      state: owner.client("forge/core-approvals", request.context.actor!),
+    const input = request.input as Record<string, unknown>;
+    const state = owner.client("forge/core-approvals", request.context.actor!);
+    const relay = {
+      harness: harnessIdentity(process.env),
+      id: sessionIdentity(
+        process.env,
+        request.context.session?.id ?? "local-cli",
+      ),
+      pid: process.pid,
+    };
+    const direct = {
+      state,
       op: request.op,
-      input: request.input as Record<string, unknown>,
+      input,
       deviceRoot,
       projectRoot: root,
-      ask,
-      relay: {
-        harness: harnessIdentity(process.env),
-        id: sessionIdentity(
+      relay,
+    };
+    if (input.approval === undefined) {
+      // No relayed evidence: a person at a terminal types the phrase; otherwise a script with no
+      // agent session may run the operations the owner listed in owner.json.
+      if (
+        attendedTerminal(
           process.env,
-          request.context.session?.id ?? "local-cli",
-        ),
-        pid: process.pid,
-      },
-    });
+          process.stdin.isTTY === true,
+          process.stderr.isTTY === true,
+        )
+      ) {
+        if (await typedConfirmation(request.op, ask))
+          return directApproval({ ...direct, method: "attended" });
+      } else if (
+        !agentSession(process.env) &&
+        unattendedOps(deviceRoot).has(request.op)
+      )
+        return directApproval({ ...direct, method: "scripts-policy" });
+    }
+    return ownerApproval({ ...direct, ask });
   }
   // Each block is captured once per call: config reads its schema from the same capture the
   // catalog runs. The cache belongs to one call and is passed down it, so overlapping calls
@@ -1449,6 +1474,19 @@ export async function createAssembly(
               warnings: call.warnings,
             };
           }
+          if (request.op === "owner.policy") {
+            const unattended = input.unattended as string[];
+            await approve(
+              request,
+              `Let scripts and CI with no agent session run ${unattended.join(", ") || "no operations"} without asking, by writing owner.json in the device folder.`,
+            );
+            writeFileSync(
+              join(deviceRoot, "owner.json"),
+              `${JSON.stringify({ unattended })}
+`,
+            );
+            return success(request.op, { unattended });
+          }
           if (request.op === "block.admit" || request.op === "config.grant") {
             await trustState.open(false);
             const digest = String(input.digest);
@@ -1882,6 +1920,30 @@ export function localContext(
 export function localSession(fallback: string): string {
   return sessionIdentity(process.env, fallback);
 }
+/** The person types the exact phrase on this terminal; end of input or any other text refuses. */
+function typedConfirmation(op: string, ask?: string): Promise<boolean> {
+  process.stderr.write(
+    `${ask === undefined ? "" : `${ask}\n`}Owner confirmation: type "confirm ${op}" to proceed: `,
+  );
+  return new Promise<boolean>((resolve) => {
+    const finish = (confirmed: boolean) => {
+      process.stdin.off("data", answer);
+      process.stdin.off("end", refused);
+      process.stdin.off("close", refused);
+      process.stdin.off("error", refused);
+      process.stdin.pause();
+      resolve(confirmed);
+    };
+    const answer = (chunk: Buffer | string) =>
+      finish(chunk.toString().trim() === `confirm ${op}`);
+    const refused = () => finish(false);
+    process.stdin.once("data", answer);
+    process.stdin.once("end", refused);
+    process.stdin.once("close", refused);
+    process.stdin.once("error", refused);
+    process.stdin.resume();
+  });
+}
 function localHarness(): string {
   return harnessIdentity(process.env);
 }
@@ -1908,27 +1970,7 @@ export function localCall(
         process.env.FORGE_AGENT?.trim()
       )
         return Promise.resolve(false);
-      process.stderr.write(
-        `Owner confirmation: type "confirm ${op}" to proceed: `,
-      );
-      return new Promise<boolean>((resolve) => {
-        const finish = (confirmed: boolean) => {
-          process.stdin.off("data", answer);
-          process.stdin.off("end", refused);
-          process.stdin.off("close", refused);
-          process.stdin.off("error", refused);
-          process.stdin.pause();
-          resolve(confirmed);
-        };
-        const answer = (chunk: Buffer | string) =>
-          finish(chunk.toString().trim() === `confirm ${op}`);
-        const refused = () => finish(false);
-        process.stdin.once("data", answer);
-        process.stdin.once("end", refused);
-        process.stdin.once("close", refused);
-        process.stdin.once("error", refused);
-        process.stdin.resume();
-      });
+      return typedConfirmation(op);
     },
     context: localContext(
       assembly,

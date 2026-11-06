@@ -12,4 +12,13 @@ export const operations: Record<string, OperationDeclaration> = {
     input: "trust/admit.input.schema.json",
     callers: ["human"],
   },
+  "owner.policy": {
+    output: "trust/policy.output.schema.json",
+    context: "device",
+    idempotent: true,
+    stability: "stable",
+    effects: ["block:write"],
+    input: "trust/policy.input.schema.json",
+    callers: ["human"],
+  },
 };

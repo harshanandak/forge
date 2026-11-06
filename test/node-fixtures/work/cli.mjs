@@ -1,4 +1,7 @@
-import { withCliOwnerApproval } from "../../fixtures/owner-approval.mjs";
+import {
+  unattendedEnv,
+  writeOwnerPolicy,
+} from "../../fixtures/owner-approval.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
@@ -7,13 +10,17 @@ const [installed, suppliedRoot] = process.argv.slice(2);
 mkdirSync(suppliedRoot, { recursive: true });
 const root = realpathSync(suppliedRoot);
 const bin = join(installed, "dist/bin/forge.js");
-const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") };
+const env = unattendedEnv({
+  ...process.env,
+  FORGE_DEVICE_ROOT: join(root, "device"),
+});
+writeOwnerPolicy(join(root, "device"));
 assert.ok(
   spawnSync("bun", ["--version"], { env, windowsHide: true }).error,
   "installed CLI must run without Bun on PATH",
 );
 let seq = 0;
-const cli = withCliOwnerApproval(cliRaw);
+const cli = cliRaw;
 function cliRaw(args, expected = 0) {
   const result = spawnSync(process.execPath, [bin, ...args], {
     cwd: root,
