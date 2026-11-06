@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { done } from "../blocks/memory/lib.ts";
+import { LocalState } from "../../src/assembly/state.ts";
 import {
   claimsOwner,
   relayedMemoryInput,
@@ -40,8 +41,6 @@ function snapshot(root: string): Record<string, string> {
   const scan = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
-      // Approval requests live in the device trust store; the note state is what must not change.
-      if (entry.name.startsWith("trust.sqlite")) continue;
       if (entry.isDirectory()) scan(path);
       else
         files[path] = createHash("sha256")
@@ -51,6 +50,29 @@ function snapshot(root: string): Record<string, string> {
   };
   scan(root);
   return files;
+}
+
+/**
+ * A call that legitimately issues an approval request writes only to the trust store's approvals
+ * namespace. Compare every other file byte for byte and the trust records themselves, so an
+ * accidental admission or grant change still shows.
+ */
+async function snapshotExceptApprovals(root: string) {
+  const files = snapshot(root);
+  for (const path of Object.keys(files))
+    if (/trust\.sqlite/.test(path)) delete files[path];
+  const trust = new LocalState(join(root, "device", "trust.sqlite"));
+  try {
+    const owner = await trust.open(false);
+    return {
+      files,
+      trust: owner
+        ?.list("forge/core-trust")
+        .map(({ key, value, revision }) => ({ key, value, revision })),
+    };
+  } finally {
+    await trust.close();
+  }
 }
 
 async function fixture(
@@ -218,7 +240,7 @@ for (const route of ["cli", "mcp"] as const) {
         status: "found",
         note: { text: { text: "secret alpha" } },
       });
-      const files = snapshot(h.root);
+      const files = await snapshotExceptApprovals(h.root);
       expect(
         await h.call("memory.forget", {
           id: first.id,
@@ -226,7 +248,7 @@ for (const route of ["cli", "mcp"] as const) {
           approval: owner,
         }),
       ).toMatchObject({ ok: true, result: { status: "not_forgotten" } });
-      expect(snapshot(h.root)).toEqual(files);
+      expect(await snapshotExceptApprovals(h.root)).toEqual(files);
     } finally {
       await h.close();
     }
