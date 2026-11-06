@@ -2,24 +2,40 @@
   "operations": {
     "accounts.plan": {
       "title": "Plan GitHub identity",
-      "summary": "Detect accounts, propose a repo identity and render the owner\u0027s one-message ask.",
-      "examples": [{ "command": "forge accounts plan --json" }]
+      "summary": "Detect accounts, propose a repo identity and render the owner's one-message ask.",
+      "examples": [
+        {
+          "command": "forge accounts plan --json"
+        }
+      ]
     },
     "accounts.use": {
       "title": "Approve GitHub identity",
       "summary": "Apply the selected account with a relayed approval quote and source, and audit the change.",
       "examples": [
         {
-          "command": "forge accounts use --input \u0027{\"login\":\"alice\",\"approval\":{\"quote\":\"yes\",\"source\":\"chat:message\"}}\u0027"
+          "command": "forge accounts use --input '{\"login\":\"alice\",\"approval\":{\"quote\":\"yes\",\"source\":\"chat:message\"}}'"
         }
       ]
     },
     "accounts.decline": {
       "title": "Decline account management",
-      "summary": "Record the owner\u0027s relayed refusal for this repo.",
+      "summary": "Record the owner's relayed refusal for this repo.",
       "examples": [
         {
-          "command": "forge accounts decline --input \u0027{\"approval\":{\"quote\":\"no\",\"source\":\"chat:message\"}}\u0027"
+          "command": "forge accounts decline --input '{\"approval\":{\"quote\":\"no\",\"source\":\"chat:message\"}}'"
+        }
+      ]
+    },
+    "accounts.check": {
+      "title": "Check commit identities",
+      "summary": "Refuse a push range whose author or committer email is not the bound GitHub account's. Defaults to every unpushed commit. Never calls gh.",
+      "examples": [
+        {
+          "command": "forge accounts check --json"
+        },
+        {
+          "command": "forge accounts check --input '{\"base\":\"origin/main\",\"tip\":\"HEAD\"}'"
         }
       ]
     }
