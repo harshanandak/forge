@@ -283,16 +283,27 @@ async function contact(
     )
       integrity("Owned Git include or its fingerprint changed");
   }
+  const includeFor = (account: Account) => ({
+    content: `# forge accounts ${hash(account)}\n[user]\n\tname = ${JSON.stringify(account.commitName)}\n\temail = ${JSON.stringify(account.commitEmails[0])}\n\tuseConfigOnly = true\n`,
+    include: `${MARK}\n[include]\n\tpath = "forge/accounts.gitconfig"\n# end forge accounts owned include\n`,
+  });
+  const validateInclude = (account: Account) => {
+    const expected = includeFor(account);
+    if (
+      !applied ||
+      owned !== expected.content ||
+      !config.includes(expected.include) ||
+      applied.includeHash !== s.crypto.sha256(expected.content)
+    )
+      integrity("Owned Git include was changed or is missing");
+  };
   if (action === "check") {
     if (!selected || !binding)
       return refuse(
         "ACCOUNT_UNBOUND",
         "No approved GitHub account for this repo; run forge accounts plan --json and relay result.ask",
       );
-    if (!applied || !owned || !config.includes(MARK))
-      integrity(
-        "Owned Git include is missing; run forge accounts plan --json to restore it",
-      );
+    validateInclude(selected);
     const limit = settings?.maxCommits ?? MAX_COMMITS;
     if (!Number.isSafeInteger(limit) || limit < 1)
       refuse("INPUT_INVALID", "maxCommits must be a positive integer");
@@ -306,26 +317,27 @@ async function contact(
         refuse("INPUT_INVALID", `Unknown revision ${name}`);
       return out.text;
     };
-    const tip = input.tip
-      ? await resolve(input.tip)
-      : (await g(["rev-parse", "--verify", "--quiet", "HEAD"], true)).text;
+    if ((await g(["rev-parse", "--is-shallow-repository"])).text !== "false")
+      refuse(
+        "ACCOUNT_SHALLOW_HISTORY",
+        "Shallow history hides commits from the check; run git fetch --unshallow and retry",
+      );
+    const tip = await resolve(input.tip ?? "HEAD");
     const base =
       input.base && !/^0+$/.test(input.base) ? await resolve(input.base) : "";
-    const rows = tip
-      ? (
-          await g([
-            "--no-replace-objects",
-            "log",
-            `--max-count=${limit + 1}`,
-            "--format=%H%x00%ae%x00%ce",
-            tip,
-            "--not",
-            ...(base ? [base] : ["--remotes"]),
-          ])
-        ).text
-          .split(/\r?\n/)
-          .filter(Boolean)
-      : [];
+    const rows = (
+      await g([
+        "--no-replace-objects",
+        "log",
+        `--max-count=${limit + 1}`,
+        "--format=%H%x00%ae%x00%ce",
+        tip,
+        "--not",
+        ...(base ? [base] : ["--remotes"]),
+      ])
+    ).text
+      .split(/\r?\n/)
+      .filter(Boolean);
     if (rows.length > limit)
       refuse(
         "ACCOUNT_RANGE_TOO_LARGE",
@@ -482,12 +494,9 @@ async function contact(
   }
   function apply(account: Account, approved: Binding) {
     const fingerprint = hash(account);
-    const content = `# forge accounts ${fingerprint}\n[user]\n\tname = ${JSON.stringify(account.commitName)}\n\temail = ${JSON.stringify(account.commitEmails[0])}\n\tuseConfigOnly = true\n`;
-    const include = `${MARK}\n[include]\n\tpath = "forge/accounts.gitconfig"\n# end forge accounts owned include\n`;
-    if (applied) {
-      if (!config.includes(include) || owned !== content)
-        integrity("Owned Git include was changed");
-    } else {
+    const { content, include } = includeFor(account);
+    if (applied) validateInclude(account);
+    else {
       const lease = s.files.lock(["forge/accounts.apply.lock"]);
       try {
         s.files.write(OWNED, content, { area: "common", expected: null });
