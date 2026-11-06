@@ -280,6 +280,27 @@
         }
       ]
     },
+    "RelayedApproval": {
+      "type": "object",
+      "description": "The owner's reply relayed through a request Forge issued for this exact operation: the request id, their words copied exactly, and where they said it. Forge records it as relayed, untrusted evidence.",
+      "properties": {
+        "request": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "quote": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "source": {
+          "type": "object",
+          "properties": {
+            "harness": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "thread": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "message": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "link": { "type": "string", "minLength": 1, "maxLength": 2000 }
+          },
+          "additionalProperties": false,
+          "required": ["harness", "thread"]
+        }
+      },
+      "additionalProperties": false,
+      "required": ["request", "quote", "source"]
+    },
     "ApprovalAudit": {
       "type": "object",
       "properties": {

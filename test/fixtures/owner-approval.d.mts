@@ -6,6 +6,7 @@ type Envelope = {
 export function approvalReply(
   result: Envelope,
   source?: { harness: string; thread: string },
+  quote?: string,
 ): {
   request: string;
   quote: string;
@@ -29,3 +30,9 @@ export function withOwnerApproval<
 >(
   call: (op: string, input: unknown, ...rest: Extra) => Result,
 ): (op: string, input?: unknown, ...rest: Extra) => Result;
+export function claimsOwner(op: string, input: unknown): boolean;
+export function relayedMemoryInput<Input extends { approval?: unknown }>(
+  input: Input,
+  first: Envelope,
+  source?: { harness: string; thread: string },
+): Input;

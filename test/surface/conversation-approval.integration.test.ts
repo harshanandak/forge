@@ -14,6 +14,11 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { done } from "../blocks/memory/lib.ts";
+import { LocalState } from "../../src/assembly/state.ts";
+import {
+  claimsOwner,
+  relayedMemoryInput,
+} from "../fixtures/owner-approval.mjs";
 
 const { createAssembly, localCall } = (await import(
   pathToFileURL(resolve("dist/src/assembly/index.js")).href
@@ -47,6 +52,29 @@ function snapshot(root: string): Record<string, string> {
   return files;
 }
 
+/**
+ * A call that legitimately issues an approval request writes only to the trust store's approvals
+ * namespace. Compare every other file byte for byte and the trust records themselves, so an
+ * accidental admission or grant change still shows.
+ */
+async function snapshotExceptApprovals(root: string) {
+  const files = snapshot(root);
+  for (const path of Object.keys(files))
+    if (/trust\.sqlite/.test(path)) delete files[path];
+  const trust = new LocalState(join(root, "device", "trust.sqlite"));
+  try {
+    const owner = await trust.open(false);
+    return {
+      files,
+      trust: owner
+        ?.list("forge/core-trust")
+        .map(({ key, value, revision }) => ({ key, value, revision })),
+    };
+  } finally {
+    await trust.close();
+  }
+}
+
 async function fixture(
   route: "cli" | "mcp",
   policy: Record<string, unknown> = {},
@@ -73,7 +101,7 @@ async function fixture(
     { budget: 100 },
     options,
   );
-  const call = async (
+  const once = async (
     op: string,
     input: Record<string, unknown>,
   ): Promise<ResultEnvelope> => {
@@ -106,6 +134,24 @@ async function fixture(
     const envelope = JSON.parse(result.stdout) as ResultEnvelope;
     expect(result.status).toBe(envelope.ok ? 0 : 1);
     return envelope;
+  };
+  // An owner claim is relayed: Forge asks, then the retry carries its request, quote and source.
+  const call = async (
+    op: string,
+    input: Record<string, unknown>,
+  ): Promise<ResultEnvelope> => {
+    const first = await once(op, input);
+    return !first.ok &&
+      first.error.code === "APPROVAL_REQUIRED" &&
+      claimsOwner(op, input)
+      ? once(
+          op,
+          relayedMemoryInput(input, first, {
+            harness: "fixture",
+            thread: "fixture",
+          }),
+        )
+      : first;
   };
   return {
     root,
@@ -194,7 +240,7 @@ for (const route of ["cli", "mcp"] as const) {
         status: "found",
         note: { text: { text: "secret alpha" } },
       });
-      const files = snapshot(h.root);
+      const files = await snapshotExceptApprovals(h.root);
       expect(
         await h.call("memory.forget", {
           id: first.id,
@@ -202,7 +248,7 @@ for (const route of ["cli", "mcp"] as const) {
           approval: owner,
         }),
       ).toMatchObject({ ok: true, result: { status: "not_forgotten" } });
-      expect(snapshot(h.root)).toEqual(files);
+      expect(await snapshotExceptApprovals(h.root)).toEqual(files);
     } finally {
       await h.close();
     }
