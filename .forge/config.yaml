@@ -26,6 +26,9 @@ values:
       reviewer: { harness: codex, model: gpt-6.1-sol, effort: high }
       tester: { harness: codex, model: gpt-6.1-terra, effort: max }
 blocks:
+  accounts:
+    source:
+      builtin: forge/accounts
   agent:
     source:
       builtin: forge/agent

@@ -1,0 +1,27 @@
+{
+  "operations": {
+    "accounts.plan": {
+      "title": "Plan GitHub identity",
+      "summary": "Detect accounts, propose a repo identity and render the owner\u0027s one-message ask.",
+      "examples": [{ "command": "forge accounts plan --json" }]
+    },
+    "accounts.use": {
+      "title": "Approve GitHub identity",
+      "summary": "Apply the selected account with a relayed approval quote and source, and audit the change.",
+      "examples": [
+        {
+          "command": "forge accounts use --input \u0027{\"login\":\"alice\",\"approval\":{\"quote\":\"yes\",\"source\":\"chat:message\"}}\u0027"
+        }
+      ]
+    },
+    "accounts.decline": {
+      "title": "Decline account management",
+      "summary": "Record the owner\u0027s relayed refusal for this repo.",
+      "examples": [
+        {
+          "command": "forge accounts decline --input \u0027{\"approval\":{\"quote\":\"no\",\"source\":\"chat:message\"}}\u0027"
+        }
+      ]
+    }
+  }
+}

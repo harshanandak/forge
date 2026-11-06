@@ -2,33 +2,36 @@
   "imported": {
     "file": ".forge/config.yaml",
     "previousRevision": "sha256:bcf1dbc713b86fc72c088bf2e8c69ab969e311d51120b6acf94965c85364b120",
-    "revision": "sha256:5be793433e4290d935c9b1d3322fe1deda0faf9795d190d4777445137fb2a75f",
+    "revision": "sha256:92296b1c6bc81da7afe2cede3778bc5ec2577faf11d2b3c236c56ca3c5d4ad24",
     "changes": [
       {
+        "pointer": "/blocks/accounts/source",
+        "after": { "builtin": "forge/accounts" }
+      },
+      {
         "pointer": "/blocks/agent/source",
-        "after": {
-          "builtin": "forge/agent"
-        }
+        "after": { "builtin": "forge/agent" }
       },
       {
         "pointer": "/blocks/memory/source",
-        "after": {
-          "builtin": "forge/memory"
-        }
+        "after": { "builtin": "forge/memory" }
       },
-      {
-        "pointer": "/blocks/work/config/claimTtlSeconds",
-        "after": 7200
-      },
+      { "pointer": "/blocks/work/config/claimTtlSeconds", "after": 7200 },
       {
         "pointer": "/blocks/work/config/labelOrder",
         "after": ["p0", "p1", "p2", "p3", "p4"]
       },
       {
         "pointer": "/blocks/work/source",
-        "after": {
-          "builtin": "forge/work"
-        }
+        "after": { "builtin": "forge/work" }
+      },
+      {
+        "pointer": "/owners/~1blocks~1accounts~1source/baseline",
+        "after": "sha256:85d5015d4c6914815001d0a1fb6c0e7601bc148dd064ab255d055094e00b3b13"
+      },
+      {
+        "pointer": "/owners/~1blocks~1accounts~1source/from",
+        "after": "harsha/delivery@0.1.2"
       },
       {
         "pointer": "/owners/~1blocks~1agent~1source/baseline",
@@ -75,7 +78,7 @@
         "after": [
           {
             "template": "harsha/delivery@0.1.2",
-            "digest": "sha256:7e8450f3913069890e7d7a51edf5e02a6473ddecf56f90517ef6ba052f02920e",
+            "digest": "sha256:8197e282d3febdf98dc5774f7c330dedc3110c82c200d23a69eed19edce6f047",
             "importedAt": "2026-10-18T09:00:00.000Z"
           }
         ]
@@ -84,6 +87,7 @@
     "fileRemoved": false,
     "template": "harsha/delivery@0.1.2",
     "added": [
+      "/blocks/accounts/source",
       "/blocks/agent/source",
       "/blocks/memory/source",
       "/blocks/work/config/claimTtlSeconds",
@@ -94,34 +98,37 @@
   },
   "removed": {
     "file": ".forge/config.yaml",
-    "previousRevision": "sha256:5be793433e4290d935c9b1d3322fe1deda0faf9795d190d4777445137fb2a75f",
+    "previousRevision": "sha256:92296b1c6bc81da7afe2cede3778bc5ec2577faf11d2b3c236c56ca3c5d4ad24",
     "revision": "sha256:bcf1dbc713b86fc72c088bf2e8c69ab969e311d51120b6acf94965c85364b120",
     "changes": [
       {
+        "pointer": "/blocks/accounts/source",
+        "before": { "builtin": "forge/accounts" }
+      },
+      {
         "pointer": "/blocks/agent/source",
-        "before": {
-          "builtin": "forge/agent"
-        }
+        "before": { "builtin": "forge/agent" }
       },
       {
         "pointer": "/blocks/memory/source",
-        "before": {
-          "builtin": "forge/memory"
-        }
+        "before": { "builtin": "forge/memory" }
       },
-      {
-        "pointer": "/blocks/work/config/claimTtlSeconds",
-        "before": 7200
-      },
+      { "pointer": "/blocks/work/config/claimTtlSeconds", "before": 7200 },
       {
         "pointer": "/blocks/work/config/labelOrder",
         "before": ["p0", "p1", "p2", "p3", "p4"]
       },
       {
         "pointer": "/blocks/work/source",
-        "before": {
-          "builtin": "forge/work"
-        }
+        "before": { "builtin": "forge/work" }
+      },
+      {
+        "pointer": "/owners/~1blocks~1accounts~1source/baseline",
+        "before": "sha256:85d5015d4c6914815001d0a1fb6c0e7601bc148dd064ab255d055094e00b3b13"
+      },
+      {
+        "pointer": "/owners/~1blocks~1accounts~1source/from",
+        "before": "harsha/delivery@0.1.2"
       },
       {
         "pointer": "/owners/~1blocks~1agent~1source/baseline",
@@ -168,7 +175,7 @@
         "before": [
           {
             "template": "harsha/delivery@0.1.2",
-            "digest": "sha256:7e8450f3913069890e7d7a51edf5e02a6473ddecf56f90517ef6ba052f02920e",
+            "digest": "sha256:8197e282d3febdf98dc5774f7c330dedc3110c82c200d23a69eed19edce6f047",
             "importedAt": "2026-10-18T09:00:00.000Z"
           }
         ]
@@ -177,6 +184,7 @@
     "fileRemoved": false,
     "template": "harsha/delivery@0.1.2",
     "removed": [
+      "/blocks/accounts/source",
       "/blocks/agent/source",
       "/blocks/memory/source",
       "/blocks/work/config/claimTtlSeconds",
