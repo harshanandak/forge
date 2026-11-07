@@ -257,9 +257,7 @@ const securityPaths = [
   "src/assembly/providers.ts",
   "templates/delivery",
 ];
-function fixture(
-  merge: Record<string, unknown> | undefined = { securityPaths },
-) {
+function fixture(merge: Record<string, unknown> | null = { securityPaths }) {
   const now = Date.parse("2026-01-01T00:00:00.000Z");
   const records = new Map<string, Row>();
   const put = (
@@ -518,7 +516,7 @@ test("a security-labeled or security-path PR gets a gated ask, never a merge act
 });
 
 test("missing security paths config pauses instead of treating no path as security", async () => {
-  const f = fixture(undefined);
+  const f = fixture(null);
   await f.verdict(head, "MERGE");
   const action = await seen(f);
   expect(action.kind).toBe("pause");
