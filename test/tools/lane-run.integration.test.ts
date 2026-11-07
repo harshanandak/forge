@@ -105,9 +105,9 @@ afterEach(async () => {
 let sharedClaude: string | undefined;
 function sharedClaudeDirectory(fixtureRoot: string) {
   if (sharedClaude) return sharedClaude;
-  const dir = (sharedClaude = realpathSync.native(
+  const dir = realpathSync.native(
     mkdtempSync(join(tmpdir(), "forge-lane-exe-")),
-  ));
+  );
   const compile = spawnSync(
     process.execPath,
     [
@@ -123,19 +123,24 @@ function sharedClaudeDirectory(fixtureRoot: string) {
   expect(compile.status).toBe(0);
   // A trap shim prevents any fallthrough to a real CLI during the red run.
   writeFileSync(join(dir, "claude"), "#!/bin/sh\nexit 17\n");
+  // Set only now, so a failed compile never leaves a path with no claude.exe for later tests.
+  sharedClaude = dir;
   return dir;
 }
 afterAll(() => {
-  if (sharedClaude) {
-    const dir = sharedClaude;
-    sharedClaude = undefined;
-    cleanupAttribution(dir, () =>
-      rmSync(dir, { recursive: true, force: true }),
+  try {
+    if (sharedClaude) {
+      const dir = sharedClaude;
+      sharedClaude = undefined;
+      cleanupAttribution(dir, () =>
+        rmSync(dir, { recursive: true, force: true }),
+      );
+    }
+  } finally {
+    console.info(
+      `lane-run fixture: avoided ${avoidedIssueChildren} issue CLI children`,
     );
   }
-  console.info(
-    `lane-run fixture: avoided ${avoidedIssueChildren} issue CLI children`,
-  );
 });
 type Verdict = {
   verdict: string;

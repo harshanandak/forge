@@ -8,11 +8,15 @@ import { powerShellArgs } from "../powershell.ts";
 import {
   cleanupAttribution,
   HOST_EVIDENCE,
+  SECOND_ATTEMPT_DELAY_MS,
   type AttributionRunner,
   type CleanupInspector,
 } from "./cleanup-attribution.ts";
 
 setDefaultTimeout(30_000);
+
+// A failing cleanup waits before its second attempt; tests that do not measure that wait skip it.
+const noSleep = () => {};
 
 for (const kind of ["file", "directory"])
   test.skipIf(process.platform !== "win32")(
@@ -112,7 +116,7 @@ test.skipIf(process.platform !== "win32")(
         () => {
           throw new Error("snapshot unavailable");
         },
-        { tool: "fixture-handle", unavailable: "" },
+        { tool: "fixture-handle", unavailable: "", sleep: noSleep },
       );
     } catch (error) {
       caught = error;
@@ -142,7 +146,7 @@ test.skipIf(process.platform !== "win32")(
           stdout: "No matching handles found.\r\n",
           stderr: "",
         }),
-        { tool: "fixture-handle", unavailable: "" },
+        { tool: "fixture-handle", unavailable: "", sleep: noSleep },
       );
     } catch {
       // The original cleanup error is rethrown after the snapshot.
@@ -171,7 +175,12 @@ function refuse(
         throw original;
       },
       run,
-      { tool: "fixture-handle", unavailable: "", ...(inspect && { inspect }) },
+      {
+        tool: "fixture-handle",
+        unavailable: "",
+        sleep: noSleep,
+        ...(inspect && { inspect }),
+      },
     );
   } catch (error) {
     expect(error).toBe(original);
@@ -376,7 +385,12 @@ test.skipIf(process.platform !== "win32")(
             : Object.assign(new Error("still refused"), { code: "EPERM" });
         },
         () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
-        { tool: "fixture-handle", unavailable: "", inspect: () => ({}) },
+        {
+          tool: "fixture-handle",
+          unavailable: "",
+          inspect: () => ({}),
+          sleep: noSleep,
+        },
       );
     } catch (error) {
       caught = error;
@@ -389,6 +403,118 @@ test.skipIf(process.platform !== "win32")(
       unknown
     >;
     expect(evidence.secondAttempt).toBe("EPERM");
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "the second attempt waits 500 ms by default before it removes again",
+  () => {
+    const original = Object.assign(new Error("cleanup refused"), {
+      code: "EBUSY",
+      path: "held",
+    });
+    const waits: number[] = [];
+    let calls = 0;
+    try {
+      cleanupAttribution(
+        "root",
+        () => {
+          calls++;
+          if (calls === 1) throw original;
+        },
+        () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
+        {
+          tool: "fixture-handle",
+          unavailable: "",
+          inspect: () => ({}),
+          sleep: (ms) => waits.push(ms),
+        },
+      );
+    } catch (error) {
+      expect(error).toBe(original);
+    }
+    expect(SECOND_ATTEMPT_DELAY_MS).toBe(500);
+    expect(waits).toEqual([500]);
+    expect(calls).toBe(2);
+  },
+  1_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "a second remove whose failure cannot be described never replaces the original error",
+  () => {
+    const root = join(
+      tmpdir(),
+      `forge-second-opaque-${process.pid}-${Date.now()}`,
+    );
+    const original = Object.assign(new Error("cleanup refused"), {
+      code: "EBUSY",
+      path: root,
+    });
+    let calls = 0;
+    let caught: unknown;
+    try {
+      cleanupAttribution(
+        root,
+        () => {
+          calls++;
+          // A null-prototype object has no code and cannot become a string.
+          throw calls === 1 ? original : Object.create(null);
+        },
+        () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
+        {
+          tool: "fixture-handle",
+          unavailable: "",
+          inspect: () => ({}),
+          sleep: noSleep,
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(calls).toBe(2);
+    expect(caught).toBe(original);
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "a run without host evidence still records whether a second remove succeeds",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-second-bare-"));
+    writeFileSync(join(root, "kept.txt"), "kept");
+    const original = Object.assign(new Error("cleanup refused"), {
+      code: "EBUSY",
+      path: root,
+    });
+    let calls = 0;
+    try {
+      cleanupAttribution(
+        root,
+        () => {
+          calls++;
+          if (calls === 1) throw original;
+          rmSync(root, { recursive: true, force: true });
+        },
+        () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
+        {
+          tool: "fixture-handle",
+          unavailable: "",
+          inspect: () => undefined,
+          sleep: noSleep,
+        },
+      );
+    } catch (error) {
+      expect(error).toBe(original);
+    }
+    expect(calls).toBe(2);
+    const line = original.message.split("Cleanup evidence: ")[1]!;
+    const evidence = JSON.parse(line.split("\n")[0]!) as Record<
+      string,
+      unknown
+    >;
+    expect(evidence.secondAttempt).toBe("removed");
   },
   5_000,
 );
@@ -585,6 +711,7 @@ for (const reason of ["checksum mismatch", "download failed", "not configured"])
           {
             tool: reason === "not configured" ? "" : "unverified-handle.exe",
             unavailable: reason === "not configured" ? "" : unavailable,
+            sleep: noSleep,
           },
         );
       } catch (error) {
