@@ -165,12 +165,14 @@ async function contact(
     args: string[],
     optional = false,
     childEnv = env,
+    spawn: { sensitive?: boolean; redact?: readonly string[] } = {},
   ) {
     const out = await s.process.run(exe, args, {
       cwd: s.files.root,
       env: childEnv,
       timeoutMs: 10000,
       maxOutputBytes: LIMIT,
+      ...spawn,
     });
     if (out.timedOut || out.truncated || (out.exitCode !== 0 && !optional))
       refuse(
@@ -180,6 +182,7 @@ async function contact(
     return {
       ok: out.exitCode === 0,
       text: out.stdout.trim(),
+      raw: out.stdout,
       error: out.stderr,
     };
   }
@@ -394,8 +397,10 @@ async function contact(
       ["auth", "token", "--hostname", "github.com", "--user", login],
       true,
       ghEnv,
+      { sensitive: true },
     );
-    const token = out.text.split(/\r?\n/)[0]?.trim() ?? "";
+    // Exactly one token line: only the terminal newline is removed.
+    const token = out.raw.replace(/\r?\n$/, "");
     if (!out.ok || !/^\S{8,512}$/.test(token))
       return optional
         ? { ok: false, text: "" }
@@ -412,13 +417,19 @@ async function contact(
         if (s.files.read(`${dir}/.owned`, 1024, "common") === undefined)
           refuse("ACCOUNT_UNAVAILABLE", "Cannot create the owned gh config");
       }
-    const result = await run(gh, ["api", ...args], optional, {
-      ...env,
-      GH_TOKEN: token,
-      GH_HOST: "github.com",
-      GH_CONFIG_DIR: `${common}/${dir}`,
-      GH_PROMPT_DISABLED: "1",
-    });
+    const result = await run(
+      gh,
+      ["api", ...args],
+      optional,
+      {
+        ...env,
+        GH_TOKEN: token,
+        GH_HOST: "github.com",
+        GH_CONFIG_DIR: `${common}/${dir}`,
+        GH_PROMPT_DISABLED: "1",
+      },
+      { redact: [token] },
+    );
     return { ok: result.ok, text: redact(result.text) };
   }
   const json = <T,>(text: string, fallback: T): T => {
@@ -709,25 +720,33 @@ async function contact(
           "ACCOUNT_VERIFY_FAILED",
           `The gh token for ${login} belongs to another GitHub account`,
         );
-      const listed = new Set(
-        json<{ email?: string }[]>(
-          (await api(login, ["user/emails", "--paginate"], true)).text.replace(
-            /\]\s*\[/g,
-            ",",
-          ),
-          [],
-        ).map((row) => (row.email ?? "").toLowerCase()),
-      );
+      const page = await api(login, ["user/emails", "--paginate"], true);
+      // Every page must succeed; a partial list is never accepted.
+      if (!page.ok && page.text)
+        refuse(
+          "ACCOUNT_VERIFY_FAILED",
+          `GitHub's email list for ${login} was incomplete (a page failed); try again`,
+        );
+      const listed = page.ok
+        ? new Set(
+            json<{ email?: string }[]>(
+              page.text.replace(/\]\s*\[/g, ","),
+              [],
+            ).map((row) => (row.email ?? "").toLowerCase()),
+          )
+        : undefined;
       const generated = `${account.userId}+${login}@users.noreply.github.com`;
       const unlisted = account.commitEmails.filter(
         (e) =>
           e.toLowerCase() !== generated.toLowerCase() &&
-          !listed.has(e.toLowerCase()),
+          !listed?.has(e.toLowerCase()),
       );
       if (unlisted.length)
         refuse(
           "ACCOUNT_VERIFY_FAILED",
-          `GitHub ${login} does not list these commit emails: ${unlisted.join(", ")}`,
+          listed
+            ? `GitHub ${login} does not list these commit emails: ${unlisted.join(", ")}`
+            : `Cannot confirm the custom commit emails ${unlisted.join(", ")}: the gh token for ${login} needs the user:email permission to read GitHub's email list`,
         );
       const approved: Binding = {
         login,
@@ -747,7 +766,12 @@ async function contact(
       s.device.write("bindings.json", JSON.stringify(bindings));
       apply(account, approved);
       await verifyIdentity(account);
-      return { repo, login, appliedFrom: approved.appliedFrom };
+      return {
+        repo,
+        login,
+        appliedFrom: approved.appliedFrom,
+        emails: listed ? "listed" : "noreply-only",
+      };
     }
     if (binding?.declined) return { repo, declined: true };
     if (selected && binding) {

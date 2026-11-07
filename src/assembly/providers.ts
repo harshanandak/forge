@@ -2,11 +2,12 @@ import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import {
   basename,
   delimiter,
+  dirname,
   isAbsolute,
   relative,
-  resolve,
   sep,
 } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -237,15 +238,42 @@ export function createProcessService(
   };
 }
 
-function real(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
-  }
+/** Names clone discovery may pass to git. Tokens, GH_*, GIT_* and credential paths are never among them. */
+const DISCOVERY_ENV = new Set([
+  "PATH",
+  "PATHEXT",
+  "HOME",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "TERM",
+  "TZ",
+  "XDG_CONFIG_HOME",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMDATA",
+]);
+
+function within(base: string, target: string): boolean {
+  const from = relative(base, target);
+  return (
+    from === "" ||
+    (from !== ".." && !from.startsWith(".." + sep) && !isAbsolute(from))
+  );
 }
 
-/** The first PATH entry outside the project that holds `name`, so a planted executable never runs. */
+/**
+ * The first PATH entry holding `name` whose canonical executable is outside the project, the
+ * temp directories and node_modules/.bin. A path that cannot be canonicalized is refused.
+ */
 function resolveOutside(
   executor: ProcessPort,
   name: string,
@@ -254,20 +282,37 @@ function resolveOutside(
 ): ReturnType<ProcessPort["resolve"]> {
   const pathKey =
     Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+  const none = () => executor.resolve(name, { ...env, [pathKey]: "" });
+  const excluded: string[] = [];
+  const temps = [tmpdir()];
+  for (const key of Object.keys(env))
+    if (["TEMP", "TMP", "TMPDIR"].includes(key.toUpperCase()))
+      temps.push(env[key]!);
+  try {
+    excluded.push(realpathSync(root));
+    for (const temp of temps) if (temp) excluded.push(realpathSync(temp));
+  } catch {
+    return none();
+  }
   for (const entry of (env[pathKey] ?? "").split(delimiter)) {
     const directory = entry.trim().replace(/^"(.*)"$/, "$1");
     if (!directory || !isAbsolute(directory)) continue;
-    // Compare real paths: temp roots such as /var on macOS are symlinks.
-    const from = relative(real(root), real(directory));
+    const found = executor.resolve(name, { ...env, [pathKey]: directory });
+    if (found.kind !== "resolved") continue;
+    let canonical: string;
+    try {
+      canonical = realpathSync(found.path);
+    } catch {
+      continue;
+    }
     if (
-      from === "" ||
-      (!from.startsWith(".." + sep) && from !== ".." && !isAbsolute(from))
+      excluded.some((base) => within(base, canonical)) ||
+      /[\\/]node_modules[\\/]\.bin[\\/]/i.test(canonical)
     )
       continue;
-    const found = executor.resolve(name, { ...env, [pathKey]: directory });
-    if (found.kind === "resolved") return found;
+    return found;
   }
-  return executor.resolve(name, { ...env, [pathKey]: "" });
+  return none();
 }
 
 function hostEnv(options: ProviderOptions): Readonly<Record<string, string>> {
@@ -676,14 +721,24 @@ export function createAssemblyProviders(
     ): Promise<OwnedHandle<FilesService>> {
       active(scope);
       // Git, not caller input or a .git text file, resolves linked-worktree roots.
-      const discoveryEnv = Object.fromEntries(
-        Object.entries(env).filter(([key]) => !/^GIT_/i.test(key)),
+      const scrubbed: Record<string, string> = Object.fromEntries(
+        Object.entries(env).filter(([key]) =>
+          DISCOVERY_ENV.has(key.toUpperCase()),
+        ),
       );
-      discoveryEnv.GIT_OPTIONAL_LOCKS = "0";
-      discoveryEnv.GIT_TERMINAL_PROMPT = "0";
-      const git = resolveOutside(executor, "git", discoveryEnv, root);
+      const git = resolveOutside(executor, "git", scrubbed, root);
       if (git.kind !== "resolved")
         refuse("UNAVAILABLE", "Clone files require Git on PATH");
+      const discoveryKey =
+        Object.keys(scrubbed).find((key) => key.toUpperCase() === "PATH") ??
+        "PATH";
+      // Git runs with its own directory as PATH, never the caller's.
+      const discoveryEnv: Record<string, string> = {
+        ...scrubbed,
+        [discoveryKey]: dirname(git.path),
+        GIT_OPTIONAL_LOCKS: "0",
+        GIT_TERMINAL_PROMPT: "0",
+      };
       const result = await executor.run(
         git,
         [
