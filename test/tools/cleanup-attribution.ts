@@ -26,7 +26,7 @@ export type CleanupInspector = (
 const MAX_LISTED_ENTRIES = 50;
 const MAX_EVIDENCE_CHARS = 12_000;
 
-// Handle cannot see every holder (a working directory, a kernel filter), so name the candidates.
+// Handle cannot see every holder (a working directory, a file system filter driver), so name the candidates.
 const HOST_EVIDENCE = String.raw`
 $root = $env:FORGE_CLEANUP_ROOT
 $data = @{}
