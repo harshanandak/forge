@@ -195,12 +195,10 @@ async function contact(
     );
   if (remote && !match)
     refuse("ACCOUNT_HOST_UNSUPPORTED", "Only github.com origins are supported");
-  const common = (
-    await g(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-  ).text;
+  // Only a repo without a github.com origin is named by its common git dir.
   const repo = match
     ? `github.com/${match[1]}/${match[2]}`.toLowerCase()
-    : `local:${common}`;
+    : `local:${(await g(["rev-parse", "--path-format=absolute", "--git-common-dir"])).text}`;
   const bindingText = s.device.read("bindings.json"),
     accountText = s.device.read("accounts.json");
   const bindings = parseObject<Record<string, Binding>>(bindingText, {});
@@ -335,12 +333,34 @@ async function contact(
         refuse("INPUT_INVALID", `Unknown revision ${name}`);
       return out.text;
     };
-    if ((await g(["rev-parse", "--is-shallow-repository"])).text !== "false")
+    // One git process answers both the shallow test and the tip: the shallow line prints first.
+    const tipName = input.tip ?? "HEAD";
+    if (!REF.test(tipName))
+      refuse("INPUT_INVALID", `Invalid revision ${tipName}`);
+    const head = await g(
+      [
+        "rev-parse",
+        "--is-shallow-repository",
+        "--verify",
+        "--quiet",
+        `${tipName}^{commit}`,
+      ],
+      true,
+    );
+    const [shallow, tipSha] = head.text.split(/\r?\n/);
+    if (!shallow)
+      refuse(
+        "ACCOUNT_UNAVAILABLE",
+        "Account operation failed; verify the binding before continuing",
+      );
+    if (shallow !== "false")
       refuse(
         "ACCOUNT_SHALLOW_HISTORY",
         "Shallow history hides commits from the check; run git fetch --unshallow and retry",
       );
-    const tip = await resolve(input.tip ?? "HEAD");
+    if (!head.ok || !tipSha)
+      refuse("INPUT_INVALID", `Unknown revision ${tipName}`);
+    const tip = tipSha;
     // An explicit all-zero base is a new-branch push: check the tip's full history.
     const newBranch = Boolean(input.base && /^0+$/.test(input.base));
     const base = input.base && !newBranch ? await resolve(input.base) : "";
@@ -440,42 +460,92 @@ async function contact(
       return fallback;
     }
   };
-  const status = await run(
-    gh,
-    ["auth", "status", "--hostname", "github.com", "--json", "hosts"],
-    true,
-    ghEnv,
-  );
-  let candidates: { login: string; active: boolean }[] = [];
-  if (status.ok) {
-    const data = parse<{
-      hosts?: Record<
-        string,
-        { login: string; active: boolean; state: string; host: string }[]
-      >;
-    }>(status.text, {});
-    candidates = (data.hosts?.["github.com"] ?? [])
-      .filter(
-        (row) =>
-          row.state === "success" &&
-          row.host === "github.com" &&
-          /^[a-z\d](?:[a-z\d-]{0,38})$/i.test(row.login),
-      )
-      .map(({ login, active }) => ({ login, active }));
-  } else if (/unknown flag.*json/i.test(status.error)) {
-    const text = await run(
+  type Candidate = { login: string; active: boolean };
+  type Unpushed = { commit: string; author: string; committer: string };
+  // A bound `use` only needs the token proof below, so it skips the account listing and the git
+  // reads that feed a question it never asks: each one is a process start. A signed-out login
+  // still refuses, because its token lookup fails with the same ACCOUNT_VERIFY_FAILED.
+  const discover = !(action === "use" && selected && binding);
+  const detect = async (): Promise<Candidate[]> => {
+    const status = await run(
       gh,
-      ["auth", "status", "--hostname", "github.com"],
-      false,
+      ["auth", "status", "--hostname", "github.com", "--json", "hosts"],
+      true,
       ghEnv,
     );
-    candidates = [
-      ...(text.text + "\n" + text.error).matchAll(
-        /Logged in to github\.com account ([a-z\d-]+)[^\r\n]*\r?\n\s*- Active account: (true|false)/gi,
-      ),
-    ].map((row) => ({ login: row[1]!, active: row[2] === "true" }));
-  } else refuse("ACCOUNT_UNAVAILABLE", "GitHub account detection failed");
+    if (status.ok) {
+      const data = parse<{
+        hosts?: Record<
+          string,
+          { login: string; active: boolean; state: string; host: string }[]
+        >;
+      }>(status.text, {});
+      return (data.hosts?.["github.com"] ?? [])
+        .filter(
+          (row) =>
+            row.state === "success" &&
+            row.host === "github.com" &&
+            /^[a-z\d](?:[a-z\d-]{0,38})$/i.test(row.login),
+        )
+        .map(({ login, active }) => ({ login, active }));
+    }
+    if (/unknown flag.*json/i.test(status.error)) {
+      const text = await run(
+        gh,
+        ["auth", "status", "--hostname", "github.com"],
+        false,
+        ghEnv,
+      );
+      return [
+        ...(text.text + "\n" + text.error).matchAll(
+          /Logged in to github\.com account ([a-z\d-]+)[^\r\n]*\r?\n\s*- Active account: (true|false)/gi,
+        ),
+      ].map((row) => ({ login: row[1]!, active: row[2] === "true" }));
+    }
+    return refuse("ACCOUNT_UNAVAILABLE", "GitHub account detection failed");
+  };
+  const history = async (): Promise<Unpushed[]> => {
+    const log = await g(
+      ["log", "--format=%H%x00%ae%x00%ce", "HEAD", "--not", "--remotes=origin"],
+      true,
+    );
+    // An unborn HEAD has no commits to list; any other failure still refuses.
+    if (!log.ok && (await g(["rev-parse", "--verify", "HEAD"], true)).ok)
+      refuse(
+        "ACCOUNT_UNAVAILABLE",
+        "Account operation failed; verify the binding before continuing",
+      );
+    return log.ok
+      ? log.text
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((line) => {
+            const [commit, author, committer] = line.split("\0");
+            return { commit: commit!, author: author!, committer: committer! };
+          })
+      : [];
+  };
+  const idle = { ok: true, text: "", raw: "", error: "" };
+  // The process supervisor caps concurrent children, so these run one after another.
+  const candidates = discover ? await detect() : [];
+  const unpushed = discover ? await history() : [];
+  const identityRows = discover
+    ? await g(
+        [
+          "config",
+          "-z",
+          "--show-origin",
+          "--get-regexp",
+          "^(user\\.email|includeif\\.)",
+        ],
+        true,
+      )
+    : idle;
+  const recentRows = discover
+    ? await g(["log", "-20", "--format=%ae%x00%ce"], true)
+    : idle;
   if (
+    discover &&
     selected &&
     !candidates.some(
       (c) => c.login.toLowerCase() === selected.login.toLowerCase(),
@@ -485,36 +555,31 @@ async function contact(
       "ACCOUNT_VERIFY_FAILED",
       `Approved GitHub account ${selected.login} is absent from gh's signed-in accounts`,
     );
-  const unpushed = (await g(["rev-parse", "--verify", "HEAD"], true)).ok
-    ? (
-        await g([
-          "log",
-          "--format=%H%x00%ae%x00%ce",
-          "HEAD",
-          "--not",
-          "--remotes=origin",
-        ])
-      ).text
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .map((line) => {
-          const [commit, author, committer] = line.split("\0");
-          return { commit: commit!, author: author!, committer: committer! };
-        })
-    : [];
-  const identities = (
-    await g(
-      [
-        "config",
-        "--show-origin",
-        "--get-regexp",
-        "^(user\\.email|includeif\\.)",
-      ],
-      true,
+  const recent = recentRows.text;
+  // With -z each entry is `origin NUL key NL value NUL` (a valueless key has no NL), so a value
+  // holding newlines or tabs cannot pass for another entry.
+  const listed = identityRows.raw.split("\0");
+  const entries: { origin: string; key: string; value: string | null }[] = [];
+  for (let at = 0; at + 1 < listed.length; at += 2) {
+    const record = listed[at + 1]!;
+    const split = record.indexOf("\n");
+    entries.push({
+      origin: listed[at]!,
+      key: split < 0 ? record : record.slice(0, split),
+      value: split < 0 ? null : record.slice(split + 1),
+    });
+  }
+  const identities = entries
+    .map(
+      (row) =>
+        `${row.origin}\t${row.key}${row.value === null ? "" : ` ${row.value}`}`,
     )
-  ).text;
-  const recent = (await g(["log", "-20", "--format=%ae%x00%ce"], true)).text;
-  const email = (await g(["config", "user.email"], true)).text;
+    .join("\n");
+  // The effective user.email is the last one the listing shows; no separate git config call.
+  const email = entries.reduce(
+    (last, row) => (row.key === "user.email" ? (row.value ?? "") : last),
+    "",
+  );
   const belongs = (address: string, login: string) =>
     new RegExp(
       `^(?:[0-9]+\\+)?${login}@users\\.noreply\\.github\\.com$`,
@@ -665,10 +730,29 @@ async function contact(
         );
       }
     }
+    // One git process lists the three keys; the last value of each is the effective one.
+    // -z records are `key NL value NUL`, so a value cannot pass for another key, and an empty
+    // value stays distinct from a key with no value.
+    const records = (
+      await g(
+        ["config", "-z", "--get-regexp", "^user\\.(email|useconfigonly|name)$"],
+        true,
+      )
+    ).raw
+      .split("\0")
+      .filter(Boolean);
+    const effective = (key: string) =>
+      records.reduce<string | null | undefined>((last, record) => {
+        const split = record.indexOf("\n");
+        if ((split < 0 ? record : record.slice(0, split)) !== key) return last;
+        return split < 0 ? null : record.slice(split + 1);
+      }, undefined);
+    // A key with no value is a true boolean, as `git config --bool` reads it; an empty value is false.
+    const configOnly = effective("user.useconfigonly");
     if (
-      (await g(["config", "user.email"])).text !== account.commitEmails[0] ||
-      (await g(["config", "--bool", "user.useConfigOnly"])).text !== "true" ||
-      (await g(["config", "user.name"])).text !== account.commitName
+      effective("user.email") !== account.commitEmails[0] ||
+      !(configOnly === null || /^(?:true|yes|on|1)$/i.test(configOnly ?? "")) ||
+      effective("user.name") !== account.commitName
     )
       integrity("Effective Git identity overrides the approved include");
   };
