@@ -1,5 +1,5 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,15 +19,21 @@ for (const kind of ["file", "directory"])
         process.execPath,
         [
           "-e",
-          `${kind === "file" ? "require('node:fs').openSync(process.argv[1], 'r');" : ""} console.log('ready'); setInterval(() => {}, 1000)`,
+          `${kind === "file" ? "require('node:fs').openSync(process.argv[1], 'r');" : "require('node:fs').watch(process.argv[1]);"} console.log('ready'); setInterval(() => {}, 1000)`,
           path,
         ],
         { cwd: root, stdio: ["ignore", "pipe", "inherit"], windowsHide: true },
       );
       const closed = once(child, "close");
       try {
-        // A Windows directory is held by cwd; opening it as a file is unnecessary.
-        await once(child.stdout, "data");
+        // The directory child holds an explicit watch handle on top of its cwd, so
+        // the snapshot does not depend on how Handle lists a cwd handle.
+        await Promise.race([
+          once(child.stdout, "data"),
+          closed.then(() => {
+            throw new Error("holder child exited before it was ready");
+          }),
+        ]);
         const original = Object.assign(new Error("cleanup refused"), {
           code: "EBUSY",
           path,
@@ -53,7 +59,17 @@ for (const kind of ["file", "directory"])
           expect(original.message).not.toContain('"status":0');
           return;
         }
-        expect(original.message).toContain(String(child.pid));
+        if (!original.message.includes(String(child.pid))) {
+          // Name what the child really holds, so a miss is diagnosable from the log.
+          const listing = spawnSync(
+            tool,
+            ["-accepteula", "-nobanner", "-a", "-p", String(child.pid)],
+            { encoding: "utf8", timeout: 10_000, windowsHide: true },
+          );
+          throw new Error(
+            `Handle did not name holder ${child.pid} of ${path}. Snapshot: ${original.message}\nHandles of the child (status ${listing.status}, error ${listing.error?.message ?? "none"}): ${listing.stdout || listing.stderr}`,
+          );
+        }
         expect(original.message).toContain(basename(process.execPath));
         expect(original.message).toContain(path.replaceAll("\\", "\\\\"));
         expect(original.message).toMatch(/"at":"\d{4}-\d\d-\d\dT/);
@@ -92,6 +108,37 @@ test.skipIf(process.platform !== "win32")(
     expect(caught).toBe(original);
     expect(original.message).toContain("snapshot unavailable");
     expect(original.message).toContain("attribution failed");
+  },
+  1_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "a Handle run that finds no holder says so instead of an empty failure",
+  () => {
+    const original = Object.assign(new Error("cleanup refused"), {
+      code: "EBUSY",
+      path: "held",
+    });
+    try {
+      cleanupAttribution(
+        "root",
+        () => {
+          throw original;
+        },
+        () => ({
+          status: 1,
+          stdout: "No matching handles found.\r\n",
+          stderr: "",
+        }),
+        { tool: "fixture-handle", unavailable: "" },
+      );
+    } catch {
+      // The original cleanup error is rethrown after the snapshot.
+    }
+    const [snapshot] = JSON.parse(
+      original.message.split("Cleanup attribution: ")[1]!,
+    ) as { failure: string }[];
+    expect(snapshot!.failure).toContain("No matching handles found");
   },
   1_000,
 );
