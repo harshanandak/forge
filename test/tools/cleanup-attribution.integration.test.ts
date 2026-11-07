@@ -394,6 +394,74 @@ test.skipIf(process.platform !== "win32")(
 );
 
 test.skipIf(process.platform !== "win32")(
+  "a second remove whose failure cannot be described never replaces the original error",
+  () => {
+    const root = join(
+      tmpdir(),
+      `forge-second-opaque-${process.pid}-${Date.now()}`,
+    );
+    const original = Object.assign(new Error("cleanup refused"), {
+      code: "EBUSY",
+      path: root,
+    });
+    let calls = 0;
+    let caught: unknown;
+    try {
+      cleanupAttribution(
+        root,
+        () => {
+          calls++;
+          // A null-prototype object has no code and cannot become a string.
+          throw calls === 1 ? original : Object.create(null);
+        },
+        () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
+        { tool: "fixture-handle", unavailable: "", inspect: () => ({}) },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(calls).toBe(2);
+    expect(caught).toBe(original);
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "a run without host evidence still records whether a second remove succeeds",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-second-bare-"));
+    writeFileSync(join(root, "kept.txt"), "kept");
+    const original = Object.assign(new Error("cleanup refused"), {
+      code: "EBUSY",
+      path: root,
+    });
+    let calls = 0;
+    try {
+      cleanupAttribution(
+        root,
+        () => {
+          calls++;
+          if (calls === 1) throw original;
+          rmSync(root, { recursive: true, force: true });
+        },
+        () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
+        { tool: "fixture-handle", unavailable: "", inspect: () => undefined },
+      );
+    } catch (error) {
+      expect(error).toBe(original);
+    }
+    expect(calls).toBe(2);
+    const line = original.message.split("Cleanup evidence: ")[1]!;
+    const evidence = JSON.parse(line.split("\n")[0]!) as Record<
+      string,
+      unknown
+    >;
+    expect(evidence.secondAttempt).toBe("removed");
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
   "the host query lists a root-named process first, flags it, and applies the cap in PowerShell",
   async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-procs-"));
