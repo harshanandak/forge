@@ -1302,8 +1302,9 @@ export async function createAssembly(
           if (configHandler) {
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
-            if (request.op === "config.show" || request.op === "laws.check")
-              await trustState.open(false);
+            if (request.op === "config.show") await trustState.open(false);
+            // laws.check reads which blocks are admitted, so it opens trust state the same way
+            if (request.op === "laws.check") await trustState.open(false);
             const handled = configHandler(request.input);
             const deviceOnly = !call.inProject && !record(handled)?.configured;
             const current =
