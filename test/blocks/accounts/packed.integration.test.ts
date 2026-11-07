@@ -822,7 +822,7 @@ test("installed accounts: the token never reaches stdout, stderr, receipts or th
 }, 120_000);
 
 test("installed accounts: a gh or git planted in a temp directory never runs during clone discovery", () => {
-  const { root, node, env, cli, clone } = setup();
+  const { root, home, node, env, cli, clone } = setup();
   try {
     const repo = clone("temp-spy");
     const planted = join(root, "tmp", "planted");
@@ -836,7 +836,7 @@ test("installed accounts: a gh or git planted in a temp directory never runs dur
         PATH: planted + delimiter + env.PATH,
         GH_TOKEN: "caller-token-never-forward",
         GITHUB_TOKEN: "caller-token-never-forward",
-        GH_CONFIG_DIR: join(root, "caller-gh"),
+        GH_CONFIG_DIR: join(home, "gh"),
       },
     );
     expect(plan.ok, JSON.stringify(plan)).toBe(true);
