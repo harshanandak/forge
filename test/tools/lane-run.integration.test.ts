@@ -2604,11 +2604,17 @@ test("detach validates child issue lookup taking longer than five seconds", asyn
     });
     expect(Date.now() - started).toBeGreaterThan(5_000);
   } finally {
-    killFixture(probe.pid(), true);
+    // The slow issue lookup is a second process of the detached tree. Both must
+    // exit before afterEach removes the root, or Windows reports EBUSY.
+    const tree = [probe.pid()];
     const startupPid = join(f.root, "startup-pid");
     if (existsSync(startupPid))
-      killFixture(Number(readFileSync(startupPid, "utf8")));
-    await waitForProcess("slow child cleanup", () => !alive(probe.pid()));
+      tree.push(Number(readFileSync(startupPid, "utf8")));
+    for (const pid of tree) killFixture(pid, true);
+    await waitForProcess("detached process tree exit", () =>
+      tree.every((pid) => !alive(pid)),
+    );
+    expect(tree.filter(alive)).toEqual([]);
   }
 });
 
