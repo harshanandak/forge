@@ -371,6 +371,25 @@ export function requestBoundTo(options: {
       )
   );
 }
+/**
+ * True when `request` exists and can never approve again: it was used, or it is still marked
+ * pending past its expiry. It only reads; a pending, unexpired or unknown request is not spent.
+ */
+export function requestSpent(options: {
+  state: Pick<DeletableStateClient, "get">;
+  request: unknown;
+  now?: () => number;
+}): boolean {
+  if (typeof options.request !== "string") return false;
+  const stored = object(options.state.get(options.request)?.value);
+  if (stored === undefined) return false;
+  return (
+    stored.status === "used" ||
+    (stored.status === "pending" &&
+      typeof stored.expiresAt === "number" &&
+      stored.expiresAt <= (options.now ?? Date.now)())
+  );
+}
 /** Splits the optional approval claim off a lane resume call; a missing claim asks the owner. */
 export function laneResumeClaim(input: unknown): {
   input: Record<string, unknown>;
