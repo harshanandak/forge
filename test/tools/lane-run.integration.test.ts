@@ -22,6 +22,7 @@ import { scriptFixture } from "../script-fixture.ts";
 import { cliTopologyFixture } from "./cli-topology-fixture.ts";
 import { RepositoryFixtures } from "./lane-fixture.ts";
 import { FixtureChildren } from "../fixture-children.ts";
+import { cleanupAttribution } from "./cleanup-attribution.ts";
 
 setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<boolean>();
@@ -80,7 +81,9 @@ afterEach(async () => {
         avoidedIssueChildren += readFileSync(calls, "utf8")
           .trim()
           .split("\n").length;
-      rmSync(root, { recursive: true, force: true });
+      cleanupAttribution(root, () =>
+        rmSync(root, { recursive: true, force: true }),
+      );
     }
   });
 });
@@ -347,17 +350,21 @@ const {main}=await import(${JSON.stringify(script)});process.exitCode=await main
     entry = script,
     allowEmpty = false,
     args = ["run", "one", "--role", "builder"],
+    // On Windows an owned child runs in the fixture job, so cleanup ends the whole tree at
+    // once. On POSIX there is no job: the test itself must end and wait for the chain.
+    owned = false,
   ) {
     childLaunches++;
-    const child = children.own(
-      spawn(process.execPath, [entry, ...args], {
-        cwd: caller,
-        env,
-        windowsHide: true,
-        timeout: 20_000,
-        detached: args.includes("--detach"),
-      }),
-    );
+    const detached = args.includes("--detach");
+    const options = { cwd: caller, env, windowsHide: true, timeout: 20_000 };
+    const child = owned
+      ? children.spawn(process.execPath, [entry, ...args], {
+          ...options,
+          detached: detached && process.platform !== "win32",
+        })
+      : children.own(
+          spawn(process.execPath, [entry, ...args], { ...options, detached }),
+        );
     child.stderr.resume();
     return Object.assign(
       new Promise<{ code: number | null; output: Verdict }>((done, fail) => {
@@ -2586,17 +2593,22 @@ test("detach validates child issue lookup taking longer than five seconds", asyn
   const f = autoFixture("auto-clean"),
     probe = detachProbe(f),
     forge = join(f.root, "fake-forge.mjs"),
+    // Windows: the fixture job owns the chain and ends it atomically in afterEach,
+    // because killing by pid races the lane spawns that start when validation ends.
+    // Elsewhere there is no job, so the test ends the process group and waits.
+    jobOwned = process.platform === "win32",
     started = Date.now();
   writeFileSync(
     forge,
     `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(f.root, "startup-pid"))},String(process.pid));await new Promise(done=>setTimeout(done,5500));${readFileSync(forge, "utf8")}`,
   );
   try {
-    const result = await f.launch(probe.helper, false, [
-      "auto",
-      "one",
-      "--detach",
-    ]);
+    const result = await f.launch(
+      probe.helper,
+      false,
+      ["auto", "one", "--detach"],
+      jobOwned,
+    );
     expect(result.code).toBe(0);
     expect(result.output).toMatchObject({
       outcome: "detached",
@@ -2604,19 +2616,57 @@ test("detach validates child issue lookup taking longer than five seconds", asyn
     });
     expect(Date.now() - started).toBeGreaterThan(5_000);
   } finally {
-    // The slow issue lookup is a second process of the detached tree. Both must
-    // exit before afterEach removes the root, or Windows reports EBUSY.
-    const tree = [probe.pid()];
-    const startupPid = join(f.root, "startup-pid");
-    if (existsSync(startupPid))
-      tree.push(Number(readFileSync(startupPid, "utf8")));
-    for (const pid of tree) killFixture(pid, true);
-    await waitForProcess("detached process tree exit", () =>
-      tree.every((pid) => !alive(pid)),
-    );
-    expect(tree.filter(alive)).toEqual([]);
+    if (!jobOwned) {
+      // The slow issue lookup is a second process of the detached tree. Both must
+      // exit before afterEach removes the root.
+      const tree = [probe.pid()];
+      const startupPid = join(f.root, "startup-pid");
+      if (existsSync(startupPid))
+        tree.push(Number(readFileSync(startupPid, "utf8")));
+      for (const pid of tree) killFixture(pid, true);
+      await waitForProcess("detached process tree exit", () =>
+        tree.every((pid) => !alive(pid)),
+      );
+      expect(tree.filter(alive)).toEqual([]);
+    }
   }
 });
+
+test.skipIf(process.platform !== "win32")(
+  "fixture cleanup ends the detached chain and its harness before the root is removed",
+  async () => {
+    const f = autoFixture("auto-slow");
+    const launched = await f.launch(
+      script,
+      false,
+      ["auto", "one", "--detach"],
+      true,
+    );
+    const { pid } = launched.output as unknown as { pid: number };
+    let harness = 0;
+    try {
+      // The harness may still be writing its pid file; wait for a whole number.
+      const harnessPid = () => {
+        try {
+          return Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
+        } catch {
+          return 0;
+        }
+      };
+      await waitForProcess("detached harness pid", () => harnessPid() > 0);
+      harness = harnessPid();
+      expect([pid, harness].filter(alive)).toEqual([pid, harness]);
+      await children.cleanup(() => {});
+      expect(
+        [pid, harness].filter(alive),
+        "processes still alive after fixture cleanup",
+      ).toEqual([]);
+    } finally {
+      for (const live of [pid, harness].filter((item) => item && alive(item)))
+        killFixture(live, true);
+    }
+  },
+);
 
 test("detach reclaims the lock when the parent dies before handoff", async () => {
   const f = autoFixture("auto-clean"),
@@ -2890,7 +2940,7 @@ for (const operation of ["reclaim", "rename"])
   });
 
 // Registration is synchronous even when Bun selects a focused subset to execute.
-expect(caseNames).toHaveLength(128);
+expect(caseNames).toHaveLength(129);
 expect(
   createHash("sha256").update(JSON.stringify(caseNames)).digest("hex"),
-).toBe("cf896f415afa1c01a4fe9d778dbfd5d612c3546e1b45b604bb7607adb254451b");
+).toBe("4154d0a0cc4a5a5c63b9f43320210cd81c98cf7fe24bb414842e00f24615edb0");

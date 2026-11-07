@@ -42,7 +42,7 @@ export function cleanupAttribution(
             output: result.stdout,
             ...(result.error || result.status !== 0
               ? {
-                  failure: `attribution failed: ${result.error?.message ?? result.stderr ?? result.stdout}`,
+                  failure: `attribution failed: ${result.error?.message ?? (result.stderr || result.stdout)}`,
                 }
               : {}),
           };
