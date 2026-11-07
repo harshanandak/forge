@@ -1,4 +1,4 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,11 +8,10 @@ import { join, resolve } from "node:path";
 // full assembly import: 0.8 to 1.2 s on the loaded Windows runner (scenarios took 6.1 to
 // 9.8 s in run 42388835182). A fixed 5 s bound per call is only about 5x that mean, so one
 // contention stall failed an unrelated PR. The bound is the scenario's: every call gets
-// whatever is left of one budget that stays under the test's own timeout, and a call that
+// whatever is left of one budget that stays under the test timeout declared below, and a call that
 // outlives it is reported by name with the time spent on each earlier call.
 const TEST_TIMEOUT_MS = 30_000;
 const SCENARIO_BUDGET_MS = TEST_TIMEOUT_MS - 5_000;
-setDefaultTimeout(TEST_TIMEOUT_MS);
 const bin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 
 test.each([
@@ -160,4 +159,5 @@ ${result.stderr}${result.stdout}`,
       rmSync(root, { recursive: true, force: true });
     }
   },
+  TEST_TIMEOUT_MS,
 );
