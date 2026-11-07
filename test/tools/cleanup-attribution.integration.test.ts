@@ -7,6 +7,7 @@ import { basename, join } from "node:path";
 import {
   cleanupAttribution,
   type AttributionRunner,
+  type CleanupInspector,
 } from "./cleanup-attribution.ts";
 
 setDefaultTimeout(30_000);
@@ -152,7 +153,11 @@ test.skipIf(process.platform !== "win32")(
   1_000,
 );
 
-function refuse(root: string, run: AttributionRunner) {
+function refuse(
+  root: string,
+  run: AttributionRunner,
+  inspect?: CleanupInspector,
+) {
   const original = Object.assign(new Error("cleanup refused"), {
     code: "EBUSY",
     path: root,
@@ -164,7 +169,7 @@ function refuse(root: string, run: AttributionRunner) {
         throw original;
       },
       run,
-      { tool: "fixture-handle", unavailable: "" },
+      { tool: "fixture-handle", unavailable: "", ...(inspect && { inspect }) },
     );
   } catch (error) {
     expect(error).toBe(original);
@@ -218,11 +223,88 @@ test.skipIf(process.platform !== "win32")(
 test.skipIf(process.platform !== "win32")(
   "a failed host query is recorded in the evidence and the original error survives",
   () => {
-    const { evidence } = refuse("root", () => {
+    const missing = join(
+      tmpdir(),
+      `forge-missing-${process.pid}-${Date.now()}`,
+    );
+    const { evidence } = refuse(missing, () => {
       throw new Error("host query unavailable");
     });
     expect(evidence).toMatchObject({ errorIsRoot: true, rootExists: false });
     expect(String(evidence.hostError)).toContain("host query unavailable");
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "a large host response still gives one valid evidence line with the filters and omitted counts",
+  () => {
+    const missing = join(tmpdir(), `forge-large-${process.pid}-${Date.now()}`);
+    const processes = Array.from({ length: 60 }, (_, index) => ({
+      pid: 100 + index,
+      parent: 1,
+      parentName: "bun.exe",
+      name: "bun.exe",
+      command: `bun ${"x".repeat(200)}`,
+    }));
+    processes.push(
+      {
+        pid: 7,
+        parent: 1,
+        parentName: "bun.exe",
+        name: "node.exe",
+        command: missing,
+      },
+      {
+        pid: 99,
+        parent: 5,
+        parentName: "bun.exe",
+        name: "conhost.exe",
+        command: "conhost",
+      },
+    );
+    const { evidence, message } = refuse(missing, (command) =>
+      command !== "fixture-handle"
+        ? {
+            status: 0,
+            stdout: JSON.stringify({
+              processes,
+              filters: `WdFilter${" x".repeat(3_000)}`,
+              volume: `instances${" y".repeat(3_000)}`,
+            }),
+          }
+        : { status: 1, stdout: "No matching handles found.\r\n" },
+    );
+    const host = evidence.host as {
+      processes: { pid: number; parentName?: string }[];
+      filters: string;
+      volume: string;
+    };
+    expect(host.filters).toContain("WdFilter");
+    expect(host.volume).toContain("instances");
+    // Root-named and conhost processes survive the cap, in front of the rest.
+    expect(host.processes.slice(0, 2).map((item) => item.pid)).toEqual([7, 99]);
+    expect(host.processes[1]!.parentName).toBe("bun.exe");
+    expect(evidence.processesOmitted).toBeGreaterThan(0);
+    expect(
+      message.split("Cleanup evidence: ")[1]!.split("\n")[0]!.length,
+    ).toBeLessThan(12_000);
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "an evidence value that cannot be serialized never replaces the original error",
+  () => {
+    const missing = join(tmpdir(), `forge-loop-${process.pid}-${Date.now()}`);
+    const loop: Record<string, unknown> = {};
+    loop.self = loop;
+    const { evidence } = refuse(
+      missing,
+      () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
+      () => loop,
+    );
+    expect(String(evidence.inspectError)).toContain("TypeError");
   },
   5_000,
 );
