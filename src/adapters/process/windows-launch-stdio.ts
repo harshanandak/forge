@@ -301,7 +301,12 @@ function attach(
       }, wait);
     };
     checkExit = () => {
-      settleIfExited();
+      if (settleIfExited()) return;
+      // A process closes its pipes just before its object is signaled, so the exit often shows up
+      // a moment later. Start the quick checks over instead of waiting out a long, late interval.
+      clearTimeout(timer);
+      step = 0;
+      schedule();
     };
     schedule();
   });
