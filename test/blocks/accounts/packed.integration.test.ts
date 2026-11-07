@@ -97,7 +97,7 @@ if (a[0] === 'api') {
 } else if (a[0] === 'auth' && a[1] === 'token') {
   if (e.GH_TOKEN || e.GH_HOST || a.join(' ').indexOf('--hostname github.com --user ') < 0) process.exit(9);
   const who = a[a.indexOf('--user') + 1];
-  if (!ids[who]) process.exit(1);
+  if (!ids[who] || flag('signedout')) process.exit(1);
   console.log('ghp_fixture_' + who + '_9d3f1c' + (flag('multiline') ? '\\nextra-line' : ''));
 } else if (a[0] === 'auth' && a[1] === 'status') {
   if (e.GH_TOKEN || e.GH_HOST) process.exit(9);
@@ -1067,6 +1067,51 @@ test("installed accounts: plan, use and check on a bound clone start only the pr
     expect(checked.ok, JSON.stringify(checked)).toBe(true);
     expect(ghCalls()).toEqual({});
     expect(gitCalls()).toEqual({ remote: 1, "rev-parse": 1, log: 1 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a clone cannot spoof the approved identity with an empty useConfigOnly or a multi-line name", () => {
+  const { root, cli, clone, git } = setup();
+  try {
+    const approval = { quote: "yes", source: "t3:fixture/message:spoof" };
+    expect(
+      cli(clone("spoof-first"), "use", { login: "alice", approval }).ok,
+    ).toBe(true);
+    // An empty value is false to git; it must not read as a bare key (true).
+    const empty = clone("spoof-empty");
+    expect(cli(empty, "use", { login: "alice", approval }).ok).toBe(true);
+    git(empty, "config", "user.useConfigOnly", "");
+    expect(cli(empty, "use", { login: "alice", approval })).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_INTEGRITY" },
+    });
+    // A name holding a newline must not pass for a second user.name entry that equals the approved name.
+    const multi = clone("spoof-multi-line");
+    expect(cli(multi, "use", { login: "alice", approval }).ok).toBe(true);
+    git(multi, "config", "user.name", "Evil\nuser.name alice");
+    expect(cli(multi, "use", { login: "alice", approval })).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_INTEGRITY" },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a bound use refuses when the bound login is signed out of gh", () => {
+  const { root, bin, cli, clone } = setup();
+  try {
+    const approval = { quote: "yes", source: "t3:fixture/message:signedout" };
+    expect(
+      cli(clone("signedout-first"), "use", { login: "alice", approval }).ok,
+    ).toBe(true);
+    // The bound path skips the account listing; the failed token lookup still refuses.
+    writeFileSync(join(bin, "signedout"), "");
+    expect(
+      cli(clone("signedout-second"), "use", { login: "alice", approval }),
+    ).toMatchObject({ ok: false, error: { code: "ACCOUNT_VERIFY_FAILED" } });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -533,6 +533,7 @@ async function contact(
     ? await g(
         [
           "config",
+          "-z",
           "--show-origin",
           "--get-regexp",
           "^(user\\.email|includeif\\.)",
@@ -554,13 +555,31 @@ async function contact(
       "ACCOUNT_VERIFY_FAILED",
       `Approved GitHub account ${selected.login} is absent from gh's signed-in accounts`,
     );
-  const identities = identityRows.text;
   const recent = recentRows.text;
+  // With -z each entry is `origin NUL key NL value NUL` (a valueless key has no NL), so a value
+  // holding newlines or tabs cannot pass for another entry.
+  const listed = identityRows.raw.split("\0");
+  const entries: { origin: string; key: string; value: string | null }[] = [];
+  for (let at = 0; at + 1 < listed.length; at += 2) {
+    const record = listed[at + 1]!;
+    const split = record.indexOf("\n");
+    entries.push({
+      origin: listed[at]!,
+      key: split < 0 ? record : record.slice(0, split),
+      value: split < 0 ? null : record.slice(split + 1),
+    });
+  }
+  const identities = entries
+    .map(
+      (row) =>
+        `${row.origin}\t${row.key}${row.value === null ? "" : ` ${row.value}`}`,
+    )
+    .join("\n");
   // The effective user.email is the last one the listing shows; no separate git config call.
-  const email = identities.split(/\r?\n/).reduce((last, line) => {
-    const row = /^[^\t]*\tuser\.email(?: (.*))?$/.exec(line);
-    return row ? (row[1] ?? "").trim() : last;
-  }, "");
+  const email = entries.reduce(
+    (last, row) => (row.key === "user.email" ? (row.value ?? "") : last),
+    "",
+  );
   const belongs = (address: string, login: string) =>
     new RegExp(
       `^(?:[0-9]+\\+)?${login}@users\\.noreply\\.github\\.com$`,
@@ -712,23 +731,23 @@ async function contact(
       }
     }
     // One git process lists the three keys; the last value of each is the effective one.
-    const keys = (
+    // -z records are `key NL value NUL`, so a value cannot pass for another key, and an empty
+    // value stays distinct from a key with no value.
+    const records = (
       await g(
-        ["config", "--get-regexp", "^user\\.(email|useconfigonly|name)$"],
+        ["config", "-z", "--get-regexp", "^user\\.(email|useconfigonly|name)$"],
         true,
       )
-    ).text.split(/\r?\n/);
+    ).raw
+      .split("\0")
+      .filter(Boolean);
     const effective = (key: string) =>
-      keys.reduce<string | null | undefined>(
-        (last, line) =>
-          line === key
-            ? null
-            : line.startsWith(`${key} `)
-              ? line.slice(key.length + 1).trim()
-              : last,
-        undefined,
-      );
-    // A key with no value is a true boolean, as `git config --bool` reads it.
+      records.reduce<string | null | undefined>((last, record) => {
+        const split = record.indexOf("\n");
+        if ((split < 0 ? record : record.slice(0, split)) !== key) return last;
+        return split < 0 ? null : record.slice(split + 1);
+      }, undefined);
+    // A key with no value is a true boolean, as `git config --bool` reads it; an empty value is false.
     const configOnly = effective("user.useconfigonly");
     if (
       effective("user.email") !== account.commitEmails[0] ||
