@@ -222,7 +222,8 @@ async function runInJob(
       // The launcher starts the command itself, so the command is its own supervisor.
       supervisorPid: launch.pid,
       commandPid: launch.pid,
-      stoppedPids: stop.stopped,
+      // The command itself is always part of what ended; the job snapshot adds anything it left behind.
+      stoppedPids: [...new Set([launch.pid, ...stop.stopped])],
       confirmed: true,
       pidSnapshotComplete: true,
       supervisorResidentBytes: 0,
