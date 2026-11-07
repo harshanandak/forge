@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { spawnBudget } from "../spawn-budget.ts";
 
 setDefaultTimeout(30_000);
 const roots: string[] = [];
@@ -55,15 +56,11 @@ beforeAll(() => {
   mkdirSync(bin);
   mkdirSync(seed);
   writeFileSync(join(seed, "package.json"), '{"private":true}');
-  const git = (...args: string[]) => {
-    const r = spawnSync("git", args, {
-      cwd: seed,
-      encoding: "utf8",
-      timeout: 5_000,
-    });
-    expect(r.status).toBe(0);
-    return r.stdout.trim();
-  };
+  const budget = spawnBudget(30_000);
+  const git = (...args: string[]) =>
+    budget
+      .run(`git ${args.join(" ")}`, "git", args, { cwd: seed }, 0)
+      .stdout.trim();
   git("init", "--initial-branch=main");
   git("add", "package.json");
   git(
