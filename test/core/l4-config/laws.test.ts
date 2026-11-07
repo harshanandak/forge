@@ -315,6 +315,26 @@ test("a value the check block does not read is unenforced, not enforced, though 
   expect(report.verdict).toBe("FAIL");
 });
 
+test("a law on an array element of a real setting is enforced", () => {
+  const p = project({
+    gate: { headReviewers: [CODEX] },
+    laws: {
+      "first-reviewer": law("merge", {
+        [`${GATE}/headReviewers/0`]: { equals: CODEX },
+      }),
+      "second-reviewer": law("merge", {
+        [`${GATE}/headReviewers/1`]: { equals: CODEX },
+      }),
+    },
+  });
+  const report = check(p);
+  const first = byId(report, "first-reviewer");
+  expect(first.status).toBe("enforced");
+  expect(first.reasons[0]?.pointer).toBe(`${GATE}/headReviewers/0`);
+  // index 1 is a declared place in the setting but holds nothing, so the condition fails
+  expect(byId(report, "second-reviewer").status).toBe("broken");
+});
+
 test("schemaDeclares walks properties, array items, alternatives and open maps", () => {
   const schema = {
     type: "object",
@@ -343,6 +363,9 @@ test("schemaDeclares walks properties, array items, alternatives and open maps",
   for (const no of [
     ["nope"],
     ["list", "x"],
+    ["list", "d"],
+    ["list", "01"],
+    ["list", "-1"],
     ["list", "0", "nope"],
     ["map", "k", "deeper"],
   ])

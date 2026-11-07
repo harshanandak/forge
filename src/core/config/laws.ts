@@ -50,7 +50,7 @@ export function schemaDeclares(
   const { properties, items, additionalProperties } = schema;
   if (isObject(properties) && Object.hasOwn(properties, head))
     return schemaDeclares(properties[head], rest);
-  if (items !== undefined && /^d+$/.test(head))
+  if (items !== undefined && /^(0|[1-9]\d*)$/.test(head))
     return schemaDeclares(items, rest);
   if (additionalProperties === true) return true;
   if (isObject(additionalProperties))
@@ -114,6 +114,24 @@ function summarize(
   };
 }
 
+/** A value inside a resolved value: an object key, or an array element by exact index. */
+function within(
+  root: unknown,
+  segments: readonly string[],
+): { found: boolean; value?: unknown } {
+  let node = root;
+  for (const segment of segments) {
+    if (Array.isArray(node)) {
+      if (!/^(0|[1-9]\d*)$/.test(segment) || Number(segment) >= node.length)
+        return { found: false };
+      node = node[Number(segment)] as unknown;
+    } else if (isObject(node) && Object.hasOwn(node, segment)) {
+      node = node[segment];
+    } else return { found: false };
+  }
+  return { found: true, value: node };
+}
+
 function filled(value: unknown): boolean {
   if (typeof value === "string" || Array.isArray(value))
     return value.length > 0;
@@ -170,13 +188,30 @@ export function createLaws(
         source: null,
       };
     const found = config.explain({ path: formatPointer(segments) });
+    let { set, value, source } = found;
+    if (!set) {
+      // explain walks objects only, so an array element is read from its nearest set ancestor
+      for (let n = segments.length - 1; n > 0; n -= 1) {
+        const parent = config.explain({
+          path: formatPointer(segments.slice(0, n)),
+        });
+        if (!parent.set) continue;
+        const inner = within(parent.value, segments.slice(n));
+        if (inner.found) {
+          set = true;
+          value = inner.value;
+          source = parent.source;
+        }
+        break;
+      }
+    }
     return {
       pointer: found.pointer,
       condition,
-      actual: found.set ? found.value : null,
-      set: found.set,
-      holds: holds(condition, found.set, found.value),
-      source: found.source,
+      actual: set ? value : null,
+      set,
+      holds: holds(condition, set, value),
+      source,
     };
   };
 
