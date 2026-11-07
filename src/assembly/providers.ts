@@ -70,10 +70,16 @@ export interface CryptoService {
   randomUUID(): string;
 }
 export interface ReceiptsService {
-  get(
-    id: string,
-  ):
-    | { readonly id: string; readonly status: string; readonly subject: string }
+  get(id: string):
+    | {
+        readonly id: string;
+        readonly status: string;
+        readonly subject: string;
+        readonly checked: readonly {
+          readonly name: string;
+          readonly status: string;
+        }[];
+      }
     | undefined;
 }
 /** Exposes verified evidence, never the backing namespace or its write methods. */
@@ -95,10 +101,19 @@ export function createReceiptsService(
         value.id !== id
       )
         refuse("RECEIPT_INVALID", "Receipt integrity failed");
+      const rows: readonly { name?: unknown; status?: unknown }[] =
+        Array.isArray(value.checked) ? value.checked : [];
       return Object.freeze({
         id: value.id,
         status: value.status,
         subject: value.subject,
+        checked: Object.freeze(
+          rows.flatMap((row) =>
+            typeof row?.name === "string" && typeof row.status === "string"
+              ? [Object.freeze({ name: row.name, status: row.status })]
+              : [],
+          ),
+        ),
       });
     },
   });

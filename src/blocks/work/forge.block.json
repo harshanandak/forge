@@ -332,6 +332,34 @@
       "stability": "experimental",
       "args": ["id"]
     },
+    "lane.next": {
+      "input": "schemas/lane-next.input.json",
+      "output": "schemas/lane-next.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": [
+        "lane:write",
+        "files:read",
+        "external:process",
+        "external:network",
+        "environment:read"
+      ],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "lane.record": {
+      "input": "schemas/lane-record.input.json",
+      "output": "schemas/lane-record.output.json",
+      "context": "project",
+      "timeoutMs": 15000,
+      "effects": ["lane:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
     "lane.show": {
       "input": "schemas/ItemRef.json",
       "output": "schemas/lane.output.json",

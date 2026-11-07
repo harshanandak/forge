@@ -93,6 +93,36 @@
           "minLength": 1,
           "maxLength": 200,
           "description": "Origin branch to fetch. Omitted: origin HEAD, falling back to main."
+        },
+        "autopilot": {
+          "description": "Post-merge steps for lane next. receiptChecks lists the checks run at the merge commit; rebuild is the runtime rebuild command and has no default.",
+          "type": "object",
+          "properties": {
+            "receiptChecks": {
+              "type": "array",
+              "uniqueItems": true,
+              "maxItems": 256,
+              "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+            },
+            "rebuild": {
+              "type": "object",
+              "required": ["argv"],
+              "properties": {
+                "argv": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
