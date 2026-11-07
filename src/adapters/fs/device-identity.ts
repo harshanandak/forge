@@ -6,6 +6,7 @@ import {
   fsyncSync,
   lstatSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -225,6 +226,19 @@ export function createDeviceFiles(
       return {
         release() {
           removePrivateDirectory(path);
+        },
+      };
+    },
+    scratch() {
+      ready(true);
+      const base = join(root, "scratch");
+      directory(base, true, true);
+      const path = join(base, randomUUID());
+      directory(path, true, true);
+      return {
+        path,
+        remove() {
+          rmSync(path, { recursive: true, force: true });
         },
       };
     },

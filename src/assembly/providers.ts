@@ -522,6 +522,10 @@ export function createAssemblyProviders(
           requireEffect("files:read");
           return files.pin(path, forbidden);
         },
+        scratch() {
+          requireEffect("files:write");
+          return files.scratch();
+        },
       };
     },
     runnerOutput(scope: ServiceScope): RunnerOutputPort {

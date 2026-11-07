@@ -72,7 +72,7 @@ if (Object.keys(e).some(k => /^(GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRI
 if (a[0] === 'api') {
   const who = /^ghp_fixture_(alice|bob|constructor)_9d3f1c$/.exec(e.GH_TOKEN || '')?.[1];
   const dir = e.GH_CONFIG_DIR && path.resolve(e.GH_CONFIG_DIR);
-  if (!who || e.GH_HOST !== 'github.com' || e.GH_PROMPT_DISABLED !== '1' || !dir || dir === path.resolve(e.HOME, 'gh') || !fs.existsSync(dir) || fs.existsSync(path.join(dir, 'hosts.yml'))) process.exit(7);
+  if (!who || e.GH_HOST !== 'github.com' || e.GH_PROMPT_DISABLED !== '1' || !dir || dir === path.resolve(e.HOME, 'gh') || !fs.existsSync(dir) || fs.readdirSync(dir).length > 0 || !fs.realpathSync(dir).startsWith(fs.realpathSync(e.HOME) + path.sep)) process.exit(7);
   if (flag('apifail')) { fs.writeSync(2, (flag('bigerr') ? 'x'.repeat(500) : '') + 'debug ' + e.GH_TOKEN + '\\n'); process.exit(1); }
   process.stderr.write('debug ' + e.GH_TOKEN + '\\n');
   const route = a[1];
@@ -933,6 +933,34 @@ test("installed accounts: a gh planted under a symlinked temp directory never ru
     );
     expect(plan.ok, JSON.stringify(plan)).toBe(true);
     expect(existsSync(spyLog) ? readFileSync(spyLog, "utf8") : "").toBe("");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a gh config planted in the clone has no effect on token-bearing calls", () => {
+  const { root, home, cli, clone, git } = setup();
+  try {
+    const repo = clone("planted-config");
+    git(
+      repo,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/alice/planted-config.git",
+    );
+    const planted = join(repo, ".git/forge/accounts-gh");
+    mkdirSync(planted, { recursive: true });
+    writeFileSync(
+      join(planted, "config.yml"),
+      "http_unix_socket: /tmp/evil.sock\n",
+    );
+    const approval = { quote: "yes", source: "t3:fixture/message:config" };
+    const used = cli(repo, "use", { login: "alice", approval });
+    expect(used.ok, JSON.stringify(used)).toBe(true);
+    // The fake gh refuses any config directory that is not empty and private to the device root.
+    const scratch = join(home, ".forge/accounts/scratch");
+    expect(existsSync(scratch) ? readdirSync(scratch) : []).toEqual([]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

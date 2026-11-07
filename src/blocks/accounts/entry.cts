@@ -406,31 +406,26 @@ async function contact(
         ? { ok: false, text: "" }
         : refuse("ACCOUNT_VERIFY_FAILED", `gh has no token for ${login}`);
     secrets.push(token);
-    const dir = "forge/accounts-gh";
-    if (s.files.read(`${dir}/.owned`, 1024, "common") === undefined)
-      try {
-        s.files.write(`${dir}/.owned`, "owned by forge accounts\n", {
-          area: "common",
-          expected: null,
-        });
-      } catch {
-        if (s.files.read(`${dir}/.owned`, 1024, "common") === undefined)
-          refuse("ACCOUNT_UNAVAILABLE", "Cannot create the owned gh config");
-      }
-    const result = await run(
-      gh,
-      ["api", ...args],
-      optional,
-      {
-        ...env,
-        GH_TOKEN: token,
-        GH_HOST: "github.com",
-        GH_CONFIG_DIR: `${common}/${dir}`,
-        GH_PROMPT_DISABLED: "1",
-      },
-      { redact: [token] },
-    );
-    return { ok: result.ok, text: redact(result.text) };
+    // A fresh empty config directory in the private device root, never one the clone can write.
+    const scratch = s.device.scratch();
+    try {
+      const result = await run(
+        gh,
+        ["api", ...args],
+        optional,
+        {
+          ...env,
+          GH_TOKEN: token,
+          GH_HOST: "github.com",
+          GH_CONFIG_DIR: scratch.path,
+          GH_PROMPT_DISABLED: "1",
+        },
+        { redact: [token] },
+      );
+      return { ok: result.ok, text: redact(result.text) };
+    } finally {
+      scratch.remove();
+    }
   }
   const json = <T,>(text: string, fallback: T): T => {
     try {

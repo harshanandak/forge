@@ -9,4 +9,6 @@ export interface DeviceFiles {
   write(name: string, text: string): void;
   lock(): { release(): void };
   pin(path: string, forbidden: readonly string[]): ExecutablePin;
+  /** A fresh, empty private directory in the device root; remove() deletes it and its contents. */
+  scratch(): { readonly path: string; remove(): void };
 }
