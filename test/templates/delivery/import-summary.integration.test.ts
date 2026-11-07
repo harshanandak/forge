@@ -4,7 +4,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-setDefaultTimeout(30_000);
+// Each scenario makes about 8 built CLI calls. Every call is a cold Node start plus the
+// full assembly import: 0.8 to 1.2 s on the loaded Windows runner (scenarios took 6.1 to
+// 9.8 s in run 42388835182). A fixed 5 s bound per call is only about 5x that mean, so one
+// contention stall failed an unrelated PR. The bound is the scenario's: every call gets
+// whatever is left of one budget that stays under the test's own timeout, and a call that
+// outlives it is reported by name with the time spent on each earlier call.
+const TEST_TIMEOUT_MS = 30_000;
+const SCENARIO_BUDGET_MS = TEST_TIMEOUT_MS - 5_000;
+setDefaultTimeout(TEST_TIMEOUT_MS);
 const bin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 
 test.each([
@@ -28,15 +36,30 @@ test.each([
   "built delivery CLI summary and verbose contract: %j",
   ({ flags, instance, checks, ...scenario }) => {
     const root = mkdtempSync(join(tmpdir(), "forge-import-summary-"));
+    const started = Date.now();
+    const spent: string[] = [];
     const cli = (...args: string[]): Record<string, unknown> => {
+      const label = `forge ${args.join(" ")}`;
+      const left = SCENARIO_BUDGET_MS - (Date.now() - started);
+      expect(
+        left,
+        `${label}: scenario budget used up by ${spent.join("; ")}`,
+      ).toBeGreaterThan(0);
+      const callStarted = Date.now();
       const result = spawnSync("node", [bin, ...args], {
         cwd: root,
         env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
         encoding: "utf8",
         windowsHide: true,
-        timeout: 5000,
+        timeout: left,
       });
-      expect(result.status, result.stderr + result.stdout).toBe(0);
+      const took = Date.now() - callStarted;
+      spent.push(`${label} ${took} ms`);
+      expect(
+        result.status,
+        `${label} ${result.status === null ? "was killed" : "exited"} after ${took} ms of a ${left} ms budget; earlier calls: ${spent.slice(0, -1).join("; ") || "none"}
+${result.stderr}${result.stdout}`,
+      ).toBe(0);
       return JSON.parse(result.stdout) as Record<string, unknown>;
     };
     const resolves = (commands: string[]) => {
