@@ -347,7 +347,8 @@ function cleanupRoot(
   if (existsSync(bin))
     expect(readdirSync(bin).filter((name) => /\.exe$/i.test(name))).toEqual([]);
   try {
-    cleanupAttribution(root, remove, run);
+    // diagnoseCleanup below already collects processes and Defender state through `run`.
+    cleanupAttribution(root, remove, run, { inspect: () => undefined });
   } catch (error) {
     if (
       process.platform === "win32" &&
