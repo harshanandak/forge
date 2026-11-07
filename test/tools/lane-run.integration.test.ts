@@ -100,7 +100,39 @@ afterEach(async () => {
       );
   });
 });
+// The compiled fixture claude.exe lives outside every per-test root, which is removed right after
+// its test, and is removed once at the end of the file, long after a runner scan of it has ended.
+let sharedClaude: string | undefined;
+function sharedClaudeDirectory(fixtureRoot: string) {
+  if (sharedClaude) return sharedClaude;
+  const dir = (sharedClaude = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "forge-lane-exe-")),
+  ));
+  const compile = spawnSync(
+    process.execPath,
+    [
+      "build",
+      "--compile",
+      join(fixtureRoot, "fake-claude.mjs"),
+      "--outfile",
+      join(dir, "claude.exe"),
+    ],
+    { encoding: "utf8", timeout: 30_000, windowsHide: true },
+  );
+  expect(compile.error).toBeUndefined();
+  expect(compile.status).toBe(0);
+  // A trap shim prevents any fallthrough to a real CLI during the red run.
+  writeFileSync(join(dir, "claude"), "#!/bin/sh\nexit 17\n");
+  return dir;
+}
 afterAll(() => {
+  if (sharedClaude) {
+    const dir = sharedClaude;
+    sharedClaude = undefined;
+    cleanupAttribution(dir, () =>
+      rmSync(dir, { recursive: true, force: true }),
+    );
+  }
   console.info(
     `lane-run fixture: avoided ${avoidedIssueChildren} issue CLI children`,
   );
@@ -603,21 +635,12 @@ test.skipIf(process.platform !== "win32")(
     const f = fixture();
     f.start();
     childLaunches++;
-    const compile = spawnSync(
-      process.execPath,
-      [
-        "build",
-        "--compile",
-        join(f.root, "fake-claude.mjs"),
-        "--outfile",
-        join(f.root, "bin", "claude.exe"),
-      ],
-      { encoding: "utf8", timeout: 30_000, windowsHide: true },
-    );
-    expect(compile.error).toBeUndefined();
-    expect(compile.status).toBe(0);
-    // A trap shim prevents any fallthrough to a real CLI during the red run.
-    writeFileSync(join(f.root, "bin", "claude"), "#!/bin/sh\nexit 17\n");
+    // The executable and the trap shim share one folder ahead of the fixture bin, so the lookup
+    // still meets claude.exe and the shell shim in the same directory, in that order.
+    const dir = sharedClaudeDirectory(f.root);
+    const pathKey =
+      Object.keys(f.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+    f.env[pathKey] = dir + delimiter + (f.env[pathKey] ?? "");
     claudeRole(f, "tester");
     const result = f.run(["run", "one", "--role", "tester"]);
     expect(result.code).toBe(0);
