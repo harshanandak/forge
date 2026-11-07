@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   createConfig,
@@ -7,6 +7,10 @@ import {
   type ShowResult,
 } from "../core/config/index.ts";
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
+import {
+  untrustedFileReason,
+  writePrivateTextAtomic,
+} from "../adapters/fs/durable-io.ts";
 import { GitCommandError } from "../adapters/vcs-git/index.ts";
 import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
 import { compatibleConfig } from "../core/config/compatible.ts";
@@ -342,7 +346,7 @@ export async function createAssembly(
         if (await confirm(request.op, ask))
           return directApproval({ ...direct, ask, method: "attended" });
       } else if (!agentSession(process.env) && POLICY_OPS.has(request.op)) {
-        const policy = unattendedOps(ownerPolicyText(deviceRoot));
+        const policy = ownerPolicy(deviceRoot);
         if (policy.ops.has(request.op))
           return directApproval({ ...direct, ask, method: "scripts-policy" });
         warning = policy.problem;
@@ -1517,10 +1521,9 @@ export async function createAssembly(
               request,
               `Let scripts and CI with no agent session run ${unattended.join(", ") || "no operations"} without asking, by writing owner.json in the device folder.`,
             );
-            writeFileSync(
+            writePrivateTextAtomic(
               join(deviceRoot, "owner.json"),
-              `${JSON.stringify({ unattended })}
-`,
+              `${JSON.stringify({ unattended })}\n`,
             );
             return success(request.op, { unattended });
           }
@@ -1981,11 +1984,19 @@ export function localContext(
 export function localSession(fallback: string): string {
   return sessionIdentity(process.env, fallback);
 }
-function ownerPolicyText(deviceRoot: string): string | undefined {
+/** owner.json grants authority, so a file anyone else could have written is ignored whole. */
+function ownerPolicy(deviceRoot: string): ReturnType<typeof unattendedOps> {
+  const path = join(deviceRoot, "owner.json");
+  const reason = untrustedFileReason(path);
+  if (reason !== undefined)
+    return {
+      ops: new Set(),
+      problem: `owner.json was ignored: ${reason}. Write it again with forge owner policy.`,
+    };
   try {
-    return readFileSync(join(deviceRoot, "owner.json"), "utf8");
+    return unattendedOps(readFileSync(path, "utf8"));
   } catch {
-    return undefined;
+    return unattendedOps(undefined);
   }
 }
 let promptBusy = false;

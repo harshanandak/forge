@@ -109,5 +109,6 @@ export function writeOwnerPolicy(deviceRoot) {
   writeFileSync(
     join(deviceRoot, "owner.json"),
     JSON.stringify({ unattended: ["block.admit", "config.grant"] }),
+    { mode: 0o600 },
   );
 }

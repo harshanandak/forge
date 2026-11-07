@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -51,6 +59,7 @@ async function open(
       writeFileSync(
         join(deviceRoot, "owner.json"),
         JSON.stringify({ unattended }),
+        { mode: 0o600 },
       ),
   };
 }
@@ -233,3 +242,56 @@ test("an attended approval uses the host's configured terminal, not the process'
   expect(asked[0]?.[0]).toBe("block.admit");
   expect(asked[0]?.[1]).toContain("Admit block");
 }, 30_000);
+
+test.skipIf(process.platform === "win32")(
+  "owner.policy writes a private owner.json over a broader one",
+  async () => {
+    const h = await open(false);
+    try {
+      const path = join(h.deviceRoot, "owner.json");
+      writeFileSync(path, "{}");
+      chmodSync(path, 0o664);
+      const input = { unattended: ["block.admit"] };
+      const first = await h.call("owner.policy", input);
+      const request = String(record(record(first.result)?.request)?.id);
+      expect(
+        await h.call("owner.policy", {
+          ...input,
+          approval: {
+            request,
+            quote: "yes",
+            source: { harness: "codex", thread: "owner-chat" },
+          },
+        }),
+      ).toMatchObject({ ok: true });
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      await h.assembly.close();
+      rmSync(h.work, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.platform === "win32")(
+  "a group-writable owner.json is ignored whole",
+  async () => {
+    const h = await open(false);
+    try {
+      h.policy(["block.admit"]);
+      chmodSync(join(h.deviceRoot, "owner.json"), 0o664);
+      const added = await h.call("block.add", { path: "./hello" });
+      const digest = String(record(added.result)?.digest);
+      const refused = await h.call("block.admit", { digest });
+      expect(refused).toMatchObject({
+        ok: false,
+        error: { code: "APPROVAL_REQUIRED" },
+      });
+      expect(JSON.stringify(refused)).toContain("group- or world-writable");
+    } finally {
+      await h.assembly.close();
+      rmSync(h.work, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);

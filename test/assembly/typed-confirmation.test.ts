@@ -4,17 +4,18 @@ import { typedConfirmation } from "../../src/assembly/index.ts";
 
 const original = Object.getOwnPropertyDescriptor(process, "stdin")!;
 let input: PassThrough;
-let output: ReturnType<typeof spyOn>;
+let restoreOutput: () => void;
 beforeEach(() => {
   input = new PassThrough();
   Object.defineProperty(process, "stdin", {
     configurable: true,
     value: input,
   });
-  output = spyOn(process.stderr, "write").mockImplementation(() => true);
+  const spy = spyOn(process.stderr, "write").mockImplementation(() => true);
+  restoreOutput = () => spy.mockRestore();
 });
 afterEach(() => {
-  output.mockRestore();
+  restoreOutput();
   input.destroy();
   Object.defineProperty(process, "stdin", original);
 });
