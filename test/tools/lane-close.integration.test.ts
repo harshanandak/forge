@@ -36,7 +36,7 @@ import { delimiter, join, resolve } from "node:path";
 import { RepositoryFixtures } from "./lane-fixture.ts";
 import { cleanupAttribution } from "./cleanup-attribution.ts";
 import { FixtureChildren } from "../fixture-children.ts";
-import { POWERSHELL_FLAGS, powerShellArgs } from "../powershell.ts";
+import { powerShellArgs } from "../powershell.ts";
 
 setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<{ head: string; merge: string }>();
@@ -683,7 +683,7 @@ if (process.platform === "win32") {
           return diagnosticResult({ holders: [], holderUnknown: true });
         queried = true;
         expect(command).toBe("powershell.exe");
-        expect(args.slice(0, 3)).toEqual([...POWERSHELL_FLAGS, "-Command"]);
+        expect(args.slice(0, 3)).toEqual(powerShellArgs("").slice(0, 3));
         expect(options.timeout).toBe(10_000);
         expect(options.windowsHide).toBe(true);
         expect(options.encoding).toBe("utf8");
@@ -815,7 +815,7 @@ if (process.platform === "win32") {
     const report = cleanupReport(root, "EBUSY", (command, args, options) => {
       called = true;
       expect(command).toBe("powershell.exe");
-      expect(args.slice(0, 3)).toEqual([...POWERSHELL_FLAGS, "-Command"]);
+      expect(args.slice(0, 3)).toEqual(powerShellArgs("").slice(0, 3));
       const script = args[3]!;
       if (script === cleanupEvidenceCommand)
         return {
