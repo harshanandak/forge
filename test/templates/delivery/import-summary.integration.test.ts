@@ -1,17 +1,15 @@
 import { expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeQuietly, spawnBudget } from "../../spawn-budget.ts";
 
 // Each scenario makes about 8 built CLI calls. Every call is a cold Node start plus the
 // full assembly import: 0.8 to 1.2 s on the loaded Windows runner (scenarios took 6.1 to
 // 9.8 s in run 42388835182). A fixed 5 s bound per call is only about 5x that mean, so one
-// contention stall failed an unrelated PR. The bound is the scenario's: every call gets
-// whatever is left of one budget that stays under the test timeout declared below, and a call that
-// outlives it is reported by name with the time spent on each earlier call.
+// contention stall failed an unrelated PR. The shared spawn budget gives every call whatever
+// is left of the test timeout declared below, minus a reserve.
 const TEST_TIMEOUT_MS = 30_000;
-const SCENARIO_BUDGET_MS = TEST_TIMEOUT_MS - 5_000;
 const bin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 
 test.each([
@@ -35,30 +33,18 @@ test.each([
   "built delivery CLI summary and verbose contract: %j",
   ({ flags, instance, checks, ...scenario }) => {
     const root = mkdtempSync(join(tmpdir(), "forge-import-summary-"));
-    const started = Date.now();
-    const spent: string[] = [];
+    const budget = spawnBudget(TEST_TIMEOUT_MS);
     const cli = (...args: string[]): Record<string, unknown> => {
-      const label = `forge ${args.join(" ")}`;
-      const left = SCENARIO_BUDGET_MS - (Date.now() - started);
-      expect(
-        left,
-        `${label}: scenario budget used up by ${spent.join("; ")}`,
-      ).toBeGreaterThan(0);
-      const callStarted = Date.now();
-      const result = spawnSync("node", [bin, ...args], {
-        cwd: root,
-        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: left,
-      });
-      const took = Date.now() - callStarted;
-      spent.push(`${label} ${took} ms`);
-      expect(
-        result.status,
-        `${label} ${result.status === null ? "was killed" : "exited"} after ${took} ms of a ${left} ms budget; earlier calls: ${spent.slice(0, -1).join("; ") || "none"}
-${result.stderr}${result.stdout}`,
-      ).toBe(0);
+      const result = budget.run(
+        `forge ${args.join(" ")}`,
+        "node",
+        [bin, ...args],
+        {
+          cwd: root,
+          env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+        },
+        0,
+      );
       return JSON.parse(result.stdout) as Record<string, unknown>;
     };
     const resolves = (commands: string[]) => {
@@ -156,7 +142,7 @@ ${result.stderr}${result.stdout}`,
         `CLI delivery remove (${flags.join(" ") || "default"}): result ${Buffer.byteLength(JSON.stringify(removal))} bytes`,
       );
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeQuietly(root);
     }
   },
   TEST_TIMEOUT_MS,
