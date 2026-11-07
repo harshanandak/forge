@@ -1,16 +1,39 @@
 import assert from "node:assert/strict";
 
 const gated = new Set(["block.admit", "config.grant", "store.reinit"]);
+const memoryGated = new Set([
+  "memory.forget",
+  "memory.restore",
+  "decision.adopt",
+]);
 
 export function approvalReply(
   result,
   source = { harness: "packed-fixture", thread: "packed-owner-chat" },
+  quote = "yes",
 ) {
   assert.equal(result.error?.code, "APPROVAL_REQUIRED");
   const request = result.result?.request?.id;
   assert.equal(typeof request, "string");
   assert.ok(request.length > 0);
-  return { request, quote: "yes", source };
+  return { request, quote, source };
+}
+
+/** True when a memory call claims the owner's words and so needs a relayed reply. */
+export function claimsOwner(op, input) {
+  return (
+    (memoryGated.has(op) || /\.(forget|restore|adopt)$/.test(op)) &&
+    input?.approval?.by === "owner" &&
+    input.approval.request === undefined
+  );
+}
+
+/** The relayed retry for a memory call that claimed the owner's words: same input, their quote kept. */
+export function relayedMemoryInput(input, first, source) {
+  return {
+    ...input,
+    approval: approvalReply(first, source, input.approval.quote),
+  };
 }
 
 export function withCliOwnerApproval(call) {
@@ -47,9 +70,14 @@ export function withOwnerApproval(call) {
       first?.ok === false &&
       first.error.code === "APPROVAL_REQUIRED" &&
       first.result?.request &&
-      gated.has(op) &&
-      !input?.approval
-        ? call(op, { ...input, approval: approvalReply(first) }, ...rest)
+      ((gated.has(op) && !input?.approval) || claimsOwner(op, input))
+        ? call(
+            op,
+            claimsOwner(op, input)
+              ? relayedMemoryInput(input, first)
+              : { ...input, approval: approvalReply(first) },
+            ...rest,
+          )
         : first;
     const first = call(op, input, ...rest);
     return typeof first?.then === "function" ? first.then(retry) : retry(first);

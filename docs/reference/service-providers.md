@@ -134,7 +134,7 @@ selected bytes, not an atomic repository-wide snapshot; callers recheck before a
 
 ## Verified receipts
 
-`forge.receipts@1` exposes only `get(id)`, returning verified `{ id, status, subject }` evidence or `undefined` when absent. Damaged receipts are refused; the backing namespace and writes are never exposed.
+`forge.receipts@1` exposes only `get(id)`, returning verified `{ id, status, subject, checked }` evidence (`checked` lists each check name with its status), or `undefined` when absent. Damaged receipts are refused; the backing namespace and writes are never exposed.
 
 ## Environment and platform primitives
 

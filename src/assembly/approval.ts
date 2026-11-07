@@ -153,3 +153,55 @@ export function ownerApproval(options: {
   proofs.set(proof, operationBinding(options.op, input));
   return proof;
 }
+
+const MEMORY_OWNER_OPS = new Set([
+  "memory.forget",
+  "memory.restore",
+  "decision.adopt",
+]);
+/** Memory forget, restore and adopt claim the owner's words, so they need a relayed reply. */
+export function memoryOwnerOp(candidate: {
+  blockId?: string | undefined;
+  declaredOp?: string | undefined;
+}): boolean {
+  return (
+    candidate.blockId === "forge/memory" &&
+    MEMORY_OWNER_OPS.has(candidate.declaredOp ?? "")
+  );
+}
+/**
+ * Splits a memory call's approval claim. An owner claim, or any approval that names a request, needs
+ * relayed evidence. An agent decision or a missing approval stays with the memory block's own policy.
+ */
+export function memoryOwnerClaim(
+  input: unknown,
+):
+  | { input: Record<string, unknown>; relayed: boolean; quote?: string }
+  | undefined {
+  const fields = object(input);
+  const claim = object(fields?.approval);
+  if (fields === undefined || claim === undefined) return undefined;
+  if (claim.by !== "owner" && claim.request === undefined) return undefined;
+  const relayed = claim.request !== undefined;
+  const rest = { ...fields };
+  delete rest.approval;
+  return {
+    input: relayed ? fields : rest,
+    relayed,
+    ...(typeof claim.quote === "string" ? { quote: claim.quote } : {}),
+  };
+}
+/** What the owner is asked, in one plain sentence naming the action. */
+export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
+  const fields = object(input);
+  const id = typeof fields?.id === "string" ? fields.id : "";
+  if (declaredOp === "decision.adopt")
+    return `Adopt decision ${id} so it becomes a binding standing rule.`;
+  if (declaredOp === "memory.restore") {
+    const notes = Array.isArray(fields?.notes) ? fields.notes.length : 0;
+    return `Restore ${notes} note${notes === 1 ? "" : "s"} from an export into Forge memory.`;
+  }
+  return fields?.undo === true
+    ? `Restore the forgotten note ${id} with its saved text and history.`
+    : `Forget note ${id}. Its text is hidden and kept only as a private backup.`;
+}

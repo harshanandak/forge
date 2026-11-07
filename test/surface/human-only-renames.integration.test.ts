@@ -12,7 +12,9 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { done } from "../blocks/memory/lib.ts";
+import { approvalReply } from "../fixtures/owner-approval.mjs";
 
 const { createAssembly, localCall } = (await import(
   pathToFileURL(resolve("dist/src/assembly/index.js")).href
@@ -161,46 +163,65 @@ for (const route of ["cli", "cli-catalog", "mcp", "mcp-catalog"] as const)
         expect(await prepare("choices.list", {})).toMatchObject({
           decisions: [{ status: "proposed" }],
         });
-        const approvedInput = {
+        // The owner's words are relayed: the first call returns a request, the retry carries it.
+        const claimed = {
           ...input,
           approval: { by: "owner", quote: "Please make this change." },
         };
-        if (route.startsWith("cli")) {
-          const args =
-            route === "cli"
-              ? [...op.split("."), "--input", JSON.stringify(approvedInput)]
-              : [
-                  "catalog",
-                  "call",
-                  "--input",
-                  JSON.stringify({ op, input: approvedInput }),
-                ];
-          const approved = spawnSync("node", [bin, ...args], {
-            cwd: root,
-            env: {
-              ...process.env,
-              FORGE_DEVICE_ROOT: deviceRoot,
-              FORGE_AGENT: "test-agent",
-            },
-            encoding: "utf8",
-            timeout: 20_000,
-            windowsHide: true,
-          });
-          if (approved.error) throw approved.error;
-          expect(JSON.parse(approved.stdout)).toMatchObject({
-            ok: true,
-            result: expected,
-          });
-          expect(approved.status).toBe(0);
-        } else {
+        const send = (body: Record<string, unknown>) => {
+          if (route.startsWith("cli")) {
+            const args =
+              route === "cli"
+                ? [...op.split("."), "--input", JSON.stringify(body)]
+                : [
+                    "catalog",
+                    "call",
+                    "--input",
+                    JSON.stringify({ op, input: body }),
+                  ];
+            const sent = spawnSync("node", [bin, ...args], {
+              cwd: root,
+              env: {
+                ...process.env,
+                FORGE_DEVICE_ROOT: deviceRoot,
+                FORGE_AGENT: "test-agent",
+              },
+              encoding: "utf8",
+              timeout: 20_000,
+              windowsHide: true,
+            });
+            if (sent.error) throw sent.error;
+            return Promise.resolve({
+              envelope: JSON.parse(sent.stdout) as ResultEnvelope,
+              status: sent.status,
+            });
+          }
           const handlers = createMcpHandlers(assembly.catalog, {}, options);
-          expect(
-            await handlers.callTool(
+          return handlers
+            .callTool(
               route === "mcp" ? op.replace(".", "_") : "catalog_call",
-              route === "mcp" ? approvedInput : { op, input: approvedInput },
-            ),
-          ).toMatchObject({ ok: true, result: expected });
-        }
+              route === "mcp" ? body : { op, input: body },
+            )
+            .then((envelope) => ({
+              envelope: envelope as ResultEnvelope,
+              status: 0,
+            }));
+        };
+        const asked = await send(claimed);
+        expect(asked.envelope).toMatchObject({
+          ok: false,
+          error: { code: "APPROVAL_REQUIRED" },
+        });
+        const approved = await send({
+          ...input,
+          approval: approvalReply(
+            asked.envelope,
+            { harness: "fixture", thread: "fixture" },
+            "Please make this change.",
+          ),
+        });
+        expect(approved.envelope).toMatchObject({ ok: true, result: expected });
+        expect(approved.status).toBe(0);
       } finally {
         await assembly.close();
         rmSync(root, { recursive: true, force: true });

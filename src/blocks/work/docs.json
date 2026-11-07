@@ -18,6 +18,24 @@
         }
       ]
     },
+    "lane.next": {
+      "title": "Next lane action",
+      "summary": "After a merge, return the next action for the lane from fresh facts: receipt at the merge commit, lane close, other delivered issues, configured rebuild, unwatch, done. Repeating it returns the same action until its fact holds. Unknown or mismatched facts return a pause with an ask.",
+      "examples": [{ "input": { "id": "demo-1", "pr": 42 } }]
+    },
+    "lane.record": {
+      "title": "Record lane action",
+      "summary": "Record a fact Forge cannot read itself for the open action number, as a JSON object in result: a receipt id, a rebuild exit code or an unwatch confirmation.",
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1",
+            "action": 1,
+            "result": "{\"receipt\":\"<id>\"}"
+          }
+        }
+      ]
+    },
     "lane.show": {
       "title": "Show lane",
       "summary": "Read the recorded lane and issue lease without changing either.",
