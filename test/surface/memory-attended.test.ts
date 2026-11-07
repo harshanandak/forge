@@ -1,17 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { AGENT_MARKERS } from "../../src/assembly/identity.ts";
 import { done, openHarness, type Harness } from "../blocks/memory/lib.ts";
 
-const MARKERS = [
-  "FORGE_HARNESS",
-  "FORGE_AGENT",
-  "FORGE_SESSION",
-  "CLAUDECODE",
-  "CODEX_SESSION_ID",
-  "CODEX_THREAD_ID",
-  "CLAUDE_CODE_SESSION_ID",
-  "T3CODE_CLI_PATH",
-  "T3CODE_THREAD_ID",
-] as const;
+const MARKERS = [...AGENT_MARKERS, "FORGE_HARNESS"];
 const saved = MARKERS.map((key) => [key, process.env[key]] as const);
 let h: Harness | undefined;
 beforeEach(() => {

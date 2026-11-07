@@ -218,6 +218,8 @@ export function directApproval(options: {
   deviceRoot: string;
   projectRoot: string;
   method: "attended" | "scripts-policy";
+  /** The plain sentence the owner agreed to; it names the digest, effects or target. */
+  ask: string;
   relay: RelayingSession;
   now?: () => number;
 }): OwnerApproval {
@@ -229,6 +231,7 @@ export function directApproval(options: {
       status: "used",
       method: options.method,
       op: options.op,
+      ask: options.ask,
       binding: digest(
         canonical({
           op: options.op,

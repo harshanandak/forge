@@ -1,20 +1,12 @@
 import { expect, test } from "bun:test";
+import { AGENT_MARKERS } from "../../src/assembly/identity.ts";
 import {
   agentSession,
   attendedTerminal,
   unattendedOps,
 } from "../../src/assembly/approval.ts";
 
-const markers = [
-  "CLAUDECODE",
-  "CLAUDE_CODE_SESSION_ID",
-  "CODEX_THREAD_ID",
-  "CODEX_SESSION_ID",
-  "T3CODE_CLI_PATH",
-  "T3CODE_THREAD_ID",
-  "FORGE_AGENT",
-  "FORGE_SESSION",
-] as const;
+const markers = AGENT_MARKERS;
 
 test("a typed confirmation needs two terminals and no agent session", () => {
   expect(attendedTerminal({}, true, true)).toBe(true);

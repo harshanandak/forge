@@ -4,16 +4,11 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
+import { AGENT_MARKERS } from "../../src/assembly/identity.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { dispatch, record } from "../../src/surface/dispatch.ts";
 
-const MARKERS = [
-  "FORGE_HARNESS",
-  "FORGE_AGENT",
-  "CODEX_SESSION_ID",
-  "CODEX_THREAD_ID",
-  "CLAUDE_CODE_SESSION_ID",
-] as const;
+const MARKERS = [...AGENT_MARKERS, "FORGE_HARNESS"];
 const saved = MARKERS.map((key) => [key, process.env[key]] as const);
 beforeEach(() => {
   for (const key of MARKERS) delete process.env[key];
@@ -80,6 +75,7 @@ test("unattended block admission follows owner.json and is logged as scripts-pol
       expect(rows?.map((row) => record(row.value)?.method)).toEqual([
         "scripts-policy",
       ]);
+      expect(String(record(rows?.[0]?.value)?.ask)).toContain("Admit block");
     } finally {
       await trust.close();
     }

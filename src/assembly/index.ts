@@ -324,6 +324,7 @@ export async function createAssembly(
       return undefined;
     return directApproval({
       ...(await openApproval(request)).direct,
+      ask,
       method: "attended",
     });
   }
@@ -339,11 +340,11 @@ export async function createAssembly(
       const { stdin, stderr } = tty();
       if (attendedTerminal(process.env, stdin, stderr)) {
         if (await confirm(request.op, ask))
-          return directApproval({ ...direct, method: "attended" });
+          return directApproval({ ...direct, ask, method: "attended" });
       } else if (!agentSession(process.env) && POLICY_OPS.has(request.op)) {
         const policy = unattendedOps(ownerPolicyText(deviceRoot));
         if (policy.ops.has(request.op))
-          return directApproval({ ...direct, method: "scripts-policy" });
+          return directApproval({ ...direct, ask, method: "scripts-policy" });
         warning = policy.problem;
       }
     }
@@ -1987,28 +1988,58 @@ function ownerPolicyText(deviceRoot: string): string | undefined {
     return undefined;
   }
 }
-/** The person types the exact phrase on this terminal; end of input or any other text refuses. */
-function typedConfirmation(op: string, ask?: string): Promise<boolean> {
+let promptBusy = false;
+const promptQueue: Array<() => void> = [];
+function releasePrompt(): void {
+  const next = promptQueue.shift();
+  if (next === undefined) promptBusy = false;
+  else next();
+}
+/**
+ * The person types the exact phrase on this terminal. Each prompt owns stdin until it ends, so one
+ * typed answer approves one operation. Closed input, end of input, a partial line or any other
+ * text refuses.
+ */
+export function typedConfirmation(op: string, ask?: string): Promise<boolean> {
+  if (promptBusy)
+    return new Promise<boolean>((resolve) =>
+      promptQueue.push(() => resolve(readConfirmation(op, ask))),
+    );
+  promptBusy = true;
+  return readConfirmation(op, ask);
+}
+function readConfirmation(op: string, ask?: string): Promise<boolean> {
+  const stdin = process.stdin;
+  if (stdin.destroyed || stdin.readableEnded || stdin.closed) {
+    releasePrompt();
+    return Promise.resolve(false);
+  }
   process.stderr.write(
     `${ask === undefined ? "" : `${ask}\n`}Owner confirmation: type "confirm ${op}" to proceed: `,
   );
   return new Promise<boolean>((resolve) => {
+    let line = "";
     const finish = (confirmed: boolean) => {
-      process.stdin.off("data", answer);
-      process.stdin.off("end", refused);
-      process.stdin.off("close", refused);
-      process.stdin.off("error", refused);
-      process.stdin.pause();
+      stdin.off("data", answer);
+      stdin.off("end", refused);
+      stdin.off("close", refused);
+      stdin.off("error", refused);
+      stdin.pause();
+      releasePrompt();
       resolve(confirmed);
     };
-    const answer = (chunk: Buffer | string) =>
-      finish(chunk.toString().trim() === `confirm ${op}`);
+    // A terminal may deliver the line in pieces: compare only once the line ending has arrived.
+    const answer = (chunk: Buffer | string) => {
+      line += chunk.toString();
+      const end = line.search(/[\r\n]/);
+      if (end >= 0) finish(line.slice(0, end).trim() === `confirm ${op}`);
+    };
     const refused = () => finish(false);
-    process.stdin.once("data", answer);
-    process.stdin.once("end", refused);
-    process.stdin.once("close", refused);
-    process.stdin.once("error", refused);
-    process.stdin.resume();
+    stdin.on("data", answer);
+    stdin.once("end", refused);
+    stdin.once("close", refused);
+    stdin.once("error", refused);
+    stdin.resume();
   });
 }
 function localHarness(): string {
