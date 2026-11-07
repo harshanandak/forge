@@ -48,6 +48,7 @@ test("every operation is a valid declaration under a core noun, and read-only on
     "config.save",
     "config.set",
     "config.show",
+    "laws.check",
     "template.import",
     "template.list",
     "template.remove",
@@ -56,7 +57,9 @@ test("every operation is a valid declaration under a core noun, and read-only on
   for (const [name, declaration] of Object.entries(fragment.operations)) {
     expect(validateOperationDeclaration(declaration).ok).toBe(true);
     expect(CORE_NOUNS).toContain(parseOperationName(name)?.noun ?? "");
-    const reads = /\.(show|explain|detect|preview|list|compare)$/.test(name);
+    const reads = /\.(show|explain|detect|preview|list|compare|check)$/.test(
+      name,
+    );
     expect(declaration.effects.length === 0).toBe(reads);
     expect(registry.lookup(`${BASE}${declaration.input}`)).toBeDefined();
     expect(registry.lookup(`${BASE}${declaration.output}`)).toBeDefined();
@@ -99,6 +102,7 @@ test("each handler's real input and output match its declared schemas", () => {
     invocation: [{ op: "set", path: "check.commands.test", value: "x" }],
   });
   call("config.detect", {});
+  call("laws.check", {});
   call("config.explain", { path: "check.commands.test" });
   call("config.preview", {
     patch: [{ op: "set", path: "check.commands.test", value: "pnpm test" }],
