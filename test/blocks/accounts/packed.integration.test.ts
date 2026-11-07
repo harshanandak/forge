@@ -124,7 +124,29 @@ if (a[0] === 'api') {
     packedConsumer(),
     "node_modules/forge-workflow/dist/bin/forge.js",
   );
+  // DIAG (temporary, forge-929): time every child this test starts and count gh and git starts.
+  const diag: {
+    kind: string;
+    label: string;
+    ms: number;
+    gh: number;
+    git: number;
+  }[] = [];
+  const logLines = (file: string) =>
+    (existsSync(file) ? readFileSync(file, "utf8") : "")
+      .split(/\r?\n/)
+      .filter(Boolean);
+  const forgeGitStarts = () =>
+    logLines(gitTrace).filter((line) => {
+      const event = JSON.parse(line) as { event: string; argv?: string[] };
+      return (
+        event.event === "start" && event.argv?.[2] === "core.fsmonitor=false"
+      );
+    }).length;
   function run(command: string, args: string[], cwd: string, extra = {}) {
+    const ghBefore = logLines(join(bin, "ghlog.txt")).length;
+    const gitBefore = forgeGitStarts();
+    const began = performance.now();
     const out = spawnSync(command, args, {
       cwd,
       env: { ...env, ...extra },
@@ -132,8 +154,59 @@ if (a[0] === 'api') {
       timeout: 20000,
       windowsHide: true,
     });
+    const ms = performance.now() - began;
+    diag.push({
+      kind: command === node ? "forge" : "testgit",
+      label: args
+        .filter((a) => !a.startsWith("-") && !a.includes(forge))
+        .slice(0, 3)
+        .join(" "),
+      ms,
+      gh: logLines(join(bin, "ghlog.txt")).length - ghBefore,
+      git: forgeGitStarts() - gitBefore,
+    });
     expect(out.error).toBeUndefined();
     return out;
+  }
+  function diagReport(cwd: string) {
+    const sum = (rows: typeof diag) => rows.reduce((t, r) => t + r.ms, 0);
+    const forgeRows = diag.filter((r) => r.kind === "forge");
+    const gitRows = diag.filter((r) => r.kind === "testgit");
+    const allGit = logLines(gitTrace).filter(
+      (line) => (JSON.parse(line) as { event: string }).event === "start",
+    ).length;
+    const out: string[] = [];
+    forgeRows.forEach((r, i) =>
+      out.push(
+        `DIAG call ${i + 1} ${r.label} ${r.ms.toFixed(0)}ms gh=${r.gh} forgeGit=${r.git}`,
+      ),
+    );
+    const bench = (command: string, args: string[], opts = {}) => {
+      const times: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        const began = performance.now();
+        spawnSync(command, args, { cwd, env, windowsHide: true, ...opts });
+        times.push(performance.now() - began);
+      }
+      return (times.reduce((t, x) => t + x, 0) / times.length).toFixed(0);
+    };
+    const ghPath = join(bin, process.platform === "win32" ? "gh.cmd" : "gh");
+    const ghBench =
+      process.platform === "win32"
+        ? bench(
+            process.env.COMSPEC ?? "cmd.exe",
+            ["/d", "/s", "/c", `"${ghPath}" auth status`],
+            { windowsVerbatimArguments: true },
+          )
+        : bench(ghPath, ["auth", "status"]);
+    out.push(
+      `DIAG forge calls=${forgeRows.length} totalMs=${sum(forgeRows).toFixed(0)}`,
+      `DIAG fake gh starts=${logLines(join(bin, "ghlog.txt")).length}`,
+      `DIAG forge git starts=${forgeGitStarts()} all git starts=${allGit}`,
+      `DIAG test-side git calls=${gitRows.length} totalMs=${sum(gitRows).toFixed(0)}`,
+      `DIAG bench avg of 5: node -e 0 = ${bench(node!, ["-e", "0"])}ms, fake gh start = ${ghBench}ms, git start = ${bench("git", ["remote", "get-url", "origin"])}ms`,
+    );
+    console.log(out.join("\n"));
   }
   // Each fake gh call appends one line, so tests can count the gh processes Forge starts.
   function ghCalls() {
@@ -249,11 +322,13 @@ if (a[0] === 'api') {
     ghCalls,
     gitCalls,
     resetCalls,
+    diagReport,
   };
 }
 
 test("installed accounts: one approval catches wrong authors and binds every clone", () => {
-  const { root, home, bin, env, run, git, cli, readAudit, clone } = setup();
+  const { root, home, bin, env, run, git, cli, readAudit, clone, diagReport } =
+    setup();
   try {
     const repo = clone("first");
     git(repo, "config", "user.email", "202+bob@users.noreply.github.com");
@@ -694,6 +769,7 @@ test("installed accounts: one approval catches wrong authors and binds every clo
       ok: false,
       error: { code: "ACCOUNT_INTEGRITY" },
     });
+    diagReport(repo);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
