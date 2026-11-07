@@ -166,6 +166,177 @@ test("PowerShell timeout follows recorded phases and batch case order", async ()
     expect(simulated.launches).toBe(1);
   }
 });
+const COMMAND_START = "FORGE_COMMAND_START:2026-11-03T00:00:00.000Z\n";
+const BUDGET = 100;
+/**
+ * A fake PowerShell for runEach. Each launch prints its scripted output. A launch with an `exit`
+ * code closes at once; one without stalls until the deadline kills it, and the kill advances the
+ * fake clock by `stallCost`, so budget accounting is exact and no test depends on real timing.
+ */
+function simulatedEach(
+  launches: { output: string; exit?: number }[],
+  stallCost: number,
+) {
+  let clock = 0;
+  const scripts: string[] = [];
+  const delays: number[] = [];
+  const batch = powerShellBatch(
+    (_shell, args) => {
+      const launch = scripts.push(args.at(-1)!) - 1;
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        kill: () => {
+          clock += stallCost;
+          child.emit("close", null);
+        },
+      });
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from(launches[launch]!.output));
+        const exit = launches[launch]!.exit;
+        if (exit !== undefined) child.emit("close", exit);
+      });
+      return child;
+    },
+    () => clock,
+  );
+  const run = async (names: string[]) => {
+    const real = globalThis.setTimeout;
+    globalThis.setTimeout = ((handler: () => void, ms?: number) => {
+      if (ms !== undefined) delays.push(ms);
+      return real(handler, ms);
+    }) as unknown as typeof setTimeout;
+    try {
+      return await batch.runEach(
+        "powershell.exe",
+        names.map((name) => ({ name, command: `Write-Output ${name}` })),
+        BUDGET,
+      );
+    } finally {
+      globalThis.setTimeout = real;
+    }
+  };
+  return { batch, scripts, delays, run };
+}
+test("a stalled batch case fails alone and the cases after it still run on the budget that is left", async () => {
+  const { batch, scripts, delays, run } = simulatedEach(
+    [
+      {
+        output: `${COMMAND_START}FORGE_CASE_START:0
+first
+FORGE_CASE_END:0:0
+FORGE_CASE_START:1
+`,
+      },
+      {
+        output: `${COMMAND_START}FORGE_CASE_START:0
+third
+FORGE_CASE_END:0:0
+FORGE_CASE_START:1
+fourth
+FORGE_CASE_END:1:1
+`,
+        exit: 0,
+      },
+    ],
+    40,
+  );
+  const outcomes = await run(["first", "stalled", "third", "fourth"]);
+  expect(outcomes.map(({ name }) => name)).toEqual([
+    "first",
+    "stalled",
+    "third",
+    "fourth",
+  ]);
+  expect(outcomes[0]).toMatchObject({ status: 0, stdout: "first\n" });
+  expect(outcomes[1]).toMatchObject({ status: -1, reason: "timeout" });
+  expect(outcomes[1]!.stderr).toContain(
+    "timeout; phase=command; case=stalled;",
+  );
+  expect(outcomes[2]).toMatchObject({ status: 0, stdout: "third\n" });
+  expect(outcomes[3]).toMatchObject({ status: 1, stdout: "fourth\n" });
+  expect(batch.launches).toBe(2);
+  expect(scripts[1]).toContain("Write-Output third");
+  expect(scripts[1]).toContain("Write-Output fourth");
+  expect(scripts[1]).not.toContain("Write-Output first");
+  expect(scripts[1]).not.toContain("Write-Output stalled");
+  // The fresh launch gets what the first one left, never a new full budget.
+  expect(delays.filter((ms) => ms === BUDGET || ms === BUDGET - 40)).toEqual([
+    BUDGET,
+    BUDGET - 40,
+  ]);
+}, 5000);
+test("a stall on the last case starts no extra launch", async () => {
+  const { batch, run } = simulatedEach(
+    [
+      {
+        output: `${COMMAND_START}FORGE_CASE_START:0
+first
+FORGE_CASE_END:0:0
+FORGE_CASE_START:1
+`,
+      },
+    ],
+    40,
+  );
+  const outcomes = await run(["first", "stalled"]);
+  expect(outcomes[0]).toMatchObject({ status: 0, stdout: "first\n" });
+  expect(outcomes[1]).toMatchObject({ status: -1, reason: "timeout" });
+  expect(batch.launches).toBe(1);
+}, 5000);
+test("a stall that spends the whole budget leaves the later cases not run and launches nothing", async () => {
+  const { batch, run } = simulatedEach(
+    [
+      {
+        output: `${COMMAND_START}FORGE_CASE_START:0
+first
+FORGE_CASE_END:0:0
+FORGE_CASE_START:1
+`,
+      },
+    ],
+    BUDGET,
+  );
+  const outcomes = await run(["first", "stalled", "third", "fourth"]);
+  expect(outcomes.map(({ reason }) => reason)).toEqual([
+    undefined,
+    "timeout",
+    "not-run",
+    "not-run",
+  ]);
+  expect(outcomes.map(({ status }) => status)).toEqual([0, -1, -1, -1]);
+  for (const outcome of outcomes.slice(2))
+    expect(outcome.stderr).toBe(
+      "deadline exhausted; not run (after stalled stalled)",
+    );
+  expect(batch.launches).toBe(1);
+}, 5000);
+test("a launch that exits non-zero after every case finished still fails the last case", async () => {
+  const { batch, run } = simulatedEach(
+    [
+      {
+        output: `${COMMAND_START}FORGE_CASE_START:0
+first
+FORGE_CASE_END:0:0
+FORGE_CASE_START:1
+second
+FORGE_CASE_END:1:0
+`,
+        exit: 3,
+      },
+    ],
+    40,
+  );
+  const outcomes = await run(["first", "second"]);
+  expect(outcomes[0]).toMatchObject({ status: 0, stdout: "first\n" });
+  expect(outcomes[1]).toMatchObject({
+    status: -1,
+    stdout: "second\n",
+    reason: "exit",
+  });
+  expect(outcomes[1]!.stderr).toContain("PowerShell exit 3;");
+  expect(batch.launches).toBe(1);
+}, 5000);
 for (const shell of shells) {
   async function prepare() {
     const cases = quotes.map((quote) => {
@@ -200,8 +371,17 @@ for (const shell of shells) {
     });
     expect(cases).toHaveLength(5);
     const launches = batch.launches;
-    const runs = await batch.run(shell, cases, 15000);
-    expect(batch.launches - launches).toBe(1);
+    const runs = await batch.runEach(shell, cases, 15000);
+    // One launch when nothing stalls; each timed-out or crashed case that has a later case that
+    // actually ran costs exactly one more launch. Not-run cases cost none.
+    const relaunched = runs.flatMap((run, index) =>
+      (run.reason === "timeout" || run.reason === "exit") &&
+      runs[index + 1] !== undefined &&
+      runs[index + 1]!.reason !== "not-run"
+        ? [index]
+        : [],
+    );
+    expect(batch.launches - launches).toBe(1 + relaunched.length);
     expect(runs).toHaveLength(cases.length);
     return cases.map((entry, index) => ({ ...entry, run: runs[index]! }));
   }
