@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { powerShellArgs } from "../powershell.ts";
 import {
   cleanupAttribution,
   type AttributionRunner,
@@ -307,6 +308,51 @@ test.skipIf(process.platform !== "win32")(
     expect(String(evidence.inspectError)).toContain("TypeError");
   },
   5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "the probe names a holder that allows reads but denies delete sharing",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-share-"));
+    const path = join(root, "held.txt");
+    writeFileSync(path, "held");
+    // Node always shares delete, so PowerShell opens the file with FileShare.Read only.
+    const holder = spawn(
+      "powershell.exe",
+      powerShellArgs(
+        "$held = [IO.File]::Open($env:FORGE_HELD, 'Open', 'Read', 'Read'); 'ready'; Start-Sleep -Seconds 60",
+      ),
+      {
+        env: { ...process.env, FORGE_HELD: path },
+        stdio: ["ignore", "pipe", "inherit"],
+        windowsHide: true,
+      },
+    );
+    const closed = once(holder, "close");
+    try {
+      await Promise.race([
+        once(holder.stdout, "data"),
+        closed.then(() => {
+          throw new Error("holder exited before it was ready");
+        }),
+      ]);
+      const { evidence } = refuse(root, () => ({
+        status: 1,
+        stdout: "No matching handles found.\r\n",
+      }));
+      expect(evidence.probeFailures).toEqual([
+        {
+          path: "held.txt",
+          code: expect.stringMatching(/^E(?:BUSY|PERM|ACCES)$/),
+        },
+      ]);
+    } finally {
+      holder.kill();
+      await closed;
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
 );
 
 for (const reason of ["checksum mismatch", "download failed", "not configured"])

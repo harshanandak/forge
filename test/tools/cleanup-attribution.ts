@@ -7,6 +7,7 @@ import {
   existsSync,
   openSync,
   readdirSync,
+  renameSync,
   statSync,
 } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
@@ -23,7 +24,13 @@ export type CleanupInspector = (
   run: AttributionRunner,
 ) => unknown;
 
-const MAX_LISTED_ENTRIES = 50;
+// Every collection and string is bounded before it is serialized, so the line stays valid JSON.
+const MAX_LISTED_ENTRIES = 30;
+const MAX_PROBED_ENTRIES = 500;
+const MAX_PROBE_FAILURES = 20;
+const MAX_PROCESSES = 20;
+const COMMAND_CHARS = 100;
+const TEXT_CHARS = 1_000;
 const MAX_EVIDENCE_CHARS = 12_000;
 
 // Handle cannot see every holder (a working directory, a file system filter driver), so name the candidates.
@@ -31,43 +38,120 @@ const HOST_EVIDENCE = String.raw`
 $root = $env:FORGE_CLEANUP_ROOT
 $data = @{}
 try {
-  $data.processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+  $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+  $names = @{}
+  foreach ($item in $all) { $names[[int]$item.ProcessId] = $item.Name }
+  $data.processes = @($all | Where-Object {
     $_.Name -match '^(git|bun|node|bash|sh|conhost|codex|claude)\.exe$' -or ([string]$_.CommandLine).IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0
-  } | Select-Object -First 60 | ForEach-Object {
+  } | Select-Object -First 300 | ForEach-Object {
     $line = [string]$_.CommandLine
-    @{ pid = $_.ProcessId; parent = $_.ParentProcessId; name = $_.Name; created = [string]$_.CreationDate; command = $line.Substring(0, [Math]::Min(200, $line.Length)) }
+    @{ pid = $_.ProcessId; parent = $_.ParentProcessId; parentName = $names[[int]$_.ParentProcessId]; parentAlive = $names.ContainsKey([int]$_.ParentProcessId); name = $_.Name; created = [string]$_.CreationDate; command = $line.Substring(0, [Math]::Min(200, $line.Length)) }
   })
 } catch { $data.processError = $_.Exception.Message }
-try { $data.filters = (& fltmc.exe filters | Out-String).Trim() } catch { $data.filterError = $_.Exception.Message }
-try { $data.volume = (& fltmc.exe instances -v $root.Substring(0, 2) | Out-String).Trim() } catch { $data.volumeError = $_.Exception.Message }
+$out = ''
+try { $out = (& fltmc.exe filters | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { $data.filterError = "fltmc filters exited $LASTEXITCODE: $out" } else { $data.filters = $out } } catch { $data.filterError = $_.Exception.Message }
+try { $out = (& fltmc.exe instances -v $root.Substring(0, 2) | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { $data.volumeError = "fltmc instances exited $LASTEXITCODE: $out" } else { $data.volume = $out } } catch { $data.volumeError = $_.Exception.Message }
 try { $data.defender = Get-MpComputerStatus -ErrorAction Stop | Select-Object RealTimeProtectionEnabled, AntivirusEnabled } catch { $data.defenderError = 'Defender state unavailable' }
 try { $data.search = (Get-Service WSearch -ErrorAction Stop).Status.ToString() } catch { $data.searchError = 'Search service state unavailable' }
 $data | ConvertTo-Json -Depth 4 -Compress
 `;
 
-// Read-only (a rename onto itself fails on directories): a delete-pending or locked entry fails the probe, so a nested holder is named.
+// Read-only. A file is opened for read and renamed onto itself: the rename asks for delete access,
+// so a holder that allows reads but denies delete sharing fails it. (A directory cannot be renamed
+// onto itself, so it is only statted.) A delete-pending or locked entry names a nested holder.
 function treeEvidence(root: string) {
-  const remaining: string[] = [];
   const probeFailures: { path: string; code: string | undefined }[] = [];
+  let probeFailuresOmitted = 0;
+  let entries: ReturnType<typeof listTree>;
   try {
-    const entries = readdirSync(root, { recursive: true, withFileTypes: true });
-    for (const entry of entries) {
-      const path = join(entry.parentPath, entry.name);
-      const name = relative(root, path);
-      if (remaining.length < MAX_LISTED_ENTRIES) remaining.push(name);
-      try {
-        if (entry.isDirectory()) statSync(path);
-        else closeSync(openSync(path, "r"));
-      } catch (error) {
+    entries = listTree(root);
+  } catch (error) {
+    return { probeFailures, scanError: String(error) };
+  }
+  const probed = entries.slice(0, MAX_PROBED_ENTRIES);
+  for (const entry of probed) {
+    const path = join(entry.parentPath, entry.name);
+    try {
+      if (entry.isDirectory()) statSync(path);
+      else {
+        closeSync(openSync(path, "r"));
+        renameSync(path, path);
+      }
+    } catch (error) {
+      if (probeFailures.length < MAX_PROBE_FAILURES)
         probeFailures.push({
-          path: name,
+          path: relative(root, path),
           code: (error as NodeJS.ErrnoException).code,
         });
-      }
+      else probeFailuresOmitted++;
     }
-    return { remainingCount: entries.length, remaining, probeFailures };
-  } catch (error) {
-    return { remaining, probeFailures, scanError: String(error) };
+  }
+  const remaining = entries
+    .slice(0, MAX_LISTED_ENTRIES)
+    .map((entry) => relative(root, join(entry.parentPath, entry.name)));
+  return {
+    remainingCount: entries.length,
+    remaining,
+    remainingOmitted: entries.length - remaining.length,
+    probesSkipped: entries.length - probed.length,
+    probeFailures,
+    probeFailuresOmitted,
+  };
+}
+
+function listTree(root: string) {
+  return readdirSync(root, { recursive: true, withFileTypes: true });
+}
+
+const clip = (value: unknown, max: number): unknown =>
+  typeof value === "string" && value.length > max ? value.slice(0, max) : value;
+
+// Root-named processes and conhost come first, so the cap never drops the likely holder.
+function boundHost(host: unknown, root: string) {
+  if (typeof host !== "object" || host === null || Array.isArray(host))
+    return { host };
+  const record = host as Record<string, unknown>;
+  const bounded: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record))
+    if (key !== "processes") bounded[key] = clip(value, TEXT_CHARS);
+  const processes: unknown[] = Array.isArray(record.processes)
+    ? record.processes
+    : [];
+  const needle = root.toLowerCase();
+  const priority = (item: unknown) => {
+    const { name, command } = (item ?? {}) as Record<string, unknown>;
+    return (
+      String(name).toLowerCase() === "conhost.exe" ||
+      String(command).toLowerCase().includes(needle)
+    );
+  };
+  const ordered = [
+    ...processes.filter(priority),
+    ...processes.filter((item) => !priority(item)),
+  ].slice(0, MAX_PROCESSES);
+  if (Array.isArray(record.processes))
+    bounded.processes = ordered.map((item) =>
+      typeof item === "object" && item !== null
+        ? Object.fromEntries(
+            Object.entries(item).map(([key, value]) => [
+              key,
+              clip(value, COMMAND_CHARS),
+            ]),
+          )
+        : item,
+    );
+  return { host: bounded, processesOmitted: processes.length - ordered.length };
+}
+
+// Never slice the JSON text: a cut line is invalid and drops the later fields.
+function serialize(evidence: unknown): string {
+  try {
+    const text = JSON.stringify(evidence);
+    return text.length <= MAX_EVIDENCE_CHARS
+      ? text
+      : JSON.stringify({ evidenceTooLarge: text.length });
+  } catch (failure) {
+    return JSON.stringify({ inspectError: String(failure) });
   }
 }
 
@@ -95,7 +179,7 @@ function windowsEvidence(
         result.error ??
         new Error(`status ${result.status}: ${result.stderr || result.stdout}`)
       );
-    evidence.host = JSON.parse(result.stdout) as unknown;
+    Object.assign(evidence, boundHost(JSON.parse(result.stdout), root));
   } catch (failure) {
     evidence.hostError = String(failure);
   }
@@ -160,10 +244,14 @@ export function cleanupAttribution(
           };
         }
       });
-      // Evidence comes first so the attribution JSON stays the last line of the message.
-      if (evidence !== undefined)
-        error.message += `\nCleanup evidence: ${JSON.stringify(evidence).slice(0, MAX_EVIDENCE_CHARS)}`;
-      error.message += `\nCleanup attribution: ${JSON.stringify(snapshots)}`;
+      try {
+        // Evidence comes first so the attribution JSON stays the last line of the message.
+        if (evidence !== undefined)
+          error.message += `\nCleanup evidence: ${serialize(evidence)}`;
+        error.message += `\nCleanup attribution: ${JSON.stringify(snapshots)}`;
+      } catch {
+        // The original cleanup error is rethrown below even if its message cannot be extended.
+      }
     }
     throw cause;
   }
