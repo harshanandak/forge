@@ -43,9 +43,15 @@ for (const kind of ["file", "directory"])
         });
         let caught: unknown;
         try {
-          cleanupAttribution(root, () => {
-            throw original;
-          });
+          // The host evidence also names the child pid; keep it out of this Handle assertion.
+          cleanupAttribution(
+            root,
+            () => {
+              throw original;
+            },
+            undefined,
+            { inspect: () => undefined },
+          );
         } catch (error) {
           caught = error;
         }
@@ -179,7 +185,7 @@ test.skipIf(process.platform !== "win32")(
     const handleTargets: string[] = [];
     try {
       const { evidence } = refuse(root, (command, args) => {
-        if (command === "powershell.exe")
+        if (command !== "fixture-handle")
           return {
             status: 0,
             stdout: JSON.stringify({
