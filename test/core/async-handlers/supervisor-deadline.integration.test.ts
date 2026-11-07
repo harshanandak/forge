@@ -24,8 +24,21 @@ test("the native helper expires without receiving its start message", async () =
     },
   );
   const exited = once(helper, "exit");
+  // The helper measures its 100 ms lifetime from when it starts running, and says so
+  // with "ready". Cold process start on a loaded runner is not part of that lifetime,
+  // so the 3 s expiry budget below is measured from "ready", not from spawn.
+  const ready = new Promise<void>((resolveReady) => {
+    helper.on("message", (message: unknown) => {
+      if ((message as { kind?: unknown } | null)?.kind === "ready")
+        resolveReady();
+    });
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    // If the parent stalls past the helper's lifetime, "exit" can arrive before the
+    // IPC "ready" message. An exit before ready still proves the helper did not outlive
+    // its deadline, so the expiry race below resolves at once and the exit assertion holds.
+    await Promise.race([ready, exited]);
     await Promise.race([
       exited,
       new Promise<never>((_resolve, reject) => {
