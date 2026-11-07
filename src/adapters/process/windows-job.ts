@@ -232,8 +232,8 @@ function loadNativeApi(): NativeApi {
 export function windowsNativeFoundation(): {
   readonly koffi: KoffiBoundary;
   readonly kernel32: KoffiLibraryBoundary;
-  closeHandle(handle: bigint): number;
-  lastError(): number;
+  readonly closeHandle: (this: void, handle: bigint) => number;
+  readonly lastError: (this: void) => number;
 } {
   const api = loadNativeApi();
   return {
