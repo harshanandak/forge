@@ -23,6 +23,10 @@ export interface CapturedLaunchOptions extends Omit<LaunchOptions, "pipes"> {
   readonly onStderr: (chunk: Buffer) => void;
   /** After four quick checks, how often to look for the exit when the pipes stay open. */
   readonly pollIntervalMs: number;
+}
+
+/** Test seams. They are not part of the production option surface; only `launchCapturedWith` takes them. */
+export interface LaunchHooks {
   /**
    * Runs once every pipe is listening and before the command starts. Tests use it to play another
    * client that reaches the pipes first.
@@ -32,13 +36,18 @@ export interface CapturedLaunchOptions extends Omit<LaunchOptions, "pipes"> {
     readonly stdout: string;
     readonly stderr: string;
   }) => Promise<void>;
+  /** Runs right after the command has started; a throw here must leave nothing running or open. */
+  readonly afterLaunch?: (pid: number) => void;
 }
 
 export interface CapturedLaunch {
   readonly pid: number;
-  /** The command's exit code, as soon as the process has ended. */
+  /** The command's exit code, as soon as the process has ended; rejects if `dispose` runs first. */
   readonly exited: Promise<number>;
-  /** Both output pipes reached end of stream, or capture failed (then this rejects). */
+  /**
+   * Both output pipes reached end of stream. Rejects when capture failed, and with a typed error
+   * if `dispose` runs first.
+   */
   readonly drained: Promise<void>;
   /** Closes every pipe and the process handle; safe to call more than once. */
   dispose(): void;
@@ -82,16 +91,24 @@ async function openPipe(nonce: Buffer): Promise<PipeServer> {
   const connection = new Promise<Accepted>((resolve, reject) => {
     server.on("connection", (socket) => {
       clients.add(socket);
+      socket.once("close", () => clients.delete(socket));
       socket.on("error", () => undefined);
       let seen = Buffer.alloc(0);
       const onData = (chunk: Buffer): void => {
         seen = Buffer.concat([seen, chunk]);
-        if (seen.length < nonce.length) return;
-        socket.off("data", onData);
-        if (!timingSafeEqual(seen.subarray(0, nonce.length), nonce)) {
+        // A prefix that already differs from the nonce is wrong however many bytes follow.
+        const compared = Math.min(seen.length, nonce.length);
+        if (
+          !timingSafeEqual(
+            seen.subarray(0, compared),
+            nonce.subarray(0, compared),
+          )
+        ) {
           socket.destroy();
           return;
         }
+        if (seen.length < nonce.length) return;
+        socket.off("data", onData);
         socket.pause();
         server.close();
         for (const other of clients) if (other !== socket) other.destroy();
@@ -122,10 +139,20 @@ function asError(value: unknown): Error {
  * Starts `plan` in `job` and wires its stdout, stderr and optional stdin. Rejects with the same
  * `SPAWN_FAILED` and errno cause a failed start gives today; nothing is left open or running.
  */
-export async function launchCaptured(
+export function launchCaptured(
   plan: SpawnPlan,
   job: WindowsJob,
   options: CapturedLaunchOptions,
+): Promise<CapturedLaunch> {
+  return launchCapturedWith(plan, job, options, {});
+}
+
+/** `launchCaptured` with the test seams in `LaunchHooks`. */
+export async function launchCapturedWith(
+  plan: SpawnPlan,
+  job: WindowsJob,
+  options: CapturedLaunchOptions,
+  hooks: LaunchHooks,
 ): Promise<CapturedLaunch> {
   if (process.platform !== "win32")
     throw new ProcessSpawnError(
@@ -142,7 +169,7 @@ export async function launchCaptured(
     const stdin =
       options.stdin === undefined ? undefined : await openPipe(nonce);
     if (stdin !== undefined) pipes.push(stdin);
-    await options.beforeLaunch?.({
+    await hooks.beforeLaunch?.({
       stdout: stdout.name,
       stderr: stderr.name,
       ...(stdin === undefined ? {} : { stdin: stdin.name }),
@@ -160,7 +187,19 @@ export async function launchCaptured(
         nonce,
       },
     });
-    return attach(launched, stdout, stderr, stdin, options);
+    try {
+      hooks.afterLaunch?.(launched.pid);
+      return attach(launched, stdout, stderr, stdin, options);
+    } catch (error) {
+      // The command already runs in the job: end it and release the handle before failing.
+      void job.stop().catch(() => undefined);
+      try {
+        closeLaunchedProcess(launched);
+      } catch {
+        // The original failure is the one to report.
+      }
+      throw error;
+    }
   } catch (error) {
     for (const pipe of pipes) pipe.abandon();
     throw error;
@@ -179,6 +218,7 @@ function attach(
   let disposed = false;
   let captureFailure: Error | undefined;
   let rejectDrained!: (error: Error) => void;
+  let rejectExited!: (error: Error) => void;
   let checkExit: () => void = () => undefined;
 
   const fail = (error: unknown): void => {
@@ -225,16 +265,20 @@ function attach(
 
   if (stdin !== undefined && options.stdin !== undefined) {
     const input = Buffer.from(options.stdin, "utf8");
-    stdin.connection.then(({ socket }) => {
-      sockets.push(socket);
-      socket.on("error", () => undefined);
-      // `finish` comes after the command has read everything; closing then gives it end of input.
-      socket.once("finish", () => socket.destroy());
-      socket.end(input);
-    }, fail);
+    stdin.connection
+      .then(({ socket }) => {
+        sockets.push(socket);
+        socket.on("error", () => undefined);
+        // `finish` comes once the whole input is flushed to the pipe; the socket is then done.
+        // A command that never reads stdin keeps this open until dispose destroys it.
+        socket.once("finish", () => socket.destroy());
+        socket.end(input);
+      })
+      .catch(fail);
   }
 
   const exited = new Promise<number>((resolve, reject) => {
+    rejectExited = reject;
     let step = 0;
     const settleIfExited = (): boolean => {
       if (disposed) return true;
@@ -274,6 +318,13 @@ function attach(
       for (const pipe of [stdout, stderr, stdin]) pipe?.abandon();
       for (const socket of sockets) socket.destroy();
       closeLaunchedProcess(launched);
+      // Settling a promise that already settled does nothing; one still open must not hang.
+      const closed = new ProcessSpawnError(
+        "SPAWN_FAILED",
+        "The launch was closed before the command finished.",
+      );
+      rejectExited(closed);
+      rejectDrained(closed);
     },
   };
 }
@@ -287,6 +338,55 @@ function attach(
 export async function stopAfterExit(
   job: WindowsJob,
 ): Promise<{ readonly stopped: readonly number[]; readonly skipped: boolean }> {
-  if (job.activeCount() === 0) return { stopped: job.members(), skipped: true };
+  try {
+    if (job.activeCount() === 0)
+      return { stopped: job.members(), skipped: true };
+  } catch {
+    // A failed query proves nothing about the job: fall through to the full stop.
+  }
   return { stopped: await job.stop(), skipped: false };
+}
+
+/** True when `drained` settles within `ms`; rejects when it rejects first. */
+async function drainedWithin(
+  drained: Promise<void>,
+  ms: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      drained.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Ends the command's job, then waits for its pipes to close for at most `drainTimeoutMs`. Stopping
+ * first matters: a descendant that still holds stdout keeps the pipe open until the job ends it.
+ * `commandExited` is false for a timeout or cancel, where the full stop always runs.
+ */
+export async function stopCaptured(
+  launch: Pick<CapturedLaunch, "drained">,
+  job: WindowsJob,
+  options: {
+    readonly drainTimeoutMs: number;
+    readonly commandExited: boolean;
+  },
+): Promise<{
+  readonly stopped: readonly number[];
+  readonly skipped: boolean;
+  readonly pipesClosed: boolean;
+}> {
+  const stop = options.commandExited
+    ? await stopAfterExit(job)
+    : { stopped: await job.stop(), skipped: false };
+  return {
+    ...stop,
+    pipesClosed: await drainedWithin(launch.drained, options.drainTimeoutMs),
+  };
 }

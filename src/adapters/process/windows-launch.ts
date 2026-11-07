@@ -150,6 +150,10 @@ interface LaunchApi {
     overlapped: null,
   ) => number;
   readonly getExitCodeProcess: (handle: bigint, code: Buffer) => number;
+  readonly getNamedPipeServerProcessId: (
+    handle: bigint,
+    processId: Buffer,
+  ) => number;
   readonly closeHandle: (handle: bigint) => number;
   readonly lastError: () => number;
 }
@@ -266,6 +270,12 @@ function loadLaunchApi(): LaunchApi {
     startupSize: koffi.sizeof(startupInfo),
     securitySize: koffi.sizeof(security),
     pointerBytes: koffi.sizeof("void *"),
+    getNamedPipeServerProcessId: asNativeFunction(
+      kernel32.func("__stdcall", "GetNamedPipeServerProcessId", "int", [
+        "void *",
+        koffi.out(koffi.pointer("uint8_t")),
+      ]),
+    ),
     closeHandle,
     lastError,
   };
@@ -384,6 +394,28 @@ function absoluteApplication(
   return resolved;
 }
 
+/**
+ * Another process of the same user can create one more instance of a listed pipe name and win the
+ * client's connect. Only this process hosts the pipes it hands out, so a server with any other
+ * process id is refused before a single byte, the nonce included, is written to it.
+ */
+function requireOwnPipeServer(api: LaunchApi, handle: bigint): void {
+  const server = Buffer.alloc(4);
+  const known = api.getNamedPipeServerProcessId(handle, server) !== 0;
+  const error = known ? 0 : api.lastError();
+  if (known && server.readUInt32LE(0) === process.pid) return;
+  api.closeHandle(handle);
+  throw new ProcessSpawnError(
+    "SPAWN_FAILED",
+    "A pipe for the command's standard handles is not served by this process.",
+    new Error(
+      known
+        ? `The pipe is served by process ${server.readUInt32LE(0)}.`
+        : `GetNamedPipeServerProcessId failed with Windows error ${error}.`,
+    ),
+  );
+}
+
 /** Opens the NUL device or a pipe client end as an inheritable handle for a standard stream. */
 function openStdio(
   api: LaunchApi,
@@ -412,18 +444,21 @@ function openStdio(
       `Could not open ${name === "NUL" ? "the NUL device" : "a pipe"} for the command's standard handles.`,
       new Error(`CreateFileW failed with Windows error ${api.lastError()}.`),
     );
+  if (name !== "NUL") requireOwnPipeServer(api, handle);
   if (identify) {
     const written = Buffer.alloc(4);
-    if (
-      api.writeFile(handle, nonce, nonce.length, written, null) === 0 ||
-      written.readUInt32LE(0) !== nonce.length
-    ) {
-      const error = api.lastError();
+    const wrote =
+      api.writeFile(handle, nonce, nonce.length, written, null) !== 0;
+    if (!wrote || written.readUInt32LE(0) !== nonce.length) {
+      // GetLastError is only meaningful after a failed call, never after a short write.
+      const cause = wrote
+        ? new Error("WriteFile wrote fewer bytes than the nonce.")
+        : new Error(`WriteFile failed with Windows error ${api.lastError()}.`);
       api.closeHandle(handle);
       throw new ProcessSpawnError(
         "SPAWN_FAILED",
         "Could not identify the launcher to its pipe.",
-        new Error(`WriteFile failed with Windows error ${error}.`),
+        cause,
       );
     }
   }

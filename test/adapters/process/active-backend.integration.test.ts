@@ -79,7 +79,7 @@ test("sequential short children retain their output without a timeout", async ()
     if (iteration === 0) {
       backend = result.supervision?.backend;
       expect(["process-group", "windows-job"]).toContain(backend ?? "missing");
-      // The 200-child Bun POSIX race proof stays intact; Windows uses a helper per call.
+      // The 200-child Bun POSIX race proof stays intact; Windows runs fewer children to bound CI time.
       count = backend === "windows-job" ? 20 : 200;
     }
     expect(result.supervision?.backend).toBe(backend);
