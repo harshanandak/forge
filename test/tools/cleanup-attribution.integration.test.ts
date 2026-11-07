@@ -480,6 +480,45 @@ test.skipIf(process.platform !== "win32")(
 );
 
 test.skipIf(process.platform !== "win32")(
+  "a second remove that throws still leaves the attribution line on the original error",
+  () => {
+    const root = join(
+      tmpdir(),
+      `forge-second-throws-${process.pid}-${Date.now()}`,
+    );
+    const original = Object.assign(new Error("cleanup refused"), {
+      code: "EBUSY",
+      path: root,
+    });
+    let calls = 0;
+    let caught: unknown;
+    try {
+      cleanupAttribution(
+        root,
+        () => {
+          calls++;
+          // A null-prototype object cannot become a string, so describing it throws.
+          throw calls === 1 ? original : Object.create(null);
+        },
+        () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
+        {
+          tool: "fixture-handle",
+          unavailable: "",
+          inspect: () => ({}),
+          sleep: noSleep,
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(original);
+    expect(calls).toBe(2);
+    expect(original.message).toContain("\nCleanup attribution: ");
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
   "a run without host evidence still records whether a second remove succeeds",
   () => {
     const root = mkdtempSync(join(tmpdir(), "forge-second-bare-"));
