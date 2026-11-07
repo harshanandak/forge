@@ -9,6 +9,7 @@ import { runProcess } from "../../../src/adapters/process/run.ts";
 import { openWindowsJob } from "../../../src/adapters/process/windows-job.ts";
 import {
   launchCaptured,
+  stopAfterExit,
   type CapturedLaunch,
 } from "../../../src/adapters/process/windows-launch-stdio.ts";
 import type {
@@ -115,7 +116,7 @@ async function launchedRun(
     };
   } finally {
     try {
-      await owner.stop();
+      await stopAfterExit(owner);
     } finally {
       try {
         launch?.dispose();
@@ -211,7 +212,7 @@ async function quietScenario(nodePath: string): Promise<Scenarios["quiet"]> {
     await launch.exited;
     await launch.drained;
     const active = owner.activeCount();
-    await owner.stop();
+    await stopAfterExit(owner);
     return { active, terminations: owner.terminations() };
   } finally {
     try {

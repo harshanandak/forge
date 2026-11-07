@@ -232,3 +232,11 @@ function attach(
     },
   };
 }
+
+/**
+ * The post-exit stop: when the command has exited and the job holds no running process, there is
+ * nothing to terminate or wait for, so `stop` (and its poll) is skipped. Otherwise it stops the job.
+ */
+export function stopAfterExit(job: WindowsJob): Promise<readonly number[]> {
+  return job.activeCount() === 0 ? Promise.resolve(job.members()) : job.stop();
+}
