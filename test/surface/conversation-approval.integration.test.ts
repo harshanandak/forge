@@ -278,7 +278,7 @@ for (const route of ["cli", "mcp"] as const) {
           },
         });
         expect(JSON.stringify(result)).toContain(
-          "Ask the owner in the conversation, then retry with approval by owner and their words.",
+          "Ask the owner that question in this chat",
         );
         expect(snapshot(h.root)).toEqual(files);
       }

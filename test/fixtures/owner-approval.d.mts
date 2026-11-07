@@ -36,3 +36,7 @@ export function relayedMemoryInput<Input extends { approval?: unknown }>(
   first: Envelope,
   source?: { harness: string; thread: string },
 ): Input;
+export function unattendedEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined>;
+export function writeOwnerPolicy(deviceRoot: string): void;

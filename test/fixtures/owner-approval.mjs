@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const gated = new Set(["block.admit", "config.grant", "store.reinit"]);
 const memoryGated = new Set([
@@ -82,4 +84,31 @@ export function withOwnerApproval(call) {
     const first = call(op, input, ...rest);
     return typeof first?.then === "function" ? first.then(retry) : retry(first);
   };
+}
+
+const agentMarkers = [
+  "FORGE_HARNESS",
+  "FORGE_AGENT",
+  "FORGE_SESSION",
+  "CLAUDECODE",
+  "CODEX_SESSION_ID",
+  "CODEX_THREAD_ID",
+  "CLAUDE_CODE_SESSION_ID",
+  "T3CODE_CLI_PATH",
+  "T3CODE_THREAD_ID",
+];
+/** CI-style fixtures model a script with no agent session, so the markers a harness sets are removed. */
+export function unattendedEnv(env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !agentMarkers.includes(key)),
+  );
+}
+/** Writes the owner's device policy that lets those scripts admit and grant without a relayed reply. */
+export function writeOwnerPolicy(deviceRoot) {
+  mkdirSync(deviceRoot, { recursive: true });
+  writeFileSync(
+    join(deviceRoot, "owner.json"),
+    JSON.stringify({ unattended: ["block.admit", "config.grant"] }),
+    { mode: 0o600 },
+  );
 }
