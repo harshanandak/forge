@@ -88,6 +88,9 @@ import {
   attendedTerminal,
   consumeOwnerApproval,
   directApproval,
+  laneResumeAsk,
+  laneResumeClaim,
+  laneResumeOp,
   POLICY_OPS,
   unattendedOps,
   memoryOwnerAsk,
@@ -335,10 +338,11 @@ export async function createAssembly(
   async function approve(
     request: Parameters<Assembly["catalog"]["invoke"]>[0],
     ask: string,
+    relayedOnly = false,
   ) {
     const { direct, input } = await openApproval(request);
     let warning: string | undefined;
-    if (input.approval === undefined) {
+    if (input.approval === undefined && !relayedOnly) {
       // No relayed evidence: a person at a terminal types the phrase; otherwise a script with no
       // agent session may run the operations the owner listed in owner.json.
       const { stdin, stderr } = tty();
@@ -1613,7 +1617,9 @@ export async function createAssembly(
         const owned =
           target && memoryOwnerOp(target)
             ? memoryOwnerClaim(request.input)
-            : undefined;
+            : target && laneResumeOp(target)
+              ? laneResumeClaim(request.input)
+              : undefined;
         if (owned) {
           // The runtime refuses dry runs for these operations; refuse first so a dry run neither
           // burns a valid approval nor leaves a pending request behind.
@@ -1628,10 +1634,14 @@ export async function createAssembly(
             );
           await approve(
             { ...request, input: owned.input },
-            memoryOwnerAsk(target!.declaredOp!, request.input),
+            laneResumeOp(target!)
+              ? laneResumeAsk(request.input)
+              : memoryOwnerAsk(target!.declaredOp!, request.input),
+            // Resuming lanes restarts spending: only a relayed reply counts, never a typed phrase or owner.json.
+            laneResumeOp(target!),
           );
           // The block records the verified quote exactly as it did for a conversation claim.
-          if (owned.relayed)
+          if (owned.relayed && !laneResumeOp(target!))
             request = {
               ...request,
               input: {

@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "all": {
+      "const": true
+    }
+  },
+  "oneOf": [
+    {
+      "required": ["id"]
+    },
+    {
+      "required": ["all"]
+    }
+  ],
+  "additionalProperties": false
+}

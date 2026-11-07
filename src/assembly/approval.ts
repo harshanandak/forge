@@ -299,3 +299,35 @@ export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
     ? `Restore the forgotten note ${id} with its saved text and history.`
     : `Forget note ${id}. Its text is hidden and kept only as a private backup.`;
 }
+
+/** Resuming stopped lanes restarts spending, so it always needs a relayed owner reply. */
+export function laneResumeOp(candidate: {
+  blockId?: string | undefined;
+  declaredOp?: string | undefined;
+}): boolean {
+  return (
+    candidate.blockId === "forge/work" && candidate.declaredOp === "lane.resume"
+  );
+}
+/** Splits the optional approval claim off a lane resume call; a missing claim asks the owner. */
+export function laneResumeClaim(input: unknown): {
+  input: Record<string, unknown>;
+  relayed: boolean;
+  quote?: string;
+} {
+  const fields = object(input) ?? {};
+  const claim = object(fields.approval);
+  const rest = { ...fields };
+  delete rest.approval;
+  return {
+    input: claim === undefined ? rest : fields,
+    relayed: claim !== undefined,
+    ...(typeof claim?.quote === "string" ? { quote: claim.quote } : {}),
+  };
+}
+export function laneResumeAsk(input: unknown): string {
+  const fields = object(input);
+  return fields?.all === true
+    ? "Resume every stopped lane. Forge starts spending calls and time again."
+    : `Resume lane ${typeof fields?.id === "string" ? fields.id : ""}. Forge starts spending calls and time on it again.`;
+}
