@@ -219,8 +219,7 @@ async function dispatchRaw(
         error: {
           ...result.error,
           message: `${op}: ${result.error.message}`,
-          repair:
-            "Ask the owner in the conversation, then retry with approval by owner and their words.",
+          repair: humanRepair(entry.declaredOp ?? op),
         },
       };
     return result;
@@ -235,6 +234,18 @@ async function dispatchRaw(
       };
     return failure("INTERNAL", "The runtime did not return a result envelope.");
   }
+}
+
+const RELAYED_OPS = new Set([
+  "memory.forget",
+  "memory.restore",
+  "decision.adopt",
+]);
+/** Forget, restore and adopt need Forge's request first, then the owner's relayed reply. */
+function humanRepair(op: string): string {
+  return RELAYED_OPS.has(op)
+    ? `Retry once with approval: {by: "owner", quote: "asking"} to get result.request.ask and a request id. Ask the owner that question in this chat and wait for their reply. Then retry the same input with approval: {request, quote: <their reply, verbatim>, source: {harness, thread}}. Never invent a quote.`
+    : "Ask the owner in the conversation, then retry with approval by owner and their words.";
 }
 
 /**

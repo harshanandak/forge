@@ -1,4 +1,7 @@
-import { withCliOwnerApproval } from "../../fixtures/owner-approval.mjs";
+import {
+  unattendedEnv,
+  writeOwnerPolicy,
+} from "../../fixtures/owner-approval.mjs";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import { spawnSync } from "node:child_process";
@@ -95,12 +98,18 @@ function phase(name) {
       `Second review ${name}: ${Math.round(performance.now() - started)} ms; ${cliCalls - calls} CLI calls, ${Math.round(cliTime - time)} ms in CLI`,
     );
 }
-const cli = (root, ...args) =>
-  withCliOwnerApproval(cliRaw.bind(null, root))(...args);
+const cli = (root, args, ...rest) => {
+  if (["admit", "grant"].includes(args[1]))
+    writeOwnerPolicy(join(root, "device"));
+  return cliRaw(root, args, ...rest);
+};
 function cliRaw(root, args, expected = 0) {
   const result = spawnCli(args, {
     cwd: root,
-    env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+    env: unattendedEnv({
+      ...process.env,
+      FORGE_DEVICE_ROOT: join(root, "device"),
+    }),
     encoding: "utf8",
     timeout: 15000,
     windowsHide: true,

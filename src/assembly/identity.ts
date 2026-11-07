@@ -37,6 +37,29 @@ export function sessionIdentity(env: Environment, fallback: string): string {
         .map(([harness, id]) => `${harness}:${encodeURIComponent(id)}`)
         .join("+");
 }
+/** Every environment signal that a coding agent, not a person, is running this process. */
+export const AGENT_MARKERS: readonly string[] = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_SESSION_ID",
+  "CODEX_THREAD_ID",
+  "CODEX_SESSION_ID",
+  "T3CODE_CLI_PATH",
+  "T3CODE_THREAD_ID",
+  "FORGE_AGENT",
+  "FORGE_SESSION",
+];
+/**
+ * True when any marker is set, whatever FORGE_HARNESS says: the label is display only and never
+ * turns an agent into a person. Detection reads the environment, so a process that clears its own
+ * environment is not detected.
+ */
+export function agentSession(env: Environment): boolean {
+  const label = trimmed(env.FORGE_HARNESS);
+  return (
+    (label !== undefined && label !== "local-cli") ||
+    AGENT_MARKERS.some((key) => trimmed(env[key]) !== undefined)
+  );
+}
 export function harnessIdentity(env: Environment): string {
   const codex = trimmed(env.CODEX_THREAD_ID) || trimmed(env.CODEX_SESSION_ID);
   const claude = trimmed(env.CLAUDE_CODE_SESSION_ID);
