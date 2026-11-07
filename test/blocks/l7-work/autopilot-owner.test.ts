@@ -543,3 +543,35 @@ test("the runtime accepts a request only if it is pending and bound to exactly t
   expect(bound("memory.forget", { id: "work-1" })).toBe(false);
   expect(bound("lane.resume", { id: "work-1" }, "unknown")).toBe(false);
 });
+
+test("the owner-approved resume reaches the driver only while autopilot is on", async () => {
+  const f = fixture();
+  await f.setOwner();
+  await f.stop("work-1");
+  await f.next("work-1");
+  await f.record({ id: "work-1", request: "req-1", scope: { id: "work-1" } });
+  await f.next("work-1");
+  expect((await f.reply("#1 1A")).approvals).toHaveLength(1);
+  const step = await f.next("work-1");
+  expect(step.kind).toBe("harness");
+  expect(step.approval?.request).toBe("req-1");
+  f.config.lanes.autopilot.enabled = false;
+  const off = await f.next("work-1");
+  expect(off.kind).not.toBe("harness");
+  expect(off.approval).toBeUndefined();
+});
+
+test("a rebuilt global record does not restart message numbers", async () => {
+  const f = fixture();
+  await f.setOwner();
+  f.spend("work-1");
+  f.spend("work-2");
+  await f.all();
+  f.time.now += 31 * MINUTE;
+  expect(sent(await f.all())[0]!.ask).toContain("Message #2");
+  f.records.delete("autopilot:global");
+  await f.setOwner();
+  const [again] = sent(await f.all());
+  expect(again!.ask).toContain("Message #3");
+  await expect(f.reply("#1 1A 2B")).rejects.toThrow(/latest is #3/);
+});

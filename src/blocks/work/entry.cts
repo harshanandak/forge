@@ -2638,9 +2638,11 @@ function ownerRoute(
             },
       );
     const open: Ask[] = [];
+    let highest = 0;
     for (const row of state.list("autopilot-ask:")) {
       if (!validAsk(row.value))
         throw new StateProblem(`${row.key} is not a valid ask`);
+      highest = Math.max(highest, row.value.batch ?? 0);
       if (openAsk(row.value)) open.push(row.value);
     }
     // A gated ask is sent only once it carries the request id the reply will be bound to.
@@ -2666,7 +2668,8 @@ function ownerRoute(
     let message: string | undefined;
     let seq = 0;
     if (due && carrier) {
-      seq = (owner.seq ?? owner.batch?.seq ?? 0) + 1;
+      // A rebuilt global record must not restart numbering: asks remember the numbers they were sent in.
+      seq = Math.max(owner.seq ?? owner.batch?.seq ?? 0, highest) + 1;
       message = composeMessage(
         seq,
         ready,
@@ -2755,13 +2758,19 @@ async function laneStep(
   const ask = row?.value;
   if (ask?.status !== "answered" || ask.answer === undefined)
     return await guardedNext(call, id);
-  // A stored answer never outranks the kill switch: while it is set, only the guard's pause returns.
+  // A stored answer never outranks the kill switch. Autopilot off returns only the guard's pause.
+  // A stop flag lets through one thing: the owner-approved resume of exactly this lane's stop.
   try {
     const flags = readGlobal(state).value;
+    const scope = flags.stopAll !== undefined ? { all: true } : { id: shown };
+    const resumes =
+      ask.answer.approval !== undefined &&
+      ask.gated?.op === "lane.resume" &&
+      canonical(ask.gated.input) === canonical(scope);
     if (
       !limitsOf(call.config).enabled ||
-      flags.stopAll !== undefined ||
-      flags.stopped[id] !== undefined
+      ((flags.stopAll !== undefined || flags.stopped[id] !== undefined) &&
+        !resumes)
     )
       return await guardedNext(call, id);
   } catch (error) {
