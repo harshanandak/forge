@@ -1,10 +1,13 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { cleanupAttribution } from "./cleanup-attribution.ts";
+import {
+  cleanupAttribution,
+  type AttributionRunner,
+} from "./cleanup-attribution.ts";
 
 setDefaultTimeout(30_000);
 
@@ -141,6 +144,81 @@ test.skipIf(process.platform !== "win32")(
     expect(snapshot!.failure).toContain("No matching handles found");
   },
   1_000,
+);
+
+function refuse(root: string, run: AttributionRunner) {
+  const original = Object.assign(new Error("cleanup refused"), {
+    code: "EBUSY",
+    path: root,
+  });
+  try {
+    cleanupAttribution(
+      root,
+      () => {
+        throw original;
+      },
+      run,
+      { tool: "fixture-handle", unavailable: "" },
+    );
+  } catch (error) {
+    expect(error).toBe(original);
+  }
+  const [, line] = original.message.split("Cleanup evidence: ");
+  return {
+    message: original.message,
+    evidence: JSON.parse(line!.split("\n")[0]!) as Record<string, unknown>,
+  };
+}
+
+test.skipIf(process.platform !== "win32")(
+  "cleanup evidence names what remains under the root, the host state and the folder search",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-evidence-"));
+    mkdirSync(join(root, "nested"));
+    writeFileSync(join(root, "nested", "kept.txt"), "kept");
+    const handleTargets: string[] = [];
+    try {
+      const { evidence } = refuse(root, (command, args) => {
+        if (command === "powershell.exe")
+          return {
+            status: 0,
+            stdout: JSON.stringify({
+              processes: [{ pid: 4242, name: "git.exe" }],
+              filters: "WdFilter",
+            }),
+          };
+        handleTargets.push(args.at(-1)!);
+        return { status: 1, stdout: "No matching handles found.\r\n" };
+      });
+      expect(evidence).toMatchObject({
+        errorIsRoot: true,
+        rootExists: true,
+        probeFailures: [],
+        host: { processes: [{ pid: 4242 }], filters: "WdFilter" },
+      });
+      expect((evidence.remaining as string[]).sort()).toEqual([
+        "nested",
+        join("nested", "kept.txt"),
+      ]);
+      // Handle matches by substring, so the bare folder name catches a differently spelled path.
+      expect(handleTargets).toContain(basename(root));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "a failed host query is recorded in the evidence and the original error survives",
+  () => {
+    const { evidence } = refuse("root", () => {
+      throw new Error("host query unavailable");
+    });
+    expect(evidence).toMatchObject({ errorIsRoot: true, rootExists: false });
+    expect(String(evidence.hostError)).toContain("host query unavailable");
+  },
+  5_000,
 );
 
 for (const reason of ["checksum mismatch", "download failed", "not configured"])
