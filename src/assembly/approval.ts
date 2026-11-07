@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { ForgeFailure } from "../contract/failure.ts";
 import { digest, type OwnerApproval } from "../core/trust/index.ts";
 import type { DeletableStateClient } from "../ports/state.ts";
-import { harnessIdentity } from "./identity.ts";
+import { agentSession } from "./identity.ts";
+
+export { agentSession };
 
 const proofs = new WeakMap<OwnerApproval, string>();
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -72,6 +74,7 @@ export function ownerApproval(options: {
   projectRoot: string;
   ask: string;
   relay: RelayingSession;
+  warning?: string;
   now?: () => number;
 }): OwnerApproval {
   const { approval: evidence, ...input } = options.input;
@@ -92,7 +95,7 @@ export function ownerApproval(options: {
       { expectRevision: 0 },
     );
     throw new ApprovalRequired(
-      "An owner reply is required before this operation runs.",
+      `An owner reply is required before this operation runs.${options.warning === undefined ? "" : ` ${options.warning}`}`,
       request,
     );
   }
@@ -158,12 +161,6 @@ export function ownerApproval(options: {
   return issueProof(options.op, input);
 }
 
-/** An agent session is any harness marker the memory guard already honored. */
-export function agentSession(
-  env: Readonly<Record<string, string | undefined>>,
-): boolean {
-  return harnessIdentity(env) !== "local-cli" || !!env.FORGE_AGENT?.trim();
-}
 /** A person is typing: both ends are terminals and no agent session is running. */
 export function attendedTerminal(
   env: Readonly<Record<string, string | undefined>>,
@@ -177,23 +174,41 @@ export const POLICY_OPS: ReadonlySet<string> = new Set([
   "block.admit",
   "config.grant",
 ]);
-/** The operations an owner.json text lets unattended calls run; unreadable text means none. */
+/**
+ * The operations an owner.json text lets unattended calls run. The whole file must be valid: an
+ * object with only an `unattended` list of unique, eligible operations. Any violation voids it all.
+ */
 export function unattendedOps(text: string | undefined): {
   ops: ReadonlySet<string>;
   problem?: string;
 } {
+  if (text === undefined) return { ops: new Set() };
+  const voided = (reason: string) => ({
+    ops: new Set<string>(),
+    problem: `owner.json was ignored: ${reason}. Fix or remove it.`,
+  });
+  let parsed: unknown;
   try {
-    const listed = object(JSON.parse(text ?? ""))?.unattended;
-    return {
-      ops: new Set(
-        Array.isArray(listed)
-          ? listed.filter((op) => typeof op === "string" && POLICY_OPS.has(op))
-          : [],
-      ),
-    };
+    parsed = JSON.parse(text);
   } catch {
-    return { ops: new Set() };
+    return voided("it is not valid JSON");
   }
+  const fields = object(parsed);
+  const listed = fields?.unattended;
+  if (
+    fields === undefined ||
+    Object.keys(fields).length !== 1 ||
+    !Array.isArray(listed)
+  )
+    return voided('it must be an object with only an "unattended" list');
+  if (
+    listed.some((op) => typeof op !== "string" || !POLICY_OPS.has(op)) ||
+    new Set(listed).size !== listed.length
+  )
+    return voided(
+      "it lists an unknown, repeated or ineligible operation (only block.admit and config.grant may run unattended)",
+    );
+  return { ops: new Set(listed as string[]) };
 }
 /** Evidence that Forge saw first-hand (a typed phrase, or the owner's own policy file). */
 export function directApproval(options: {

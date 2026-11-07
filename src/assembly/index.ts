@@ -84,6 +84,7 @@ import {
   attendedTerminal,
   consumeOwnerApproval,
   directApproval,
+  POLICY_OPS,
   unattendedOps,
   memoryOwnerAsk,
   memoryOwnerClaim,
@@ -279,48 +280,78 @@ export async function createAssembly(
     },
     consumeOwnerApproval,
   );
+  const tty = () =>
+    options.terminal?.tty() ?? {
+      stdin: process.stdin.isTTY === true,
+      stderr: process.stderr.isTTY === true,
+    };
+  const confirm = (op: string, ask: string) =>
+    options.terminal?.confirm(op, ask) ?? typedConfirmation(op, ask);
+  async function openApproval(
+    request: Parameters<Assembly["catalog"]["invoke"]>[0],
+  ) {
+    const owner = (await trustState.open(true))!;
+    const input = request.input as Record<string, unknown>;
+    return {
+      input,
+      direct: {
+        state: owner.client("forge/core-approvals", request.context.actor!),
+        op: request.op,
+        input,
+        deviceRoot,
+        projectRoot: root,
+        relay: {
+          harness: harnessIdentity(process.env),
+          id: sessionIdentity(
+            process.env,
+            request.context.session?.id ?? "local-cli",
+          ),
+          pid: process.pid,
+        },
+      },
+    };
+  }
+  /** A person at a terminal types the phrase; any agent session, or piped input, gets nothing here. */
+  async function attendedApproval(
+    request: Parameters<Assembly["catalog"]["invoke"]>[0],
+    ask: string,
+  ) {
+    const { stdin, stderr } = tty();
+    if (
+      !attendedTerminal(process.env, stdin, stderr) ||
+      !(await confirm(request.op, ask))
+    )
+      return undefined;
+    return directApproval({
+      ...(await openApproval(request)).direct,
+      method: "attended",
+    });
+  }
   async function approve(
     request: Parameters<Assembly["catalog"]["invoke"]>[0],
     ask: string,
   ) {
-    const owner = (await trustState.open(true))!;
-    const input = request.input as Record<string, unknown>;
-    const state = owner.client("forge/core-approvals", request.context.actor!);
-    const relay = {
-      harness: harnessIdentity(process.env),
-      id: sessionIdentity(
-        process.env,
-        request.context.session?.id ?? "local-cli",
-      ),
-      pid: process.pid,
-    };
-    const direct = {
-      state,
-      op: request.op,
-      input,
-      deviceRoot,
-      projectRoot: root,
-      relay,
-    };
+    const { direct, input } = await openApproval(request);
+    let warning: string | undefined;
     if (input.approval === undefined) {
       // No relayed evidence: a person at a terminal types the phrase; otherwise a script with no
       // agent session may run the operations the owner listed in owner.json.
-      if (
-        attendedTerminal(
-          process.env,
-          process.stdin.isTTY === true,
-          process.stderr.isTTY === true,
-        )
-      ) {
-        if (await typedConfirmation(request.op, ask))
+      const { stdin, stderr } = tty();
+      if (attendedTerminal(process.env, stdin, stderr)) {
+        if (await confirm(request.op, ask))
           return directApproval({ ...direct, method: "attended" });
-      } else if (
-        !agentSession(process.env) &&
-        unattendedOps(ownerPolicyText(deviceRoot)).ops.has(request.op)
-      )
-        return directApproval({ ...direct, method: "scripts-policy" });
+      } else if (!agentSession(process.env) && POLICY_OPS.has(request.op)) {
+        const policy = unattendedOps(ownerPolicyText(deviceRoot));
+        if (policy.ops.has(request.op))
+          return directApproval({ ...direct, method: "scripts-policy" });
+        warning = policy.problem;
+      }
     }
-    return ownerApproval({ ...direct, ask });
+    return ownerApproval({
+      ...direct,
+      ask,
+      ...(warning === undefined ? {} : { warning }),
+    });
   }
   // Each block is captured once per call: config reads its schema from the same capture the
   // catalog runs. The cache belongs to one call and is passed down it, so overlapping calls
@@ -1604,6 +1635,30 @@ export async function createAssembly(
                 approval: { by: "owner", quote: owned.quote },
               },
             };
+        } else if (
+          target &&
+          memoryOwnerOp(target) &&
+          request.caller === "human" &&
+          request.dryRun !== true &&
+          record(request.input)?.approval === undefined
+        ) {
+          // A person at a terminal types the phrase; the block then sees the owner's authorization.
+          if (
+            await attendedApproval(
+              request,
+              memoryOwnerAsk(target.declaredOp!, request.input),
+            )
+          )
+            request = {
+              ...request,
+              input: {
+                ...(request.input as Record<string, unknown>),
+                approval: {
+                  by: "owner",
+                  quote: `confirm ${request.op} (typed at the terminal)`,
+                },
+              },
+            };
         }
         const runtimeCatalog = withCheckRunBudget(
           current.catalog,
@@ -1978,8 +2033,7 @@ export function localCall(
         process.stdin.isTTY !== true ||
         process.stdin.destroyed ||
         process.stdin.readableEnded ||
-        localHarness() !== "local-cli" ||
-        process.env.FORGE_AGENT?.trim()
+        agentSession(process.env)
       )
         return Promise.resolve(false);
       return typedConfirmation(op);

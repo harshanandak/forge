@@ -171,6 +171,22 @@ Copy the complete [hello block](examples/hello-block) and follow
 [Writing a block](docs/writing-a-block.md) to check, add, admit and run it.
 The example and guide also ship in the npm package.
 
+## Owner approval
+
+Block admission, effect grants, store recovery and memory forget, restore and adopt
+need the owner. An agent asks the owner in chat and relays their reply. A person at a
+terminal types `confirm <operation>` instead. Scripts and CI with no agent session can
+run `block admit` and `config grant` once the owner approves a device policy with
+`forge owner policy --input '{"unattended":["block.admit","config.grant"]}'`, which
+writes `owner.json` in the device folder. An invalid `owner.json` is ignored whole.
+
+This is auditable consent, not authentication. Agent detection reads environment
+variables (CLAUDECODE, CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, CODEX_SESSION_ID,
+T3CODE_CLI_PATH, T3CODE_THREAD_ID, FORGE_AGENT, FORGE_SESSION, and any FORGE_HARNESS
+other than `local-cli`). A process that clears its own environment is not detected, and
+a deliberate agent running as the same OS user can also edit the device files. Forge
+stops accidental and hint-following agents, not that one.
+
 ## MCP
 
 After importing the template, add this top-level section to

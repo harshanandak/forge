@@ -89,9 +89,13 @@ export function withOwnerApproval(call) {
 const agentMarkers = [
   "FORGE_HARNESS",
   "FORGE_AGENT",
+  "FORGE_SESSION",
+  "CLAUDECODE",
   "CODEX_SESSION_ID",
   "CODEX_THREAD_ID",
   "CLAUDE_CODE_SESSION_ID",
+  "T3CODE_CLI_PATH",
+  "T3CODE_THREAD_ID",
 ];
 /** CI-style fixtures model a script with no agent session, so the markers a harness sets are removed. */
 export function unattendedEnv(env) {

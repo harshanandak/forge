@@ -25,7 +25,10 @@ afterEach(() => {
   }
 });
 
-async function open(project: boolean) {
+async function open(
+  project: boolean,
+  terminal?: NonNullable<Parameters<typeof createAssembly>[0]["terminal"]>,
+) {
   const work = mkdtempSync(join(tmpdir(), "forge-owner-policy-"));
   const root = join(work, "project");
   const deviceRoot = join(work, "device");
@@ -36,7 +39,12 @@ async function open(project: boolean) {
     join(root, "hello"),
     { recursive: true },
   );
-  const assembly = await createAssembly({ root, deviceRoot, project });
+  const assembly = await createAssembly({
+    root,
+    deviceRoot,
+    project,
+    ...(terminal === undefined ? {} : { terminal }),
+  });
   const options = localCall(assembly);
   return {
     work,
@@ -186,4 +194,46 @@ test("a malformed owner.json is ignored and says so", async () => {
     await h.assembly.close();
     rmSync(h.work, { recursive: true, force: true });
   }
+}, 30_000);
+
+test("an attended approval uses the host's configured terminal, not the process's", async () => {
+  const asked: string[][] = [];
+  for (const stdin of [true, false]) {
+    const h = await open(false, {
+      tty: () => ({ stdin, stderr: true }),
+      confirm: (op, ask) => {
+        asked.push([op, ask]);
+        return Promise.resolve(true);
+      },
+    });
+    try {
+      const added = await h.call("block.add", { path: "./hello" });
+      const digest = String(record(added.result)?.digest);
+      const admitted = await h.call("block.admit", { digest });
+      if (stdin) {
+        expect(admitted).toMatchObject({ ok: true });
+        await h.assembly.close();
+        const trust = new LocalState(join(h.deviceRoot, "trust.sqlite"));
+        try {
+          const rows = (await trust.open(false))?.list("forge/core-approvals");
+          expect(rows?.map((row) => record(row.value)?.method)).toEqual([
+            "attended",
+          ]);
+        } finally {
+          await trust.close();
+        }
+      } else {
+        expect(admitted).toMatchObject({
+          ok: false,
+          error: { code: "APPROVAL_REQUIRED" },
+        });
+        await h.assembly.close();
+      }
+    } finally {
+      rmSync(h.work, { recursive: true, force: true });
+    }
+  }
+  expect(asked).toHaveLength(1);
+  expect(asked[0]?.[0]).toBe("block.admit");
+  expect(asked[0]?.[1]).toContain("Admit block");
 }, 30_000);
