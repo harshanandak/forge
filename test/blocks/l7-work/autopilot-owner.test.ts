@@ -172,6 +172,11 @@ function fixture() {
     put,
     session,
     records,
+    // Every key and revision, to prove a repeat of a pending ask writes nothing.
+    revisions: () =>
+      JSON.stringify(
+        [...records.entries()].map(([key, row]) => [key, row.revision]),
+      ),
     // A lane that has used its one call pauses with a budget ask.
     spend: (id: string) =>
       put(
@@ -239,6 +244,12 @@ test("two lanes pausing within 30 minutes give one message with two numbered ask
   // A third ask five minutes later is held for the window.
   f.time.now += 5 * MINUTE;
   for (const action of await f.all()) expect(action.kind).toBe("wait");
+  // Repeating a pending ask writes nothing: not for the owner, nor for another session.
+  const before = f.revisions();
+  for (const action of await f.all()) expect(action.kind).toBe("wait");
+  f.session.env = { CLAUDE_CODE_SESSION_ID: "child-9" };
+  for (const action of await f.all()) expect(action.kind).toBe("hand-to-owner");
+  expect(f.revisions()).toBe(before);
 });
 
 test('the reply "1A 2B" unpauses both lanes with the chosen options', async () => {
@@ -405,6 +416,9 @@ test("a session that calls lane next first does not become the owner channel and
   // The text names no session: another caller reads the same pending pause byte for byte.
   f.session.env = { CLAUDE_CODE_SESSION_ID: "builder-8" };
   expect((await f.next("work-1")).ask).toBe(first.ask);
+  const unset = f.revisions();
+  await f.next("work-1");
+  expect(f.revisions()).toBe(unset);
   f.session.env = { CLAUDE_CODE_SESSION_ID: "builder-7" };
   expect(f.records.get("autopilot-ask:work-1")?.value.status).toBe("queued");
   expect(

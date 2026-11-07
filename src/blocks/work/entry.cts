@@ -2606,7 +2606,6 @@ function ownerRoute(
         status: "queued",
       };
       saveAsk(state, ask, row?.revision ?? 0);
-      emit(state, id, "ask", { reason: action.why });
       current.set(id, ask);
     }
     if (!current.size) return actions;
