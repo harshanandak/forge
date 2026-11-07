@@ -53,8 +53,12 @@ function underNode(): NodeRun {
 function expectedEcho(testCase: Case, echo: Echo): void {
   expect(echo.argv, testCase.name).toEqual([...testCase.args]);
   const seen = new Map(echo.env.map(([k, v]) => [k.toUpperCase(), v]));
-  for (const [key, value] of Object.entries(testCase.env))
-    expect(seen.get(key.toUpperCase()), `${testCase.name} ${key}`).toBe(value);
+  // Names that differ only by case collapse to the first in sorted order, as in Node.
+  const kept = new Map<string, string>();
+  for (const key of Object.keys(testCase.env).sort())
+    if (!kept.has(key.toUpperCase())) kept.set(key.toUpperCase(), key);
+  for (const [folded, key] of kept)
+    expect(seen.get(folded), `${testCase.name} ${key}`).toBe(testCase.env[key]);
 }
 
 function expectGrandchild(report: GrandchildReport): void {

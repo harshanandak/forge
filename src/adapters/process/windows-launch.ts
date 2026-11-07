@@ -257,7 +257,14 @@ export function buildWindowsEnvironmentBlock(
   parent: Readonly<Record<string, string | undefined>> = process.env,
 ): Buffer {
   const entries = new Map<string, string>();
-  for (const [name, value] of Object.entries(env)) {
+  // Node (lib/child_process.js, win32): sort the keys, then keep only the first of each
+  // case-insensitive name, so { Path, PATH } passes PATH alone.
+  const sawName = new Set<string>();
+  for (const name of Object.keys(env).sort()) {
+    const folded = name.toUpperCase();
+    if (sawName.has(folded)) continue;
+    sawName.add(folded);
+    const value = env[name] as string;
     if (name === "" || name.includes("=") || name.includes("\0"))
       refuse(
         "An environment name must not be empty or hold an equals sign or a NUL.",
@@ -329,6 +336,10 @@ function openNul(api: LaunchApi, write: boolean): bigint {
   return handle;
 }
 
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
 /** Ends every process in the per-command job, so a launch that cannot be returned runs nowhere. */
 function endJob(job: WindowsJob): void {
   void job.stop().catch(() => undefined);
@@ -340,13 +351,13 @@ function releaseLaunch(
   attributeList: bigint | undefined,
   allocations: readonly bigint[],
   handles: readonly bigint[],
-): unknown {
-  const errors: unknown[] = [];
+): Error | undefined {
+  const errors: Error[] = [];
   const step = (action: () => void): void => {
     try {
       action();
     } catch (error) {
-      errors.push(error);
+      errors.push(asError(error));
     }
   };
   if (attributeList !== undefined)
@@ -401,7 +412,7 @@ export function launchInJob(
   const allocations: bigint[] = [];
   let attributeList: bigint | undefined;
   let launched: LaunchedProcess | undefined;
-  let failed = false;
+  let failure: Error | undefined;
   try {
     for (const write of [false, true, true])
       nulHandles.push(openNul(api, write));
@@ -506,32 +517,35 @@ export function launchInJob(
     if (isHandle(hThread, size)) api.closeHandle(hThread);
     if (isHandle(hProcess, size) && typeof dwProcessId === "number") {
       launched = { pid: dwProcessId, processHandle: hProcess };
-      return launched;
-    }
-    // The command is already running in the job; end it rather than leave it unowned.
-    if (isHandle(hProcess, size)) api.closeHandle(hProcess);
-    endJob(job);
-    throw new ProcessSpawnError(
-      "SPAWN_FAILED",
-      "Windows returned no process handle for the command.",
-    );
-  } catch (error) {
-    failed = true;
-    throw error;
-  } finally {
-    const cleanupError = releaseLaunch(
-      api,
-      attributeList,
-      allocations,
-      nulHandles,
-    );
-    if (cleanupError !== undefined && !failed) {
-      // Cleanup failed after a good launch: hand back nothing that could leak or run unowned.
-      if (launched !== undefined) api.closeHandle(launched.processHandle);
+    } else {
+      // The command is already running in the job; end it rather than leave it unowned.
+      if (isHandle(hProcess, size)) api.closeHandle(hProcess);
       endJob(job);
-      throw cleanupError;
+      throw new ProcessSpawnError(
+        "SPAWN_FAILED",
+        "Windows returned no process handle for the command.",
+      );
     }
+  } catch (error) {
+    failure = asError(error);
   }
+  const cleanupError = releaseLaunch(
+    api,
+    attributeList,
+    allocations,
+    nulHandles,
+  );
+  // A failed launch reports its own error; a cleanup error never hides it.
+  if (failure !== undefined) throw failure;
+  if (launched === undefined)
+    throw new ProcessSpawnError("SPAWN_FAILED", "The command did not start.");
+  if (cleanupError !== undefined) {
+    // Cleanup failed after a good launch: hand back nothing that could leak or run unowned.
+    api.closeHandle(launched.processHandle);
+    endJob(job);
+    throw cleanupError;
+  }
+  return launched;
 }
 
 /** Releases the process handle `launchInJob` returned. */

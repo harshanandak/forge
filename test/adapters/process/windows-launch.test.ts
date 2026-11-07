@@ -53,6 +53,20 @@ test("environment entries that would be read differently are refused", () => {
   expect(refused).toEqual(Array(4).fill("INVALID_OPTIONS"));
 }, 5000);
 
+test("names that differ only by case keep the first in sorted order, like Node", () => {
+  const nul = String.fromCharCode(0);
+  const block = buildWindowsEnvironmentBlock(
+    { Path: "lower", PATH: "upper", foo: "a", FOO: "b" },
+    {},
+  );
+  expect(block.toString("utf16le").split(nul)).toEqual([
+    "FOO=b",
+    "PATH=upper",
+    "",
+    "",
+  ]);
+}, 5000);
+
 test("the environment block is sorted, UTF-16 and gets only libuv's required variables", () => {
   const nul = String.fromCharCode(0);
   const block = buildWindowsEnvironmentBlock(

@@ -81,6 +81,10 @@ const envCases: readonly Record<string, string>[] = [
   { SystemRoot: root },
   { systemroot: root },
   { V: "a=b=c", "SPACE KEY": "v w", k: "line1\nline2" },
+  // Names that differ only by case: Node keeps the first in sorted order.
+  { Path: "lower", PATH: "upper" },
+  { foo: "a", FOO: "b" },
+  { fOO: "3", Foo: "1", FOO: "2", other: "x" },
 ];
 const shimCases: readonly (readonly string[])[] = [
   ["plain"],
