@@ -19,11 +19,14 @@ import { delimiter, join, resolve } from "node:path";
 
 import { laneRun, runClaude, runCodex } from "../../tools/lane-run.ts";
 import { scriptFixture } from "../script-fixture.ts";
+import { spawnBudget } from "../spawn-budget.ts";
 import { cliTopologyFixture } from "./cli-topology-fixture.ts";
 import { RepositoryFixtures } from "./lane-fixture.ts";
 import { FixtureChildren } from "../fixture-children.ts";
 import { cleanupAttribution } from "./cleanup-attribution.ts";
 
+// The structure guard needs a numeric literal in setDefaultTimeout; keep the constant equal to it.
+const DEFAULT_TIMEOUT_MS = 60_000;
 setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<boolean>();
 const script = resolve(import.meta.dirname, "../../tools/lane.ts");
@@ -920,11 +923,13 @@ test("a dead owner run lock is reclaimed and released", () => {
   const f = fixture();
   f.start();
   childLaunches++;
-  const dead = spawnSync(process.execPath, ["-e", ""], {
-    timeout: 5_000,
-    windowsHide: true,
-  });
-  expect(dead.status).toBe(0);
+  const dead = spawnBudget(DEFAULT_TIMEOUT_MS).run(
+    "node -e (exited pid)",
+    process.execPath,
+    ["-e", ""],
+    {},
+    0,
+  );
   const lock = join(f.main, ".git", "forge-lane-one.lock");
   mkdirSync(lock);
   writeFileSync(join(lock, `owner-${dead.pid}-${randomUUID()}`), "");
@@ -2910,11 +2915,13 @@ for (const operation of ["reclaim", "rename"])
     const lock = join(f.main, ".git", "forge-lane-one.lock");
     mkdirSync(lock);
     childLaunches++;
-    const dead = spawnSync(process.execPath, ["-e", ""], {
-      timeout: 5_000,
-      windowsHide: true,
-    });
-    expect(dead.status).toBe(0);
+    const dead = spawnBudget(DEFAULT_TIMEOUT_MS).run(
+      "node -e (exited pid)",
+      process.execPath,
+      ["-e", ""],
+      {},
+      0,
+    );
     const owner = join(lock, `owner-${dead.pid}-${randomUUID()}`);
     writeFileSync(owner, "");
     const helper = join(f.root, "lock-error.ts");
