@@ -1,20 +1,107 @@
 {
-  "type": "object",
-  "required": ["lane", "step", "n", "recorded"],
-  "properties": {
-    "lane": {
-      "type": "string"
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["lane", "step", "n", "recorded"],
+      "properties": {
+        "lane": {
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "recorded": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
     },
-    "step": {
-      "type": "string"
-    },
-    "n": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "recorded": {
-      "const": true
+    {
+      "type": "object",
+      "required": ["recorded", "mapped", "answers", "approvals"],
+      "properties": {
+        "recorded": {
+          "const": true
+        },
+        "mapped": {
+          "type": "boolean"
+        },
+        "answers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["lane", "label", "choice", "hold"],
+            "properties": {
+              "lane": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "choice": {
+                "type": "string"
+              },
+              "hold": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["lane", "op", "input", "approval"],
+            "properties": {
+              "lane": {
+                "type": "string"
+              },
+              "op": {
+                "type": "string"
+              },
+              "input": {
+                "type": "object"
+              },
+              "approval": {
+                "type": "object",
+                "required": ["request", "quote", "source"],
+                "properties": {
+                  "request": {
+                    "type": "string"
+                  },
+                  "quote": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "object",
+                    "required": ["harness", "thread"],
+                    "properties": {
+                      "harness": {
+                        "type": "string"
+                      },
+                      "thread": {
+                        "type": "string"
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
     }
-  },
-  "additionalProperties": false
+  ]
 }

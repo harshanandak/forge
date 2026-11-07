@@ -1,12 +1,153 @@
 {
   "type": "object",
-  "required": ["id"],
   "oneOf": [
-    { "required": ["action", "result"], "not": { "required": ["mergeGate"] } },
     {
-      "required": ["mergeGate"],
+      "required": ["id", "action", "result"],
       "not": {
-        "anyOf": [{ "required": ["action"] }, { "required": ["result"] }]
+        "anyOf": [
+          {
+            "required": ["mergeGate"]
+          },
+          {
+            "required": ["reply"]
+          },
+          {
+            "required": ["source"]
+          },
+          {
+            "required": ["request"]
+          },
+          {
+            "required": ["ownerChannel"]
+          },
+          {
+            "required": ["approval"]
+          },
+          {
+            "required": ["scope"]
+          }
+        ]
+      }
+    },
+    {
+      "required": ["id", "mergeGate"],
+      "not": {
+        "anyOf": [
+          {
+            "required": ["action"]
+          },
+          {
+            "required": ["result"]
+          },
+          {
+            "required": ["reply"]
+          },
+          {
+            "required": ["source"]
+          },
+          {
+            "required": ["request"]
+          },
+          {
+            "required": ["ownerChannel"]
+          },
+          {
+            "required": ["approval"]
+          },
+          {
+            "required": ["scope"]
+          }
+        ]
+      }
+    },
+    {
+      "required": ["id", "request", "scope"],
+      "not": {
+        "anyOf": [
+          {
+            "required": ["action"]
+          },
+          {
+            "required": ["result"]
+          },
+          {
+            "required": ["mergeGate"]
+          },
+          {
+            "required": ["reply"]
+          },
+          {
+            "required": ["source"]
+          },
+          {
+            "required": ["ownerChannel"]
+          },
+          {
+            "required": ["approval"]
+          }
+        ]
+      }
+    },
+    {
+      "required": ["reply", "source"],
+      "not": {
+        "anyOf": [
+          {
+            "required": ["id"]
+          },
+          {
+            "required": ["action"]
+          },
+          {
+            "required": ["result"]
+          },
+          {
+            "required": ["mergeGate"]
+          },
+          {
+            "required": ["request"]
+          },
+          {
+            "required": ["ownerChannel"]
+          },
+          {
+            "required": ["approval"]
+          },
+          {
+            "required": ["scope"]
+          }
+        ]
+      }
+    },
+    {
+      "required": ["ownerChannel"],
+      "not": {
+        "anyOf": [
+          {
+            "required": ["id"]
+          },
+          {
+            "required": ["action"]
+          },
+          {
+            "required": ["result"]
+          },
+          {
+            "required": ["mergeGate"]
+          },
+          {
+            "required": ["reply"]
+          },
+          {
+            "required": ["source"]
+          },
+          {
+            "required": ["request"]
+          },
+          {
+            "required": ["scope"]
+          }
+        ]
       }
     }
   ],
@@ -36,11 +177,137 @@
           "pattern": "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$",
           "description": "The full head the merge-gate review read."
         },
-        "verdict": { "enum": ["MERGE", "FIX"] },
-        "reviewer": { "type": "string", "minLength": 1, "maxLength": 200 }
+        "verdict": {
+          "enum": ["MERGE", "FIX"]
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
       },
       "additionalProperties": false,
       "description": "The merge-gate review verdict for one head. Only MERGE for the current head lets lane next return the merge action."
+    },
+    "reply": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "The owner's reply, verbatim. Forge maps labels like 1A 2B to the asks in the last owner message; anything else keeps every lane paused."
+    },
+    "source": {
+      "type": "object",
+      "required": ["harness", "thread", "message"],
+      "properties": {
+        "harness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "thread": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "additionalProperties": false,
+      "description": "Where the reply was said. It must be the owner channel the first ask recorded."
+    },
+    "request": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9-]{1,200}$",
+      "description": "The request id from APPROVAL_REQUIRED for the gated step a lane's ask waits on."
+    },
+    "approval": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "source": {
+          "type": "object",
+          "required": ["harness", "thread"],
+          "properties": {
+            "harness": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "thread": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "link": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["request", "quote", "source"],
+      "additionalProperties": false,
+      "description": "The owner's reply, relayed verbatim with the request id Forge returned."
+    },
+    "ownerChannel": {
+      "type": "object",
+      "required": ["harness", "thread"],
+      "properties": {
+        "harness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "thread": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      },
+      "additionalProperties": false,
+      "description": "The session whose replies Forge accepts as the owner's. It is never claimed implicitly: the first call returns APPROVAL_REQUIRED and the owner's relayed reply approves it."
+    },
+    "scope": {
+      "type": "object",
+      "oneOf": [
+        {
+          "required": ["id"]
+        },
+        {
+          "required": ["all"]
+        }
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "all": {
+          "const": true
+        }
+      },
+      "additionalProperties": false,
+      "description": "The lane resume input the request was asked for: {id} or {all:true}. It must match the gated ask exactly."
     }
   },
   "additionalProperties": false
