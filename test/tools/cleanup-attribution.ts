@@ -36,17 +36,23 @@ const MAX_EVIDENCE_CHARS = 12_000;
 // Handle cannot see every holder (a working directory, a file system filter driver), so name the candidates.
 export const HOST_EVIDENCE = String.raw`
 $root = $env:FORGE_CLEANUP_ROOT
+# The cap is an environment variable only so a test can force it small.
+$cap = 300
+if ($env:FORGE_CLEANUP_PROCESS_CAP) { $cap = [int]$env:FORGE_CLEANUP_PROCESS_CAP }
 $data = @{}
 try {
   $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
   $names = @{}
   foreach ($item in $all) { $names[[int]$item.ProcessId] = $item.Name }
-  $data.processes = @($all | Where-Object {
+  # Flag and sort root-named processes here, before the cap, so a busy runner cannot push the holder out.
+  $matched = @($all | Where-Object {
     $_.Name -match '^(git|bun|node|bash|sh|conhost|codex|claude)\.exe$' -or ([string]$_.CommandLine).IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0
-  } | Select-Object -First 300 | ForEach-Object {
+  } | ForEach-Object {
     $line = [string]$_.CommandLine
-    @{ pid = $_.ProcessId; parent = $_.ParentProcessId; parentName = $names[[int]$_.ParentProcessId]; parentAlive = $names.ContainsKey([int]$_.ParentProcessId); name = $_.Name; created = [string]$_.CreationDate; command = $line.Substring(0, [Math]::Min(200, $line.Length)) }
+    [pscustomobject]@{ pid = $_.ProcessId; parent = $_.ParentProcessId; parentName = $names[[int]$_.ParentProcessId]; parentAlive = $names.ContainsKey([int]$_.ParentProcessId); name = $_.Name; created = [string]$_.CreationDate; matchesRoot = ($line.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0); command = $line.Substring(0, [Math]::Min(200, $line.Length)) }
   })
+  $data.processesMatched = $matched.Count
+  $data.processes = @($matched | Sort-Object @{ Expression = { if ($_.matchesRoot) { 0 } elseif ($_.name -eq 'conhost.exe') { 1 } else { 2 } } }, pid | Select-Object -First $cap)
 } catch { $data.processError = $_.Exception.Message }
 $out = ''
 try { $out = (& fltmc.exe filters | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { $data.filterError = "fltmc filters exited $($LASTEXITCODE): $out" } else { $data.filters = $out } } catch { $data.filterError = $_.Exception.Message }
@@ -106,8 +112,8 @@ function listTree(root: string) {
 const clip = (value: unknown, max: number): unknown =>
   typeof value === "string" && value.length > max ? value.slice(0, max) : value;
 
-// Root-named processes and conhost come first, so the cap never drops the likely holder.
-function boundHost(host: unknown, root: string) {
+// PowerShell already flags root-named processes; they and conhost go first so the cap never drops the likely holder.
+function boundHost(host: unknown) {
   if (typeof host !== "object" || host === null || Array.isArray(host))
     return { host };
   const record = host as Record<string, unknown>;
@@ -117,13 +123,9 @@ function boundHost(host: unknown, root: string) {
   const processes: unknown[] = Array.isArray(record.processes)
     ? record.processes
     : [];
-  const needle = root.toLowerCase();
   const priority = (item: unknown) => {
-    const { name, command } = (item ?? {}) as Record<string, unknown>;
-    return (
-      String(name).toLowerCase() === "conhost.exe" ||
-      String(command).toLowerCase().includes(needle)
-    );
+    const { name, matchesRoot } = (item ?? {}) as Record<string, unknown>;
+    return matchesRoot === true || String(name).toLowerCase() === "conhost.exe";
   };
   const ordered = [
     ...processes.filter(priority),
@@ -140,7 +142,31 @@ function boundHost(host: unknown, root: string) {
           )
         : item,
     );
-  return { host: bounded, processesOmitted: processes.length - ordered.length };
+  const matched =
+    typeof record.processesMatched === "number"
+      ? record.processesMatched
+      : processes.length;
+  return {
+    host: bounded,
+    processesOmitted: Math.max(matched, processes.length) - ordered.length,
+  };
+}
+
+// Short scalars and the probe results are the evidence that matters most, so the fallback keeps them.
+const FALLBACK_SCALAR_CHARS = 300;
+function tooLarge(evidence: unknown, length: number) {
+  const kept: Record<string, unknown> = { evidenceTooLarge: length };
+  if (typeof evidence === "object" && evidence !== null)
+    for (const [key, value] of Object.entries(evidence))
+      if (
+        key === "probeFailures" ||
+        value === null ||
+        typeof value === "number" ||
+        typeof value === "boolean" ||
+        (typeof value === "string" && value.length <= FALLBACK_SCALAR_CHARS)
+      )
+        kept[key] = value;
+  return kept;
 }
 
 // Never slice the JSON text: a cut line is invalid and drops the later fields.
@@ -149,10 +175,28 @@ function serialize(evidence: unknown): string {
     const text = JSON.stringify(evidence);
     return text.length <= MAX_EVIDENCE_CHARS
       ? text
-      : JSON.stringify({ evidenceTooLarge: text.length });
+      : JSON.stringify(tooLarge(evidence, text.length));
   } catch (failure) {
     return JSON.stringify({ inspectError: String(failure) });
   }
+}
+
+// Diagnostic only, never a retry: it says whether a hold was transient. The caller still throws
+// the original error, so a failing cleanup keeps failing and nothing is masked.
+function secondAttempt(cleanup: () => void) {
+  const started = performance.now();
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  let outcome: string;
+  try {
+    cleanup();
+    outcome = "removed";
+  } catch (failure) {
+    outcome = String((failure as NodeJS.ErrnoException)?.code ?? failure);
+  }
+  return {
+    secondAttempt: outcome,
+    secondAttemptMs: Math.round(performance.now() - started),
+  };
 }
 
 function windowsEvidence(
@@ -179,7 +223,7 @@ function windowsEvidence(
         result.error ??
         new Error(`status ${result.status}: ${result.stderr || result.stdout}`)
       );
-    Object.assign(evidence, boundHost(JSON.parse(result.stdout), root));
+    Object.assign(evidence, boundHost(JSON.parse(result.stdout)));
   } catch (failure) {
     evidence.hostError = String(failure);
   }
@@ -244,6 +288,14 @@ export function cleanupAttribution(
           };
         }
       });
+      // Last, so the attribution above saw the state the failure left behind.
+      if (evidence !== undefined)
+        evidence = {
+          ...(typeof evidence === "object" && evidence !== null
+            ? evidence
+            : { inspected: evidence }),
+          ...secondAttempt(cleanup),
+        };
       try {
         // Evidence comes first so the attribution JSON stays the last line of the message.
         if (evidence !== undefined)
