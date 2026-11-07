@@ -340,12 +340,12 @@ test.skipIf(process.platform !== "win32")(
         status: 1,
         stdout: "No matching handles found.\r\n",
       }));
-      expect(evidence.probeFailures).toEqual([
-        {
-          path: "held.txt",
-          code: expect.stringMatching(/^E(?:BUSY|PERM|ACCES)$/),
-        },
-      ]);
+      const failures = evidence.probeFailures as {
+        path: string;
+        code: string;
+      }[];
+      expect(failures.map((failure) => failure.path)).toEqual(["held.txt"]);
+      expect(failures[0]!.code).toMatch(/^E(?:BUSY|PERM|ACCES)$/);
     } finally {
       holder.kill();
       await closed;
