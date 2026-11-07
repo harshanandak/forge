@@ -34,7 +34,10 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
 import { RepositoryFixtures } from "./lane-fixture.ts";
-import { cleanupAttribution } from "./cleanup-attribution.ts";
+import {
+  cleanupAttribution,
+  type CleanupSleep,
+} from "./cleanup-attribution.ts";
 import { FixtureChildren } from "../fixture-children.ts";
 import { powerShellArgs } from "../powershell.ts";
 
@@ -342,13 +345,17 @@ function cleanupRoot(
   start: number,
   remove = () => rmSync(root, { recursive: true, force: true }),
   run: DiagnosticRunner = spawnSync,
+  sleep?: CleanupSleep,
 ) {
   const bin = join(root, "bin");
   if (existsSync(bin))
     expect(readdirSync(bin).filter((name) => /\.exe$/i.test(name))).toEqual([]);
   try {
     // diagnoseCleanup below already collects processes and Defender state through `run`.
-    cleanupAttribution(root, remove, run, { inspect: () => undefined });
+    cleanupAttribution(root, remove, run, {
+      inspect: () => undefined,
+      ...(sleep ? { sleep } : {}),
+    });
   } catch (error) {
     if (
       process.platform === "win32" &&
@@ -404,6 +411,8 @@ function cleanupReport(
           throw original;
         },
         run,
+        // These tests read the report, not the second attempt, so skip its 500 ms wait.
+        () => {},
       );
     } catch (error) {
       caught = error;

@@ -316,6 +316,11 @@ export function cleanupAttribution(
               : { inspected: evidence };
         // Evidence comes first so the attribution JSON stays the last line of the message.
         error.message += `\nCleanup evidence: ${serialize({ ...base, ...secondAttempt(cleanup, sleep) })}`;
+      } catch {
+        // The original cleanup error is rethrown below even if its message cannot be extended.
+      }
+      // Its own try, so a second attempt that throws still leaves the attribution line.
+      try {
         error.message += `\nCleanup attribution: ${JSON.stringify(snapshots)}`;
       } catch {
         // The original cleanup error is rethrown below even if its message cannot be extended.
