@@ -3,7 +3,10 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { environmentWithoutBun } from "../../tools/pack-smoke/environment.ts";
+import {
+  bunFreeNodeExecutable,
+  environmentWithoutBun,
+} from "../../tools/pack-smoke/environment.ts";
 import { cleanupAttribution } from "../tools/cleanup-attribution.ts";
 import { FixtureChildren } from "../fixture-children.ts";
 
@@ -13,14 +16,13 @@ test("built CLI help alias matches --help on Node without Bun or stores", async 
   const node = Bun.which("node");
   if (!node) throw new Error("Node runtime required");
   try {
-    const bin = join(root, "bin");
     const env = {
-      ...environmentWithoutBun(bin, node),
+      ...environmentWithoutBun(node),
       FORGE_DEVICE_ROOT: join(root, "device"),
     };
     const run = (args: string[]) =>
       children.run(
-        join(bin, process.platform === "win32" ? "node.exe" : "node"),
+        bunFreeNodeExecutable(node),
         [resolve("dist/bin/forge.js"), ...args],
         {
           cwd: root,
@@ -47,7 +49,7 @@ test("built CLI help alias matches --help on Node without Bun or stores", async 
       expect(actual.stdout).toBe(expected.stdout);
       expect(actual.stderr).toBe("");
     }
-    expect(readdirSync(root)).toEqual(["bin"]);
+    expect(readdirSync(root)).toEqual([]);
   } finally {
     await children.cleanup(() =>
       cleanupAttribution(root, () =>

@@ -12,7 +12,7 @@ test("the installed guide runs the shipped block and explains three manifest mis
   try {
     const node = Bun.which("node");
     if (!node) throw new Error("Node runtime required");
-    const env = environmentWithoutBun(join(scratch, "bin"), node);
+    const env = environmentWithoutBun(node);
     const result = spawnSync(
       node,
       [resolve(import.meta.dirname, "journey.mjs"), packedConsumer()],

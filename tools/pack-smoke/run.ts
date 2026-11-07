@@ -18,7 +18,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { runWithin } from "./bounded.ts";
-import { environmentWithoutBun, resolveBun } from "./environment.ts";
+import {
+  bunFreeNodeExecutable,
+  environmentWithoutBun,
+  resolveBun,
+} from "./environment.ts";
 import { packInput } from "./input.ts";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -79,12 +83,8 @@ async function main(): Promise<void> {
 
   const work = mkdtempSync(join(tmpdir(), "forge-pack-smoke-"));
   try {
-    const env = environmentWithoutBun(join(work, "bin"), process.execPath);
-    const consumerNode = join(
-      work,
-      "bin",
-      process.platform === "win32" ? "node.exe" : "node",
-    );
+    const env = environmentWithoutBun(process.execPath);
+    const consumerNode = bunFreeNodeExecutable(process.execPath);
     if (run("bun", ["--version"], root, env).error === undefined)
       fail("bun is still resolvable on PATH; the smoke must run without Bun");
     const npmCli = [
