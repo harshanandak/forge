@@ -4,32 +4,33 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The store graph is imported dynamically so the worker can report "running"
-// (barrier 6) before it pays that cold-start cost, and so the barrier 0 budget
-// only covers the store open, not thread start-up plus module loading.
+// The store graph is imported dynamically so the worker can finish loading it
+// before it reports ready (barrier 6). Thread start-up and module loading are
+// cold-start cost, not the work the test bounds, so the main thread waits for
+// barrier 6 without a numeric budget: the only bound is the 20 s spawnSync
+// timeout in the test, which kills this process if the worker never gets ready.
+// Barrier 0 (10 s) then covers only the store open up to write-pre-lock.
 const storeUrl = new URL(
   "../../../src/adapters/store-sqlite/index.ts",
   import.meta.url,
 ).href;
-const wait = (state, index, expected) => {
-  const result = Atomics.wait(state, index, expected, 10000);
+const wait = (state, index, expected, budget = 10000) => {
+  const result = Atomics.wait(state, index, expected, budget);
   assert.notEqual(result, "timed-out", `barrier ${index}`);
 };
 const signal = (state, index, value = 1) => {
   Atomics.store(state, index, value);
   Atomics.notify(state, index);
 };
-// Slot 7 counts worker milestones so the main thread can check their order.
-const milestone = (state) => Atomics.add(state, 7, 1) + 1;
 if (!isMainThread) {
   const { directory, shared, method } = workerData;
   const state = new Int32Array(shared);
-  signal(state, 6, milestone(state));
   const { createSqliteStore } = await import(storeUrl);
+  signal(state, 6);
   const opened = await createSqliteStore(directory, {
     step(step) {
       if (step === "write-pre-lock") {
-        signal(state, 0, milestone(state));
+        signal(state, 0);
         wait(state, 1, 0);
       }
       if (step === "write-lock-attempt") signal(state, 4);
@@ -96,7 +97,7 @@ if (!isMainThread) {
       );
     } else {
       const [method, boundary] = mode.split(":");
-      const state = new Int32Array(new SharedArrayBuffer(32));
+      const state = new Int32Array(new SharedArrayBuffer(28));
       let worker;
       const target = await open("live.db", {
         step(step) {
@@ -114,12 +115,8 @@ if (!isMainThread) {
       worker = new Worker(new URL(import.meta.url), {
         workerData: { directory, shared: state.buffer, method },
       });
-      wait(state, 6, 0);
+      wait(state, 6, 0, Infinity);
       wait(state, 0, 0);
-      assert.ok(
-        Atomics.load(state, 6) < Atomics.load(state, 0),
-        "worker must report running before it opens the store",
-      );
       target.restoreImage(
         image,
         () => {},
