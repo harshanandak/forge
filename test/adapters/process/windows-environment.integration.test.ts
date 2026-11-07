@@ -48,6 +48,20 @@ function expectCallerEnvironmentOnly(report: EnvironmentReport): void {
   ]);
 }
 
+function expectCmdShimRuns(report: EnvironmentReport): void {
+  // Only PATH was passed: the .cmd still starts, with cmd.exe taken from the system directory.
+  expect(report.cmdShim.exitCode).toBe(0);
+  expect(report.cmdShim.printedMarker).toBe(true);
+  // Nothing from the host reaches it: PATH and SYSTEMROOT, plus the three names cmd.exe sets itself.
+  expect(upper(report.cmdShim.names)).toEqual([
+    "COMSPEC",
+    "PATH",
+    "PATHEXT",
+    "PROMPT",
+    "SYSTEMROOT",
+  ]);
+}
+
 describe.skipIf(!windows)("windows command environment", () => {
   test("under node, only the caller's variables and SystemRoot reach the command", () => {
     expectCallerEnvironmentOnly(underNode());
@@ -55,5 +69,13 @@ describe.skipIf(!windows)("windows command environment", () => {
 
   test("under bun, only the caller's variables and SystemRoot reach the command", async () => {
     expectCallerEnvironmentOnly(await environmentReport(nodePath));
+  }, 150_000);
+
+  test("under node, a .cmd runs with only PATH in its environment", () => {
+    expectCmdShimRuns(underNode());
+  }, 150_000);
+
+  test("under bun, a .cmd runs with only PATH in its environment", async () => {
+    expectCmdShimRuns(await environmentReport(nodePath));
   }, 150_000);
 });

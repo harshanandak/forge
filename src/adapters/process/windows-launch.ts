@@ -1,5 +1,4 @@
 import { win32 } from "node:path";
-import { envValue } from "./env.ts";
 import { ProcessSpawnError } from "./errors.ts";
 import type { SpawnPlan } from "./plan.ts";
 import {
@@ -51,7 +50,10 @@ const ERRNO_FOR_WINDOWS_ERROR: Readonly<Record<number, string>> = {
   206: "ENAMETOOLONG",
 };
 const MAX_COMMAND_LINE_UNITS = 32766;
-/** libuv copies these from the parent when the caller's environment lacks them (process.c). */
+/**
+ * libuv copies these from its parent process when the caller's environment lacks them (process.c).
+ * Here "its parent" is `minimalHostEnvironment`, never the real host environment.
+ */
 const LIBUV_REQUIRED_VARIABLES = [
   "HOMEDRIVE",
   "HOMEPATH",
@@ -68,6 +70,11 @@ const LIBUV_REQUIRED_VARIABLES = [
 
 export interface LaunchOptions {
   readonly cwd: string;
+  /**
+   * The command's whole environment. Nothing is inherited from the host, with one exception: if it
+   * lacks SystemRoot, the host's SystemRoot is added, because the helper this launcher replaced did
+   * the same for every command and many Windows programs fail without it.
+   */
   readonly env: Readonly<Record<string, string>>;
   /** Defaults to true, like `windowsHide: true` in the helper. */
   readonly windowsHide?: boolean;
@@ -154,6 +161,7 @@ interface LaunchApi {
     handle: bigint,
     processId: Buffer,
   ) => number;
+  readonly getSystemDirectory: (buffer: Buffer, size: number) => number;
   readonly closeHandle: (handle: bigint) => number;
   readonly lastError: () => number;
 }
@@ -276,6 +284,12 @@ function loadLaunchApi(): LaunchApi {
         koffi.out(koffi.pointer("uint8_t")),
       ]),
     ),
+    getSystemDirectory: asNativeFunction(
+      kernel32.func("__stdcall", "GetSystemDirectoryW", "uint32_t", [
+        koffi.out(koffi.pointer("uint8_t")),
+        "uint32_t",
+      ]),
+    ),
     closeHandle,
     lastError,
   };
@@ -329,13 +343,24 @@ function upperName(name: string): string {
 }
 
 /**
+ * What the helper this launcher replaced gave libuv to copy from: its whole environment was
+ * SystemRoot. Copying from the real host environment would pass PATH, TEMP, USERPROFILE and more to
+ * a command whose caller left them out.
+ */
+function minimalHostEnvironment(): Record<string, string> {
+  return { SystemRoot: process.env.SystemRoot ?? "C:/Windows" };
+}
+
+/**
  * libuv `make_program_env`: only entries with `=`, sorted by case-insensitive name, plus the
  * required variables above copied from the parent when missing. UTF-16, NUL separated, ending
  * with an extra NUL.
  */
 export function buildWindowsEnvironmentBlock(
   env: Readonly<Record<string, string>>,
-  parent: Readonly<Record<string, string | undefined>> = process.env,
+  parent: Readonly<
+    Record<string, string | undefined>
+  > = minimalHostEnvironment(),
 ): Buffer {
   const entries = new Map<string, string>();
   // Node (lib/child_process.js, win32): sort the keys, then keep only the first of each
@@ -373,20 +398,37 @@ export function buildWindowsEnvironmentBlock(
 const ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/])/;
 
 /**
- * `lpApplicationName` must be absolute or CreateProcessW searches the working directory. The one
- * bare name the plan can produce, the cmd.exe fallback, is resolved from SystemRoot, never searched.
+ * The command interpreter for the one bare name the plan can produce, cmd.exe, taken from the
+ * trusted Windows system directory and never from the command's environment or the working folder.
  */
-function absoluteApplication(
-  file: string,
-  env: Readonly<Record<string, string>>,
-): string {
-  if (file.includes("\0")) refuse("The program path holds a NUL.");
-  let resolved = file;
-  if (file.toLowerCase() === "cmd.exe") {
-    const root = envValue(env, "SystemRoot", "win32");
-    if (root !== undefined && ABSOLUTE.test(root))
-      resolved = win32.join(root, "System32", "cmd.exe");
+function systemCommandInterpreter(): string | undefined {
+  try {
+    const buffer = Buffer.alloc(520);
+    const length = loadLaunchApi().getSystemDirectory(buffer, 260);
+    if (length > 0 && length < 260) {
+      const directory = buffer.toString("utf16le", 0, length * 2);
+      if (ABSOLUTE.test(directory)) return win32.join(directory, "cmd.exe");
+    }
+  } catch {
+    // Fall back to the host's own SystemRoot below.
   }
+  const root = process.env.SystemRoot;
+  return root !== undefined && ABSOLUTE.test(root)
+    ? win32.join(root, "System32", "cmd.exe")
+    : undefined;
+}
+
+/**
+ * `lpApplicationName` must be absolute or CreateProcessW searches the working directory. The one
+ * bare name the plan can produce, the cmd.exe fallback, is resolved from the system directory, never
+ * searched.
+ */
+function absoluteApplication(file: string): string {
+  if (file.includes("\0")) refuse("The program path holds a NUL.");
+  const resolved =
+    file.toLowerCase() === "cmd.exe"
+      ? (systemCommandInterpreter() ?? file)
+      : file;
   if (!ABSOLUTE.test(resolved))
     refuse(
       `Refusing to launch "${file}": the program path must be absolute so Windows never searches the working directory.`,
@@ -524,7 +566,7 @@ export function launchInJob(
       "CONTAINMENT_UNAVAILABLE",
       "The Windows launcher is unavailable on this platform.",
     );
-  const application = absoluteApplication(plan.file, options.env);
+  const application = absoluteApplication(plan.file);
   const commandLine = buildWindowsCommandLine(plan);
   if (commandLine.includes("\0")) refuse("The command line holds a NUL.");
   if (commandLine.length > MAX_COMMAND_LINE_UNITS)

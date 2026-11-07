@@ -1,6 +1,8 @@
 // Runs a command through the process adapter with a deliberately small environment and reports
 // which variable names reach it. The same file is the child program, and prints a report under Node.
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runProcess } from "../../../src/adapters/process/run.ts";
@@ -26,7 +28,15 @@ export interface EnvironmentReport {
   readonly withSystemRoot: readonly string[];
   /** Names the command saw when the caller left SystemRoot out. */
   readonly withoutSystemRoot: readonly string[];
+  /** A .cmd run with only PATH in its environment: whether it ran, and the names it saw. */
+  readonly cmdShim: {
+    readonly exitCode: number | null;
+    readonly printedMarker: boolean;
+    readonly names: readonly string[];
+  };
 }
+
+export const CMD_MARKER = "forge-cmd-shim-ran";
 
 const supervision = {
   cleanupTimeoutMs: 5000,
@@ -51,6 +61,40 @@ async function namesSeenBy(
   return JSON.parse(result.stdout) as string[];
 }
 
+/** With neither SystemRoot nor ComSpec in the caller's environment, a .cmd must still start. */
+async function cmdShimReport(): Promise<EnvironmentReport["cmdShim"]> {
+  const dir = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "forge-cmd-shim-")),
+  );
+  try {
+    const shim = join(dir, "marker.cmd");
+    writeFileSync(shim, `@echo ${CMD_MARKER}\r\n@set\r\n`);
+    const result = await runProcess(
+      shim,
+      [],
+      {
+        cwd: tmpdir(),
+        env: { PATH: dir },
+        timeoutMs: 30_000,
+        maxOutputBytes: 65_536,
+      },
+      "win32",
+      { supervision },
+    );
+    const names = result.stdout
+      .split(/\r?\n/)
+      .map((line) => /^([^=\s][^=]*)=/.exec(line)?.[1])
+      .filter((name): name is string => name !== undefined);
+    return {
+      exitCode: result.exitCode,
+      printedMarker: result.stdout.includes(CMD_MARKER),
+      names,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export async function environmentReport(
   nodePath: string,
 ): Promise<EnvironmentReport> {
@@ -70,6 +114,7 @@ export async function environmentReport(
         FORGE_ALLOWED: "kept",
       }),
       withoutSystemRoot: await namesSeenBy(nodePath, { FORGE_ALLOWED: "kept" }),
+      cmdShim: await cmdShimReport(),
     };
   } finally {
     delete process.env.FORGE_LEAK_SENTINEL;
