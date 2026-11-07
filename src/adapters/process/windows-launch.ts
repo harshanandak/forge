@@ -442,8 +442,9 @@ export function launchInJob(
     attributeList = list;
     // The list keeps pointers to these values, so they stay allocated until after the launch.
     const jobSlot = koffi.alloc("void *", 1);
+    allocations.push(jobSlot);
     const handleSlots = koffi.alloc("void *", nulHandles.length);
-    allocations.push(jobSlot, handleSlots);
+    allocations.push(handleSlots);
     koffi.encode(jobSlot, 0, "void *", jobHandle);
     nulHandles.forEach((handle, index) =>
       koffi.encode(handleSlots, index * size, "void *", handle),

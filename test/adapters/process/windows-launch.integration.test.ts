@@ -65,8 +65,10 @@ function expectGrandchild(report: GrandchildReport): void {
   expect(report.whileParentRuns).toContain(report.child);
   expect(report.whileParentRuns).toContain(report.grandchild);
   expect(report.parentGone).toBe(true);
+  // The parent's exit is proven by `parentGone` (an exit-code probe). The pid list is not used
+  // for it: Windows keeps an exited process listed in the job until its object is released, and
+  // other holders (the console host) can keep it, so absence from the list is not guaranteed.
   expect(report.afterParentExit).toContain(report.grandchild);
-  expect(report.afterParentExit).not.toContain(report.child);
   expect(report.stopped).toContain(report.grandchild);
   expect(report.grandchildGone).toBe(true);
 }

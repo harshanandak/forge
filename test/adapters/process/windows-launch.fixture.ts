@@ -172,9 +172,16 @@ export async function launchedCase(
     launched = launchInJob(plan, job, { cwd: dir, env: testCase.env });
     return await waitForJson<Echo>(out);
   } finally {
-    await job.stop();
-    if (launched !== undefined) closeLaunchedProcess(launched);
-    job.close();
+    // Each release step runs even if the one before it throws.
+    try {
+      await job.stop();
+    } finally {
+      try {
+        if (launched !== undefined) closeLaunchedProcess(launched);
+      } finally {
+        job.close();
+      }
+    }
   }
 }
 
