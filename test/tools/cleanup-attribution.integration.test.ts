@@ -242,19 +242,23 @@ test.skipIf(process.platform !== "win32")(
   "a large host response still gives one valid evidence line with the filters and omitted counts",
   () => {
     const missing = join(tmpdir(), `forge-large-${process.pid}-${Date.now()}`);
-    const processes = Array.from({ length: 60 }, (_, index) => ({
-      pid: 100 + index,
-      parent: 1,
-      parentName: "bun.exe",
-      name: "bun.exe",
-      command: `bun ${"x".repeat(200)}`,
-    }));
+    const processes: Record<string, unknown>[] = Array.from(
+      { length: 60 },
+      (_, index) => ({
+        pid: 100 + index,
+        parent: 1,
+        parentName: "bun.exe",
+        name: "bun.exe",
+        command: `bun ${"x".repeat(200)}`,
+      }),
+    );
     processes.push(
       {
         pid: 7,
         parent: 1,
         parentName: "bun.exe",
         name: "node.exe",
+        matchesRoot: true,
         command: missing,
       },
       {
@@ -312,6 +316,167 @@ test.skipIf(process.platform !== "win32")(
 );
 
 test.skipIf(process.platform !== "win32")(
+  "the evidence line records whether a second remove succeeds and still throws the original error",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-second-"));
+    writeFileSync(join(root, "kept.txt"), "kept");
+    const original = Object.assign(new Error("cleanup refused"), {
+      code: "EBUSY",
+      path: root,
+    });
+    let calls = 0;
+    let caught: unknown;
+    try {
+      cleanupAttribution(
+        root,
+        () => {
+          calls++;
+          if (calls === 1) throw original;
+          rmSync(root, { recursive: true, force: true });
+        },
+        () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
+        { tool: "fixture-handle", unavailable: "", inspect: () => ({}) },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(original);
+    expect(calls).toBe(2);
+    const line = original.message.split("Cleanup evidence: ")[1]!;
+    const evidence = JSON.parse(line.split("\n")[0]!) as Record<
+      string,
+      unknown
+    >;
+    expect(evidence.secondAttempt).toBe("removed");
+    expect(evidence.secondAttemptMs).toBeGreaterThanOrEqual(450);
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "a second remove that fails again records its error code",
+  () => {
+    const root = join(
+      tmpdir(),
+      `forge-second-busy-${process.pid}-${Date.now()}`,
+    );
+    const original = Object.assign(new Error("cleanup refused"), {
+      code: "EBUSY",
+      path: root,
+    });
+    let calls = 0;
+    let caught: unknown;
+    try {
+      cleanupAttribution(
+        root,
+        () => {
+          calls++;
+          throw calls === 1
+            ? original
+            : Object.assign(new Error("still refused"), { code: "EPERM" });
+        },
+        () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
+        { tool: "fixture-handle", unavailable: "", inspect: () => ({}) },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    // The first error is the one that surfaces; the second only becomes evidence.
+    expect(caught).toBe(original);
+    const line = original.message.split("Cleanup evidence: ")[1]!;
+    const evidence = JSON.parse(line.split("\n")[0]!) as Record<
+      string,
+      unknown
+    >;
+    expect(evidence.secondAttempt).toBe("EPERM");
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "the host query lists a root-named process first, flags it, and applies the cap in PowerShell",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-procs-"));
+    // The root sits past character 200 of the command line, so only a flag from PowerShell finds it.
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "console.log('ready'); setInterval(() => {}, 1000)",
+        "x".repeat(300),
+        root,
+      ],
+      { stdio: ["ignore", "pipe", "inherit"], windowsHide: true },
+    );
+    const closed = once(child, "close");
+    try {
+      await Promise.race([
+        once(child.stdout, "data"),
+        closed.then(() => {
+          throw new Error("child exited before it was ready");
+        }),
+      ]);
+      const result = spawnSync(
+        "powershell.exe",
+        powerShellArgs(HOST_EVIDENCE),
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            FORGE_CLEANUP_ROOT: root,
+            FORGE_CLEANUP_PROCESS_CAP: "1",
+          },
+          timeout: 60_000,
+          windowsHide: true,
+        },
+      );
+      expect(result.status).toBe(0);
+      const host = JSON.parse(result.stdout) as {
+        processes: { pid: number; matchesRoot?: boolean; command: string }[];
+      };
+      // With a cap of one, only a sort that runs before the cap keeps the root-named process.
+      expect(host.processes).toHaveLength(1);
+      expect(host.processes[0]!.pid).toBe(child.pid!);
+      expect(host.processes[0]!.matchesRoot).toBe(true);
+      expect(host.processes[0]!.command.length).toBeLessThanOrEqual(200);
+      expect(host.processes[0]!.command).not.toContain(root);
+    } finally {
+      child.kill();
+      await closed;
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  90_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "an evidence line that is too large still keeps the scalars and the probe results",
+  () => {
+    const root = join(tmpdir(), `forge-huge-${process.pid}-${Date.now()}`);
+    const { evidence } = refuse(
+      root,
+      () => ({ status: 1, stdout: "No matching handles found.\r\n" }),
+      () => ({
+        root,
+        rootExists: true,
+        errorIsRoot: true,
+        probeFailures: [{ path: "held.txt", code: "EBUSY" }],
+        padding: "x".repeat(20_000),
+      }),
+    );
+    expect(evidence.evidenceTooLarge).toBeGreaterThan(12_000);
+    expect(evidence).toMatchObject({
+      root,
+      rootExists: true,
+      errorIsRoot: true,
+      probeFailures: [{ path: "held.txt", code: "EBUSY" }],
+    });
+    expect(evidence.padding).toBeUndefined();
+  },
+  5_000,
+);
+
+test.skipIf(process.platform !== "win32")(
   "the probe names a holder that allows reads but denies delete sharing",
   async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-share-"));
@@ -321,7 +486,7 @@ test.skipIf(process.platform !== "win32")(
     const holder = spawn(
       "powershell.exe",
       powerShellArgs(
-        "$held = [IO.File]::Open($env:FORGE_HELD, 'Open', 'Read', 'Read'); 'ready'; Start-Sleep -Seconds 60",
+        "$held = [IO.File]::Open($env:FORGE_HELD, 'Open', 'Read', 'Read'); 'ready'; [Console]::Out.Flush(); Start-Sleep -Seconds 60",
       ),
       {
         env: { ...process.env, FORGE_HELD: path },
