@@ -18,6 +18,7 @@ beforeEach(() => {
   for (const key of MARKERS) delete process.env[key];
 });
 afterEach(async () => {
+  live.on = false;
   await h?.close();
   h = undefined;
   for (const [key, value] of saved) {
@@ -26,8 +27,10 @@ afterEach(async () => {
   }
 });
 
+/** The terminal is attended only while `live` is set, so harness setup still takes the relayed path. */
+const live = { on: false };
 const terminal = (stdin: boolean, answer: boolean) => ({
-  tty: () => ({ stdin, stderr: true }),
+  tty: () => ({ stdin: live.on && stdin, stderr: true }),
   confirm: () => Promise.resolve(answer),
 });
 
@@ -36,7 +39,9 @@ async function forget(stdin: boolean, answer: boolean) {
   const note = done(
     await h.call("memory.add", { level: "device", text: "temporary" }),
   ) as { id: string };
+  live.on = true;
   const result = await h.call("memory.forget", { id: note.id });
+  live.on = false;
   const shown = done(await h.call("memory.show", { id: note.id }));
   return { result, shown };
 }
