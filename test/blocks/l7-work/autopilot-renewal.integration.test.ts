@@ -106,9 +106,7 @@ test("a request is replaced only once it is used or expired, by the real approva
     const ask = async (): Promise<string> => {
       const bare = await h.invoke("lane.resume", scope);
       expect(bare.ok).toBe(false);
-      return String(
-        (bare.result as unknown as { request: { id: string } }).request.id,
-      );
+      return String((bare.result as { request: { id: string } }).request.id);
     };
     const record = async (request: string, replaces: string) =>
       JSON.stringify(
