@@ -24,6 +24,7 @@ import { cliTopologyFixture } from "./cli-topology-fixture.ts";
 import { RepositoryFixtures } from "./lane-fixture.ts";
 import { FixtureChildren } from "../fixture-children.ts";
 import { cleanupAttribution } from "./cleanup-attribution.ts";
+import { executablesUnder } from "./fixture-executables.ts";
 
 // The structure guard needs a numeric literal in setDefaultTimeout; keep the constant equal to it.
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -78,16 +79,25 @@ async function withEnvironment<T>(
 }
 afterEach(async () => {
   await children.cleanup(() => {
+    const executables: string[] = [];
     for (const root of roots.splice(0)) {
       const calls = join(root, "issue-calls");
       if (existsSync(calls))
         avoidedIssueChildren += readFileSync(calls, "utf8")
           .trim()
           .split("\n").length;
+      // The root is still removed first; the violation is reported after every root is gone.
+      executables.push(
+        ...executablesUnder(root).map((path) => join(root, path)),
+      );
       cleanupAttribution(root, () =>
         rmSync(root, { recursive: true, force: true }),
       );
     }
+    if (executables.length)
+      throw new Error(
+        `A per-test root held an executable (a runner scan can hold it and fail the removal with EBUSY): ${executables.join(", ")}`,
+      );
   });
 });
 afterAll(() => {
