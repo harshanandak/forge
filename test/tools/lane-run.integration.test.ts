@@ -2590,26 +2590,45 @@ function detachProbe(f: ReturnType<typeof autoFixture>, handoff = "") {
 
 test("detach validates child issue lookup taking longer than five seconds", async () => {
   const f = autoFixture("auto-clean"),
+    probe = detachProbe(f),
     forge = join(f.root, "fake-forge.mjs"),
+    // Windows: the fixture job owns the chain and ends it atomically in afterEach,
+    // because killing by pid races the lane spawns that start when validation ends.
+    // Elsewhere there is no job, so the test ends the process group and waits.
+    jobOwned = process.platform === "win32",
     started = Date.now();
   writeFileSync(
     forge,
-    `await new Promise(done=>setTimeout(done,5500));${readFileSync(forge, "utf8")}`,
+    `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(f.root, "startup-pid"))},String(process.pid));await new Promise(done=>setTimeout(done,5500));${readFileSync(forge, "utf8")}`,
   );
-  // The detached chain starts spawning lane processes as soon as validation ends,
-  // so killing it by pid races those spawns. The fixture job ends it atomically.
-  const result = await f.launch(
-    script,
-    false,
-    ["auto", "one", "--detach"],
-    true,
-  );
-  expect(result.code).toBe(0);
-  expect(result.output).toMatchObject({
-    outcome: "detached",
-    validated: true,
-  });
-  expect(Date.now() - started).toBeGreaterThan(5_000);
+  try {
+    const result = await f.launch(
+      probe.helper,
+      false,
+      ["auto", "one", "--detach"],
+      jobOwned,
+    );
+    expect(result.code).toBe(0);
+    expect(result.output).toMatchObject({
+      outcome: "detached",
+      validated: true,
+    });
+    expect(Date.now() - started).toBeGreaterThan(5_000);
+  } finally {
+    if (!jobOwned) {
+      // The slow issue lookup is a second process of the detached tree. Both must
+      // exit before afterEach removes the root.
+      const tree = [probe.pid()];
+      const startupPid = join(f.root, "startup-pid");
+      if (existsSync(startupPid))
+        tree.push(Number(readFileSync(startupPid, "utf8")));
+      for (const pid of tree) killFixture(pid, true);
+      await waitForProcess("detached process tree exit", () =>
+        tree.every((pid) => !alive(pid)),
+      );
+      expect(tree.filter(alive)).toEqual([]);
+    }
+  }
 });
 
 test.skipIf(process.platform !== "win32")(
