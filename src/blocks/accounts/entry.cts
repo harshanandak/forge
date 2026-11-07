@@ -526,23 +526,23 @@ async function contact(
       : [];
   };
   const idle = { ok: true, text: "", raw: "", error: "" };
-  // The account listing and the git reads do not depend on each other, so they start together.
-  const [candidates, unpushed, identityRows, recentRows] = discover
-    ? await Promise.all([
-        detect(),
-        history(),
-        g(
-          [
-            "config",
-            "--show-origin",
-            "--get-regexp",
-            "^(user\\.email|includeif\\.)",
-          ],
-          true,
-        ),
-        g(["log", "-20", "--format=%ae%x00%ce"], true),
-      ])
-    : [[] as Candidate[], [] as Unpushed[], idle, idle];
+  // The process supervisor caps concurrent children, so these run one after another.
+  const candidates = discover ? await detect() : [];
+  const unpushed = discover ? await history() : [];
+  const identityRows = discover
+    ? await g(
+        [
+          "config",
+          "--show-origin",
+          "--get-regexp",
+          "^(user\\.email|includeif\\.)",
+        ],
+        true,
+      )
+    : idle;
+  const recentRows = discover
+    ? await g(["log", "-20", "--format=%ae%x00%ce"], true)
+    : idle;
   if (
     discover &&
     selected &&
@@ -577,22 +577,16 @@ async function contact(
   // `use` with a named login does not need every account's push permission; skipping the
   // lookups saves two gh processes per signed-in account.
   const permissionsChecked = !(action === "use" && input.login);
-  if (match && !selected && permissionsChecked) {
-    // One lookup per signed-in account; they are independent, so they start together.
-    const rows = await Promise.all(
-      candidates.map((c) =>
-        api(c.login, [`repos/${match[1]}/${match[2]}`], true),
-      ),
-    );
-    rows.forEach((row, index) => {
+  if (match && !selected && permissionsChecked)
+    for (const c of candidates) {
+      const row = await api(c.login, [`repos/${match[1]}/${match[2]}`], true);
       const push = row.ok
         ? json<{ permissions?: { push?: boolean } }>(row.text, {}).permissions
             ?.push
         : undefined;
-      if (push === true) pushers.push(candidates[index]!.login);
+      if (push === true) pushers.push(c.login);
       else if (push === false) denied++;
-    });
-  }
+    }
   const byEmail = emailMatches.filter(
     (c) => !pushers.length || pushers.includes(c.login),
   );
@@ -782,11 +776,8 @@ async function contact(
       };
       if (/[\r\n\0]/.test(account.commitName))
         refuse("INPUT_INVALID", "Invalid GitHub commit name");
-      // The token proof and the email list are independent reads; the proof is judged first.
-      const [, page] = await Promise.all([
-        confirmToken(account),
-        api(login, ["user/emails", "--paginate"], true),
-      ]);
+      await confirmToken(account);
+      const page = await api(login, ["user/emails", "--paginate"], true);
       // Every page must succeed; a partial list is never accepted.
       if (!page.ok && page.text.startsWith("["))
         refuse(
