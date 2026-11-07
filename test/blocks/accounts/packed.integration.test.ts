@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -33,7 +34,64 @@ type Audit = {
   kind: string;
   repo: string;
   approval?: { quote: string; source: string };
+  ask?: string;
 };
+
+let template: string | undefined;
+// The shared starting clone: one commit by alice, origin set, accounts block configured.
+function baseClone() {
+  if (template) return template;
+  const dir = mkdtempSync(join(tmpdir(), "forge-accounts-template-"));
+  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "clone");
+  mkdirSync(path);
+  const config = join(dir, "gitconfig");
+  writeFileSync(config, "");
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] =>
+        entry[1] !== undefined && !entry[0].toUpperCase().startsWith("GIT_"),
+    ),
+  );
+  Object.assign(env, {
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: config,
+    HOME: dir,
+    USERPROFILE: dir,
+  });
+  const git = (...args: string[]) => {
+    const out = spawnSync("git", args, {
+      cwd: path,
+      env,
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    expect(out.status, out.stderr).toBe(0);
+  };
+  git("init", "-b", "main");
+  git("remote", "add", "origin", "https://github.com/alice/app.git");
+  git(
+    "-c",
+    "user.name=Alice",
+    "-c",
+    "user.email=101+alice@users.noreply.github.com",
+    "commit",
+    "--allow-empty",
+    "-m",
+    "base",
+  );
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  mkdirSync(join(path, ".forge"));
+  writeFileSync(
+    join(path, ".forge/config.yaml"),
+    JSON.stringify({
+      schemaVersion: "forge.config/1",
+      blocks: { accounts: { source: { builtin: "forge/accounts" } } },
+    }),
+  );
+  template = path;
+  return path;
+}
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), "forge-accounts-"));
@@ -84,15 +142,14 @@ if (a[0] === 'api') {
   process.stderr.write('debug ' + e.GH_TOKEN + '\\n');
   const route = a[1];
   let m;
-  if (route === 'user') console.log(JSON.stringify({ login: flag('swapped') ? 'mallory' : who, id: ids[who] }));
+  if (route === 'user') console.log(JSON.stringify({ login: flag('swapped') ? 'mallory' : who, id: ids[who], name: who + (flag('renamed') ? ' updated' : '') + (who === 'constructor' && flag('leaky') ? ' ' + e.GH_TOKEN : '') }));
   else if (route === 'user/emails' && a.includes('--paginate')) {
     if (flag('emailscope')) { fs.writeSync(1, JSON.stringify({ message: 'Not Found', status: '404' }) + '\\n'); process.exit(1); }
-    const page = JSON.stringify([{ email: ids[who] + '+' + who + '@users.noreply.github.com', primary: true, verified: true }]);
+    const page = JSON.stringify([{ email: ids[who] + '+' + who + '@users.noreply.github.com', primary: true, verified: true }].concat(flag('emaillisted') ? [{ email: who + '@example.test', primary: false, verified: true }] : []));
     if (flag('emailpage2')) { fs.writeSync(1, page + '\\n'); process.exit(1); }
     console.log(page);
   }
   else if ((m = /^repos\\/([^/]+)\\/([^/]+)$/.exec(route))) console.log(JSON.stringify({ permissions: { push: who === m[1] || (m[1] === 'org' && who === 'bob') } }));
-  else if ((m = /^users\\/(alice|bob|constructor)$/.exec(route))) console.log(JSON.stringify({ id: ids[m[1]], name: m[1] + (flag('renamed') ? ' updated' : '') + (m[1] === 'constructor' && flag('leaky') ? ' ' + e.GH_TOKEN : '') }));
   else process.exit(8);
 } else if (a[0] === 'auth' && a[1] === 'token') {
   if (e.GH_TOKEN || e.GH_HOST || a.join(' ').indexOf('--hostname github.com --user ') < 0) process.exit(9);
@@ -145,7 +202,7 @@ if (a[0] === 'api') {
       counts[line] = (counts[line] ?? 0) + 1;
     return counts;
   }
-  // The accounts block starts its git processes with -c core.fsmonitor=false; Forge's own git calls do not.
+  // The accounts block starts its git processes with -c core.fsmonitor=false, except `git var`; Forge's own git calls carry neither.
   function gitCalls() {
     const counts: Record<string, number> = {};
     for (const line of (existsSync(gitTrace)
@@ -156,9 +213,13 @@ if (a[0] === 'api') {
       .filter(Boolean)) {
       const event = JSON.parse(line) as { event: string; argv?: string[] };
       const argv = event.argv?.slice(1) ?? [];
-      if (event.event !== "start" || argv[1] !== "core.fsmonitor=false")
-        continue;
-      const verb = argv.slice(2).find((arg) => !arg.startsWith("-")) ?? "";
+      if (event.event !== "start") continue;
+      // The identity probes run `git var` with the caller's environment and carry no -c flag.
+      const owned = argv[1] === "core.fsmonitor=false";
+      if (!owned && argv[0] !== "var") continue;
+      const verb = owned
+        ? (argv.slice(2).find((arg) => !arg.startsWith("-")) ?? "")
+        : "var";
       counts[verb] = (counts[verb] ?? 0) + 1;
     }
     return counts;
@@ -191,31 +252,10 @@ if (a[0] === 'api') {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Audit);
+  // Every test gets its own fresh copy of one clone built once per file: five git starts each otherwise.
   function clone(name: string) {
     const path = join(root, name);
-    mkdirSync(path);
-    git(path, "init", "-b", "main");
-    git(path, "remote", "add", "origin", "https://github.com/alice/app.git");
-    git(
-      path,
-      "-c",
-      "user.name=Alice",
-      "-c",
-      "user.email=101+alice@users.noreply.github.com",
-      "commit",
-      "--allow-empty",
-      "-m",
-      "base",
-    );
-    git(path, "update-ref", "refs/remotes/origin/main", "HEAD");
-    mkdirSync(join(path, ".forge"));
-    writeFileSync(
-      join(path, ".forge/config.yaml"),
-      JSON.stringify({
-        schemaVersion: "forge.config/1",
-        blocks: { accounts: { source: { builtin: "forge/accounts" } } },
-      }),
-    );
+    cpSync(baseClone(), path, { recursive: true });
     return path;
   }
   function emptyClone(name: string, remote: string) {
@@ -931,26 +971,14 @@ test("installed accounts: gh output is validated strictly before it is trusted",
       cli(fresh("multi-line-token"), "use", { login: "alice", approval }),
     ).toMatchObject({ ok: false, error: { code: "ACCOUNT_VERIFY_FAILED" } });
     rmSync(join(bin, "multiline"));
-    writeFileSync(join(bin, "emailpage2"), "");
-    const partial = cli(fresh("email-page-two"), "use", {
-      login: "alice",
-      approval,
-    });
-    expect(partial).toMatchObject({
-      ok: false,
-      error: { code: "ACCOUNT_VERIFY_FAILED" },
-    });
-    expect(partial.error.message).toContain("email");
-    rmSync(join(bin, "emailpage2"));
+    // A noreply-only account never reads the email list, so a broken list cannot block it.
     writeFileSync(join(bin, "emailscope"), "");
-    const degraded = cli(fresh("email-scope"), "use", {
+    const noreply = cli(fresh("email-scope"), "use", {
       login: "alice",
       approval,
     });
-    expect(degraded.ok, JSON.stringify(degraded)).toBe(true);
-    expect((degraded.result as { emails?: string }).emails).toBe(
-      "noreply-only",
-    );
+    expect(noreply.ok, JSON.stringify(noreply)).toBe(true);
+    expect((noreply.result as { emails?: string }).emails).toBe("noreply-only");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1013,7 +1041,7 @@ test("installed accounts: a gh config planted in the clone has no effect on toke
   }
 }, 120_000);
 
-test("installed accounts: use with a named login starts one gh token lookup and no permission lookups", () => {
+test("installed accounts: use with a named login starts one token lookup and one api user call", () => {
   const { root, cli, clone, ghCalls } = setup();
   try {
     const repo = clone("few-gh-calls");
@@ -1021,46 +1049,61 @@ test("installed accounts: use with a named login starts one gh token lookup and 
     const used = cli(repo, "use", { login: "alice", approval });
     expect(used.ok, JSON.stringify(used)).toBe(true);
     // Each gh process is a cmd.exe and node start on Windows, so the count is the user-facing cost.
-    expect(ghCalls()).toEqual({
-      "auth status": 1,
-      "auth token": 1,
-      "api users/alice": 1,
-      "api user": 1,
-      "api user/emails": 1,
-    });
+    // One api user call proves the token's login and id and supplies the name; the generated
+    // noreply address needs no email listing, and a named login needs no account listing.
+    expect(ghCalls()).toEqual({ "auth token": 1, "api user": 1 });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }, 120_000);
 
 test("installed accounts: plan, use and check on a bound clone start only the processes their checks need", () => {
-  const { root, cli, clone, ghCalls, gitCalls, resetCalls } = setup();
+  const { root, cli, clone, git, ghCalls, gitCalls, resetCalls } = setup();
   try {
     const approval = { quote: "yes", source: "t3:fixture/message:counts" };
     const first = clone("counts-first");
-    // Unbound plan: one account listing, then a token lookup and a permission lookup per signed-in account.
+    // Unbound plan on a remote a signed-in account owns: one account listing; the owner is the pick, so no token or permission lookups.
     resetCalls();
     expect(cli(first, "plan").ok).toBe(true);
+    expect(ghCalls()).toEqual({ "auth status": 1 });
+    // The origin url, the unpushed commits, the git identities and the recent authors; no common-dir lookup for a github.com origin.
+    expect(gitCalls()).toEqual({ remote: 1, log: 2, config: 1 });
+    // No signed-in account owns this remote: a token lookup and a permission lookup per signed-in account.
+    const ghost = clone("counts-ghost");
+    git(
+      ghost,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/ghost/app.git",
+    );
+    resetCalls();
+    expect(cli(ghost, "plan").ok).toBe(true);
     expect(ghCalls()).toEqual({
       "auth status": 1,
       "auth token": 3,
       "api repos/x/y": 3,
     });
-    // The origin url, the unpushed commits, the git identities and the recent authors; no common-dir lookup for a github.com origin.
-    expect(gitCalls()).toEqual({ remote: 1, log: 2, config: 1 });
+    // Unbound use with a named login: the token proof alone. The token lookup shows the login is signed
+    // in, so no account listing; the email listing is only for a custom commit email.
+    resetCalls();
     expect(cli(first, "use", { login: "alice", approval }).ok).toBe(true);
+    expect(ghCalls()).toEqual({ "auth token": 1, "api user": 1 });
+    // The git reads still feed the unpushed-commit and email hazards: the origin url, the unpushed commits,
+    // the identities and the recent authors, the identity check, and the two `git var` probes.
+    expect(gitCalls()).toEqual({ remote: 1, log: 2, config: 2, var: 2 });
     const second = clone("counts-second");
     // Bound plan: one account listing and no token or permission lookups.
     resetCalls();
     expect(cli(second, "plan").ok).toBe(true);
     expect(ghCalls()).toEqual({ "auth status": 1 });
     // The second config call is the identity check: one read of name, email and useConfigOnly.
-    expect(gitCalls()).toEqual({ remote: 1, log: 2, config: 2 });
+    expect(gitCalls()).toEqual({ remote: 1, log: 2, config: 2, var: 2 });
     // Bound use: the token proof and the one identity read; the account listing and the git discovery only feed a question it never asks.
     resetCalls();
     expect(cli(second, "use", { login: "alice", approval }).ok).toBe(true);
     expect(ghCalls()).toEqual({ "auth token": 1, "api user": 1 });
-    expect(gitCalls()).toEqual({ remote: 1, config: 1 });
+    expect(gitCalls()).toEqual({ remote: 1, config: 1, var: 2 });
     // Check never calls gh: the origin url, the shallow and tip lookup in one call, and the log.
     resetCalls();
     const checked = cli(second, "check");
@@ -1095,6 +1138,16 @@ test("installed accounts: a clone cannot spoof the approved identity with an emp
       ok: false,
       error: { code: "ACCOUNT_INTEGRITY" },
     });
+    // Git reads any nonzero integer as true and 0 as false.
+    const numeric = clone("spoof-numeric");
+    expect(cli(numeric, "use", { login: "alice", approval }).ok).toBe(true);
+    git(numeric, "config", "user.useConfigOnly", "2");
+    expect(cli(numeric, "use", { login: "alice", approval }).ok).toBe(true);
+    git(numeric, "config", "user.useConfigOnly", "0");
+    expect(cli(numeric, "use", { login: "alice", approval })).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_INTEGRITY" },
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1112,6 +1165,100 @@ test("installed accounts: a bound use refuses when the bound login is signed out
     expect(
       cli(clone("signedout-second"), "use", { login: "alice", approval }),
     ).toMatchObject({ ok: false, error: { code: "ACCOUNT_VERIFY_FAILED" } });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: use with a login gh holds no token for refuses before it binds anything", () => {
+  const { root, cli, clone } = setup();
+  try {
+    const approval = { quote: "yes", source: "t3:fixture/message:unknown" };
+    // The token lookup is the only proof that the login is signed in; it needs no account listing.
+    expect(
+      cli(clone("no-token"), "use", { login: "carol", approval }),
+    ).toMatchObject({ ok: false, error: { code: "ACCOUNT_VERIFY_FAILED" } });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a custom commit email is bound only when GitHub lists it", () => {
+  const { root, home, bin, cli, clone } = setup();
+  try {
+    const approval = { quote: "yes", source: "t3:fixture/message:custom" };
+    expect(
+      cli(clone("custom-first"), "use", { login: "alice", approval }).ok,
+    ).toBe(true);
+    // Give the stored account a second commit email, as a hand-edited accounts file would.
+    const dir = join(home, ".forge/accounts");
+    const accounts = JSON.parse(
+      readFileSync(join(dir, "accounts.json"), "utf8"),
+    ) as Record<string, { commitEmails: string[] }>;
+    accounts.alice!.commitEmails.push("alice@example.test");
+    writeFileSync(join(dir, "accounts.json"), JSON.stringify(accounts));
+    writeFileSync(join(dir, "bindings.json"), "{}");
+    const unlisted = cli(clone("custom-unlisted"), "use", {
+      login: "alice",
+      approval,
+    });
+    expect(unlisted).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_VERIFY_FAILED" },
+    });
+    expect(unlisted.error.message).toContain("alice@example.test");
+    writeFileSync(join(bin, "emailpage2"), "");
+    const partial = cli(clone("custom-page-two"), "use", {
+      login: "alice",
+      approval,
+    });
+    expect(partial).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_VERIFY_FAILED" },
+    });
+    expect(partial.error.message).toContain("email");
+    rmSync(join(bin, "emailpage2"));
+    writeFileSync(join(bin, "emailscope"), "");
+    const scoped = cli(clone("custom-scope"), "use", {
+      login: "alice",
+      approval,
+    });
+    expect(scoped).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_VERIFY_FAILED" },
+    });
+    expect(scoped.error.message).toContain("user:email");
+    rmSync(join(bin, "emailscope"));
+    writeFileSync(join(bin, "emaillisted"), "");
+    const listed = cli(clone("custom-listed"), "use", {
+      login: "alice",
+      approval,
+    });
+    expect(listed.ok, JSON.stringify(listed)).toBe(true);
+    expect((listed.result as { emails?: string }).emails).toBe("listed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a named-login use still records the unpushed-commit and email hazards", () => {
+  const { root, cli, clone, git, readAudit } = setup();
+  try {
+    const repo = clone("named-hazards");
+    git(repo, "config", "user.email", "202+bob@users.noreply.github.com");
+    git(repo, "-c", "user.name=Bob", "commit", "--allow-empty", "-m", "wrong");
+    const wrong = git(repo, "rev-parse", "HEAD");
+    const approval = { quote: "yes", source: "t3:fixture/message:hazards" };
+    const used = cli(repo, "use", { login: "alice", approval });
+    expect(used.ok, JSON.stringify(used)).toBe(true);
+    const ask = readAudit().find(
+      (row) => row.id === used.result.appliedFrom,
+    )?.ask;
+    expect(ask).toContain(wrong);
+    expect(ask).toContain("unpushed");
+    expect(ask).toContain("202+bob@users.noreply.github.com");
+    // Only gh's account listing is skipped, so no active-account hazard is computed.
+    expect(ask).not.toContain("signed in as");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
