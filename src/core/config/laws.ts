@@ -42,9 +42,9 @@ export function schemaDeclares(
   if (segments.length === 0 || schema === true) return true;
   if (!isObject(schema)) return false;
   const [head, ...rest] = segments as [string, ...string[]];
-  const alternatives = ["oneOf", "anyOf", "allOf"].flatMap((key) => {
-    const found = schema[key];
-    return Array.isArray(found) ? found : [];
+  const alternatives = ["oneOf", "anyOf", "allOf"].flatMap((key): unknown[] => {
+    const found: unknown = schema[key];
+    return Array.isArray(found) ? (found as unknown[]) : [];
   });
   if (alternatives.some((alt) => schemaDeclares(alt, segments))) return true;
   const { properties, items, additionalProperties } = schema;
@@ -241,15 +241,10 @@ export function createLaws(
   return {
     check() {
       const shown = config.show();
-      const excluded = new Set(shown.excluded.flatMap((e) => e.problems));
-      const problems = [
-        // a config file that cannot be read at all, then the parts of it that are not valid; a
-        // problem at the document root or in the laws section means the laws were not read
-        ...shown.problems.filter((p) => !excluded.has(p)),
-        ...shown.excluded
-          .filter((e) => e.pointer === "" || e.pointer === "/laws")
-          .flatMap((e) => e.problems),
-      ];
+      // Judging values from a config the system treats as invalid could pass a law the real
+      // config does not satisfy, so any unusable part (an unreadable file, an invalid
+      // document or laws section, an invalid block) is a problem, never an empty or clean pass.
+      const problems = [...shown.problems];
       const section = shown.effective.laws;
       const stated = (isObject(section) ? Object.entries(section) : [])
         .filter((entry): entry is [string, JsonObject] => isObject(entry[1]))

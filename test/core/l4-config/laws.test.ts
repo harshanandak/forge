@@ -412,7 +412,7 @@ test("a config without laws gives an empty report and changes nothing", () => {
   expect(configured.config.show().revision).toBe(revision);
 });
 
-test("the schema accepts a well-formed law and rejects an unknown key, a bad point or a bad condition", () => {
+test("the schema accepts a well-formed law and rejects an unknown key, a malformed point name or a bad condition", () => {
   const document = (laws: unknown) => ({
     schemaVersion: "forge.config/1",
     blocks: {},
@@ -423,9 +423,18 @@ test("the schema accepts a well-formed law and rejects an unknown key, a bad poi
     true,
   );
   expect(validateConfigDocument(document({})).ok).toBe(true);
+  // core keeps no list of points: any well-formed name is accepted, and a block decides if it is enforced
+  for (const point of ["deploy", "push", "a1-b2"])
+    expect(
+      validateConfigDocument(document({ "any-point": { ...good, at: point } }))
+        .ok,
+      point,
+    ).toBe(true);
   for (const bad of [
     { ...good, extra: true },
-    { ...good, at: "deploy" },
+    { ...good, at: "Bad Point!" },
+    { ...good, at: "" },
+    { ...good, at: "has_underscore" },
     { says: "no point", requires: good.requires },
     { says: "", at: "merge", requires: good.requires },
     { ...good, requires: {} },
@@ -532,22 +541,22 @@ test("a block manifest may declare the points it enforces, and nothing else abou
     );
 });
 
-test("a config whose document cannot be used never reports an empty pass", () => {
+test("a config with an unusable part never reports a pass", () => {
   const p = makeProject();
   open.push(p);
   mkdirSync(join(p.root, ".forge"));
-  // no `blocks`: a problem at the document root, so the whole document is left out
+  // a wrong schemaVersion: the laws read fine, but the document is not one Forge accepts
   writeFileSync(
     join(p.root, ".forge/config.yaml"),
     JSON.stringify({
-      schemaVersion: "forge.config/1",
+      schemaVersion: "forge.config/9",
+      blocks: {},
       laws: {
-        ok: law("merge", { "check.gate.receiptChecks": { nonEmpty: true } }),
+        ok: law("merge", { "check.gate.receiptChecks": { nonEmpty: false } }),
       },
     }),
   );
-  const report = check(p);
-  expect(report.laws).toEqual([]);
+  const report = check(p, [CHECK_ENFORCES]);
   expect(report.verdict).toBe("FAIL");
   expect(report.problems.length).toBeGreaterThan(0);
 });

@@ -1,10 +1,11 @@
 // `forge laws check` through the real assembly: the report is the result, and the exit code follows
 // the other report operations: 0 when every law is enforced, 1 when a law is broken or the laws
 // section is malformed, 2 when a law is written down but nothing enforces it.
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { blockCapture } from "../../src/assembly/capture.ts";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
 import { runCli } from "../../src/surface/cli.ts";
 
@@ -28,6 +29,23 @@ async function run(laws: unknown, checkBlock: Record<string, unknown> = {}) {
     laws,
   });
   writeFileSync(join(root, ".forge/config.yaml"), text);
+  // The source tree has no built entry.cjs, so without a built package the check block would be
+  // unavailable; stub only that file, as the other assembly tests do. Everything else is real,
+  // including the manifest's `enforces` and the block's config schema.
+  const open = blockCapture.open.bind(blockCapture);
+  const capture = spyOn(blockCapture, "open").mockImplementation((path) => {
+    const handle = open(path);
+    return {
+      ...handle,
+      value: {
+        ...handle.value,
+        read: (name, budget) =>
+          name.endsWith(".cjs")
+            ? new TextEncoder().encode("module.exports={};")
+            : handle.value.read(name, budget),
+      },
+    };
+  });
   const assembly = await createAssembly({
     root,
     deviceRoot: join(root, "device"),
@@ -41,6 +59,7 @@ async function run(laws: unknown, checkBlock: Record<string, unknown> = {}) {
     );
   } finally {
     await assembly.close();
+    capture.mockRestore();
     rmSync(root, { recursive: true, force: true });
   }
 }

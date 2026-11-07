@@ -223,7 +223,8 @@ declare is ignored by the block, so a law on it is never enforced). A disabled, 
 are unenforced. Each reason names the pointer,
 the condition, the actual value and where it came from. It reads only. The exit
 code is 0 when all laws are enforced, 2 when one is unenforced, and 1 when one is
-broken or the laws section is malformed. Broken or malformed wins: with one broken
+broken or the config has an unusable part (an unreadable file, an invalid laws section
+or block). Broken or invalid wins: with one broken
 law and one unenforced law the exit code is 1. A law that fails the schema (an
 unknown key, a bad `at` name, a bad condition) rejects the whole `laws` section, so no
 law in it is checked and the report carries the problem instead.
