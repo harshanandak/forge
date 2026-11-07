@@ -86,7 +86,11 @@
           "type": "array",
           "default": ["node_modules/", "dist/"],
           "maxItems": 64,
-          "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
         },
         "base": {
           "type": "string",
@@ -95,14 +99,18 @@
           "description": "Origin branch to fetch. Omitted: origin HEAD, falling back to main."
         },
         "autopilot": {
-          "description": "Post-merge steps for lane next. receiptChecks lists the checks run at the merge commit; rebuild is the runtime rebuild command and has no default.",
+          "description": "Autopilot limits and post-merge steps for lane next. enabled false makes every lane next return pause. budgets are per lane; load limits show as a hold in lane status; the hold is advisory and does not yet stop lane start. receiptChecks lists the checks run at the merge commit; rebuild is the runtime rebuild command and has no default.",
           "type": "object",
           "properties": {
             "receiptChecks": {
               "type": "array",
               "uniqueItems": true,
               "maxItems": 256,
-              "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
             },
             "rebuild": {
               "type": "object",
@@ -117,6 +125,53 @@
                     "minLength": 1,
                     "maxLength": 4096
                   }
+                }
+              },
+              "additionalProperties": false
+            },
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "budgets": {
+              "type": "object",
+              "properties": {
+                "calls": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 20
+                },
+                "reviewRounds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 2
+                },
+                "ciFixRounds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 3
+                },
+                "activeHours": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "default": 8
+                }
+              },
+              "additionalProperties": false
+            },
+            "load": {
+              "type": "object",
+              "properties": {
+                "minFreeMemoryMb": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 2048
+                },
+                "maxCpuPercent": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100,
+                  "default": 85
                 }
               },
               "additionalProperties": false

@@ -48,6 +48,17 @@ type WorkConfig = {
     readonly base?: string;
     readonly discardIgnored?: readonly string[];
     readonly autopilot?: {
+      readonly enabled?: boolean;
+      readonly budgets?: {
+        readonly calls?: number;
+        readonly reviewRounds?: number;
+        readonly ciFixRounds?: number;
+        readonly activeHours?: number;
+      };
+      readonly load?: {
+        readonly minFreeMemoryMb?: number;
+        readonly maxCpuPercent?: number;
+      };
       readonly receiptChecks?: readonly string[];
       readonly rebuild?: { readonly argv: readonly string[] };
     };
@@ -115,6 +126,35 @@ type CloseLaneInput = ItemRef & {
   discardIgnored?: boolean;
 };
 type TailInput = ItemRef & { pr?: number; head?: string };
+type NextInput = {
+  readonly id?: string;
+  readonly all?: boolean;
+  readonly pr?: number;
+  readonly head?: string;
+};
+type StopInput = { readonly id?: string; readonly all?: boolean };
+type ResumeInput = StopInput & {
+  readonly approval?: { readonly quote?: string };
+};
+type Usage = { used: number; limit: number };
+type LaneRow = {
+  id: string;
+  step: string;
+  pr?: number;
+  stopped: boolean;
+  calls: Usage;
+  activeHours: Usage;
+  rounds: { review: Usage; ci: Usage };
+};
+type Load = { freeMemoryMb: number; cpuBusyPercent: number };
+type LaneStatus = {
+  enabled: boolean;
+  stopped: boolean;
+  stoppedLanes: string[];
+  hold?: string;
+  load?: Load;
+  lanes: LaneRow[];
+};
 type TailRecordInput = ItemRef & { action: number; result: string };
 type TailAction = {
   lane: string;
@@ -129,7 +169,13 @@ type TailAction = {
   raw?: string;
 };
 type WorkOperations = TrackerOperations<"issue"> & {
-  readonly "lane.next": readonly [TailInput, TailAction];
+  readonly "lane.next": readonly [
+    NextInput,
+    TailAction | { actions: TailAction[] },
+  ];
+  readonly "lane.stop": readonly [StopInput, { stopped: string; at: string }];
+  readonly "lane.resume": readonly [ResumeInput, { resumed: string }];
+  readonly "lane.status": readonly [Record<string, never>, LaneStatus];
   readonly "lane.record": readonly [
     TailRecordInput,
     { lane: string; step: string; n: number; recorded: true },
@@ -915,7 +961,7 @@ async function readPull(
     url: row.url,
   };
 }
-async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
+async function tailNext(call: HandlerCall<TailInput>): Promise<TailAction> {
   const { input, services, config } = call;
   const state = client(services),
     ids = idsFor(state, config),
@@ -1312,6 +1358,473 @@ async function laneNext(call: HandlerCall<TailInput>): Promise<TailAction> {
     budget: { ...journal.counters },
   };
 }
+/*
+ * Lane autopilot guardrails (forge-885 S2). Every limit is config with a default. `lane.next`
+ * checks the switch, the stop flag and the lane's budgets before it reads anything, and a lane
+ * it cannot decide pauses. The global state lives at `autopilot:global`.
+ */
+type GlobalState = {
+  stopAll?: string;
+  stopped: Record<string, string>;
+  resumed?: { at: string; scope: string; quote?: string };
+};
+const GLOBAL = "autopilot:global";
+const DEFAULT_LIMITS = {
+  calls: 20,
+  reviewRounds: 2,
+  ciFixRounds: 3,
+  activeHours: 8,
+  minFreeMemoryMb: 2048,
+  maxCpuPercent: 85,
+  lanes: 3,
+};
+function limitsOf(config: unknown) {
+  const lanes = (config as WorkConfig | undefined)?.lanes;
+  const settings = lanes?.autopilot;
+  return {
+    enabled: settings?.enabled !== false,
+    calls: settings?.budgets?.calls ?? DEFAULT_LIMITS.calls,
+    reviewRounds:
+      settings?.budgets?.reviewRounds ?? DEFAULT_LIMITS.reviewRounds,
+    ciFixRounds: settings?.budgets?.ciFixRounds ?? DEFAULT_LIMITS.ciFixRounds,
+    activeHours: settings?.budgets?.activeHours ?? DEFAULT_LIMITS.activeHours,
+    minFreeMemoryMb:
+      settings?.load?.minFreeMemoryMb ?? DEFAULT_LIMITS.minFreeMemoryMb,
+    maxCpuPercent:
+      settings?.load?.maxCpuPercent ?? DEFAULT_LIMITS.maxCpuPercent,
+    lanes: lanes?.max ?? DEFAULT_LIMITS.lanes,
+  };
+}
+type Limits = ReturnType<typeof limitsOf>;
+/** A stored autopilot record that is present but unreadable. Only an absent record gets defaults. */
+class StateProblem extends Error {
+  readonly global: boolean;
+  constructor(what: string, global = false) {
+    super(`Stored autopilot state is malformed: ${what}`);
+    this.global = global;
+  }
+}
+const isTime = (value: unknown): value is string =>
+  typeof value === "string" && Number.isFinite(Date.parse(value));
+const isCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0;
+const isMap = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+function readGlobal(state: LeaseStateClient): {
+  value: GlobalState;
+  revision: number;
+} {
+  const record = state.get(GLOBAL);
+  if (!record) return { value: { stopped: {} }, revision: 0 };
+  const value = record.value as Record<string, unknown> | null;
+  if (!isMap(value))
+    throw new StateProblem("autopilot:global is not an object", true);
+  const { stopAll, stopped, resumed } = value;
+  if (stopAll !== undefined && !isTime(stopAll))
+    throw new StateProblem("autopilot:global stopAll is not a time", true);
+  if (!isMap(stopped) || !Object.values(stopped).every(isTime))
+    throw new StateProblem(
+      "autopilot:global stopped is missing or not a map of times",
+      true,
+    );
+  if (resumed !== undefined && !isMap(resumed))
+    throw new StateProblem("autopilot:global resumed is not an object", true);
+  return {
+    value: value as unknown as GlobalState,
+    revision: record.revision,
+  };
+}
+/** A sample counts only when both numbers are finite and in range. */
+function validLoad(load: unknown): load is Load {
+  const sample = load as Partial<Load> | null | undefined;
+  return (
+    typeof sample?.freeMemoryMb === "number" &&
+    Number.isFinite(sample.freeMemoryMb) &&
+    sample.freeMemoryMb >= 0 &&
+    typeof sample.cpuBusyPercent === "number" &&
+    Number.isFinite(sample.cpuBusyPercent) &&
+    sample.cpuBusyPercent >= 0 &&
+    sample.cpuBusyPercent <= 100
+  );
+}
+/**
+ * Whether a new lane may start, from the running count and a load sample. Pure, so tests inject
+ * the numbers. An unmeasured load holds the start: unknown means no.
+ */
+function startDecision(
+  running: number,
+  limits: Limits,
+  load: Load | undefined,
+): { start: true } | { start: false; reason: string } {
+  if (running >= limits.lanes)
+    return {
+      start: false,
+      reason: `lane cap ${limits.lanes} reached (${running} running)`,
+    };
+  if (!validLoad(load))
+    return { start: false, reason: "machine load cannot be measured" };
+  if (load.freeMemoryMb < limits.minFreeMemoryMb)
+    return {
+      start: false,
+      reason: `free memory ${load.freeMemoryMb} MB is under ${limits.minFreeMemoryMb} MB`,
+    };
+  if (load.cpuBusyPercent > limits.maxCpuPercent)
+    return {
+      start: false,
+      reason: `CPU ${load.cpuBusyPercent}% is over ${limits.maxCpuPercent}%`,
+    };
+  return { start: true };
+}
+const clockKey = (id: string): string => `autopilot-clock:${id}`;
+function clockOf(state: LeaseStateClient, id: string): number | undefined {
+  const record = state.get(clockKey(id));
+  if (!record) return undefined;
+  const at = (record.value as { startedAt?: unknown } | null)?.startedAt;
+  if (!isTime(at))
+    throw new StateProblem(`${clockKey(id)} has no valid startedAt`);
+  return Date.parse(at);
+}
+/** What a lane has used. Review and CI rounds count from the journal once a loop writes them. */
+function usageOf(
+  state: LeaseStateClient,
+  ids: Ids,
+  id: string,
+  limits: Limits,
+) {
+  const journal = state.get(journalKey(id))?.value as
+    (Journal & { rounds?: { review?: unknown; ci?: unknown } }) | undefined;
+  if (
+    journal !== undefined &&
+    (!isMap(journal) ||
+      typeof journal.step !== "string" ||
+      !isCount(journal.pr) ||
+      !isMap(journal.counters) ||
+      !isCount(journal.counters.actions) ||
+      !isCount(journal.counters.records))
+  )
+    throw new StateProblem(`${journalKey(id)} is missing required fields`);
+  const rounds = journal?.rounds;
+  if (
+    rounds !== undefined &&
+    (!isMap(rounds) ||
+      (rounds.review !== undefined && !isCount(rounds.review)) ||
+      (rounds.ci !== undefined && !isCount(rounds.ci)))
+  )
+    throw new StateProblem(`${journalKey(id)} rounds are not counts`);
+  const clock = clockOf(state, id);
+  const activeMs = clock === undefined ? 0 : Math.max(0, state.now() - clock);
+  return {
+    journal,
+    calls: {
+      used: callBudget(state, ids, ids.shown(id)).used,
+      limit: limits.calls,
+    },
+    // Compared in milliseconds against the exact limit; hours are rounded only for display.
+    activeMs,
+    activeHours: {
+      used: Math.round((activeMs / 3600_000) * 100) / 100,
+      limit: limits.activeHours,
+    },
+    rounds: {
+      review: {
+        used: (rounds?.review as number | undefined) ?? 0,
+        limit: limits.reviewRounds,
+      },
+      ci: {
+        used: (rounds?.ci as number | undefined) ?? 0,
+        limit: limits.ciFixRounds,
+      },
+    },
+  };
+}
+function guardPause(
+  lane: string,
+  why: string,
+  ask: string,
+  raw: unknown,
+): TailAction {
+  return {
+    lane,
+    step: "guard",
+    n: 0,
+    kind: "pause",
+    why,
+    expect: "an owner reply; Forge guesses nothing",
+    budget: { actions: 0, records: 0 },
+    ask,
+    raw: typeof raw === "string" ? raw : JSON.stringify(raw),
+  };
+}
+async function guardedNext(
+  call: HandlerCall<NextInput>,
+  id: string,
+): Promise<TailAction> {
+  const { input, services, config } = call;
+  const state = client(services),
+    ids = idsFor(state, config),
+    shown = ids.shown(id),
+    limits = limitsOf(config);
+  if (!limits.enabled)
+    return guardPause(
+      shown,
+      "Lane autopilot is switched off in config",
+      "Set blocks.work.config.lanes.autopilot.enabled to true to run lanes again.",
+      { enabled: false },
+    );
+  const unreadable = (error: unknown): TailAction => {
+    if (!(error instanceof StateProblem)) throw error;
+    return guardPause(
+      shown,
+      error.message,
+      "Forge cannot trust this stored state, so the lane stays paused. Repair or remove the record, then run lane next again.",
+      error.message,
+    );
+  };
+  let flags: GlobalState;
+  try {
+    flags = readGlobal(state).value;
+  } catch (error) {
+    return unreadable(error);
+  }
+  const stoppedAt = flags.stopAll ?? flags.stopped[id];
+  if (stoppedAt !== undefined)
+    return guardPause(
+      shown,
+      `Lanes were stopped at ${stoppedAt}`,
+      "Resume with forge lane resume once you approve. Forge returns only pause until then.",
+      { stopped: stoppedAt },
+    );
+  let used: ReturnType<typeof usageOf>;
+  try {
+    // An id that was never allocated must not leave a clock behind.
+    get(state, id, shown);
+    if (clockOf(state, id) === undefined)
+      persist(
+        state,
+        clockKey(id),
+        { startedAt: new Date(state.now()).toISOString() },
+        0,
+      );
+    used = usageOf(state, ids, id, limits);
+  } catch (error) {
+    return unreadable(error);
+  }
+  const spent: [string, Usage, boolean][] = [
+    ["calls", used.calls, used.calls.used >= used.calls.limit],
+    [
+      "active hours",
+      used.activeHours,
+      used.activeMs >= used.activeHours.limit * 3600_000,
+    ],
+    [
+      "review rounds",
+      used.rounds.review,
+      used.rounds.review.used >= used.rounds.review.limit,
+    ],
+    [
+      "CI fix rounds",
+      used.rounds.ci,
+      used.rounds.ci.used >= used.rounds.ci.limit,
+    ],
+  ];
+  for (const [name, usage, over] of spent)
+    if (over)
+      return guardPause(
+        shown,
+        `${shown} used up its ${name} budget`,
+        `${shown} has used its ${name} budget (limit ${usage.limit}, used ${usage.used}). Raise blocks.work.config.lanes.autopilot.budgets or stop the lane; Forge waits for your reply.`,
+        { budget: name, ...usage },
+      );
+  return await tailNext({ ...call, input: { ...input, id: shown } });
+}
+/** The step and PR a lane recorded before any post-merge journal exists. */
+function beforeMerge(
+  state: LeaseStateClient,
+  id: string,
+): { step?: string; pr?: number } {
+  const step = recovery(appended(state, `comment:${id}:`))?.step;
+  const url = appended(state, `link:${id}:`)
+    .map((row) => row.value as LinkInput)
+    .filter((link) => link.relation === "delivers")
+    .at(-1)?.url;
+  const pr = Number(/\/pull\/(\d+)\/?$/.exec(url ?? "")?.[1] ?? 0);
+  return { ...(step ? { step } : {}), ...(pr ? { pr } : {}) };
+}
+/**
+ * Every lane that still needs attention: the registered lanes, plus any lane whose autopilot
+ * journal is not at done. Lane close removes a lane from the registry before the tail ends.
+ * A journal that cannot be read is listed too, so its pause shows.
+ */
+function activeLanes(state: LeaseStateClient, files: FilesService): string[] {
+  const found = laneRegistry(files).lanes.map(laneIdentity);
+  for (const row of state.list("autopilot:")) {
+    const id = row.key.slice("autopilot:".length);
+    if (!/^work-\d+$/.test(id) || found.includes(id)) continue;
+    const value = row.value as { step?: unknown } | null;
+    if (!isMap(value) || value.step !== "done") found.push(id);
+  }
+  return found;
+}
+async function laneNext(
+  call: HandlerCall<NextInput>,
+): Promise<TailAction | { actions: TailAction[] }> {
+  const { input, services, config } = call;
+  const state = client(services),
+    ids = idsFor(state, config);
+  if (input.all === true) {
+    if (input.id !== undefined || input.pr !== undefined || input.head)
+      fail("INPUT_INVALID", "--all takes no id, pr or head");
+    const actions: TailAction[] = [];
+    for (const id of activeLanes(state, laneFiles(services))) {
+      try {
+        actions.push(await guardedNext(call, id));
+      } catch (error) {
+        // One lane that cannot be read never hides the others, and never acts.
+        actions.push(
+          guardPause(
+            ids.shown(id),
+            "Forge could not decide this lane's next action",
+            "Check this lane by hand and tell me what to do.",
+            error instanceof Error ? error.message : String(error),
+          ),
+        );
+      }
+    }
+    return { actions };
+  }
+  if (input.id === undefined)
+    return fail("INPUT_INVALID", "Give a lane id or --all");
+  return await guardedNext(call, ids.stored(input.id));
+}
+function laneStop(call: HandlerCall<StopInput>): {
+  stopped: string;
+  at: string;
+} {
+  const { input, services, config } = call;
+  const state = client(services),
+    ids = idsFor(state, config);
+  if ((input.all === true) === (input.id !== undefined))
+    fail("INPUT_INVALID", "Give exactly one of a lane id or --all");
+  const at = new Date(state.now()).toISOString();
+  let value: GlobalState;
+  let revision: number;
+  let scope = "all";
+  try {
+    ({ value, revision } = readGlobal(state));
+  } catch (error) {
+    if (!(error instanceof StateProblem)) throw error;
+    // An unreadable record is replaced by a stop of every lane: the safe direction.
+    persist(
+      state,
+      GLOBAL,
+      { stopAll: at, stopped: {} },
+      state.get(GLOBAL)?.revision ?? 0,
+    );
+    return { stopped: "all", at };
+  }
+  if (input.all === true) value.stopAll ??= at;
+  else {
+    const id = ids.stored(input.id!);
+    get(state, id, input.id);
+    scope = ids.shown(id);
+    value.stopped[id] ??= at;
+  }
+  persist(state, GLOBAL, value, revision);
+  return { stopped: scope, at };
+}
+function laneResume(call: HandlerCall<ResumeInput>): { resumed: string } {
+  const { input, services, config } = call;
+  const state = client(services),
+    ids = idsFor(state, config);
+  if ((input.all === true) === (input.id !== undefined))
+    fail("INPUT_INVALID", "Give exactly one of a lane id or --all");
+  let value: GlobalState;
+  let revision: number;
+  try {
+    ({ value, revision } = readGlobal(state));
+  } catch (error) {
+    if (!(error instanceof StateProblem)) throw error;
+    return fail("INPUT_INVALID", `${error.message}; repair or remove it first`);
+  }
+  let scope = "all";
+  if (input.all === true) {
+    delete value.stopAll;
+    value.stopped = {};
+  } else {
+    const id = ids.stored(input.id!);
+    if (value.stopAll !== undefined)
+      fail("INPUT_CONFLICT", "All lanes are stopped; resume all of them");
+    delete value.stopped[id];
+    scope = ids.shown(id);
+  }
+  value.resumed = {
+    at: new Date(state.now()).toISOString(),
+    scope,
+    ...(input.approval?.quote === undefined
+      ? {}
+      : { quote: input.approval.quote.slice(0, 2000) }),
+  };
+  persist(state, GLOBAL, value, revision);
+  return { resumed: scope };
+}
+async function laneStatus(
+  call: HandlerCall<Record<string, never>>,
+): Promise<LaneStatus> {
+  const { services, config } = call;
+  const state = client(services),
+    ids = idsFor(state, config),
+    limits = limitsOf(config),
+    lanes = laneRegistry(laneFiles(services)).lanes,
+    listed = activeLanes(state, laneFiles(services));
+  let flags: GlobalState;
+  let rows: LaneRow[];
+  try {
+    flags = readGlobal(state).value;
+    rows = listed.map((id) => {
+      const used = usageOf(state, ids, id, limits);
+      const recorded = beforeMerge(state, id);
+      return {
+        id: ids.shown(id),
+        step: used.journal?.step ?? recorded.step ?? "before merge",
+        ...(used.journal || recorded.pr
+          ? { pr: used.journal?.pr ?? recorded.pr! }
+          : {}),
+        stopped: flags.stopAll !== undefined || flags.stopped[id] !== undefined,
+        calls: used.calls,
+        activeHours: used.activeHours,
+        rounds: used.rounds,
+      };
+    });
+  } catch (error) {
+    if (!(error instanceof StateProblem)) throw error;
+    // Unreadable state holds every start; a bad global record also counts as stopped.
+    return {
+      enabled: limits.enabled,
+      stopped: error.global,
+      stoppedLanes: [],
+      hold: `hold: ${error.message}`,
+      lanes: [],
+    };
+  }
+  let load: Load | undefined;
+  try {
+    load = await (
+      services as { environment?: Partial<EnvironmentService> }
+    ).environment?.load?.();
+  } catch {
+    load = undefined;
+  }
+  if (!validLoad(load)) load = undefined;
+  const decision = startDecision(lanes.length, limits, load);
+  return {
+    enabled: limits.enabled,
+    stopped: flags.stopAll !== undefined,
+    stoppedLanes: Object.keys(flags.stopped).map(ids.shown),
+    ...(decision.start ? {} : { hold: `hold: ${decision.reason}` }),
+    ...(load ? { load } : {}),
+    lanes: rows,
+  };
+}
 function laneRecord(call: HandlerCall<TailRecordInput>): {
   lane: string;
   step: string;
@@ -1429,6 +1942,9 @@ function laneRecord(call: HandlerCall<TailRecordInput>): {
 }
 const operations: Operations<WorkOperations> = {
   "lane.next": (call) => laneNext(call),
+  "lane.stop": (call) => laneStop(call),
+  "lane.resume": (call) => laneResume(call),
+  "lane.status": (call) => laneStatus(call),
   "lane.record": (call) => laneRecord(call),
   "lane.show": ({ input, services, config }) => {
     const state = client(services),

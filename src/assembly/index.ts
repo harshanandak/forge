@@ -81,6 +81,9 @@ import { LocalState } from "./state.ts";
 import {
   ApprovalRequired,
   consumeOwnerApproval,
+  laneResumeAsk,
+  laneResumeClaim,
+  laneResumeOp,
   memoryOwnerAsk,
   memoryOwnerClaim,
   memoryOwnerOp,
@@ -1535,7 +1538,9 @@ export async function createAssembly(
         const owned =
           target && memoryOwnerOp(target)
             ? memoryOwnerClaim(request.input)
-            : undefined;
+            : target && laneResumeOp(target)
+              ? laneResumeClaim(request.input)
+              : undefined;
         if (owned) {
           // The runtime refuses dry runs for these operations; refuse first so a dry run neither
           // burns a valid approval nor leaves a pending request behind.
@@ -1550,10 +1555,12 @@ export async function createAssembly(
             );
           await approve(
             { ...request, input: owned.input },
-            memoryOwnerAsk(target!.declaredOp!, request.input),
+            laneResumeOp(target!)
+              ? laneResumeAsk(request.input)
+              : memoryOwnerAsk(target!.declaredOp!, request.input),
           );
           // The block records the verified quote exactly as it did for a conversation claim.
-          if (owned.relayed)
+          if (owned.relayed && !laneResumeOp(target!))
             request = {
               ...request,
               input: {

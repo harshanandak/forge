@@ -145,6 +145,8 @@ never implicitly added. Names use the host platform's case rules. Do not seriali
 selected credentials into output or persistent state. Hosts may supply a restricted
 baseline through `AssemblyOptions.providers.env`.
 
+`load()` samples the machine for one second and returns `{ freeMemoryMb, cpuBusyPercent }`, with CPU time from `os.cpus()` because `os.loadavg` is zero on Windows. It requires `environment:read`, reads nothing from the caller environment and keeps no background timer.
+
 `forge.crypto@1` exposes `sha256(text)` (UTF-8, lowercase hex, no prefix) and
 `randomUUID()`. These expose platform primitives absent from the captured VM; parsers,
 canonical JSON, receipt policy and other pure functions remain in blocks. Hash input
