@@ -11,8 +11,10 @@ import {
   launchCaptured,
   type CapturedLaunch,
 } from "../../../src/adapters/process/windows-launch-stdio.ts";
-import type { ProcessOutputEvidence } from "../../../src/ports/process.ts";
-import type { SpawnOptions } from "../../../src/ports/process.ts";
+import type {
+  ProcessOutputEvidence,
+  SpawnOptions,
+} from "../../../src/ports/process.ts";
 
 export const fixturePath = fileURLToPath(import.meta.url);
 

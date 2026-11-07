@@ -27,6 +27,29 @@ const FILE_SHARE_READ_WRITE = 0x00000003;
 const OPEN_EXISTING = 3;
 const FILE_ATTRIBUTE_NORMAL = 0x00000080;
 const ERROR_INSUFFICIENT_BUFFER = 122;
+const WAIT_OBJECT_0 = 0;
+const WAIT_TIMEOUT = 258;
+/**
+ * What libuv's `uv_translate_sys_error` reports for the errors CreateProcessW returns, so a failed
+ * start carries the same errno name as Node's spawn gives today (access denied is EPERM there).
+ */
+const ERRNO_FOR_WINDOWS_ERROR: Readonly<Record<number, string>> = {
+  2: "ENOENT",
+  3: "ENOENT",
+  15: "ENOENT",
+  53: "ENOENT",
+  123: "ENOENT",
+  161: "ENOENT",
+  267: "ENOENT",
+  5: "EPERM",
+  740: "EACCES",
+  998: "EACCES",
+  1920: "EACCES",
+  8: "ENOMEM",
+  14: "ENOMEM",
+  87: "EINVAL",
+  206: "ENAMETOOLONG",
+};
 const MAX_COMMAND_LINE_UNITS = 32766;
 /** libuv copies these from the parent when the caller's environment lacks them (process.c). */
 const LIBUV_REQUIRED_VARIABLES = [
@@ -48,6 +71,15 @@ export interface LaunchOptions {
   readonly env: Readonly<Record<string, string>>;
   /** Defaults to true, like `windowsHide: true` in the helper. */
   readonly windowsHide?: boolean;
+  /**
+   * Names of named pipes the host is already listening on. The launcher opens the client ends and
+   * hands them to the command; any stream left out stays on the NUL device.
+   */
+  readonly pipes?: {
+    readonly stdin?: string;
+    readonly stdout?: string;
+    readonly stderr?: string;
+  };
 }
 
 export interface LaunchedProcess {
@@ -100,6 +132,11 @@ interface LaunchApi {
   readonly startupSize: number;
   readonly securitySize: number;
   readonly pointerBytes: number;
+  readonly waitForSingleObject: (
+    handle: bigint,
+    milliseconds: number,
+  ) => number;
+  readonly getExitCodeProcess: (handle: bigint, code: Buffer) => number;
   readonly closeHandle: (handle: bigint) => number;
   readonly lastError: () => number;
 }
@@ -189,6 +226,18 @@ function loadLaunchApi(): LaunchApi {
         "str16",
         koffi.pointer(startupInfo),
         koffi.out(koffi.pointer(processInformation)),
+      ]),
+    ),
+    waitForSingleObject: asNativeFunction(
+      kernel32.func("__stdcall", "WaitForSingleObject", "uint32_t", [
+        "void *",
+        "uint32_t",
+      ]),
+    ),
+    getExitCodeProcess: asNativeFunction(
+      kernel32.func("__stdcall", "GetExitCodeProcess", "int", [
+        "void *",
+        koffi.out(koffi.pointer("uint8_t")),
       ]),
     ),
     koffi,
@@ -313,9 +362,10 @@ function absoluteApplication(
   return resolved;
 }
 
-function openNul(api: LaunchApi, write: boolean): bigint {
+/** Opens the NUL device or a pipe client end as an inheritable handle for a standard stream. */
+function openStdio(api: LaunchApi, name: string, write: boolean): bigint {
   const handle = api.createFile(
-    "NUL",
+    name,
     write ? GENERIC_WRITE : GENERIC_READ,
     FILE_SHARE_READ_WRITE,
     {
@@ -330,7 +380,7 @@ function openNul(api: LaunchApi, write: boolean): bigint {
   if (!isHandle(handle, api.pointerBytes))
     throw new ProcessSpawnError(
       "SPAWN_FAILED",
-      "Could not open the NUL device for the command's standard handles.",
+      `Could not open ${name === "NUL" ? "the NUL device" : "a pipe"} for the command's standard handles.`,
       new Error(`CreateFileW failed with Windows error ${api.lastError()}.`),
     );
   return handle;
@@ -338,6 +388,19 @@ function openNul(api: LaunchApi, write: boolean): bigint {
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+/** SPAWN_FAILED carrying the errno name Node's spawn would report for this Windows error. */
+function startFailure(error: number): ProcessSpawnError {
+  const code = ERRNO_FOR_WINDOWS_ERROR[error];
+  const message = `CreateProcessW failed with Windows error ${error}.`;
+  return new ProcessSpawnError(
+    "SPAWN_FAILED",
+    "Could not start the command.",
+    code === undefined
+      ? new Error(message)
+      : Object.assign(new Error(message), { code }),
+  );
 }
 
 /** Ends every process in the per-command job, so a launch that cannot be returned runs nowhere. */
@@ -368,9 +431,9 @@ function releaseLaunch(
 }
 
 /**
- * Starts `plan` directly inside `job` with its standard handles on the NUL device. Only those
- * three handles are inherited; the job handle never is. Pipes, exit waiting and error codes
- * arrive in later slices.
+ * Starts `plan` directly inside `job`. Its standard handles are the pipe client ends in
+ * `options.pipes`, or the NUL device. Only those three handles are inherited; the job handle never
+ * is, and the launcher closes its own copies before it returns.
  */
 export function launchInJob(
   plan: SpawnPlan,
@@ -408,14 +471,16 @@ export function launchInJob(
   }
   const { koffi } = api;
   const size = api.pointerBytes;
-  const nulHandles: bigint[] = [];
+  const stdioHandles: bigint[] = [];
   const allocations: bigint[] = [];
   let attributeList: bigint | undefined;
   let launched: LaunchedProcess | undefined;
   let failure: Error | undefined;
   try {
-    for (const write of [false, true, true])
-      nulHandles.push(openNul(api, write));
+    const pipes = options.pipes;
+    const targets = [pipes?.stdin, pipes?.stdout, pipes?.stderr];
+    for (const [index, name] of targets.entries())
+      stdioHandles.push(openStdio(api, name ?? "NUL", index !== 0));
     const sizeSlot = koffi.alloc("uintptr_t", 1);
     allocations.push(sizeSlot);
     // The first call fails by design and reports the buffer size the list needs.
@@ -443,10 +508,10 @@ export function launchInJob(
     // The list keeps pointers to these values, so they stay allocated until after the launch.
     const jobSlot = koffi.alloc("void *", 1);
     allocations.push(jobSlot);
-    const handleSlots = koffi.alloc("void *", nulHandles.length);
+    const handleSlots = koffi.alloc("void *", stdioHandles.length);
     allocations.push(handleSlots);
     koffi.encode(jobSlot, 0, "void *", jobHandle);
-    nulHandles.forEach((handle, index) =>
+    stdioHandles.forEach((handle, index) =>
       koffi.encode(handleSlots, index * size, "void *", handle),
     );
     for (const [attribute, value, bytes] of [
@@ -454,7 +519,7 @@ export function launchInJob(
       [
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
         handleSlots,
-        size * nulHandles.length,
+        size * stdioHandles.length,
       ],
     ] as const) {
       if (
@@ -469,7 +534,7 @@ export function launchInJob(
         );
     }
     const hide = options.windowsHide !== false;
-    const [stdin, stdout, stderr] = nulHandles;
+    const [stdin, stdout, stderr] = stdioHandles;
     const startup = {
       cb: api.startupSize,
       lpReserved: null,
@@ -506,14 +571,7 @@ export function launchInJob(
       startup,
       information,
     );
-    if (created === 0)
-      throw new ProcessSpawnError(
-        "SPAWN_FAILED",
-        "Could not start the command.",
-        new Error(
-          `CreateProcessW failed with Windows error ${api.lastError()}.`,
-        ),
-      );
+    if (created === 0) throw startFailure(api.lastError());
     const { hProcess, hThread, dwProcessId } = information;
     if (isHandle(hThread, size)) api.closeHandle(hThread);
     if (isHandle(hProcess, size) && typeof dwProcessId === "number") {
@@ -534,7 +592,7 @@ export function launchInJob(
     api,
     attributeList,
     allocations,
-    nulHandles,
+    stdioHandles,
   );
   // A failed launch reports its own error; a cleanup error never hides it.
   if (failure !== undefined) throw failure;
@@ -547,6 +605,34 @@ export function launchInJob(
     throw cleanupError;
   }
   return launched;
+}
+
+/**
+ * The exit code once the process has ended, or undefined while it still runs. A zero-wait check,
+ * so the event loop is never blocked.
+ */
+export function processExitCode(launched: LaunchedProcess): number | undefined {
+  const api = loadLaunchApi();
+  const waited = api.waitForSingleObject(launched.processHandle, 0);
+  if (waited === WAIT_TIMEOUT) return undefined;
+  if (waited !== WAIT_OBJECT_0)
+    throw new ProcessSpawnError(
+      "SPAWN_FAILED",
+      "Could not check whether the command has exited.",
+      new Error(
+        `WaitForSingleObject failed with Windows error ${api.lastError()}.`,
+      ),
+    );
+  const code = Buffer.alloc(4);
+  if (api.getExitCodeProcess(launched.processHandle, code) === 0)
+    throw new ProcessSpawnError(
+      "SPAWN_FAILED",
+      "Could not read the command's exit code.",
+      new Error(
+        `GetExitCodeProcess failed with Windows error ${api.lastError()}.`,
+      ),
+    );
+  return code.readUInt32LE(0);
 }
 
 /** Releases the process handle `launchInJob` returned. */
