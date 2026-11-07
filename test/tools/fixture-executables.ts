@@ -16,7 +16,9 @@ export function executablesUnder(
     return list(root)
       .filter((entry) => entry.isFile() && /\.exe$/i.test(entry.name))
       .map((entry) => relative(root, join(entry.parentPath, entry.name)));
-  } catch {
-    return [];
+  } catch (error) {
+    // Only a missing root means "no executables"; any other failure must fail the guard, not pass it.
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return [];
+    throw error;
   }
 }

@@ -230,6 +230,9 @@ function windowsEvidence(
   return evidence;
 }
 
+// Timing: the worst failure path is about 48 s (15 s host query, 3 x 10 s Handle runs, 0.5 s second
+// attempt, plus the tree probe) against the 60 s hook timeout, so only about 12 s of margin is
+// left. That margin is known and deliberately unchanged; do not add another slow step here.
 export function cleanupAttribution(
   root: string,
   cleanup: () => void,
@@ -288,18 +291,18 @@ export function cleanupAttribution(
           };
         }
       });
-      // Last, so the attribution above saw the state the failure left behind.
-      if (evidence !== undefined)
-        evidence = {
-          ...(typeof evidence === "object" && evidence !== null
-            ? evidence
-            : { inspected: evidence }),
-          ...secondAttempt(cleanup),
-        };
       try {
+        // Last, so the attribution above saw the state the failure left behind. It runs for every
+        // run, with or without host evidence, and inside this try so that nothing it throws can
+        // replace the original error.
+        const base =
+          evidence === undefined
+            ? {}
+            : typeof evidence === "object" && evidence !== null
+              ? evidence
+              : { inspected: evidence };
         // Evidence comes first so the attribution JSON stays the last line of the message.
-        if (evidence !== undefined)
-          error.message += `\nCleanup evidence: ${serialize(evidence)}`;
+        error.message += `\nCleanup evidence: ${serialize({ ...base, ...secondAttempt(cleanup) })}`;
         error.message += `\nCleanup attribution: ${JSON.stringify(snapshots)}`;
       } catch {
         // The original cleanup error is rethrown below even if its message cannot be extended.
