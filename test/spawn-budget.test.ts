@@ -22,7 +22,7 @@ function scripted(testTimeoutMs: number, replies: Reply[]) {
         status: 0,
         signal: null,
         ...reply,
-      } as SpawnSyncReturns<string>;
+      };
     },
   });
   return { budget, timeouts, advance: (ms: number) => (clock += ms) };
