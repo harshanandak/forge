@@ -67,6 +67,7 @@ function setup() {
 const fs = require('node:fs'), path = require('node:path');
 const a = process.argv.slice(2), e = process.env;
 const flag = (name) => fs.existsSync(path.join(__dirname, name));
+process.on('exit', () => { try { fs.appendFileSync(path.join(__dirname, 'ghlog.txt'), (a[0] === 'api' ? 'api ' + String(a[1]).replace(/[a-z0-9_.-]+\\/[a-z0-9_.-]+$/i, 'repos/x/y') : a.slice(0, 2).join(' ')) + ' ' + Math.round(process.uptime() * 1000) + '\\n'); } catch {} });
 const ids = { alice: 101, bob: 202, constructor: 303, mallory: 404 };
 if (Object.keys(e).some(k => /^(GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|GH_REPO|NODE_OPTIONS|GIT_AUTHOR_EMAIL|GIT_CONFIG_COUNT)$/i.test(k))) process.exit(9);
 if (a[0] === 'api') {
@@ -128,16 +129,47 @@ if (a[0] === 'api') {
       windowsHide: true,
     });
     timings.push({
-      label: `${command === node ? "forge" : command} ${args.slice(0, 3).join(" ")}`,
+      label:
+        command === node
+          ? `forge ${args[1]} ${args[2]}`
+          : `${command} ${args[0] === "-c" ? args[2] : args[0]}`,
       ms: Math.round(performance.now() - started),
     });
     expect(out.error).toBeUndefined();
     return out;
   }
+  function aggregate(rows: { label: string; ms: number }[]) {
+    const groups = new Map<string, number[]>();
+    for (const row of rows)
+      groups.set(row.label, [...(groups.get(row.label) ?? []), row.ms]);
+    return [...groups.entries()]
+      .map(([label, list]) => ({
+        label,
+        n: list.length,
+        avg: Math.round(list.reduce((a, b) => a + b, 0) / list.length),
+        max: Math.max(...list),
+      }))
+      .sort((a, b) => b.n * b.avg - a.n * a.avg)
+      .slice(0, 12);
+  }
   function timingSummary() {
     const total = timings.reduce((sum, t) => sum + t.ms, 0);
-    const slowest = [...timings].sort((a, b) => b.ms - a.ms).slice(0, 5);
-    return `ACCOUNTS-TIMING calls=${timings.length} total=${total}ms slowest=${JSON.stringify(slowest)}`;
+    const ghLog = join(bin, "ghlog.txt");
+    const gh = (existsSync(ghLog) ? readFileSync(ghLog, "utf8") : "")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const at = line.lastIndexOf(" ");
+        return {
+          label: "gh " + line.slice(0, at),
+          ms: Number(line.slice(at + 1)),
+        };
+      });
+    return [
+      `ACCOUNTS-TIMING calls=${timings.length} total=${total}ms`,
+      `ACCOUNTS-TIMING by call (label n avg max, wall ms): ${JSON.stringify(aggregate(timings))}`,
+      `ACCOUNTS-TIMING fake gh node lifetime inside the fake (n avg max, ms): ${JSON.stringify(aggregate(gh))}`,
+    ].join("\n");
   }
   function git(cwd: string, ...args: string[]) {
     const out = run("git", args, cwd);
