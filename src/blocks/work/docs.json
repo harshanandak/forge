@@ -28,7 +28,7 @@
     },
     "lane.next": {
       "title": "Next lane action",
-      "summary": "Return the next action for one lane (id) or every lane (all). It pauses first when autopilot is off, the lanes are stopped or a budget is used up. While the PR is open it returns the forge pr merge action only when every merge condition holds and a MERGE verdict is recorded for the head. After a merge it returns receipt, close, issues, rebuild, unwatch, done. Unknown facts pause with an ask.",
+      "summary": "Return the next action for one lane (id) or all. Pauses when autopilot is off, stopped or over budget. While the PR is open, returns the merge action only when every condition holds and a MERGE verdict is recorded for the head. After a merge: receipt, close, issues, rebuild, unwatch, done.",
       "examples": [
         {
           "input": {
