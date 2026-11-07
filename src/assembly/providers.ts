@@ -498,7 +498,15 @@ export function createAssemblyProviders(
               { idle: 0, all: 0 },
             );
           const before = times();
-          await new Promise((done) => setTimeout(done, 1000));
+          await new Promise<void>((done) => {
+            const finish = () => {
+              clearTimeout(timer);
+              scope.signal.removeEventListener("abort", finish);
+              done();
+            };
+            const timer = setTimeout(finish, 1000);
+            scope.signal.addEventListener("abort", finish, { once: true });
+          });
           active(scope);
           const after = times();
           const total = after.all - before.all;

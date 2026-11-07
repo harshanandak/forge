@@ -99,7 +99,7 @@
           "description": "Origin branch to fetch. Omitted: origin HEAD, falling back to main."
         },
         "autopilot": {
-          "description": "Autopilot limits and post-merge steps for lane next. enabled false makes every lane next return pause. budgets are per lane; load holds new starts. receiptChecks lists the checks run at the merge commit; rebuild is the runtime rebuild command and has no default.",
+          "description": "Autopilot limits and post-merge steps for lane next. enabled false makes every lane next return pause. budgets are per lane; load limits show as a hold in lane status; the hold is advisory and does not yet stop lane start. receiptChecks lists the checks run at the merge commit; rebuild is the runtime rebuild command and has no default.",
           "type": "object",
           "properties": {
             "receiptChecks": {

@@ -18,6 +18,8 @@ type Status = {
   lanes: {
     id: string;
     stopped: boolean;
+    step?: string;
+    pr?: number;
     calls: { used: number; limit: number };
     activeHours: { used: number; limit: number };
     hold?: string;
@@ -267,6 +269,7 @@ test("a malformed clock or round record pauses the lane", async () => {
     ["autopilot-clock:work-1", { startedAt: "nope" }],
     ["autopilot-clock:work-1", {}],
     ["autopilot:work-1", { rounds: { review: "two" } }],
+    ["autopilot:work-1", {}],
   ] as const) {
     const f = fixture();
     f.put(key, value, { expectRevision: 0 });
@@ -355,4 +358,45 @@ test("a lane past lane close with steps left stays listed until its journal is d
   );
   expect(lanes(await f.all())).toEqual(["work-2"]);
   expect((await f.status()).lanes.map((lane) => lane.id)).toEqual(["work-2"]);
+});
+
+test("a lane for an issue that does not exist leaves no clock behind", async () => {
+  const f = fixture();
+  await expect(f.next({ id: "work-9" })).rejects.toThrow(/NOT_FOUND/);
+  expect(f.records.has("autopilot-clock:work-9")).toBe(false);
+});
+
+test("status shows the recorded checkpoint step and delivery PR before any journal", async () => {
+  const f = fixture();
+  f.put(
+    "comment:work-2:1",
+    {
+      id: "work-2",
+      body: "checkpoint review",
+      checkpoint: {
+        step: "review",
+        branch: "feat/work-2",
+        worktree: "/lane/work-2",
+        next: "merge",
+      },
+    },
+    { expectRevision: 0 },
+  );
+  f.put(
+    "link:work-2:1",
+    {
+      id: "work-2",
+      relation: "delivers",
+      url: "https://github.com/example/repo/pull/9",
+    },
+    { expectRevision: 0 },
+  );
+  const rows = (await f.status()).lanes;
+  expect(rows.find((lane) => lane.id === "work-2")).toMatchObject({
+    step: "review",
+    pr: 9,
+  });
+  expect(rows.find((lane) => lane.id === "work-1")).toMatchObject({
+    step: "before merge",
+  });
 });

@@ -1493,8 +1493,16 @@ function usageOf(
 ) {
   const journal = state.get(journalKey(id))?.value as
     (Journal & { rounds?: { review?: unknown; ci?: unknown } }) | undefined;
-  if (journal !== undefined && !isMap(journal))
-    throw new StateProblem(`${journalKey(id)} is not an object`);
+  if (
+    journal !== undefined &&
+    (!isMap(journal) ||
+      typeof journal.step !== "string" ||
+      !isCount(journal.pr) ||
+      !isMap(journal.counters) ||
+      !isCount(journal.counters.actions) ||
+      !isCount(journal.counters.records))
+  )
+    throw new StateProblem(`${journalKey(id)} is missing required fields`);
   const rounds = journal?.rounds;
   if (
     rounds !== undefined &&
@@ -1588,6 +1596,8 @@ async function guardedNext(
     );
   let used: ReturnType<typeof usageOf>;
   try {
+    // An id that was never allocated must not leave a clock behind.
+    get(state, id, shown);
     if (clockOf(state, id) === undefined)
       persist(
         state,
@@ -1626,6 +1636,19 @@ async function guardedNext(
         { budget: name, ...usage },
       );
   return await tailNext({ ...call, input: { ...input, id: shown } });
+}
+/** The step and PR a lane recorded before any post-merge journal exists. */
+function beforeMerge(
+  state: LeaseStateClient,
+  id: string,
+): { step?: string; pr?: number } {
+  const step = recovery(appended(state, `comment:${id}:`))?.step;
+  const url = appended(state, `link:${id}:`)
+    .map((row) => row.value as LinkInput)
+    .filter((link) => link.relation === "delivers")
+    .at(-1)?.url;
+  const pr = Number(/\/pull\/(\d+)\/?$/.exec(url ?? "")?.[1] ?? 0);
+  return { ...(step ? { step } : {}), ...(pr ? { pr } : {}) };
 }
 /**
  * Every lane that still needs attention: the registered lanes, plus any lane whose autopilot
@@ -1759,10 +1782,13 @@ async function laneStatus(
     flags = readGlobal(state).value;
     rows = listed.map((id) => {
       const used = usageOf(state, ids, id, limits);
+      const recorded = beforeMerge(state, id);
       return {
         id: ids.shown(id),
-        step: used.journal?.step ?? "before merge",
-        ...(used.journal ? { pr: used.journal.pr } : {}),
+        step: used.journal?.step ?? recorded.step ?? "before merge",
+        ...(used.journal || recorded.pr
+          ? { pr: used.journal?.pr ?? recorded.pr! }
+          : {}),
         stopped: flags.stopAll !== undefined || flags.stopped[id] !== undefined,
         calls: used.calls,
         activeHours: used.activeHours,

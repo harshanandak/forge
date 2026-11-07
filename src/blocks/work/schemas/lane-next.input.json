@@ -20,6 +20,18 @@
       "pattern": "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$"
     }
   },
-  "oneOf": [{ "required": ["id"] }, { "required": ["all"] }],
+  "oneOf": [
+    { "required": ["id"] },
+    {
+      "required": ["all"],
+      "not": {
+        "anyOf": [
+          { "required": ["id"] },
+          { "required": ["pr"] },
+          { "required": ["head"] }
+        ]
+      }
+    }
+  ],
   "additionalProperties": false
 }
