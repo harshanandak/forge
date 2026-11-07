@@ -23,6 +23,15 @@ export interface CapturedLaunchOptions extends Omit<LaunchOptions, "pipes"> {
   readonly onStderr: (chunk: Buffer) => void;
   /** After four quick checks, how often to look for the exit when the pipes stay open. */
   readonly pollIntervalMs: number;
+  /**
+   * Runs once every pipe is listening and before the command starts. Tests use it to play another
+   * client that reaches the pipes first.
+   */
+  readonly beforeLaunch?: (names: {
+    readonly stdin?: string;
+    readonly stdout: string;
+    readonly stderr: string;
+  }) => Promise<void>;
 }
 
 export interface CapturedLaunch {
@@ -106,6 +115,11 @@ export async function launchCaptured(
     pipes.push(stderr);
     const stdin = options.stdin === undefined ? undefined : await openPipe();
     if (stdin !== undefined) pipes.push(stdin);
+    await options.beforeLaunch?.({
+      stdout: stdout.name,
+      stderr: stderr.name,
+      ...(stdin === undefined ? {} : { stdin: stdin.name }),
+    });
     const launched = launchInJob(plan, job, {
       cwd: options.cwd,
       env: options.env,

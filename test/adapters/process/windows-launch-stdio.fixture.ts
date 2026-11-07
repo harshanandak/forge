@@ -1,5 +1,6 @@
 // Runs the Windows launcher's captured path and the current supervised path on the same child.
 // The same file is the child program, and prints a full report when Node runs it directly.
+import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,7 @@ import {
   launchCaptured,
   stopAfterExit,
   type CapturedLaunch,
+  type CapturedLaunchOptions,
 } from "../../../src/adapters/process/windows-launch-stdio.ts";
 import type {
   ProcessOutputEvidence,
@@ -52,6 +54,12 @@ export interface Scenarios {
     readonly launched: Failure;
     readonly current: Failure;
   }[];
+  /** Another client reaches every pipe before the command's own end does. */
+  readonly foreign: {
+    readonly launched: Report;
+    /** Bytes the intruding clients received from the host. */
+    readonly intruderBytes: number;
+  };
   readonly quiet: {
     readonly skipped: boolean;
     readonly terminations: number;
@@ -83,6 +91,7 @@ async function launchedRun(
   nodePath: string,
   args: readonly string[],
   spawnOptions: SpawnOptions,
+  beforeLaunch?: CapturedLaunchOptions["beforeLaunch"],
 ): Promise<Report> {
   const owner = job();
   const { stdout, stderr } = captureStreams(spawnOptions);
@@ -95,6 +104,7 @@ async function launchedRun(
         cwd: spawnOptions.cwd,
         env: spawnOptions.env,
         pollIntervalMs: 25,
+        ...(beforeLaunch === undefined ? {} : { beforeLaunch }),
         ...(spawnOptions.stdin === undefined
           ? {}
           : { stdin: spawnOptions.stdin }),
@@ -192,6 +202,42 @@ async function missingScenario(): Promise<Scenarios["missing"]> {
   return results;
 }
 
+/**
+ * Intruders connect to every pipe before the command's own end does. Stdout and stderr intruders
+ * write junk and the stdin intruder only listens; none may change the capture or receive input.
+ */
+async function foreignScenario(
+  nodePath: string,
+): Promise<Scenarios["foreign"]> {
+  const intruders: Socket[] = [];
+  let intruderBytes = 0;
+  try {
+    const launched = await launchedRun(
+      nodePath,
+      [fixturePath, "child"],
+      options("evidence"),
+      async (names) => {
+        for (const [stream, name] of Object.entries(names)) {
+          const socket = await new Promise<Socket>((resolve, reject) => {
+            const client = connect(name);
+            client.once("connect", () => resolve(client));
+            client.once("error", reject);
+          });
+          socket.on("error", () => undefined);
+          socket.on("data", (chunk: Buffer) => {
+            intruderBytes += chunk.length;
+          });
+          if (stream !== "stdin") socket.write(`FOREIGN ${stream}`);
+          intruders.push(socket);
+        }
+      },
+    );
+    return { launched, intruderBytes };
+  } finally {
+    for (const socket of intruders) socket.destroy();
+  }
+}
+
 /** A command with no descendants exits; the post-exit stop skips or terminates, and the job ends empty. */
 async function quietScenario(nodePath: string): Promise<Scenarios["quiet"]> {
   const owner = job();
@@ -244,6 +290,7 @@ export async function scenarios(nodePath: string): Promise<Scenarios> {
     evidence: await both("evidence"),
     capped: await both("capped"),
     missing: await missingScenario(),
+    foreign: await foreignScenario(nodePath),
     quiet: await quietScenario(nodePath),
   };
 }

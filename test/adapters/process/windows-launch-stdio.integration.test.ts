@@ -68,6 +68,13 @@ function expectMissing(result: Scenarios): void {
   }
 }
 
+function expectForeign(result: Scenarios): void {
+  // Another client got to each pipe first: the capture still equals the normal run, and the
+  // stdin intruder received none of the command's input.
+  expect(result.foreign.launched).toEqual(result.evidence.current);
+  expect(result.foreign.intruderBytes).toBe(0);
+}
+
 function expectQuiet(result: Scenarios): void {
   // Windows can still count a process that is shutting down (the console host) just after the
   // command exits, so the stop may skip or terminate. It never does both, and the job ends empty.
@@ -101,6 +108,14 @@ describe.skipIf(!windows)("windows launcher stdio", () => {
 
   test("under bun, a missing executable gives SPAWN_FAILED with ENOENT", async () => {
     expectMissing(await underBun());
+  }, 150_000);
+
+  test("under node, a client that reaches the pipes first gets no input and changes no output", () => {
+    expectForeign(underNode());
+  }, 150_000);
+
+  test("under bun, a client that reaches the pipes first gets no input and changes no output", async () => {
+    expectForeign(await underBun());
   }, 150_000);
 
   test("under node, stop after a clean exit terminates nothing", () => {
