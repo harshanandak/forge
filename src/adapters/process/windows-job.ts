@@ -72,6 +72,10 @@ interface NativeApi {
 export interface WindowsJob {
   attach(pid: number): void;
   members(): readonly number[];
+  /** Processes still running in the job, not counting ones that already exited. */
+  activeCount(): number;
+  /** How many times `stop` called TerminateJobObject. */
+  terminations(): number;
   stop(): Promise<readonly number[]>;
   close(): void;
 }
@@ -467,6 +471,7 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
   }
 
   let stopping: Promise<readonly number[]> | undefined;
+  let terminated = 0;
   const currentJob = (): bigint => {
     if (job === undefined) {
       throw new ProcessSpawnError(
@@ -514,6 +519,14 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
       return processIds(api, currentJob());
     },
 
+    activeCount(): number {
+      return activeProcesses(api, currentJob());
+    },
+
+    terminations(): number {
+      return terminated;
+    },
+
     stop(): Promise<readonly number[]> {
       if (stopping !== undefined) return stopping;
       const handle = currentJob();
@@ -522,9 +535,11 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
         try {
           stopped = processIds(api, handle);
         } catch (cause) {
+          terminated += 1;
           terminateJob(api, handle);
           throw cause;
         }
+        terminated += 1;
         terminateJob(api, handle);
         const deadline = performance.now() + options.cleanupTimeoutMs;
         while (activeProcesses(api, handle) !== 0) {
