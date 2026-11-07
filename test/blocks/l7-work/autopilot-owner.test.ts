@@ -402,6 +402,10 @@ test("a session that calls lane next first does not become the owner channel and
   expect(first.kind).toBe("pause");
   expect(first.why).toContain("owner channel is not set");
   expect(first.ask).toContain("ownerChannel");
+  // The text names no session: another caller reads the same pending pause byte for byte.
+  f.session.env = { CLAUDE_CODE_SESSION_ID: "builder-8" };
+  expect((await f.next("work-1")).ask).toBe(first.ask);
+  f.session.env = { CLAUDE_CODE_SESSION_ID: "builder-7" };
   expect(f.records.get("autopilot-ask:work-1")?.value.status).toBe("queued");
   expect(
     (

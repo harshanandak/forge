@@ -2620,7 +2620,7 @@ function ownerRoute(
           : {
               ...action,
               why: `${action.why}. The owner channel is not set, so this ask stays queued.`,
-              ask: `Set the owner channel with forge lane record --input '{"ownerChannel":{"harness":"${channel.harness}","thread":"${channel.thread}"}}' (use the owner's chat harness and thread; Forge asks the owner to approve it). Then run lane next again.`,
+              ask: `Set the owner channel with forge lane record --input '{"ownerChannel":{"harness":"<owner chat harness>","thread":"<owner chat thread>"}}' (fill in the owner's chat harness and thread; Forge asks the owner to approve it). Then run lane next again.`,
             },
       );
     if (!sameChannel(owner.channel, channel))
