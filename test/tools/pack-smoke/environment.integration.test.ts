@@ -6,16 +6,21 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, relative } from "node:path";
 import {
+  bunFreeNodeDirectory,
+  bunFreeNodeExecutable,
   environmentWithoutBun,
   resolveBun,
 } from "../../../tools/pack-smoke/environment.ts";
+
+const nodeName = process.platform === "win32" ? "node.exe" : "node";
 
 test("the absolute Bun runner starts with a Bun-free consumer environment", () => {
   const folder = mkdtempSync(join(tmpdir(), "forge-pack-env-"));
@@ -25,11 +30,11 @@ test("the absolute Bun runner starts with a Bun-free consumer environment", () =
     const original = { Path: `${folder}${delimiter}`, BUN_INSTALL: folder };
     const runner = resolveBun(original);
     expect(runner).toBe(bun);
-    const nodeDirectory = join(folder, "node-only");
     const node = Bun.which("node");
     if (node === null)
       throw new Error("Node is required for the consumer environment");
-    const env = environmentWithoutBun(nodeDirectory, node, original);
+    const env = environmentWithoutBun(node, original);
+    const nodeDirectory = dirname(bunFreeNodeExecutable(node));
     expect(env.Path).toBe(nodeDirectory);
     expect(env.BUN_INSTALL).toBeUndefined();
     expect(original.BUN_INSTALL).toBe(folder);
@@ -54,6 +59,58 @@ test("the absolute Bun runner starts with a Bun-free consumer environment", () =
     expect(() => resolveBun({ PATH: "" })).toThrow(
       "bun is not resolvable on PATH",
     );
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("the Bun-free Node executable lives outside the caller's root and is reused across calls", () => {
+  const folder = mkdtempSync(join(tmpdir(), "forge-shared-node-env-"));
+  try {
+    // A stand-in binary is enough: it is copied or linked, never run.
+    const node = join(folder, "fake-node");
+    writeFileSync(node, "not a real node");
+    const first = environmentWithoutBun(node, { PATH: "" });
+    const second = environmentWithoutBun(node, { PATH: "" });
+    expect(second.PATH).toBe(first.PATH);
+    const directory = first.PATH!;
+    expect(first.PATH!.split(delimiter)).toEqual([directory]);
+    // The caller deletes its root, so the executable must not live inside it.
+    expect(relative(folder, directory).startsWith("..")).toBe(true);
+    expect(readdirSync(folder)).toEqual(["fake-node"]);
+    expect(bunFreeNodeExecutable(node)).toBe(join(directory, nodeName));
+    // The directory holds only the executable and the completion marker, so a Windows
+    // executable searching its own directory finds no Bun.
+    expect(readdirSync(directory).sort()).toEqual(["complete", nodeName]);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("a finished Bun-free copy from an earlier run is reused and unfinished or wrong-sized ones are not", () => {
+  const folder = mkdtempSync(join(tmpdir(), "forge-shared-node-reuse-"));
+  try {
+    const node = join(folder, "fake-node");
+    writeFileSync(node, "not a real node");
+    const shared = bunFreeNodeDirectory(node);
+    mkdirSync(shared, { recursive: true });
+    const earlier = (name: string, content: string, marker: boolean) => {
+      const directory = join(shared, name);
+      mkdirSync(directory);
+      writeFileSync(join(directory, nodeName), content);
+      if (marker) writeFileSync(join(directory, "complete"), "");
+      return join(directory, nodeName);
+    };
+    // Names sort before the finished copy, so each one must be skipped on its own merits.
+    earlier("a-unfinished", "not a real node", false);
+    earlier("b-wrong-size", "short", true);
+    const finished = earlier("c-finished", "not a real node", true);
+    expect(bunFreeNodeExecutable(node)).toBe(finished);
+    expect(readdirSync(shared).sort()).toEqual([
+      "a-unfinished",
+      "b-wrong-size",
+      "c-finished",
+    ]);
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
@@ -86,7 +143,6 @@ test("colocated Node and Bun leave node and npm exec working without exposing Bu
   try {
     const colocated = join(folder, "tools");
     mkdirSync(colocated);
-    const nodeName = process.platform === "win32" ? "node.exe" : "node";
     const colocatedNode = join(colocated, nodeName);
     copyFileSync(node, colocatedNode);
     symlinkSync(
@@ -110,9 +166,8 @@ test("colocated Node and Bun leave node and npm exec working without exposing Bu
       [key]: `${colocated}${delimiter}${system}`,
       BUN_INSTALL: colocated,
     };
-    const nodeDirectory = join(folder, "node-only");
-    const env = environmentWithoutBun(nodeDirectory, colocatedNode, original);
-    const consumerNode = join(nodeDirectory, nodeName);
+    const env = environmentWithoutBun(colocatedNode, original);
+    const consumerNode = bunFreeNodeExecutable(colocatedNode);
     const modules = join(folder, "node_modules");
     const fixture = join(modules, "smoke-bin");
     const bins = join(modules, ".bin");
