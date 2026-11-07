@@ -401,6 +401,8 @@ function fixture(
     renames: {} as Record<string, string>,
     laterLabels: undefined as string[] | undefined,
     prBranch: "feat/x",
+    prUrl: url,
+    origin: "https://github.com/example/repo",
     registry: [
       {
         issue: "work-1",
@@ -430,7 +432,7 @@ function fixture(
           headRefName: world.prBranch,
           headRefOid: world.head,
           mergeCommit: null,
-          url,
+          url: world.prUrl,
         });
       if (fields === "headRefOid,labels")
         return JSON.stringify({
@@ -446,6 +448,7 @@ function fixture(
         changedFiles: world.paths.length,
       });
     }
+    if (args[0] === "repo" && args[1] === "view") return `${world.origin}\n`;
     if (args[1]?.includes("/pulls/7/files"))
       return world.paths
         .map((path) =>
@@ -857,6 +860,32 @@ test("the PR and branch must belong to this lane", async () => {
   expect(mismatch.kind).toBe("pause");
   expect(mismatch.why).toContain("PR #9");
   expect(mismatch.argv).toBeUndefined();
+});
+
+test("a PR in another repository or host is never merged automatically", async () => {
+  for (const other of [
+    "https://github.com/someone/else/pull/7",
+    "https://github.example.com/example/repo/pull/7",
+  ]) {
+    const f = fixture();
+    await f.verdict(head, "MERGE");
+    f.put(
+      "link:work-1:1",
+      { relation: "delivers", url: other },
+      { expectRevision: 0 },
+    );
+    f.world.prUrl = other;
+    const action = await seen(f, { pr: undefined });
+    expect(action.kind).toBe("pause");
+    expect(action.argv).toBeUndefined();
+    expect(action.why).toContain("this project is");
+    expect(action.ask).toContain("Cross-repo");
+  }
+  // The same repository with a trailing .git or different case is the same project.
+  const same = fixture();
+  await same.verdict(head, "MERGE");
+  same.world.origin = "https://GitHub.com/Example/Repo.git/";
+  expect((await seen(same)).kind).toBe("forge");
 });
 
 test("a pause that needs a person comes before a wait that needs time", async () => {

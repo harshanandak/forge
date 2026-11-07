@@ -1417,6 +1417,8 @@ type MergeSettings = {
 };
 class Unreadable extends Error {}
 class HeadMoved extends Error {}
+/** The PR is in another repository or host than this project; never merged automatically. */
+class ForeignRepo extends Error {}
 function parseJson(text: string, what: string): Record<string, unknown> {
   let value: unknown;
   try {
@@ -1511,6 +1513,15 @@ async function readMergeFacts(
   if (!where || Number(where[4]) !== pr)
     throw new Unreadable(`PR url ${url} is not a pull request url`);
   const [, host = "", owner = "", repo = ""] = where;
+  // `forge pr merge <n>` acts on this project's repository, so a PR elsewhere is never merged here.
+  const origin = (await run(["repo", "view", "--json", "url", "--jq", ".url"]))
+    .trim()
+    .replace(/(?:\.git)?\/*$/, "")
+    .toLowerCase();
+  if (origin !== `https://${host}/${owner}/${repo}`.toLowerCase())
+    throw new ForeignRepo(
+      `PR #${pr} is at https://${host}/${owner}/${repo}, this project is ${origin || "unknown"}`,
+    );
   const reasons: string[] = [];
   const named = (rows: unknown, key: string): string[] => {
     if (!Array.isArray(rows)) throw new Unreadable(`PR ${key} list missing`);
@@ -1830,6 +1841,12 @@ async function mergeNext(
     );
   } catch (error) {
     if (error instanceof HeadMoved) return moved(error.message);
+    if (error instanceof ForeignRepo)
+      return pause(
+        error.message,
+        "This PR is in another repository or host. Cross-repo merges are never automatic: merge it yourself or tell me what to do.",
+        { url: pull.url },
+      );
     if (!(error instanceof Unreadable)) throw error;
     return pause(
       `Forge could not read the merge facts for PR #${pr}`,
