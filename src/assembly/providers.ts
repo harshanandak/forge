@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import { cpus, freemem } from "node:os";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
@@ -64,6 +65,11 @@ export interface EnvironmentService {
   readonly packageRoot: string;
   inherit(): Readonly<Record<string, string>>;
   select(names: readonly string[]): Readonly<Record<string, string>>;
+  /** Free memory and the share of CPU time spent busy over one second, measured now. */
+  load(): Promise<{
+    readonly freeMemoryMb: number;
+    readonly cpuBusyPercent: number;
+  }>;
 }
 export interface CryptoService {
   sha256(text: string): string;
@@ -474,6 +480,37 @@ export function createAssemblyProviders(
         get platform(): NodeJS.Platform {
           active(scope);
           return process.platform;
+        },
+        async load() {
+          active(scope);
+          if (!scope.effects.includes("environment:read"))
+            refuse(
+              "EFFECT_UNDECLARED",
+              "Measuring machine load requires environment:read",
+            );
+          // CPU time from os.cpus(), because os.loadavg returns zeros on Windows.
+          const times = () =>
+            cpus().reduce(
+              (sum, cpu) => {
+                const all = Object.values(cpu.times).reduce((a, b) => a + b, 0);
+                return { idle: sum.idle + cpu.times.idle, all: sum.all + all };
+              },
+              { idle: 0, all: 0 },
+            );
+          const before = times();
+          await new Promise((done) => setTimeout(done, 1000));
+          active(scope);
+          const after = times();
+          const total = after.all - before.all;
+          return {
+            freeMemoryMb: Math.floor(freemem() / 1_048_576),
+            cpuBusyPercent:
+              total <= 0
+                ? 0
+                : Math.round(
+                    (100 * (total - (after.idle - before.idle))) / total,
+                  ),
+          };
         },
         select(names: readonly string[]): Readonly<Record<string, string>> {
           const requested: readonly string[] = names;

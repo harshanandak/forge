@@ -1,11 +1,14 @@
 {
   "type": "object",
-  "required": ["id"],
   "properties": {
     "id": {
       "type": "string",
       "minLength": 1,
       "maxLength": 200
+    },
+    "all": {
+      "const": true,
+      "description": "Return the next action for every lane in the registry."
     },
     "pr": {
       "type": "integer",
@@ -17,5 +20,6 @@
       "pattern": "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$"
     }
   },
+  "oneOf": [{ "required": ["id"] }, { "required": ["all"] }],
   "additionalProperties": false
 }

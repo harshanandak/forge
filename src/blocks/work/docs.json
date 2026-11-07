@@ -3,7 +3,15 @@
     "lane.close": {
       "title": "Close lane",
       "summary": "Claim the issue first. Close a merged lane with a PASS receipt, or a CLOSED unmerged PR with a dropped reason. Refuse active run locks and dirty work; resume matching close journals. keepOpen preserves the issue; discardIgnored authorizes other ignored files.",
-      "examples": [{ "input": { "id": "demo-1", "pr": 42, "receipt": "<id>" } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1",
+            "pr": 42,
+            "receipt": "<id>"
+          }
+        }
+      ]
     },
     "lane.start": {
       "title": "Start lane",
@@ -20,8 +28,20 @@
     },
     "lane.next": {
       "title": "Next lane action",
-      "summary": "After a merge, return the next action for the lane from fresh facts: receipt at the merge commit, lane close, other delivered issues, configured rebuild, unwatch, done. Repeating it returns the same action until its fact holds. Unknown or mismatched facts return a pause with an ask.",
-      "examples": [{ "input": { "id": "demo-1", "pr": 42 } }]
+      "summary": "Return the next action for one lane (id) or every lane (all). It first checks the autopilot switch, the stop flag and the lane's budgets, and returns pause with an ask when any says stop. After a merge it returns the next tail action from fresh facts: receipt at the merge commit, lane close, other delivered issues, configured rebuild, unwatch, done. Unknown or mismatched facts return a pause with an ask.",
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1",
+            "pr": 42
+          }
+        },
+        {
+          "input": {
+            "all": true
+          }
+        }
+      ]
     },
     "lane.record": {
       "title": "Record lane action",
@@ -33,6 +53,37 @@
             "action": 1,
             "result": "{\"receipt\":\"<id>\"}"
           }
+        }
+      ]
+    },
+    "lane.stop": {
+      "title": "Stop lanes",
+      "summary": "Set the stop flag for one lane or all lanes. After it, lane next returns only pause. Stopping needs no approval.",
+      "examples": [
+        {
+          "input": {
+            "all": true
+          }
+        }
+      ]
+    },
+    "lane.resume": {
+      "title": "Resume lanes",
+      "summary": "Clear the stop flag for one lane or all lanes. It restarts spending, so it needs the owner's reply relayed as an approval: call once without approval to get a request, ask the owner, then call again with approval {request, quote, source}.",
+      "examples": [
+        {
+          "input": {
+            "all": true
+          }
+        }
+      ]
+    },
+    "lane.status": {
+      "title": "Lane status",
+      "summary": "Show every lane's step, PR, stop flag and use of its call, active time and round budgets, the stop flag and autopilot switch, and a measured load sample. hold names why a new lane would not start now: lane cap, low free memory or high CPU.",
+      "examples": [
+        {
+          "input": {}
         }
       ]
     },
@@ -50,12 +101,25 @@
     "issue.create": {
       "title": "Issue create",
       "summary": "Create with title and kind.",
-      "examples": [{ "input": { "title": "First task", "kind": "task" } }]
+      "examples": [
+        {
+          "input": {
+            "title": "First task",
+            "kind": "task"
+          }
+        }
+      ]
     },
     "issue.show": {
       "title": "Issue show",
       "summary": "Read issue and live lease only.",
-      "examples": [{ "input": { "id": "demo-1" } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1"
+          }
+        }
+      ]
     },
     "issue.list": {
       "title": "List",
@@ -77,28 +141,60 @@
       "title": "Comment",
       "summary": "Append plain comment; read via issue.comments.",
       "examples": [
-        { "input": { "id": "demo-1", "body": "Implementation started." } }
+        {
+          "input": {
+            "id": "demo-1",
+            "body": "Implementation started."
+          }
+        }
       ]
     },
     "issue.claim": {
       "title": "Claim",
       "summary": "Lease an open issue for this session. ttlSeconds overrides claimTtlSeconds (default 3600s).",
-      "examples": [{ "input": { "id": "demo-1", "ttlSeconds": 7200 } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1",
+            "ttlSeconds": 7200
+          }
+        }
+      ]
     },
     "issue.renew": {
       "title": "Renew",
       "summary": "Renew live generation/reacquire expired lease. ttlSeconds overrides claimTtlSeconds (default 3600s).",
-      "examples": [{ "input": { "id": "demo-1", "ttlSeconds": 7200 } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1",
+            "ttlSeconds": 7200
+          }
+        }
+      ]
     },
     "issue.release": {
       "title": "Release",
       "summary": "Release this session's lease.",
-      "examples": [{ "input": { "id": "demo-1" } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1"
+          }
+        }
+      ]
     },
     "issue.close": {
       "title": "Close",
       "summary": "Close with held lease and verified PASS receipt bound to delivered PR, or written withoutReceipt reason.",
-      "examples": [{ "input": { "id": "demo-1", "receipt": "<id>" } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1",
+            "receipt": "<id>"
+          }
+        }
+      ]
     },
     "issue.ready": {
       "title": "Ready",
@@ -115,7 +211,14 @@
     "issue.call": {
       "title": "Call",
       "summary": "Count root intent call; refuse after 60 calls/30 hours; return bounded timebox.",
-      "examples": [{ "input": { "id": "demo-1", "role": "build" } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1",
+            "role": "build"
+          }
+        }
+      ]
     },
     "issue.checkpoint": {
       "title": "Issue checkpoint",
@@ -135,17 +238,38 @@
     "issue.resume": {
       "title": "Issue resume",
       "summary": "Read restart context.",
-      "examples": [{ "input": {} }, { "input": { "id": "demo-1" } }]
+      "examples": [
+        {
+          "input": {}
+        },
+        {
+          "input": {
+            "id": "demo-1"
+          }
+        }
+      ]
     },
     "issue.comments": {
       "title": "Issue comments",
       "summary": "Read issue comments.",
-      "examples": [{ "input": { "id": "demo-1" } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1"
+          }
+        }
+      ]
     },
     "issue.events": {
       "title": "Events",
       "summary": "Read accepted issue and lease history.",
-      "examples": [{ "input": { "id": "demo-1" } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1"
+          }
+        }
+      ]
     },
     "issue.dep": {
       "title": "Dep",
@@ -175,7 +299,13 @@
     "issue.links": {
       "title": "Links",
       "summary": "Read issue links.",
-      "examples": [{ "input": { "id": "demo-1" } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1"
+          }
+        }
+      ]
     },
     "issue.tree": {
       "title": "Tree",
