@@ -187,6 +187,48 @@ other than `local-cli`). A process that clears its own environment is not detect
 a deliberate agent running as the same OS user can also edit the device files. Forge
 stops accidental and hint-following agents, not that one.
 
+## Laws
+
+A law states a rule in plain words and names the resolved config values that must
+hold for it. Add a top-level `laws` section to `.forge/config.yaml`:
+
+```yaml
+laws:
+  codex-reviews-every-pr:
+    says: Codex reviews every PR head before merge
+    at: merge
+    requires:
+      check.gate.headReviewers: { contains: "chatgpt-codex-connector[bot]" }
+  merge-needs-receipt:
+    says: No merge without a passing local check receipt
+    at: merge
+    requires:
+      check.gate.receiptChecks: { nonEmpty: true }
+```
+
+`at` names a point such as `merge`. Core keeps no list of points: an enabled block
+declares the points it enforces in its manifest, as `"enforces": {"merge": "/gate"}`,
+which maps a point to the subtree of that block's own config the enforcement reads.
+The check block declares `merge` with `/gate`. Each `requires` key is
+a JSON Pointer or `<instance>.<key>` for that instance's config, with one condition:
+`equals`, `contains` (an array element or text in a string), `nonEmpty`, `atLeast`
+or `atMost`. A value that is not set fails its condition.
+
+`forge laws check` reports each law as `enforced` (an enabled block that loads
+declares that point, every value sits under `/blocks/<instance>/config/<subtree>` of
+that block and is a setting its config schema declares, and every condition holds), `broken` (a condition fails) or `unenforced`
+(no enabled block enforces that point, a value lies outside what the block
+enforces, or the block does not read that setting: a key its config schema does not
+declare is ignored by the block, so a law on it is never enforced). A disabled, missing or unloadable instance enforces nothing, so its laws
+are unenforced. Each reason names the pointer,
+the condition, the actual value and where it came from. It reads only. The exit
+code is 0 when all laws are enforced, 2 when one is unenforced, and 1 when one is
+broken or the config has an unusable part (an unreadable file, an invalid laws section
+or block). Broken or invalid wins: with one broken
+law and one unenforced law the exit code is 1. A law that fails the schema (an
+unknown key, a bad `at` name, a bad condition) rejects the whole `laws` section, so no
+law in it is checked and the report carries the problem instead.
+
 ## MCP
 
 After importing the template, add this top-level section to
