@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { ProcessSpawnError } from "./errors.ts";
 import type { SpawnPlan } from "./plan.ts";
@@ -44,11 +44,18 @@ export interface CapturedLaunch {
   dispose(): void;
 }
 
+interface Accepted {
+  /** Paused; the caller resumes it once its listeners are attached. */
+  readonly socket: Socket;
+  /** Bytes that arrived in the same read as the nonce. */
+  readonly rest: Buffer;
+}
+
 interface PipeServer {
   readonly name: string;
-  /** The one connection this pipe accepts. */
-  readonly connection: Promise<Socket>;
-  /** Stops listening and destroys the connection, now or when it arrives. */
+  /** The connection that proved it is the launcher's own client end. */
+  readonly connection: Promise<Accepted>;
+  /** Stops listening and destroys every connection, now or when it arrives. */
   abandon(): void;
 }
 
@@ -62,14 +69,35 @@ function listen(server: Server, name: string): Promise<void> {
   });
 }
 
-async function openPipe(): Promise<PipeServer> {
+/**
+ * Another user or process can open a named pipe before the command's own end does, so a connection
+ * counts only after its first bytes are the nonce the launcher wrote on its client end. Any other
+ * connection is destroyed and the server keeps waiting; the first one that proves itself is the
+ * only one kept, and the server then stops listening.
+ */
+async function openPipe(nonce: Buffer): Promise<PipeServer> {
   const name = `\\\\.\\pipe\\forge-${process.pid}-${randomBytes(16).toString("hex")}`;
   const server = createServer();
-  const connection = new Promise<Socket>((resolve, reject) => {
-    server.once("connection", (socket) => {
-      // Exactly one client is accepted; nothing else can reach the pipe after this.
-      server.close();
-      resolve(socket);
+  const clients = new Set<Socket>();
+  const connection = new Promise<Accepted>((resolve, reject) => {
+    server.on("connection", (socket) => {
+      clients.add(socket);
+      socket.on("error", () => undefined);
+      let seen = Buffer.alloc(0);
+      const onData = (chunk: Buffer): void => {
+        seen = Buffer.concat([seen, chunk]);
+        if (seen.length < nonce.length) return;
+        socket.off("data", onData);
+        if (!timingSafeEqual(seen.subarray(0, nonce.length), nonce)) {
+          socket.destroy();
+          return;
+        }
+        socket.pause();
+        server.close();
+        for (const other of clients) if (other !== socket) other.destroy();
+        resolve({ socket, rest: seen.subarray(nonce.length) });
+      };
+      socket.on("data", onData);
     });
     server.once("error", reject);
   });
@@ -81,10 +109,7 @@ async function openPipe(): Promise<PipeServer> {
     connection,
     abandon: () => {
       server.close();
-      connection.then(
-        (socket) => socket.destroy(),
-        () => undefined,
-      );
+      for (const socket of clients) socket.destroy();
     },
   };
 }
@@ -109,11 +134,13 @@ export async function launchCaptured(
     );
   const pipes: PipeServer[] = [];
   try {
-    const stdout = await openPipe();
+    const nonce = randomBytes(16);
+    const stdout = await openPipe(nonce);
     pipes.push(stdout);
-    const stderr = await openPipe();
+    const stderr = await openPipe(nonce);
     pipes.push(stderr);
-    const stdin = options.stdin === undefined ? undefined : await openPipe();
+    const stdin =
+      options.stdin === undefined ? undefined : await openPipe(nonce);
     if (stdin !== undefined) pipes.push(stdin);
     await options.beforeLaunch?.({
       stdout: stdout.name,
@@ -130,6 +157,7 @@ export async function launchCaptured(
         stdout: stdout.name,
         stderr: stderr.name,
         ...(stdin === undefined ? {} : { stdin: stdin.name }),
+        nonce,
       },
     });
     return attach(launched, stdout, stderr, stdin, options);
@@ -163,19 +191,22 @@ function attach(
     sink: (chunk: Buffer) => void,
   ): Promise<void> =>
     pipe.connection.then(
-      (socket) =>
+      ({ socket, rest }) =>
         new Promise<void>((resolve) => {
           sockets.push(socket);
-          socket.on("data", (chunk: Buffer) => {
+          const feed = (chunk: Buffer): void => {
             try {
               sink(chunk);
             } catch (error) {
               fail(error);
             }
-          });
-          // A broken pipe after the command ends is just the end of the stream.
-          socket.on("error", () => undefined);
+          };
+          if (rest.length > 0) feed(rest);
+          socket.on("data", feed);
+          // A read error means the capture may be partial, so it fails instead of looking complete.
+          socket.on("error", fail);
           socket.once("close", () => resolve());
+          socket.resume();
         }),
     );
   const outputs = Promise.all([
@@ -194,7 +225,7 @@ function attach(
 
   if (stdin !== undefined && options.stdin !== undefined) {
     const input = Buffer.from(options.stdin, "utf8");
-    stdin.connection.then((socket) => {
+    stdin.connection.then(({ socket }) => {
       sockets.push(socket);
       socket.on("error", () => undefined);
       // `finish` comes after the command has read everything; closing then gives it end of input.

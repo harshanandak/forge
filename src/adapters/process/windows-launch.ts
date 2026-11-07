@@ -79,6 +79,12 @@ export interface LaunchOptions {
     readonly stdin?: string;
     readonly stdout?: string;
     readonly stderr?: string;
+    /**
+     * Written on each pipe's client end before the command starts. The host accepts a connection
+     * only after it reads this, so another client that reaches the pipe first is never mistaken for
+     * the command's own end.
+     */
+    readonly nonce?: Buffer;
   };
 }
 
@@ -135,6 +141,13 @@ interface LaunchApi {
   readonly waitForSingleObject: (
     handle: bigint,
     milliseconds: number,
+  ) => number;
+  readonly writeFile: (
+    handle: bigint,
+    data: Buffer,
+    size: number,
+    written: Buffer,
+    overlapped: null,
   ) => number;
   readonly getExitCodeProcess: (handle: bigint, code: Buffer) => number;
   readonly closeHandle: (handle: bigint) => number;
@@ -232,6 +245,15 @@ function loadLaunchApi(): LaunchApi {
       kernel32.func("__stdcall", "WaitForSingleObject", "uint32_t", [
         "void *",
         "uint32_t",
+      ]),
+    ),
+    writeFile: asNativeFunction(
+      kernel32.func("__stdcall", "WriteFile", "int", [
+        "void *",
+        "void *",
+        "uint32_t",
+        koffi.out(koffi.pointer("uint8_t")),
+        "void *",
       ]),
     ),
     getExitCodeProcess: asNativeFunction(
@@ -363,10 +385,17 @@ function absoluteApplication(
 }
 
 /** Opens the NUL device or a pipe client end as an inheritable handle for a standard stream. */
-function openStdio(api: LaunchApi, name: string, write: boolean): bigint {
+function openStdio(
+  api: LaunchApi,
+  name: string,
+  write: boolean,
+  nonce?: Buffer,
+): bigint {
+  // A pipe's client end can send the nonce only with write access, even when it is the stdin end.
+  const identify = nonce !== undefined && name !== "NUL";
   const handle = api.createFile(
     name,
-    write ? GENERIC_WRITE : GENERIC_READ,
+    write ? GENERIC_WRITE : GENERIC_READ | (identify ? GENERIC_WRITE : 0),
     FILE_SHARE_READ_WRITE,
     {
       nLength: api.securitySize,
@@ -383,6 +412,21 @@ function openStdio(api: LaunchApi, name: string, write: boolean): bigint {
       `Could not open ${name === "NUL" ? "the NUL device" : "a pipe"} for the command's standard handles.`,
       new Error(`CreateFileW failed with Windows error ${api.lastError()}.`),
     );
+  if (identify) {
+    const written = Buffer.alloc(4);
+    if (
+      api.writeFile(handle, nonce, nonce.length, written, null) === 0 ||
+      written.readUInt32LE(0) !== nonce.length
+    ) {
+      const error = api.lastError();
+      api.closeHandle(handle);
+      throw new ProcessSpawnError(
+        "SPAWN_FAILED",
+        "Could not identify the launcher to its pipe.",
+        new Error(`WriteFile failed with Windows error ${error}.`),
+      );
+    }
+  }
   return handle;
 }
 
@@ -480,7 +524,9 @@ export function launchInJob(
     const pipes = options.pipes;
     const targets = [pipes?.stdin, pipes?.stdout, pipes?.stderr];
     for (const [index, name] of targets.entries())
-      stdioHandles.push(openStdio(api, name ?? "NUL", index !== 0));
+      stdioHandles.push(
+        openStdio(api, name ?? "NUL", index !== 0, pipes?.nonce),
+      );
     const sizeSlot = koffi.alloc("uintptr_t", 1);
     allocations.push(sizeSlot);
     // The first call fails by design and reports the buffer size the list needs.
