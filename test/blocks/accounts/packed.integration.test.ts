@@ -72,11 +72,17 @@ if (a[0] === 'api') {
   const who = /^ghp_fixture_(alice|bob|constructor)_9d3f1c$/.exec(e.GH_TOKEN || '')?.[1];
   const dir = e.GH_CONFIG_DIR && path.resolve(e.GH_CONFIG_DIR);
   if (!who || e.GH_HOST !== 'github.com' || e.GH_PROMPT_DISABLED !== '1' || !dir || dir === path.resolve(e.HOME, 'gh') || !fs.existsSync(dir) || fs.existsSync(path.join(dir, 'hosts.yml'))) process.exit(7);
+  if (flag('apifail')) { fs.writeSync(2, (flag('bigerr') ? 'x'.repeat(500) : '') + 'debug ' + e.GH_TOKEN + '\\n'); process.exit(1); }
   process.stderr.write('debug ' + e.GH_TOKEN + '\\n');
   const route = a[1];
   let m;
   if (route === 'user') console.log(JSON.stringify({ login: flag('swapped') ? 'mallory' : who, id: ids[who] }));
-  else if (route === 'user/emails' && a.includes('--paginate')) console.log(JSON.stringify([{ email: ids[who] + '+' + who + '@users.noreply.github.com', primary: true, verified: true }]));
+  else if (route === 'user/emails' && a.includes('--paginate')) {
+    if (flag('emailscope')) { fs.writeSync(2, 'HTTP 404 Not Found'); process.exit(1); }
+    const page = JSON.stringify([{ email: ids[who] + '+' + who + '@users.noreply.github.com', primary: true, verified: true }]);
+    if (flag('emailpage2')) { fs.writeSync(1, page + '\\n'); process.exit(1); }
+    console.log(page);
+  }
   else if ((m = /^repos\\/([^/]+)\\/([^/]+)$/.exec(route))) console.log(JSON.stringify({ permissions: { push: who === m[1] || (m[1] === 'org' && who === 'bob') } }));
   else if ((m = /^users\\/(alice|bob|constructor)$/.exec(route))) console.log(JSON.stringify({ id: ids[m[1]], name: m[1] + (flag('renamed') ? ' updated' : '') + (m[1] === 'constructor' && flag('leaky') ? ' ' + e.GH_TOKEN : '') }));
   else process.exit(8);
@@ -84,7 +90,7 @@ if (a[0] === 'api') {
   if (e.GH_TOKEN || e.GH_HOST || a.join(' ').indexOf('--hostname github.com --user ') < 0) process.exit(9);
   const who = a[a.indexOf('--user') + 1];
   if (!ids[who]) process.exit(1);
-  console.log('ghp_fixture_' + who + '_9d3f1c');
+  console.log('ghp_fixture_' + who + '_9d3f1c' + (flag('multiline') ? '\\nextra-line' : ''));
 } else if (a[0] === 'auth' && a[1] === 'status') {
   if (e.GH_TOKEN || e.GH_HOST) process.exit(9);
   for (const key of ['APPDATA','GH_CONFIG_DIR','XDG_CONFIG_HOME']) if (!e[key]?.startsWith(e.HOME)) process.exit(7);
@@ -167,7 +173,35 @@ if (a[0] === 'api') {
     );
     return path;
   }
-  return { root, home, bin, env, node, forge, run, git, cli, readAudit, clone };
+  function emptyClone(name: string, remote: string) {
+    const path = join(root, name);
+    mkdirSync(path);
+    git(path, "init", "-b", "main");
+    git(path, "remote", "add", "origin", remote);
+    mkdirSync(join(path, ".forge"));
+    writeFileSync(
+      join(path, ".forge/config.yaml"),
+      JSON.stringify({
+        schemaVersion: "forge.config/1",
+        blocks: { accounts: { source: { builtin: "forge/accounts" } } },
+      }),
+    );
+    return path;
+  }
+  return {
+    root,
+    home,
+    bin,
+    env,
+    node,
+    forge,
+    run,
+    git,
+    cli,
+    readAudit,
+    clone,
+    emptyClone,
+  };
 }
 
 test("installed accounts: one approval catches wrong authors and binds every clone", () => {
@@ -619,31 +653,32 @@ test("installed accounts: one approval catches wrong authors and binds every clo
 
 const TOKEN = "ghp_fixture_constructor_9d3f1c";
 
+function plant(dir: string, node: string, spyLog: string) {
+  mkdirSync(dir, { recursive: true });
+  const spy = join(dir, "spy.cjs");
+  writeFileSync(
+    spy,
+    `require('node:fs').appendFileSync(${JSON.stringify(spyLog)}, process.argv.slice(2).join(' ') + ' ' + JSON.stringify(process.env) + '\\n');`,
+  );
+  for (const name of ["gh", "git"]) {
+    const file = join(dir, process.platform === "win32" ? `${name}.cmd` : name);
+    writeFileSync(
+      file,
+      process.platform === "win32"
+        ? ["@echo off", `"${node}" "${spy}" %*`, ""].join("\r\n")
+        : ["#!/bin/sh", `exec '${node}' '${spy}' "$@"`, ""].join("\n"),
+    );
+    chmodSync(file, 0o700);
+  }
+}
+
 test("installed accounts: planted gh and git on PATH never run or see the token", () => {
   const { root, node, env, cli, clone } = setup();
   try {
     const repo = clone("spy");
     const planted = join(repo, ".bin");
-    mkdirSync(planted);
     const spyLog = join(root, "spy.log");
-    const spy = join(planted, "spy.cjs");
-    writeFileSync(
-      spy,
-      `require('node:fs').appendFileSync(${JSON.stringify(spyLog)}, process.argv.slice(2).join(' ') + ' ' + JSON.stringify(process.env) + '\n');`,
-    );
-    for (const name of ["gh", "git"]) {
-      const file = join(
-        planted,
-        process.platform === "win32" ? `${name}.cmd` : name,
-      );
-      writeFileSync(
-        file,
-        process.platform === "win32"
-          ? ["@echo off", `"${node}" "${spy}" %*`, ""].join("\r\n")
-          : ["#!/bin/sh", `exec '${node}' '${spy}' "$@"`, ""].join("\n"),
-      );
-      chmodSync(file, 0o700);
-    }
+    plant(planted, node, spyLog);
     const hostile = {
       PATH: planted + delimiter + env.PATH,
       GH_TOKEN: "caller-token-never-forward",
@@ -757,6 +792,94 @@ test("installed accounts: the token never reaches stdout, stderr, receipts or th
       ...files.map((path) => readFileSync(path, "latin1")),
     ])
       expect(text).not.toContain(TOKEN);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a gh or git planted in a temp directory never runs during clone discovery", () => {
+  const { root, node, env, cli, clone } = setup();
+  try {
+    const repo = clone("temp-spy");
+    const planted = join(root, "tmp", "planted");
+    const spyLog = join(root, "temp-spy.log");
+    plant(planted, node, spyLog);
+    const plan = cli(
+      repo,
+      "plan",
+      {},
+      {
+        PATH: planted + delimiter + env.PATH,
+        GH_TOKEN: "caller-token-never-forward",
+        GITHUB_TOKEN: "caller-token-never-forward",
+        GH_CONFIG_DIR: join(root, "caller-gh"),
+      },
+    );
+    expect(plan.ok, JSON.stringify(plan)).toBe(true);
+    expect(existsSync(spyLog) ? readFileSync(spyLog, "utf8") : "").toBe("");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a failed API call after the token lookup exposes no token in the error envelope", () => {
+  const { root, bin, cli, emptyClone } = setup();
+  try {
+    const repo = emptyClone("failing", "https://github.com/alice/failing.git");
+    const approval = { quote: "yes", source: "t3:fixture/message:fail" };
+    for (const padded of [false, true]) {
+      writeFileSync(join(bin, "apifail"), "");
+      if (padded) writeFileSync(join(bin, "bigerr"), "");
+      const out = cli(repo, "use", { login: "alice", approval });
+      expect(out.ok).toBe(false);
+      expect(out.error.code).toBe("ACCOUNT_UNAVAILABLE");
+      expect(JSON.stringify(out)).not.toContain("ghp_");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: gh output is validated strictly before it is trusted", () => {
+  const { root, bin, cli, clone, git } = setup();
+  try {
+    const approval = { quote: "yes", source: "t3:fixture/message:strict" };
+    function fresh(name: string) {
+      const repo = clone(name);
+      git(
+        repo,
+        "remote",
+        "set-url",
+        "origin",
+        `https://github.com/alice/${name}.git`,
+      );
+      return repo;
+    }
+    writeFileSync(join(bin, "multiline"), "");
+    expect(
+      cli(fresh("multi-line-token"), "use", { login: "alice", approval }),
+    ).toMatchObject({ ok: false, error: { code: "ACCOUNT_VERIFY_FAILED" } });
+    rmSync(join(bin, "multiline"));
+    writeFileSync(join(bin, "emailpage2"), "");
+    const partial = cli(fresh("email-page-two"), "use", {
+      login: "alice",
+      approval,
+    });
+    expect(partial).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_VERIFY_FAILED" },
+    });
+    expect(partial.error.message).toContain("email");
+    rmSync(join(bin, "emailpage2"));
+    writeFileSync(join(bin, "emailscope"), "");
+    const degraded = cli(fresh("email-scope"), "use", {
+      login: "alice",
+      approval,
+    });
+    expect(degraded.ok, JSON.stringify(degraded)).toBe(true);
+    expect((degraded.result as { emails?: string }).emails).toBe(
+      "noreply-only",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
