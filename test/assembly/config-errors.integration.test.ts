@@ -23,6 +23,7 @@ import { pathToFileURL } from "node:url";
 import { GENERATED_MARKER, renderSkills } from "../../src/surface/skills.ts";
 import { version } from "../../src/version.ts";
 import { candidate } from "../surface/fixtures/catalog.ts";
+import { removeQuietly, spawnBudget } from "../spawn-budget.ts";
 
 type HintedFailure = FailureEnvelope & {
   readonly error: FailureEnvelope["error"] & {
@@ -476,24 +477,20 @@ test("built CLI reports the actual config error and recovers after repair", () =
   const root = mkdtempSync(join(tmpdir(), "forge-config-errors-cli-"));
   const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
   mkdirSync(join(root, ".forge"));
-  const initialized = spawnSync("git", ["init", "--quiet"], {
-    cwd: root,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 5000,
-  });
-  expect(initialized.status, initialized.stderr).toBe(0);
+  const budget = spawnBudget(110_000);
+  budget.run("git init", "git", ["init", "--quiet"], { cwd: root }, 0);
   const file = join(root, ".forge/config.yaml");
   const cli = (args: string[], code: number): ResultEnvelope => {
-    const result = spawnSync("node", [bin, ...args], {
-      cwd: root,
-      env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 30_000,
-    });
-    expect(result.error).toBeUndefined();
-    expect(result.status, result.stdout + result.stderr).toBe(code);
+    const result = budget.run(
+      `forge ${args.join(" ")}`,
+      "node",
+      [bin, ...args],
+      {
+        cwd: root,
+        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+      },
+      code,
+    );
     return JSON.parse(result.stdout) as ResultEnvelope;
   };
   try {
@@ -618,7 +615,7 @@ test("built CLI reports the actual config error and recovers after repair", () =
       result: { commands: [] },
     });
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeQuietly(root);
   }
 }, 110_000);
 
