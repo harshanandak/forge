@@ -1,4 +1,10 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 import {
   chmodSync,
   cpSync,
@@ -242,6 +248,9 @@ test("an attended approval uses the host's configured terminal, not the process'
   expect(asked[0]?.[0]).toBe("block.admit");
   expect(asked[0]?.[1]).toContain("Admit block");
 }, 30_000);
+
+// The platform-conditional tests below take the same 30 s as the rest of this file.
+setDefaultTimeout(30_000);
 
 test.skipIf(process.platform === "win32")(
   "owner.policy writes a private owner.json over a broader one",
