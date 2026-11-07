@@ -391,21 +391,27 @@ async function contact(
   const secrets: string[] = [];
   const redact = (text: string) =>
     secrets.reduce((out, secret) => out.split(secret).join("[redacted]"), text);
+  // One token lookup per login per invocation: each lookup is a gh process.
+  const tokens = new Map<string, string>();
   async function api(login: string, args: string[], optional = false) {
-    const out = await run(
-      gh,
-      ["auth", "token", "--hostname", "github.com", "--user", login],
-      true,
-      ghEnv,
-      { sensitive: true },
-    );
-    // Exactly one token line: only the terminal newline is removed.
-    const token = out.raw.replace(/\r?\n$/, "");
-    if (!out.ok || !/^\S{8,512}$/.test(token))
-      return optional
-        ? { ok: false, text: "" }
-        : refuse("ACCOUNT_VERIFY_FAILED", `gh has no token for ${login}`);
-    secrets.push(token);
+    let token = tokens.get(login);
+    if (token === undefined) {
+      const out = await run(
+        gh,
+        ["auth", "token", "--hostname", "github.com", "--user", login],
+        true,
+        ghEnv,
+        { sensitive: true },
+      );
+      // Exactly one token line: only the terminal newline is removed.
+      token = out.raw.replace(/\r?\n$/, "");
+      if (!out.ok || !/^\S{8,512}$/.test(token))
+        return optional
+          ? { ok: false, text: "" }
+          : refuse("ACCOUNT_VERIFY_FAILED", `gh has no token for ${login}`);
+      secrets.push(token);
+      tokens.set(login, token);
+    }
     // A fresh empty config directory in the private device root, never one the clone can write.
     const scratch = s.device.scratch();
     try {
@@ -522,7 +528,10 @@ async function contact(
   );
   const pushers: string[] = [];
   let denied = 0;
-  if (match && !selected)
+  // `use` with a named login does not need every account's push permission; skipping the
+  // lookups saves two gh processes per signed-in account.
+  const permissionsChecked = !(action === "use" && input.login);
+  if (match && !selected && permissionsChecked)
     for (const c of candidates) {
       const row = await api(c.login, [`repos/${match[1]}/${match[2]}`], true);
       const push = row.ok
@@ -757,6 +766,7 @@ async function contact(
           kind: "use",
           ask,
           proposal: pick?.login ?? null,
+          permissionsChecked,
           input: { login },
           fingerprint: hash(account),
           approval: input.approval,
