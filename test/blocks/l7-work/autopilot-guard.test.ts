@@ -157,6 +157,7 @@ function fixture(
   });
   return {
     records,
+    registry,
     time,
     put,
     sample,
@@ -318,4 +319,40 @@ test("the active time budget compares exact milliseconds, not rounded hours", as
   const over = (await f.all())[0];
   expect(over?.kind).toBe("pause");
   expect(over?.why).toMatch(/active hours budget/);
+});
+
+test("a lane past lane close with steps left stays listed until its journal is done", async () => {
+  const f = fixture();
+  // Lane close removed work-1 from the registry, but its tail is not finished.
+  f.registry.splice(0, 1);
+  const journal = {
+    id: "work-1",
+    pr: 7,
+    url: "https://github.com/example/repo/pull/7",
+    head: "a".repeat(40),
+    mergeCommit: "b".repeat(40),
+    branch: "feat/work-1",
+    named: [],
+    step: "issues",
+    recorded: {},
+    counters: { actions: 3, records: 2 },
+  };
+  f.put("autopilot:work-1", journal, { expectRevision: 0 });
+  const lanes = (actions: Action[]) => actions.map((action) => action.lane);
+  expect(lanes(await f.all()).toSorted()).toEqual(["work-1", "work-2"]);
+  const status = await f.status();
+  expect(status.lanes.map((lane) => lane.id).toSorted()).toEqual([
+    "work-1",
+    "work-2",
+  ]);
+  expect(status.lanes.find((lane) => lane.id === "work-1")).toMatchObject({
+    step: "issues",
+  });
+  f.put(
+    "autopilot:work-1",
+    { ...journal, step: "done" },
+    { expectRevision: 1 },
+  );
+  expect(lanes(await f.all())).toEqual(["work-2"]);
+  expect((await f.status()).lanes.map((lane) => lane.id)).toEqual(["work-2"]);
 });

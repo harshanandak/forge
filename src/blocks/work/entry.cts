@@ -1627,6 +1627,21 @@ async function guardedNext(
       );
   return await tailNext({ ...call, input: { ...input, id: shown } });
 }
+/**
+ * Every lane that still needs attention: the registered lanes, plus any lane whose autopilot
+ * journal is not at done. Lane close removes a lane from the registry before the tail ends.
+ * A journal that cannot be read is listed too, so its pause shows.
+ */
+function activeLanes(state: LeaseStateClient, files: FilesService): string[] {
+  const found = laneRegistry(files).lanes.map(laneIdentity);
+  for (const row of state.list("autopilot:")) {
+    const id = row.key.slice("autopilot:".length);
+    if (!/^work-\d+$/.test(id) || found.includes(id)) continue;
+    const value = row.value as { step?: unknown } | null;
+    if (!isMap(value) || value.step !== "done") found.push(id);
+  }
+  return found;
+}
 async function laneNext(
   call: HandlerCall<NextInput>,
 ): Promise<TailAction | { actions: TailAction[] }> {
@@ -1637,8 +1652,7 @@ async function laneNext(
     if (input.id !== undefined || input.pr !== undefined || input.head)
       fail("INPUT_INVALID", "--all takes no id, pr or head");
     const actions: TailAction[] = [];
-    for (const row of laneRegistry(laneFiles(services)).lanes) {
-      const id = laneIdentity(row);
+    for (const id of activeLanes(state, laneFiles(services))) {
       try {
         actions.push(await guardedNext(call, id));
       } catch (error) {
@@ -1737,13 +1751,13 @@ async function laneStatus(
   const state = client(services),
     ids = idsFor(state, config),
     limits = limitsOf(config),
-    lanes = laneRegistry(laneFiles(services)).lanes;
+    lanes = laneRegistry(laneFiles(services)).lanes,
+    listed = activeLanes(state, laneFiles(services));
   let flags: GlobalState;
   let rows: LaneRow[];
   try {
     flags = readGlobal(state).value;
-    rows = lanes.map((row) => {
-      const id = laneIdentity(row);
+    rows = listed.map((id) => {
       const used = usageOf(state, ids, id, limits);
       return {
         id: ids.shown(id),
