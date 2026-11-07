@@ -53,8 +53,12 @@ export interface Scenarios {
     readonly current: Failure;
   }[];
   readonly quiet: {
-    readonly active: number;
+    readonly skipped: boolean;
     readonly terminations: number;
+    /** Running processes left after the stop. */
+    readonly activeAfter: number;
+    /** Job members right after the exit, kept for the failure message. */
+    readonly membersAtExit: readonly number[];
   };
 }
 
@@ -188,7 +192,7 @@ async function missingScenario(): Promise<Scenarios["missing"]> {
   return results;
 }
 
-/** A command with no descendants exits; the job is already empty, so stop must not terminate. */
+/** A command with no descendants exits; the post-exit stop skips or terminates, and the job ends empty. */
 async function quietScenario(nodePath: string): Promise<Scenarios["quiet"]> {
   const owner = job();
   let launch: CapturedLaunch | undefined;
@@ -211,9 +215,14 @@ async function quietScenario(nodePath: string): Promise<Scenarios["quiet"]> {
     );
     await launch.exited;
     await launch.drained;
-    const active = owner.activeCount();
-    await stopAfterExit(owner);
-    return { active, terminations: owner.terminations() };
+    const membersAtExit = owner.members();
+    const { skipped } = await stopAfterExit(owner);
+    return {
+      skipped,
+      terminations: owner.terminations(),
+      activeAfter: owner.activeCount(),
+      membersAtExit,
+    };
   } finally {
     try {
       launch?.dispose();

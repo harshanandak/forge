@@ -69,8 +69,13 @@ function expectMissing(result: Scenarios): void {
 }
 
 function expectQuiet(result: Scenarios): void {
-  // The job is already empty after exit, so nothing was terminated or polled.
-  expect(result.quiet).toEqual({ active: 0, terminations: 0 });
+  // Windows can still count a process that is shutting down (the console host) just after the
+  // command exits, so the stop may skip or terminate. It never does both, and the job ends empty.
+  const { skipped, terminations, activeAfter, membersAtExit } = result.quiet;
+  expect(terminations, `members at exit ${membersAtExit.join(",")}`).toBe(
+    skipped ? 0 : 1,
+  );
+  expect(activeAfter, `members at exit ${membersAtExit.join(",")}`).toBe(0);
 }
 
 describe.skipIf(!windows)("windows launcher stdio", () => {

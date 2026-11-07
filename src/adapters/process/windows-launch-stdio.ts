@@ -236,7 +236,12 @@ function attach(
 /**
  * The post-exit stop: when the command has exited and the job holds no running process, there is
  * nothing to terminate or wait for, so `stop` (and its poll) is skipped. Otherwise it stops the job.
+ * A process the command left behind, or one still shutting down such as the console host, keeps the
+ * count above 0 for a moment; then the full stop runs, which is always safe.
  */
-export function stopAfterExit(job: WindowsJob): Promise<readonly number[]> {
-  return job.activeCount() === 0 ? Promise.resolve(job.members()) : job.stop();
+export async function stopAfterExit(
+  job: WindowsJob,
+): Promise<{ readonly stopped: readonly number[]; readonly skipped: boolean }> {
+  if (job.activeCount() === 0) return { stopped: job.members(), skipped: true };
+  return { stopped: await job.stop(), skipped: false };
 }
