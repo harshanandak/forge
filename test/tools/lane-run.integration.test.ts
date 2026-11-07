@@ -2915,7 +2915,7 @@ for (const operation of ["reclaim", "rename"])
   });
 
 // Registration is synchronous even when Bun selects a focused subset to execute.
-expect(caseNames).toHaveLength(128);
+expect(caseNames).toHaveLength(129);
 expect(
   createHash("sha256").update(JSON.stringify(caseNames)).digest("hex"),
 ).toBe("cf896f415afa1c01a4fe9d778dbfd5d612c3546e1b45b604bb7607adb254451b");
