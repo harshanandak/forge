@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import {
   createConfig,
   createConfigOperations,
+  type LawsReport,
   type ShowResult,
 } from "../core/config/index.ts";
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
@@ -1329,6 +1330,30 @@ export async function createAssembly(
                 ),
                 result: output,
               };
+            if (request.op === "laws.check") {
+              const report = output as LawsReport;
+              if (report.verdict !== "PASS")
+                return {
+                  ok: false,
+                  op: request.op,
+                  status: report.verdict,
+                  error: {
+                    code:
+                      report.problems.length > 0
+                        ? "LAWS_INVALID"
+                        : report.summary.broken > 0
+                          ? "LAWS_BROKEN"
+                          : "LAWS_UNENFORCED",
+                    message:
+                      report.problems.length > 0
+                        ? report.problems.join("\n")
+                        : `${report.summary.broken} broken and ${report.summary.unenforced} unenforced of ${report.laws.length} laws; see result.laws`,
+                    retry: "never",
+                  },
+                  warnings: call.warnings,
+                  result: output,
+                };
+            }
             return { ...success(request.op, output), warnings: call.warnings };
           }
           if (request.op === "skills.sync") {

@@ -1,6 +1,7 @@
 // Handlers for the operations declared in operations.json. The runtime validates input and output
 // against the declared schemas; each handler is synchronous and returns one JSON value.
 import { createConfig, type PatchStep } from "./config.ts";
+import { createLaws } from "./laws.ts";
 import { createTemplates, type TemplateEnvironment } from "./templates.ts";
 
 export type ConfigOperations = Readonly<
@@ -22,6 +23,7 @@ export function createConfigOperations(
 ): ConfigOperations {
   const config = createConfig(env);
   const templates = createTemplates(env);
+  const laws = createLaws(config);
   const op =
     (handle: (input: Input) => unknown) =>
     (input: unknown): unknown =>
@@ -54,6 +56,7 @@ export function createConfigOperations(
         ...(Array.isArray(i.paths) ? { paths: i.paths.map(String) } : {}),
       }),
     ),
+    "laws.check": op(() => laws.check()),
     "template.list": op(() => templates.list()),
     "template.show": op((i) =>
       templates.show({ template: text(i, "template") }),

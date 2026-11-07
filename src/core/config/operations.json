@@ -65,6 +65,15 @@
       "callers": ["agent", "human"],
       "stability": "experimental"
     },
+    "laws.check": {
+      "input": "schemas/empty.input.json",
+      "output": "schemas/laws-check.output.json",
+      "context": "project",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
     "template.list": {
       "input": "schemas/empty.input.json",
       "output": "schemas/template-list.output.json",

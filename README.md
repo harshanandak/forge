@@ -187,6 +187,38 @@ other than `local-cli`). A process that clears its own environment is not detect
 a deliberate agent running as the same OS user can also edit the device files. Forge
 stops accidental and hint-following agents, not that one.
 
+## Laws
+
+A law states a rule in plain words and names the resolved config values that must
+hold for it. Add a top-level `laws` section to `.forge/config.yaml`:
+
+```yaml
+laws:
+  codex-reviews-every-pr:
+    says: Codex reviews every PR head before merge
+    at: merge
+    requires:
+      check.gate.headReviewers: { contains: "chatgpt-codex-connector[bot]" }
+  merge-needs-receipt:
+    says: No merge without a passing local check receipt
+    at: merge
+    requires:
+      check.gate.receiptChecks: { nonEmpty: true }
+```
+
+`at` is one of `merge`, `push`, `commit`, `close` or `start`. Each `requires` key is
+a JSON Pointer or `<instance>.<key>` for that instance's config, with one condition:
+`equals`, `contains` (an array element or text in a string), `nonEmpty`, `atLeast`
+or `atMost`. A value that is not set fails its condition.
+
+`forge laws check` reports each law as `enforced` (Forge enforces that point and
+every condition holds), `broken` (a condition fails) or `unenforced` (Forge
+enforces nothing at that point yet, or the enforcer does not read those values;
+today only `merge` is enforced, through `check.gate`). Each reason names the
+pointer, the condition, the actual value and where it came from. It reads only and
+exits 0 when all laws are enforced, 1 when one is broken or the section is
+malformed, and 2 when one is unenforced.
+
 ## MCP
 
 After importing the template, add this top-level section to

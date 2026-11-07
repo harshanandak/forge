@@ -22,6 +22,17 @@ export {
 } from "./document.ts";
 export type { ConfigFiles } from "./files.ts";
 export type { Ignored, Layer, LayerEntry } from "./layers.ts";
+export {
+  createLaws,
+  ENFORCERS,
+  type Enforcer,
+  type LawPoint,
+  type LawReason,
+  type LawReport,
+  type LawsApi,
+  type LawsReport,
+  type LawStatus,
+} from "./laws.ts";
 export { createConfigOperations, type ConfigOperations } from "./operations.ts";
 export { CONFIG_FILE, LOCK_FILE } from "./store.ts";
 export {
