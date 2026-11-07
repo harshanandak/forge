@@ -183,9 +183,15 @@ function serialize(evidence: unknown): string {
 
 // Diagnostic only, never a retry: it says whether a hold was transient. The caller still throws
 // the original error, so a failing cleanup keeps failing and nothing is masked.
-function secondAttempt(cleanup: () => void) {
+export const SECOND_ATTEMPT_DELAY_MS = 500;
+export type CleanupSleep = (ms: number) => void;
+const blockingSleep: CleanupSleep = (ms) => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
+function secondAttempt(cleanup: () => void, sleep: CleanupSleep) {
   const started = performance.now();
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  sleep(SECOND_ATTEMPT_DELAY_MS);
   let outcome: string;
   try {
     cleanup();
@@ -241,7 +247,14 @@ export function cleanupAttribution(
     tool = process.env.FORGE_HANDLE_EXE,
     unavailable = process.env.FORGE_HANDLE_UNAVAILABLE,
     inspect = windowsEvidence,
-  }: { tool?: string; unavailable?: string; inspect?: CleanupInspector } = {},
+    // Only a unit test of this helper injects a no-op; every real cleanup waits the full delay.
+    sleep = blockingSleep,
+  }: {
+    tool?: string;
+    unavailable?: string;
+    inspect?: CleanupInspector;
+    sleep?: CleanupSleep;
+  } = {},
 ): void {
   try {
     cleanup();
@@ -302,7 +315,7 @@ export function cleanupAttribution(
               ? evidence
               : { inspected: evidence };
         // Evidence comes first so the attribution JSON stays the last line of the message.
-        error.message += `\nCleanup evidence: ${serialize({ ...base, ...secondAttempt(cleanup) })}`;
+        error.message += `\nCleanup evidence: ${serialize({ ...base, ...secondAttempt(cleanup, sleep) })}`;
         error.message += `\nCleanup attribution: ${JSON.stringify(snapshots)}`;
       } catch {
         // The original cleanup error is rethrown below even if its message cannot be extended.
