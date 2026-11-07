@@ -170,6 +170,7 @@ type TailRecordInput = {
   reply?: string;
   source?: ReplySource;
   request?: string;
+  replaces?: string;
   scope?: Record<string, unknown>;
   ownerChannel?: Channel;
   approval?: unknown;
@@ -2410,6 +2411,7 @@ function saveAsk(state: LeaseStateClient, ask: Ask, revision: number): AskRow {
 /** Held or answered: the owner has spoken about this reason, so it is not asked again. */
 const settledAsk = (ask: Ask): boolean =>
   ask.status === "held" || ask.status === "answered";
+const heldAsk = (ask: Ask | undefined): boolean => ask?.status === "held";
 const openAsk = (ask: Ask | undefined): boolean =>
   ask?.status === "queued" || ask?.status === "sent";
 /**
@@ -2456,6 +2458,17 @@ function channelOf(services: unknown): Channel | undefined {
 function quiet(action: TailAction): TailAction {
   const { ask: _ask, ...rest } = action;
   return rest;
+}
+/** The owner already decided this pause: no ask text, no message, nothing written, until the lane changes. */
+function settledAction(action: TailAction, ask: Ask): TailAction {
+  return {
+    ...quiet(action),
+    step: "owner",
+    kind: "pause",
+    why: `${action.why}. The owner already answered${ask.answer ? ` ${ask.answer.label}` : ""}, so this is not asked again until the lane's state changes.`,
+    expect:
+      "nothing; the owner decided, so do not ask or message them about this again",
+  };
 }
 const sameChannel = (a: Channel, b: Channel): boolean =>
   a.harness === b.harness && a.thread === b.thread;
@@ -2546,12 +2559,13 @@ function mapReply(reply: string, items: Ask[]): string[] | undefined {
   }
   return chosen;
 }
-/** The message a reply answers: one "#<n>" in the words, or source.message "#<n>"; never guessed. */
+const LEADING_NUMBER = /^#(\d{1,9})(?!\w)/;
+/** The message a reply answers: a leading "#<n>" token, or source.message "#<n>"; any other "#<n>" is plain text. */
 function messageNumber(quote: string, source: ReplySource): number | undefined {
-  const found = [...quote.matchAll(/(?:^|\s)#(\d{1,9})(?!\w)/g)].map((match) =>
-    Number(match[1]),
-  );
-  const named = /^#(\d{1,9})$/.exec(source.message ?? "");
+  const found: number[] = [];
+  const leading = LEADING_NUMBER.exec(quote);
+  if (leading) found.push(Number(leading[1]));
+  const named = /^#(\d{1,9})$/.exec(source.message?.trim() ?? "");
   if (named) found.push(Number(named[1]));
   return found.length > 0 && found.every((number) => number === found[0])
     ? found[0]
@@ -2587,7 +2601,8 @@ function ownerRoute(
       const id = ids.stored(action.lane);
       const row = readAsk(state, id);
       if (action.kind !== "pause") {
-        if (row && openAsk(row.value))
+        // The lane moved on, so a hold the owner chose for its old pause no longer applies.
+        if (row && (openAsk(row.value) || heldAsk(row.value)))
           saveAsk(state, { ...row.value, status: "done" }, row.revision);
         continue;
       }
@@ -2619,28 +2634,30 @@ function ownerRoute(
     // Nobody claims the channel by asking first: it is set only with the owner's approval.
     if (owner === undefined)
       return actions.map((action): TailAction =>
-        current.get(ids.stored(action.lane)) === undefined ||
-        settledAsk(current.get(ids.stored(action.lane))!)
+        current.get(ids.stored(action.lane)) === undefined
           ? action
-          : {
-              ...action,
-              why: `${action.why}. The owner channel is not set, so this ask stays queued.`,
-              ask: `Set the owner channel with forge lane record --input '{"ownerChannel":{"harness":"<owner chat harness>","thread":"<owner chat thread>"}}' (fill in the owner's chat harness and thread; Forge asks the owner to approve it). Then run lane next again.`,
-            },
+          : settledAsk(current.get(ids.stored(action.lane))!)
+            ? settledAction(action, current.get(ids.stored(action.lane))!)
+            : {
+                ...action,
+                why: `${action.why}. The owner channel is not set, so this ask stays queued.`,
+                ask: `Set the owner channel with forge lane record --input '{"ownerChannel":{"harness":"<owner chat harness>","thread":"<owner chat thread>"}}' (fill in the owner's chat harness and thread; Forge asks the owner to approve it). Then run lane next again.`,
+              },
       );
     if (!sameChannel(owner.channel, channel))
       return actions.map((action): TailAction =>
-        current.get(ids.stored(action.lane)) === undefined ||
-        settledAsk(current.get(ids.stored(action.lane))!)
+        current.get(ids.stored(action.lane)) === undefined
           ? action
-          : {
-              ...quiet(action),
-              step: "owner",
-              kind: "hand-to-owner",
-              why: `${action.why}. This session is not the owner channel (${owner.channel.harness}, ${owner.channel.thread}).`,
-              expect:
-                "nothing from this session; hand this to the owner channel and stop",
-            },
+          : settledAsk(current.get(ids.stored(action.lane))!)
+            ? settledAction(action, current.get(ids.stored(action.lane))!)
+            : {
+                ...quiet(action),
+                step: "owner",
+                kind: "hand-to-owner",
+                why: `${action.why}. This session is not the owner channel (${owner.channel.harness}, ${owner.channel.thread}).`,
+                expect:
+                  "nothing from this session; hand this to the owner channel and stop",
+              },
       );
     const open: Ask[] = [];
     let highest = 0;
@@ -2702,8 +2719,8 @@ function ownerRoute(
       last === undefined ? at : new Date(last + OWNER_WINDOW_MS).toISOString();
     return actions.map((action): TailAction => {
       const ask = current.get(ids.stored(action.lane));
-      if (action.kind !== "pause" || ask === undefined || settledAsk(ask))
-        return action;
+      if (action.kind !== "pause" || ask === undefined) return action;
+      if (settledAsk(ask)) return settledAction(action, ask);
       if (ask.gated && ask.gated.request === undefined)
         return {
           ...quiet(action),
@@ -2889,7 +2906,7 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
     return fail("INPUT_CONFLICT", `${ASK(id)} is missing`);
   });
   const mapped = mapReply(
-    quote.replace(/(?:^|\s)#\d{1,9}(?!\w)/g, " "),
+    quote.replace(LEADING_NUMBER, " "),
     rows.map((row) => row.value),
   );
   // A resume bound to {all:true} clears every stop, so it needs every ask bound to that same
@@ -3035,11 +3052,13 @@ function ownerRequest(call: HandlerCall<TailRecordInput>): {
   const state = client(services),
     ids = idsFor(state, config),
     id = ids.stored(input.id!);
-  const { request, scope } = input;
+  const { request, scope, replaces } = input;
   if (
     !nonEmpty(request) ||
     !/^[A-Za-z0-9-]{1,200}$/.test(request) ||
-    !isMap(scope)
+    !isMap(scope) ||
+    (replaces !== undefined &&
+      (!nonEmpty(replaces) || !/^[A-Za-z0-9-]{1,200}$/.test(replaces)))
   )
     return fail(
       "INPUT_INVALID",
@@ -3053,7 +3072,13 @@ function ownerRequest(call: HandlerCall<TailRecordInput>): {
     return fail("INPUT_CONFLICT", error.message);
   }
   const gate = row?.value.gated;
-  if (!row || !openAsk(row.value) || !gate)
+  // A renewal also reaches an ask whose owner answer carries the dead request; a hold or a done ask never.
+  const renewable = openAsk(row?.value) || row?.value.status === "answered";
+  if (
+    !row ||
+    !gate ||
+    !(replaces === undefined ? openAsk(row.value) : renewable)
+  )
     return fail(
       "INPUT_CONFLICT",
       `${input.id} has no open gated ask waiting for a request id`,
@@ -3065,13 +3090,53 @@ function ownerRequest(call: HandlerCall<TailRecordInput>): {
       "INPUT_CONFLICT",
       `The request is for ${canonical(scope)} but ${input.id} waits on ${canonical(gate.input)}`,
     );
-  if (gate.request !== undefined)
+  if (gate.request === request)
     return fail(
       "INPUT_CONFLICT",
-      gate.request === request
-        ? "That request id is already recorded for this ask"
-        : "This ask already has a request id; it is not replaced",
+      "That request id is already recorded for this ask",
     );
+  if (gate.request !== undefined && replaces === undefined)
+    return fail(
+      "INPUT_CONFLICT",
+      "This ask already has a request id; it is not replaced",
+    );
+  if (replaces !== undefined && replaces !== gate.request)
+    return fail(
+      "INPUT_CONFLICT",
+      gate.request === undefined
+        ? "This ask has no request id to replace"
+        : "replaces names a request this ask does not carry",
+    );
+  // The runtime already reported the replaced request as expired or used. Every ask on it is asked
+  // again, bound to the new id; an answer given for the old id is dropped, never carried over.
+  if (replaces !== undefined) {
+    const at = new Date(state.now()).toISOString();
+    for (const other of state.list("autopilot-ask:")) {
+      const ask = other.value;
+      if (
+        !validAsk(ask) ||
+        !(openAsk(ask) || ask.status === "answered") ||
+        ask.gated?.request !== replaces ||
+        ask.gated.op !== gate.op ||
+        canonical(ask.gated.input) !== canonical(gate.input)
+      )
+        continue;
+      const { answer: _answer, batch: _batch, n: _n, ...rest } = ask;
+      persist(
+        state,
+        other.key,
+        {
+          ...rest,
+          gated: { ...ask.gated, request },
+          queuedAt: at,
+          status: "queued",
+        },
+        other.revision,
+      );
+    }
+    emit(state, id, "request-renewed", { replaces, request });
+    return { lane: ids.shown(id), step: "owner", n: 0, recorded: true };
+  }
   for (const other of state.list("autopilot-ask:")) {
     const ask = other.value;
     if (
@@ -3198,6 +3263,16 @@ function laneResume(call: HandlerCall<ResumeInput>): { resumed: string } {
       : { quote: input.approval.quote.slice(0, 2000) }),
   };
   persist(state, GLOBAL, value, revision);
+  // A resume is a state change: a hold the owner chose for the old pause no longer applies.
+  for (const row of state.list("autopilot-ask:")) {
+    const ask = row.value;
+    if (
+      validAsk(ask) &&
+      heldAsk(ask) &&
+      (input.all === true || ask.lane === ids.stored(input.id!))
+    )
+      persist(state, row.key, { ...ask, status: "done" }, row.revision);
+  }
   return { resumed: scope };
 }
 async function laneStatus(
@@ -3287,7 +3362,8 @@ function laneRecord(call: HandlerCall<TailRecordInput>):
       input.action !== undefined ||
       input.result !== undefined ||
       input.mergeGate !== undefined ||
-      input.request !== undefined
+      input.request !== undefined ||
+      input.replaces !== undefined
     )
       return fail("INPUT_INVALID", "Give a reply and its source on their own");
     return ownerReply(call);
@@ -3298,6 +3374,8 @@ function laneRecord(call: HandlerCall<TailRecordInput>):
     ids = idsFor(state, config),
     id = ids.stored(input.id);
   get(state, id, input.id);
+  if (input.replaces !== undefined && input.request === undefined)
+    return fail("INPUT_INVALID", "replaces goes with a new request id");
   if (input.request !== undefined) {
     if (
       input.action !== undefined ||
