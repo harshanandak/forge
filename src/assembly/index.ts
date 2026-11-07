@@ -88,10 +88,14 @@ import {
   attendedTerminal,
   consumeOwnerApproval,
   directApproval,
+  laneOwnerChannelAsk,
+  laneOwnerChannelOp,
+  laneRequestOp,
   laneResumeAsk,
   laneResumeClaim,
   laneResumeOp,
   POLICY_OPS,
+  requestBoundTo,
   unattendedOps,
   memoryOwnerAsk,
   memoryOwnerClaim,
@@ -1617,9 +1621,33 @@ export async function createAssembly(
         const owned =
           target && memoryOwnerOp(target)
             ? memoryOwnerClaim(request.input)
-            : target && laneResumeOp(target)
+            : target &&
+                (laneResumeOp(target) ||
+                  laneOwnerChannelOp(target, request.input))
               ? laneResumeClaim(request.input)
               : undefined;
+        if (target && laneRequestOp(target, request.input)) {
+          // A request id may be recorded on an ask only if it is a pending request for exactly
+          // `lane resume` with the scope given; otherwise an approval for one step could ride on another.
+          const fields = request.input as Record<string, unknown>;
+          if (
+            !requestBoundTo({
+              state: (await openApproval(request)).direct.state,
+              request: fields.request,
+              op: "lane.resume",
+              input: fields.scope,
+              deviceRoot,
+              projectRoot: root,
+            })
+          )
+            refuse(
+              "INPUT_CONFLICT",
+              "The request is not a pending approval request bound to lane resume with that scope. Call lane resume without approval to get one.",
+            );
+        }
+        const laneOwned =
+          target !== undefined &&
+          (laneResumeOp(target) || laneOwnerChannelOp(target, request.input));
         if (owned) {
           // The runtime refuses dry runs for these operations; refuse first so a dry run neither
           // burns a valid approval nor leaves a pending request behind.
@@ -1634,14 +1662,16 @@ export async function createAssembly(
             );
           await approve(
             { ...request, input: owned.input },
-            laneResumeOp(target!)
-              ? laneResumeAsk(request.input)
-              : memoryOwnerAsk(target!.declaredOp!, request.input),
-            // Resuming lanes restarts spending: only a relayed reply counts, never a typed phrase or owner.json.
-            laneResumeOp(target!),
+            laneOwnerChannelOp(target!, request.input)
+              ? laneOwnerChannelAsk(request.input)
+              : laneResumeOp(target!)
+                ? laneResumeAsk(request.input)
+                : memoryOwnerAsk(target!.declaredOp!, request.input),
+            // Resuming lanes restarts spending and naming the owner channel lets it approve: only a relayed reply counts, never a typed phrase or owner.json.
+            laneOwned,
           );
           // The block records the verified quote exactly as it did for a conversation claim.
-          if (owned.relayed && !laneResumeOp(target!))
+          if (owned.relayed && !laneOwned)
             request = {
               ...request,
               input: {

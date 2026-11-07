@@ -309,6 +309,68 @@ export function laneResumeOp(candidate: {
     candidate.blockId === "forge/work" && candidate.declaredOp === "lane.resume"
   );
 }
+/**
+ * Naming the owner channel decides whose replies approve gated lane steps, so it needs a relayed
+ * owner reply and is never implicit or self-approved.
+ */
+export function laneOwnerChannelOp(
+  candidate: { blockId?: string | undefined; declaredOp?: string | undefined },
+  input: unknown,
+): boolean {
+  return (
+    candidate.blockId === "forge/work" &&
+    candidate.declaredOp === "lane.record" &&
+    object(input)?.ownerChannel !== undefined
+  );
+}
+export function laneOwnerChannelAsk(input: unknown): string {
+  const channel = object(object(input)?.ownerChannel);
+  const shown = (value: unknown) => (typeof value === "string" ? value : "");
+  return `Make ${shown(channel?.harness)} thread ${shown(channel?.thread)} the owner channel. Replies from it become approvals for gated lane steps.`;
+}
+/** Recording a gated step's request id on an ask: the runtime checks the request before the block stores it. */
+export function laneRequestOp(
+  candidate: { blockId?: string | undefined; declaredOp?: string | undefined },
+  input: unknown,
+): boolean {
+  return (
+    candidate.blockId === "forge/work" &&
+    candidate.declaredOp === "lane.record" &&
+    object(input)?.request !== undefined
+  );
+}
+/**
+ * True when `request` is a pending, unexpired approval request bound to exactly this operation and
+ * input in this device and project. It only reads; nothing is consumed.
+ */
+export function requestBoundTo(options: {
+  state: Pick<DeletableStateClient, "get">;
+  request: unknown;
+  op: string;
+  input: unknown;
+  deviceRoot: string;
+  projectRoot: string;
+  now?: () => number;
+}): boolean {
+  if (typeof options.request !== "string") return false;
+  const stored = object(options.state.get(options.request)?.value);
+  const input = object(options.input);
+  if (stored === undefined || input === undefined) return false;
+  return (
+    stored.status === "pending" &&
+    typeof stored.expiresAt === "number" &&
+    stored.expiresAt > (options.now ?? Date.now)() &&
+    stored.binding ===
+      digest(
+        canonical({
+          op: options.op,
+          input,
+          deviceRoot: options.deviceRoot,
+          projectRoot: options.projectRoot,
+        }),
+      )
+  );
+}
 /** Splits the optional approval claim off a lane resume call; a missing claim asks the owner. */
 export function laneResumeClaim(input: unknown): {
   input: Record<string, unknown>;
