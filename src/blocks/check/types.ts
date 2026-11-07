@@ -33,10 +33,13 @@ export interface CheckConfig {
     readonly requiredChecks?: "github-required" | readonly string[];
     readonly receiptChecks?: readonly string[];
     readonly doorPaths?: readonly string[];
+    readonly headReviewers?: readonly string[];
   };
 }
 export interface GateInput {
   readonly pr: number;
+  /** Merge only: refuse to merge unless the gate reads this exact head. */
+  readonly head?: string;
 }
 export interface GateResult {
   readonly verdict: "PASS" | "REFUSED";

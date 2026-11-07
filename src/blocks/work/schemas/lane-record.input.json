@@ -1,6 +1,15 @@
 {
   "type": "object",
-  "required": ["id", "action", "result"],
+  "required": ["id"],
+  "oneOf": [
+    { "required": ["action", "result"], "not": { "required": ["mergeGate"] } },
+    {
+      "required": ["mergeGate"],
+      "not": {
+        "anyOf": [{ "required": ["action"] }, { "required": ["result"] }]
+      }
+    }
+  ],
   "properties": {
     "id": {
       "type": "string",
@@ -17,6 +26,21 @@
       "minLength": 2,
       "maxLength": 65536,
       "description": "A JSON object with the facts Forge cannot read itself."
+    },
+    "mergeGate": {
+      "type": "object",
+      "required": ["head", "verdict", "reviewer"],
+      "properties": {
+        "head": {
+          "type": "string",
+          "pattern": "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$",
+          "description": "The full head the merge-gate review read."
+        },
+        "verdict": { "enum": ["MERGE", "FIX"] },
+        "reviewer": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false,
+      "description": "The merge-gate review verdict for one head. Only MERGE for the current head lets lane next return the merge action."
     }
   },
   "additionalProperties": false

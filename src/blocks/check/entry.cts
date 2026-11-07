@@ -792,6 +792,9 @@ function doorMatches(path: string, glob: string): boolean {
   return new RegExp(`${pattern}$`).test(path);
 }
 
+/** A GitHub login, with the [bot] suffix the REST API gives apps. It is spliced into a jq filter, so it stays strict. */
+const REVIEWER = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?$/;
+const CODEX_REVIEWER = "chatgpt-codex-connector[bot]";
 const THREAD_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
 const CHECK_QUERY =
@@ -1154,6 +1157,13 @@ async function gate(
         if (page.files !== undefined) invalid();
         continue;
       }
+      if (typeof page.status !== "string") invalid();
+      // The compare base is the current tip of the base branch; only "ahead" or "identical" means it is an ancestor of the head.
+      if (page.status !== "ahead" && page.status !== "identical")
+        refuse(
+          "BASE_NOT_UPDATED",
+          `branch does not contain the current base branch tip (compare status: ${page.status})`,
+        );
       if (!Array.isArray(page.files) || page.files.length > 300) invalid();
       for (const file of page.files) {
         if (
@@ -1206,6 +1216,68 @@ async function gate(
         "DOOR_PATH_TOUCHED",
         "Pull request changes configured door paths; owner review is required",
       );
+    const reviewers = config.gate?.headReviewers ?? [CODEX_REVIEWER];
+    if (!reviewers.length)
+      refuse(
+        "HEAD_REVIEWERS_EMPTY",
+        "gate.headReviewers must name at least one reviewer; an empty list is not a way to skip the head review",
+      );
+    for (const login of reviewers) {
+      if (!REVIEWER.test(login)) invalid();
+      // GitHub logins are case-insensitive. Codex keeps one summary comment per PR with one state line.
+      const states = (
+        await gh([
+          "api",
+          `repos/${repository[2]}/${repository[3]}/issues/${input.pr}/comments`,
+          "--paginate",
+          "--hostname",
+          repository[1]!,
+          "--jq",
+          `.[] | select((.user.login | ascii_downcase) == "${login.toLowerCase()}") | .body | split("\\n")[] | select(contains("codex-review-state:v1"))`,
+        ])
+      )
+        .split("\n")
+        .flatMap((line) => {
+          const text = /codex-review-state:v1 (\{.*\})/.exec(line)?.[1];
+          return text === undefined ? [] : [text];
+        });
+      // Only state lines that name this head count; two different results for it conflict.
+      const named: { done: boolean; clean: boolean }[] = [];
+      for (const text of states) {
+        try {
+          const value: unknown = JSON.parse(text);
+          const review =
+            isRecord(value) && isRecord(value.code_review)
+              ? value.code_review
+              : undefined;
+          if (
+            typeof review?.commit_sha === "string" &&
+            review.commit_sha.toLowerCase() === head
+          )
+            named.push({
+              done: review.status === "completed",
+              // A clean review says false; true, null or a missing field is not clean.
+              clean: review.has_unresolved_findings === false,
+            });
+        } catch {
+          // A line that is not JSON names no head.
+        }
+      }
+      const first = named[0];
+      if (!first || !first.done)
+        refuse("HEAD_REVIEW_MISSING", `head review missing: ${login}`);
+      else if (
+        named.some(
+          (row) => row.done !== first.done || row.clean !== first.clean,
+        )
+      )
+        refuse("HEAD_REVIEW_CONFLICT", `head review conflicts: ${login}`);
+      else if (!first.clean)
+        refuse(
+          "HEAD_REVIEW_FINDINGS",
+          `head review has unresolved findings: ${login}`,
+        );
+    }
     const after = await view();
     if (after.headRefOid !== head)
       refuse(
@@ -1293,6 +1365,18 @@ async function prMerge(args: Call<GateInput>): Promise<MergeResult> {
     deadline: args.deadline - 25000 - cleanupMs - readbackBudgetMs,
   });
   active();
+  if (
+    args.input.head !== undefined &&
+    evidence.head !== "" &&
+    args.input.head.toLowerCase() !== evidence.head
+  )
+    return {
+      outcome: "HEAD_MOVED",
+      pr: args.input.pr,
+      head: evidence.head,
+      gate: evidence,
+      detail: `Expected head ${args.input.head} but the gate read ${evidence.head}; nothing was merged`,
+    };
   let result: MergeResult = {
     outcome: "MERGE_UNVERIFIED",
     pr: args.input.pr,
