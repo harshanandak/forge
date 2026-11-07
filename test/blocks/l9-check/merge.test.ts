@@ -219,6 +219,7 @@ function fixture() {
           } else if (args[1]?.includes("/compare/"))
             value = [
               {
+                status: "ahead",
                 base_commit: { sha: base },
                 files: [{ filename: "src/main.ts", status: "modified" }],
               },

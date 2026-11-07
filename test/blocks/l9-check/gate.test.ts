@@ -176,6 +176,7 @@ function fixture(headRefName: unknown = "feat/x") {
               comparePages ??
                 (Array.isArray(files)
                   ? files.map((_page, index) => ({
+                      status: "ahead",
                       base_commit: { sha: base },
                       ...(index === 0 ? { files: files.flat() } : {}),
                     }))
