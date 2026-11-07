@@ -44,6 +44,7 @@ import {
   removeIn,
   setIn,
 } from "./pointer.ts";
+import type { Enforcer } from "./laws.ts";
 import { expandShortForm } from "./short.ts";
 import { CONFIG_FILE, commit, readProject } from "./store.ts";
 
@@ -56,6 +57,8 @@ export interface TemplateSource {
 export interface TemplateEnvironment extends ConfigEnvironment {
   readonly templates: TemplateSource;
   readonly commandsFor?: (declaredOp: string) => readonly string[];
+  /** What the enabled, loadable blocks say they enforce, read afresh when laws are checked. */
+  readonly enforcers?: () => readonly Enforcer[];
 }
 
 export interface TemplateSummary {

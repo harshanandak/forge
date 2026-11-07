@@ -30,10 +30,72 @@
       "type": "object",
       "propertyNames": { "$ref": "common.json#/$defs/JsonPointer" },
       "additionalProperties": { "$ref": "#/$defs/KeyOwner" }
+    },
+    "laws": {
+      "description": "Rules the project states in plain words, each tied to the resolved config values that must hold. laws.check reports whether each is enforced, broken or unenforced; nothing else reads this section.",
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "$ref": "common.json#/$defs/Segment" },
+      "additionalProperties": { "$ref": "#/$defs/Law" }
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "Law": {
+      "description": "One rule: what it says, the point it applies at, and the config values that must hold.",
+      "type": "object",
+      "required": ["says", "at", "requires"],
+      "properties": {
+        "says": {
+          "description": "The rule in plain words.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "at": {
+          "description": "The point the rule applies at, named as an enabled block declares it in its manifest's enforces.",
+          "$ref": "common.json#/$defs/Segment"
+        },
+        "requires": {
+          "description": "Resolved config values that must hold, keyed by a JSON Pointer or <instance>.<key> for that instance's config.",
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "additionalProperties": { "$ref": "#/$defs/LawCondition" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "LawCondition": {
+      "description": "Exactly one test on a resolved value. A missing value fails every test.",
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "equals": { "description": "The value equals this." },
+        "contains": {
+          "description": "An array holds this element, or a string holds this text."
+        },
+        "nonEmpty": {
+          "description": "true: a non-empty string, array or object; false: an empty one.",
+          "type": "boolean"
+        },
+        "atLeast": {
+          "description": "A number no smaller than this.",
+          "type": "number"
+        },
+        "atMost": {
+          "description": "A number no larger than this.",
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
     "RuntimeBudget": {
       "description": "Optional host ceiling, or the fallback budget for operations without timeoutMs.",
       "type": "object",

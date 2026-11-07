@@ -153,6 +153,57 @@
         }
       },
       "additionalProperties": true
+    },
+    "LawReason": {
+      "description": "One condition of a law, with the resolved value it was judged on.",
+      "type": "object",
+      "required": ["pointer", "condition", "actual", "set", "holds", "source"],
+      "properties": {
+        "pointer": {
+          "description": "The resolved config pointer, or the key as written when it is not a config path.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "condition": { "type": "object" },
+        "actual": {
+          "description": "The resolved value; null when it is not set."
+        },
+        "set": { "type": "boolean" },
+        "holds": { "type": "boolean" },
+        "source": {
+          "enum": [
+            "default",
+            "derived",
+            "project",
+            "template",
+            "invocation",
+            null
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "LawReport": {
+      "type": "object",
+      "required": ["id", "says", "at", "status", "detail", "reasons"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "says": { "type": "string" },
+        "at": {
+          "$ref": "../../../../schemas/common.json#/$defs/Segment"
+        },
+        "status": { "enum": ["enforced", "broken", "unenforced"] },
+        "detail": {
+          "description": "Why the law has this status, in plain words.",
+          "type": "string"
+        },
+        "reasons": {
+          "type": "array",
+          "items": { "$ref": "defs.json#/$defs/LawReason" }
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

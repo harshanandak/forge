@@ -122,6 +122,10 @@
         }
       ]
     },
+    "laws.check": {
+      "title": "Check laws",
+      "summary": "Report each law in the config as enforced, broken or unenforced, with the resolved value and where it came from. Reads only. Exits 0 when every law is enforced, 2 when a law is unenforced (no enabled block enforces its point, its values lie outside what that block enforces, or a value is not a setting that block's config schema declares), and 1 when a law is broken or the config has an unusable part (an unreadable file, an invalid laws section or block). Broken or invalid wins over unenforced. A schema-invalid law rejects the whole laws section, so no law in it is checked."
+    },
     "template.list": {
       "title": "List templates",
       "summary": "List installed configuration templates."

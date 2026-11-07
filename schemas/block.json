@@ -52,6 +52,13 @@
       "propertyNames": { "$ref": "common.json#/$defs/OperationName" },
       "additionalProperties": { "$ref": "operation.json" }
     },
+    "enforces": {
+      "description": "Points this block enforces, each mapped to the subtree of its own config (a JSON Pointer) that the enforcement reads. A law at a point counts as enforced only through an enabled, loadable block that declares it.",
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": { "$ref": "common.json#/$defs/Segment" },
+      "additionalProperties": { "$ref": "common.json#/$defs/JsonPointer" }
+    },
     "provides": {
       "type": "array",
       "maxItems": 16,
