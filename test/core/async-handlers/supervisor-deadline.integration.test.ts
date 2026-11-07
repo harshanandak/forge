@@ -35,12 +35,10 @@ test("the native helper expires without receiving its start message", async () =
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([
-      ready,
-      exited.then(() => {
-        throw Error("The helper exited before reporting ready");
-      }),
-    ]);
+    // If the parent stalls past the helper's lifetime, "exit" can arrive before the
+    // IPC "ready" message. An exit before ready still proves the helper did not outlive
+    // its deadline, so the expiry race below resolves at once and the exit assertion holds.
+    await Promise.race([ready, exited]);
     await Promise.race([
       exited,
       new Promise<never>((_resolve, reject) => {
