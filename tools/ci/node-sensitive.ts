@@ -13,6 +13,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for node program coverage.",
   "test/adapters/process/supervisor-errno.integration.test.ts":
     "Launches selected Node for supervisor errno coverage.",
+  "test/adapters/process/windows-launch-stdio.integration.test.ts":
+    "Launches selected Node for Windows launcher stdio and exit coverage.",
   "test/adapters/process/windows-launch.integration.test.ts":
     "Launches selected Node for Windows launcher parity and containment coverage.",
   "test/assembly/check-outcomes.integration.test.ts":
