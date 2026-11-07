@@ -62,7 +62,7 @@ export async function powerShellStep(
               new Error(
                 `PowerShell ${timedOut ? "timeout" : `exit ${status}`}; phase=${phases.commandStart ? "command" : phases.firstOutput ? "startup-output" : "startup"}; case=${phases.case ?? "pending"}; ${JSON.stringify(phases)}; ${stderr}`,
               ),
-              { stdout, stderr },
+              { stdout, stderr, timedOut },
             ),
           );
       });
@@ -83,6 +83,8 @@ type CaseOutcome = {
   status: number;
   stdout: string;
   stderr: string;
+  /** Why a case failed without a status of its own: its launch timed out or exited, or it never ran. */
+  reason?: "timeout" | "exit" | "not-run";
 };
 
 function batchScript(cases: readonly BatchCase[]) {
@@ -105,7 +107,10 @@ function finishedCase(index: number, stdout: string) {
 }
 
 /** One launch per batch; emitted commands remain verbatim inside isolated script blocks. */
-export function powerShellBatch(launch: PowerShellSpawn = spawn) {
+export function powerShellBatch(
+  launch: PowerShellSpawn = spawn,
+  now: () => number = () => performance.now(),
+) {
   let launches = 0;
   return {
     get launches() {
@@ -128,38 +133,63 @@ export function powerShellBatch(launch: PowerShellSpawn = spawn) {
       });
     },
     /**
-     * One outcome per case, in order. A launch that stalls or dies fails only the case it was
-     * running (status -1, stderr holds the timeout message); the cases before it keep their
-     * results and the cases after it run in a fresh launch with the same deadline.
+     * One outcome per case, in order, inside ONE wall-clock budget equal to `timeout` (the same
+     * worst case as `run`). A launch that stalls or dies fails only the case it was running
+     * (status -1, `reason` "timeout" or "exit", stderr holds the message). The cases before it keep
+     * their results; the cases after it run in a fresh launch that gets only the budget left.
+     * When the budget is spent they are reported as `reason: "not-run"` (status -1), never as
+     * passes, and no launch starts for them.
      */
     async runEach(
       shell: string,
       cases: readonly BatchCase[],
       timeout: number,
     ): Promise<CaseOutcome[]> {
+      const started = now();
       const outcomes: CaseOutcome[] = [];
       let pending = cases;
       while (pending.length > 0) {
         const current = pending;
+        const remaining = timeout - (now() - started);
+        if (remaining <= 0) {
+          const after = outcomes.at(-1);
+          const why = after
+            ? ` (after ${after.name} ${after.reason === "timeout" ? "stalled" : "failed"})`
+            : "";
+          for (const { name } of current)
+            outcomes.push({
+              name,
+              status: -1,
+              stdout: "",
+              stderr: `deadline exhausted; not run${why}`,
+              reason: "not-run",
+            });
+          break;
+        }
         launches += 1;
         let stdout: string;
         let stderr: string;
-        let failure: Error | undefined;
+        let failure: (Error & { timedOut?: boolean }) | undefined;
         try {
           ({ stdout, stderr } = await powerShellStep(
             shell,
             batchScript(current),
-            timeout,
+            remaining,
             current.map(({ name }) => name),
             launch,
           ));
         } catch (error) {
           if (!(error instanceof Error)) throw error;
-          const partial = error as Error & { stdout?: string; stderr?: string };
-          failure = error;
+          const partial = error as Error & {
+            stdout?: string;
+            stderr?: string;
+            timedOut?: boolean;
+          };
+          failure = partial;
           stdout = partial.stdout ?? "";
           stderr = partial.stderr ?? "";
         }
+        const reason = failure?.timedOut ? "timeout" : "exit";
         let finished = 0;
         for (const { name } of current) {
           const done = finishedCase(finished, stdout);
@@ -167,15 +197,28 @@ export function powerShellBatch(launch: PowerShellSpawn = spawn) {
           outcomes.push({ name, stderr, ...done });
           finished += 1;
         }
-        if (finished === current.length) break;
-        const stalled = current[finished]!;
+        if (finished === current.length) {
+          // Every case printed its end marker, but the launch itself failed: report it on the
+          // last case, as `run` would have thrown it.
+          if (failure !== undefined) {
+            const last = outcomes.at(-1)!;
+            outcomes[outcomes.length - 1] = {
+              ...last,
+              status: last.status === 0 ? -1 : last.status,
+              stderr: failure.message,
+              reason,
+            };
+          }
+          break;
+        }
         outcomes.push({
-          name: stalled.name,
+          name: current[finished]!.name,
           status: -1,
           stdout: "",
           stderr:
             failure?.message ??
-            `PowerShell case did not complete: ${stalled.name}`,
+            `PowerShell case did not complete: ${current[finished]!.name}`,
+          reason,
         });
         pending = current.slice(finished + 1);
       }
