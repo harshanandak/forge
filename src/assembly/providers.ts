@@ -310,7 +310,8 @@ function resolveOutside(
       /[\\/]node_modules[\\/]\.bin[\\/]/i.test(canonical)
     )
       continue;
-    return found;
+    // Launch the path that was checked, not the PATH entry.
+    return { kind: "resolved", path: canonical };
   }
   return none();
 }

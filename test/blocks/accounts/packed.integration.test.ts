@@ -9,6 +9,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,7 +79,7 @@ if (a[0] === 'api') {
   let m;
   if (route === 'user') console.log(JSON.stringify({ login: flag('swapped') ? 'mallory' : who, id: ids[who] }));
   else if (route === 'user/emails' && a.includes('--paginate')) {
-    if (flag('emailscope')) { fs.writeSync(2, 'HTTP 404 Not Found'); process.exit(1); }
+    if (flag('emailscope')) { fs.writeSync(1, JSON.stringify({ message: 'Not Found', status: '404' }) + '\\n'); process.exit(1); }
     const page = JSON.stringify([{ email: ids[who] + '+' + who + '@users.noreply.github.com', primary: true, verified: true }]);
     if (flag('emailpage2')) { fs.writeSync(1, page + '\\n'); process.exit(1); }
     console.log(page);
@@ -653,14 +654,19 @@ test("installed accounts: one approval catches wrong authors and binds every clo
 
 const TOKEN = "ghp_fixture_constructor_9d3f1c";
 
-function plant(dir: string, node: string, spyLog: string) {
+function plant(
+  dir: string,
+  node: string,
+  spyLog: string,
+  names = ["gh", "git"],
+) {
   mkdirSync(dir, { recursive: true });
   const spy = join(dir, "spy.cjs");
   writeFileSync(
     spy,
     `require('node:fs').appendFileSync(${JSON.stringify(spyLog)}, process.argv.slice(2).join(' ') + ' ' + JSON.stringify(process.env) + '\\n');`,
   );
-  for (const name of ["gh", "git"]) {
+  for (const name of names) {
     const file = join(dir, process.platform === "win32" ? `${name}.cmd` : name);
     writeFileSync(
       file,
@@ -705,7 +711,25 @@ test("installed accounts: plan picks the only account that can push and use veri
     expect(plan.result.reason).toContain("push access");
     const approval = { quote: "yes", source: "t3:fixture/message:push" };
     expect(cli(repo, "use", { login: "bob", approval }).ok).toBe(true);
+    const ghost = clone("ghost");
+    git(
+      ghost,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/ghost/app.git",
+    );
+    const denied = cli(ghost, "plan");
+    expect(denied.ok, JSON.stringify(denied)).toBe(true);
+    expect(denied.result.hazards.join(" ")).toContain(
+      "no signed-in account can push",
+    );
     writeFileSync(join(bin, "swapped"), "");
+    // A stored binding is only reused when the token still belongs to its login.
+    expect(cli(repo, "use", { login: "bob", approval })).toMatchObject({
+      ok: false,
+      error: { code: "ACCOUNT_VERIFY_FAILED" },
+    });
     const swapped = clone("swapped");
     git(
       swapped,
@@ -880,6 +904,35 @@ test("installed accounts: gh output is validated strictly before it is trusted",
     expect((degraded.result as { emails?: string }).emails).toBe(
       "noreply-only",
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a gh planted under a symlinked temp directory never runs", () => {
+  if (process.platform === "win32") return;
+  const { root, node, env, cli, clone } = setup();
+  try {
+    const repo = clone("temp-link");
+    const real = join(root, "tmp");
+    const link = join(root, "tmp-link");
+    symlinkSync(real, link, "dir");
+    const planted = join(real, "planted-gh");
+    const spyLog = join(root, "temp-link.log");
+    plant(planted, node, spyLog, ["gh"]);
+    const plan = cli(
+      repo,
+      "plan",
+      {},
+      {
+        PATH: planted + delimiter + env.PATH,
+        TMPDIR: link,
+        TEMP: link,
+        TMP: link,
+      },
+    );
+    expect(plan.ok, JSON.stringify(plan)).toBe(true);
+    expect(existsSync(spyLog) ? readFileSync(spyLog, "utf8") : "").toBe("");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

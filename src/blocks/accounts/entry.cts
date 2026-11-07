@@ -526,15 +526,16 @@ async function contact(
     [email, ...recent.split(/[\0\r\n]/)].some((e) => belongs(e, c.login)),
   );
   const pushers: string[] = [];
+  let denied = 0;
   if (match && !selected)
     for (const c of candidates) {
       const row = await api(c.login, [`repos/${match[1]}/${match[2]}`], true);
-      if (
-        row.ok &&
-        json<{ permissions?: { push?: boolean } }>(row.text, {}).permissions
-          ?.push === true
-      )
-        pushers.push(c.login);
+      const push = row.ok
+        ? json<{ permissions?: { push?: boolean } }>(row.text, {}).permissions
+            ?.push
+        : undefined;
+      if (push === true) pushers.push(c.login);
+      else if (push === false) denied++;
     }
   const byEmail = emailMatches.filter(
     (c) => !pushers.length || pushers.includes(c.login),
@@ -563,6 +564,8 @@ async function contact(
     hazards.push(
       `effective user.email is ${email}, outside ${pick.login}'s noreply identity`,
     );
+  if (!pushers.length && candidates.length && denied === candidates.length)
+    hazards.push("no signed-in account can push to this remote");
   if (pick && pushers.length && !pushers.includes(pick.login))
     hazards.push(
       `${pick.login} cannot push to this remote; ${pushers.join(", ")} can`,
@@ -616,6 +619,20 @@ async function contact(
       }
     }
   }
+  const confirmToken = async (account: Account) => {
+    const me = json<{ login?: string; id?: number }>(
+      (await api(account.login, ["user"])).text,
+      {},
+    );
+    if (
+      me.login?.toLowerCase() !== account.login.toLowerCase() ||
+      me.id !== account.userId
+    )
+      refuse(
+        "ACCOUNT_VERIFY_FAILED",
+        `The gh token for ${account.login} belongs to another GitHub account`,
+      );
+  };
   const verifyIdentity = async (account: Account) => {
     const callerEnv = s.environment.inherit();
     for (const role of ["AUTHOR", "COMMITTER"] as const) {
@@ -665,6 +682,7 @@ async function contact(
             "ACCOUNT_BOUND",
             "Rebinding requires explicit revocation first",
           );
+        await confirmToken(selected);
         apply(selected, binding);
         await verifyIdentity(selected);
         return {
@@ -708,21 +726,10 @@ async function contact(
       };
       if (/[\r\n\0]/.test(account.commitName))
         refuse("INPUT_INVALID", "Invalid GitHub commit name");
-      const me = json<{ login?: string; id?: number }>(
-        (await api(login, ["user"])).text,
-        {},
-      );
-      if (
-        me.login?.toLowerCase() !== login.toLowerCase() ||
-        me.id !== account.userId
-      )
-        refuse(
-          "ACCOUNT_VERIFY_FAILED",
-          `The gh token for ${login} belongs to another GitHub account`,
-        );
+      await confirmToken(account);
       const page = await api(login, ["user/emails", "--paginate"], true);
       // Every page must succeed; a partial list is never accepted.
-      if (!page.ok && page.text)
+      if (!page.ok && page.text.startsWith("["))
         refuse(
           "ACCOUNT_VERIFY_FAILED",
           `GitHub's email list for ${login} was incomplete (a page failed); try again`,
