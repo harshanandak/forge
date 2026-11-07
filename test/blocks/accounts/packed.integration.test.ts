@@ -67,6 +67,7 @@ function setup() {
 const fs = require('node:fs'), path = require('node:path');
 const a = process.argv.slice(2), e = process.env;
 const flag = (name) => fs.existsSync(path.join(__dirname, name));
+fs.appendFileSync(path.join(__dirname, 'ghlog.txt'), (a[0] === 'api' && a[1].startsWith('repos/') ? 'api repos/x/y' : a.slice(0, 2).join(' ')) + '\\n');
 const ids = { alice: 101, bob: 202, constructor: 303, mallory: 404 };
 if (Object.keys(e).some(k => /^(GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|GH_REPO|NODE_OPTIONS|GIT_AUTHOR_EMAIL|GIT_CONFIG_COUNT)$/i.test(k))) process.exit(9);
 if (a[0] === 'api') {
@@ -128,6 +129,16 @@ if (a[0] === 'api') {
     expect(out.error).toBeUndefined();
     return out;
   }
+  // Each fake gh call appends one line, so tests can count the gh processes Forge starts.
+  function ghCalls() {
+    const log = join(bin, "ghlog.txt");
+    const counts: Record<string, number> = {};
+    for (const line of (existsSync(log) ? readFileSync(log, "utf8") : "")
+      .split(/\r?\n/)
+      .filter(Boolean))
+      counts[line] = (counts[line] ?? 0) + 1;
+    return counts;
+  }
   function git(cwd: string, ...args: string[]) {
     const out = run("git", args, cwd);
     expect(out.status, out.stderr).toBe(0);
@@ -140,6 +151,11 @@ if (a[0] === 'api') {
       cwd,
       extra,
     );
+    // Report the child's own failure before parsing, so a dead or killed call is not a JSON error.
+    expect(
+      out.stdout,
+      `forge accounts ${verb} printed nothing: status=${out.status} signal=${out.signal} stderr=${out.stderr}`,
+    ).not.toBe("");
     return { status: out.status, ...(JSON.parse(out.stdout) as Reply) };
   }
   const readAudit = (): Audit[] =>
@@ -202,6 +218,7 @@ if (a[0] === 'api') {
     readAudit,
     clone,
     emptyClone,
+    ghCalls,
   };
 }
 
@@ -961,6 +978,26 @@ test("installed accounts: a gh config planted in the clone has no effect on toke
     // The fake gh refuses any config directory that is not empty and private to the device root.
     const scratch = join(home, ".forge/accounts/scratch");
     expect(existsSync(scratch) ? readdirSync(scratch) : []).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: use with a named login starts one gh token lookup and no permission lookups", () => {
+  const { root, cli, clone, ghCalls } = setup();
+  try {
+    const repo = clone("few-gh-calls");
+    const approval = { quote: "yes", source: "t3:fixture/message:calls" };
+    const used = cli(repo, "use", { login: "alice", approval });
+    expect(used.ok, JSON.stringify(used)).toBe(true);
+    // Each gh process is a cmd.exe and node start on Windows, so the count is the user-facing cost.
+    expect(ghCalls()).toEqual({
+      "auth status": 1,
+      "auth token": 1,
+      "api users/alice": 1,
+      "api user": 1,
+      "api user/emails": 1,
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
