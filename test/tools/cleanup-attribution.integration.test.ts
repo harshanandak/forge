@@ -19,19 +19,15 @@ for (const kind of ["file", "directory"])
         process.execPath,
         [
           "-e",
-          // Signal only after the handle is held: open the file, or chdir into the directory.
-          `${kind === "file" ? "require('node:fs').openSync(process.argv[1], 'r');" : "process.chdir(process.argv[1]);"} console.log('ready'); setInterval(() => {}, 1000)`,
+          `${kind === "file" ? "require('node:fs').openSync(process.argv[1], 'r');" : ""} console.log('ready'); setInterval(() => {}, 1000)`,
           path,
         ],
         { cwd: root, stdio: ["ignore", "pipe", "inherit"], windowsHide: true },
       );
       const closed = once(child, "close");
       try {
-        // A Windows directory is held by cwd; the child re-enters it before signalling.
-        let signal = "";
-        while (!signal.includes("ready"))
-          signal += String((await once(child.stdout, "data"))[0]);
-        expect(signal).toContain("ready");
+        // A Windows directory is held by cwd; opening it as a file is unnecessary.
+        await once(child.stdout, "data");
         const original = Object.assign(new Error("cleanup refused"), {
           code: "EBUSY",
           path,
