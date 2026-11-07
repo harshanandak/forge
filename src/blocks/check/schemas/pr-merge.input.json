@@ -3,6 +3,11 @@
   "additionalProperties": false,
   "required": ["pr"],
   "properties": {
-    "pr": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+    "pr": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "head": {
+      "type": "string",
+      "pattern": "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$",
+      "description": "Merge only if the gate reads this exact head; otherwise HEAD_MOVED and nothing is merged."
+    }
   }
 }

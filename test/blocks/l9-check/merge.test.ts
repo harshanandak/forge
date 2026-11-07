@@ -31,6 +31,16 @@ setDefaultTimeout(1000);
 const head = "a".repeat(40),
   base = "c".repeat(40),
   merged = "d".repeat(40);
+// The default reviewer (the Codex connector) is always checked; the fake prints what the real jq filter would.
+const reviewLine = `<!-- codex-review-state:v1 ${JSON.stringify({
+  code_review: {
+    commit_sha: head,
+    has_any_findings: false,
+    has_unresolved_findings: false,
+    status: "completed",
+  },
+})} -->`;
+
 const config: CheckConfig = {
   commands: { structure: "tool check" },
   timeoutMs: 1000,
@@ -216,9 +226,12 @@ function fixture() {
                 },
               },
             ];
-          } else if (args[1]?.includes("/compare/"))
+          } else if (args[1]?.includes("/issues/7/comments"))
+            return { ...complete, stdout: reviewLine };
+          else if (args[1]?.includes("/compare/"))
             value = [
               {
+                status: "ahead",
                 base_commit: { sha: base },
                 files: [{ filename: "src/main.ts", status: "modified" }],
               },

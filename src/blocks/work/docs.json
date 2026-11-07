@@ -28,7 +28,7 @@
     },
     "lane.next": {
       "title": "Next lane action",
-      "summary": "Return the next action for one lane (id) or every lane (all). It pauses first when autopilot is off, the lanes are stopped or a budget is used up. After a merge it returns receipt, lane close, other delivered issues, rebuild, unwatch, done. Unknown facts pause with an ask.",
+      "summary": "Return the next action for one lane (id) or all. Pauses when autopilot is off, stopped or over budget. While the PR is open, returns the merge action only when every condition holds and a MERGE verdict is recorded for the head. After a merge: receipt, close, issues, rebuild, unwatch, done.",
       "examples": [
         {
           "input": {
@@ -45,7 +45,7 @@
     },
     "lane.record": {
       "title": "Record lane action",
-      "summary": "Record a fact Forge cannot read itself for the open action number, as a JSON object in result: a receipt id, a rebuild exit code or an unwatch confirmation.",
+      "summary": "Record a fact Forge cannot read itself for the open action number, as a JSON object in result: a receipt id, a rebuild exit code or an unwatch confirmation. Or give mergeGate {head, verdict MERGE or FIX, reviewer} to record the merge-gate review verdict for one head instead of action and result.",
       "examples": [
         {
           "input": {
