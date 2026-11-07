@@ -309,6 +309,25 @@ export function laneResumeOp(candidate: {
     candidate.blockId === "forge/work" && candidate.declaredOp === "lane.resume"
   );
 }
+/**
+ * Naming the owner channel decides whose replies approve gated lane steps, so it needs a relayed
+ * owner reply and is never implicit or self-approved.
+ */
+export function laneOwnerChannelOp(
+  candidate: { blockId?: string | undefined; declaredOp?: string | undefined },
+  input: unknown,
+): boolean {
+  return (
+    candidate.blockId === "forge/work" &&
+    candidate.declaredOp === "lane.record" &&
+    object(input)?.ownerChannel !== undefined
+  );
+}
+export function laneOwnerChannelAsk(input: unknown): string {
+  const channel = object(object(input)?.ownerChannel);
+  const shown = (value: unknown) => (typeof value === "string" ? value : "");
+  return `Make ${shown(channel?.harness)} thread ${shown(channel?.thread)} the owner channel. Replies from it become approvals for gated lane steps.`;
+}
 /** Splits the optional approval claim off a lane resume call; a missing claim asks the owner. */
 export function laneResumeClaim(input: unknown): {
   input: Record<string, unknown>;

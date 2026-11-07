@@ -88,6 +88,8 @@ import {
   attendedTerminal,
   consumeOwnerApproval,
   directApproval,
+  laneOwnerChannelAsk,
+  laneOwnerChannelOp,
   laneResumeAsk,
   laneResumeClaim,
   laneResumeOp,
@@ -1617,9 +1619,14 @@ export async function createAssembly(
         const owned =
           target && memoryOwnerOp(target)
             ? memoryOwnerClaim(request.input)
-            : target && laneResumeOp(target)
+            : target &&
+                (laneResumeOp(target) ||
+                  laneOwnerChannelOp(target, request.input))
               ? laneResumeClaim(request.input)
               : undefined;
+        const laneOwned =
+          target !== undefined &&
+          (laneResumeOp(target) || laneOwnerChannelOp(target, request.input));
         if (owned) {
           // The runtime refuses dry runs for these operations; refuse first so a dry run neither
           // burns a valid approval nor leaves a pending request behind.
@@ -1634,14 +1641,16 @@ export async function createAssembly(
             );
           await approve(
             { ...request, input: owned.input },
-            laneResumeOp(target!)
-              ? laneResumeAsk(request.input)
-              : memoryOwnerAsk(target!.declaredOp!, request.input),
-            // Resuming lanes restarts spending: only a relayed reply counts, never a typed phrase or owner.json.
-            laneResumeOp(target!),
+            laneOwnerChannelOp(target!, request.input)
+              ? laneOwnerChannelAsk(request.input)
+              : laneResumeOp(target!)
+                ? laneResumeAsk(request.input)
+                : memoryOwnerAsk(target!.declaredOp!, request.input),
+            // Resuming lanes restarts spending and naming the owner channel lets it approve: only a relayed reply counts, never a typed phrase or owner.json.
+            laneOwned,
           );
           // The block records the verified quote exactly as it did for a conversation claim.
-          if (owned.relayed && !laneResumeOp(target!))
+          if (owned.relayed && !laneOwned)
             request = {
               ...request,
               input: {

@@ -28,7 +28,7 @@
     },
     "lane.next": {
       "title": "Next lane action",
-      "summary": "Return the next action for one lane (id) or all. Pauses when autopilot is off, stopped or over budget. While the PR is open, returns the merge action only when every condition holds and a MERGE verdict is recorded for the head. After a merge: receipt, close, issues, rebuild, unwatch, done.",
+      "summary": "Return the next action for one lane (id) or all. Pauses when autopilot is off, stopped or over budget. While the PR is open, returns the merge action only when every condition holds and a MERGE verdict is recorded for the head. After a merge: receipt, close, issues, rebuild, unwatch, done. A pause becomes an owner ask: the owner channel gets one numbered ask-owner message at most every 30 minutes (a kill-switch trip at once), any other session gets hand-to-owner.",
       "examples": [
         {
           "input": {
@@ -45,13 +45,23 @@
     },
     "lane.record": {
       "title": "Record lane action",
-      "summary": "Record a fact Forge cannot read itself for the open action number, as a JSON object in result: a receipt id, a rebuild exit code or an unwatch confirmation. Or give mergeGate {head, verdict MERGE or FIX, reviewer} to record the merge-gate review verdict for one head instead of action and result.",
+      "summary": "Record a fact Forge cannot read itself for the open action number, as a JSON object in result: a receipt id, a rebuild exit code or an unwatch confirmation. Or give mergeGate {head, verdict MERGE or FIX, reviewer} to record the merge-gate review verdict for one head instead of action and result. Or give reply and source {harness, thread, message} to record the owner's reply verbatim: labels like 1A 2B map to the asks in the last owner message, ok takes every default, and anything else keeps every lane paused. Or give id and request to attach the request id of a gated step to its ask. Or give ownerChannel {harness, thread} to name the owner channel; it is never implicit, and like lane resume it needs the owner's reply relayed as an approval (call once to get a request, then again with approval {request, quote, source}).",
       "examples": [
         {
           "input": {
             "id": "demo-1",
             "action": 1,
             "result": "{\"receipt\":\"<id>\"}"
+          }
+        },
+        {
+          "input": {
+            "reply": "1A 2B",
+            "source": {
+              "harness": "claude-code",
+              "thread": "claude-code:demo",
+              "message": "m-1"
+            }
           }
         }
       ]

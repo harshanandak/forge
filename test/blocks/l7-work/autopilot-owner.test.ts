@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { resolve } from "node:path";
+import {
+  laneOwnerChannelAsk,
+  laneOwnerChannelOp,
+} from "../../../src/assembly/approval.ts";
 
 setDefaultTimeout(30_000);
 type Action = {
@@ -180,6 +184,13 @@ function fixture() {
           actions: Action[];
         }
       ).actions,
+    // The owner's approval for this input is the runtime's job; the handler only stores it.
+    setOwner: async (channel: { harness: string; thread: string } = OWNER) =>
+      await operations["lane.record"](
+        bound({
+          ownerChannel: { harness: channel.harness, thread: channel.thread },
+        }),
+      ),
     stop: (id: string) => operations["lane.stop"](bound({ id })),
     record: async (input: Record<string, unknown>) =>
       await operations["lane.record"](bound(input)),
@@ -192,6 +203,7 @@ const sent = (actions: Action[]) =>
 
 test("two lanes pausing within 30 minutes give one message with two numbered asks and their defaults", async () => {
   const f = fixture();
+  await f.setOwner();
   f.spend("work-1");
   f.spend("work-2");
   f.put(
@@ -228,6 +240,7 @@ test("two lanes pausing within 30 minutes give one message with two numbered ask
 
 test('the reply "1A 2B" unpauses both lanes with the chosen options', async () => {
   const f = fixture();
+  await f.setOwner();
   f.spend("work-1");
   f.spend("work-2");
   await f.all();
@@ -256,6 +269,7 @@ test('the reply "1A 2B" unpauses both lanes with the chosen options', async () =
 
 test("a free-text reply that maps to two labels for one item keeps both paused and queues one clarifying question", async () => {
   const f = fixture();
+  await f.setOwner();
   f.spend("work-1");
   f.spend("work-2");
   await f.all();
@@ -277,6 +291,7 @@ test("a free-text reply that maps to two labels for one item keeps both paused a
 
 test("a gated ask's reply produces an approval with the stored request id, and a non-owner reply does not", async () => {
   const f = fixture();
+  await f.setOwner();
   await f.stop("work-1");
   // The ask is not sent until the request id it will be bound to is recorded.
   const fetch = await f.next("work-1");
@@ -308,6 +323,7 @@ test("a gated ask's reply produces an approval with the stored request id, and a
   });
   // The defaults reply never approves: B keeps it stopped.
   const kept = fixture();
+  await kept.setOwner();
   await kept.stop("work-1");
   await kept.next("work-1");
   await kept.record({ id: "work-1", request: "req-456" });
@@ -319,6 +335,7 @@ test("a gated ask's reply produces an approval with the stored request id, and a
 
 test("with no reply both lanes stay paused past any number of windows", async () => {
   const f = fixture();
+  await f.setOwner();
   f.spend("work-1");
   f.spend("work-2");
   for (let window = 0; window < 6; window += 1) {
@@ -338,6 +355,7 @@ test("with no reply both lanes stay paused past any number of windows", async ()
 
 test("an urgent kill-switch item is sent at once, not held for the window", async () => {
   const f = fixture();
+  await f.setOwner();
   f.spend("work-1");
   expect((await f.next("work-1")).kind).toBe("ask-owner");
   f.time.now += 5 * MINUTE;
@@ -351,6 +369,7 @@ test("an urgent kill-switch item is sent at once, not held for the window", asyn
 
 test("an ask reached from another session is handed to the owner channel", async () => {
   const f = fixture();
+  await f.setOwner();
   f.spend("work-1");
   expect((await f.next("work-1")).kind).toBe("ask-owner");
   f.session.env = { CLAUDE_CODE_SESSION_ID: "child-9" };
@@ -358,4 +377,57 @@ test("an ask reached from another session is handed to the owner channel", async
   expect(action.kind).toBe("hand-to-owner");
   expect(action.ask).toBeUndefined();
   expect(action.why).toContain("not the owner channel");
+});
+
+test("a session that calls lane next first does not become the owner channel and cannot approve", async () => {
+  const f = fixture();
+  f.spend("work-1");
+  f.session.env = { CLAUDE_CODE_SESSION_ID: "builder-7" };
+  const first = await f.next("work-1");
+  expect(first.kind).toBe("pause");
+  expect(first.why).toContain("owner channel is not set");
+  expect(first.ask).toContain("ownerChannel");
+  expect(f.records.get("autopilot-ask:work-1")?.value.status).toBe("queued");
+  expect(
+    (
+      f.records.get("autopilot:global")?.value as
+        { owner?: unknown } | undefined
+    )?.owner,
+  ).toBeUndefined();
+  // Asking again, even for a gated stop, still sends nothing and approves nothing.
+  await f.stop("work-1");
+  expect((await f.next("work-1")).kind).toBe("pause");
+  await expect(
+    f.reply("1A", {
+      harness: "claude-code",
+      thread: "claude-code:builder-7",
+      message: "m-2",
+    }),
+  ).rejects.toThrow(/No owner message is waiting/);
+  // Once the owner names their channel, the builder is handed off and its reply is refused.
+  await f.setOwner();
+  expect((await f.next("work-1")).kind).toBe("hand-to-owner");
+  await expect(
+    f.reply("1A", {
+      harness: "claude-code",
+      thread: "claude-code:builder-7",
+      message: "m-3",
+    }),
+  ).rejects.toThrow(/No owner message is waiting/);
+});
+
+test("naming the owner channel needs the owner's relayed approval at the runtime", () => {
+  const candidate = { blockId: "forge/work", declaredOp: "lane.record" };
+  const input = { ownerChannel: { harness: "claude-code", thread: "t-1" } };
+  expect(laneOwnerChannelOp(candidate, input)).toBe(true);
+  expect(laneOwnerChannelOp(candidate, { id: "work-1", request: "r" })).toBe(
+    false,
+  );
+  expect(
+    laneOwnerChannelOp(
+      { blockId: "forge/work", declaredOp: "lane.next" },
+      input,
+    ),
+  ).toBe(false);
+  expect(laneOwnerChannelAsk(input)).toContain("owner channel");
 });
