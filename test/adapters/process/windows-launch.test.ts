@@ -4,6 +4,8 @@ import {
   buildWindowsEnvironmentBlock,
   quoteWindowsArgument,
 } from "../../../src/adapters/process/windows-launch.ts";
+import { stopAfterExit } from "../../../src/adapters/process/windows-launch-stdio.ts";
+import type { WindowsJob } from "../../../src/adapters/process/windows-job.ts";
 
 // The expected pairs come from the table in libuv's src/win/process.c (quote_cmd_arg).
 test("argument quoting matches libuv", () => {
@@ -85,4 +87,35 @@ test("the environment block is sorted, UTF-16 and gets only libuv's required var
   expect(buildWindowsEnvironmentBlock({}, {}).toString("utf16le")).toBe(
     nul + nul,
   );
+}, 5000);
+
+function fakeJob(active: number): { job: WindowsJob; stops: () => number } {
+  let stops = 0;
+  const job: WindowsJob = {
+    attach: () => undefined,
+    members: () => [11, 12],
+    activeCount: () => active,
+    terminations: () => stops,
+    stop: () => {
+      stops += 1;
+      return Promise.resolve([11, 12]);
+    },
+    close: () => undefined,
+  };
+  return { job, stops: () => stops };
+}
+
+test("the post-exit stop skips an empty job and fully stops one that still counts a process", async () => {
+  const empty = fakeJob(0);
+  expect(await stopAfterExit(empty.job)).toEqual({
+    stopped: [11, 12],
+    skipped: true,
+  });
+  expect(empty.stops()).toBe(0);
+  const busy = fakeJob(1);
+  expect(await stopAfterExit(busy.job)).toEqual({
+    stopped: [11, 12],
+    skipped: false,
+  });
+  expect(busy.stops()).toBe(1);
 }, 5000);
