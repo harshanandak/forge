@@ -28,7 +28,7 @@
     },
     "lane.next": {
       "title": "Next lane action",
-      "summary": "Return the next action for one lane (id) or every lane (all). It first checks the autopilot switch, the stop flag and the lane's budgets, and returns pause with an ask when any says stop. After a merge it returns the next tail action from fresh facts: receipt at the merge commit, lane close, other delivered issues, configured rebuild, unwatch, done. Unknown or mismatched facts return a pause with an ask.",
+      "summary": "Return the next action for one lane (id) or every lane (all). It pauses first when autopilot is off, the lanes are stopped or a budget is used up. After a merge it returns receipt, lane close, other delivered issues, rebuild, unwatch, done. Unknown facts pause with an ask.",
       "examples": [
         {
           "input": {
