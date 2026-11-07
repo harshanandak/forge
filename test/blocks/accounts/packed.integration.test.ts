@@ -117,7 +117,9 @@ if (a[0] === 'api') {
     packedConsumer(),
     "node_modules/forge-workflow/dist/bin/forge.js",
   );
+  const timings: { label: string; ms: number }[] = [];
   function run(command: string, args: string[], cwd: string, extra = {}) {
+    const started = performance.now();
     const out = spawnSync(command, args, {
       cwd,
       env: { ...env, ...extra },
@@ -125,8 +127,17 @@ if (a[0] === 'api') {
       timeout: 20000,
       windowsHide: true,
     });
+    timings.push({
+      label: `${command === node ? "forge" : command} ${args.slice(0, 3).join(" ")}`,
+      ms: Math.round(performance.now() - started),
+    });
     expect(out.error).toBeUndefined();
     return out;
+  }
+  function timingSummary() {
+    const total = timings.reduce((sum, t) => sum + t.ms, 0);
+    const slowest = [...timings].sort((a, b) => b.ms - a.ms).slice(0, 5);
+    return `ACCOUNTS-TIMING calls=${timings.length} total=${total}ms slowest=${JSON.stringify(slowest)}`;
   }
   function git(cwd: string, ...args: string[]) {
     const out = run("git", args, cwd);
@@ -140,6 +151,11 @@ if (a[0] === 'api') {
       cwd,
       extra,
     );
+    // Report the child's own failure before parsing, so a dead or killed call is not a JSON error.
+    expect(
+      out.stdout,
+      `forge accounts ${verb} printed nothing: status=${out.status} signal=${out.signal} stderr=${out.stderr}`,
+    ).not.toBe("");
     return { status: out.status, ...(JSON.parse(out.stdout) as Reply) };
   }
   const readAudit = (): Audit[] =>
@@ -202,11 +218,23 @@ if (a[0] === 'api') {
     readAudit,
     clone,
     emptyClone,
+    timingSummary,
   };
 }
 
 test("installed accounts: one approval catches wrong authors and binds every clone", () => {
-  const { root, home, bin, env, run, git, cli, readAudit, clone } = setup();
+  const {
+    root,
+    home,
+    bin,
+    env,
+    run,
+    git,
+    cli,
+    readAudit,
+    clone,
+    timingSummary,
+  } = setup();
   try {
     const repo = clone("first");
     git(repo, "config", "user.email", "202+bob@users.noreply.github.com");
@@ -648,6 +676,7 @@ test("installed accounts: one approval catches wrong authors and binds every clo
       error: { code: "ACCOUNT_INTEGRITY" },
     });
   } finally {
+    console.log(timingSummary());
     rmSync(root, { recursive: true, force: true });
   }
 }, 120_000);
