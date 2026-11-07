@@ -3,15 +3,18 @@
 // The report marks each law enforced, broken or unenforced, with the reason and where the value
 // came from. Nothing here writes: a config without laws is left exactly as it was.
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createConfigOperations,
-  type LawsReport,
+  type Enforcer,
   type PatchStep,
-  withUnavailable,
 } from "../../../src/core/config/index.ts";
-import { validateConfigDocument } from "../../../src/generated/validators.ts";
+import {
+  validateBlockManifest,
+  validateConfigDocument,
+} from "../../../src/generated/validators.ts";
 import { type Fixture, makeProject } from "./lib/project.ts";
 
 setDefaultTimeout(30_000);
@@ -83,18 +86,25 @@ function project(
   return p;
 }
 
-function check(p: Fixture): Report {
-  const handler = createConfigOperations(p.env)["laws.check"];
+/** What the check block declares in its manifest: merge, through its `gate` config. */
+const CHECK_ENFORCES: Enforcer = {
+  point: "merge",
+  instance: "check",
+  root: ["blocks", "check", "config", "gate"],
+};
+
+/** The host passes what its enabled, loadable blocks declare; core names no point itself. */
+function check(
+  p: Fixture,
+  enforcers: readonly Enforcer[] = [CHECK_ENFORCES],
+): Report {
+  const handler = createConfigOperations({
+    ...p.env,
+    enforcers: () => enforcers,
+  })["laws.check"];
   if (handler === undefined) throw new Error("laws.check is not registered");
   return JSON.parse(JSON.stringify(handler({}))) as Report;
 }
-
-/** withUnavailable on a report read back from JSON. */
-const downgrade = (report: Report, unavailable: Map<string, string>): Report =>
-  withUnavailable(
-    report as unknown as LawsReport,
-    unavailable,
-  ) as unknown as Report;
 
 const byId = (report: Report, id: string): Law => {
   const found = report.laws.find((l) => l.id === id);
@@ -167,7 +177,7 @@ test("a law at a point Forge does not enforce is unenforced, even when its condi
   const report = check(p);
   const found = byId(report, "tests-before-push");
   expect(found.status).toBe("unenforced");
-  expect(found.detail).toContain("push");
+  expect(found.detail).toContain("no enabled block enforces push");
   expect(report.verdict).toBe("INCOMPLETE");
   expect(report.summary).toEqual({ enforced: 0, broken: 0, unenforced: 1 });
 });
@@ -179,7 +189,7 @@ test("a law that reads a value the enforcer does not read is unenforced", () => 
   });
   const found = byId(check(p), "elsewhere");
   expect(found.status).toBe("unenforced");
-  expect(found.detail).toContain("/values/review");
+  expect(found.detail).toContain("is outside what check enforces");
 });
 
 test("a law whose config value is missing is broken, in the pointer form and the instance form", () => {
@@ -381,62 +391,48 @@ function change(p: Fixture, steps: PatchStep[]): void {
   p.config.apply({ patch: steps, expectRevision: p.config.show().revision });
 }
 
-test("a merge law is unenforced when the check instance is disabled, though its values still hold", () => {
+test("a merge law is unenforced when no enabled block declares merge, though its values hold", () => {
   const p = project({ gate: { headReviewers: [CODEX] }, laws: codexLaw });
-  change(p, [{ op: "set", path: "/blocks/check/enabled", value: false }]);
-  const report = check(p);
+  // the host leaves a disabled, missing or unloadable check instance out of the list
+  const report = check(p, []);
   const found = byId(report, "codex-reviews-every-pr");
   expect(found.status).toBe("unenforced");
-  expect(found.detail).toContain("check instance is disabled");
+  expect(found.detail).toContain("no enabled block enforces merge");
   expect(found.reasons.every((r) => r.holds)).toBe(true);
   expect(report.verdict).toBe("INCOMPLETE");
 });
 
-test("a merge law is unenforced when the check instance is not the Forge check block", () => {
-  const p = project({ gate: { headReviewers: [CODEX] }, laws: codexLaw });
-  change(p, [
-    { op: "set", path: "/blocks/check/source", value: { path: "blocks/mine" } },
-  ]);
-  const found = byId(check(p), "codex-reviews-every-pr");
-  expect(found.status).toBe("unenforced");
-  expect(found.detail).toContain("check instance is not forge/check");
-});
-
-test("a failing condition still makes the law broken when the check instance is disabled", () => {
-  const p = project({
-    gate: { receiptChecks: [] },
-    laws: {
-      "needs-receipt": law("merge", {
-        [`${GATE}/receiptChecks`]: { nonEmpty: true },
-      }),
-    },
-  });
-  change(p, [{ op: "set", path: "/blocks/check/enabled", value: false }]);
-  const report = check(p);
-  expect(byId(report, "needs-receipt").status).toBe("broken");
-  expect(report.verdict).toBe("FAIL");
-});
-
-test("an enforcer the host reports as unable to load leaves its enforced laws unenforced", () => {
+test("a law is enforced only when its pointers sit inside the subtree the block declares", () => {
   const p = project({
     gate: { headReviewers: [CODEX] },
+    values: { review: true },
     laws: {
-      ...codexLaw,
-      "tests-before-push": law("push", { "/values/x": { equals: true } }),
+      inside: law("merge", { [`${GATE}/headReviewers`]: { contains: CODEX } }),
+      outside: law("merge", { "/values/review": { equals: true } }),
     },
   });
   const report = check(p);
-  expect(byId(report, "codex-reviews-every-pr").status).toBe("enforced");
-  const downgraded = downgrade(
-    report,
-    new Map([["check", "the block cannot be opened"]]),
-  );
-  const found = byId(downgraded, "codex-reviews-every-pr");
-  expect(found.status).toBe("unenforced");
-  expect(found.detail).toContain("the block cannot be opened");
-  expect(downgraded.summary).toEqual({ enforced: 0, broken: 0, unenforced: 2 });
-  expect(downgraded.verdict).toBe("INCOMPLETE");
-  expect(downgrade(report, new Map())).toEqual(report);
+  expect(byId(report, "inside").status).toBe("enforced");
+  const outside = byId(report, "outside");
+  expect(outside.status).toBe("unenforced");
+  expect(outside.detail).toContain("is outside what check enforces");
+});
+
+test("a block manifest may declare the points it enforces, and nothing else about them", () => {
+  const manifest = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL("../../../src/blocks/check/forge.block.json", import.meta.url),
+      ),
+      "utf8",
+    ),
+  ) as Record<string, unknown>;
+  expect(manifest.enforces).toEqual({ merge: "/gate" });
+  expect(validateBlockManifest(manifest).ok).toBe(true);
+  for (const bad of [{ "Not Kebab": "/gate" }, { merge: "gate" }, { merge: 1 }])
+    expect(validateBlockManifest({ ...manifest, enforces: bad }).ok).toBe(
+      false,
+    );
 });
 
 test("a config whose document cannot be used never reports an empty pass", () => {

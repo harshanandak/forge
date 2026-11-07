@@ -23,7 +23,7 @@ export function createConfigOperations(
 ): ConfigOperations {
   const config = createConfig(env);
   const templates = createTemplates(env);
-  const laws = createLaws(config);
+  const laws = createLaws(config, env.enforcers);
   const op =
     (handle: (input: Input) => unknown) =>
     (input: unknown): unknown =>

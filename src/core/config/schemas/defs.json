@@ -190,7 +190,9 @@
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 100 },
         "says": { "type": "string" },
-        "at": { "enum": ["merge", "push", "commit", "close", "start"] },
+        "at": {
+          "$ref": "../../../../schemas/common.json#/$defs/Segment"
+        },
         "status": { "enum": ["enforced", "broken", "unenforced"] },
         "detail": {
           "description": "Why the law has this status, in plain words.",

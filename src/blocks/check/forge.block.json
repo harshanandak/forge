@@ -6,6 +6,7 @@
   "profile": "trusted-action/v2",
   "entry": "entry.cjs",
   "configSchema": "schemas/config.json",
+  "enforces": { "merge": "/gate" },
   "nouns": {
     "pr": { "interface": "1.0.0" },
     "check": {

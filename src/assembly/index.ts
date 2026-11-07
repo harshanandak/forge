@@ -4,9 +4,9 @@ import { homedir } from "node:os";
 import {
   createConfig,
   createConfigOperations,
+  type Enforcer,
   type LawsReport,
   type ShowResult,
-  withUnavailable,
 } from "../core/config/index.ts";
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
 import {
@@ -16,6 +16,7 @@ import {
 import { GitCommandError } from "../adapters/vcs-git/index.ts";
 import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
 import { compatibleConfig } from "../core/config/compatible.ts";
+import { parsePointer } from "../core/config/pointer.ts";
 import { detectProject, createFolderFiles } from "../blocks/project/index.ts";
 import {
   Catalog,
@@ -458,6 +459,27 @@ export async function createAssembly(
         snapshot(callScope())
           .candidates.filter((entry) => entry.declaredOp === declaredOp)
           .map((entry) => `forge ${cliWords(entry.op)!.join(" ")}`),
+      // what the enabled, loadable, admitted blocks declare they enforce, for laws.check
+      enforcers: (): readonly Enforcer[] =>
+        [...snapshot(callScope()).blocks].flatMap(([name, block]) => {
+          try {
+            if (!block.shipped) trust.check(block.digest, []);
+          } catch {
+            return [];
+          }
+          return Object.entries(block.manifest.enforces ?? {}).map(
+            ([point, subtree]): Enforcer => ({
+              point,
+              instance: name,
+              root: [
+                "blocks",
+                name,
+                "config",
+                ...(parsePointer(subtree) ?? []),
+              ],
+            }),
+          );
+        }),
       builtinSource: (name: string): BlockSource | undefined =>
         firstPartyBlocks[`forge/${name}`] === undefined
           ? undefined
@@ -1271,7 +1293,8 @@ export async function createAssembly(
           if (configHandler) {
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
-            if (request.op === "config.show") await trustState.open(false);
+            if (request.op === "config.show" || request.op === "laws.check")
+              await trustState.open(false);
             const handled = configHandler(request.input);
             const deviceOnly = !call.inProject && !record(handled)?.configured;
             const current =
@@ -1332,21 +1355,8 @@ export async function createAssembly(
                 result: output,
               };
             if (request.op === "laws.check") {
-              let report = output as LawsReport;
-              // an enforcer that is configured but cannot load enforces nothing
-              if (report.laws.some((law) => law.status === "enforced"))
-                report = withUnavailable(
-                  report,
-                  new Map(
-                    snapshot(call).unavailable.map((b) => [b.name, b.reason]),
-                  ),
-                );
-              if (report.verdict === "PASS")
-                return {
-                  ...success(request.op, report),
-                  warnings: call.warnings,
-                };
-              else
+              const report = output as LawsReport;
+              if (report.verdict !== "PASS")
                 return {
                   ok: false,
                   op: request.op,
@@ -1365,7 +1375,7 @@ export async function createAssembly(
                     retry: "never",
                   },
                   warnings: call.warnings,
-                  result: report,
+                  result: output,
                 };
             }
             return { ...success(request.op, output), warnings: call.warnings };

@@ -53,8 +53,8 @@
           "maxLength": 500
         },
         "at": {
-          "description": "The point the rule applies at.",
-          "enum": ["merge", "push", "commit", "close", "start"]
+          "description": "The point the rule applies at, named as an enabled block declares it in its manifest's enforces.",
+          "$ref": "common.json#/$defs/Segment"
         },
         "requires": {
           "description": "Resolved config values that must hold, keyed by a JSON Pointer or <instance>.<key> for that instance's config.",
