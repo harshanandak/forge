@@ -28,7 +28,10 @@ const complete = {
 type Findings = boolean | null | "missing";
 const codexLine = (
   sha: string,
-  { status = "completed", findings = false as Findings } = {},
+  {
+    status = "completed",
+    findings = false,
+  }: { status?: string; findings?: Findings } = {},
 ) =>
   `<!-- codex-review-state:v1 ${JSON.stringify({
     code_review: {
