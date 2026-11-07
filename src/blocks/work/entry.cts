@@ -1974,6 +1974,8 @@ type GlobalState = {
     sentAt?: string;
     batch?: { seq: number; items: string[]; replied?: true };
     clarify?: string;
+    /** The clarifying question is the all-or-nothing one for a resume after stop-all. */
+    allOrNothing?: true;
   };
 };
 const GLOBAL = "autopilot:global";
@@ -2350,6 +2352,7 @@ function validOwner(value: unknown): boolean {
     (value.seq === undefined || isCount(value.seq)) &&
     (sentAt === undefined || isTime(sentAt)) &&
     (clarify === undefined || typeof clarify === "string") &&
+    (value.allOrNothing === undefined || value.allOrNothing === true) &&
     (batch === undefined ||
       (isMap(batch) &&
         isCount(batch.seq) &&
@@ -2492,11 +2495,14 @@ function composeMessage(
   items: Ask[],
   digest: string,
   clarify: string | undefined,
+  allOrNothing = false,
 ): string {
   const lines = [
     clarify === undefined
       ? `Message #${seq}. Lanes need you (${items.length}):`
-      : `Message #${seq}. I could not tell which option you chose for each item in "${clip(clarify, 80)}". Answer once per item:`,
+      : allOrNothing
+        ? `Message #${seq}. Resuming after a stop of every lane is all or nothing, so I resumed nothing for "${clip(clarify, 80)}". Answer A for every lane to resume them all, or B for every lane to keep them stopped:`
+        : `Message #${seq}. I could not tell which option you chose for each item in "${clip(clarify, 80)}". Answer once per item:`,
   ];
   items.forEach((ask, index) =>
     lines.push(
@@ -2674,6 +2680,7 @@ function ownerRoute(
         ready,
         digestLine(state, ids, owner.sentAt),
         owner.clarify,
+        owner.allOrNothing === true,
       );
       for (const ask of ready) {
         const row = readAsk(state, ask.lane)!;
@@ -2688,6 +2695,7 @@ function ownerRoute(
       owner.seq = seq;
       owner.sentAt = at;
       delete owner.clarify;
+      delete owner.allOrNothing;
       saveGlobal();
     }
     const next =
@@ -2880,10 +2888,42 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
     }
     return fail("INPUT_CONFLICT", `${ASK(id)} is missing`);
   });
-  const labels = mapReply(
+  const mapped = mapReply(
     quote.replace(/(?:^|\s)#\d{1,9}(?!\w)/g, " "),
     rows.map((row) => row.value),
   );
+  // A resume bound to {all:true} clears every stop, so it needs every ask bound to that same
+  // request to choose resume. Any hold or missing ask means nothing is approved and nothing moves.
+  const resumesAll = (ask: Ask, label: string | undefined): boolean =>
+    ask.gated?.input.all === true &&
+    ask.options.find((option) => option.label === label)?.approve === true;
+  const approving = new Set<string>();
+  rows.forEach((row, index) => {
+    const ask = row.value;
+    if (
+      mapped &&
+      ask.status === "sent" &&
+      ask.batch === batch.seq &&
+      ask.gated?.request !== undefined &&
+      resumesAll(ask, mapped[index])
+    )
+      approving.add(ask.gated.request);
+  });
+  const partial = [...approving].some((request) =>
+    state.list("autopilot-ask:").some((other) => {
+      const ask = other.value;
+      if (!validAsk(ask) || !openAsk(ask) || ask.gated?.request !== request)
+        return false;
+      const at = rows.findIndex((row) => row.value.lane === ask.lane);
+      return !(
+        at >= 0 &&
+        ask.status === "sent" &&
+        ask.batch === batch.seq &&
+        resumesAll(ask, mapped?.[at])
+      );
+    }),
+  );
+  const labels = partial ? undefined : mapped;
   const result: ReplyResult = {
     recorded: true,
     mapped: labels !== undefined,
@@ -2929,7 +2969,14 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
       choice: option.text,
       hold: option.hold === true,
     });
-    if (approval && ask.gated)
+    // One resume-all approval, however many lanes share its request.
+    if (
+      approval &&
+      ask.gated &&
+      !result.approvals.some(
+        (issued) => issued.approval.request === approval.request,
+      )
+    )
       result.approvals.push({
         lane: ask.issue,
         op: ask.gated.op,
@@ -2940,7 +2987,12 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
   if (labels) {
     batch.replied = true;
     delete owner.clarify;
-  } else owner.clarify = clip(quote, 2000);
+    delete owner.allOrNothing;
+  } else {
+    owner.clarify = clip(quote, 2000);
+    if (partial) owner.allOrNothing = true;
+    else delete owner.allOrNothing;
+  }
   persist(state, GLOBAL, global.value, global.revision);
   return result;
 }

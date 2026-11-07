@@ -199,6 +199,7 @@ function fixture() {
           ownerChannel: { harness: channel.harness, thread: channel.thread },
         }),
       ),
+    stopAll: () => operations["lane.stop"](bound({ all: true })),
     stop: (id: string) => operations["lane.stop"](bound({ id })),
     record: async (input: Record<string, unknown>) =>
       await operations["lane.record"](bound(input)),
@@ -593,3 +594,44 @@ test("a rebuilt global record does not restart message numbers", async () => {
   expect(again!.ask).toContain("Message #3");
   await expect(f.reply("#1 1A 2B")).rejects.toThrow(/latest is #3/);
 });
+
+for (const [replyText, approved] of [
+  ["#1 1A 2B", false],
+  ["#1 1A 2A", true],
+] as const)
+  test(`after a stop of every lane, "${replyText}" ${approved ? "gives one resume-all approval" : "approves nothing and asks one all-or-nothing question"}`, async () => {
+    const f = fixture();
+    await f.setOwner();
+    await f.stopAll();
+    await f.all();
+    await f.record({
+      id: "work-1",
+      request: "req-all",
+      scope: { all: true },
+    });
+    expect(sent(await f.all())).toHaveLength(1);
+    const result = await f.reply(replyText);
+    if (approved) {
+      expect(result.mapped).toBe(true);
+      expect(result.approvals).toHaveLength(1);
+      expect(result.approvals[0]).toMatchObject({
+        op: "lane.resume",
+        input: { all: true },
+        approval: { request: "req-all", quote: replyText, source: OWNER },
+      });
+      return;
+    }
+    expect(result.mapped).toBe(false);
+    expect(result.approvals).toEqual([]);
+    expect(result.answers).toEqual([]);
+    const actions = await f.all();
+    const question = sent(actions);
+    expect(question).toHaveLength(1);
+    expect(question[0]!.ask).toContain("all or nothing");
+    for (const action of actions) {
+      expect(action.kind).not.toBe("harness");
+      expect(action.approval).toBeUndefined();
+    }
+    // Resuming all of them still works once every ask chooses resume.
+    expect((await f.reply("#2 1A 2A")).approvals).toHaveLength(1);
+  });
