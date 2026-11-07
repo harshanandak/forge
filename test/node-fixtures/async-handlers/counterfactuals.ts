@@ -21,12 +21,13 @@ export function asyncCounterfactuals(platform: NodeJS.Platform) {
     // Windows ends the job after the command exits; POSIX ends the command's process group directly.
     platform === "win32"
       ? {
-          // The post-exit stop never completes, so a root that exited cannot finish its invocation.
+          // The post-exit stop still ends the tree but reports nothing it ended, so the report must
+          // fail to name the stopped grandchild.
           file: "adapters/process/windows-launch-stdio.js",
           from: "return { stopped: await job.stop(), skipped: false };",
-          to: "return await new Promise(() => undefined);",
+          to: "return { stopped: (await job.stop(), []), skipped: false };",
           mode: "default-cleanup",
-          evidence: "root exit must complete after tree cleanup",
+          evidence: "containment report must include the stopped grandchild",
         }
       : {
           file: "adapters/process/process-tree.js",
