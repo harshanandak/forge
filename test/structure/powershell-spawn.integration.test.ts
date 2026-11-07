@@ -4,7 +4,9 @@ import { findUnsharedPowerShell, HELPER } from "./lib/powershell.ts";
 
 test("every PowerShell spawn goes through the shared helper and its startup flags", () => {
   const files = readRepoFiles(
-    listRepoFiles().filter((path) => /^(?:test|tools)\//.test(path)),
+    listRepoFiles().filter(
+      (path) => path.startsWith("test/") || path.startsWith("tools/"),
+    ),
   );
   expect(format(findUnsharedPowerShell(files))).toEqual([]);
 }, 30_000);

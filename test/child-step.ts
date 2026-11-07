@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { EventEmitter } from "node:events";
+import { powerShellArgs } from "./powershell.ts";
 
 type PowerShellSpawn = (
   shell: string,
@@ -26,12 +27,9 @@ export async function powerShellStep(
   const marker = "FORGE_COMMAND_START:";
   const child = launch(
     shell,
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
+    powerShellArgs(
       `[Console]::Out.WriteLine('${marker}' + [DateTime]::UtcNow.ToString('o'));\n${command}`,
-    ],
+    ),
     { windowsHide: true },
   );
   let timedOut = false;

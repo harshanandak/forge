@@ -15,8 +15,11 @@ const NAMES_ONLY = new Set(["tools/ci/windows-trace.ts"]);
 
 const SCANNED = /^(?:test|tools)\/.+\.[cm]?[jt]s$/;
 const EXECUTABLE = /powershell\.exe|(?<![\w./-])pwsh(?:\.exe)?(?![\w-])/i;
+/** child-step.ts is the batching wrapper over the helper; importing either reaches it. */
+const BATCH = "test/child-step.ts";
 const IMPORTS_HELPER =
-  /from\s+["'](?:\.{1,2}\/)+(?:[\w.-]+\/)*powershell\.ts["']/;
+  /from\s+["'](?:\.{1,2}\/)+(?:[\w.-]+\/)*(?:powershell|child-step)\.ts["']/;
+const IMPORTS_POWERSHELL = /from\s+["']\.\/powershell\.ts["']/;
 const FLAG_LITERAL = /["']-(?:NoProfile|NonInteractive)["']/;
 
 function lineOf(text: string, index: number): number {
@@ -43,6 +46,13 @@ export function findUnsharedPowerShell(
           message: `the helper must pass ${flag}`,
         });
   }
+  const batch = files.find((file) => file.path === BATCH);
+  if (batch !== undefined && !IMPORTS_POWERSHELL.test(batch.text))
+    violations.push({
+      rule: "powershell-spawn",
+      file: BATCH,
+      message: `the batch wrapper must build its arguments through ${HELPER}`,
+    });
   for (const file of files) {
     if (
       !SCANNED.test(file.path) ||
