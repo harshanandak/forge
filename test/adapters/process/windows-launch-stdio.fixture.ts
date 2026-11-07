@@ -47,6 +47,13 @@ export interface Failure {
   readonly code: unknown;
   readonly causeCode: unknown;
 }
+/** Another client reaches every pipe before the command's own end does. */
+export interface ForeignReport {
+  readonly launched: Report;
+  readonly current: Report;
+  /** Bytes the intruding clients received from the host. */
+  readonly intruderBytes: number;
+}
 export interface Scenarios {
   readonly evidence: { readonly launched: Report; readonly current: Report };
   readonly capped: { readonly launched: Report; readonly current: Report };
@@ -54,12 +61,6 @@ export interface Scenarios {
     readonly launched: Failure;
     readonly current: Failure;
   }[];
-  /** Another client reaches every pipe before the command's own end does. */
-  readonly foreign: {
-    readonly launched: Report;
-    /** Bytes the intruding clients received from the host. */
-    readonly intruderBytes: number;
-  };
   readonly quiet: {
     readonly skipped: boolean;
     readonly terminations: number;
@@ -205,10 +206,11 @@ async function missingScenario(): Promise<Scenarios["missing"]> {
 /**
  * Intruders connect to every pipe before the command's own end does. Stdout and stderr intruders
  * write junk and the stdin intruder only listens; none may change the capture or receive input.
+ * It runs on its own, never inside `scenarios`, so a failure here cannot fail the other tests.
  */
-async function foreignScenario(
+export async function foreignScenario(
   nodePath: string,
-): Promise<Scenarios["foreign"]> {
+): Promise<ForeignReport> {
   const intruders: Socket[] = [];
   let intruderBytes = 0;
   try {
@@ -232,7 +234,15 @@ async function foreignScenario(
         }
       },
     );
-    return { launched, intruderBytes };
+    return {
+      launched,
+      current: await currentRun(
+        nodePath,
+        [fixturePath, "child"],
+        options("evidence"),
+      ),
+      intruderBytes,
+    };
   } finally {
     for (const socket of intruders) socket.destroy();
   }
@@ -290,7 +300,6 @@ export async function scenarios(nodePath: string): Promise<Scenarios> {
     evidence: await both("evidence"),
     capped: await both("capped"),
     missing: await missingScenario(),
-    foreign: await foreignScenario(nodePath),
     quiet: await quietScenario(nodePath),
   };
 }
@@ -318,6 +327,10 @@ if (isEntry) {
       process.stderr.write(Buffer.alloc(STDERR_BYTES, "e"));
       process.exitCode = 7;
     });
+  } else if (mode === "foreign") {
+    process.stdout.write(
+      JSON.stringify(await foreignScenario(process.execPath)),
+    );
   } else if (mode === "run") {
     process.stdout.write(JSON.stringify(await scenarios(process.execPath)));
   }

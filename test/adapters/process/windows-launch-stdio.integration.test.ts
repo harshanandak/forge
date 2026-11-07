@@ -5,7 +5,9 @@ import {
   expectedBytes,
   expectedInput,
   fixturePath,
+  foreignScenario,
   scenarios,
+  type ForeignReport,
   type Scenarios,
 } from "./windows-launch-stdio.fixture.ts";
 
@@ -25,6 +27,29 @@ function underNode(): Scenarios {
     throw new Error(`node run failed: ${run.stderr || run.error?.message}`);
   nodeRun = JSON.parse(run.stdout) as Scenarios;
   return nodeRun;
+}
+
+let nodeForeign: ForeignReport | undefined;
+function foreignUnderNode(): ForeignReport {
+  if (nodeForeign !== undefined) return nodeForeign;
+  const run = spawnSync(nodePath, [fixturePath, "foreign"], {
+    encoding: "utf8",
+    timeout: 120_000,
+    windowsHide: true,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (run.status !== 0)
+    throw new Error(
+      `node foreign run failed: ${run.stderr || run.error?.message}`,
+    );
+  nodeForeign = JSON.parse(run.stdout) as ForeignReport;
+  return nodeForeign;
+}
+
+let bunForeign: Promise<ForeignReport> | undefined;
+function foreignUnderBun(): Promise<ForeignReport> {
+  bunForeign ??= foreignScenario(nodePath);
+  return bunForeign;
 }
 
 let bunRun: Promise<Scenarios> | undefined;
@@ -68,11 +93,11 @@ function expectMissing(result: Scenarios): void {
   }
 }
 
-function expectForeign(result: Scenarios): void {
+function expectForeign(result: ForeignReport): void {
   // Another client got to each pipe first: the capture still equals the normal run, and the
   // stdin intruder received none of the command's input.
-  expect(result.foreign.launched).toEqual(result.evidence.current);
-  expect(result.foreign.intruderBytes).toBe(0);
+  expect(result.launched).toEqual(result.current);
+  expect(result.intruderBytes).toBe(0);
 }
 
 function expectQuiet(result: Scenarios): void {
@@ -111,11 +136,11 @@ describe.skipIf(!windows)("windows launcher stdio", () => {
   }, 150_000);
 
   test("under node, a client that reaches the pipes first gets no input and changes no output", () => {
-    expectForeign(underNode());
+    expectForeign(foreignUnderNode());
   }, 150_000);
 
   test("under bun, a client that reaches the pipes first gets no input and changes no output", async () => {
-    expectForeign(await underBun());
+    expectForeign(await foreignUnderBun());
   }, 150_000);
 
   test("under node, stop after a clean exit terminates nothing", () => {
