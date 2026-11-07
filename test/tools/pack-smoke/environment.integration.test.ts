@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import {
+  bunFreeNodeExecutable,
   environmentWithoutBun,
   resolveBun,
 } from "../../../tools/pack-smoke/environment.ts";
@@ -25,11 +26,11 @@ test("the absolute Bun runner starts with a Bun-free consumer environment", () =
     const original = { Path: `${folder}${delimiter}`, BUN_INSTALL: folder };
     const runner = resolveBun(original);
     expect(runner).toBe(bun);
-    const nodeDirectory = join(folder, "node-only");
     const node = Bun.which("node");
     if (node === null)
       throw new Error("Node is required for the consumer environment");
-    const env = environmentWithoutBun(nodeDirectory, node, original);
+    const env = environmentWithoutBun(node, original);
+    const nodeDirectory = dirname(bunFreeNodeExecutable(node));
     expect(env.Path).toBe(nodeDirectory);
     expect(env.BUN_INSTALL).toBeUndefined();
     expect(original.BUN_INSTALL).toBe(folder);
@@ -65,12 +66,8 @@ test("the Bun-free Node executable lives outside the caller's root and is reused
     const node = Bun.which("node");
     if (node === null)
       throw new Error("Node is required for the consumer environment");
-    const first = environmentWithoutBun(join(folder, "first"), node, {
-      PATH: "",
-    });
-    const second = environmentWithoutBun(join(folder, "second"), node, {
-      PATH: "",
-    });
+    const first = environmentWithoutBun(node, { PATH: "" });
+    const second = environmentWithoutBun(node, { PATH: "" });
     const firstDirectory = first.PATH!.split(delimiter)[0]!;
     const secondDirectory = second.PATH!.split(delimiter)[0]!;
     const executable = join(
@@ -140,9 +137,8 @@ test("colocated Node and Bun leave node and npm exec working without exposing Bu
       [key]: `${colocated}${delimiter}${system}`,
       BUN_INSTALL: colocated,
     };
-    const nodeDirectory = join(folder, "node-only");
-    const env = environmentWithoutBun(nodeDirectory, colocatedNode, original);
-    const consumerNode = join(nodeDirectory, nodeName);
+    const env = environmentWithoutBun(colocatedNode, original);
+    const consumerNode = bunFreeNodeExecutable(colocatedNode);
     const modules = join(folder, "node_modules");
     const fixture = join(modules, "smoke-bin");
     const bins = join(modules, ".bin");
