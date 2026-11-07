@@ -2918,4 +2918,4 @@ for (const operation of ["reclaim", "rename"])
 expect(caseNames).toHaveLength(129);
 expect(
   createHash("sha256").update(JSON.stringify(caseNames)).digest("hex"),
-).toBe("cf896f415afa1c01a4fe9d778dbfd5d612c3546e1b45b604bb7607adb254451b");
+).toBe("4154d0a0cc4a5a5c63b9f43320210cd81c98cf7fe24bb414842e00f24615edb0");
