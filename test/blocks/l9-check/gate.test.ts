@@ -18,6 +18,15 @@ import { exitCode } from "../../../src/surface/result.ts";
 import type { Catalog } from "../../../src/core/catalog/index.ts";
 
 const head = "a".repeat(40);
+// The default reviewer (the Codex connector) is always checked; the fake prints what the real jq filter would.
+const reviewLine = `<!-- codex-review-state:v1 ${JSON.stringify({
+  code_review: {
+    commit_sha: head,
+    has_any_findings: false,
+    has_unresolved_findings: false,
+    status: "completed",
+  },
+})} -->`;
 const base = "c".repeat(40);
 
 function ciPage(checks: unknown, oid = head, endCursor: string | null = null) {
@@ -176,12 +185,15 @@ function fixture(headRefName: unknown = "feat/x") {
               comparePages ??
                 (Array.isArray(files)
                   ? files.map((_page, index) => ({
+                      status: "ahead",
                       base_commit: { sha: base },
                       ...(index === 0 ? { files: files.flat() } : {}),
                     }))
                   : files),
             );
-          } else
+          } else if (args[1]?.includes("/issues/7/comments"))
+            stdout = reviewLine;
+          else
             stdout = JSON.stringify(args[1] === "graphql" ? pages : filePages);
         } else throw new Error(`Unexpected gh command: ${args.join(" ")}`);
         if (bounce && headHistory.length === 1)
@@ -322,7 +334,7 @@ test("gate preserves normal branch evidence collection without another gh call",
     expect(args[args.indexOf("--json") + 1]?.split(",")).toContain(
       "headRefName",
     );
-  expect(f.calls).toHaveLength(5);
+  expect(f.calls).toHaveLength(6);
 }, 1000);
 
 test("gate refuses empty or malformed head branch evidence", async () => {
@@ -520,7 +532,7 @@ test("gate checks renamed destinations in paginated comparisons", async () => {
   expect(result.verdict).toBe("REFUSED");
   expect(result.doorPaths).toEqual(["migrations/critical.sql"]);
   const requests = f.calls.filter((args) => args[0] === "api");
-  expect(requests).toHaveLength(3);
+  expect(requests).toHaveLength(4);
   for (const args of requests)
     expect(
       args.slice(

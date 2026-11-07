@@ -345,7 +345,7 @@ test("a receipt at another commit pauses and quotes the receipt", async () => {
   expect(action.raw).toContain(head);
 });
 
-test("unreadable GitHub data pauses and quotes it; an open PR waits", async () => {
+test("unreadable GitHub data pauses and quotes it; an open PR with no readable merge facts pauses", async () => {
   const f = fixture();
   f.gh.reply = "not json";
   const garbled = await f.next();
@@ -357,7 +357,7 @@ test("unreadable GitHub data pauses and quotes it; an open PR waits", async () =
     mergeCommit: null,
     url,
   };
-  expect(await f.next()).toMatchObject({ kind: "wait" });
+  expect(await f.next()).toMatchObject({ kind: "pause", step: "merge" });
 });
 
 test("recording an action that is not open is refused", async () => {
