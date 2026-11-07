@@ -4,6 +4,9 @@ import { homedir } from "node:os";
 import {
   createConfig,
   createConfigOperations,
+  type Enforcer,
+  type LawsReport,
+  schemaDeclares,
   type ShowResult,
 } from "../core/config/index.ts";
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
@@ -14,6 +17,7 @@ import {
 import { GitCommandError } from "../adapters/vcs-git/index.ts";
 import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
 import { compatibleConfig } from "../core/config/compatible.ts";
+import { parsePointer } from "../core/config/pointer.ts";
 import { detectProject, createFolderFiles } from "../blocks/project/index.ts";
 import {
   Catalog,
@@ -461,6 +465,35 @@ export async function createAssembly(
         snapshot(callScope())
           .candidates.filter((entry) => entry.declaredOp === declaredOp)
           .map((entry) => `forge ${cliWords(entry.op)!.join(" ")}`),
+      // what the enabled, loadable, admitted blocks declare they enforce, for laws.check
+      enforcers: (): readonly Enforcer[] =>
+        [...snapshot(callScope()).blocks].flatMap(([name, block]) => {
+          try {
+            if (!block.shipped) trust.check(block.digest, []);
+          } catch {
+            return [];
+          }
+          // the block's own config schema, already loaded for this composition
+          const path = block.manifest.configSchema;
+          const schema =
+            path === undefined ? undefined : block.resolvedSchema(path);
+          return Object.entries(block.manifest.enforces ?? {}).map(
+            ([point, subtree]): Enforcer => ({
+              point,
+              instance: name,
+              root: [
+                "blocks",
+                name,
+                "config",
+                ...(parsePointer(subtree) ?? []),
+              ],
+              // no schema means the block's config is not narrowed, so any setting may be read
+              reads: (segments) =>
+                schema === undefined ||
+                schemaDeclares(schema, segments.slice(3)),
+            }),
+          );
+        }),
       builtinSource: (name: string): BlockSource | undefined =>
         firstPartyBlocks[`forge/${name}`] === undefined
           ? undefined
@@ -1275,6 +1308,8 @@ export async function createAssembly(
             if (!validateConfigValue(entry.declaration, "input", request.input))
               refuse("INPUT_INVALID", "Invalid config input");
             if (request.op === "config.show") await trustState.open(false);
+            // laws.check reads which blocks are admitted, so it opens trust state the same way
+            if (request.op === "laws.check") await trustState.open(false);
             const handled = configHandler(request.input);
             const deviceOnly = !call.inProject && !record(handled)?.configured;
             const current =
@@ -1334,6 +1369,30 @@ export async function createAssembly(
                 ),
                 result: output,
               };
+            if (request.op === "laws.check") {
+              const report = output as LawsReport;
+              if (report.verdict !== "PASS")
+                return {
+                  ok: false,
+                  op: request.op,
+                  status: report.verdict,
+                  error: {
+                    code:
+                      report.problems.length > 0
+                        ? "LAWS_INVALID"
+                        : report.summary.broken > 0
+                          ? "LAWS_BROKEN"
+                          : "LAWS_UNENFORCED",
+                    message:
+                      report.problems.length > 0
+                        ? report.problems.join("\n")
+                        : `${report.summary.broken} broken and ${report.summary.unenforced} unenforced of ${report.laws.length} laws; see result.laws`,
+                    retry: "never",
+                  },
+                  warnings: call.warnings,
+                  result: output,
+                };
+            }
             return { ...success(request.op, output), warnings: call.warnings };
           }
           if (request.op === "skills.sync") {

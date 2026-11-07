@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/harshanandak/forge/main/src/core/config/schemas/laws-check.output.json",
+  "type": "object",
+  "required": ["verdict", "laws", "summary", "problems"],
+  "properties": {
+    "verdict": {
+      "description": "FAIL when a law is broken or the laws section is malformed; INCOMPLETE when a law is unenforced; else PASS.",
+      "enum": ["PASS", "FAIL", "INCOMPLETE"]
+    },
+    "laws": {
+      "type": "array",
+      "items": { "$ref": "defs.json#/$defs/LawReport" }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["enforced", "broken", "unenforced"],
+      "properties": {
+        "enforced": { "type": "integer", "minimum": 0 },
+        "broken": { "type": "integer", "minimum": 0 },
+        "unenforced": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "problems": {
+      "description": "Why the laws section could not be read, if it could not.",
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}

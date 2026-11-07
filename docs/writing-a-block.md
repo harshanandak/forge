@@ -90,6 +90,10 @@ npx forge block admit <digest>
 npx forge hello say --name World
 ```
 
+A block that enforces a rule can say so with `"enforces": {"<point>": "<config pointer>"}`
+in its manifest. `forge laws check` then counts a law at that point as enforced only
+when the block is enabled, loads, and the law's values sit under that config subtree.
+
 `check` succeeds with `ok: true`, a `blockId` of `example.org/hello`, a
 `sha256:` digest and `admitted: false`; it executes no handler and registers
 nothing. `add` writes the block source to `.forge/config.yaml`, then returns
