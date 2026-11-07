@@ -3,10 +3,19 @@ import { Worker, isMainThread, workerData } from "node:worker_threads";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 
-const wait = (state, index, expected) => {
-  const result = Atomics.wait(state, index, expected, 10000);
+// The store graph is imported dynamically so the worker can finish loading it
+// before it reports ready (barrier 6). Thread start-up and module loading are
+// cold-start cost, not the work the test bounds, so the main thread waits for
+// barrier 6 without a numeric budget: the only bound is the 20 s spawnSync
+// timeout in the test, which kills this process if the worker never gets ready.
+// Barrier 0 (10 s) then covers only the store open up to write-pre-lock.
+const storeUrl = new URL(
+  "../../../src/adapters/store-sqlite/index.ts",
+  import.meta.url,
+).href;
+const wait = (state, index, expected, budget = 10000) => {
+  const result = Atomics.wait(state, index, expected, budget);
   assert.notEqual(result, "timed-out", `barrier ${index}`);
 };
 const signal = (state, index, value = 1) => {
@@ -16,6 +25,8 @@ const signal = (state, index, value = 1) => {
 if (!isMainThread) {
   const { directory, shared, method } = workerData;
   const state = new Int32Array(shared);
+  const { createSqliteStore } = await import(storeUrl);
+  signal(state, 6);
   const opened = await createSqliteStore(directory, {
     step(step) {
       if (step === "write-pre-lock") {
@@ -40,6 +51,7 @@ if (!isMainThread) {
     signal(state, 3);
   }
 } else {
+  const { createSqliteStore } = await import(storeUrl);
   const mode = process.argv[2];
   const directory = mkdtempSync(join(tmpdir(), "forge-writer-fence-"));
   const handles = [];
@@ -85,7 +97,7 @@ if (!isMainThread) {
       );
     } else {
       const [method, boundary] = mode.split(":");
-      const state = new Int32Array(new SharedArrayBuffer(24));
+      const state = new Int32Array(new SharedArrayBuffer(28));
       let worker;
       const target = await open("live.db", {
         step(step) {
@@ -103,6 +115,7 @@ if (!isMainThread) {
       worker = new Worker(new URL(import.meta.url), {
         workerData: { directory, shared: state.buffer, method },
       });
+      wait(state, 6, 0, Infinity);
       wait(state, 0, 0);
       target.restoreImage(
         image,
