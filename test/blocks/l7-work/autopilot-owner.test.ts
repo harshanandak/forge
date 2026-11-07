@@ -5,6 +5,7 @@ import {
   laneOwnerChannelOp,
   ownerApproval,
   requestBoundTo,
+  requestSpent,
   type ApprovalRequired,
 } from "../../../src/assembly/approval.ts";
 
@@ -653,7 +654,7 @@ test("an expired request is renewed on the same ask and the owner is asked again
   // The renewal must name the request the ask carries; a bare replacement is still refused.
   await expect(
     f.record({ id: "work-1", request: "req-new", scope }),
-  ).rejects.toThrow(/not replaced/);
+  ).rejects.toThrow(/no open gated ask/);
   await expect(
     f.record({ id: "work-1", request: "req-new", scope, replaces: "req-x" }),
   ).rejects.toThrow(/does not carry/);
@@ -761,4 +762,74 @@ test("a message number in source.message counts when the words carry none", asyn
   expect((await f.reply("1A 2B", { ...OWNER, message: "#1" })).mapped).toBe(
     true,
   );
+});
+
+test("the runtime calls a request spent only when it was used or has expired, never while pending", () => {
+  const store = new Map<string, { value: unknown; revision: number }>();
+  const state = {
+    get: (key: string) => store.get(key),
+    put: (key: string, value: unknown) => {
+      const row = { value, revision: (store.get(key)?.revision ?? 0) + 1 };
+      store.set(key, row);
+      return row;
+    },
+  } as never;
+  let now = Date.parse("2026-01-01T00:00:00.000Z");
+  const ask = (input: Record<string, unknown>): string => {
+    try {
+      ownerApproval({
+        state,
+        op: "lane.resume",
+        input,
+        deviceRoot: "/device",
+        projectRoot: "/project",
+        ask: "Resume.",
+        relay: { harness: "claude-code", id: "owner-1", pid: 1 },
+        now: () => now,
+      });
+    } catch (error) {
+      return (error as ApprovalRequired).request!.id;
+    }
+    return "";
+  };
+  const old = ask({ id: "work-1" });
+  const spent = (request: unknown) =>
+    requestSpent({ state, request, now: () => now });
+  const usable = (request: string) =>
+    requestBoundTo({
+      state,
+      request,
+      op: "lane.resume",
+      input: { id: "work-1" },
+      deviceRoot: "/device",
+      projectRoot: "/project",
+      now: () => now,
+    });
+  expect(spent(old)).toBe(false);
+  expect(usable(old)).toBe(true);
+  now += 25 * 60 * MINUTE;
+  // The owner's reply a day later: the request is dead and a new one can take its place.
+  expect(usable(old)).toBe(false);
+  expect(spent(old)).toBe(true);
+  const fresh = ask({ id: "work-1" });
+  expect(usable(fresh)).toBe(true);
+  expect(spent(fresh)).toBe(false);
+  // Used: burn it through the real approval path.
+  ownerApproval({
+    state,
+    op: "lane.resume",
+    input: {
+      id: "work-1",
+      approval: { request: fresh, quote: "ok", source: OWNER },
+    },
+    deviceRoot: "/device",
+    projectRoot: "/project",
+    ask: "Resume.",
+    relay: { harness: "claude-code", id: "owner-1", pid: 1 },
+    now: () => now,
+  });
+  expect(spent(fresh)).toBe(true);
+  expect(usable(fresh)).toBe(false);
+  expect(spent("missing")).toBe(false);
+  expect(spent(undefined)).toBe(false);
 });

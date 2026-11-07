@@ -96,6 +96,7 @@ import {
   laneResumeOp,
   POLICY_OPS,
   requestBoundTo,
+  requestSpent,
   unattendedOps,
   memoryOwnerAsk,
   memoryOwnerClaim,
@@ -1630,9 +1631,10 @@ export async function createAssembly(
           // A request id may be recorded on an ask only if it is a pending request for exactly
           // `lane resume` with the scope given; otherwise an approval for one step could ride on another.
           const fields = request.input as Record<string, unknown>;
+          const approvals = (await openApproval(request)).direct.state;
           if (
             !requestBoundTo({
-              state: (await openApproval(request)).direct.state,
+              state: approvals,
               request: fields.request,
               op: "lane.resume",
               input: fields.scope,
@@ -1643,6 +1645,15 @@ export async function createAssembly(
             refuse(
               "INPUT_CONFLICT",
               "The request is not a pending approval request bound to lane resume with that scope. Call lane resume without approval to get one.",
+            );
+          // A request may be replaced only when the runtime reports the old one as expired or used.
+          if (
+            fields.replaces !== undefined &&
+            !requestSpent({ state: approvals, request: fields.replaces })
+          )
+            refuse(
+              "INPUT_CONFLICT",
+              "The request to replace is not expired or used. Only a spent request is replaced; a pending one is still waiting for the owner.",
             );
         }
         const laneOwned =
