@@ -711,10 +711,29 @@ async function contact(
         );
       }
     }
+    // One git process lists the three keys; the last value of each is the effective one.
+    const keys = (
+      await g(
+        ["config", "--get-regexp", "^user\\.(email|useconfigonly|name)$"],
+        true,
+      )
+    ).text.split(/\r?\n/);
+    const effective = (key: string) =>
+      keys.reduce<string | null | undefined>(
+        (last, line) =>
+          line === key
+            ? null
+            : line.startsWith(`${key} `)
+              ? line.slice(key.length + 1).trim()
+              : last,
+        undefined,
+      );
+    // A key with no value is a true boolean, as `git config --bool` reads it.
+    const configOnly = effective("user.useconfigonly");
     if (
-      (await g(["config", "user.email"])).text !== account.commitEmails[0] ||
-      (await g(["config", "--bool", "user.useConfigOnly"])).text !== "true" ||
-      (await g(["config", "user.name"])).text !== account.commitName
+      effective("user.email") !== account.commitEmails[0] ||
+      !(configOnly === null || /^(?:true|yes|on|1)$/i.test(configOnly ?? "")) ||
+      effective("user.name") !== account.commitName
     )
       integrity("Effective Git identity overrides the approved include");
   };

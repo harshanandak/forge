@@ -1054,12 +1054,13 @@ test("installed accounts: plan, use and check on a bound clone start only the pr
     resetCalls();
     expect(cli(second, "plan").ok).toBe(true);
     expect(ghCalls()).toEqual({ "auth status": 1 });
-    expect(gitCalls()).toEqual({ remote: 1, log: 2, config: 1 });
-    // Bound use: the token proof alone; the account listing and the git discovery only feed a question it never asks.
+    // The second config call is the identity check: one read of name, email and useConfigOnly.
+    expect(gitCalls()).toEqual({ remote: 1, log: 2, config: 2 });
+    // Bound use: the token proof and the one identity read; the account listing and the git discovery only feed a question it never asks.
     resetCalls();
     expect(cli(second, "use", { login: "alice", approval }).ok).toBe(true);
     expect(ghCalls()).toEqual({ "auth token": 1, "api user": 1 });
-    expect(gitCalls()).toEqual({ remote: 1 });
+    expect(gitCalls()).toEqual({ remote: 1, config: 1 });
     // Check never calls gh: the origin url, the shallow and tip lookup in one call, and the log.
     resetCalls();
     const checked = cli(second, "check");
