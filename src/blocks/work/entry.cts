@@ -1399,7 +1399,7 @@ const DEFAULT_SECURITY_PATHS = [
   "templates/delivery",
 ];
 const MANIFEST_FILE =
-  /^(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|[a-z]+\.lockb?)$/;
+  /^(?:package\.json|[a-z]+\.lockb?|[a-z]+-lock\.(?:json|ya?ml)|[a-z]+-shrinkwrap\.json)$/;
 const MERGE_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$head:GitObjectID!){repository(owner:$owner,name:$repo){object(oid:$head){... on Commit{statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion isRequired(pullRequestNumber:$n)} ... on StatusContext{context state isRequired(pullRequestNumber:$n)}}}}}} pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}";
 type MergeVerdict = {
