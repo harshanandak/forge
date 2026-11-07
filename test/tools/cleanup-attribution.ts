@@ -49,8 +49,8 @@ try {
   })
 } catch { $data.processError = $_.Exception.Message }
 $out = ''
-try { $out = (& fltmc.exe filters | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { $data.filterError = "fltmc filters exited $LASTEXITCODE: $out" } else { $data.filters = $out } } catch { $data.filterError = $_.Exception.Message }
-try { $out = (& fltmc.exe instances -v $root.Substring(0, 2) | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { $data.volumeError = "fltmc instances exited $LASTEXITCODE: $out" } else { $data.volume = $out } } catch { $data.volumeError = $_.Exception.Message }
+try { $out = (& fltmc.exe filters | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { $data.filterError = "fltmc filters exited $($LASTEXITCODE): $out" } else { $data.filters = $out } } catch { $data.filterError = $_.Exception.Message }
+try { $out = (& fltmc.exe instances -v $root.Substring(0, 2) | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { $data.volumeError = "fltmc instances exited $($LASTEXITCODE): $out" } else { $data.volume = $out } } catch { $data.volumeError = $_.Exception.Message }
 try { $data.defender = Get-MpComputerStatus -ErrorAction Stop | Select-Object RealTimeProtectionEnabled, AntivirusEnabled } catch { $data.defenderError = 'Defender state unavailable' }
 try { $data.search = (Get-Service WSearch -ErrorAction Stop).Status.ToString() } catch { $data.searchError = 'Search service state unavailable' }
 $data | ConvertTo-Json -Depth 4 -Compress
