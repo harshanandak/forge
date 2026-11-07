@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, relative } from "node:path";
 import {
   environmentWithoutBun,
   resolveBun,
@@ -54,6 +54,36 @@ test("the absolute Bun runner starts with a Bun-free consumer environment", () =
     expect(() => resolveBun({ PATH: "" })).toThrow(
       "bun is not resolvable on PATH",
     );
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("the Bun-free Node executable lives outside the caller's root and is reused across calls", () => {
+  const folder = mkdtempSync(join(tmpdir(), "forge-shared-node-env-"));
+  try {
+    const node = Bun.which("node");
+    if (node === null)
+      throw new Error("Node is required for the consumer environment");
+    const first = environmentWithoutBun(join(folder, "first"), node, {
+      PATH: "",
+    });
+    const second = environmentWithoutBun(join(folder, "second"), node, {
+      PATH: "",
+    });
+    const firstDirectory = first.PATH!.split(delimiter)[0]!;
+    const secondDirectory = second.PATH!.split(delimiter)[0]!;
+    const executable = join(
+      firstDirectory,
+      process.platform === "win32" ? "node.exe" : "node",
+    );
+    // The caller deletes its root, so the executable must not live inside it.
+    expect(relative(folder, firstDirectory).startsWith("..")).toBe(true);
+    expect(existsSync(executable)).toBe(true);
+    expect(secondDirectory).toBe(firstDirectory);
+    // The directory is Bun-free because a Windows executable searches its own directory.
+    expect(existsSync(join(firstDirectory, "bun.exe"))).toBe(false);
+    expect(existsSync(join(firstDirectory, "bun"))).toBe(false);
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
