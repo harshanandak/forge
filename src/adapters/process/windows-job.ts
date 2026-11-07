@@ -18,17 +18,21 @@ type NativeFunction<Arguments extends readonly unknown[], Result> = (
   ...args: Arguments
 ) => Result;
 
-interface KoffiLibraryBoundary {
+export interface KoffiLibraryBoundary {
   func(...definition: readonly unknown[]): unknown;
 }
 
-interface KoffiBoundary {
+export interface KoffiBoundary {
   load(path: string): unknown;
   opaque(name?: string): unknown;
   pointer(...definition: readonly unknown[]): unknown;
   struct(name: string, members: Readonly<Record<string, unknown>>): unknown;
   out(type: unknown): unknown;
   sizeof(type: unknown): number;
+  alloc(type: unknown, length: number): bigint;
+  free(pointer: bigint): void;
+  encode(pointer: bigint, offset: number, type: unknown, value: unknown): void;
+  decode(pointer: bigint, type: unknown): unknown;
 }
 
 interface NativeApi {
@@ -61,6 +65,8 @@ interface NativeApi {
   readonly getLastError: NativeFunction<readonly [], number>;
   readonly extendedLimitType: unknown;
   readonly extendedLimitSize: number;
+  readonly koffi: KoffiBoundary;
+  readonly kernel32: KoffiLibraryBoundary;
 }
 
 export interface WindowsJob {
@@ -91,7 +97,11 @@ function asKoffi(value: unknown): KoffiBoundary {
     !hasFunction(value, "pointer") ||
     !hasFunction(value, "struct") ||
     !hasFunction(value, "out") ||
-    !hasFunction(value, "sizeof")
+    !hasFunction(value, "sizeof") ||
+    !hasFunction(value, "alloc") ||
+    !hasFunction(value, "free") ||
+    !hasFunction(value, "encode") ||
+    !hasFunction(value, "decode")
   ) {
     throw new TypeError("Koffi did not expose its expected synchronous API.");
   }
@@ -105,7 +115,7 @@ function asLibrary(value: unknown): KoffiLibraryBoundary {
   return value as KoffiLibraryBoundary;
 }
 
-function asNativeFunction<Arguments extends readonly unknown[], Result>(
+export function asNativeFunction<Arguments extends readonly unknown[], Result>(
   value: unknown,
 ): NativeFunction<Arguments, Result> {
   if (typeof value !== "function") {
@@ -212,8 +222,40 @@ function loadNativeApi(): NativeApi {
     ),
     extendedLimitType,
     extendedLimitSize: koffi.sizeof(extendedLimitType),
+    koffi,
+    kernel32,
   };
   return nativeApi;
+}
+
+/** The koffi handle, kernel32 library and shared helpers the launcher builds on. */
+export function windowsNativeFoundation(): {
+  readonly koffi: KoffiBoundary;
+  readonly kernel32: KoffiLibraryBoundary;
+  readonly closeHandle: (this: void, handle: bigint) => number;
+  readonly lastError: (this: void) => number;
+} {
+  const api = loadNativeApi();
+  return {
+    koffi: api.koffi,
+    kernel32: api.kernel32,
+    closeHandle: (handle) => api.closeHandle(handle),
+    lastError: () => api.getLastError(),
+  };
+}
+
+const jobHandles = new WeakMap<WindowsJob, () => bigint>();
+
+/** The raw job handle for a job opened here; it throws once the job is closed. */
+export function windowsJobHandle(job: WindowsJob): bigint {
+  const read = jobHandles.get(job);
+  if (read === undefined) {
+    throw new ProcessSpawnError(
+      "CONTAINMENT_UNAVAILABLE",
+      "The Windows Job Object was not opened by this adapter.",
+    );
+  }
+  return read();
 }
 
 function isHandle(value: unknown): value is bigint {
@@ -435,7 +477,7 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
     return job;
   };
 
-  return {
+  const opened: WindowsJob = {
     attach(pid: number): void {
       if (!Number.isInteger(pid) || pid <= 0 || pid > 0xffffffff) {
         throw new ProcessSpawnError(
@@ -513,4 +555,6 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
       job = undefined;
     },
   };
+  jobHandles.set(opened, currentJob);
+  return opened;
 }
