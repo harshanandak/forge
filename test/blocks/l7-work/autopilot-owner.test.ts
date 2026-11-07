@@ -5,6 +5,7 @@ import {
   laneOwnerChannelOp,
   ownerApproval,
   requestBoundTo,
+  requestSpent,
   type ApprovalRequired,
 } from "../../../src/assembly/approval.ts";
 
@@ -46,6 +47,7 @@ type Handler<Output> = (call: {
 type Operations = {
   "lane.next": Handler<Action | { actions: Action[] }>;
   "lane.stop": Handler<{ stopped: string }>;
+  "lane.resume": Handler<{ resumed: string }>;
   "lane.record": Handler<Reply | { recorded: true }>;
 };
 type Row = {
@@ -201,6 +203,7 @@ function fixture() {
       ),
     stopAll: () => operations["lane.stop"](bound({ all: true })),
     stop: (id: string) => operations["lane.stop"](bound({ id })),
+    resume: (id: string) => operations["lane.resume"](bound({ id })),
     record: async (input: Record<string, unknown>) =>
       await operations["lane.record"](bound(input)),
     reply: async (reply: string, source: Source = OWNER) =>
@@ -635,3 +638,254 @@ for (const [replyText, approved] of [
     // Resuming all of them still works once every ask chooses resume.
     expect((await f.reply("#2 1A 2A")).approvals).toHaveLength(1);
   });
+
+test("an expired request is renewed on the same ask and the owner is asked again, bound to the new id", async () => {
+  const f = fixture();
+  await f.setOwner();
+  await f.stop("work-1");
+  await f.next("work-1");
+  const scope = { id: "work-1" };
+  await f.record({ id: "work-1", request: "req-old", scope });
+  expect((await f.next("work-1")).kind).toBe("ask-owner");
+  // The owner answers a day later: the handler cannot see expiry, the runtime refuses this id.
+  f.time.now += 25 * 60 * MINUTE;
+  const stale = await f.reply("#1 1A");
+  expect(stale.approvals[0]!.approval.request).toBe("req-old");
+  // The renewal must name the request the ask carries; a bare replacement is still refused.
+  await expect(
+    f.record({ id: "work-1", request: "req-new", scope }),
+  ).rejects.toThrow(/no open gated ask/);
+  await expect(
+    f.record({ id: "work-1", request: "req-new", scope, replaces: "req-x" }),
+  ).rejects.toThrow(/does not carry/);
+  await f.record({
+    id: "work-1",
+    request: "req-new",
+    scope,
+    replaces: "req-old",
+  });
+  // The answer given for the old id is dropped; the same ask goes out again in the next message.
+  const again = await f.next("work-1");
+  expect(again.kind).toBe("ask-owner");
+  expect(again.approval).toBeUndefined();
+  expect(again.ask).toContain("Message #2");
+  expect(again.ask).toContain("A) resume it");
+  // The old message number no longer answers anything after the renewal.
+  await expect(f.reply("#1 1A")).rejects.toThrow(/latest is #2/);
+  const fresh = await f.reply("#2 1A");
+  expect(fresh.approvals).toEqual([
+    {
+      lane: "work-1",
+      op: "lane.resume",
+      input: scope,
+      approval: { request: "req-new", quote: "#2 1A", source: OWNER },
+    },
+  ]);
+  expect((await f.next("work-1")).approval?.request).toBe("req-new");
+  // A request that was never recorded cannot be "replaced".
+  await expect(
+    f.record({
+      id: "work-2",
+      request: "req-9",
+      scope: { id: "work-2" },
+      replaces: "req-old",
+    }),
+  ).rejects.toThrow(/no open gated ask/);
+});
+
+test("a hold answer returns a quiet held action to every session, writes nothing and clears when the lane resumes", async () => {
+  const f = fixture();
+  await f.setOwner();
+  f.spend("work-1");
+  expect((await f.next("work-1")).kind).toBe("ask-owner");
+  const result = await f.reply("#1 1C");
+  expect(result.answers[0]).toMatchObject({ label: "C", hold: true });
+  const before = f.revisions();
+  for (const session of ["owner-1", "child-9"]) {
+    f.session.env = { CLAUDE_CODE_SESSION_ID: session };
+    const held = await f.next("work-1");
+    expect(held.kind).toBe("pause");
+    expect(held.ask).toBeUndefined();
+    expect(held.why).toContain("owner");
+  }
+  expect(f.revisions()).toBe(before);
+  // The same reason after a resume is a new decision for the owner.
+  f.session.env = { CLAUDE_CODE_SESSION_ID: "owner-1" };
+  await f.resume("work-1");
+  f.time.now += 31 * MINUTE;
+  const asked = await f.next("work-1");
+  expect(asked.kind).toBe("ask-owner");
+  expect(asked.ask).toContain("Message #2");
+});
+
+test('"ok" on a stopped lane keeps it held quietly, and a new stop is asked again', async () => {
+  const f = fixture();
+  await f.setOwner();
+  await f.stop("work-1");
+  await f.next("work-1");
+  await f.record({ id: "work-1", request: "req-1", scope: { id: "work-1" } });
+  expect((await f.next("work-1")).kind).toBe("ask-owner");
+  expect((await f.reply("#1 ok")).answers[0]).toMatchObject({ hold: true });
+  const before = f.revisions();
+  const held = await f.next("work-1");
+  expect(held.kind).toBe("pause");
+  expect(held.ask).toBeUndefined();
+  expect(f.revisions()).toBe(before);
+  await f.resume("work-1");
+  await f.stop("work-1");
+  expect((await f.next("work-1")).kind).toBe("forge");
+});
+
+test("only a leading #n or source.message names the message a reply answers", async () => {
+  const f = fixture();
+  await f.setOwner();
+  f.spend("work-1");
+  f.spend("work-2");
+  await f.all();
+  f.time.now += 31 * MINUTE;
+  await f.all();
+  f.time.now += 31 * MINUTE;
+  expect(sent(await f.all())[0]!.ask).toContain("Message #3");
+  const before = f.revisions();
+  await expect(f.reply("do PR #3 first, 1A 2B")).rejects.toThrow(
+    /Name the message/,
+  );
+  await expect(f.reply("1A 2B for PR #3")).rejects.toThrow(/Name the message/);
+  expect(f.revisions()).toBe(before);
+  expect((await f.reply("#3 1A 2B")).mapped).toBe(true);
+});
+
+test("a message number in source.message counts when the words carry none", async () => {
+  const f = fixture();
+  await f.setOwner();
+  f.spend("work-1");
+  f.spend("work-2");
+  await f.all();
+  expect((await f.reply("1A 2B", { ...OWNER, message: "#1" })).mapped).toBe(
+    true,
+  );
+});
+
+test("the runtime calls a request spent only when it was used or has expired, never while pending", () => {
+  const store = new Map<string, { value: unknown; revision: number }>();
+  const state = {
+    get: (key: string) => store.get(key),
+    put: (key: string, value: unknown) => {
+      const row = { value, revision: (store.get(key)?.revision ?? 0) + 1 };
+      store.set(key, row);
+      return row;
+    },
+  } as never;
+  let now = Date.parse("2026-01-01T00:00:00.000Z");
+  const ask = (input: Record<string, unknown>): string => {
+    try {
+      ownerApproval({
+        state,
+        op: "lane.resume",
+        input,
+        deviceRoot: "/device",
+        projectRoot: "/project",
+        ask: "Resume.",
+        relay: { harness: "claude-code", id: "owner-1", pid: 1 },
+        now: () => now,
+      });
+    } catch (error) {
+      return (error as ApprovalRequired).request!.id;
+    }
+    return "";
+  };
+  const old = ask({ id: "work-1" });
+  const spent = (request: unknown) =>
+    requestSpent({ state, request, now: () => now });
+  const usable = (request: string) =>
+    requestBoundTo({
+      state,
+      request,
+      op: "lane.resume",
+      input: { id: "work-1" },
+      deviceRoot: "/device",
+      projectRoot: "/project",
+      now: () => now,
+    });
+  expect(spent(old)).toBe(false);
+  expect(usable(old)).toBe(true);
+  now += 25 * 60 * MINUTE;
+  // The owner's reply a day later: the request is dead and a new one can take its place.
+  expect(usable(old)).toBe(false);
+  expect(spent(old)).toBe(true);
+  const fresh = ask({ id: "work-1" });
+  expect(usable(fresh)).toBe(true);
+  expect(spent(fresh)).toBe(false);
+  // Used: burn it through the real approval path.
+  ownerApproval({
+    state,
+    op: "lane.resume",
+    input: {
+      id: "work-1",
+      approval: { request: fresh, quote: "ok", source: OWNER },
+    },
+    deviceRoot: "/device",
+    projectRoot: "/project",
+    ask: "Resume.",
+    relay: { harness: "claude-code", id: "owner-1", pid: 1 },
+    now: () => now,
+  });
+  expect(spent(fresh)).toBe(true);
+  expect(usable(fresh)).toBe(false);
+  expect(spent("missing")).toBe(false);
+  expect(spent(undefined)).toBe(false);
+});
+
+test("a source.message number with a trailing space still names the message", async () => {
+  const f = fixture();
+  await f.setOwner();
+  f.spend("work-1");
+  f.spend("work-2");
+  await f.all();
+  expect((await f.reply("1A 2B", { ...OWNER, message: "#1 " })).mapped).toBe(
+    true,
+  );
+});
+
+test("after a stop of every lane, renewing the request keeps both asks on it and the all-or-nothing rule", async () => {
+  const f = fixture();
+  await f.setOwner();
+  await f.stopAll();
+  await f.all();
+  const scope = { all: true };
+  await f.record({ id: "work-1", request: "req-R", scope });
+  expect(sent(await f.all())).toHaveLength(1);
+  f.time.now += 25 * 60 * MINUTE;
+  await f.record({
+    id: "work-1",
+    request: "req-R2",
+    scope,
+    replaces: "req-R",
+  });
+  for (const lane of ["work-1", "work-2"]) {
+    const ask = f.records.get(`autopilot-ask:${lane}`)!.value as {
+      status: string;
+      gated: { request: string };
+      answer?: unknown;
+    };
+    expect(ask.status).toBe("queued");
+    expect(ask.gated.request).toBe("req-R2");
+    expect(ask.answer).toBeUndefined();
+  }
+  const message = sent(await f.all());
+  expect(message).toHaveLength(1);
+  expect(message[0]!.ask).toContain("Message #2");
+  // One lane kept stopped: nothing is approved and every lane stays paused.
+  const mixed = await f.reply("#2 1A 2B");
+  expect(mixed.approvals).toEqual([]);
+  expect(mixed.mapped).toBe(false);
+  expect(sent(await f.all())[0]!.ask).toContain("all or nothing");
+  // Every lane resumes: exactly one approval, bound to the renewed request.
+  const all = await f.reply("#3 1A 2A");
+  expect(all.approvals).toHaveLength(1);
+  expect(all.approvals[0]).toMatchObject({
+    op: "lane.resume",
+    input: { all: true },
+    approval: { request: "req-R2", quote: "#3 1A 2A", source: OWNER },
+  });
+});
