@@ -180,6 +180,11 @@ export interface AssemblyOptions {
    */
   readonly project?: boolean;
   readonly providers?: ProviderOptions;
+  /** The terminal a person types on; left out, the process's own stdin and stderr. */
+  readonly terminal?: {
+    readonly tty: () => { readonly stdin: boolean; readonly stderr: boolean };
+    readonly confirm: (op: string, ask: string) => Promise<boolean>;
+  };
 }
 export interface UnavailableBlock {
   readonly name: string;
@@ -311,7 +316,7 @@ export async function createAssembly(
           return directApproval({ ...direct, method: "attended" });
       } else if (
         !agentSession(process.env) &&
-        unattendedOps(ownerPolicyText(deviceRoot)).has(request.op)
+        unattendedOps(ownerPolicyText(deviceRoot)).ops.has(request.op)
       )
         return directApproval({ ...direct, method: "scripts-policy" });
     }

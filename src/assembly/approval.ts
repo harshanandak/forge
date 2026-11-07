@@ -178,16 +178,21 @@ export const POLICY_OPS: ReadonlySet<string> = new Set([
   "config.grant",
 ]);
 /** The operations an owner.json text lets unattended calls run; unreadable text means none. */
-export function unattendedOps(text: string | undefined): ReadonlySet<string> {
+export function unattendedOps(text: string | undefined): {
+  ops: ReadonlySet<string>;
+  problem?: string;
+} {
   try {
     const listed = object(JSON.parse(text ?? ""))?.unattended;
-    return new Set(
-      Array.isArray(listed)
-        ? listed.filter((op) => typeof op === "string" && POLICY_OPS.has(op))
-        : [],
-    );
+    return {
+      ops: new Set(
+        Array.isArray(listed)
+          ? listed.filter((op) => typeof op === "string" && POLICY_OPS.has(op))
+          : [],
+      ),
+    };
   } catch {
-    return new Set();
+    return { ops: new Set() };
   }
 }
 /** Evidence that Forge saw first-hand (a typed phrase, or the owner's own policy file). */

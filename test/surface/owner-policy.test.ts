@@ -144,3 +144,46 @@ test("owner.policy needs a relayed approval and then writes owner.json", async (
     rmSync(h.work, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("FORGE_HARNESS=local-cli does not hide an agent session from the policy", async () => {
+  for (const marker of ["CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) {
+    const h = await open(false);
+    try {
+      h.policy(["block.admit"]);
+      process.env.FORGE_HARNESS = "local-cli";
+      process.env[marker] = "agent-session";
+      const added = await h.call("block.add", { path: "./hello" });
+      const digest = String(record(added.result)?.digest);
+      expect(await h.call("block.admit", { digest })).toMatchObject({
+        ok: false,
+        error: { code: "APPROVAL_REQUIRED" },
+      });
+    } finally {
+      delete process.env[marker];
+      delete process.env.FORGE_HARNESS;
+      await h.assembly.close();
+      rmSync(h.work, { recursive: true, force: true });
+    }
+  }
+}, 30_000);
+
+test("a malformed owner.json is ignored and says so", async () => {
+  const h = await open(false);
+  try {
+    writeFileSync(
+      join(h.deviceRoot, "owner.json"),
+      '{"unattended":["block.admit",42]}',
+    );
+    const added = await h.call("block.add", { path: "./hello" });
+    const digest = String(record(added.result)?.digest);
+    const refused = await h.call("block.admit", { digest });
+    expect(refused).toMatchObject({
+      ok: false,
+      error: { code: "APPROVAL_REQUIRED" },
+    });
+    expect(JSON.stringify(refused)).toContain("owner.json was ignored");
+  } finally {
+    await h.assembly.close();
+    rmSync(h.work, { recursive: true, force: true });
+  }
+}, 30_000);

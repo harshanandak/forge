@@ -17,7 +17,11 @@ import {
 import { tmpdir } from "node:os";
 import { runInNewContext } from "node:vm";
 import { join, resolve } from "node:path";
-import { createAssembly, type Assembly } from "../../../src/assembly/index.ts";
+import {
+  createAssembly,
+  type Assembly,
+  type AssemblyOptions,
+} from "../../../src/assembly/index.ts";
 import { ForgeFailure } from "../../../src/contract/author.ts";
 import {
   SchemaRegistry,
@@ -174,13 +178,21 @@ export async function openHarness(
   blocks: readonly BlockName[],
   settings: Readonly<Record<string, unknown>> = {},
   /** A second project on the same device shares the first one's device folder. */
-  place: { readonly deviceRoot?: string; readonly project?: string } = {},
+  place: {
+    readonly deviceRoot?: string;
+    readonly project?: string;
+    readonly terminal?: AssemblyOptions["terminal"];
+  } = {},
 ): Promise<Harness> {
   const work = mkdtempSync(join(tmpdir(), "forge-l8-"));
   const root = join(work, place.project ?? "project");
   const deviceRoot = place.deviceRoot ?? join(work, "device");
   mkdirSync(root);
-  const assembly = await createAssembly({ root, deviceRoot });
+  const assembly = await createAssembly({
+    root,
+    deviceRoot,
+    ...(place.terminal === undefined ? {} : { terminal: place.terminal }),
+  });
   let counter = 0;
   const ambient = (actor: Actor): AmbientContext => ({
     actor,
