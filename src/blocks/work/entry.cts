@@ -1428,6 +1428,8 @@ function parseJson(text: string, what: string): Record<string, unknown> {
     throw new Unreadable(`${what} is not an object`);
   return value as Record<string, unknown>;
 }
+const listOf = (value: unknown): unknown[] =>
+  Array.isArray(value) ? value : [];
 /** A stored verdict is trusted only when every field is present and well formed. */
 function validVerdict(row: unknown): row is MergeVerdict {
   return (
@@ -1508,12 +1510,7 @@ async function readMergeFacts(
   const where = /^https:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(url);
   if (!where || Number(where[4]) !== pr)
     throw new Unreadable(`PR url ${url} is not a pull request url`);
-  const [, host, owner, repo] = where as unknown as [
-    string,
-    string,
-    string,
-    string,
-  ];
+  const [, host = "", owner = "", repo = ""] = where;
   const reasons: string[] = [];
   const named = (rows: unknown, key: string): string[] => {
     if (!Array.isArray(rows)) throw new Unreadable(`PR ${key} list missing`);
@@ -1540,6 +1537,7 @@ async function readMergeFacts(
     !isCommit(view.baseRefOid) ||
     typeof view.state !== "string" ||
     typeof view.mergeStateStatus !== "string" ||
+    typeof view.changedFiles !== "number" ||
     !Number.isInteger(view.changedFiles)
   )
     throw new Unreadable("PR view is missing facts");
@@ -1642,7 +1640,7 @@ async function readMergeFacts(
   const wanted = settings?.requiredChecks ?? "github-required";
   const seen = new Set<string>();
   let required = 0;
-  for (const node of (contexts?.nodes ?? []) as unknown[]) {
+  for (const node of listOf(contexts?.nodes)) {
     if (!isMap(node)) throw new Unreadable("A check entry is not an object");
     if (typeof node.isRequired !== "boolean")
       throw new Unreadable("A check does not say whether it is required");
@@ -1668,7 +1666,7 @@ async function readMergeFacts(
       if (!seen.has(name)) reasons.push(`required check ${name} is absent`);
   if (!required) reasons.push("no required checks were found on the head");
   let open = 0;
-  for (const node of threads.nodes as unknown[]) {
+  for (const node of listOf(threads.nodes)) {
     if (!isMap(node) || typeof node.isResolved !== "boolean")
       throw new Unreadable("A review thread entry is not readable");
     if (!node.isResolved) open++;

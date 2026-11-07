@@ -532,7 +532,7 @@ test("gate checks renamed destinations in paginated comparisons", async () => {
   expect(result.verdict).toBe("REFUSED");
   expect(result.doorPaths).toEqual(["migrations/critical.sql"]);
   const requests = f.calls.filter((args) => args[0] === "api");
-  expect(requests).toHaveLength(3);
+  expect(requests).toHaveLength(4);
   for (const args of requests)
     expect(
       args.slice(
