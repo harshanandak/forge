@@ -465,7 +465,14 @@ async function contact(
   // A bound `use` only needs the token proof below, so it skips the account listing and the git
   // reads that feed a question it never asks: each one is a process start. A signed-out login
   // still refuses, because its token lookup fails with the same ACCOUNT_VERIFY_FAILED.
-  const discover = !(action === "use" && selected && binding);
+  const bound = action === "use" && selected !== undefined && binding;
+  const discover = !bound;
+  // An unbound `use` that names its login skips only gh's account listing: the token proof below
+  // is what shows the login is signed in, and the git reads still feed the commit and email hazards.
+  const named =
+    action === "use" && !bound && input.login ? input.login : undefined;
+  if (named !== undefined && !/^[a-z\d](?:[a-z\d-]{0,38})$/i.test(named))
+    refuse("ACCOUNT_UNKNOWN", "Name a signed-in GitHub account");
   const detect = async (): Promise<Candidate[]> => {
     const status = await run(
       gh,
@@ -527,7 +534,11 @@ async function contact(
   };
   const idle = { ok: true, text: "", raw: "", error: "" };
   // The process supervisor caps concurrent children, so these run one after another.
-  const candidates = discover ? await detect() : [];
+  const candidates: Candidate[] = named
+    ? [{ login: named, active: false }]
+    : discover
+      ? await detect()
+      : [];
   const unpushed = discover ? await history() : [];
   const identityRows = discover
     ? await g(
@@ -593,9 +604,10 @@ async function contact(
   );
   const pushers: string[] = [];
   let denied = 0;
-  // `use` with a named login does not need every account's push permission; skipping the
-  // lookups saves two gh processes per signed-in account.
-  const permissionsChecked = !(action === "use" && input.login);
+  // The remote's owner is always the pick, so the owner's own permission never changes the answer,
+  // and no other account's push permission can either. A named login needs none of them.
+  // Each skipped lookup saves two gh processes per signed-in account.
+  const permissionsChecked = !named && !owner;
   if (match && !selected && permissionsChecked)
     for (const c of candidates) {
       const row = await api(c.login, [`repos/${match[1]}/${match[2]}`], true);
@@ -615,16 +627,22 @@ async function contact(
       : undefined;
   const pick = selected
     ? candidates.find((c) => c.login === selected.login)
-    : (owner ?? onlyPusher ?? (byEmail.length === 1 ? byEmail[0] : undefined));
+    : named
+      ? candidates[0]
+      : (owner ??
+        onlyPusher ??
+        (byEmail.length === 1 ? byEmail[0] : undefined));
   const reason = selected
     ? "previously approved for this repo"
     : owner
       ? "owns the remote"
-      : pick && pick === onlyPusher
-        ? "is the only signed-in account with push access to the remote"
-        : pick
-          ? "matches the commit email"
-          : "no signal chooses one account";
+      : named
+        ? "named in the owner's reply"
+        : pick && pick === onlyPusher
+          ? "is the only signed-in account with push access to the remote"
+          : pick
+            ? "matches the commit email"
+            : "no signal chooses one account";
   const hazards: string[] = [];
   const active = candidates.find((c) => c.active);
   if (pick && active && active.login !== pick.login)
@@ -688,15 +706,27 @@ async function contact(
       }
     }
   }
-  const confirmToken = async (account: Account) => {
-    const me = json<{ login?: string; id?: number }>(
-      (await api(account.login, ["user"])).text,
+  // One call answers who the token belongs to: its own login, numeric id and display name.
+  const identify = async (login: string) => {
+    const me = json<{ login?: string; id?: number; name?: string | null }>(
+      (await api(login, ["user"])).text,
       {},
     );
-    if (
-      me.login?.toLowerCase() !== account.login.toLowerCase() ||
-      me.id !== account.userId
-    )
+    if (me.login?.toLowerCase() !== login.toLowerCase())
+      refuse(
+        "ACCOUNT_VERIFY_FAILED",
+        `The gh token for ${login} belongs to another GitHub account`,
+      );
+    const id = me.id;
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 1)
+      refuse(
+        "ACCOUNT_VERIFY_FAILED",
+        "GitHub did not return a public account id",
+      );
+    return { id, name: typeof me.name === "string" ? me.name : null };
+  };
+  const confirmToken = async (account: Account) => {
+    if ((await identify(account.login)).id !== account.userId)
       refuse(
         "ACCOUNT_VERIFY_FAILED",
         `The gh token for ${account.login} belongs to another GitHub account`,
@@ -747,11 +777,19 @@ async function contact(
         if ((split < 0 ? record : record.slice(0, split)) !== key) return last;
         return split < 0 ? null : record.slice(split + 1);
       }, undefined);
-    // A key with no value is a true boolean, as `git config --bool` reads it; an empty value is false.
+    // As `git config --bool` reads it: a key with no value is true, an empty value is false, and a
+    // decimal integer is true unless it is 0. Forms git reads differently (0x10, 010) are refused.
     const configOnly = effective("user.useconfigonly");
+    const configOnlyTrue =
+      configOnly === null ||
+      (configOnly !== undefined &&
+        (/^(?:true|yes|on)$/i.test(configOnly) ||
+          (/^[+-]?(?:0|[1-9]\d*)$/.test(configOnly) &&
+            Number(configOnly) !== 0 &&
+            Math.abs(Number(configOnly)) <= 2147483647)));
     if (
       effective("user.email") !== account.commitEmails[0] ||
-      !(configOnly === null || /^(?:true|yes|on|1)$/i.test(configOnly ?? "")) ||
+      !configOnlyTrue ||
       effective("user.name") !== account.commitName
     )
       integrity("Effective Git identity overrides the approved include");
@@ -782,15 +820,7 @@ async function contact(
       const login = input.login ?? pick?.login;
       if (!login || !candidates.some((c) => c.login === login))
         refuse("ACCOUNT_UNKNOWN", "Name a signed-in GitHub account");
-      const info = parse<{ id?: number; name?: string | null }>(
-        (await api(login, [`users/${login}`])).text,
-        {},
-      );
-      if (!Number.isSafeInteger(info.id) || !info.id || info.id < 1)
-        refuse(
-          "ACCOUNT_VERIFY_FAILED",
-          "GitHub did not return a public account id",
-        );
+      const info = await identify(login);
       const existing = Object.hasOwn(accounts, login)
         ? accounts[login]
         : undefined;
@@ -814,35 +844,39 @@ async function contact(
       };
       if (/[\r\n\0]/.test(account.commitName))
         refuse("INPUT_INVALID", "Invalid GitHub commit name");
-      await confirmToken(account);
-      const page = await api(login, ["user/emails", "--paginate"], true);
-      // Every page must succeed; a partial list is never accepted.
-      if (!page.ok && page.text.startsWith("["))
-        refuse(
-          "ACCOUNT_VERIFY_FAILED",
-          `GitHub's email list for ${login} was incomplete (a page failed); try again`,
-        );
-      const listed = page.ok
-        ? new Set(
-            json<{ email?: string }[]>(
-              page.text.replace(/\]\s*\[/g, ","),
-              [],
-            ).map((row) => (row.email ?? "").toLowerCase()),
-          )
-        : undefined;
+      // The one api user call above already proved the token's login and id, so an existing
+      // account needs no second proof. The generated noreply address is built from that
+      // verified id; only a custom commit email needs GitHub's email list.
       const generated = `${account.userId}+${login}@users.noreply.github.com`;
-      const unlisted = account.commitEmails.filter(
-        (e) =>
-          e.toLowerCase() !== generated.toLowerCase() &&
-          !listed?.has(e.toLowerCase()),
+      const custom = account.commitEmails.filter(
+        (e) => e.toLowerCase() !== generated.toLowerCase(),
       );
-      if (unlisted.length)
-        refuse(
-          "ACCOUNT_VERIFY_FAILED",
-          listed
-            ? `GitHub ${login} does not list these commit emails: ${unlisted.join(", ")}`
-            : `Cannot confirm the custom commit emails ${unlisted.join(", ")}: the gh token for ${login} needs the user:email permission to read GitHub's email list`,
-        );
+      let listed: Set<string> | undefined;
+      if (custom.length) {
+        const page = await api(login, ["user/emails", "--paginate"], true);
+        // Every page must succeed; a partial list is never accepted.
+        if (!page.ok && page.text.startsWith("["))
+          refuse(
+            "ACCOUNT_VERIFY_FAILED",
+            `GitHub's email list for ${login} was incomplete (a page failed); try again`,
+          );
+        listed = page.ok
+          ? new Set(
+              json<{ email?: string }[]>(
+                page.text.replace(/\]\s*\[/g, ","),
+                [],
+              ).map((row) => (row.email ?? "").toLowerCase()),
+            )
+          : undefined;
+        const unlisted = custom.filter((e) => !listed?.has(e.toLowerCase()));
+        if (unlisted.length)
+          refuse(
+            "ACCOUNT_VERIFY_FAILED",
+            listed
+              ? `GitHub ${login} does not list these commit emails: ${unlisted.join(", ")}`
+              : `Cannot confirm the custom commit emails ${unlisted.join(", ")}: the gh token for ${login} needs the user:email permission to read GitHub's email list`,
+          );
+      }
       const approved: Binding = {
         login,
         fingerprint: hash(account),
