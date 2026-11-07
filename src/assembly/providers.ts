@@ -7,7 +7,7 @@ import {
   relative,
   sep,
 } from "node:path";
-import { tmpdir } from "node:os";
+import { cpus, freemem, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -72,6 +72,11 @@ export interface EnvironmentService {
   readonly packageRoot: string;
   inherit(): Readonly<Record<string, string>>;
   select(names: readonly string[]): Readonly<Record<string, string>>;
+  /** Free memory and the share of CPU time spent busy over one second, measured now. */
+  load(): Promise<{
+    readonly freeMemoryMb: number;
+    readonly cpuBusyPercent: number;
+  }>;
 }
 export interface CryptoService {
   sha256(text: string): string;
@@ -564,6 +569,49 @@ export function createAssemblyProviders(
         get platform(): NodeJS.Platform {
           active(scope);
           return process.platform;
+        },
+        async load() {
+          active(scope);
+          if (!scope.effects.includes("environment:read"))
+            refuse(
+              "EFFECT_UNDECLARED",
+              "Measuring machine load requires environment:read",
+            );
+          // CPU time from os.cpus(), because os.loadavg returns zeros on Windows.
+          const times = () =>
+            cpus().reduce(
+              (sum, cpu) => {
+                const all = Object.values(cpu.times).reduce((a, b) => a + b, 0);
+                return { idle: sum.idle + cpu.times.idle, all: sum.all + all };
+              },
+              { idle: 0, all: 0 },
+            );
+          const before = times();
+          await new Promise<void>((done) => {
+            const finish = () => {
+              clearTimeout(timer);
+              scope.signal.removeEventListener("abort", finish);
+              done();
+            };
+            const timer = setTimeout(finish, 1000);
+            scope.signal.addEventListener("abort", finish, { once: true });
+          });
+          active(scope);
+          const after = times();
+          const total = after.all - before.all;
+          const free = freemem();
+          // A sample that cannot be measured is an error, never an idle machine.
+          if (before.all <= 0 || total <= 0 || !Number.isFinite(free))
+            refuse("UNAVAILABLE", "Machine load could not be measured");
+          const busy = Math.round(
+            (100 * (total - (after.idle - before.idle))) / total,
+          );
+          if (!Number.isFinite(busy) || busy < 0 || busy > 100)
+            refuse("UNAVAILABLE", "Machine load could not be measured");
+          return {
+            freeMemoryMb: Math.floor(free / 1_048_576),
+            cpuBusyPercent: busy,
+          };
         },
         select(names: readonly string[]): Readonly<Record<string, string>> {
           const requested: readonly string[] = names;

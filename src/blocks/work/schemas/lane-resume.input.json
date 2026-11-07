@@ -1,0 +1,67 @@
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "all": {
+      "const": true
+    },
+    "approval": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "source": {
+          "type": "object",
+          "required": ["harness", "thread"],
+          "properties": {
+            "harness": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "thread": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "link": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["request", "quote", "source"],
+      "additionalProperties": false,
+      "description": "The owner's reply, relayed verbatim with the request id Forge returned."
+    }
+  },
+  "oneOf": [
+    {
+      "required": ["id"]
+    },
+    {
+      "required": ["all"]
+    }
+  ],
+  "additionalProperties": false
+}

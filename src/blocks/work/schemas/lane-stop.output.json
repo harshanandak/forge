@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "required": ["stopped", "at"],
+  "properties": {
+    "stopped": {
+      "type": "string"
+    },
+    "at": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

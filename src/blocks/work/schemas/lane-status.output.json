@@ -1,0 +1,124 @@
+{
+  "type": "object",
+  "required": ["enabled", "stopped", "stoppedLanes", "lanes"],
+  "properties": {
+    "enabled": {
+      "type": "boolean"
+    },
+    "stopped": {
+      "type": "boolean"
+    },
+    "stoppedLanes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "hold": {
+      "type": "string"
+    },
+    "load": {
+      "type": "object",
+      "required": ["freeMemoryMb", "cpuBusyPercent"],
+      "properties": {
+        "freeMemoryMb": {
+          "type": "number"
+        },
+        "cpuBusyPercent": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "step", "stopped", "calls", "activeHours", "rounds"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "step": {
+            "type": "string"
+          },
+          "pr": {
+            "type": "integer"
+          },
+          "stopped": {
+            "type": "boolean"
+          },
+          "calls": {
+            "type": "object",
+            "required": ["used", "limit"],
+            "properties": {
+              "used": {
+                "type": "number",
+                "minimum": 0
+              },
+              "limit": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "activeHours": {
+            "type": "object",
+            "required": ["used", "limit"],
+            "properties": {
+              "used": {
+                "type": "number",
+                "minimum": 0
+              },
+              "limit": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "rounds": {
+            "type": "object",
+            "required": ["review", "ci"],
+            "properties": {
+              "review": {
+                "type": "object",
+                "required": ["used", "limit"],
+                "properties": {
+                  "used": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "limit": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              },
+              "ci": {
+                "type": "object",
+                "required": ["used", "limit"],
+                "properties": {
+                  "used": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "limit": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
