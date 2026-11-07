@@ -22,6 +22,7 @@ import { scriptFixture } from "../script-fixture.ts";
 import { cliTopologyFixture } from "./cli-topology-fixture.ts";
 import { RepositoryFixtures } from "./lane-fixture.ts";
 import { FixtureChildren } from "../fixture-children.ts";
+import { cleanupAttribution } from "./cleanup-attribution.ts";
 
 setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<boolean>();
@@ -80,7 +81,9 @@ afterEach(async () => {
         avoidedIssueChildren += readFileSync(calls, "utf8")
           .trim()
           .split("\n").length;
-      rmSync(root, { recursive: true, force: true });
+      cleanupAttribution(root, () =>
+        rmSync(root, { recursive: true, force: true }),
+      );
     }
   });
 });
@@ -347,17 +350,20 @@ const {main}=await import(${JSON.stringify(script)});process.exitCode=await main
     entry = script,
     allowEmpty = false,
     args = ["run", "one", "--role", "builder"],
+    // Owned children run in the fixture job, so cleanup ends the whole tree at once.
+    owned = false,
   ) {
     childLaunches++;
-    const child = children.own(
-      spawn(process.execPath, [entry, ...args], {
-        cwd: caller,
-        env,
-        windowsHide: true,
-        timeout: 20_000,
-        detached: args.includes("--detach"),
-      }),
-    );
+    const detached = args.includes("--detach");
+    const options = { cwd: caller, env, windowsHide: true, timeout: 20_000 };
+    const child = owned
+      ? children.spawn(process.execPath, [entry, ...args], {
+          ...options,
+          detached: detached && process.platform !== "win32",
+        })
+      : children.own(
+          spawn(process.execPath, [entry, ...args], { ...options, detached }),
+        );
     child.stderr.resume();
     return Object.assign(
       new Promise<{ code: number | null; output: Verdict }>((done, fail) => {
@@ -2584,45 +2590,38 @@ function detachProbe(f: ReturnType<typeof autoFixture>, handoff = "") {
 
 test("detach validates child issue lookup taking longer than five seconds", async () => {
   const f = autoFixture("auto-clean"),
-    probe = detachProbe(f),
     forge = join(f.root, "fake-forge.mjs"),
     started = Date.now();
   writeFileSync(
     forge,
-    `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(f.root, "startup-pid"))},String(process.pid));await new Promise(done=>setTimeout(done,5500));${readFileSync(forge, "utf8")}`,
+    `await new Promise(done=>setTimeout(done,5500));${readFileSync(forge, "utf8")}`,
   );
-  try {
-    const result = await f.launch(probe.helper, false, [
-      "auto",
-      "one",
-      "--detach",
-    ]);
-    expect(result.code).toBe(0);
-    expect(result.output).toMatchObject({
-      outcome: "detached",
-      validated: true,
-    });
-    expect(Date.now() - started).toBeGreaterThan(5_000);
-  } finally {
-    // The slow issue lookup is a second process of the detached tree. Both must
-    // exit before afterEach removes the root, or Windows reports EBUSY.
-    const tree = [probe.pid()];
-    const startupPid = join(f.root, "startup-pid");
-    if (existsSync(startupPid))
-      tree.push(Number(readFileSync(startupPid, "utf8")));
-    for (const pid of tree) killFixture(pid, true);
-    await waitForProcess("detached process tree exit", () =>
-      tree.every((pid) => !alive(pid)),
-    );
-    expect(tree.filter(alive)).toEqual([]);
-  }
+  // The detached chain starts spawning lane processes as soon as validation ends,
+  // so killing it by pid races those spawns. The fixture job ends it atomically.
+  const result = await f.launch(
+    script,
+    false,
+    ["auto", "one", "--detach"],
+    true,
+  );
+  expect(result.code).toBe(0);
+  expect(result.output).toMatchObject({
+    outcome: "detached",
+    validated: true,
+  });
+  expect(Date.now() - started).toBeGreaterThan(5_000);
 });
 
 test.skipIf(process.platform !== "win32")(
   "fixture cleanup ends the detached chain and its harness before the root is removed",
   async () => {
     const f = autoFixture("auto-slow");
-    const launched = await f.launch(script, false, ["auto", "one", "--detach"]);
+    const launched = await f.launch(
+      script,
+      false,
+      ["auto", "one", "--detach"],
+      true,
+    );
     const { pid } = launched.output as unknown as { pid: number };
     let harness = 0;
     try {
