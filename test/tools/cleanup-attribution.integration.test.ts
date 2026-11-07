@@ -96,6 +96,37 @@ test.skipIf(process.platform !== "win32")(
   1_000,
 );
 
+test.skipIf(process.platform !== "win32")(
+  "a Handle run that finds no holder says so instead of an empty failure",
+  () => {
+    const original = Object.assign(new Error("cleanup refused"), {
+      code: "EBUSY",
+      path: "held",
+    });
+    try {
+      cleanupAttribution(
+        "root",
+        () => {
+          throw original;
+        },
+        () => ({
+          status: 1,
+          stdout: "No matching handles found.\r\n",
+          stderr: "",
+        }),
+        { tool: "fixture-handle", unavailable: "" },
+      );
+    } catch {
+      // The original cleanup error is rethrown after the snapshot.
+    }
+    const [snapshot] = JSON.parse(
+      original.message.split("Cleanup attribution: ")[1]!,
+    ) as { failure: string }[];
+    expect(snapshot!.failure).toContain("No matching handles found");
+  },
+  1_000,
+);
+
 for (const reason of ["checksum mismatch", "download failed", "not configured"])
   test.skipIf(process.platform !== "win32")(
     `unavailable Handle reports ${reason} without executing it`,

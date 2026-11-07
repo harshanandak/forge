@@ -2618,6 +2618,31 @@ test("detach validates child issue lookup taking longer than five seconds", asyn
   }
 });
 
+test.skipIf(process.platform !== "win32")(
+  "fixture cleanup ends the detached chain and its harness before the root is removed",
+  async () => {
+    const f = autoFixture("auto-slow");
+    const launched = await f.launch(script, false, ["auto", "one", "--detach"]);
+    const { pid } = launched.output as unknown as { pid: number };
+    let harness = 0;
+    try {
+      await waitForProcess("detached harness", () =>
+        existsSync(join(f.root, "harness-pid")),
+      );
+      harness = Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
+      expect([pid, harness].filter(alive)).toEqual([pid, harness]);
+      await children.cleanup(() => {});
+      expect(
+        [pid, harness].filter(alive),
+        "processes still alive after fixture cleanup",
+      ).toEqual([]);
+    } finally {
+      for (const live of [pid, harness].filter((item) => item && alive(item)))
+        killFixture(live, true);
+    }
+  },
+);
+
 test("detach reclaims the lock when the parent dies before handoff", async () => {
   const f = autoFixture("auto-clean"),
     probe = detachProbe(f, "process.exit(73);");
