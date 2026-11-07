@@ -109,6 +109,11 @@ MCP cannot admit code. An approved retry returns `admitted: true`.
 The final command returns `ok: true` and
 `result: {"message":"Hello, World!"}`. Each command runs in a fresh process.
 
+A person at a terminal (stdin and stderr are terminals, no agent session) is asked to
+type `confirm <operation>` instead. Scripts and CI with no agent session can skip both
+once the owner approves `forge owner policy --input '{"unattended":["block.admit","config.grant"]}'`,
+which writes `owner.json` in the device folder. `store reinit` never reads it.
+
 Changing captured files changes the digest: check, add and admit again after
 reviewing the new code. Bad manifests return `INPUT_INVALID`, exit 6, the manifest
 path and one sentence per failing field, including spelling suggestions. Fix

@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "required": ["unattended"],
+  "properties": {
+    "unattended": {
+      "type": "array",
+      "items": { "enum": ["block.admit", "config.grant"] },
+      "uniqueItems": true
+    },
+    "approval": {}
+  },
+  "additionalProperties": false
+}

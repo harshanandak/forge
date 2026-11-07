@@ -41,7 +41,7 @@ test("noninteractive local calls need conversation approval and preserve notes a
       error: { code: "HUMAN_REQUIRED" },
     });
     expect(!result.ok && result.error.repair).toContain(
-      "Ask the owner in the conversation",
+      "Ask the owner that question in this chat",
     );
     expect(await mcp.callTool("catalog_call", { op, input })).toMatchObject({
       ok: false,

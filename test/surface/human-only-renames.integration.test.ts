@@ -149,7 +149,7 @@ for (const route of ["cli", "cli-catalog", "mcp", "mcp-catalog"] as const)
           });
         }
         const repair = (refused as { error: { repair: string } }).error.repair;
-        expect(repair).toContain("Ask the owner in the conversation");
+        expect(repair).toContain("Ask the owner that question in this chat");
         expect(
           (refused as { error: { message: string } }).error.message,
         ).toContain(op);

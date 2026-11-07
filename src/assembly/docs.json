@@ -5,6 +5,11 @@
       "summary": "Create a new empty project store and identity, replacing its old device registration. Refuse if a store is present.",
       "examples": [{ "input": {} }]
     },
+    "owner.policy": {
+      "title": "Set the unattended policy",
+      "summary": "List the operations scripts and CI may run with no agent session and no approval: block.admit and config.grant. Writes owner.json in the device folder and needs the owner's reply.",
+      "examples": [{ "input": { "unattended": ["block.admit"] } }]
+    },
     "catalog.describe": {
       "title": "Describe a command",
       "summary": "Show the full declaration and schemas for a command.",
