@@ -22,6 +22,9 @@
           },
           {
             "required": ["approval"]
+          },
+          {
+            "required": ["scope"]
           }
         ]
       }
@@ -50,12 +53,15 @@
           },
           {
             "required": ["approval"]
+          },
+          {
+            "required": ["scope"]
           }
         ]
       }
     },
     {
-      "required": ["id", "request"],
+      "required": ["id", "request", "scope"],
       "not": {
         "anyOf": [
           {
@@ -106,6 +112,9 @@
           },
           {
             "required": ["approval"]
+          },
+          {
+            "required": ["scope"]
           }
         ]
       }
@@ -134,6 +143,9 @@
           },
           {
             "required": ["request"]
+          },
+          {
+            "required": ["scope"]
           }
         ]
       }
@@ -273,6 +285,29 @@
       },
       "additionalProperties": false,
       "description": "The session whose replies Forge accepts as the owner's. It is never claimed implicitly: the first call returns APPROVAL_REQUIRED and the owner's relayed reply approves it."
+    },
+    "scope": {
+      "type": "object",
+      "oneOf": [
+        {
+          "required": ["id"]
+        },
+        {
+          "required": ["all"]
+        }
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "all": {
+          "const": true
+        }
+      },
+      "additionalProperties": false,
+      "description": "The lane resume input the request was asked for: {id} or {all:true}. It must match the gated ask exactly."
     }
   },
   "additionalProperties": false

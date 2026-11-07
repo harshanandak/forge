@@ -170,6 +170,7 @@ type TailRecordInput = {
   reply?: string;
   source?: ReplySource;
   request?: string;
+  scope?: Record<string, unknown>;
   ownerChannel?: Channel;
   approval?: unknown;
 };
@@ -1968,6 +1969,8 @@ type GlobalState = {
   resumed?: { at: string; scope: string; quote?: string };
   owner?: {
     channel: Channel;
+    /** The last message number sent; it only grows, even if the channel changes. */
+    seq?: number;
     sentAt?: string;
     batch?: { seq: number; items: string[]; replied?: true };
     clarify?: string;
@@ -2344,6 +2347,7 @@ function validOwner(value: unknown): boolean {
   if (!isMap(value) || !isChannel(value.channel)) return false;
   const { sentAt, batch, clarify } = value;
   return (
+    (value.seq === undefined || isCount(value.seq)) &&
     (sentAt === undefined || isTime(sentAt)) &&
     (clarify === undefined || typeof clarify === "string") &&
     (batch === undefined ||
@@ -2356,7 +2360,10 @@ function validOwner(value: unknown): boolean {
 }
 function validAsk(value: unknown): value is Ask {
   if (!isMap(value)) return false;
-  const { options, gated, answer } = value;
+  const { gated, answer } = value;
+  const options = Array.isArray(value.options)
+    ? (value.options as Record<string, unknown>[])
+    : undefined;
   return (
     nonEmpty(value.lane) &&
     nonEmpty(value.issue) &&
@@ -2366,7 +2373,7 @@ function validAsk(value: unknown): value is Ask {
     ["queued", "sent", "answered", "held", "done"].includes(
       value.status as string,
     ) &&
-    Array.isArray(options) &&
+    options !== undefined &&
     options.length >= 2 &&
     options.every(
       (option) =>
@@ -2397,6 +2404,9 @@ function saveAsk(state: LeaseStateClient, ask: Ask, revision: number): AskRow {
   const written = persist(state, ASK(ask.lane), ask, revision);
   return { value: ask, revision: written.revision };
 }
+/** Held or answered: the owner has spoken about this reason, so it is not asked again. */
+const settledAsk = (ask: Ask): boolean =>
+  ask.status === "held" || ask.status === "answered";
 const openAsk = (ask: Ask | undefined): boolean =>
   ask?.status === "queued" || ask?.status === "sent";
 /**
@@ -2478,14 +2488,15 @@ function digestLine(
   return `Merged and closed since my last message: ${shown}${done.length > 5 ? ` and ${done.length - 5} more` : ""}.`;
 }
 function composeMessage(
+  seq: number,
   items: Ask[],
   digest: string,
   clarify: string | undefined,
 ): string {
   const lines = [
     clarify === undefined
-      ? `Lanes need you (${items.length}):`
-      : `I could not tell which option you chose for each item in "${clip(clarify, 80)}". Answer once per item:`,
+      ? `Message #${seq}. Lanes need you (${items.length}):`
+      : `Message #${seq}. I could not tell which option you chose for each item in "${clip(clarify, 80)}". Answer once per item:`,
   ];
   items.forEach((ask, index) =>
     lines.push(
@@ -2493,7 +2504,7 @@ function composeMessage(
     ),
   );
   lines.push(
-    'Reply like "1A 2B", or "ok" to take every default. If you do not reply, every lane stays paused.',
+    `Reply with this message's number, like "#${seq} 1A 2B", or "#${seq} ok" to take every default. A reply to an older message is refused. If you do not reply, every lane stays paused.`,
   );
   if (digest) lines.push(digest);
   return lines.join("\n");
@@ -2522,8 +2533,22 @@ function mapReply(reply: string, items: Ask[]): string[] | undefined {
       return undefined;
     labels[at] = label;
   }
-  return labels.every((label) => label !== undefined)
-    ? (labels as string[])
+  const chosen: string[] = [];
+  for (const label of labels) {
+    if (label === undefined) return undefined;
+    chosen.push(label);
+  }
+  return chosen;
+}
+/** The message a reply answers: one "#<n>" in the words, or source.message "#<n>"; never guessed. */
+function messageNumber(quote: string, source: ReplySource): number | undefined {
+  const found = [...quote.matchAll(/(?:^|\s)#(\d{1,9})(?!\w)/g)].map((match) =>
+    Number(match[1]),
+  );
+  const named = /^#(\d{1,9})$/.exec(source.message ?? "");
+  if (named) found.push(Number(named[1]));
+  return found.length > 0 && found.every((number) => number === found[0])
+    ? found[0]
     : undefined;
 }
 /**
@@ -2562,7 +2587,7 @@ function ownerRoute(
       }
       if (
         row?.value.reason === action.why &&
-        (openAsk(row.value) || row.value.status === "held")
+        (openAsk(row.value) || settledAsk(row.value))
       ) {
         current.set(id, row.value);
         continue;
@@ -2590,7 +2615,7 @@ function ownerRoute(
     if (owner === undefined)
       return actions.map((action): TailAction =>
         current.get(ids.stored(action.lane)) === undefined ||
-        current.get(ids.stored(action.lane))!.status === "held"
+        settledAsk(current.get(ids.stored(action.lane))!)
           ? action
           : {
               ...action,
@@ -2601,7 +2626,7 @@ function ownerRoute(
     if (!sameChannel(owner.channel, channel))
       return actions.map((action): TailAction =>
         current.get(ids.stored(action.lane)) === undefined ||
-        current.get(ids.stored(action.lane))!.status === "held"
+        settledAsk(current.get(ids.stored(action.lane))!)
           ? action
           : {
               ...quiet(action),
@@ -2641,8 +2666,9 @@ function ownerRoute(
     let message: string | undefined;
     let seq = 0;
     if (due && carrier) {
-      seq = (owner.batch?.seq ?? 0) + 1;
+      seq = (owner.seq ?? owner.batch?.seq ?? 0) + 1;
       message = composeMessage(
+        seq,
         ready,
         digestLine(state, ids, owner.sentAt),
         owner.clarify,
@@ -2657,6 +2683,7 @@ function ownerRoute(
         if (current.has(ask.lane)) current.set(ask.lane, sent.value);
       }
       owner.batch = { seq, items: ready.map((ask) => ask.lane) };
+      owner.seq = seq;
       owner.sentAt = at;
       delete owner.clarify;
       saveGlobal();
@@ -2665,7 +2692,7 @@ function ownerRoute(
       last === undefined ? at : new Date(last + OWNER_WINDOW_MS).toISOString();
     return actions.map((action): TailAction => {
       const ask = current.get(ids.stored(action.lane));
-      if (action.kind !== "pause" || ask === undefined || ask.status === "held")
+      if (action.kind !== "pause" || ask === undefined || settledAsk(ask))
         return action;
       if (ask.gated && ask.gated.request === undefined)
         return {
@@ -2678,7 +2705,7 @@ function ownerRoute(
             ...(ask.gated.input.all === true ? ["--all"] : [ask.issue]),
           ],
           why: `${action.why}. The owner's approval needs a request id first.`,
-          expect: `Run this once without approval; it fails with APPROVAL_REQUIRED and a request id. Record it with: forge lane record --input '{"id":"${ask.issue}","request":"<request id>"}'. Do not ask the owner yet.`,
+          expect: `Run this once without approval; it fails with APPROVAL_REQUIRED and a request id. Record it with: forge lane record --input '{"id":"${ask.issue}","request":"<request id>","scope":${JSON.stringify(ask.gated.input)}}'. Do not ask the owner yet.`,
         };
       if (message !== undefined && action === carrier)
         return {
@@ -2687,7 +2714,7 @@ function ownerRoute(
           kind: "ask-owner",
           n: seq,
           why: `${ready.length} lane${ready.length === 1 ? "" : "s"} need the owner`,
-          expect: `Send this text as your reply in this chat. When the owner answers, record it verbatim with: forge lane record --input '{"reply":"<their words>","source":{"harness":"${owner.channel.harness}","thread":"${owner.channel.thread}","message":"<message id>"}}'`,
+          expect: `Send this text as your reply in this chat. When the owner answers, record it verbatim with: forge lane record --input '{"reply":"<their words, including #${seq}>","source":{"harness":"${owner.channel.harness}","thread":"${owner.channel.thread}","message":"<message id>"}}'`,
           ask: message,
         };
       return {
@@ -2728,6 +2755,19 @@ async function laneStep(
   const ask = row?.value;
   if (ask?.status !== "answered" || ask.answer === undefined)
     return await guardedNext(call, id);
+  // A stored answer never outranks the kill switch: while it is set, only the guard's pause returns.
+  try {
+    const flags = readGlobal(state).value;
+    if (
+      !limitsOf(call.config).enabled ||
+      flags.stopAll !== undefined ||
+      flags.stopped[id] !== undefined
+    )
+      return await guardedNext(call, id);
+  } catch (error) {
+    if (!(error instanceof StateProblem)) throw error;
+    return await guardedNext(call, id);
+  }
   const chosen = ask.options.find(
     (option) => option.label === ask.answer!.label,
   );
@@ -2767,8 +2807,10 @@ function setOwnerChannel(call: HandlerCall<TailRecordInput>): {
   const owner = global.value.owner;
   // A different channel starts clean: an old message and reply window never carry over.
   if (owner === undefined || !sameChannel(owner.channel, channel)) {
+    const seq = owner?.seq ?? owner?.batch?.seq;
     global.value.owner = {
       channel: { harness: channel.harness, thread: channel.thread },
+      ...(seq === undefined ? {} : { seq }),
     };
     persist(state, GLOBAL, global.value, global.revision);
   }
@@ -2801,12 +2843,23 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
   const owner = global.value.owner;
   if (owner?.batch === undefined || owner.batch.replied === true)
     return fail("INPUT_CONFLICT", "No owner message is waiting for a reply");
-  if (!sameChannel(owner.channel, source as Channel))
+  if (!sameChannel(owner.channel, source))
     return fail(
       "INPUT_CONFLICT",
       `The reply is not from the owner channel (${owner.channel.harness}, ${owner.channel.thread}); nothing was recorded`,
     );
   const quote = reply.trim();
+  const numbered = messageNumber(quote, source);
+  if (numbered === undefined)
+    return fail(
+      "INPUT_INVALID",
+      `Name the message this answers with its number, like "#${owner.batch.seq} 1A 2B"; nothing was recorded and every lane stays paused`,
+    );
+  if (numbered !== owner.batch.seq)
+    return fail(
+      "INPUT_CONFLICT",
+      `This reply answers message #${numbered} but the latest is #${owner.batch.seq}; nothing was recorded, every lane stays paused and the owner is asked again`,
+    );
   const at = new Date(state.now()).toISOString();
   const batch = owner.batch;
   const rows = batch.items.map((id): AskRow => {
@@ -2820,7 +2873,7 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
     return fail("INPUT_CONFLICT", `${ASK(id)} is missing`);
   });
   const labels = mapReply(
-    quote,
+    quote.replace(/(?:^|\s)#\d{1,9}(?!\w)/g, " "),
     rows.map((row) => row.value),
   );
   const result: ReplyResult = {
@@ -2829,7 +2882,7 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
     answers: [],
     approvals: [],
   };
-  const heard = source as ReplySource;
+  const heard = source;
   rows.forEach((row, index) => {
     const ask = row.value;
     emit(state, ask.lane, labels ? "reply" : "reply-unmapped", {
@@ -2922,11 +2975,15 @@ function ownerRequest(call: HandlerCall<TailRecordInput>): {
   const state = client(services),
     ids = idsFor(state, config),
     id = ids.stored(input.id!);
-  const request = input.request;
-  if (!nonEmpty(request) || !/^[A-Za-z0-9-]{1,200}$/.test(request))
+  const { request, scope } = input;
+  if (
+    !nonEmpty(request) ||
+    !/^[A-Za-z0-9-]{1,200}$/.test(request) ||
+    !isMap(scope)
+  )
     return fail(
       "INPUT_INVALID",
-      "request must be the request id from APPROVAL_REQUIRED",
+      "Give the request id from APPROVAL_REQUIRED and the scope it was asked for",
     );
   let row: AskRow | undefined;
   try {
@@ -2941,9 +2998,29 @@ function ownerRequest(call: HandlerCall<TailRecordInput>): {
       "INPUT_CONFLICT",
       `${input.id} has no open gated ask waiting for a request id`,
     );
+  // The runtime already checked that this request is pending and bound to this scope. The scope
+  // must also be exactly what the ask waits on, or an approval for one step could ride on another.
+  if (canonical(scope) !== canonical(gate.input))
+    return fail(
+      "INPUT_CONFLICT",
+      `The request is for ${canonical(scope)} but ${input.id} waits on ${canonical(gate.input)}`,
+    );
+  if (gate.request !== undefined)
+    return fail(
+      "INPUT_CONFLICT",
+      gate.request === request
+        ? "That request id is already recorded for this ask"
+        : "This ask already has a request id; it is not replaced",
+    );
   for (const other of state.list("autopilot-ask:")) {
     const ask = other.value;
-    if (!validAsk(ask) || !openAsk(ask) || !ask.gated) continue;
+    if (
+      !validAsk(ask) ||
+      !openAsk(ask) ||
+      !ask.gated ||
+      ask.gated.request !== undefined
+    )
+      continue;
     if (
       ask.gated.op !== gate.op ||
       canonical(ask.gated.input) !== canonical(gate.input)

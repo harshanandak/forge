@@ -3,6 +3,9 @@ import { resolve } from "node:path";
 import {
   laneOwnerChannelAsk,
   laneOwnerChannelOp,
+  ownerApproval,
+  requestBoundTo,
+  type ApprovalRequired,
 } from "../../../src/assembly/approval.ts";
 
 setDefaultTimeout(30_000);
@@ -244,7 +247,7 @@ test('the reply "1A 2B" unpauses both lanes with the chosen options', async () =
   f.spend("work-1");
   f.spend("work-2");
   await f.all();
-  const result = await f.reply("1A 2B");
+  const result = await f.reply("#1 1A 2B");
   expect(result.mapped).toBe(true);
   expect(result.answers.map(({ lane, label }) => [lane, label])).toEqual([
     ["work-1", "A"],
@@ -254,7 +257,7 @@ test('the reply "1A 2B" unpauses both lanes with the chosen options', async () =
   for (const action of [one, two]) {
     expect(action.kind).toBe("harness");
     expect(action.step).toBe("owner");
-    expect(action.why).toContain('"1A 2B"');
+    expect(action.why).toContain('"#1 1A 2B"');
   }
   expect(one.why).toContain("chose A");
   expect(two.why).toContain("chose B");
@@ -274,7 +277,7 @@ test("a free-text reply that maps to two labels for one item keeps both paused a
   f.spend("work-2");
   await f.all();
   for (const text of ["1A or 1B", "1A 2", "1A 1B 2C", "do 1A", "1D 2A"]) {
-    const result = await f.reply(text);
+    const result = await f.reply(`#1 ${text}`);
     expect(result.mapped).toBe(false);
     expect(result.answers).toEqual([]);
   }
@@ -286,7 +289,7 @@ test("a free-text reply that maps to two labels for one item keeps both paused a
   expect(sent(actions)[0]!.ask).toContain("could not tell which option");
   expect(actions.every((action) => action.kind !== "harness")).toBe(true);
   // A reply that maps afterwards still works: nothing was applied before.
-  expect((await f.reply("1C 2C")).mapped).toBe(true);
+  expect((await f.reply("#2 1C 2C")).mapped).toBe(true);
 });
 
 test("a gated ask's reply produces an approval with the stored request id, and a non-owner reply does not", async () => {
@@ -297,28 +300,36 @@ test("a gated ask's reply produces an approval with the stored request id, and a
   const fetch = await f.next("work-1");
   expect(fetch.kind).toBe("forge");
   expect(fetch.argv).toEqual(["forge", "lane", "resume", "work-1"]);
-  await f.record({ id: "work-1", request: "req-123" });
+  await f.record({
+    id: "work-1",
+    request: "req-123",
+    scope: { id: "work-1" },
+  });
   const ask = await f.next("work-1");
   expect(ask.kind).toBe("ask-owner");
   expect(ask.ask).toContain("A) resume it");
   await expect(
-    f.reply("1A", { harness: "codex", thread: "codex:other", message: "m-9" }),
+    f.reply("#1 1A", {
+      harness: "codex",
+      thread: "codex:other",
+      message: "m-9",
+    }),
   ).rejects.toThrow(/not from the owner channel/);
   expect(await f.next("work-1")).toMatchObject({ kind: "wait" });
-  const result = await f.reply("1A");
+  const result = await f.reply("#1 1A");
   expect(result.approvals).toEqual([
     {
       lane: "work-1",
       op: "lane.resume",
       input: { id: "work-1" },
-      approval: { request: "req-123", quote: "1A", source: OWNER },
+      approval: { request: "req-123", quote: "#1 1A", source: OWNER },
     },
   ]);
   const step = await f.next("work-1");
   expect(step.kind).toBe("harness");
   expect(step.approval).toEqual({
     request: "req-123",
-    quote: "1A",
+    quote: "#1 1A",
     source: OWNER,
   });
   // The defaults reply never approves: B keeps it stopped.
@@ -326,9 +337,13 @@ test("a gated ask's reply produces an approval with the stored request id, and a
   await kept.setOwner();
   await kept.stop("work-1");
   await kept.next("work-1");
-  await kept.record({ id: "work-1", request: "req-456" });
+  await kept.record({
+    id: "work-1",
+    request: "req-456",
+    scope: { id: "work-1" },
+  });
   await kept.next("work-1");
-  const none = await kept.reply("ok");
+  const none = await kept.reply("#1 ok");
   expect(none.approvals).toEqual([]);
   expect(none.answers[0]).toMatchObject({ label: "B", hold: true });
 });
@@ -430,4 +445,101 @@ test("naming the owner channel needs the owner's relayed approval at the runtime
     ),
   ).toBe(false);
   expect(laneOwnerChannelAsk(input)).toContain("owner channel");
+});
+
+test("a reply to an older message is refused when the message was sent again", async () => {
+  const f = fixture();
+  await f.setOwner();
+  f.spend("work-1");
+  f.spend("work-2");
+  const [first] = sent(await f.all());
+  expect(first!.ask).toContain("Message #1");
+  f.time.now += 31 * MINUTE;
+  const [second] = sent(await f.all());
+  expect(second!.ask).toContain("Message #2");
+  await expect(f.reply("#1 1A 2B")).rejects.toThrow(
+    /message #1 but the latest is #2/,
+  );
+  await expect(f.reply("1A 2B")).rejects.toThrow(/Name the message/);
+  for (const id of ["work-1", "work-2"])
+    expect(f.records.get(`autopilot-ask:${id}`)?.value.status).toBe("sent");
+  // A changed channel never reuses an old number.
+  await f.setOwner({ harness: "claude-code", thread: "claude-code:owner-2" });
+  f.session.env = { CLAUDE_CODE_SESSION_ID: "owner-2" };
+  const [third] = sent(await f.all());
+  expect(third!.ask).toContain("Message #3");
+});
+
+for (const halt of ["stop", "off"] as const)
+  test(`a stored answer never outranks the kill switch (${halt})`, async () => {
+    const f = fixture();
+    await f.setOwner();
+    f.spend("work-1");
+    f.spend("work-2");
+    await f.all();
+    await f.reply("#1 1A 2C");
+    expect((await f.next("work-1")).kind).toBe("harness");
+    if (halt === "stop") await f.stop("work-1");
+    else f.config.lanes.autopilot.enabled = false;
+    const action = await f.next("work-1");
+    expect(action.kind).not.toBe("harness");
+    expect(action.approval).toBeUndefined();
+  });
+
+test("a request id for another scope is refused and a recorded one is not replaced", async () => {
+  const f = fixture();
+  await f.setOwner();
+  await f.stop("work-1");
+  expect((await f.next("work-1")).kind).toBe("forge");
+  await expect(
+    f.record({ id: "work-1", request: "req-all", scope: { all: true } }),
+  ).rejects.toThrow(/waits on/);
+  await f.record({ id: "work-1", request: "req-1", scope: { id: "work-1" } });
+  await expect(
+    f.record({ id: "work-1", request: "req-2", scope: { id: "work-1" } }),
+  ).rejects.toThrow(/not replaced/);
+  expect((await f.next("work-1")).kind).toBe("ask-owner");
+  await expect(
+    f.record({ id: "work-1", request: "req-3", scope: { id: "work-1" } }),
+  ).rejects.toThrow(/not replaced/);
+});
+
+test("the runtime accepts a request only if it is pending and bound to exactly that step", () => {
+  const store = new Map<string, { value: unknown; revision: number }>();
+  const state = {
+    get: (key: string) => store.get(key),
+    put: (key: string, value: unknown) => {
+      const row = { value, revision: (store.get(key)?.revision ?? 0) + 1 };
+      store.set(key, row);
+      return row;
+    },
+  } as never;
+  let request = "";
+  try {
+    ownerApproval({
+      state,
+      op: "lane.resume",
+      input: { id: "work-1" },
+      deviceRoot: "/device",
+      projectRoot: "/project",
+      ask: "Resume lane work-1.",
+      relay: { harness: "claude-code", id: "owner-1", pid: 1 },
+    });
+  } catch (error) {
+    request = (error as ApprovalRequired).request!.id;
+  }
+  const bound = (op: string, input: unknown, id = request) =>
+    requestBoundTo({
+      state,
+      request: id,
+      op,
+      input,
+      deviceRoot: "/device",
+      projectRoot: "/project",
+    });
+  expect(bound("lane.resume", { id: "work-1" })).toBe(true);
+  expect(bound("lane.resume", { all: true })).toBe(false);
+  expect(bound("lane.resume", { id: "work-2" })).toBe(false);
+  expect(bound("memory.forget", { id: "work-1" })).toBe(false);
+  expect(bound("lane.resume", { id: "work-1" }, "unknown")).toBe(false);
 });
