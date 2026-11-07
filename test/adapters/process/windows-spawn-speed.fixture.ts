@@ -46,8 +46,7 @@ function environment(): Record<string, string> {
   return Object.fromEntries(
     Object.entries(process.env).filter(
       (entry): entry is [string, string] =>
-        entry[1] !== undefined &&
-        KEPT_ENVIRONMENT.has(entry[0].toLowerCase()),
+        entry[1] !== undefined && KEPT_ENVIRONMENT.has(entry[0].toLowerCase()),
     ),
   );
 }

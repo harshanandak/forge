@@ -237,7 +237,11 @@ try {
     process.platform === "win32" ? 0 : 1,
     "no helper may be started",
   );
-  assert.equal(during.helpers.length, 0, "no helper may run beside the command");
+  assert.equal(
+    during.helpers.length,
+    0,
+    "no helper may run beside the command",
+  );
   for (const controller of controllers) controller.abort();
   const outcomes = await awaitDeadline(
     settled,
