@@ -240,7 +240,33 @@ export class InvocationServices {
       omittedResults: this.#omittedResults,
     };
   }
-  #capture(result: ProcessResult): void {
+  #capture(
+    result: ProcessResult,
+    options: Pick<SpawnOptions, "sensitive" | "redact">,
+  ): void {
+    if (options.sensitive === true) {
+      // A token lookup is never recorded, not even its exit status.
+      this.#omittedResults = Math.min(
+        Number.MAX_SAFE_INTEGER,
+        this.#omittedResults + 1,
+      );
+      return;
+    }
+    if (options.redact?.length) {
+      // Redact the whole stream first, so a secret cannot straddle the capture bound.
+      const hide = (text: string) =>
+        options.redact!.reduce(
+          (out, secret) =>
+            secret ? out.split(secret).join("[redacted]") : out,
+          text,
+        );
+      const { outputEvidence: _encoded, ...rest } = result;
+      result = {
+        ...rest,
+        stdout: hide(result.stdout),
+        stderr: hide(result.stderr),
+      };
+    }
     // Count and byte exhaustion stop further inspection, including oversized results.
     if (this.#results.length < 8 && this.#resultBytes < 32_768) {
       try {
@@ -413,7 +439,7 @@ export class InvocationServices {
             void pending.then(
               (result) => {
                 this.#pending.delete(pending);
-                this.#capture(result);
+                this.#capture(result, options);
                 if (result.supervision && this.#reports.length < 32)
                   this.#reports.push(result.supervision);
               },

@@ -6,6 +6,7 @@ import {
   fsyncSync,
   lstatSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -148,6 +149,14 @@ export function createDeviceFiles(
 ): DeviceFiles {
   const parent = join(home, ".forge"),
     root = join(parent, "accounts");
+  // Temp roots are often symlinks (/var on macOS): compare real paths.
+  const canonicalBase = (base: string) => {
+    try {
+      return realpathSync(base);
+    } catch {
+      return resolve(base);
+    }
+  };
   const inside = (base: string, path: string) => {
     const r = relative(base, path);
     return (
@@ -220,12 +229,27 @@ export function createDeviceFiles(
         },
       };
     },
+    scratch() {
+      ready(true);
+      const base = join(root, "scratch");
+      directory(base, true, true);
+      const path = join(base, randomUUID());
+      directory(path, true, true);
+      return {
+        path,
+        remove() {
+          rmSync(path, { recursive: true, force: true });
+        },
+      };
+    },
     pin(path, forbidden) {
       if (!isAbsolute(path)) refuse();
       const canonical = realpathSync(path);
       if (
         inside(resolve(root), canonical) ||
-        forbidden.some((base) => base && inside(resolve(base), canonical)) ||
+        forbidden.some(
+          (base) => base && inside(canonicalBase(base), canonical),
+        ) ||
         /[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/i.test(canonical)
       )
         refuse();
