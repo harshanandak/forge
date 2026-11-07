@@ -14,10 +14,12 @@ type Status = {
   enabled: boolean;
   stopped: boolean;
   hold?: string;
+  load?: unknown;
   lanes: {
     id: string;
     stopped: boolean;
     calls: { used: number; limit: number };
+    activeHours: { used: number; limit: number };
     hold?: string;
   }[];
 };
@@ -65,7 +67,9 @@ function fixture(
   lanes: Record<string, unknown> = {},
 ) {
   const config = { lanes: { ...lanes, autopilot } };
-  const now = Date.parse("2026-01-01T00:00:00.000Z");
+  const start = Date.parse("2026-01-01T00:00:00.000Z");
+  const time = { now: start };
+  const now = start;
   const records = new Map<string, Row>();
   const put = (
     key: string,
@@ -101,7 +105,7 @@ function fixture(
     count: (prefix: string) =>
       [...records.keys()].filter((key) => key.startsWith(prefix)).length,
     maxNumber: () => 0,
-    now: () => now,
+    now: () => time.now,
     get: (key: string) => records.get(key),
     list: (prefix: string) =>
       [...records.values()].filter((row) => row.key.startsWith(prefix)),
@@ -116,7 +120,10 @@ function fixture(
     branch: `feat/${id}`,
     brief: `/project/.worktrees/briefs/${id}.md`,
   }));
-  const sample = { value: { freeMemoryMb: 8000, cpuBusyPercent: 10 } };
+  const sample = {
+    value: { freeMemoryMb: 8000, cpuBusyPercent: 10 },
+    fail: false,
+  };
   const ghCalls: string[][] = [];
   const services = {
     state,
@@ -128,7 +135,10 @@ function fixture(
     environment: {
       platform: "linux",
       select: () => ({}),
-      load: () => Promise.resolve(sample.value),
+      load: () =>
+        sample.fail
+          ? Promise.reject(new Error("Machine load could not be measured"))
+          : Promise.resolve(sample.value),
     },
     process: {
       resolve: (path: string) => ({ kind: "resolved", path }),
@@ -147,6 +157,8 @@ function fixture(
   });
   return {
     records,
+    time,
+    put,
     sample,
     ghCalls,
     call: (id: string, n: number) =>
@@ -227,4 +239,83 @@ test("lanes.autopilot.enabled false makes every lane.next pause", async () => {
   expect(await f.next({ id: "work-2" })).toMatchObject({ kind: "pause" });
   expect((await f.status()).enabled).toBe(false);
   expect(f.ghCalls).toHaveLength(0);
+});
+
+test("a malformed global record pauses every lane instead of reading as no stop", async () => {
+  for (const value of [
+    {},
+    { stopped: "x" },
+    { stopped: { "work-1": "not a time" } },
+    { stopped: {}, stopAll: 5 },
+  ]) {
+    const f = fixture();
+    f.put("autopilot:global", value, { expectRevision: 0 });
+    const actions = await f.all();
+    expect(actions.map((action) => action.kind)).toEqual(["pause", "pause"]);
+    for (const action of actions) expect(action.why).toMatch(/malformed/);
+    expect(await f.next({ id: "work-1" })).toMatchObject({ kind: "pause" });
+    const status = await f.status();
+    expect(status.stopped).toBe(true);
+    expect(status.hold).toMatch(/^hold: .*malformed/);
+    expect(f.ghCalls).toHaveLength(0);
+  }
+});
+
+test("a malformed clock or round record pauses the lane", async () => {
+  for (const [key, value] of [
+    ["autopilot-clock:work-1", { startedAt: "nope" }],
+    ["autopilot-clock:work-1", {}],
+    ["autopilot:work-1", { rounds: { review: "two" } }],
+  ] as const) {
+    const f = fixture();
+    f.put(key, value, { expectRevision: 0 });
+    const action = (await f.next({ id: "work-1", pr: 7 })) as Action;
+    expect(action.kind).toBe("pause");
+    expect(action.why).toMatch(/malformed/);
+    expect(f.ghCalls).toHaveLength(0);
+    expect((await f.status()).hold).toMatch(/^hold: .*malformed/);
+  }
+});
+
+test("stop replaces an unreadable global record with a stop of every lane", async () => {
+  const f = fixture();
+  f.put("autopilot:global", { stopped: "x" }, { expectRevision: 0 });
+  expect(await f.stop({ id: "work-1" })).toMatchObject({ stopped: "all" });
+  expect((await f.status()).stopped).toBe(true);
+});
+
+test("an unmeasurable or out-of-range load sample holds a start", async () => {
+  const f = fixture();
+  f.sample.fail = true;
+  expect((await f.status()).hold).toBe("hold: machine load cannot be measured");
+  f.sample.fail = false;
+  for (const value of [
+    { freeMemoryMb: Number.NaN, cpuBusyPercent: 10 },
+    { freeMemoryMb: 8000, cpuBusyPercent: Number.NaN },
+    { freeMemoryMb: 8000, cpuBusyPercent: -1 },
+    { freeMemoryMb: 8000, cpuBusyPercent: 101 },
+    { freeMemoryMb: -5, cpuBusyPercent: 10 },
+  ]) {
+    f.sample.value = value;
+    const status = await f.status();
+    expect(status.hold).toBe("hold: machine load cannot be measured");
+    expect(status.load).toBeUndefined();
+  }
+});
+
+test("the active time budget compares exact milliseconds, not rounded hours", async () => {
+  const f = fixture({ budgets: { activeHours: 1 } });
+  await f.all();
+  // 0.9997 hours rounds to 1.00 for display but is under the limit.
+  f.time.now += 3_599_000;
+  const under = await f.all();
+  expect(under[0]?.why).not.toMatch(/active hours/);
+  expect((await f.status()).lanes[0]?.activeHours).toEqual({
+    used: 1,
+    limit: 1,
+  });
+  f.time.now += 1_000;
+  const over = (await f.all())[0];
+  expect(over?.kind).toBe("pause");
+  expect(over?.why).toMatch(/active hours budget/);
 });

@@ -502,14 +502,18 @@ export function createAssemblyProviders(
           active(scope);
           const after = times();
           const total = after.all - before.all;
+          const free = freemem();
+          // A sample that cannot be measured is an error, never an idle machine.
+          if (before.all <= 0 || total <= 0 || !Number.isFinite(free))
+            refuse("UNAVAILABLE", "Machine load could not be measured");
+          const busy = Math.round(
+            (100 * (total - (after.idle - before.idle))) / total,
+          );
+          if (!Number.isFinite(busy) || busy < 0 || busy > 100)
+            refuse("UNAVAILABLE", "Machine load could not be measured");
           return {
-            freeMemoryMb: Math.floor(freemem() / 1_048_576),
-            cpuBusyPercent:
-              total <= 0
-                ? 0
-                : Math.round(
-                    (100 * (total - (after.idle - before.idle))) / total,
-                  ),
+            freeMemoryMb: Math.floor(free / 1_048_576),
+            cpuBusyPercent: busy,
           };
         },
         select(names: readonly string[]): Readonly<Record<string, string>> {

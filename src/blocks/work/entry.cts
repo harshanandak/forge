@@ -1396,16 +1396,56 @@ function limitsOf(config: unknown) {
   };
 }
 type Limits = ReturnType<typeof limitsOf>;
+/** A stored autopilot record that is present but unreadable. Only an absent record gets defaults. */
+class StateProblem extends Error {
+  readonly global: boolean;
+  constructor(what: string, global = false) {
+    super(`Stored autopilot state is malformed: ${what}`);
+    this.global = global;
+  }
+}
+const isTime = (value: unknown): value is string =>
+  typeof value === "string" && Number.isFinite(Date.parse(value));
+const isCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0;
+const isMap = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 function readGlobal(state: LeaseStateClient): {
   value: GlobalState;
   revision: number;
 } {
   const record = state.get(GLOBAL);
-  const value = record?.value as Partial<GlobalState> | undefined;
+  if (!record) return { value: { stopped: {} }, revision: 0 };
+  const value = record.value as Record<string, unknown> | null;
+  if (!isMap(value))
+    throw new StateProblem("autopilot:global is not an object", true);
+  const { stopAll, stopped, resumed } = value;
+  if (stopAll !== undefined && !isTime(stopAll))
+    throw new StateProblem("autopilot:global stopAll is not a time", true);
+  if (!isMap(stopped) || !Object.values(stopped).every(isTime))
+    throw new StateProblem(
+      "autopilot:global stopped is missing or not a map of times",
+      true,
+    );
+  if (resumed !== undefined && !isMap(resumed))
+    throw new StateProblem("autopilot:global resumed is not an object", true);
   return {
-    value: { ...value, stopped: { ...value?.stopped } },
-    revision: record?.revision ?? 0,
+    value: value as unknown as GlobalState,
+    revision: record.revision,
   };
+}
+/** A sample counts only when both numbers are finite and in range. */
+function validLoad(load: unknown): load is Load {
+  const sample = load as Partial<Load> | null | undefined;
+  return (
+    typeof sample?.freeMemoryMb === "number" &&
+    Number.isFinite(sample.freeMemoryMb) &&
+    sample.freeMemoryMb >= 0 &&
+    typeof sample.cpuBusyPercent === "number" &&
+    Number.isFinite(sample.cpuBusyPercent) &&
+    sample.cpuBusyPercent >= 0 &&
+    sample.cpuBusyPercent <= 100
+  );
 }
 /**
  * Whether a new lane may start, from the running count and a load sample. Pure, so tests inject
@@ -1421,7 +1461,8 @@ function startDecision(
       start: false,
       reason: `lane cap ${limits.lanes} reached (${running} running)`,
     };
-  if (!load) return { start: false, reason: "machine load cannot be measured" };
+  if (!validLoad(load))
+    return { start: false, reason: "machine load cannot be measured" };
   if (load.freeMemoryMb < limits.minFreeMemoryMb)
     return {
       start: false,
@@ -1436,10 +1477,12 @@ function startDecision(
 }
 const clockKey = (id: string): string => `autopilot-clock:${id}`;
 function clockOf(state: LeaseStateClient, id: string): number | undefined {
-  const at = (
-    state.get(clockKey(id))?.value as { startedAt?: string } | undefined
-  )?.startedAt;
-  return at === undefined ? undefined : Date.parse(at);
+  const record = state.get(clockKey(id));
+  if (!record) return undefined;
+  const at = (record.value as { startedAt?: unknown } | null)?.startedAt;
+  if (!isTime(at))
+    throw new StateProblem(`${clockKey(id)} has no valid startedAt`);
+  return Date.parse(at);
 }
 /** What a lane has used. Review and CI rounds count from the journal once a loop writes them. */
 function usageOf(
@@ -1449,27 +1492,40 @@ function usageOf(
   limits: Limits,
 ) {
   const journal = state.get(journalKey(id))?.value as
-    (Journal & { rounds?: { review?: number; ci?: number } }) | undefined;
+    (Journal & { rounds?: { review?: unknown; ci?: unknown } }) | undefined;
+  if (journal !== undefined && !isMap(journal))
+    throw new StateProblem(`${journalKey(id)} is not an object`);
+  const rounds = journal?.rounds;
+  if (
+    rounds !== undefined &&
+    (!isMap(rounds) ||
+      (rounds.review !== undefined && !isCount(rounds.review)) ||
+      (rounds.ci !== undefined && !isCount(rounds.ci)))
+  )
+    throw new StateProblem(`${journalKey(id)} rounds are not counts`);
   const clock = clockOf(state, id);
+  const activeMs = clock === undefined ? 0 : Math.max(0, state.now() - clock);
   return {
     journal,
     calls: {
       used: callBudget(state, ids, ids.shown(id)).used,
       limit: limits.calls,
     },
+    // Compared in milliseconds against the exact limit; hours are rounded only for display.
+    activeMs,
     activeHours: {
-      used:
-        clock === undefined
-          ? 0
-          : Math.round(((state.now() - clock) / 3600_000) * 100) / 100,
+      used: Math.round((activeMs / 3600_000) * 100) / 100,
       limit: limits.activeHours,
     },
     rounds: {
       review: {
-        used: journal?.rounds?.review ?? 0,
+        used: (rounds?.review as number | undefined) ?? 0,
         limit: limits.reviewRounds,
       },
-      ci: { used: journal?.rounds?.ci ?? 0, limit: limits.ciFixRounds },
+      ci: {
+        used: (rounds?.ci as number | undefined) ?? 0,
+        limit: limits.ciFixRounds,
+      },
     },
   };
 }
@@ -1499,8 +1555,7 @@ async function guardedNext(
   const state = client(services),
     ids = idsFor(state, config),
     shown = ids.shown(id),
-    limits = limitsOf(config),
-    flags = readGlobal(state).value;
+    limits = limitsOf(config);
   if (!limits.enabled)
     return guardPause(
       shown,
@@ -1508,6 +1563,21 @@ async function guardedNext(
       "Set blocks.work.config.lanes.autopilot.enabled to true to run lanes again.",
       { enabled: false },
     );
+  const unreadable = (error: unknown): TailAction => {
+    if (!(error instanceof StateProblem)) throw error;
+    return guardPause(
+      shown,
+      error.message,
+      "Forge cannot trust this stored state, so the lane stays paused. Repair or remove the record, then run lane next again.",
+      error.message,
+    );
+  };
+  let flags: GlobalState;
+  try {
+    flags = readGlobal(state).value;
+  } catch (error) {
+    return unreadable(error);
+  }
   const stoppedAt = flags.stopAll ?? flags.stopped[id];
   if (stoppedAt !== undefined)
     return guardPause(
@@ -1516,22 +1586,39 @@ async function guardedNext(
       "Resume with forge lane resume once you approve. Forge returns only pause until then.",
       { stopped: stoppedAt },
     );
-  if (clockOf(state, id) === undefined)
-    persist(
-      state,
-      clockKey(id),
-      { startedAt: new Date(state.now()).toISOString() },
-      0,
-    );
-  const used = usageOf(state, ids, id, limits);
-  const spent: [string, Usage][] = [
-    ["calls", used.calls],
-    ["active hours", used.activeHours],
-    ["review rounds", used.rounds.review],
-    ["CI fix rounds", used.rounds.ci],
+  let used: ReturnType<typeof usageOf>;
+  try {
+    if (clockOf(state, id) === undefined)
+      persist(
+        state,
+        clockKey(id),
+        { startedAt: new Date(state.now()).toISOString() },
+        0,
+      );
+    used = usageOf(state, ids, id, limits);
+  } catch (error) {
+    return unreadable(error);
+  }
+  const spent: [string, Usage, boolean][] = [
+    ["calls", used.calls, used.calls.used >= used.calls.limit],
+    [
+      "active hours",
+      used.activeHours,
+      used.activeMs >= used.activeHours.limit * 3600_000,
+    ],
+    [
+      "review rounds",
+      used.rounds.review,
+      used.rounds.review.used >= used.rounds.review.limit,
+    ],
+    [
+      "CI fix rounds",
+      used.rounds.ci,
+      used.rounds.ci.used >= used.rounds.ci.limit,
+    ],
   ];
-  for (const [name, usage] of spent)
-    if (usage.used >= usage.limit)
+  for (const [name, usage, over] of spent)
+    if (over)
       return guardPause(
         shown,
         `${shown} used up its ${name} budget`,
@@ -1581,9 +1668,23 @@ function laneStop(call: HandlerCall<StopInput>): {
     ids = idsFor(state, config);
   if ((input.all === true) === (input.id !== undefined))
     fail("INPUT_INVALID", "Give exactly one of a lane id or --all");
-  const { value, revision } = readGlobal(state);
   const at = new Date(state.now()).toISOString();
+  let value: GlobalState;
+  let revision: number;
   let scope = "all";
+  try {
+    ({ value, revision } = readGlobal(state));
+  } catch (error) {
+    if (!(error instanceof StateProblem)) throw error;
+    // An unreadable record is replaced by a stop of every lane: the safe direction.
+    persist(
+      state,
+      GLOBAL,
+      { stopAll: at, stopped: {} },
+      state.get(GLOBAL)?.revision ?? 0,
+    );
+    return { stopped: "all", at };
+  }
   if (input.all === true) value.stopAll ??= at;
   else {
     const id = ids.stored(input.id!);
@@ -1600,7 +1701,14 @@ function laneResume(call: HandlerCall<ResumeInput>): { resumed: string } {
     ids = idsFor(state, config);
   if ((input.all === true) === (input.id !== undefined))
     fail("INPUT_INVALID", "Give exactly one of a lane id or --all");
-  const { value, revision } = readGlobal(state);
+  let value: GlobalState;
+  let revision: number;
+  try {
+    ({ value, revision } = readGlobal(state));
+  } catch (error) {
+    if (!(error instanceof StateProblem)) throw error;
+    return fail("INPUT_INVALID", `${error.message}; repair or remove it first`);
+  }
   let scope = "all";
   if (input.all === true) {
     delete value.stopAll;
@@ -1629,21 +1737,35 @@ async function laneStatus(
   const state = client(services),
     ids = idsFor(state, config),
     limits = limitsOf(config),
-    flags = readGlobal(state).value,
     lanes = laneRegistry(laneFiles(services)).lanes;
-  const rows: LaneRow[] = lanes.map((row) => {
-    const id = laneIdentity(row);
-    const used = usageOf(state, ids, id, limits);
+  let flags: GlobalState;
+  let rows: LaneRow[];
+  try {
+    flags = readGlobal(state).value;
+    rows = lanes.map((row) => {
+      const id = laneIdentity(row);
+      const used = usageOf(state, ids, id, limits);
+      return {
+        id: ids.shown(id),
+        step: used.journal?.step ?? "before merge",
+        ...(used.journal ? { pr: used.journal.pr } : {}),
+        stopped: flags.stopAll !== undefined || flags.stopped[id] !== undefined,
+        calls: used.calls,
+        activeHours: used.activeHours,
+        rounds: used.rounds,
+      };
+    });
+  } catch (error) {
+    if (!(error instanceof StateProblem)) throw error;
+    // Unreadable state holds every start; a bad global record also counts as stopped.
     return {
-      id: ids.shown(id),
-      step: used.journal?.step ?? "before merge",
-      ...(used.journal ? { pr: used.journal.pr } : {}),
-      stopped: flags.stopAll !== undefined || flags.stopped[id] !== undefined,
-      calls: used.calls,
-      activeHours: used.activeHours,
-      rounds: used.rounds,
+      enabled: limits.enabled,
+      stopped: error.global,
+      stoppedLanes: [],
+      hold: `hold: ${error.message}`,
+      lanes: [],
     };
-  });
+  }
   let load: Load | undefined;
   try {
     load = await (
@@ -1652,6 +1774,7 @@ async function laneStatus(
   } catch {
     load = undefined;
   }
+  if (!validLoad(load)) load = undefined;
   const decision = startDecision(lanes.length, limits, load);
   return {
     enabled: limits.enabled,
