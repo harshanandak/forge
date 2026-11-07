@@ -701,10 +701,33 @@ test("a missing securityPaths config uses the code default and never skips the c
   const action = await seen(f);
   expect(action.kind).toBe("pause");
   expect(action.why).toContain("security tier");
-  const lock = fixture({ enabled: true });
-  await lock.verdict(head, "MERGE");
-  lock.world.paths = ["bun.lock"];
-  expect((await seen(lock)).why).toContain("security tier");
+  // Manifests and lock files of any toolchain, at the root or nested, are security tier.
+  for (const file of [
+    "bun.lock",
+    "bun.lockb",
+    "yarn.lock",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "package.json",
+    "packages/x/package.json",
+    "packages/x/pnpm-lock.yaml",
+    "apps/web/package-lock.json",
+    "Packages/X/Yarn.lock",
+  ]) {
+    const lock = fixture({ enabled: true });
+    await lock.verdict(head, "MERGE");
+    lock.world.paths = [file];
+    const paused = await seen(lock);
+    expect(paused.kind).toBe("pause");
+    expect(paused.why).toContain("security tier");
+    expect(paused.argv).toBeUndefined();
+  }
+  // A look-alike name is not a manifest.
+  const alike = fixture({ enabled: true });
+  await alike.verdict(head, "MERGE");
+  alike.world.paths = ["docs/package.json.md", "src/notpackage.json"];
+  expect((await seen(alike)).kind).toBe("forge");
   const plain = fixture({ enabled: true });
   await plain.verdict(head, "MERGE");
   expect((await seen(plain)).kind).toBe("forge");

@@ -1389,17 +1389,17 @@ const MERGE_KEY = (id: string): string => `autopilot-merge:${id}`;
 const CODEX_REVIEWER = "chatgpt-codex-connector[bot]";
 const REVIEWER = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?$/;
 // Code defaults: the runtime only applies top-level schema defaults, so a nested key can be absent.
-// Lock files are matched by suffix, not by name, so this list never assumes a toolchain.
+// Manifests and lock files match by file name at any depth (MANIFEST_FILE), not by one toolchain.
 const DEFAULT_SECURITY_PATHS = [
   ".github/workflows",
-  "package.json",
   "src/core/trust",
   "src/adapters/fs",
   "src/adapters/process",
   "src/assembly/providers.ts",
   "templates/delivery",
 ];
-const LOCK_FILE = /\.lockb?$/;
+const MANIFEST_FILE =
+  /^(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|[a-z]+\.lockb?)$/;
 const MERGE_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$head:GitObjectID!){repository(owner:$owner,name:$repo){object(oid:$head){... on Commit{statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion isRequired(pullRequestNumber:$n)} ... on StatusContext{context state isRequired(pullRequestNumber:$n)}}}}}} pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}";
 type MergeVerdict = {
@@ -1869,7 +1869,8 @@ async function mergeNext(
     const form = securityForm(file);
     return (
       folders.some((entry) => form === entry || form.startsWith(`${entry}/`)) ||
-      (configured === undefined && LOCK_FILE.test(form))
+      (configured === undefined &&
+        MANIFEST_FILE.test(form.slice(form.lastIndexOf("/") + 1)))
     );
   });
   if (label !== undefined || path !== undefined)
