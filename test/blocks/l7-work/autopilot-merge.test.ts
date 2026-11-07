@@ -246,7 +246,20 @@ afterAll(() => {
   else globals.fail = previousFail;
 });
 
-function fixture() {
+// The schema default; the runtime fills it in, so the fixture states it.
+const securityPaths = [
+  ".github/workflows",
+  "package.json",
+  "bun.lock",
+  "src/core/trust",
+  "src/adapters/fs",
+  "src/adapters/process",
+  "src/assembly/providers.ts",
+  "templates/delivery",
+];
+function fixture(
+  merge: Record<string, unknown> | undefined = { securityPaths },
+) {
   const now = Date.parse("2026-01-01T00:00:00.000Z");
   const records = new Map<string, Row>();
   const put = (
@@ -391,7 +404,7 @@ function fixture() {
   const bound = (input: Record<string, unknown>) => ({
     input,
     services,
-    config: {},
+    config: { lanes: { autopilot: merge ? { merge } : {} } },
     signal: new AbortController().signal,
     deadline: Number.MAX_SAFE_INTEGER,
   });
@@ -502,6 +515,14 @@ test("a security-labeled or security-path PR gets a gated ask, never a merge act
     expect(action.kind).toBe("pause");
     expect(action.argv).toBeUndefined();
   }
+});
+
+test("missing security paths config pauses instead of treating no path as security", async () => {
+  const f = fixture(undefined);
+  await f.verdict(head, "MERGE");
+  const action = await seen(f);
+  expect(action.kind).toBe("pause");
+  expect(action.argv).toBeUndefined();
 });
 
 test("unreadable GitHub data pauses and quotes it", async () => {

@@ -1391,16 +1391,6 @@ async function tailNext(call: HandlerCall<TailInput>): Promise<TailAction> {
 const MERGE_KEY = (id: string): string => `autopilot-merge:${id}`;
 const CODEX_REVIEWER = "chatgpt-codex-connector[bot]";
 const REVIEWER = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?$/;
-const SECURITY_PATHS = [
-  ".github/workflows",
-  "package.json",
-  "bun.lock",
-  "src/core/trust",
-  "src/adapters/fs",
-  "src/adapters/process",
-  "src/assembly/providers.ts",
-  "templates/delivery",
-];
 const MERGE_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$head:GitObjectID!){repository(owner:$owner,name:$repo){object(oid:$head){... on Commit{statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion isRequired(pullRequestNumber:$n)} ... on StatusContext{context state isRequired(pullRequestNumber:$n)}}}}}} pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}";
 type MergeVerdict = {
@@ -1549,7 +1539,7 @@ async function readMergeFacts(
     ]),
     "GraphQL answer",
   );
-  const data = graph.errors === undefined ? (graph.data as unknown) : null;
+  const data = graph.errors === undefined ? graph.data : null;
   const repository = (data as { repository?: unknown } | null)?.repository as
     | {
         object?: {
@@ -1618,7 +1608,7 @@ async function readMergeFacts(
         const text = /codex-review-state:v1 (\{.*\})/.exec(line)?.[1];
         return text === undefined ? [] : [text];
       });
-    let reviewed = false;
+    let reviewed: boolean;
     try {
       const code = (
         JSON.parse(lines.at(-1) ?? "null") as {
@@ -1724,7 +1714,14 @@ async function mergeNext(
   const labels = (settings?.securityLabels ?? ["security"]).map((name) =>
     name.toLowerCase(),
   );
-  const prefixes = settings?.securityPaths ?? SECURITY_PATHS;
+  const prefixes = settings?.securityPaths;
+  // The default list is the config schema's; a missing list is never read as "no paths are security".
+  if (prefixes === undefined)
+    return pause(
+      "No security paths are configured",
+      "Set blocks.work.config.lanes.autopilot.merge.securityPaths (the schema default lists the sensitive paths), then run lane next again.",
+      { securityPaths: null },
+    );
   const label = facts.labels.find((name) =>
     labels.includes(name.toLowerCase()),
   );

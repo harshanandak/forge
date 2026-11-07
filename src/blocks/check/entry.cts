@@ -1234,7 +1234,7 @@ async function gate(
           const text = /codex-review-state:v1 (\{.*\})/.exec(line)?.[1];
           return text === undefined ? [] : [text];
         });
-      let reviewed = false;
+      let reviewed: boolean;
       try {
         const value: unknown = JSON.parse(states.at(-1) ?? "null");
         reviewed =
