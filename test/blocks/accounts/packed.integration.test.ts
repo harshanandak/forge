@@ -34,6 +34,7 @@ type Audit = {
   kind: string;
   repo: string;
   approval?: { quote: string; source: string };
+  ask?: string;
 };
 
 let template: string | undefined;
@@ -149,7 +150,6 @@ if (a[0] === 'api') {
     console.log(page);
   }
   else if ((m = /^repos\\/([^/]+)\\/([^/]+)$/.exec(route))) console.log(JSON.stringify({ permissions: { push: who === m[1] || (m[1] === 'org' && who === 'bob') } }));
-  else if ((m = /^users\\/(alice|bob|constructor)$/.exec(route))) console.log(JSON.stringify({ id: ids[m[1]], name: m[1] + (flag('renamed') ? ' updated' : '') + (m[1] === 'constructor' && flag('leaky') ? ' ' + e.GH_TOKEN : '') }));
   else process.exit(8);
 } else if (a[0] === 'auth' && a[1] === 'token') {
   if (e.GH_TOKEN || e.GH_HOST || a.join(' ').indexOf('--hostname github.com --user ') < 0) process.exit(9);
@@ -1160,13 +1160,14 @@ test("installed accounts: plan, use and check on a bound clone start only the pr
       "auth token": 3,
       "api repos/x/y": 3,
     });
-    // Unbound use with a named login: the token proof and the one identity read. The account listing,
-    // the commit history and the email listing only feed a question it never asks.
+    // Unbound use with a named login: the token proof alone. The token lookup shows the login is signed
+    // in, so no account listing; the email listing is only for a custom commit email.
     resetCalls();
     expect(cli(first, "use", { login: "alice", approval }).ok).toBe(true);
     expect(ghCalls()).toEqual({ "auth token": 1, "api user": 1 });
-    // The origin url, one identity read, and the two `git var` identity probes.
-    expect(gitCalls()).toEqual({ remote: 1, config: 1, var: 2 });
+    // The git reads still feed the unpushed-commit and email hazards: the origin url, the unpushed commits,
+    // the identities and the recent authors, the identity check, and the two `git var` probes.
+    expect(gitCalls()).toEqual({ remote: 1, log: 2, config: 2, var: 2 });
     const second = clone("counts-second");
     // Bound plan: one account listing and no token or permission lookups.
     resetCalls();
@@ -1311,6 +1312,29 @@ test("installed accounts: a custom commit email is bound only when GitHub lists 
     });
     expect(listed.ok, JSON.stringify(listed)).toBe(true);
     expect((listed.result as { emails?: string }).emails).toBe("listed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a named-login use still records the unpushed-commit and email hazards", () => {
+  const { root, cli, clone, git, readAudit } = setup();
+  try {
+    const repo = clone("named-hazards");
+    git(repo, "config", "user.email", "202+bob@users.noreply.github.com");
+    git(repo, "-c", "user.name=Bob", "commit", "--allow-empty", "-m", "wrong");
+    const wrong = git(repo, "rev-parse", "HEAD");
+    const approval = { quote: "yes", source: "t3:fixture/message:hazards" };
+    const used = cli(repo, "use", { login: "alice", approval });
+    expect(used.ok, JSON.stringify(used)).toBe(true);
+    const ask = readAudit().find(
+      (row) => row.id === used.result.appliedFrom,
+    )?.ask;
+    expect(ask).toContain(wrong);
+    expect(ask).toContain("unpushed");
+    expect(ask).toContain("202+bob@users.noreply.github.com");
+    // Only gh's account listing is skipped, so no active-account hazard is computed.
+    expect(ask).not.toContain("signed in as");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
