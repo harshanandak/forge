@@ -166,6 +166,60 @@ test("PowerShell timeout follows recorded phases and batch case order", async ()
     expect(simulated.launches).toBe(1);
   }
 });
+test(
+  "a stalled batch case fails alone and the cases after it still run",
+  async () => {
+    const commandStart = "FORGE_COMMAND_START:2026-11-03T00:00:00.000Z\n";
+    // Launch 0 stalls inside "stalled" (case 1). Launch 1 runs the two cases after it.
+    const outputs = [
+      `${commandStart}FORGE_CASE_START:0\nfirst\nFORGE_CASE_END:0:0\nFORGE_CASE_START:1\n`,
+      `${commandStart}FORGE_CASE_START:0\nthird\nFORGE_CASE_END:0:0\nFORGE_CASE_START:1\nfourth\nFORGE_CASE_END:1:1\n`,
+    ];
+    const scripts: string[] = [];
+    const simulated = powerShellBatch((_shell, args) => {
+      const launch = scripts.push(args.at(-1)!) - 1;
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        kill: () => child.emit("close", null),
+      });
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from(outputs[launch]!));
+        if (launch > 0) child.emit("close", 0);
+      });
+      return child;
+    });
+    const outcomes = await simulated.runEach(
+      "powershell.exe",
+      [
+        { name: "first", command: "Write-Output first" },
+        { name: "stalled", command: "Start-Sleep -Seconds 60" },
+        { name: "third", command: "Write-Output third" },
+        { name: "fourth", command: "Write-Output fourth" },
+      ],
+      0,
+    );
+    expect(outcomes.map(({ name }) => name)).toEqual([
+      "first",
+      "stalled",
+      "third",
+      "fourth",
+    ]);
+    expect(outcomes[0]).toMatchObject({ status: 0, stdout: "first\n" });
+    expect(outcomes[1]!.status).not.toBe(0);
+    expect(outcomes[1]!.stderr).toContain(
+      "timeout; phase=command; case=stalled;",
+    );
+    expect(outcomes[2]).toMatchObject({ status: 0, stdout: "third\n" });
+    expect(outcomes[3]).toMatchObject({ status: 1, stdout: "fourth\n" });
+    expect(simulated.launches).toBe(2);
+    expect(scripts[1]).toContain("Write-Output third");
+    expect(scripts[1]).toContain("Write-Output fourth");
+    expect(scripts[1]).not.toContain("Write-Output first");
+    expect(scripts[1]).not.toContain("Start-Sleep");
+  },
+  5000,
+);
 for (const shell of shells) {
   async function prepare() {
     const cases = quotes.map((quote) => {
