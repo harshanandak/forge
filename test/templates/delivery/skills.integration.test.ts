@@ -19,6 +19,7 @@ import { yamlConfigCodec } from "../../../src/adapters/config-yaml/index.ts";
 import { DEFAULT_PARSE_LIMITS } from "../../../src/contract/untrusted.ts";
 import { verifyReceipt } from "../../../src/blocks/check/index.ts";
 import { parse } from "yaml";
+import { spawnBudget } from "../../spawn-budget.ts";
 
 const branchBin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 
@@ -47,14 +48,10 @@ test("guide's declared check saves stdout and a broken command goes red", () => 
         JSON.stringify({ schemaVersion: "forge.config/1", ...config }),
       );
     writeConfig();
+    // Same 120 s declared below; the fixture's CLI calls keep their own 45 s bound.
+    const budget = spawnBudget(120_000);
     const git = (...args: string[]) => {
-      const result = spawnSync("git", args, {
-        cwd: root,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 5000,
-      });
-      expect(result.status, result.stderr).toBe(0);
+      budget.run(`git ${args.join(" ")}`, "git", args, { cwd: root }, 0);
     };
     git("init", "--quiet");
     git("add", ".");

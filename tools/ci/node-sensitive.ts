@@ -87,6 +87,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for pr state coverage.",
   "test/node-fixtures/async-handlers/cleanup.integration.test.ts":
     "Launches selected Node for cleanup coverage.",
+  "test/spawn-budget.test.ts":
+    "Conservatively retains Node command literals passed to a fake spawn.",
   "test/structure/dependency-boundary.integration.test.ts":
     "Conservatively retains synthetic Node-launch guard fixtures.",
   "test/structure/node-sensitive.integration.test.ts":
