@@ -33,6 +33,26 @@ test("the command line quotes each part, or copies it verbatim for cmd.exe", () 
   ).toBe("C:\\x y\\a.exe b c ");
 }, 5000);
 
+function codeOf(action: () => unknown): unknown {
+  try {
+    action();
+  } catch (error) {
+    return (error as { code?: unknown }).code;
+  }
+  return "no error";
+}
+
+test("environment entries that would be read differently are refused", () => {
+  const nul = String.fromCharCode(0);
+  const refused = [
+    { "": "value" },
+    { "A=B": "c" },
+    { [`A${nul}B`]: "c" },
+    { A: `b${nul}c` },
+  ].map((env) => codeOf(() => buildWindowsEnvironmentBlock(env, {})));
+  expect(refused).toEqual(Array(4).fill("INVALID_OPTIONS"));
+}, 5000);
+
 test("the environment block is sorted, UTF-16 and gets only libuv's required variables", () => {
   const nul = String.fromCharCode(0);
   const block = buildWindowsEnvironmentBlock(

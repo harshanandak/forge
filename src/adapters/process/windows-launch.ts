@@ -258,9 +258,12 @@ export function buildWindowsEnvironmentBlock(
 ): Buffer {
   const entries = new Map<string, string>();
   for (const [name, value] of Object.entries(env)) {
-    const entry = `${name}=${value}`.toWellFormed();
-    if (entry.includes("\0")) refuse("An environment entry holds a NUL.");
-    entries.set(entry, upperName(entry.slice(0, entry.indexOf("="))));
+    if (name === "" || name.includes("=") || name.includes("\0"))
+      refuse(
+        "An environment name must not be empty or hold an equals sign or a NUL.",
+      );
+    if (value.includes("\0")) refuse("An environment value holds a NUL.");
+    entries.set(`${name}=${value}`.toWellFormed(), upperName(name));
   }
   const present = new Set(entries.values());
   for (const name of LIBUV_REQUIRED_VARIABLES) {
@@ -326,6 +329,33 @@ function openNul(api: LaunchApi, write: boolean): bigint {
   return handle;
 }
 
+/** Ends every process in the per-command job, so a launch that cannot be returned runs nowhere. */
+function endJob(job: WindowsJob): void {
+  void job.stop().catch(() => undefined);
+}
+
+/** Runs every release step even when one throws, and returns the first error. */
+function releaseLaunch(
+  api: LaunchApi,
+  attributeList: bigint | undefined,
+  allocations: readonly bigint[],
+  handles: readonly bigint[],
+): unknown {
+  const errors: unknown[] = [];
+  const step = (action: () => void): void => {
+    try {
+      action();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  if (attributeList !== undefined)
+    step(() => api.deleteAttributeList(attributeList));
+  for (const pointer of allocations) step(() => api.koffi.free(pointer));
+  for (const handle of handles) step(() => api.closeHandle(handle));
+  return errors[0];
+}
+
 /**
  * Starts `plan` directly inside `job` with its standard handles on the NUL device. Only those
  * three handles are inherited; the job handle never is. Pipes, exit waiting and error codes
@@ -370,6 +400,8 @@ export function launchInJob(
   const nulHandles: bigint[] = [];
   const allocations: bigint[] = [];
   let attributeList: bigint | undefined;
+  let launched: LaunchedProcess | undefined;
+  let failed = false;
   try {
     for (const write of [false, true, true])
       nulHandles.push(openNul(api, write));
@@ -472,16 +504,33 @@ export function launchInJob(
       );
     const { hProcess, hThread, dwProcessId } = information;
     if (isHandle(hThread, size)) api.closeHandle(hThread);
-    if (!isHandle(hProcess, size) || typeof dwProcessId !== "number")
-      throw new ProcessSpawnError(
-        "SPAWN_FAILED",
-        "Windows returned no process handle for the command.",
-      );
-    return { pid: dwProcessId, processHandle: hProcess };
+    if (isHandle(hProcess, size) && typeof dwProcessId === "number") {
+      launched = { pid: dwProcessId, processHandle: hProcess };
+      return launched;
+    }
+    // The command is already running in the job; end it rather than leave it unowned.
+    if (isHandle(hProcess, size)) api.closeHandle(hProcess);
+    endJob(job);
+    throw new ProcessSpawnError(
+      "SPAWN_FAILED",
+      "Windows returned no process handle for the command.",
+    );
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    if (attributeList !== undefined) api.deleteAttributeList(attributeList);
-    for (const pointer of allocations) koffi.free(pointer);
-    for (const handle of nulHandles) api.closeHandle(handle);
+    const cleanupError = releaseLaunch(
+      api,
+      attributeList,
+      allocations,
+      nulHandles,
+    );
+    if (cleanupError !== undefined && !failed) {
+      // Cleanup failed after a good launch: hand back nothing that could leak or run unowned.
+      if (launched !== undefined) api.closeHandle(launched.processHandle);
+      endJob(job);
+      throw cleanupError;
+    }
   }
 }
 
