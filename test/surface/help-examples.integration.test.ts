@@ -12,6 +12,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { childStep } from "../child-step.ts";
+import { powerShellArgs } from "../powershell.ts";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
 
 const { createAssembly, localCall } = (await import(
@@ -114,10 +115,7 @@ for (const shell of shells) {
                   `$step = [Diagnostics.Stopwatch]::StartNew(); [Console]::Error.WriteLine('START ${op}'); ${example}; $code = $LASTEXITCODE; [Console]::Error.WriteLine('END ${op} after ' + $step.ElapsedMilliseconds + ' ms'); if ($code -ne 0) { exit $code }; [Console]::Out.WriteLine('${marker}')`,
               )
               .join("; ");
-      const args =
-        shell === "POSIX"
-          ? ["-c", script]
-          : ["-NoProfile", "-NonInteractive", "-Command", script];
+      const args = shell === "POSIX" ? ["-c", script] : powerShellArgs(script);
       const result = await childStep(`${shell} help examples`, async () => {
         shellStarts += 1;
         const env: Record<string, string> = {};

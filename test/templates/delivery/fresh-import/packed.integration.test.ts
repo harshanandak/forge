@@ -20,6 +20,7 @@ import type {
   ResultEnvelope,
 } from "../../../../src/generated/types.ts";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
+import { powerShellArgs } from "../../../powershell.ts";
 
 const windows = process.platform === "win32";
 for (const shell of ["POSIX", ...(windows ? ["PowerShell 5.1"] : [])]) {
@@ -113,9 +114,7 @@ for (const shell of ["POSIX", ...(windows ? ["PowerShell 5.1"] : [])]) {
           : `$ErrorActionPreference = 'Stop'; function forge { & '${node}' '${bin}' @args }; ${command}; exit $LASTEXITCODE`;
       const repaired = spawnSync(
         executable,
-        shell === "POSIX"
-          ? ["-c", script]
-          : ["-NoProfile", "-NonInteractive", "-Command", script],
+        shell === "POSIX" ? ["-c", script] : powerShellArgs(script),
         {
           cwd: root,
           env,

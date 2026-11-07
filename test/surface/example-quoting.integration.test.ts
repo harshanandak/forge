@@ -2,6 +2,7 @@ import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { renderExample } from "../../src/contract/example.ts";
+import { powerShellArgs } from "../powershell.ts";
 import {
   authoredInputs,
   exampleShells,
@@ -74,7 +75,7 @@ for (const [index, shell] of exampleShells.entries()) {
           ? ["-c", script]
           : shell === "cmd"
             ? ["/d", "/v:off", "/s", "/c", `"${script}"`]
-            : ["-NoProfile", "-NonInteractive", "-Command", script];
+            : powerShellArgs(script);
       const result = spawnSync(executable, args, {
         encoding: "utf8",
         timeout: 20_000,
