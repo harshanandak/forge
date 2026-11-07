@@ -2565,7 +2565,7 @@ function messageNumber(quote: string, source: ReplySource): number | undefined {
   const found: number[] = [];
   const leading = LEADING_NUMBER.exec(quote);
   if (leading) found.push(Number(leading[1]));
-  const named = /^#(\d{1,9})$/.exec(source.message ?? "");
+  const named = /^#(\d{1,9})$/.exec(source.message?.trim() ?? "");
   if (named) found.push(Number(named[1]));
   return found.length > 0 && found.every((number) => number === found[0])
     ? found[0]

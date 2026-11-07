@@ -670,6 +670,8 @@ test("an expired request is renewed on the same ask and the owner is asked again
   expect(again.approval).toBeUndefined();
   expect(again.ask).toContain("Message #2");
   expect(again.ask).toContain("A) resume it");
+  // The old message number no longer answers anything after the renewal.
+  await expect(f.reply("#1 1A")).rejects.toThrow(/latest is #2/);
   const fresh = await f.reply("#2 1A");
   expect(fresh.approvals).toEqual([
     {
@@ -832,4 +834,58 @@ test("the runtime calls a request spent only when it was used or has expired, ne
   expect(usable(fresh)).toBe(false);
   expect(spent("missing")).toBe(false);
   expect(spent(undefined)).toBe(false);
+});
+
+test("a source.message number with a trailing space still names the message", async () => {
+  const f = fixture();
+  await f.setOwner();
+  f.spend("work-1");
+  f.spend("work-2");
+  await f.all();
+  expect((await f.reply("1A 2B", { ...OWNER, message: "#1 " })).mapped).toBe(
+    true,
+  );
+});
+
+test("after a stop of every lane, renewing the request keeps both asks on it and the all-or-nothing rule", async () => {
+  const f = fixture();
+  await f.setOwner();
+  await f.stopAll();
+  await f.all();
+  const scope = { all: true };
+  await f.record({ id: "work-1", request: "req-R", scope });
+  expect(sent(await f.all())).toHaveLength(1);
+  f.time.now += 25 * 60 * MINUTE;
+  await f.record({
+    id: "work-1",
+    request: "req-R2",
+    scope,
+    replaces: "req-R",
+  });
+  for (const lane of ["work-1", "work-2"]) {
+    const ask = f.records.get(`autopilot-ask:${lane}`)!.value as {
+      status: string;
+      gated: { request: string };
+      answer?: unknown;
+    };
+    expect(ask.status).toBe("queued");
+    expect(ask.gated.request).toBe("req-R2");
+    expect(ask.answer).toBeUndefined();
+  }
+  const message = sent(await f.all());
+  expect(message).toHaveLength(1);
+  expect(message[0]!.ask).toContain("Message #2");
+  // One lane kept stopped: nothing is approved and every lane stays paused.
+  const mixed = await f.reply("#2 1A 2B");
+  expect(mixed.approvals).toEqual([]);
+  expect(mixed.mapped).toBe(false);
+  expect(sent(await f.all())[0]!.ask).toContain("all or nothing");
+  // Every lane resumes: exactly one approval, bound to the renewed request.
+  const all = await f.reply("#3 1A 2A");
+  expect(all.approvals).toHaveLength(1);
+  expect(all.approvals[0]).toMatchObject({
+    op: "lane.resume",
+    input: { all: true },
+    approval: { request: "req-R2", quote: "#3 1A 2A", source: OWNER },
+  });
 });
