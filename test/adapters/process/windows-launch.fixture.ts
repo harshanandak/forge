@@ -140,7 +140,6 @@ export function referenceCase(
   testCase: Case,
   plan: SpawnPlan,
   out: string,
-  dir: string,
 ): Echo {
   rmSync(out, { force: true });
   const run = spawnSync(plan.file, [...plan.args], {
@@ -168,7 +167,6 @@ export async function launchedCase(
   testCase: Case,
   plan: SpawnPlan,
   out: string,
-  dir: string,
 ): Promise<Echo> {
   const job = openWindowsJob({ cleanupTimeoutMs: 5000, pollIntervalMs: 25 });
   let launched: ReturnType<typeof launchInJob> | undefined;
@@ -245,7 +243,7 @@ export async function grandchildScenario(
 }
 
 /** A relative program path is refused before anything starts. */
-export function relativeScenario(dir: string): {
+export function relativeScenario(): {
   readonly refused: readonly { code: unknown; started: number }[];
 } {
   const job = openWindowsJob({ cleanupTimeoutMs: 5000, pollIntervalMs: 25 });
@@ -322,8 +320,8 @@ if (isEntry) {
       );
       results.push({
         name: testCase.name,
-        launched: await launchedCase(testCase, plan, out, first),
-        reference: referenceCase(testCase, plan, `${out}`, first),
+        launched: await launchedCase(testCase, plan, out),
+        reference: referenceCase(testCase, plan, out),
       });
     }
     process.stdout.write(
@@ -334,7 +332,7 @@ if (isEntry) {
           first,
           "node-gc",
         ),
-        relative: relativeScenario(first),
+        relative: relativeScenario(),
       }),
     );
   }

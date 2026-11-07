@@ -103,7 +103,7 @@ describe.skipIf(!windows)("windows launcher", () => {
     const { results } = underNode();
     for (const [index, testCase] of corpus().entries()) {
       const { plan, out } = planFor(testCase, index, dir, "bun", nodePath);
-      const launched = await launchedCase(testCase, plan, out, dir);
+      const launched = await launchedCase(testCase, plan, out);
       expect(launched, testCase.name).toEqual(
         (results[index] as NodeRun["results"][number]).reference,
       );
@@ -112,6 +112,6 @@ describe.skipIf(!windows)("windows launcher", () => {
 
   test("a relative program path is refused and nothing starts", () => {
     expectRefused(underNode().relative);
-    expectRefused(relativeScenario(dir));
+    expectRefused(relativeScenario());
   }, 150_000);
 });
