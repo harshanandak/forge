@@ -7,6 +7,7 @@ import { basename, join } from "node:path";
 import { powerShellArgs } from "../powershell.ts";
 import {
   cleanupAttribution,
+  HOST_EVIDENCE,
   type AttributionRunner,
   type CleanupInspector,
 } from "./cleanup-attribution.ts";
@@ -156,7 +157,7 @@ test.skipIf(process.platform !== "win32")(
 
 function refuse(
   root: string,
-  run: AttributionRunner,
+  run: AttributionRunner = spawnSync,
   inspect?: CleanupInspector,
 ) {
   const original = Object.assign(new Error("cleanup refused"), {
@@ -353,6 +354,46 @@ test.skipIf(process.platform !== "win32")(
     }
   },
   30_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "the host evidence script parses as PowerShell",
+  () => {
+    const result = spawnSync(
+      "powershell.exe",
+      powerShellArgs(
+        "$errors = $null; $tokens = $null; [void][System.Management.Automation.Language.Parser]::ParseInput($env:FORGE_PS_SCRIPT, [ref]$tokens, [ref]$errors); Write-Output ($errors.Count.ToString() + ' ' + (($errors | ForEach-Object { $_.Message }) -join '; '))",
+      ),
+      {
+        encoding: "utf8",
+        env: { ...process.env, FORGE_PS_SCRIPT: HOST_EVIDENCE },
+        timeout: 30_000,
+        windowsHide: true,
+      },
+    );
+    expect(result.status).toBe(0);
+    // The line is the parse error count followed by their messages.
+    expect(result.stdout.trim()).toBe("0");
+  },
+  60_000,
+);
+
+test.skipIf(process.platform !== "win32")(
+  "the real host query returns processes and the filter state without a host error",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-host-"));
+    writeFileSync(join(root, "kept.txt"), "kept");
+    try {
+      const { evidence } = refuse(root);
+      expect(evidence.hostError).toBeUndefined();
+      const host = evidence.host as Record<string, unknown>;
+      expect(Array.isArray(host.processes)).toBe(true);
+      expect("filters" in host || "filterError" in host).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  60_000,
 );
 
 for (const reason of ["checksum mismatch", "download failed", "not configured"])
