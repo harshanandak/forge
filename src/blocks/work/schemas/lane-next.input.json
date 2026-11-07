@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "required": ["id"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "pr": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$"
+    }
+  },
+  "additionalProperties": false
+}

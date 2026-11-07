@@ -41,6 +41,7 @@ test("verified receipt reads preserve subject and reject a tampered subject", ()
     id: body.id,
     status: body.status,
     subject: body.subject,
+    checked: [],
   });
   expect(service.get("absent")).toBeUndefined();
   expect(Object.keys(service)).toEqual(["get"]);

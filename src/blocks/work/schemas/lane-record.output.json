@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "required": ["lane", "step", "n", "recorded"],
+  "properties": {
+    "lane": {
+      "type": "string"
+    },
+    "step": {
+      "type": "string"
+    },
+    "n": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "recorded": {
+      "const": true
+    }
+  },
+  "additionalProperties": false
+}

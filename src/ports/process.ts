@@ -18,6 +18,10 @@ export interface SpawnOptions {
   /** Sees every output byte as it arrives; capture bounds never apply to it. */
   readonly observer?: OutputObserver;
   readonly stdin?: string;
+  /** The result carries a secret: error diagnostics never record it. */
+  readonly sensitive?: boolean;
+  /** Exact values replaced in the diagnostic copy of this result's streams. */
+  readonly redact?: readonly string[];
   /** Cancellation stops the supervised scope before run settles. */
   readonly signal?: AbortSignal;
   readonly containment?: "supervised" | "strict";
