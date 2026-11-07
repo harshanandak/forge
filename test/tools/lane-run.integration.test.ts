@@ -108,21 +108,32 @@ function sharedClaudeDirectory(fixtureRoot: string) {
   const dir = realpathSync.native(
     mkdtempSync(join(tmpdir(), "forge-lane-exe-")),
   );
-  const compile = spawnSync(
-    process.execPath,
-    [
-      "build",
-      "--compile",
-      join(fixtureRoot, "fake-claude.mjs"),
-      "--outfile",
-      join(dir, "claude.exe"),
-    ],
-    { encoding: "utf8", timeout: 30_000, windowsHide: true },
-  );
-  expect(compile.error).toBeUndefined();
-  expect(compile.status).toBe(0);
-  // A trap shim prevents any fallthrough to a real CLI during the red run.
-  writeFileSync(join(dir, "claude"), "#!/bin/sh\nexit 17\n");
+  try {
+    const compile = spawnSync(
+      process.execPath,
+      [
+        "build",
+        "--compile",
+        join(fixtureRoot, "fake-claude.mjs"),
+        "--outfile",
+        join(dir, "claude.exe"),
+      ],
+      { encoding: "utf8", timeout: 30_000, windowsHide: true },
+    );
+    expect(compile.error).toBeUndefined();
+    expect(compile.status).toBe(0);
+    // A trap shim prevents any fallthrough to a real CLI during the red run.
+    writeFileSync(join(dir, "claude"), "#!/bin/sh\nexit 17\n");
+  } catch (failure) {
+    // The end-of-file hook only removes a folder that setup finished, so remove this one here.
+    // Best effort: the setup failure, not a cleanup failure, is the error to report.
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Ignored on purpose.
+    }
+    throw failure;
+  }
   // Set only now, so a failed compile never leaves a path with no claude.exe for later tests.
   sharedClaude = dir;
   return dir;
