@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -23,6 +24,9 @@ import {
 import { waitUntilGone } from "../../node-fixtures/process/liveness.ts";
 
 export const fixturePath = fileURLToPath(import.meta.url);
+
+// Commands start outside the working folder, so no process keeps that folder busy after it ends.
+const neutralCwd = tmpdir();
 
 export interface Case {
   readonly name: string;
@@ -140,7 +144,7 @@ export function referenceCase(
 ): Echo {
   rmSync(out, { force: true });
   const run = spawnSync(plan.file, [...plan.args], {
-    cwd: dir,
+    cwd: neutralCwd,
     env: { ...testCase.env },
     windowsHide: true,
     windowsVerbatimArguments: plan.windowsVerbatimArguments,
@@ -169,7 +173,7 @@ export async function launchedCase(
   const job = openWindowsJob({ cleanupTimeoutMs: 5000, pollIntervalMs: 25 });
   let launched: ReturnType<typeof launchInJob> | undefined;
   try {
-    launched = launchInJob(plan, job, { cwd: dir, env: testCase.env });
+    launched = launchInJob(plan, job, { cwd: neutralCwd, env: testCase.env });
     return await waitForJson<Echo>(out);
   } finally {
     // Each release step runs even if the one before it throws.
@@ -214,7 +218,7 @@ export async function grandchildScenario(
         windowsVerbatimArguments: false,
       },
       job,
-      { cwd: dir, env: {} },
+      { cwd: neutralCwd, env: {} },
     );
     const { child, grandchild } = await waitForJson<{
       child: number;
@@ -257,7 +261,7 @@ export function relativeScenario(dir: string): {
         const launched = launchInJob(
           { file, args: [], windowsVerbatimArguments: false },
           job,
-          { cwd: dir, env: {} },
+          { cwd: neutralCwd, env: {} },
         );
         closeLaunchedProcess(launched);
       } catch (error) {
