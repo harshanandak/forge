@@ -32,3 +32,12 @@ test("a root without executables, or one that is gone, lists nothing", () => {
   }
   expect(executablesUnder(root)).toEqual([]);
 });
+
+test("a scan that fails for any reason but a missing root fails the guard", () => {
+  const denied = Object.assign(new Error("scan denied"), { code: "EACCES" });
+  expect(() =>
+    executablesUnder("root", () => {
+      throw denied;
+    }),
+  ).toThrow(denied);
+});
