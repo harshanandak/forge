@@ -74,14 +74,14 @@ It reads the base and head again after collecting evidence and refuses if either
 REFUSED exits 1 with the complete result and refusal reasons retained. Missing, malformed,
 truncated or failed CLI evidence refuses. The operation writes no state.
 
-The gate also refuses when the branch does not contain current main (`BASE_NOT_UPDATED`: the
+The gate also refuses when the branch does not contain the current tip of its base branch (`BASE_NOT_UPDATED`: the
 compare status of the base tip against the head is not `ahead` or `identical`) and when a
 configured head reviewer has no completed review on the exact head (`HEAD_REVIEW_MISSING`,
 detail `head review missing: <login>`). `gate.headReviewers` defaults to
-`["chatgpt-codex-connector[bot]"]`; for each login the gate reads the newest
-`codex-review-state:v1` line in that login's PR summary comment and requires
+`["chatgpt-codex-connector[bot]"]`; for each login the gate reads every
+`codex-review-state:v1` line in that login's PR comments that names the head and requires
 `code_review.status` `completed` with `code_review.commit_sha` equal to the head. Only the
-Codex connector format is understood; an empty list turns the check off.
+Codex connector format is understood; logins compare case-insensitively, an omitted list means the Codex connector (applied in code, not only by the schema), and an empty list refuses every merge. Two different state lines for the head (`HEAD_REVIEW_CONFLICT`) or `code_review.has_unresolved_findings` other than `false` (`HEAD_REVIEW_FINDINGS`) also refuse.
 `forge pr merge <n> --head <sha>` additionally returns `HEAD_MOVED` and merges nothing when the
 gate reads a different head than the one given.
 

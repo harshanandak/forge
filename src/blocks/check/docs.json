@@ -11,7 +11,7 @@
     },
     "check.gate": {
       "title": "Check merge evidence",
-      "summary": "Read fresh GitHub pull request evidence and require a verified current-head PASS receipt, successful required checks, zero unresolved threads, no door paths, main in the branch, and a head review by each gate.headReviewers login. PASS exits 0; REFUSED exits 1 with reasons in result."
+      "summary": "Read fresh GitHub pull request evidence and require a verified current-head PASS receipt, successful required checks, zero unresolved threads, no door paths, base tip in the branch, and a head review by each gate.headReviewers login. PASS exits 0; REFUSED exits 1 with reasons in result."
     },
     "check.run": {
       "title": "Run declared checks",

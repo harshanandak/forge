@@ -117,11 +117,34 @@
               "description": "The merge step of lane next. headReviewers are GitHub logins whose completed review must name the exact head (default the Codex connector, read from its codex-review-state:v1 summary comment). securityLabels and securityPaths mark a PR as security tier, which gets a gated ask and never a merge action; paths match a file or a folder prefix.",
               "type": "object",
               "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Off until a trusted merge-gate verdict channel exists: lane record cannot yet tell which session recorded a verdict, so with false lane next never returns the merge action and a PR that is otherwise ready pauses for the owner."
+                },
+                "requiredChecks": {
+                  "default": "github-required",
+                  "description": "Which checks must pass on the head, the same rule as check.gate: github-required (GitHub's required flag) or a list of check names.",
+                  "oneOf": [
+                    { "const": "github-required" },
+                    {
+                      "type": "array",
+                      "uniqueItems": true,
+                      "maxItems": 256,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      }
+                    }
+                  ]
+                },
                 "headReviewers": {
                   "default": ["chatgpt-codex-connector[bot]"],
                   "type": "array",
                   "uniqueItems": true,
                   "maxItems": 16,
+                  "description": "GitHub logins compared case-insensitively. An empty list does not skip the head review: lane next pauses.",
                   "items": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*(\\[bot\\])?$",

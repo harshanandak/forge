@@ -61,11 +61,7 @@ type WorkConfig = {
       };
       readonly receiptChecks?: readonly string[];
       readonly rebuild?: { readonly argv: readonly string[] };
-      readonly merge?: {
-        readonly headReviewers?: readonly string[];
-        readonly securityLabels?: readonly string[];
-        readonly securityPaths?: readonly string[];
-      };
+      readonly merge?: MergeSettings;
     };
   };
   readonly labelOrder?: readonly string[];
@@ -1047,6 +1043,7 @@ async function tailNext(call: HandlerCall<TailInput>): Promise<TailAction> {
       issue: issue.id,
       id,
       pr,
+      linked,
       pull,
       state,
       files,
@@ -1391,6 +1388,18 @@ async function tailNext(call: HandlerCall<TailInput>): Promise<TailAction> {
 const MERGE_KEY = (id: string): string => `autopilot-merge:${id}`;
 const CODEX_REVIEWER = "chatgpt-codex-connector[bot]";
 const REVIEWER = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?$/;
+// Code defaults: the runtime only applies top-level schema defaults, so a nested key can be absent.
+// Lock files are matched by suffix, not by name, so this list never assumes a toolchain.
+const DEFAULT_SECURITY_PATHS = [
+  ".github/workflows",
+  "package.json",
+  "src/core/trust",
+  "src/adapters/fs",
+  "src/adapters/process",
+  "src/assembly/providers.ts",
+  "templates/delivery",
+];
+const LOCK_FILE = /\.lockb?$/;
 const MERGE_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$head:GitObjectID!){repository(owner:$owner,name:$repo){object(oid:$head){... on Commit{statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion isRequired(pullRequestNumber:$n)} ... on StatusContext{context state isRequired(pullRequestNumber:$n)}}}}}} pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}";
 type MergeVerdict = {
@@ -1398,6 +1407,13 @@ type MergeVerdict = {
   verdict: "MERGE" | "FIX";
   reviewer: string;
   at: string;
+};
+type MergeSettings = {
+  readonly enabled?: boolean;
+  readonly headReviewers?: readonly string[];
+  readonly requiredChecks?: "github-required" | readonly string[];
+  readonly securityLabels?: readonly string[];
+  readonly securityPaths?: readonly string[];
 };
 class Unreadable extends Error {}
 class HeadMoved extends Error {}
@@ -1412,6 +1428,27 @@ function parseJson(text: string, what: string): Record<string, unknown> {
     throw new Unreadable(`${what} is not an object`);
   return value as Record<string, unknown>;
 }
+/** A stored verdict is trusted only when every field is present and well formed. */
+function validVerdict(row: unknown): row is MergeVerdict {
+  return (
+    isMap(row) &&
+    Object.keys(row).sort().join(",") === "at,head,reviewer,verdict" &&
+    isCommit(row.head) &&
+    (row.verdict === "MERGE" || row.verdict === "FIX") &&
+    typeof row.reviewer === "string" &&
+    row.reviewer.trim() !== "" &&
+    typeof row.at === "string" &&
+    Number.isFinite(Date.parse(row.at))
+  );
+}
+/** Compare security paths the way a case-insensitive checkout sees them. */
+const securityForm = (path: string): string =>
+  path
+    .replace(/\\/g, "/")
+    .replace(/^(?:\.\/)+/, "")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
 async function readMergeFacts(
   call: { signal: AbortSignal; deadline: number },
   bound: { process?: ProcessService; environment?: EnvironmentService },
@@ -1419,7 +1456,7 @@ async function readMergeFacts(
   pr: number,
   url: string,
   head: string,
-  reviewers: readonly string[],
+  settings: MergeSettings | undefined,
 ): Promise<{ reasons: string[]; labels: string[]; paths: string[] }> {
   if (!bound.process || !bound.environment)
     fail("UNAVAILABLE", "Lane next needs process and environment services");
@@ -1455,7 +1492,14 @@ async function readMergeFacts(
       timeoutMs: Math.min(20000, remaining),
       maxOutputBytes: 65536,
     });
-    if (result.exitCode !== 0 || result.timedOut || result.truncated)
+    if (
+      result.exitCode !== 0 ||
+      result.timedOut ||
+      result.truncated ||
+      (result.outputEvidence &&
+        (!result.outputEvidence.stdout.complete ||
+          !result.outputEvidence.stderr.complete))
+    )
       throw new Unreadable(
         `gh ${args.slice(0, 2).join(" ")} did not finish (exit ${result.exitCode})`,
       );
@@ -1471,40 +1515,67 @@ async function readMergeFacts(
     string,
   ];
   const reasons: string[] = [];
+  const named = (rows: unknown, key: string): string[] => {
+    if (!Array.isArray(rows)) throw new Unreadable(`PR ${key} list missing`);
+    return rows.map((row) => {
+      const value = isMap(row) ? row[key] : undefined;
+      if (typeof value !== "string")
+        throw new Unreadable(`PR ${key} entry is not a string`);
+      return value;
+    });
+  };
   const view = parseJson(
     await run([
       "pr",
       "view",
       url,
       "--json",
-      "headRefOid,baseRefOid,state,mergeStateStatus,labels,files,changedFiles",
+      "headRefOid,baseRefOid,state,mergeStateStatus,labels,changedFiles",
     ]),
     "PR view",
   );
-  const named = (rows: unknown, key: string): string[] => {
-    if (!Array.isArray(rows)) throw new Unreadable(`PR ${key} list missing`);
-    return rows.map((row) => {
-      const value = (row as Record<string, unknown> | null)?.[key];
-      if (typeof value !== "string")
-        throw new Unreadable(`PR ${key} entry is not a string`);
-      return value;
-    });
-  };
   const labels = named(view.labels, "name");
-  const paths = named(view.files, "path");
   if (
     !isCommit(view.headRefOid) ||
     !isCommit(view.baseRefOid) ||
     typeof view.state !== "string" ||
     typeof view.mergeStateStatus !== "string" ||
-    view.changedFiles !== paths.length
+    !Number.isInteger(view.changedFiles)
   )
-    throw new Unreadable("PR view is missing facts or lists too few files");
+    throw new Unreadable("PR view is missing facts");
   if (view.headRefOid.toLowerCase() !== head)
     throw new HeadMoved(`head is now ${view.headRefOid}`);
   if (view.state !== "OPEN" || view.mergeStateStatus !== "CLEAN")
     reasons.push(
       `merge state is ${view.state}/${view.mergeStateStatus}, not OPEN/CLEAN`,
+    );
+  // The files API names both sides of a rename; `gh pr view --json files` lists only the new path.
+  const changed = (
+    await run([
+      "api",
+      `repos/${owner}/${repo}/pulls/${pr}/files?per_page=100`,
+      "--paginate",
+      "--hostname",
+      host,
+      "--jq",
+      ".[] | {f: .filename, p: .previous_filename} | @json",
+    ])
+  )
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => parseJson(line, "PR file"));
+  const paths: string[] = [];
+  for (const file of changed) {
+    if (typeof file.f !== "string" || !file.f)
+      throw new Unreadable("A changed file has no name");
+    paths.push(file.f);
+    if (typeof file.p === "string" && file.p) paths.push(file.p);
+    else if (file.p !== null && file.p !== undefined)
+      throw new Unreadable("A changed file has a malformed previous name");
+  }
+  if (changed.length !== view.changedFiles)
+    throw new Unreadable(
+      `PR lists ${view.changedFiles} changed files but the files API returned ${changed.length}`,
     );
   const ancestry = (
     await run([
@@ -1518,7 +1589,7 @@ async function readMergeFacts(
   ).trim();
   if (ancestry !== "ahead" && ancestry !== "identical")
     reasons.push(
-      `branch does not contain current main (compare status: ${ancestry || "unknown"})`,
+      `branch does not contain the current base branch tip (compare status: ${ancestry || "unknown"})`,
     );
   const graph = parseJson(
     await run([
@@ -1555,7 +1626,7 @@ async function readMergeFacts(
   const contexts = repository?.object?.statusCheckRollup?.contexts;
   const threads = repository?.pullRequest?.reviewThreads;
   const more = (info: unknown): boolean =>
-    (info as { hasNextPage?: unknown } | null)?.hasNextPage !== false;
+    !isMap(info) || info.hasNextPage !== false;
   if (
     !repository?.object ||
     !threads ||
@@ -1567,8 +1638,12 @@ async function readMergeFacts(
     throw new Unreadable(
       "GitHub checks or review threads are missing or have more than one page",
     );
+  // Required checks follow the same rule as check.gate: GitHub's required flag, or a named list.
+  const wanted = settings?.requiredChecks ?? "github-required";
+  const seen = new Set<string>();
   let required = 0;
-  for (const node of (contexts?.nodes ?? []) as Record<string, unknown>[]) {
+  for (const node of (contexts?.nodes ?? []) as unknown[]) {
+    if (!isMap(node)) throw new Unreadable("A check entry is not an object");
     if (typeof node.isRequired !== "boolean")
       throw new Unreadable("A check does not say whether it is required");
     const isRun = node.__typename === "CheckRun";
@@ -1579,19 +1654,36 @@ async function readMergeFacts(
         : (node.state ?? node.status);
     if (typeof name !== "string" || typeof shown !== "string")
       throw new Unreadable("A check has no name or state");
-    if (!node.isRequired) continue;
+    seen.add(name);
+    if (
+      wanted === "github-required" ? !node.isRequired : !wanted.includes(name)
+    )
+      continue;
     required++;
     if (shown !== "SUCCESS")
       reasons.push(`required check ${name} is ${shown}, not SUCCESS`);
   }
+  if (wanted !== "github-required")
+    for (const name of wanted)
+      if (!seen.has(name)) reasons.push(`required check ${name} is absent`);
   if (!required) reasons.push("no required checks were found on the head");
-  const open = (threads.nodes as { isResolved?: unknown }[]).filter(
-    (node) => node.isResolved !== true,
-  ).length;
+  let open = 0;
+  for (const node of threads.nodes as unknown[]) {
+    if (!isMap(node) || typeof node.isResolved !== "boolean")
+      throw new Unreadable("A review thread entry is not readable");
+    if (!node.isResolved) open++;
+  }
   if (open) reasons.push(`${open} unresolved review thread(s)`);
+  // An omitted list means the Codex connector; an empty list is never a way to skip the review.
+  const reviewers = settings?.headReviewers ?? [CODEX_REVIEWER];
+  if (!reviewers.length)
+    throw new Unreadable(
+      "No head reviewers are configured; an empty list does not skip the head review",
+    );
   for (const login of reviewers) {
     if (!REVIEWER.test(login))
       throw new Unreadable(`reviewer login ${login} is not a valid login`);
+    // GitHub logins are case-insensitive.
     const lines = (
       await run([
         "api",
@@ -1600,7 +1692,7 @@ async function readMergeFacts(
         "--hostname",
         host,
         "--jq",
-        `.[] | select(.user.login == "${login}") | .body | split("\\n")[] | select(contains("codex-review-state:v1"))`,
+        `.[] | select((.user.login | ascii_downcase) == "${login.toLowerCase()}") | .body | split("\\n")[] | select(contains("codex-review-state:v1"))`,
       ])
     )
       .split("\n")
@@ -1608,24 +1700,40 @@ async function readMergeFacts(
         const text = /codex-review-state:v1 (\{.*\})/.exec(line)?.[1];
         return text === undefined ? [] : [text];
       });
-    let reviewed: boolean;
-    try {
-      const code = (
-        JSON.parse(lines.at(-1) ?? "null") as {
-          code_review?: { status?: unknown; commit_sha?: unknown };
-        } | null
-      )?.code_review;
-      reviewed =
-        code?.status === "completed" &&
-        typeof code.commit_sha === "string" &&
-        code.commit_sha.toLowerCase() === head;
-    } catch {
-      reviewed = false;
+    // Only state lines that name this head count; two different results for it conflict.
+    const mine: { done: boolean; clean: boolean }[] = [];
+    for (const text of lines) {
+      try {
+        const value: unknown = JSON.parse(text);
+        const review =
+          isMap(value) && isMap(value.code_review)
+            ? value.code_review
+            : undefined;
+        if (
+          typeof review?.commit_sha === "string" &&
+          review.commit_sha.toLowerCase() === head
+        )
+          mine.push({
+            done: review.status === "completed",
+            // A clean review says false; true, null or a missing field is not clean.
+            clean: review.has_unresolved_findings === false,
+          });
+      } catch {
+        // A line that is not JSON names no head.
+      }
     }
-    if (!reviewed) reasons.push(`head review missing: ${login}`);
+    const first = mine[0];
+    if (!first || !first.done) reasons.push(`head review missing: ${login}`);
+    else if (
+      mine.some((row) => row.done !== first.done || row.clean !== first.clean)
+    )
+      reasons.push(`head review conflicts: ${login}`);
+    else if (!first.clean)
+      reasons.push(`head review has unresolved findings: ${login}`);
   }
+  // The fresh read: the head must not have moved, and a label added since the first read counts.
   const after = parseJson(
-    await run(["pr", "view", url, "--json", "headRefOid"]),
+    await run(["pr", "view", url, "--json", "headRefOid,labels"]),
     "PR head",
   );
   if (
@@ -1633,7 +1741,11 @@ async function readMergeFacts(
     after.headRefOid.toLowerCase() !== head
   )
     throw new HeadMoved(`head is now ${String(after.headRefOid)}`);
-  return { reasons, labels, paths };
+  return {
+    reasons,
+    labels: [...new Set([...labels, ...named(after.labels, "name")])],
+    paths,
+  };
 }
 async function mergeNext(
   call: HandlerCall<TailInput>,
@@ -1641,6 +1753,7 @@ async function mergeNext(
     issue: string;
     id: string;
     pr: number;
+    linked: number;
     pull: TailPull;
     state: LeaseStateClient;
     files: FilesService;
@@ -1679,9 +1792,30 @@ async function mergeNext(
       "The PR head moved while Forge checked it. Review the new head, record a merge-gate verdict for it, then run lane next again.",
       { checked: head, detail },
     );
+  // The PR and its branch must belong to this lane before anything else is read.
+  const lane = laneRegistry(files).lanes.find(
+    (row) => laneIdentity(row) === id,
+  );
+  if (!lane)
+    return pause(
+      `No recorded lane for ${issue}`,
+      "This lane has no registry entry, so Forge cannot tell this PR belongs to it. Tell me what to do.",
+      { issue },
+    );
+  if (lane.branch !== pull.headRefName)
+    return pause(
+      `PR #${pr} is on ${pull.headRefName} but the lane is on ${lane.branch}`,
+      "The PR is on a different branch than the lane. Check it and tell me what to do.",
+      { lane: lane.branch, pr: pull.headRefName },
+    );
+  if (at.linked !== 0 && at.linked !== pr)
+    return pause(
+      `${issue} delivers PR #${at.linked} but PR #${pr} was asked about`,
+      "The PR does not match the lane's delivers link. Tell me which PR this lane lands.",
+      { linked: at.linked, asked: pr },
+    );
   if (input.head !== undefined && input.head.toLowerCase() !== head)
     return moved(`pinned ${input.head} but the PR head is ${head}`);
-  const reviewers = settings?.headReviewers ?? [CODEX_REVIEWER];
   let facts: Awaited<ReturnType<typeof readMergeFacts>>;
   try {
     facts = await readMergeFacts(
@@ -1694,7 +1828,7 @@ async function mergeNext(
       pr,
       pull.url,
       head,
-      reviewers,
+      settings,
     );
   } catch (error) {
     if (error instanceof HeadMoved) return moved(error.message);
@@ -1705,69 +1839,76 @@ async function mergeNext(
       error.message,
     );
   }
-  if (facts.reasons.length)
-    return action(
-      "wait",
-      `The merge gate refuses PR #${pr}: ${facts.reasons.join("; ")}`,
-      `every merge condition true on head ${head}`,
-    );
+  // Pauses that need a person come before waits that only need time.
   const labels = (settings?.securityLabels ?? ["security"]).map((name) =>
     name.toLowerCase(),
   );
-  const prefixes = settings?.securityPaths;
-  // The default list is the config schema's; a missing list is never read as "no paths are security".
-  if (prefixes === undefined)
-    return pause(
-      "No security paths are configured",
-      "Set blocks.work.config.lanes.autopilot.merge.securityPaths (the schema default lists the sensitive paths), then run lane next again.",
-      { securityPaths: null },
-    );
+  const configured = settings?.securityPaths;
+  const folders = (configured ?? DEFAULT_SECURITY_PATHS)
+    .map(securityForm)
+    .filter(Boolean);
   const label = facts.labels.find((name) =>
     labels.includes(name.toLowerCase()),
   );
-  const path = facts.paths.find((file) =>
-    prefixes.some((entry) => file === entry || file.startsWith(`${entry}/`)),
-  );
+  const path = facts.paths.find((file) => {
+    const form = securityForm(file);
+    return (
+      folders.some((entry) => form === entry || form.startsWith(`${entry}/`)) ||
+      (configured === undefined && LOCK_FILE.test(form))
+    );
+  });
   if (label !== undefined || path !== undefined)
     return pause(
       `PR #${pr} is security tier (${label !== undefined ? `label ${label}` : `path ${path}`})`,
       "A security PR is merged by the owner. Review it and merge it yourself, or tell me to go ahead.",
       { label: label ?? null, path: path ?? null },
     );
-  const row = state.get(MERGE_KEY(id))?.value as MergeVerdict | undefined;
+  const row = state.get(MERGE_KEY(id))?.value;
+  if (row !== undefined) {
+    if (!validVerdict(row))
+      return pause(
+        "The stored merge-gate verdict is malformed",
+        "Record the verdict again for the current head.",
+        row,
+      );
+    if (row.head.toLowerCase() !== head)
+      return pause(
+        `The merge-gate verdict is for ${row.head}, not the current head ${head}`,
+        "Run the merge-gate review on the current head and record its verdict.",
+        row,
+      );
+    if (row.verdict !== "MERGE")
+      return pause(
+        `The merge-gate verdict for head ${head} is ${row.verdict}`,
+        "The reviewer asked for fixes. Fix them and record a new verdict, or tell me what to do.",
+        row,
+      );
+  }
+  if (facts.reasons.length)
+    return action(
+      "wait",
+      `The merge gate refuses PR #${pr}: ${facts.reasons.join("; ")}`,
+      `every merge condition true on head ${head}`,
+    );
   if (row === undefined)
     return action(
       "wait",
       `No merge-gate verdict is recorded for head ${head}`,
-      `a verdict, recorded with: forge lane record --input '{"id":"${issue}","mergeGate":{"head":"${head}","verdict":"MERGE","reviewer":"<who>"}}'`,
+      `a verdict from the merge-gate reviewer, recorded with: forge lane record --input '{"id":"${issue}","mergeGate":{"head":"${head}","verdict":"<MERGE|FIX>","reviewer":"<who>"}}'. Record only the verdict the merge-gate reviewer gave; never your own.`,
     );
-  if (
-    !isMap(row) ||
-    !isCommit(row.head) ||
-    (row.verdict !== "MERGE" && row.verdict !== "FIX") ||
-    typeof row.reviewer !== "string"
-  )
+  // lane.record cannot tell which session records a verdict, so a verdict is not yet trustworthy.
+  if (settings?.enabled !== true)
     return pause(
-      "The stored merge-gate verdict is malformed",
-      "Record the verdict again for the current head.",
-      row,
-    );
-  if (row.head.toLowerCase() !== head)
-    return pause(
-      `The merge-gate verdict is for ${row.head}, not the current head ${head}`,
-      "Run the merge-gate review on the current head and record its verdict.",
-      row,
-    );
-  if (row.verdict !== "MERGE")
-    return pause(
-      `The merge-gate verdict for head ${head} is ${row.verdict}`,
-      "The reviewer asked for fixes. Fix them and record a new verdict, or tell me what to do.",
-      row,
+      `Every merge condition holds on head ${head}, but the merge action is switched off`,
+      "Merge PR #" +
+        pr +
+        " by hand, or set blocks.work.config.lanes.autopilot.merge.enabled to true once a trusted verdict channel exists.",
+      { enabled: settings?.enabled ?? false },
     );
   emit(state, id, "merge-action", { pr, head });
   return action(
     "forge",
-    `Every merge condition holds on head ${head} and ${row.reviewer} recorded MERGE for it. Run this: it runs the full gate again, squash merges with --match-head-commit ${head} and reads the result back. Never run raw gh pr merge.`,
+    `Every merge condition holds on head ${head} and a MERGE verdict is recorded for it. Run this: it runs the full gate again, squash merges with --match-head-commit ${head} and reads the result back. Never run raw gh pr merge.`,
     `outcome MERGED for head ${head}; any other outcome stops the lane`,
     { argv: ["forge", "pr", "merge", String(pr), "--head", head] },
   );
