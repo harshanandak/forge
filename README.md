@@ -216,9 +216,10 @@ or `atMost`. A value that is not set fails its condition.
 
 `forge laws check` reports each law as `enforced` (an enabled block that loads
 declares that point, every value sits under `/blocks/<instance>/config/<subtree>` of
-that block, and every condition holds), `broken` (a condition fails) or `unenforced`
-(no enabled block enforces that point, or a value lies outside what the block
-enforces). A disabled, missing or unloadable instance enforces nothing, so its laws
+that block and is a setting its config schema declares, and every condition holds), `broken` (a condition fails) or `unenforced`
+(no enabled block enforces that point, a value lies outside what the block
+enforces, or the block does not read that setting: a key its config schema does not
+declare is ignored by the block, so a law on it is never enforced). A disabled, missing or unloadable instance enforces nothing, so its laws
 are unenforced. Each reason names the pointer,
 the condition, the actual value and where it came from. It reads only. The exit
 code is 0 when all laws are enforced, 2 when one is unenforced, and 1 when one is

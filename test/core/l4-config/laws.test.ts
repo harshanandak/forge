@@ -10,6 +10,7 @@ import {
   createConfigOperations,
   type Enforcer,
   type PatchStep,
+  schemaDeclares,
 } from "../../../src/core/config/index.ts";
 import {
   validateBlockManifest,
@@ -86,12 +87,29 @@ function project(
   return p;
 }
 
-/** What the check block declares in its manifest: merge, through its `gate` config. */
-const CHECK_ENFORCES: Enforcer = {
+/** The check block's real config schema: the settings it reads. */
+const CHECK_SCHEMA: unknown = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL("../../../src/blocks/check/schemas/config.json", import.meta.url),
+    ),
+    "utf8",
+  ),
+);
+
+/** An enforcer for merge over part of the check block's config, as the host builds it. */
+const enforcing = (...subtree: string[]): Enforcer => ({
   point: "merge",
   instance: "check",
-  root: ["blocks", "check", "config", "gate"],
-};
+  root: ["blocks", "check", "config", ...subtree],
+  reads: (segments) => schemaDeclares(CHECK_SCHEMA, segments.slice(3)),
+});
+
+/** What the check block declares in its manifest: merge, through its `gate` config. */
+const CHECK_ENFORCES = enforcing("gate");
+/** The whole check config, for conditions on settings outside the gate. */
+const CHECK_CONFIG = enforcing();
+const CFG = "/blocks/check/config";
 
 /** The host passes what its enabled, loadable blocks declare; core names no point itself. */
 function check(
@@ -214,32 +232,60 @@ test("a law whose config value is missing is broken, in the pointer form and the
   ]);
 });
 
-test("equals, contains, nonEmpty, atLeast and atMost each judge the resolved value", () => {
+test("equals, contains, nonEmpty, atLeast and atMost each judge a real check setting", () => {
   const p = project({
-    gate: { quorum: 2, mode: "strict-review", doors: [] },
+    gate: {
+      requiredChecks: ["unit"],
+      headReviewers: [CODEX],
+      doorPaths: [],
+    },
     laws: {
-      "equals-holds": law("merge", { [`${GATE}/quorum`]: { equals: 2 } }),
-      "equals-fails": law("merge", { [`${GATE}/quorum`]: { equals: 3 } }),
-      "contains-text": law("merge", {
-        [`${GATE}/mode`]: { contains: "review" },
+      "equals-holds": law("merge", {
+        [`${GATE}/requiredChecks`]: { equals: ["unit"] },
+      }),
+      "equals-fails": law("merge", {
+        [`${GATE}/requiredChecks`]: { equals: ["lint"] },
+      }),
+      "contains-element": law("merge", {
+        [`${GATE}/headReviewers`]: { contains: CODEX },
       }),
       "contains-fails": law("merge", {
-        [`${GATE}/mode`]: { contains: "relaxed" },
+        [`${GATE}/headReviewers`]: { contains: "someone-else[bot]" },
       }),
-      "empty-holds": law("merge", { [`${GATE}/doors`]: { nonEmpty: false } }),
-      "empty-fails": law("merge", { [`${GATE}/mode`]: { nonEmpty: false } }),
-      "least-holds": law("merge", { [`${GATE}/quorum`]: { atLeast: 2 } }),
-      "least-fails": law("merge", { [`${GATE}/quorum`]: { atLeast: 3 } }),
-      "most-holds": law("merge", { [`${GATE}/quorum`]: { atMost: 2 } }),
-      "most-fails": law("merge", { [`${GATE}/quorum`]: { atMost: 1 } }),
-      "least-on-text": law("merge", { [`${GATE}/mode`]: { atLeast: 1 } }),
+      "contains-text": law("merge", {
+        [`${CFG}/report`]: { contains: "exit" },
+      }),
+      "contains-text-fails": law("merge", {
+        [`${CFG}/report`]: { contains: "json" },
+      }),
+      "empty-holds": law("merge", {
+        [`${GATE}/doorPaths`]: { nonEmpty: false },
+      }),
+      "empty-fails": law("merge", {
+        [`${GATE}/headReviewers`]: { nonEmpty: false },
+      }),
+      "least-holds": law("merge", {
+        [`${CFG}/review/rounds`]: { atLeast: 3 },
+      }),
+      "least-fails": law("merge", {
+        [`${CFG}/review/rounds`]: { atLeast: 4 },
+      }),
+      "most-holds": law("merge", { [`${CFG}/review/rounds`]: { atMost: 3 } }),
+      "most-fails": law("merge", { [`${CFG}/review/rounds`]: { atMost: 2 } }),
+      "least-on-text": law("merge", { [`${CFG}/report`]: { atLeast: 1 } }),
     },
   });
-  const report = check(p);
+  change(p, [
+    { op: "set", path: `${CFG}/report`, value: "exit-code" },
+    { op: "set", path: `${CFG}/review/rounds`, value: 3 },
+  ]);
+  const report = check(p, [CHECK_CONFIG]);
   const status = Object.fromEntries(report.laws.map((l) => [l.id, l.status]));
   expect(status).toEqual({
+    "contains-element": "enforced",
     "contains-fails": "broken",
     "contains-text": "enforced",
+    "contains-text-fails": "broken",
     "empty-fails": "broken",
     "empty-holds": "enforced",
     "equals-fails": "broken",
@@ -250,6 +296,57 @@ test("equals, contains, nonEmpty, atLeast and atMost each judge the resolved val
     "most-fails": "broken",
     "most-holds": "enforced",
   });
+});
+
+test("a value the check block does not read is unenforced, not enforced, though the config holds it", () => {
+  const p = project({
+    gate: { quorum: 2 },
+    laws: {
+      "quorum-holds": law("merge", { [`${GATE}/quorum`]: { equals: 2 } }),
+      "quorum-fails": law("merge", { [`${GATE}/quorum`]: { equals: 3 } }),
+    },
+  });
+  const report = check(p);
+  const held = byId(report, "quorum-holds");
+  expect(held.status).toBe("unenforced");
+  expect(held.detail).toContain(`${GATE}/quorum is not a setting check reads`);
+  // a failing condition is still broken, and broken wins the verdict
+  expect(byId(report, "quorum-fails").status).toBe("broken");
+  expect(report.verdict).toBe("FAIL");
+});
+
+test("schemaDeclares walks properties, array items, alternatives and open maps", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      list: {
+        type: "array",
+        items: { type: "object", properties: { id: {} } },
+      },
+      pick: {
+        oneOf: [{ const: "a" }, { type: "array", items: { type: "string" } }],
+      },
+      map: { type: "object", additionalProperties: { type: "string" } },
+      free: { type: "object" },
+    },
+    additionalProperties: false,
+  };
+  for (const yes of [
+    [],
+    ["list"],
+    ["list", "0", "id"],
+    ["pick", "1"],
+    ["map", "anything"],
+    ["free", "any", "depth"],
+  ])
+    expect(schemaDeclares(schema, yes), yes.join("/")).toBe(true);
+  for (const no of [
+    ["nope"],
+    ["list", "x"],
+    ["list", "0", "nope"],
+    ["map", "k", "deeper"],
+  ])
+    expect(schemaDeclares(schema, no), no.join("/")).toBe(false);
 });
 
 test("every condition of a law must hold, and the report lists each one", () => {

@@ -6,6 +6,7 @@ import {
   createConfigOperations,
   type Enforcer,
   type LawsReport,
+  schemaDeclares,
   type ShowResult,
 } from "../core/config/index.ts";
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
@@ -467,6 +468,10 @@ export async function createAssembly(
           } catch {
             return [];
           }
+          // the block's own config schema, already loaded for this composition
+          const path = block.manifest.configSchema;
+          const schema =
+            path === undefined ? undefined : block.resolvedSchema(path);
           return Object.entries(block.manifest.enforces ?? {}).map(
             ([point, subtree]): Enforcer => ({
               point,
@@ -477,6 +482,10 @@ export async function createAssembly(
                 "config",
                 ...(parsePointer(subtree) ?? []),
               ],
+              // no schema means the block's config is not narrowed, so any setting may be read
+              reads: (segments) =>
+                schema === undefined ||
+                schemaDeclares(schema, segments.slice(3)),
             }),
           );
         }),

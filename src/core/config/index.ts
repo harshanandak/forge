@@ -30,6 +30,7 @@ export {
   type LawsApi,
   type LawsReport,
   type LawStatus,
+  schemaDeclares,
 } from "./laws.ts";
 export { createConfigOperations, type ConfigOperations } from "./operations.ts";
 export { CONFIG_FILE, LOCK_FILE } from "./store.ts";

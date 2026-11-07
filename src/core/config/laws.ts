@@ -25,6 +25,43 @@ export interface Enforcer {
   readonly instance: string;
   /** Config pointer segments that enforcement reads; a law counts as enforced only inside one. */
   readonly root: readonly string[];
+  /** Whether the block reads the setting at these pointer segments (the whole pointer from the document root). */
+  readonly reads: (segments: readonly string[]) => boolean;
+}
+
+/**
+ * Whether a config schema declares the setting at these segments: each segment is a declared
+ * property, an array index into `items`, or a key an `additionalProperties` schema admits. A
+ * free-form object (no `properties`, no combinator) or an empty schema admits any key. A block ignores settings its
+ * schema does not declare, so a law on one of those is not enforced by that block.
+ */
+export function schemaDeclares(
+  schema: unknown,
+  segments: readonly string[],
+): boolean {
+  if (segments.length === 0 || schema === true) return true;
+  if (!isObject(schema)) return false;
+  const [head, ...rest] = segments as [string, ...string[]];
+  const alternatives = ["oneOf", "anyOf", "allOf"].flatMap((key) => {
+    const found = schema[key];
+    return Array.isArray(found) ? found : [];
+  });
+  if (alternatives.some((alt) => schemaDeclares(alt, segments))) return true;
+  const { properties, items, additionalProperties } = schema;
+  if (isObject(properties) && Object.hasOwn(properties, head))
+    return schemaDeclares(properties[head], rest);
+  if (items !== undefined && /^d+$/.test(head))
+    return schemaDeclares(items, rest);
+  if (additionalProperties === true) return true;
+  if (isObject(additionalProperties))
+    return schemaDeclares(additionalProperties, rest);
+  // a free-form object, or a schema that says nothing, admits any key
+  return (
+    (schema.type === "object" || Object.keys(schema).length === 0) &&
+    properties === undefined &&
+    additionalProperties === undefined &&
+    alternatives.length === 0
+  );
 }
 
 export type LawStatus = "enforced" | "broken" | "unenforced";
@@ -168,14 +205,31 @@ export function createLaws(
         status: "broken",
         detail: `${failing.map((r) => r.pointer).join(", ")} ${failing.length === 1 ? "does" : "do"} not meet the condition`,
       };
-    const outside = reasons.filter(
-      (r) => !here.some((e) => isPrefix(e.root, parsePointer(r.pointer) ?? [])),
+    const names = here.map((e) => e.instance).join(", ");
+    const inside = (r: LawReason) =>
+      here.filter((e) => isPrefix(e.root, parsePointer(r.pointer) ?? []));
+    const outside = reasons.filter((r) => inside(r).length === 0);
+    const unread = reasons.filter(
+      (r) =>
+        inside(r).length > 0 &&
+        !inside(r).some((e) => e.reads(parsePointer(r.pointer) ?? [])),
     );
-    if (outside.length > 0)
+    if (outside.length > 0 || unread.length > 0)
       return {
         ...base,
         status: "unenforced",
-        detail: `${outside.map((r) => r.pointer).join(", ")} is outside what ${here.map((e) => e.instance).join(", ")} enforces`,
+        detail: [
+          ...(outside.length > 0
+            ? [
+                `${outside.map((r) => r.pointer).join(", ")} is outside what ${names} enforces`,
+              ]
+            : []),
+          ...(unread.length > 0
+            ? [
+                `${unread.map((r) => r.pointer).join(", ")} is not a setting ${names} reads`,
+              ]
+            : []),
+        ].join("; "),
       };
     return {
       ...base,
