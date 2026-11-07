@@ -350,7 +350,8 @@ const {main}=await import(${JSON.stringify(script)});process.exitCode=await main
     entry = script,
     allowEmpty = false,
     args = ["run", "one", "--role", "builder"],
-    // Owned children run in the fixture job, so cleanup ends the whole tree at once.
+    // On Windows an owned child runs in the fixture job, so cleanup ends the whole tree at
+    // once. On POSIX there is no job: the test itself must end and wait for the chain.
     owned = false,
   ) {
     childLaunches++;
@@ -2644,10 +2645,16 @@ test.skipIf(process.platform !== "win32")(
     const { pid } = launched.output as unknown as { pid: number };
     let harness = 0;
     try {
-      await waitForProcess("detached harness", () =>
-        existsSync(join(f.root, "harness-pid")),
-      );
-      harness = Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
+      // The harness may still be writing its pid file; wait for a whole number.
+      const harnessPid = () => {
+        try {
+          return Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
+        } catch {
+          return 0;
+        }
+      };
+      await waitForProcess("detached harness pid", () => harnessPid() > 0);
+      harness = harnessPid();
       expect([pid, harness].filter(alive)).toEqual([pid, harness]);
       await children.cleanup(() => {});
       expect(

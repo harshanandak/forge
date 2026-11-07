@@ -67,7 +67,7 @@ for (const kind of ["file", "directory"])
             { encoding: "utf8", timeout: 10_000, windowsHide: true },
           );
           throw new Error(
-            `Handle did not name holder ${child.pid} of ${path}. Snapshot: ${original.message}\nHandles of the child: ${listing.stdout || listing.stderr}`,
+            `Handle did not name holder ${child.pid} of ${path}. Snapshot: ${original.message}\nHandles of the child (status ${listing.status}, error ${listing.error?.message ?? "none"}): ${listing.stdout || listing.stderr}`,
           );
         }
         expect(original.message).toContain(basename(process.execPath));
