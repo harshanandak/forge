@@ -112,6 +112,43 @@
                 "maxLength": 200
               }
             },
+            "merge": {
+              "description": "The merge step of lane next. headReviewers are GitHub logins whose completed review must name the exact head (default the Codex connector, read from its codex-review-state:v1 summary comment). securityLabels and securityPaths mark a PR as security tier, which gets a gated ask and never a merge action; paths match a file or a folder prefix.",
+              "type": "object",
+              "properties": {
+                "headReviewers": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "maxItems": 16,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*(\\[bot\\])?$",
+                    "maxLength": 100
+                  }
+                },
+                "securityLabels": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "maxItems": 64,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  }
+                },
+                "securityPaths": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "maxItems": 256,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
             "rebuild": {
               "type": "object",
               "required": ["argv"],

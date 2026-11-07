@@ -55,6 +55,18 @@
           "maxItems": 256,
           "items": { "type": "string", "minLength": 1, "maxLength": 200 }
         },
+        "headReviewers": {
+          "default": ["chatgpt-codex-connector[bot]"],
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 16,
+          "description": "GitHub logins whose completed review must name the exact head. Reads the codex-review-state:v1 line of the reviewer's summary comment, so only the Codex connector format is understood. An empty list turns the check off.",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*(\\[bot\\])?$",
+            "maxLength": 100
+          }
+        },
         "doorPaths": {
           "default": [],
           "type": "array",

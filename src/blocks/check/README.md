@@ -74,6 +74,17 @@ It reads the base and head again after collecting evidence and refuses if either
 REFUSED exits 1 with the complete result and refusal reasons retained. Missing, malformed,
 truncated or failed CLI evidence refuses. The operation writes no state.
 
+The gate also refuses when the branch does not contain current main (`BASE_NOT_UPDATED`: the
+compare status of the base tip against the head is not `ahead` or `identical`) and when a
+configured head reviewer has no completed review on the exact head (`HEAD_REVIEW_MISSING`,
+detail `head review missing: <login>`). `gate.headReviewers` defaults to
+`["chatgpt-codex-connector[bot]"]`; for each login the gate reads the newest
+`codex-review-state:v1` line in that login's PR summary comment and requires
+`code_review.status` `completed` with `code_review.commit_sha` equal to the head. Only the
+Codex connector format is understood; an empty list turns the check off.
+`forge pr merge <n> --head <sha>` additionally returns `HEAD_MOVED` and merges nothing when the
+gate reads a different head than the one given.
+
 `gate.requiredChecks` defaults to `"github-required"`, resolved by each commit context's
 `isRequired(pullRequestNumber: ...)` field.
 An explicit list requires every named check; an empty resolved list refuses.

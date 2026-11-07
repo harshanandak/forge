@@ -527,7 +527,7 @@ test("no action Forge returns carries a forbidden merge, push or hook flag", () 
     "--force-with-lease",
     "--no-verify",
     "--no-gpg-sign",
-    "LEFTHOOK",
+    "HOOK=0",
     "reset --hard",
   ];
   for (const action of returned) {
