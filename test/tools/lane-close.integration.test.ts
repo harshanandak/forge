@@ -36,6 +36,7 @@ import { delimiter, join, resolve } from "node:path";
 import { RepositoryFixtures } from "./lane-fixture.ts";
 import { cleanupAttribution } from "./cleanup-attribution.ts";
 import { FixtureChildren } from "../fixture-children.ts";
+import { powerShellArgs } from "../powershell.ts";
 
 setDefaultTimeout(60_000);
 const repositories = new RepositoryFixtures<{ head: string; merge: string }>();
@@ -135,12 +136,9 @@ function cleanupNativeEnvironment(run: DiagnosticRunner = spawnSync) {
     try {
       const result = spawnSync(
         "powershell.exe",
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
+        powerShellArgs(
           `Add-Type -ErrorAction Stop -OutputAssembly $env:FORGE_LANE_CLOSE_ASSEMBLY -TypeDefinition @'\n${cleanupNativeSource}\n'@`,
-        ],
+        ),
         {
           encoding: "utf8",
           timeout: 10_000,
@@ -269,7 +267,7 @@ function diagnoseCleanup(
   try {
     const result = run(
       "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", cleanupEvidenceCommand],
+      powerShellArgs(cleanupEvidenceCommand),
       {
         encoding: "utf8",
         timeout: 10_000,
@@ -312,12 +310,7 @@ function diagnoseCleanup(
       report.scanError = String(error);
     }
 
-    const args = [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      cleanupDiagnosticCommand,
-    ];
+    const args = powerShellArgs(cleanupDiagnosticCommand);
     const result = run("powershell.exe", args, {
       encoding: "utf8",
       timeout: 10_000,
@@ -450,16 +443,12 @@ test.skipIf(process.platform !== "win32")(
       ) +
       "  Write-Output ([CleanupRestartManager]::Query($env:FORGE_LANE_CLOSE_DIAGNOSTIC_PATH).Length)\n} catch { throw }";
     const started = performance.now();
-    const result = spawnSync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      {
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 10_000,
-        env: { ...env, FORGE_LANE_CLOSE_DIAGNOSTIC_PATH: root },
-      },
-    );
+    const result = spawnSync("powershell.exe", powerShellArgs(script), {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+      env: { ...env, FORGE_LANE_CLOSE_DIAGNOSTIC_PATH: root },
+    });
     console.info(
       `Restart Manager directory diagnostic: ${performance.now() - started} ms`,
     );
@@ -551,7 +540,7 @@ test.skipIf(process.platform !== "win32")(
       const started = performance.now();
       const result = spawnSync(
         "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", cleanupEvidenceCommand],
+        powerShellArgs(cleanupEvidenceCommand),
         {
           encoding: "utf8",
           timeout: 10_000,
@@ -660,12 +649,7 @@ if (process.platform === "win32") {
       expect(invocation).toBeDefined();
       const [command, args, options] = invocation!;
       expect(command).toBe("powershell.exe");
-      expect(args).toEqual([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        cleanupDiagnosticCommand,
-      ]);
+      expect(args).toEqual(powerShellArgs(cleanupDiagnosticCommand));
       expect(options.encoding).toBe("utf8");
       expect(options.windowsHide).toBe(true);
       expect(options.env?.FORGE_LANE_CLOSE_DIAGNOSTIC_ROOT).toBe(root);
@@ -699,11 +683,7 @@ if (process.platform === "win32") {
           return diagnosticResult({ holders: [], holderUnknown: true });
         queried = true;
         expect(command).toBe("powershell.exe");
-        expect(args.slice(0, 3)).toEqual([
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-        ]);
+        expect(args.slice(0, 3)).toEqual(powerShellArgs("").slice(0, 3));
         expect(options.timeout).toBe(10_000);
         expect(options.windowsHide).toBe(true);
         expect(options.encoding).toBe("utf8");
@@ -835,11 +815,7 @@ if (process.platform === "win32") {
     const report = cleanupReport(root, "EBUSY", (command, args, options) => {
       called = true;
       expect(command).toBe("powershell.exe");
-      expect(args.slice(0, 3)).toEqual([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-      ]);
+      expect(args.slice(0, 3)).toEqual(powerShellArgs("").slice(0, 3));
       const script = args[3]!;
       if (script === cleanupEvidenceCommand)
         return {

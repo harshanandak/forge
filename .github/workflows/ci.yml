@@ -225,6 +225,23 @@ jobs:
             "FORGE_HANDLE_UNAVAILABLE=handle unavailable: $reason" >> $env:GITHUB_ENV
             Write-Host "handle unavailable: $reason"
           }
+      # The first powershell.exe start and first Add-Type compile on a fresh runner took 2-6 s and
+      # sometimes outran a test's own 10-30 s budget (forge-895). Pay that cold start here once.
+      # No continue-on-error: if Windows PowerShell 5.1 cannot start, the job fails.
+      - name: Warm up Windows PowerShell
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+          $script = "Add-Type -TypeDefinition 'public static class ForgeWarm { public static int One() { return 1; } }'; [ForgeWarm]::One()"
+          foreach ($pass in 'cold', 'warm') {
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            $out = & $exe -NoProfile -NonInteractive -Command $script
+            if ($LASTEXITCODE -ne 0 -or "$out".Trim() -ne '1') { throw "PowerShell 5.1 $pass warm-up failed: exit $LASTEXITCODE, output '$out'" }
+            $line = "PowerShell 5.1 $pass start plus compile: $($timer.ElapsedMilliseconds) ms"
+            Write-Host $line
+            $line >> $env:GITHUB_STEP_SUMMARY
+          }
       - name: Start Windows runner trace
         if: runner.os == 'Windows'
         continue-on-error: true
