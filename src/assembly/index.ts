@@ -6,6 +6,7 @@ import {
   createConfigOperations,
   type LawsReport,
   type ShowResult,
+  withUnavailable,
 } from "../core/config/index.ts";
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
 import {
@@ -1331,8 +1332,21 @@ export async function createAssembly(
                 result: output,
               };
             if (request.op === "laws.check") {
-              const report = output as LawsReport;
-              if (report.verdict !== "PASS")
+              let report = output as LawsReport;
+              // an enforcer that is configured but cannot load enforces nothing
+              if (report.laws.some((law) => law.status === "enforced"))
+                report = withUnavailable(
+                  report,
+                  new Map(
+                    snapshot(call).unavailable.map((b) => [b.name, b.reason]),
+                  ),
+                );
+              if (report.verdict === "PASS")
+                return {
+                  ...success(request.op, report),
+                  warnings: call.warnings,
+                };
+              else
                 return {
                   ok: false,
                   op: request.op,
@@ -1351,7 +1365,7 @@ export async function createAssembly(
                     retry: "never",
                   },
                   warnings: call.warnings,
-                  result: output,
+                  result: report,
                 };
             }
             return { ...success(request.op, output), warnings: call.warnings };

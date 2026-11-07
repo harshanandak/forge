@@ -213,11 +213,15 @@ or `atMost`. A value that is not set fails its condition.
 
 `forge laws check` reports each law as `enforced` (Forge enforces that point and
 every condition holds), `broken` (a condition fails) or `unenforced` (Forge
-enforces nothing at that point yet, or the enforcer does not read those values;
-today only `merge` is enforced, through `check.gate`). Each reason names the
-pointer, the condition, the actual value and where it came from. It reads only and
-exits 0 when all laws are enforced, 1 when one is broken or the section is
-malformed, and 2 when one is unenforced.
+enforces nothing at that point yet, the enforcer does not read those values, or
+the `check` instance is missing, disabled, not `forge/check` or cannot load; today
+only `merge` is enforced, through `check.gate`). Each reason names the pointer,
+the condition, the actual value and where it came from. It reads only. The exit
+code is 0 when all laws are enforced, 2 when one is unenforced, and 1 when one is
+broken or the laws section is malformed. Broken or malformed wins: with one broken
+law and one unenforced law the exit code is 1. A law that fails the schema (an
+unknown key, a bad `at`, a bad condition) rejects the whole `laws` section, so no
+law in it is checked and the report carries the problem instead.
 
 ## MCP
 

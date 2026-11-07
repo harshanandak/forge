@@ -124,7 +124,7 @@
     },
     "laws.check": {
       "title": "Check laws",
-      "summary": "Report each law in the config as enforced, broken or unenforced, with the resolved value and where it came from. Reads only. Exits 0 when every law is enforced, 1 when a law is broken or the laws section is malformed, 2 when a law has no enforcer at its point."
+      "summary": "Report each law in the config as enforced, broken or unenforced, with the resolved value and where it came from. Reads only. Exits 0 when every law is enforced, 2 when a law is unenforced (no enforcer at its point, or the check instance is missing, disabled, not forge/check or cannot load), and 1 when a law is broken or the laws section is malformed. Broken or malformed wins over unenforced. A schema-invalid law rejects the whole laws section, so no law in it is checked."
     },
     "template.list": {
       "title": "List templates",

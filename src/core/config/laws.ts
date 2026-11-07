@@ -4,7 +4,7 @@
 // `unenforced` when nothing Forge runs at that point reads those values. Values come from the one
 // resolver (config.show and config.explain); this module never layers or writes anything.
 import { jsonEqual } from "../../contract/schema.ts";
-import type { ConfigApi, ValueSource } from "./config.ts";
+import type { ConfigApi, ShowResult, ValueSource } from "./config.ts";
 import {
   formatPointer,
   isObject,
@@ -26,6 +26,9 @@ export type LawPoint = (typeof LAW_POINTS)[number];
 export interface Enforcer {
   /** The setting Forge reads at this point, for the report. */
   readonly name: string;
+  /** The block instance that runs it, and the built-in source that instance must have. */
+  readonly instance: string;
+  readonly source: string;
   /** The config pointer segments that setting reads; a law only counts as enforced inside it. */
   readonly root: readonly string[];
 }
@@ -36,7 +39,12 @@ export interface Enforcer {
  * Extend this one table when another point gains an enforcer.
  */
 export const ENFORCERS: Readonly<Partial<Record<LawPoint, Enforcer>>> = {
-  merge: { name: "check.gate", root: ["blocks", "check", "config", "gate"] },
+  merge: {
+    name: "check.gate",
+    instance: "check",
+    source: "forge/check",
+    root: ["blocks", "check", "config", "gate"],
+  },
 };
 
 export type LawStatus = "enforced" | "broken" | "unenforced";
@@ -68,6 +76,48 @@ export interface LawsReport {
 
 export interface LawsApi {
   check(): LawsReport;
+}
+
+function summarize(
+  problems: readonly string[],
+  laws: readonly LawReport[],
+): LawsReport {
+  const summary = { enforced: 0, broken: 0, unenforced: 0 };
+  for (const law of laws) summary[law.status] += 1;
+  return {
+    verdict:
+      problems.length > 0 || summary.broken > 0
+        ? "FAIL"
+        : summary.unenforced > 0
+          ? "INCOMPLETE"
+          : "PASS",
+    laws,
+    summary,
+    problems,
+  };
+}
+
+/**
+ * Downgrade enforced laws whose enforcing instance is configured but cannot load. The host knows
+ * which instances those are (name to reason); this module only reads config, so it takes them in.
+ */
+export function withUnavailable(
+  report: LawsReport,
+  unavailable: ReadonlyMap<string, string>,
+): LawsReport {
+  const laws = report.laws.map((law): LawReport => {
+    const instance = ENFORCERS[law.at]?.instance;
+    const reason =
+      instance === undefined ? undefined : unavailable.get(instance);
+    return law.status === "enforced" && reason !== undefined
+      ? {
+          ...law,
+          status: "unenforced",
+          detail: `${instance} instance cannot load: ${reason}`,
+        }
+      : law;
+  });
+  return summarize(report.problems, laws);
 }
 
 function filled(value: unknown): boolean {
@@ -135,7 +185,11 @@ export function createLaws(
     };
   };
 
-  const judge = (id: string, law: JsonObject): LawReport => {
+  const judge = (
+    id: string,
+    law: JsonObject,
+    instances: ShowResult["instances"],
+  ): LawReport => {
     const at = law.at as LawPoint;
     const requires = isObject(law.requires) ? law.requires : {};
     const reasons = Object.entries(requires).map(([path, condition]) =>
@@ -156,15 +210,26 @@ export function createLaws(
         status: "broken",
         detail: `${failing.map((r) => r.pointer).join(", ")} ${failing.length === 1 ? "does" : "do"} not meet the condition`,
       };
+    const instance = instances.find((i) => i.name === enforcer.instance);
+    const missing: string[] = [];
+    if (instance === undefined)
+      missing.push(`${enforcer.instance} instance is not configured`);
+    else if (!instance.enabled)
+      missing.push(`${enforcer.instance} instance is disabled`);
+    else if (
+      !("builtin" in instance.source) ||
+      instance.source.builtin !== enforcer.source
+    )
+      missing.push(`${enforcer.instance} instance is not ${enforcer.source}`);
     const outside = reasons.filter(
       (r) => !isPrefix(enforcer.root, parsePointer(r.pointer) ?? []),
     );
     if (outside.length > 0)
-      return {
-        ...base,
-        status: "unenforced",
-        detail: `${enforcer.name} reads only ${formatPointer(enforcer.root)}, not ${outside.map((r) => r.pointer).join(", ")}`,
-      };
+      missing.push(
+        `${enforcer.name} reads only ${formatPointer(enforcer.root)}, not ${outside.map((r) => r.pointer).join(", ")}`,
+      );
+    if (missing.length > 0)
+      return { ...base, status: "unenforced", detail: missing.join("; ") };
     return {
       ...base,
       status: "enforced",
@@ -177,30 +242,19 @@ export function createLaws(
       const shown = config.show();
       const excluded = new Set(shown.excluded.flatMap((e) => e.problems));
       const problems = [
-        // a config file that cannot be read at all, then the parts of it that are not valid
+        // a config file that cannot be read at all, then the parts of it that are not valid; a
+        // problem at the document root or in the laws section means the laws were not read
         ...shown.problems.filter((p) => !excluded.has(p)),
         ...shown.excluded
-          .filter((e) => e.pointer === "/laws")
+          .filter((e) => e.pointer === "" || e.pointer === "/laws")
           .flatMap((e) => e.problems),
       ];
       const section = shown.effective.laws;
       const laws = (isObject(section) ? Object.entries(section) : [])
         .filter((entry): entry is [string, JsonObject] => isObject(entry[1]))
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([id, law]) => judge(id, law));
-      const summary = { enforced: 0, broken: 0, unenforced: 0 };
-      for (const law of laws) summary[law.status] += 1;
-      return {
-        verdict:
-          problems.length > 0 || summary.broken > 0
-            ? "FAIL"
-            : summary.unenforced > 0
-              ? "INCOMPLETE"
-              : "PASS",
-        laws,
-        summary,
-        problems,
-      };
+        .map(([id, law]) => judge(id, law, shown.instances));
+      return summarize(problems, laws);
     },
   };
 }

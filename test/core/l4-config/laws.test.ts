@@ -7,7 +7,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   createConfigOperations,
+  type LawsReport,
   type PatchStep,
+  withUnavailable,
 } from "../../../src/core/config/index.ts";
 import { validateConfigDocument } from "../../../src/generated/validators.ts";
 import { type Fixture, makeProject } from "./lib/project.ts";
@@ -86,6 +88,13 @@ function check(p: Fixture): Report {
   if (handler === undefined) throw new Error("laws.check is not registered");
   return JSON.parse(JSON.stringify(handler({}))) as Report;
 }
+
+/** withUnavailable on a report read back from JSON. */
+const downgrade = (report: Report, unavailable: Map<string, string>): Report =>
+  withUnavailable(
+    report as unknown as LawsReport,
+    unavailable,
+  ) as unknown as Report;
 
 const byId = (report: Report, id: string): Law => {
   const found = report.laws.find((l) => l.id === id);
@@ -360,4 +369,92 @@ test("a hand-edited malformed laws section is reported as a problem, not read", 
   expect(report.verdict).toBe("FAIL");
   expect(report.problems.length).toBeGreaterThan(0);
   expect(report.problems.join("\n")).toContain("laws.bad");
+});
+
+const codexLaw = {
+  "codex-reviews-every-pr": law("merge", {
+    [`${GATE}/headReviewers`]: { contains: CODEX },
+  }),
+};
+
+function change(p: Fixture, steps: PatchStep[]): void {
+  p.config.apply({ patch: steps, expectRevision: p.config.show().revision });
+}
+
+test("a merge law is unenforced when the check instance is disabled, though its values still hold", () => {
+  const p = project({ gate: { headReviewers: [CODEX] }, laws: codexLaw });
+  change(p, [{ op: "set", path: "/blocks/check/enabled", value: false }]);
+  const report = check(p);
+  const found = byId(report, "codex-reviews-every-pr");
+  expect(found.status).toBe("unenforced");
+  expect(found.detail).toContain("check instance is disabled");
+  expect(found.reasons.every((r) => r.holds)).toBe(true);
+  expect(report.verdict).toBe("INCOMPLETE");
+});
+
+test("a merge law is unenforced when the check instance is not the Forge check block", () => {
+  const p = project({ gate: { headReviewers: [CODEX] }, laws: codexLaw });
+  change(p, [
+    { op: "set", path: "/blocks/check/source", value: { path: "blocks/mine" } },
+  ]);
+  const found = byId(check(p), "codex-reviews-every-pr");
+  expect(found.status).toBe("unenforced");
+  expect(found.detail).toContain("check instance is not forge/check");
+});
+
+test("a failing condition still makes the law broken when the check instance is disabled", () => {
+  const p = project({
+    gate: { receiptChecks: [] },
+    laws: {
+      "needs-receipt": law("merge", {
+        [`${GATE}/receiptChecks`]: { nonEmpty: true },
+      }),
+    },
+  });
+  change(p, [{ op: "set", path: "/blocks/check/enabled", value: false }]);
+  const report = check(p);
+  expect(byId(report, "needs-receipt").status).toBe("broken");
+  expect(report.verdict).toBe("FAIL");
+});
+
+test("an enforcer the host reports as unable to load leaves its enforced laws unenforced", () => {
+  const p = project({
+    gate: { headReviewers: [CODEX] },
+    laws: {
+      ...codexLaw,
+      "tests-before-push": law("push", { "/values/x": { equals: true } }),
+    },
+  });
+  const report = check(p);
+  expect(byId(report, "codex-reviews-every-pr").status).toBe("enforced");
+  const downgraded = downgrade(
+    report,
+    new Map([["check", "the block cannot be opened"]]),
+  );
+  const found = byId(downgraded, "codex-reviews-every-pr");
+  expect(found.status).toBe("unenforced");
+  expect(found.detail).toContain("the block cannot be opened");
+  expect(downgraded.summary).toEqual({ enforced: 0, broken: 0, unenforced: 2 });
+  expect(downgraded.verdict).toBe("INCOMPLETE");
+  expect(downgrade(report, new Map())).toEqual(report);
+});
+
+test("a config whose document cannot be used never reports an empty pass", () => {
+  const p = makeProject();
+  open.push(p);
+  mkdirSync(join(p.root, ".forge"));
+  // no `blocks`: a problem at the document root, so the whole document is left out
+  writeFileSync(
+    join(p.root, ".forge/config.yaml"),
+    JSON.stringify({
+      schemaVersion: "forge.config/1",
+      laws: {
+        ok: law("merge", { "check.gate.receiptChecks": { nonEmpty: true } }),
+      },
+    }),
+  );
+  const report = check(p);
+  expect(report.laws).toEqual([]);
+  expect(report.verdict).toBe("FAIL");
+  expect(report.problems.length).toBeGreaterThan(0);
 });

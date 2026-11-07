@@ -13,7 +13,7 @@ setDefaultTimeout(30_000);
 const CODEX = "chatgpt-codex-connector[bot]";
 const GATE = "/blocks/check/config/gate";
 
-async function run(laws: unknown) {
+async function run(laws: unknown, checkBlock: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), "forge-laws-check-"));
   mkdirSync(join(root, ".forge"));
   const text = JSON.stringify({
@@ -21,6 +21,7 @@ async function run(laws: unknown) {
     blocks: {
       check: {
         source: { builtin: "forge/check" },
+        ...checkBlock,
         config: { commands: {}, gate: { headReviewers: [CODEX] } },
       },
     },
@@ -87,6 +88,27 @@ test("laws check exits 2 and keeps the report when a law has no enforcer", async
     status: "INCOMPLETE",
     error: { code: "LAWS_UNENFORCED" },
     result: { verdict: "INCOMPLETE", summary: { unenforced: 1 } },
+  });
+  expect(exitCode).toBe(2);
+});
+
+test("laws check exits 2 when the check instance is disabled, though its values hold", async () => {
+  const { envelope, exitCode } = await run(
+    {
+      "codex-reviews": merge({
+        [`${GATE}/headReviewers`]: { contains: CODEX },
+      }),
+    },
+    { enabled: false },
+  );
+  expect(envelope, JSON.stringify(envelope)).toMatchObject({
+    ok: false,
+    status: "INCOMPLETE",
+    error: { code: "LAWS_UNENFORCED" },
+    result: {
+      verdict: "INCOMPLETE",
+      laws: [{ id: "codex-reviews", status: "unenforced" }],
+    },
   });
   expect(exitCode).toBe(2);
 });
