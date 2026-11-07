@@ -60,6 +60,12 @@ function setup() {
   };
   for (const name of ["SystemRoot", "SYSTEMROOT", "PATHEXT", "COMSPEC"])
     if (process.env[name]) env[name] = process.env[name]!;
+  // Git's own trace2 log lists every git process; a global setting makes each one append a start event.
+  const gitTrace = join(home, "git-trace.txt");
+  writeFileSync(
+    join(home, ".gitconfig"),
+    `[trace2]\n\teventTarget = ${gitTrace.replaceAll("\\", "/")}\n`,
+  );
   const fake = join(bin, "fake.cjs");
   writeFileSync(
     fake,
@@ -138,6 +144,28 @@ if (a[0] === 'api') {
       .filter(Boolean))
       counts[line] = (counts[line] ?? 0) + 1;
     return counts;
+  }
+  // The accounts block starts its git processes with -c core.fsmonitor=false; Forge's own git calls do not.
+  function gitCalls() {
+    const counts: Record<string, number> = {};
+    for (const line of (existsSync(gitTrace)
+      ? readFileSync(gitTrace, "utf8")
+      : ""
+    )
+      .split(/\r?\n/)
+      .filter(Boolean)) {
+      const event = JSON.parse(line) as { event: string; argv?: string[] };
+      const argv = event.argv?.slice(1) ?? [];
+      if (event.event !== "start" || argv[1] !== "core.fsmonitor=false")
+        continue;
+      const verb = argv.slice(2).find((arg) => !arg.startsWith("-")) ?? "";
+      counts[verb] = (counts[verb] ?? 0) + 1;
+    }
+    return counts;
+  }
+  function resetCalls() {
+    for (const file of [gitTrace, join(bin, "ghlog.txt")])
+      if (existsSync(file)) rmSync(file);
   }
   function git(cwd: string, ...args: string[]) {
     const out = run("git", args, cwd);
@@ -219,6 +247,8 @@ if (a[0] === 'api') {
     clone,
     emptyClone,
     ghCalls,
+    gitCalls,
+    resetCalls,
   };
 }
 
@@ -998,6 +1028,44 @@ test("installed accounts: use with a named login starts one gh token lookup and 
       "api user": 1,
       "api user/emails": 1,
     });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: plan, use and check on a bound clone start only the processes their checks need", () => {
+  const { root, cli, clone, ghCalls, gitCalls, resetCalls } = setup();
+  try {
+    const approval = { quote: "yes", source: "t3:fixture/message:counts" };
+    const first = clone("counts-first");
+    // Unbound plan: one account listing, then a token lookup and a permission lookup per signed-in account.
+    resetCalls();
+    expect(cli(first, "plan").ok).toBe(true);
+    expect(ghCalls()).toEqual({
+      "auth status": 1,
+      "auth token": 3,
+      "api repos/x/y": 3,
+    });
+    // The origin url, the unpushed commits, the git identities and the recent authors; no common-dir lookup for a github.com origin.
+    expect(gitCalls()).toEqual({ remote: 1, log: 2, config: 1 });
+    expect(cli(first, "use", { login: "alice", approval }).ok).toBe(true);
+    const second = clone("counts-second");
+    // Bound plan: one account listing and no token or permission lookups.
+    resetCalls();
+    expect(cli(second, "plan").ok).toBe(true);
+    expect(ghCalls()).toEqual({ "auth status": 1 });
+    expect(gitCalls()).toEqual({ remote: 1, log: 2, config: 1 });
+    // Bound use: the token proof alone; the account listing and the git discovery only feed a question it never asks.
+    resetCalls();
+    expect(cli(second, "use", { login: "alice", approval }).ok).toBe(true);
+    expect(ghCalls()).toEqual({ "auth token": 1, "api user": 1 });
+    expect(gitCalls()).toEqual({ remote: 1 });
+    // Check never calls gh: the origin url, the shallow and tip lookup in one call, and the log.
+    resetCalls();
+    const checked = cli(second, "check");
+    expect(checked.ok, JSON.stringify(checked)).toBe(true);
+    expect(ghCalls()).toEqual({});
+    expect(gitCalls()).toEqual({ remote: 1, "rev-parse": 1, log: 1 });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
