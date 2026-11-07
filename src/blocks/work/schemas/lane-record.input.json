@@ -25,6 +25,9 @@
           },
           {
             "required": ["scope"]
+          },
+          {
+            "required": ["replaces"]
           }
         ]
       }
@@ -56,6 +59,9 @@
           },
           {
             "required": ["scope"]
+          },
+          {
+            "required": ["replaces"]
           }
         ]
       }
@@ -115,6 +121,9 @@
           },
           {
             "required": ["scope"]
+          },
+          {
+            "required": ["replaces"]
           }
         ]
       }
@@ -146,6 +155,9 @@
           },
           {
             "required": ["scope"]
+          },
+          {
+            "required": ["replaces"]
           }
         ]
       }
@@ -308,6 +320,11 @@
       },
       "additionalProperties": false,
       "description": "The lane resume input the request was asked for: {id} or {all:true}. It must match the gated ask exactly."
+    },
+    "replaces": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9-]{1,200}$",
+      "description": "With request: the request id this ask carries now. Allowed only when the runtime reports that request as expired or used; the new request then replaces it and the owner is asked again."
     }
   },
   "additionalProperties": false
