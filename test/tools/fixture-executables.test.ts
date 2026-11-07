@@ -33,6 +33,27 @@ test("a root without executables, or one that is gone, lists nothing", () => {
   expect(executablesUnder(root)).toEqual([]);
 });
 
+test("an entry that vanishes in the middle of the walk fails the guard instead of hiding executables", () => {
+  const vanished = Object.assign(new Error("entry vanished"), {
+    code: "ENOENT",
+    path: join("root", "bin", "gone"),
+  });
+  expect(() =>
+    executablesUnder("root", () => {
+      throw vanished;
+    }),
+  ).toThrow(vanished);
+  const missingRoot = Object.assign(new Error("root missing"), {
+    code: "ENOENT",
+    path: "root",
+  });
+  expect(
+    executablesUnder("root", () => {
+      throw missingRoot;
+    }),
+  ).toEqual([]);
+});
+
 test("a scan that fails for any reason but a missing root fails the guard", () => {
   const denied = Object.assign(new Error("scan denied"), { code: "EACCES" });
   expect(() =>
