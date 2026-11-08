@@ -3,7 +3,7 @@
   "type": "object",
   "properties": {
     "status": {
-      "enum": ["added", "updated", "not_found", "read_only"]
+      "enum": ["added", "updated", "exists", "not_found", "read_only"]
     },
     "id": {
       "$ref": "defs.json#/$defs/NoteId"
@@ -14,7 +14,7 @@
     "notice": {
       "type": "string",
       "maxLength": 600,
-      "description": "Present when the note or edit waits for the owner: says so and how the owner accepts it."
+      "description": "Present when the note or edit waits for the owner, or when an identical owner-tagged note already exists (status exists, id names it): says so and what to do next."
     }
   },
   "additionalProperties": false,

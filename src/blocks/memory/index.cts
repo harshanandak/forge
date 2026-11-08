@@ -63,10 +63,10 @@ interface NoteValue {
   readonly forgotten?: NoteValue;
   readonly approval?: Approval & { readonly at: string };
   /** Absent once accepted. A never-accepted owner-tagged note is proposed, then accepted or rejected. */
-  readonly status?: "proposed" | "rejected";
+  readonly status?: "proposed" | "rejected" | "withdrawn";
   /** A revision of an accepted note that waits for the owner; the note's own fields stay served. */
   readonly proposal?: Proposal;
-  /** Revisions the owner rejected, kept for history. */
+  /** Revisions the owner rejected or an agent withdrew, kept for history. */
   readonly rejectedProposals?: readonly Proposal[];
 }
 /** A proposal as an export carries it: its text is an untrusted-text object. */
@@ -76,6 +76,11 @@ interface RestoredProposal {
   readonly tags: readonly string[];
   readonly links: readonly string[];
   readonly at: string;
+  readonly withdrawn?: {
+    readonly by: string;
+    readonly reason: { readonly text: string };
+    readonly at: string;
+  };
 }
 interface Proposal {
   readonly text: string;
@@ -83,6 +88,12 @@ interface Proposal {
   readonly tags: readonly string[];
   readonly links: readonly string[];
   readonly at: string;
+  /** Set when an agent took the proposal back; the owner never decided it. */
+  readonly withdrawn?: {
+    readonly by: string;
+    readonly reason: string;
+    readonly at: string;
+  };
 }
 type Approval =
   | { readonly by: "owner"; readonly quote: string }
@@ -167,6 +178,12 @@ const MAX_VERSIONS = 5;
 const MAX_RETRIES = 8;
 const DEFAULT_LIMIT = 10;
 const SNIPPET_LENGTH = 200;
+// Two owner-tagged texts say the same thing when their word sets overlap at least this much.
+const NEAR_DUPLICATE_OVERLAP = 0.9;
+// A flipped one of these makes a long text a different rule even at a high overlap.
+const OPPOSITES = new Set(
+  "not no never dont don cannot without avoid stop always".split(" "),
+);
 // A bare note-N is a note written before notes had levels: every one of those is a device note.
 const NOTE_REF = /^(?:(device|project\/([0-9a-f]{16}))\/)?note-([0-9]{1,9})$/;
 const LEGACY_REF = /^note-[0-9]{1,9}$/;
@@ -199,6 +216,81 @@ function ownerTag(
       tag,
     ),
   );
+}
+function words(text: string): string[] {
+  return text
+    .normalize("NFKC")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+}
+/** Equal after case, spacing and punctuation, or word sets that overlap by NEAR_DUPLICATE_OVERLAP. */
+function sameRule(a: string, b: string): boolean {
+  const left = words(a);
+  const right = words(b);
+  if (left.join(" ") === right.join(" ")) return true;
+  const one = new Set(left);
+  const two = new Set(right);
+  let shared = 0;
+  for (const word of one) if (two.has(word)) shared += 1;
+  const union = one.size + two.size - shared;
+  if (union === 0 || shared / union < NEAR_DUPLICATE_OVERLAP) return false;
+  for (const word of one)
+    if (!two.has(word) && OPPOSITES.has(word)) return false;
+  for (const word of two)
+    if (!one.has(word) && OPPOSITES.has(word)) return false;
+  return true;
+}
+/**
+ * An active or proposed owner-tagged note in this store and scope that says the same as `text`,
+ * so a second proposal for one decision is never created. `except` skips the note being edited.
+ */
+function twinOf(
+  source: Source,
+  text: string,
+  scope: string | undefined,
+  config: MemoryConfig,
+  except?: number,
+): { id: string; state: "active" | "proposed" } | undefined {
+  const tagged = (tags: readonly string[]) =>
+    ownerTag(tags, config) !== undefined;
+  let after = 0;
+  for (;;) {
+    const page = notePage(source, {
+      after,
+      limit: LIST_LIMIT,
+      descending: false,
+    });
+    for (const { id, number, value } of page) {
+      if (number === except || value.deleted === true) continue;
+      if (
+        value.scope === scope &&
+        tagged(value.tags) &&
+        (value.status === undefined || value.status === "proposed") &&
+        sameRule(value.text, text)
+      )
+        return {
+          id,
+          state: value.status === undefined ? "active" : "proposed",
+        };
+      const waiting = value.proposal;
+      if (
+        waiting !== undefined &&
+        waiting.scope === scope &&
+        tagged(waiting.tags) &&
+        sameRule(waiting.text, text)
+      )
+        return { id, state: "proposed" };
+    }
+    const last = page.at(-1);
+    if (page.length < LIST_LIMIT || !last) return undefined;
+    after = last.number;
+  }
+}
+function twinNotice(twin: { id: string; state: "active" | "proposed" }) {
+  return twin.state === "active"
+    ? `This rule is already active as ${twin.id}; nothing was added.`
+    : `This rule is already proposed as ${twin.id}; nothing was added. It waits for the owner there.`;
 }
 function approved(
   approval: Approval | undefined,
@@ -639,6 +731,19 @@ function shownProposal(proposal: Proposal, id: string) {
     tags: [...proposal.tags],
     links: qualifiedLinks(proposal.links),
     at: proposal.at,
+    ...(proposal.withdrawn === undefined
+      ? {}
+      : {
+          withdrawn: {
+            by: proposal.withdrawn.by,
+            reason: fence(
+              proposal.withdrawn.reason,
+              `memory:${id}:withdrawn`,
+              proposal.withdrawn.at,
+            ),
+            at: proposal.withdrawn.at,
+          },
+        }),
   };
 }
 
@@ -1455,6 +1560,13 @@ module.exports = {
       ) {
         const scope =
           input.scope === undefined ? old.scope : (input.scope ?? undefined);
+        const twin = twinOf(source, input.text, scope, config, number);
+        if (twin)
+          return {
+            status: "exists" as const,
+            id: twin.id,
+            notice: twinNotice(twin),
+          };
         const waiting: NoteValue = {
           ...old,
           textRevision: old.textRevision ?? existing.revision,
@@ -1496,7 +1608,8 @@ module.exports = {
         Object.assign(value, { versionApproval: approval });
       // An edit to a rejected owner-tagged note puts the corrected note back in front of the owner.
       const resubmitted =
-        old.status === "rejected" && ownerTag(value.tags, config) !== undefined;
+        (old.status === "rejected" || old.status === "withdrawn") &&
+        ownerTag(value.tags, config) !== undefined;
       if (resubmitted) Object.assign(value, { status: "proposed" });
       // Moves keep text version numbers while the destination store starts at revision one.
       if ((old.textRevision ?? 0) > existing.revision)
@@ -1526,7 +1639,7 @@ module.exports = {
         ),
         ...(resubmitted
           ? {
-              notice: `${editing} was rejected and is proposed again with this text. It waits for the owner; memory.accept needs id, revision and text from memory.show ${editing}.`,
+              notice: `${editing} was ${old.status} and is proposed again with this text. It waits for the owner; memory.accept needs id, revision and text from memory.show ${editing}.`,
             }
           : {}),
       };
@@ -1549,6 +1662,16 @@ module.exports = {
       // An owner tag never reaches the served rules on an agent's say-so: the note starts proposed
       // and only the owner's relayed memory.accept activates it, whatever approval the add carries.
       const tag = ownerTag(value.tags, config);
+      const twin =
+        tag === undefined
+          ? undefined
+          : twinOf(target, value.text, value.scope, config);
+      if (twin)
+        return {
+          status: "exists" as const,
+          id: twin.id,
+          notice: twinNotice(twin),
+        };
       const stored: NoteValue =
         tag === undefined ? value : { ...value, status: "proposed" };
       const expected = canonical(stored);
@@ -1588,7 +1711,7 @@ module.exports = {
         ...(tag === undefined
           ? {}
           : {
-              notice: `${id} has the owner tag ${tag}, so it waits for the owner and is not served as a rule yet. The owner accepts it with memory.accept: copy id, revision and text from memory.show ${id} into items, then ask the owner and follow the approval request it returns.`,
+              notice: `${id} has the owner tag ${tag}, so it waits for the owner and is not served as a rule yet. Owner tags are only for directional choices the owner must make; a settled implementation fact or procedure takes the tag fact, procedure or reference and applies at once. Take back a duplicate or needless proposal with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id} into items, then follow the approval request it returns.`,
             }),
       };
     });
@@ -2483,6 +2606,19 @@ module.exports = {
       tags: [...proposal.tags],
       links: qualifiedLinks(proposal.links),
       at: proposal.at,
+      ...(proposal.withdrawn === undefined
+        ? {}
+        : {
+            withdrawn: {
+              by: proposal.withdrawn.by,
+              reason: {
+                kind: "untrusted" as const,
+                source: `memory:${id}:withdrawn`,
+                text: proposal.withdrawn.reason,
+              },
+              at: proposal.withdrawn.at,
+            },
+          }),
     });
     return {
       format: waiting
@@ -2540,7 +2676,7 @@ module.exports = {
         tags: readonly string[];
         links: readonly string[];
         text: { text: string };
-        status?: "proposed" | "rejected";
+        status?: "proposed" | "rejected" | "withdrawn";
         proposal?: RestoredProposal;
         rejectedProposals?: readonly RestoredProposal[];
       }[];
@@ -2635,6 +2771,15 @@ module.exports = {
         tags: entry.tags,
         links: relinked(entry.links, restored),
         at: entry.at,
+        ...(entry.withdrawn === undefined
+          ? {}
+          : {
+              withdrawn: {
+                by: entry.withdrawn.by,
+                reason: entry.withdrawn.reason.text,
+                at: entry.withdrawn.at,
+              },
+            }),
       });
       // A bundle's own fields are never proof that the owner accepted a note: a new owner-tagged
       // note comes back proposed, whatever status the bundle claims, and only memory.accept serves it.
@@ -2642,8 +2787,8 @@ module.exports = {
       for (const { key, note } of adding) {
         const ownerTagged = ownerTag(note.tags, config) !== undefined;
         const status =
-          note.status === "rejected"
-            ? "rejected"
+          note.status === "rejected" || note.status === "withdrawn"
+            ? note.status
             : ownerTagged || note.status === "proposed"
               ? "proposed"
               : undefined;
@@ -2700,7 +2845,78 @@ module.exports = {
 
   "memory.accept": (args: DecideArgs) => decide(args, "accept"),
   "memory.reject": (args: DecideArgs) => decide(args, "reject"),
-
+  /**
+   * An agent takes back a proposal that is a duplicate or no longer needed. It needs no owner
+   * approval because it never serves text: the note or revision closes, stays in history with who
+   * withdrew and why, and only memory.accept can ever serve anything.
+   */
+  "memory.withdraw": async ({
+    input,
+    services,
+  }: {
+    input: { items: { id: string; revision: number }[]; reason: string };
+    services: Services;
+  }) => {
+    const at = new Date().toISOString();
+    const withdrawn = {
+      by: services.levels.caller,
+      reason: input.reason,
+      at,
+    };
+    const results: { id: string; status: string }[] = [];
+    const seen = new Set<string>();
+    for (const item of input.items) {
+      const requested = qualified(item.id);
+      const found = await sourceFor(services, requested);
+      const done = (id: string, status: string) => {
+        if (seen.has(id)) return;
+        seen.add(id);
+        results.push({ id, status });
+      };
+      if (unreached(found)) {
+        done(requested, "not_found");
+        continue;
+      }
+      const { source, number } = found;
+      const id = idIn(source, number);
+      if (seen.has(id)) continue;
+      const key = noteKey(number);
+      const existing = source.state.get(key);
+      const old = existing && (existing.value as NoteValue);
+      if (source.readOnly) done(id, "read_only");
+      else if (!existing || !old || old.deleted === true) done(id, "not_found");
+      else if (old.proposal === undefined && old.status !== "proposed")
+        done(id, "not_proposed");
+      else if (existing.revision !== item.revision) done(id, "conflict");
+      else {
+        const { proposal, ...kept } = old;
+        const closed: Proposal = proposal ?? {
+          text: old.text,
+          ...(old.scope === undefined ? {} : { scope: old.scope }),
+          tags: old.tags,
+          links: old.links,
+          at: old.changedAt ?? old.createdAt ?? at,
+        };
+        const value: NoteValue = {
+          ...kept,
+          textRevision: old.textRevision ?? existing.revision,
+          ...(proposal === undefined ? { status: "withdrawn" as const } : {}),
+          rejectedProposals: [
+            ...(old.rejectedProposals ?? []),
+            { ...closed, withdrawn },
+          ].slice(-MAX_VERSIONS),
+        };
+        try {
+          source.state.put(key, value, { expectRevision: existing.revision });
+          done(id, "withdrawn");
+        } catch (error) {
+          if (!conflict(error)) throw error;
+          done(id, "conflict");
+        }
+      }
+    }
+    return { results };
+  },
   "decision.propose": ({
     input,
     config,

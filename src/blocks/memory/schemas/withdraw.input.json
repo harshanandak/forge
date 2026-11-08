@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "defs.json#/$defs/NoteRef"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The note revision you read (note.revision from show or proposals). The proposal is left alone if the note has changed."
+          }
+        },
+        "additionalProperties": false,
+        "required": ["id", "revision"]
+      },
+      "description": "The proposals to take back: at most 10."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "Why: for example the id of the note that says the same, or the evidence that settles it."
+    }
+  },
+  "additionalProperties": false,
+  "required": ["items", "reason"]
+}

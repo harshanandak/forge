@@ -8,6 +8,8 @@ Use the lowercase repo name from `gh repo view --json name --jq '.name|ascii_dow
 
 Save future-session facts: `forge memory add --input '{"text":"...","level":"device","scope":"<name>","tags":["..."]}'`.
 
+Owner tags (`rule`, `preference`, `decision`) are only for directional choices the owner must approve, such as which method to follow; the note waits for the owner. Implementation facts and procedures you settled with evidence use `fact`, `procedure` or `reference` and apply at once; for example "the release job needs a clean tree". A repeat of an owner note returns `exists`. Take back a duplicate or needless proposal with `forge memory withdraw`.
+
 ## Propose and adopt
 
 Record an answer or propose a standing rule: `forge decision propose --input '{"title":"...","text":"..."}'`. On `format_missing`, follow the returned `repair`, then propose again. Only after `proposed`, hand it to a human for `decision.adopt`; adoption makes it binding.
