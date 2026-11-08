@@ -588,6 +588,77 @@ try {
     );
   }
 
+  // Memory by phase of one `issue show`: marks written by a patched copy of the build, so the growth
+  // is charged to what Forge was doing (importing, reading blocks, waiting on git, the call itself).
+  const phaseDir = variantBin("dist-phases", (dir) => {
+    const mark = (label: string): string =>
+      `process.stderr.write("MARK|${label}|" + [process.memoryUsage.rss(), process.memoryUsage().heapUsed, process.memoryUsage().heapTotal, process.memoryUsage().external].map((n) => (n / 1048576).toFixed(1)).join("|") + String.fromCharCode(10));`;
+    const patch = (
+      file: string,
+      edits: readonly (readonly [string, string])[],
+    ) => {
+      const path = join(dir, file);
+      let source = readFileSync(path, "utf8");
+      for (const [from, to] of edits) {
+        if (!source.includes(from)) continue;
+        source = source.replace(from, () => to);
+      }
+      writeFileSync(path, source);
+    };
+    patch("bin/forge.js", [
+      [
+        'const { runLocalCommand } = await import("../src/assembly/command.js");',
+        `${mark("bin: before importing the command graph")} const { runLocalCommand } = await import("../src/assembly/command.js"); ${mark("command graph imported (every static import loaded)")}`,
+      ],
+      [
+        "process.exitCode = await runLocalCommand(argv);",
+        `process.exitCode = await runLocalCommand(argv); ${mark("command finished")}`,
+      ],
+    ]);
+    patch("src/assembly/index.js", [
+      [
+        'found = captureBlock(resolveConfiguredBlock(root, source), blockCapture, undefined, "builtin" in source);',
+        `${mark("block capture starts")} found = captureBlock(resolveConfiguredBlock(root, source), blockCapture, undefined, "builtin" in source); ${mark("block capture ends")}`,
+      ],
+      [
+        "async invoke(request) {",
+        `async invoke(request) { ${mark("invoke starts")}`,
+      ],
+      [
+        "derived.push(...(await pending));",
+        `derived.push(...(await pending)); ${mark("git answer received")}`,
+      ],
+      [
+        "const result = await direct.invoke(call, request);",
+        `${mark("call dispatch starts")} const result = await direct.invoke(call, request); ${mark("call dispatch ends")}`,
+      ],
+    ]);
+  });
+  const phased = spawnSync(process.execPath, [phaseDir, "issue", "show", id], {
+    cwd: project,
+    env,
+    encoding: "utf8",
+    timeout: 60_000,
+    windowsHide: true,
+  });
+  const marks = phased.stderr
+    .split(String.fromCharCode(10))
+    .filter((line) => line.startsWith("MARK|"))
+    .map((line) => line.split("|").slice(1));
+  if (phased.status === 0 && marks.length > 0)
+    lines.push(
+      "Memory by phase of one `issue show` (MB; a copy of the build writes a mark at each step):",
+      "",
+      "| Step | RSS | RSS change | Heap used | Heap total | External |",
+      "| ---- | --: | ---------: | --------: | ---------: | -------: |",
+      ...marks.map(
+        (mark, index) =>
+          `| ${mark[0]} | ${mark[1]} | ${index === 0 ? "" : (Number(mark[1]) - Number(marks[index - 1]![1])).toFixed(1)} | ${mark[2]} | ${mark[3]} | ${mark[4]} |`,
+      ),
+      "",
+    );
+  else lines.push(`Phase marks failed: ${phased.stderr.slice(0, 300)}`, "");
+
   // Starting one program through the process adapter: the first call pays module and native setup.
   const launchScript = join(folder, "launch.mjs");
   const adapter = pathToFileURL(
