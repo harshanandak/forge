@@ -162,6 +162,9 @@ jobs:
       - run: bun run build
       - name: CLI speed
         run: node tools/bench/cli-speed.ts --gate
+      - name: CLI footprint
+        if: always()
+        run: node tools/bench/footprint.ts
 
   verify:
     name: Verify (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})

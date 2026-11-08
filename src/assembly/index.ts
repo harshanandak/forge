@@ -197,6 +197,12 @@ export interface AssemblyOptions {
    */
   readonly project?: boolean;
   readonly providers?: ProviderOptions;
+  /**
+   * A host that runs one command and exits: the package's own blocks are read once and reused by
+   * later calls, where a long-lived host re-reads them on every call. Blocks from a project or a
+   * package are always re-read.
+   */
+  readonly oneShot?: boolean;
   /** The terminal a person types on; left out, the process's own stdin and stderr. */
   readonly terminal?: {
     readonly tty: () => { readonly stdin: boolean; readonly stderr: boolean };
@@ -386,6 +392,9 @@ export async function createAssembly(
     config: ReturnType<typeof createConfig>;
     configOperations: ReturnType<typeof createConfigOperations>;
   };
+  const sharedBuiltins = options.oneShot
+    ? new Map<string, CapturedBlock>()
+    : undefined;
   function callScope(derived: readonly DetectionObservation[] = []): CallScope {
     const warnings: Array<ResultEnvelope["warnings"][number]> = [];
     const ignoredConfig = new Map<
@@ -398,16 +407,21 @@ export async function createAssembly(
       const key = JSON.stringify(source);
       let found = captures.get(key);
       if (found === undefined) {
-        try {
-          // Only a builtin source reads the installed package's own block folder (resolveBlock).
-          found = captureBlock(
-            resolveConfiguredBlock(root, source),
-            blockCapture,
-            undefined,
-            "builtin" in source,
-          );
-        } catch (error) {
-          found = { failed: error };
+        const reusable = "builtin" in source ? sharedBuiltins : undefined;
+        found = reusable?.get(key);
+        if (found === undefined) {
+          try {
+            // Only a builtin source reads the installed package's own block folder (resolveBlock).
+            found = captureBlock(
+              resolveConfiguredBlock(root, source),
+              blockCapture,
+              undefined,
+              "builtin" in source,
+            );
+            reusable?.set(key, found);
+          } catch (error) {
+            found = { failed: error };
+          }
         }
         captures.set(key, found);
       }
@@ -2166,11 +2180,14 @@ function readConfirmation(op: string, ask?: string): Promise<boolean> {
 function localHarness(): string {
   return harnessIdentity(process.env);
 }
-export async function createLocalAssembly(): Promise<Assembly> {
+export async function createLocalAssembly(
+  options: { readonly oneShot?: boolean } = {},
+): Promise<Assembly> {
   const root = process.cwd();
   return createAssembly({
     root,
     deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
+    ...(options.oneShot === undefined ? {} : { oneShot: options.oneShot }),
   });
 }
 

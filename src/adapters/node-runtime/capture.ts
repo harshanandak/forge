@@ -11,13 +11,18 @@ import { resolve, relative, isAbsolute, sep } from "node:path";
 import type { FileCapturePort } from "../../core/catalog/index.ts";
 import { refuse } from "../../core/trust/index.ts";
 
+// One native call per path instead of one `lstat` per path component in JavaScript: a block read
+// resolves four paths per file and a command reads over a hundred files. Root and file paths both
+// come from here, so the containment comparisons below stay like with like.
+const realpath = realpathSync.native;
+
 /** Each read closes its descriptor before returning immutable captured bytes. */
 export function createNodeFileCapture(
   beforeOpen?: () => void,
 ): FileCapturePort {
   return {
     open(rootPath) {
-      const root = realpathSync(rootPath);
+      const root = realpath(rootPath);
       const rootIdentity = statSync(root, { bigint: true });
       if (!rootIdentity.isDirectory())
         refuse("INPUT_INVALID", "capture root must be a directory");
@@ -25,7 +30,7 @@ export function createNodeFileCapture(
         ownership: "borrowed",
         value: {
           read(name, maxBytes) {
-            const path = realpathSync(resolve(root, name));
+            const path = realpath(resolve(root, name));
             const rel = relative(root, path);
             if (
               isAbsolute(name) ||
@@ -50,12 +55,12 @@ export function createNodeFileCapture(
             try {
               const opened = fstatSync(descriptor, { bigint: true });
               // Validate the opened identity before reading: textual containment alone races renames.
-              const openedPath = realpathSync(path);
+              const openedPath = realpath(path);
               const openedRelative = relative(root, openedPath);
               const currentRoot = statSync(root, { bigint: true });
               const currentFile = statSync(openedPath, { bigint: true });
               if (
-                realpathSync(root) !== root ||
+                realpath(root) !== root ||
                 currentRoot.dev !== rootIdentity.dev ||
                 currentRoot.ino !== rootIdentity.ino ||
                 openedRelative === ".." ||
