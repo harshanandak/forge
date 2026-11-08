@@ -361,3 +361,49 @@ test("the repository gitignore keeps the manifest tracked and local .forge files
   expect(ignored(".forge/scratch.json")).toBe(0);
   expect(ignored(".forge/state.sqlite")).toBe(0);
 }, 30_000);
+
+test("minting a store id never overwrites an identity another writer committed after the first read", async () => {
+  const f = fixture();
+  try {
+    const a = await f.checkout("a", manifest());
+    const owner = (await a.state.open(true))!;
+    const real = owner.get.bind(owner);
+    const rival = { id: "b0b0b0b0b0b0b0b0", projectId: OTHER_ID };
+    let reads = 0;
+    let committing = false;
+    // The writer's first three identity reads (store id, recorded project id, mint) see an empty
+    // store; the rival commits its full identity just before the mint read returns. Later reads are real.
+    const spy = spyOn(owner, "get").mockImplementation((...args) => {
+      if (committing || args[0] !== IDENTITY || args[1] !== "identity")
+        return real(...args);
+      reads++;
+      if (reads === 3) {
+        committing = true;
+        try {
+          owner.put(IDENTITY, "identity", rival, actor, { expectRevision: 0 });
+        } finally {
+          committing = false;
+        }
+      }
+      return reads <= 3 ? undefined : real(...args);
+    });
+    try {
+      const failure = await f.projectOf(a).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toMatchObject({
+        error: { code: "PROJECT_ID_CONFLICT" },
+      });
+      const message = (failure as { error: { message: string } }).error.message;
+      expect(message).toContain(MANIFEST_ID);
+      expect(message).toContain(OTHER_ID);
+    } finally {
+      spy.mockRestore();
+    }
+    // The rival's store id and project id are untouched.
+    expect((await f.recorded(a.state))?.value).toEqual(rival);
+  } finally {
+    await f.close();
+  }
+}, 30_000);

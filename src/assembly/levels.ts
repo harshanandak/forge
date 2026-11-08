@@ -98,12 +98,15 @@ export function projectName(root: string): string {
       .slice(0, 64) || "project"
   );
 }
-function identityOf(owner: StateOwner | undefined): string | undefined {
-  const value = owner?.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.value as
-    { id?: unknown } | undefined;
+/** The store id an identity record carries, if any. */
+function storeIdOf(record: unknown): string | undefined {
+  const value = record as { id?: unknown } | undefined;
   return typeof value?.id === "string" && PROJECT_ID.test(value.id)
     ? value.id
     : undefined;
+}
+function identityOf(owner: StateOwner | undefined): string | undefined {
+  return storeIdOf(owner?.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.value);
 }
 const MAX_RECORD_ATTEMPTS = 8;
 /** The manifest id an identity record accepted, recorded beside its own id. */
@@ -229,7 +232,9 @@ export function openLevels(options: {
 
   function mint(owner: StateOwner): string {
     for (;;) {
-      const existing = identityOf(owner);
+      // One snapshot per attempt: the id check and the write's revision come from the same read.
+      const current = owner.get(IDENTITY_NAMESPACE, IDENTITY_KEY);
+      const existing = storeIdOf(current?.value);
       if (existing) return existing;
       try {
         owner.put(
@@ -237,10 +242,7 @@ export function openLevels(options: {
           IDENTITY_KEY,
           { id: randomBytes(8).toString("hex") },
           actor,
-          {
-            expectRevision:
-              owner.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.revision ?? 0,
-          },
+          { expectRevision: current?.revision ?? 0 },
         );
       } catch (error) {
         if (!conflict(error)) throw error;
