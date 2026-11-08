@@ -18,14 +18,16 @@ export function asyncCounterfactuals(platform: NodeJS.Platform) {
       mode: "strict-refusal",
       evidence: "strict containment must refuse before activation",
     },
-    // Windows keeps the Job Object helper; POSIX ends the command's process group directly.
+    // Windows ends the job after the command exits; POSIX ends the command's process group directly.
     platform === "win32"
       ? {
-          file: "adapters/process/run.js",
-          from: "stoppedPids = await container.stop();",
-          to: "stoppedPids = [];",
+          // The post-exit stop still ends the tree but reports nothing it ended, so the report must
+          // fail to name the stopped grandchild.
+          file: "adapters/process/windows-launch-stdio.js",
+          from: "return { stopped: await job.stop(), skipped: false };",
+          to: "return { stopped: (await job.stop(), []), skipped: false };",
           mode: "default-cleanup",
-          evidence: "root exit must complete after tree cleanup",
+          evidence: "containment report must include the stopped grandchild",
         }
       : {
           file: "adapters/process/process-tree.js",

@@ -2,6 +2,7 @@ import { validateSupervision, type SupervisionOptions } from "./supervision.ts";
 import type { ContainmentCapability } from "../../ports/process.ts";
 import type { Platform } from "./platform.ts";
 import { ProcessSpawnError } from "./errors.ts";
+import type { WindowsJob } from "./windows-job.ts";
 
 export interface ContainmentOptions {
   readonly supervision?: SupervisionOptions;
@@ -10,7 +11,8 @@ export interface ContainmentOptions {
 }
 export interface ContainmentScope {
   readonly backend: "windows-job";
-  attach(pid: number): void;
+  /** The per-command job the launcher starts the command in. */
+  readonly job: WindowsJob;
   stop(): Promise<readonly number[]>;
   close(): void;
 }
@@ -47,7 +49,7 @@ export async function openContainment(
   const job = openWindowsJob(timing);
   return {
     backend: "windows-job",
-    attach: (pid) => job.attach(pid),
+    job,
     stop: () => job.stop(),
     close: () => job.close(),
   };

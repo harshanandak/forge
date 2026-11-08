@@ -7,7 +7,7 @@ export interface SupervisionOptions {
   readonly maxConcurrent: number;
 }
 
-/** Safety ceilings bound temporary helpers and cleanup even for malformed host config. */
+/** Safety ceilings bound concurrent commands and cleanup even for malformed host config. */
 export const MAX_SUPERVISORS: number = 1;
 
 export function validateSupervision(

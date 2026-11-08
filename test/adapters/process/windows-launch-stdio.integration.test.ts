@@ -98,6 +98,8 @@ function expectForeign(result: ForeignReport): void {
   // stdin intruder received none of the command's input.
   expect(result.launched).toEqual(result.current);
   expect(result.intruderBytes).toBe(0);
+  // Wrong bytes are refused on sight: 16 or more of them, and a short prefix that already differs.
+  expect(result.closedBeforeLaunch).toEqual({ stdout: true, stderr: true });
 }
 
 function expectQuiet(result: Scenarios): void {

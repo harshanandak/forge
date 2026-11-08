@@ -118,6 +118,41 @@ export function corpus(): readonly Case[] {
   ];
 }
 
+/** What libuv copies from its parent into a command's environment when the caller left it out. */
+const COPIED_BY_LIBUV = new Set([
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LOGONSERVER",
+  "PATH",
+  "SYSTEMDRIVE",
+  "TEMP",
+  "USERDOMAIN",
+  "USERNAME",
+  "USERPROFILE",
+  "WINDIR",
+]);
+
+/**
+ * Node's own spawn gives a command those host variables when the caller omits them; the launcher
+ * deliberately does not (only SystemRoot, as the old helper did). So the reference echo is compared
+ * without them: the caller's own variables, SystemRoot and anything the command adds stay.
+ */
+export function withoutHostCopies(
+  echo: Echo,
+  callerEnv: Readonly<Record<string, string>>,
+): Echo {
+  const passed = new Set(
+    Object.keys(callerEnv).map((name) => name.toUpperCase()),
+  );
+  return {
+    ...echo,
+    env: echo.env.filter(([name]) => {
+      const folded = name.toUpperCase();
+      return !(COPIED_BY_LIBUV.has(folded) && !passed.has(folded));
+    }),
+  };
+}
+
 export function planFor(
   testCase: Case,
   index: number,
