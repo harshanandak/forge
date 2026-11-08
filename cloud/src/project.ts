@@ -197,14 +197,9 @@ export class Project {
     if (prior.outcome !== "ok") throw new ForgeFailure(recorded as ForgeError);
     const first = recorded as LeaseRecord;
     const current = this.#owner.lease(NAMESPACE, subject);
-    if (route === "release") {
-      // A release took effect when that generation is still the current one and released.
-      if (
-        current?.generation === first.generation &&
-        current.releasedAt !== undefined
-      )
-        return first;
-    } else if (
+    // A recorded release returns the same released result at any generation: it grants nothing.
+    if (route === "release") return first;
+    if (
       current !== undefined &&
       decideLease(current, {
         mode: "held",

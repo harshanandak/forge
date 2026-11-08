@@ -204,7 +204,7 @@ if (phase === "main") {
   );
 
   await check(
-    "a cached renew or release is refused once the next generation exists",
+    "a replayed renew is refused once the next generation exists; a replayed release returns its released result",
     async () => {
       const project = `${run}-superseded`;
       const subject = "issue:work-7";
@@ -224,13 +224,16 @@ if (phase === "main") {
         generation: first.generation,
         requestId: "a-release",
       };
-      granted(await send(project, "POST", "release", release));
+      const released = granted(await send(project, "POST", "release", release));
       const next = granted(
         await claim(project, subject, holderOf("b"), "b-claim"),
       );
       assert.equal(next.generation, first.generation + 1);
       refused(await send(project, "POST", "renew", renewal), "LEASE_STALE");
-      refused(await send(project, "POST", "release", release), "LEASE_STALE");
+      assert.deepEqual(
+        granted(await send(project, "POST", "release", release)),
+        released,
+      );
       assert.deepEqual(granted(await holderLookup(project, subject)), next);
     },
   );
@@ -317,30 +320,32 @@ if (phase === "main") {
       const subject = "issue:work-11";
       const holder = holderOf("current");
       const long = granted(await claim(project, subject, holder, "long-grant"));
-      const shortRenewal = {
+      const renewal = (ttlMs: number, requestId: string) => ({
         subject,
         holder,
         generation: long.generation,
-        ttlMs: 1_000,
-        requestId: "short-renew",
-      };
-      const short = granted(await send(project, "POST", "renew", shortRenewal));
-      assert.notEqual(short.expiresAt, long.expiresAt);
-      assert.deepEqual(
-        granted(await claim(project, subject, holder, "long-grant")),
-        short,
+        ttlMs,
+        requestId,
+      });
+      const longer = granted(
+        await send(project, "POST", "renew", renewal(900_000, "renew-a")),
       );
-      assert.deepEqual(
-        granted(await send(project, "POST", "renew", shortRenewal)),
-        short,
+      const short = granted(
+        await send(project, "POST", "renew", renewal(1_000, "renew-b")),
       );
+      assert.notEqual(short.expiresAt, longer.expiresAt);
+      for (const replay of [
+        send(project, "POST", "renew", renewal(900_000, "renew-a")),
+        claim(project, subject, holder, "long-grant"),
+      ])
+        assert.deepEqual(granted(await replay), short);
       await sleep(1_300);
       refused(
-        await claim(project, subject, holder, "long-grant"),
+        await send(project, "POST", "renew", renewal(900_000, "renew-a")),
         "LEASE_STALE",
       );
       refused(
-        await send(project, "POST", "renew", shortRenewal),
+        await claim(project, subject, holder, "long-grant"),
         "LEASE_STALE",
       );
     },
@@ -385,6 +390,68 @@ if (phase === "main") {
         "the retry did not take the lease",
       );
       granted(await claim(project, "issue:work-12", rival, "rival-2"));
+    },
+  );
+
+  await check(
+    "a refused renew or release keeps its id: the retry stays refused and another route or input conflicts",
+    async () => {
+      const project = `${run}-refused-write`;
+      const subject = "issue:work-14";
+      const a = holderOf("a");
+      const b = holderOf("b");
+      const held = granted(await claim(project, subject, a, "a-claim"));
+      const renew = {
+        subject,
+        holder: b,
+        generation: held.generation,
+        ttlMs: 60_000,
+        requestId: "b-renew",
+      };
+      const release = {
+        subject,
+        holder: b,
+        generation: held.generation,
+        requestId: "b-release",
+      };
+      refused(await send(project, "POST", "renew", renew), "LEASE_NOT_HELD");
+      refused(
+        await send(project, "POST", "release", release),
+        "LEASE_NOT_HELD",
+      );
+      granted(
+        await send(project, "POST", "release", {
+          subject,
+          holder: a,
+          generation: held.generation,
+          requestId: "a-release",
+        }),
+      );
+      granted(await claim(project, subject, b, "b-claim"));
+      // Run again, each would now be LEASE_STALE; the recorded refusal comes back instead.
+      refused(await send(project, "POST", "renew", renew), "LEASE_NOT_HELD");
+      refused(
+        await send(project, "POST", "release", release),
+        "LEASE_NOT_HELD",
+      );
+      refused(
+        await send(project, "POST", "release", {
+          ...release,
+          requestId: "b-renew",
+        }),
+        "INPUT_CONFLICT",
+      );
+      refused(
+        await send(project, "POST", "renew", { ...renew, ttlMs: 1_000 }),
+        "INPUT_CONFLICT",
+      );
+      refused(
+        await send(project, "POST", "release", {
+          ...release,
+          generation: held.generation + 1,
+        }),
+        "INPUT_CONFLICT",
+      );
     },
   );
 
