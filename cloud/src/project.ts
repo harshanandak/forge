@@ -149,26 +149,13 @@ export class Project {
       generation,
       ttlMs,
     ]);
-    const prior = this.#db.get(
-      `SELECT fingerprint, result FROM ${REQUESTS} WHERE request_id=?`,
-      [requestId],
-    );
-    if (prior !== undefined) {
-      if (prior.fingerprint !== fingerprint)
-        throw new ForgeFailure({
-          code: "INPUT_CONFLICT",
-          message: "Request ID belongs to a different input",
-          retry: "reconcile_first",
-        });
-      return JSON.parse(String(prior.result)) as LeaseRecord;
-    }
     const fence = { subject, holder, generation };
     const lease =
       route === "renew"
         ? this.#owner.renew(NAMESPACE, fence, ttlMs)
         : this.#owner.release(NAMESPACE, fence);
     this.#db.run(
-      `INSERT INTO ${REQUESTS} (request_id, fingerprint, result) VALUES (?, ?, ?)`,
+      `INSERT OR REPLACE INTO ${REQUESTS} (request_id, fingerprint, result) VALUES (?, ?, ?)`,
       [requestId, fingerprint, JSON.stringify(lease)],
     );
     return lease;
