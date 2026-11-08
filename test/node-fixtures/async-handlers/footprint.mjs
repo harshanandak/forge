@@ -238,12 +238,17 @@ try {
   );
   if (process.platform === "win32") {
     // Windows starts the command natively, so Node's spawn is never involved and counting its calls
-    // proves nothing. The process table does: the only child of the host is the command itself.
-    assert.deepEqual(before.children, [], "a fresh host must have no children");
+    // proves nothing. The process table does. A fresh host can already have a child that Windows or
+    // the test runner put there, so measure what the run adds: the command must be the only new child.
+    const preexisting = new Set(before.children.map((child) => child.pid));
+    const describe = (children) =>
+      children.map((child) => `${child.pid}:${child.image}`).join(", ");
     assert.deepEqual(
-      during.children,
+      during.children
+        .filter((child) => !preexisting.has(child.pid))
+        .map((child) => child.pid),
       targetPids.toSorted((a, b) => a - b),
-      "the command must be the host's only child process",
+      `the command must be the only child the run adds (before: [${describe(before.children)}], during: [${describe(during.children)}])`,
     );
   } else {
     // POSIX starts the command through Node's spawn, so that one call is the command.

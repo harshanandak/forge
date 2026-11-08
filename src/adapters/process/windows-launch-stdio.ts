@@ -332,14 +332,15 @@ function attach(
       clearTimeout(timer);
       for (const pipe of [stdout, stderr, stdin]) pipe?.abandon();
       for (const socket of sockets) socket.destroy();
-      closeProcess(launched);
-      // Settling a promise that already settled does nothing; one still open must not hang.
+      // Settle first: releasing the process handle can throw, and that must not leave `exited` or
+      // `drained` pending. Settling a promise that already settled does nothing.
       const closed = new ProcessSpawnError(
         "SPAWN_FAILED",
         "The launch was closed before the command finished.",
       );
       rejectExited(closed);
       rejectDrained(closed);
+      closeProcess(launched);
     },
   };
 }
