@@ -178,7 +178,7 @@ test("close wording is kept as its own proposal with a similarTo hint, at the 0.
   expect(close.id).not.toBe(base.id);
   expect(close.similarTo).toEqual([base.id]);
   expect(close.notice).toContain(
-    `similar to ${base.id}; withdraw this one if it says the same thing`,
+    "similar to the notes in similarTo; withdraw this one if it says the same thing",
   );
   // 8 of 10 words shared: 0.8, and 8 of 9 against the note above: no hint.
   const minusTwo = TEN.split(" ").slice(0, 8).join(" ");
@@ -214,7 +214,7 @@ test("the same words in another order are a different rule and reach the owner",
   expect(opposite.note.status).toBe("proposed");
   expect(opposite.similarTo).toEqual([first.id]);
   expect(opposite.notice).toContain(
-    `similar to ${first.id}; withdraw this one if it says the same thing`,
+    "similar to the notes in similarTo; withdraw this one if it says the same thing",
   );
   expect(opposite.notice!.length).toBeLessThanOrEqual(600);
   const served = await rules();
@@ -313,6 +313,66 @@ test("a scope-only edit of a pending rule never makes a second proposal of anoth
   const kept = await call("memory.show", { id: other.id });
   expect(kept.note.status).toBe("proposed");
   expect((kept.note as { scope?: string }).scope).toBe("two");
+});
+
+test("every notice stays inside the add output limit in the worst case", async () => {
+  // The longest custom owner tag, project ids with 9-digit numbers, and two similar notes.
+  const tag = "a".repeat(40);
+  const config = { approval: { ownerTags: [tag] } };
+  const entry = loadEntry("memory");
+  const device = memoryState();
+  const store = memoryState();
+  store.put("meta/note-counter", { last: 99_999_999 }, { expectRevision: 0 });
+  const services = {
+    state: device,
+    levels: {
+      ...device,
+      caller: "agent" as const,
+      inProject: true,
+      project: () =>
+        Promise.resolve({
+          identity: { id: "0123456789abcdef", name: "app" },
+          state: store,
+        }),
+      peer: (ref: string) =>
+        Promise.resolve({ status: "not_found" as const, ref }),
+    },
+  };
+  const call = (input: object) =>
+    entry["memory.add"]!({ input, config, services }) as Promise<Reply>;
+  const valid = blockSchema("memory", "add.output.json");
+  const add = (text: string) => call({ level: "project", text, tags: [tag] });
+  await add(TEN);
+  await add(`${TEN}.`);
+  await add(`${TEN}!`);
+  const added = await add(`${TEN}?`);
+  expect(added.similarTo).toHaveLength(2);
+  expect(added.id).toBe("project/0123456789abcdef/note-100000003");
+  expect(added.notice!.length).toBeLessThanOrEqual(600);
+  expect(valid(JSON.parse(JSON.stringify(added)))).toEqual([]);
+
+  // Editing a pending note to similar wording, and putting a withdrawn note back, are bounded too.
+  const other = await add("An unrelated rule about releases.");
+  const edited = await call({ id: other.id, text: `${TEN}#` });
+  expect(edited.similarTo).toHaveLength(2);
+  expect(valid(JSON.parse(JSON.stringify(edited)))).toEqual([]);
+  const closed = await add("Another unrelated rule about naming.");
+  await entry["memory.withdraw"]!({
+    input: {
+      items: [{ id: closed.id, revision: closed.note.revision }],
+      reason: "test",
+    },
+    services,
+  });
+  const again = await call({ id: closed.id, text: `${TEN}@` });
+  expect(again.notice).toContain("proposed again");
+  expect(again.similarTo).toHaveLength(2);
+  expect(valid(JSON.parse(JSON.stringify(again)))).toEqual([]);
+
+  // An exact repeat names one id and nothing else.
+  const repeat = await add(TEN);
+  expect(repeat.status).toBe("exists");
+  expect(valid(JSON.parse(JSON.stringify(repeat)))).toEqual([]);
 });
 
 test("an edit to close wording is kept and names the close note", async () => {

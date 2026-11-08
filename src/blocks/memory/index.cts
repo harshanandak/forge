@@ -311,13 +311,14 @@ function twinNotice(twin: { id: string; state: "active" | "proposed" }) {
     ? `This rule is already active as ${twin.id}; nothing was added.`
     : `This rule is already proposed as ${twin.id}; nothing was added. It waits for the owner there.`;
 }
-/** The hint for a proposal that was kept: close notes, to withdraw this one if it says the same. */
+/** The hint for a proposal that was kept. It names no ids, so a notice stays bounded; similarTo holds them. */
 function similarity(similar: readonly string[]) {
   return similar.length === 0
     ? {}
     : {
         similarTo: [...similar],
-        notice: `It is similar to ${similar.join(", ")}; withdraw this one if it says the same thing.`,
+        notice:
+          "It is similar to the notes in similarTo; withdraw this one if it says the same thing.",
       };
 }
 function approved(
