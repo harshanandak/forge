@@ -1,0 +1,86 @@
+name: Cloud claims
+
+# The claim server under cloud/ runs its conformance checks against a local `wrangler dev`.
+# It is a separate workflow so every other pull request skips it; it also runs when the state
+# owner it wraps changes.
+on:
+  pull_request:
+    paths:
+      - "cloud/**"
+      - "src/core/state/**"
+      - "src/contract/lease.ts"
+      - "src/contract/failure.ts"
+      - "src/ports/store.ts"
+      - "schemas/**"
+      - ".github/workflows/cloud.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  conformance:
+    name: Cloud conformance (wrangler dev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUD_BASE: http://127.0.0.1:8787
+      CONFORMANCE_STATE: ${{ runner.temp }}/conformance-state.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.4"
+      # The claim server imports Forge's state owner, which needs the generated validators.
+      - run: bun install --frozen-lockfile
+      - run: bun run gen
+      - run: bun install --frozen-lockfile
+        working-directory: cloud
+      - name: Conformance checks
+        working-directory: cloud
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          persist="$RUNNER_TEMP/wrangler-state"
+          start() {
+            bun x wrangler dev --local --persist-to "$persist" > "$RUNNER_TEMP/wrangler-$1.log" 2>&1 &
+            echo $! > "$RUNNER_TEMP/wrangler.pid"
+            for _ in $(seq 1 60); do
+              if curl -s -o /dev/null "$CLOUD_BASE/p/ready/holder?subject=ready"; then return 0; fi
+              sleep 1
+            done
+            echo "::error::wrangler dev did not answer within 60 seconds"
+            cat "$RUNNER_TEMP/wrangler-$1.log"
+            return 1
+          }
+          stop() {
+            pkill -P "$(cat "$RUNNER_TEMP/wrangler.pid")" || true
+            kill "$(cat "$RUNNER_TEMP/wrangler.pid")" || true
+            sleep 2
+            pkill -f workerd || true
+            for _ in $(seq 1 20); do
+              if ! curl -s -o /dev/null "$CLOUD_BASE/"; then return 0; fi
+              sleep 0.5
+            done
+            echo "::error::wrangler dev did not stop"
+            return 1
+          }
+          trap 'pkill -f workerd || true' EXIT
+          start first
+          bun conformance/conformance.ts main
+          stop
+          start second
+          bun conformance/conformance.ts restart
+      - name: wrangler log
+        if: failure()
+        run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log || true
