@@ -82,6 +82,7 @@ import {
 import { firstPartyBlocks } from "./first-party.ts";
 import {
   configCandidates,
+  configOperationNames,
   coreDocs,
   validateConfigValue,
 } from "./declarations.ts";
@@ -1033,12 +1034,10 @@ export async function createAssembly(
       if (parseOperationName(op) === undefined) return undefined;
       const current = snapshot(callScope());
       if (
-        [
-          ...configCandidates,
-          grantCandidate,
-          ...discoveryOperations,
-          ...current.candidates,
-        ].some((entry) => entry.op === op) ||
+        configOperationNames.has(op) ||
+        [grantCandidate, ...discoveryOperations, ...current.candidates].some(
+          (entry) => entry.op === op,
+        ) ||
         current.problems.length === 0
       )
         return undefined;
@@ -1135,16 +1134,17 @@ export async function createAssembly(
           // An unreadable config has no healthy project candidates to retain.
         }
       }
-      return [...configCandidates, grantCandidate, ...candidates];
+      return [...configCandidates(), grantCandidate, ...candidates];
     },
     async invoke(request) {
       const derived: DetectionObservation[] = [];
       const deviceMemory = deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived);
       try {
-        const preview = configCandidates.find(
-          (entry) => entry.op === request.op && entry.op === "config.show",
-        );
+        const preview =
+          request.op === "config.show"
+            ? configCandidates().find((entry) => entry.op === request.op)
+            : undefined;
         if (
           preview &&
           !validateConfigValue(preview.declaration, "input", request.input)
@@ -1187,9 +1187,11 @@ export async function createAssembly(
               });
             },
           );
-        const core = configCandidates
-          .concat(grantCandidate, discoveryOperations)
-          .some((entry) => entry.op === request.op);
+        const core =
+          configOperationNames.has(request.op) ||
+          [grantCandidate, ...discoveryOperations].some(
+            (entry) => entry.op === request.op,
+          );
         if (core) derived.push(...(await prefix()));
         let workEnabled = false;
         const loaded = deviceMemory
@@ -1261,7 +1263,7 @@ export async function createAssembly(
         const checked = validateInvocationRequest(request);
         if (!checked.ok) refuse("INPUT_INVALID", "Invalid invocation");
         const entry = [
-          ...configCandidates,
+          ...(configOperationNames.has(request.op) ? configCandidates() : []),
           grantCandidate,
           ...discoveryOperations,
         ].find((candidate) => candidate.op === request.op);
