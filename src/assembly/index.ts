@@ -1216,8 +1216,20 @@ export async function createAssembly(
           (workEnabled ||
             !blockCatalog?.list().includes(request.op) ||
             blockCatalog.resolve(request.op).operation.instance === "work")
-        )
-          derived.push(...(await prefix()));
+        ) {
+          // git answers in its own process. Read the enabled blocks while it runs, which the
+          // call does next anyway (a failed read is cached and reported there), not after it.
+          const pending = prefix();
+          for (const instance of loaded.instances) {
+            if (!instance.enabled) continue;
+            try {
+              call.captured(instance.source);
+            } catch {
+              // cached with its error; the call that needs this block reports it
+            }
+          }
+          derived.push(...(await pending));
+        }
       } catch (error) {
         return withCallWarnings(call, failure(request.op, error));
       }
