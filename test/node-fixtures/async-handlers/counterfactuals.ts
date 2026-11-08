@@ -34,8 +34,26 @@ export function asyncCounterfactuals(platform: NodeJS.Platform) {
           from: "(await endProcessGroup(pid, supervision, undefined, exited))",
           to: "(child.kill('SIGKILL'), true)",
           mode: "default-cleanup",
-          evidence: "invocation must stop its entire process tree",
+          // Only the exited root is signaled, so the grandchild keeps stdout open and the pipes
+          // assertion in the rootexit journey fails before the liveness check does.
+          evidence:
+            "root exit must end the whole command tree so no descendant holds the output pipes",
         },
+    ...(platform === "win32"
+      ? [
+          {
+            // The post-exit stop is skipped but the report still names the grandchild, so only the
+            // output pipes can tell: the grandchild keeps stdout open until kill-on-close, after
+            // the drain timeout. This proves the job was stopped, not merely closed later.
+            file: "adapters/process/windows-launch-stdio.js",
+            from: "return { stopped: await job.stop(), skipped: false };",
+            to: "return { stopped: job.members(), skipped: false };",
+            mode: "post-exit-stop",
+            evidence:
+              "root exit must end the whole command tree so no descendant holds the output pipes",
+          },
+        ]
+      : []),
     {
       file: "adapters/node-runtime/isolation.js",
       from: "Promise.resolve(handler(args))",

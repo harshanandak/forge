@@ -25,6 +25,7 @@ const GENERIC_WRITE = 0x40000000;
 const FILE_SHARE_READ_WRITE = 0x00000003;
 const OPEN_EXISTING = 3;
 const FILE_ATTRIBUTE_NORMAL = 0x00000080;
+const HANDLE_FLAG_INHERIT = 0x00000001;
 const ERROR_INSUFFICIENT_BUFFER = 122;
 const WAIT_OBJECT_0 = 0;
 const WAIT_TIMEOUT = 258;
@@ -162,6 +163,11 @@ interface LaunchApi {
     processId: Buffer,
   ) => number;
   readonly getSystemDirectory: (buffer: Buffer, size: number) => number;
+  readonly setHandleInformation: (
+    handle: bigint,
+    mask: number,
+    flags: number,
+  ) => number;
   readonly closeHandle: (handle: bigint) => number;
   readonly lastError: () => number;
 }
@@ -287,6 +293,13 @@ function loadLaunchApi(): LaunchApi {
     getSystemDirectory: asNativeFunction(
       kernel32.func("__stdcall", "GetSystemDirectoryW", "uint32_t", [
         koffi.out(koffi.pointer("uint8_t")),
+        "uint32_t",
+      ]),
+    ),
+    setHandleInformation: asNativeFunction(
+      kernel32.func("__stdcall", "SetHandleInformation", "int", [
+        "void *",
+        "uint32_t",
         "uint32_t",
       ]),
     ),
@@ -458,7 +471,11 @@ function requireOwnPipeServer(api: LaunchApi, handle: bigint): void {
   );
 }
 
-/** Opens the NUL device or a pipe client end as an inheritable handle for a standard stream. */
+/**
+ * Opens the NUL device or a pipe client end for a standard stream. The handle is not inheritable
+ * yet: `launchInJob` makes it inheritable only just before CreateProcessW, so nothing else started
+ * in this process during the rest of the launch can inherit it.
+ */
 function openStdio(
   api: LaunchApi,
   name: string,
@@ -474,7 +491,7 @@ function openStdio(
     {
       nLength: api.securitySize,
       lpSecurityDescriptor: null,
-      bInheritHandle: 1,
+      bInheritHandle: 0,
     },
     OPEN_EXISTING,
     FILE_ATTRIBUTE_NORMAL,
@@ -656,6 +673,27 @@ export function launchInJob(
           ),
         );
     }
+    // A handle list only accepts inheritable handles, so they become inheritable here. What is left
+    // open is the span of the next few synchronous native calls, down from the whole launch. Another
+    // thread starting a process without a handle list in that span could still inherit them; that
+    // needs a second thread spawning at that exact moment. One command starts at a time
+    // (MAX_SUPERVISORS is 1, pinned by test/adapters/process/supervisor-limit.test.ts), and the
+    // handles are closed again below.
+    for (const handle of stdioHandles)
+      if (
+        api.setHandleInformation(
+          handle,
+          HANDLE_FLAG_INHERIT,
+          HANDLE_FLAG_INHERIT,
+        ) === 0
+      )
+        throw new ProcessSpawnError(
+          "SPAWN_FAILED",
+          "Could not make a standard handle inheritable.",
+          new Error(
+            `SetHandleInformation failed with Windows error ${api.lastError()}.`,
+          ),
+        );
     const hide = options.windowsHide !== false;
     const [stdin, stdout, stderr] = stdioHandles;
     const startup = {

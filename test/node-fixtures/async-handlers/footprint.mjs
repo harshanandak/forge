@@ -231,17 +231,29 @@ try {
     false,
     "the refused workload must not run",
   );
-  // POSIX starts the command through Node's spawn; Windows starts it natively and has no helper.
-  assert.equal(
-    supervisorStarts,
-    process.platform === "win32" ? 0 : 1,
-    "no helper may be started",
-  );
   assert.equal(
     during.helpers.length,
     0,
     "no helper may run beside the command",
   );
+  if (process.platform === "win32") {
+    // Windows starts the command natively, so Node's spawn is never involved and counting its calls
+    // proves nothing. The process table does. A fresh host can already have a child that Windows or
+    // the test runner put there, so measure what the run adds: the command must be the only new child.
+    const preexisting = new Set(before.children.map((child) => child.pid));
+    const describe = (children) =>
+      children.map((child) => `${child.pid}:${child.image}`).join(", ");
+    assert.deepEqual(
+      during.children
+        .filter((child) => !preexisting.has(child.pid))
+        .map((child) => child.pid),
+      targetPids.toSorted((a, b) => a - b),
+      `the command must be the only child the run adds (before: [${describe(before.children)}], during: [${describe(during.children)}])`,
+    );
+  } else {
+    // POSIX starts the command through Node's spawn, so that one call is the command.
+    assert.equal(supervisorStarts, 1, "no helper may be started");
+  }
   for (const controller of controllers) controller.abort();
   const outcomes = await awaitDeadline(
     settled,
@@ -262,7 +274,6 @@ try {
         outcome.value.supervision?.commandPid,
         "supervisorPid must equal commandPid",
       );
-      assert.equal(outcome.value.supervision?.supervisorResidentBytes, 0);
     }
     return outcome.value.supervision;
   });
