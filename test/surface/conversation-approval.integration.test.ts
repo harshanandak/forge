@@ -418,13 +418,8 @@ for (const route of ["cli", "mcp"] as const) {
       expect(
         done(await h.call("memory.show", { id: "device/note-3" })),
       ).toMatchObject({
-        note: {
-          approval: {
-            by: "owner",
-            quote: { text: owner.quote },
-            at: expect.any(String) as unknown,
-          },
-        },
+        // A restored owner-tagged note waits for the owner's accept, whatever the bundle says.
+        note: { status: "proposed" },
       });
       expect(
         await h.call("memory.restore", {

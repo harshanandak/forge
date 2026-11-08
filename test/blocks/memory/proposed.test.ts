@@ -567,7 +567,7 @@ test("an owner approval granted for one proposal cannot activate a replacement e
   expect(served.text.text).not.toMatch(/approved wording|different wording/);
 });
 
-test("export and restore carry proposed and rejected state and never accept it", async () => {
+test("export and restore keep proposed and rejected state and never accept a new owner-tagged note", async () => {
   const from = setup();
   const proposed = await propose(from.call, "proposed stays proposed");
   const rejected = await propose(from.call, "rejected stays rejected");
@@ -577,6 +577,16 @@ test("export and restore carry proposed and rejected state and never accept it",
   const history = await activeRule(from.call, "history text");
   await from.call("memory.add", { id: history.id, text: "rejected edit text" });
   await decide(from.call, "memory.reject", [history.id]);
+  const plain = await from.call("memory.add", {
+    level: "device",
+    text: "plain note text",
+    tags: ["fact"],
+  });
+  await from.call("memory.add", {
+    id: plain.id,
+    text: "plain note text",
+    tags: ["fact", "rule"],
+  });
 
   // A real export crosses the wire as JSON; the block's own objects are not plain objects here.
   const bundle = JSON.parse(
@@ -590,19 +600,24 @@ test("export and restore carry proposed and rejected state and never accept it",
   expect(blockSchema("memory", "restore.input.json")(restoreInput)).toEqual([]);
 
   const into = setup();
-  expect(await into.call("memory.restore", restoreInput)).toMatchObject({
-    added: 4,
+  expect(
+    await into.call<{ added: number; conflicts: string[]; notice?: string }>(
+      "memory.restore",
+      restoreInput,
+    ),
+  ).toMatchObject({
+    added: 5,
     conflicts: [],
+    notice:
+      "3 owner-tagged notes restored as proposals; accept them with memory.accept.",
   });
+  // A bundle is never proof of acceptance: every owner-tagged note comes back waiting or rejected.
   const served = await into.rules();
-  expect(served.text.text).toContain("accepted text");
-  expect(served.text.text).toContain("history text");
   expect(served.text.text).not.toMatch(
-    /proposed stays|rejected stays|pending edit|rejected edit/,
+    /proposed stays|rejected stays|accepted text|history text|pending edit|rejected edit/,
   );
-  // Two notes are accepted with a pending or rejected revision; two never were accepted.
-  expect(served.receipt.selected).toHaveLength(2);
-  expect(served.receipt.proposed?.count).toBe(2);
+  expect(served.receipt.selected).toEqual([]);
+  expect(served.receipt.proposed?.count).toBe(4);
   expect(await into.call("memory.show", { id: proposed.id })).toMatchObject({
     note: { status: "proposed", text: { text: "proposed stays proposed" } },
   });
@@ -611,21 +626,79 @@ test("export and restore carry proposed and rejected state and never accept it",
   });
   expect(restoredRejected.note.status).toBe("rejected");
   expect(restoredRejected.note.approval).toBeUndefined();
-  expect(await into.call("memory.show", { id: edited.id })).toMatchObject({
-    note: {
-      text: { text: "accepted text" },
-      proposal: { text: { text: "pending edit text" } },
-    },
+  // A rule that was accepted where it was exported comes back as a proposal of its served text.
+  const restoredEdited = await into.call("memory.show", { id: edited.id });
+  expect(restoredEdited.note).toMatchObject({
+    status: "proposed",
+    text: { text: "accepted text" },
   });
+  expect(restoredEdited.note.proposal).toBeUndefined();
+  // Rejection history survives; so does a pending revision on a note that is not owner-tagged.
   expect(await into.call("memory.show", { id: history.id })).toMatchObject({
     note: {
+      status: "proposed",
       text: { text: "history text" },
       rejectedProposals: [{ text: { text: "rejected edit text" } }],
     },
   });
-  // The pending items stay pending after the round trip: only an accept serves them.
-  await decide(into.call, "memory.accept", [edited.id]);
-  expect((await into.rules()).text.text).toContain("pending edit text");
+  expect(await into.call("memory.show", { id: plain.id })).toMatchObject({
+    note: {
+      text: { text: "plain note text" },
+      proposal: { tags: ["fact", "rule"] },
+    },
+  });
+  // Only an accept serves them.
+  await decide(into.call, "memory.accept", [edited.id, history.id]);
+  const after = (await into.rules()).text.text;
+  expect(after).toContain("accepted text");
+  expect(after).toContain("history text");
+  expect(after).not.toMatch(/proposed stays|rejected stays/);
+});
+
+test("restore stores a new owner-tagged note as a proposal whatever status the bundle claims", async () => {
+  const { call, rules } = setup();
+  const notes = [
+    {
+      id: "device/note-1",
+      tags: ["rule"],
+      links: [],
+      text: { text: "rule with no status" },
+    },
+    {
+      id: "device/note-2",
+      tags: ["rule", "preference"],
+      links: [],
+      text: { text: "rule claiming to be active" },
+      status: "active",
+    },
+  ];
+  const result = await call<{ added: number; notice?: string }>(
+    "memory.restore",
+    {
+      format: "forge.memory.export/3",
+      level: "device",
+      notes,
+      approval: ownerApproval,
+    },
+  );
+  expect(result).toMatchObject({
+    added: 2,
+    notice:
+      "2 owner-tagged notes restored as proposals; accept them with memory.accept.",
+  });
+  const served = await rules();
+  expect(served.text.text).not.toMatch(/no status|claiming to be active/);
+  expect(served.receipt.selected).toEqual([]);
+  expect(served.receipt.proposed?.count).toBe(2);
+  for (const id of ["device/note-1", "device/note-2"]) {
+    const shown = await call("memory.show", { id });
+    expect(shown.note.status).toBe("proposed");
+    expect(shown.note.approval).toBeUndefined();
+  }
+  await decide(call, "memory.accept", ["device/note-1", "device/note-2"]);
+  const after = (await rules()).text.text;
+  expect(after).toContain("rule with no status");
+  expect(after).toContain("rule claiming to be active");
 });
 
 test("a bundle with no proposal state stays the format older restorers read", async () => {

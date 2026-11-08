@@ -2636,7 +2636,18 @@ module.exports = {
         links: relinked(entry.links, restored),
         at: entry.at,
       });
-      for (const { key, note } of adding)
+      // A bundle's own fields are never proof that the owner accepted a note: a new owner-tagged
+      // note comes back proposed, whatever status the bundle claims, and only memory.accept serves it.
+      let proposals = 0;
+      for (const { key, note } of adding) {
+        const ownerTagged = ownerTag(note.tags, config) !== undefined;
+        const status =
+          note.status === "rejected"
+            ? "rejected"
+            : ownerTagged || note.status === "proposed"
+              ? "proposed"
+              : undefined;
+        if (ownerTagged && status === "proposed") proposals += 1;
         entries.push({
           key,
           value: {
@@ -2644,14 +2655,15 @@ module.exports = {
             createdAt: approval.at,
             changedAt: approval.at,
             textAt: approval.at,
-            ...(note.status === undefined
+            ...(status === undefined
               ? { versionApproval: approval, approval }
-              : { status: note.status }),
+              : { status }),
             ...(note.scope === undefined ? {} : { scope: note.scope }),
             tags: note.tags,
             links: relinked(note.links, restored),
             previous: [],
-            ...(note.proposal === undefined
+            // A pending revision cannot ride on a note that was never accepted.
+            ...(note.proposal === undefined || status !== undefined
               ? {}
               : { proposal: restoredProposal(note.proposal) }),
             ...(note.rejectedProposals?.length
@@ -2663,6 +2675,7 @@ module.exports = {
           },
           expectRevision: 0,
         });
+      }
       const added = entries.length;
       const counter = readCounter(state, NOTE_COUNTER);
       if (counter.last < highest)
@@ -2672,7 +2685,16 @@ module.exports = {
           expectRevision: counter.revision,
         });
       if (entries.length > 0) state.putMany(entries);
-      return { added, skipped, conflicts };
+      return {
+        added,
+        skipped,
+        conflicts,
+        ...(proposals === 0
+          ? {}
+          : {
+              notice: `${proposals} owner-tagged note${proposals === 1 ? "" : "s"} restored as proposal${proposals === 1 ? "" : "s"}; accept them with memory.accept.`,
+            }),
+      };
     });
   },
 

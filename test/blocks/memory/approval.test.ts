@@ -307,10 +307,13 @@ test("restore approval is checked against only added notes, atomically before co
       services,
     }),
   ).toMatchObject({ added: 2 });
-  for (const id of ["note-2", "note-3"])
-    expect(
-      await entry["memory.show"]!({ input: { id }, services }),
-    ).toMatchObject({ note: { approval: { by: "owner" } } });
+  expect(
+    await entry["memory.show"]!({ input: { id: "note-2" }, services }),
+  ).toMatchObject({ note: { approval: { by: "owner" } } });
+  // A restored owner-tagged note waits for the owner's accept instead of arriving accepted.
+  expect(
+    await entry["memory.show"]!({ input: { id: "note-3" }, services }),
+  ).toMatchObject({ note: { status: "proposed" } });
   expect(
     await entry["memory.restore"]!({
       input: { ...backup, approval: agent },

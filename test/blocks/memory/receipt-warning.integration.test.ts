@@ -97,6 +97,21 @@ module.exports["memory.rules"] = (args) => {
       ),
     );
     // Restore writes a page of 25 notes in one transaction; 55 single adds outlast the deadline on Windows CI.
+    // Only decisions are owner-tagged here: a restored owner-tagged note would come back proposed
+    // and unserved, and this journey needs 55 served rules to overflow the packet.
+    if (large)
+      writeFileSync(
+        join(root, ".forge/config.yaml"),
+        JSON.stringify({
+          schemaVersion: "forge.config/1",
+          blocks: {
+            memory: {
+              source: { builtin: "forge/memory" },
+              config: { approval: { ownerTags: ["decision"] } },
+            },
+          },
+        }),
+      );
     if (large)
       for (let start = 0; start < 55; start += 25) {
         const page = {
