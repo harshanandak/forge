@@ -80,6 +80,49 @@ export const ownerApproval = {
   quote: "Confirmed by owner in conversation",
 } as const;
 
+/**
+ * Add a note and, as the owner would, accept it: an owner-tagged note starts proposed and is
+ * served as a rule only after memory.accept. Works with a direct entry call.
+ */
+export async function accepted<T extends { id: string }>(
+  call: (op: string, input: object) => unknown,
+  input: object,
+): Promise<T> {
+  const added = (await call("memory.add", input)) as T;
+  await call("memory.accept", {
+    items: await decisionItems(call, [added.id]),
+    approval: ownerApproval,
+  });
+  return added;
+}
+
+interface Shown {
+  note: {
+    revision: number;
+    text: { text: string };
+    proposal?: { text: { text: string } };
+  };
+}
+/** What the owner is shown for a proposal: its note revision and the text that would be served. */
+export function decisionItem(id: string, shown: Shown) {
+  return {
+    id,
+    revision: shown.note.revision,
+    text: (shown.note.proposal ?? shown.note).text.text,
+  };
+}
+/** The items memory.accept and memory.reject bind the owner's approval to, read with a direct call. */
+export async function decisionItems(
+  call: (op: string, input: object) => unknown,
+  ids: readonly string[],
+) {
+  return Promise.all(
+    ids.map(async (id) =>
+      decisionItem(id, (await call("memory.show", { id })) as Shown),
+    ),
+  );
+}
+
 /** Copy a block and emit its entry the way the build does, so the block runs as captured bytes. */
 export function stageBlock(name: BlockName, into: string): string {
   const target = join(into, name);

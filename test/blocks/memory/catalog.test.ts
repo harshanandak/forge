@@ -42,6 +42,8 @@ const operations = {
   "memory.forget": { effects: ["memory:write"], humanOnly: false },
   "memory.export": { effects: [], humanOnly: false },
   "memory.restore": { effects: ["memory:write"], humanOnly: false },
+  "memory.accept": { effects: ["memory:write"], humanOnly: false },
+  "memory.reject": { effects: ["memory:write"], humanOnly: false },
   "decision.propose": { effects: ["decision:write"], humanOnly: false },
   "decision.adopt": { effects: ["decision:write"], humanOnly: false },
   "decision.list": { effects: [], humanOnly: false },

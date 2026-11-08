@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { blockSchema, loadEntry, memoryState } from "./lib.ts";
+import { accepted, blockSchema, loadEntry, memoryState } from "./lib.ts";
 
 const projectId = "0123456789abcdef";
 const destination = `project/${projectId}/note-1`;
@@ -18,12 +18,23 @@ async function setup() {
   const entry = loadEntry("memory");
   const services = { state: device, levels: device };
   const call = (op: string, input: object) => entry[op]!({ input, services });
-  await call("memory.add", {
-    level: "device",
-    scope: "forge",
-    text: "moved rule",
-    tags: ["rule", "on:deploy"],
-  });
+  // The accepted rule a first add and accept would leave, at revision 1 so the move needs no extra read.
+  const at = new Date().toISOString();
+  device.put(
+    "note/000000001",
+    {
+      text: "moved rule",
+      createdAt: at,
+      changedAt: at,
+      textAt: at,
+      scope: "forge",
+      tags: ["rule", "on:deploy"],
+      links: [],
+      previous: [],
+    },
+    { expectRevision: 0 },
+  );
+  device.put("meta/note-counter", { last: 1 }, { expectRevision: 0 });
   await call("memory.move", {
     id: "device/note-1",
     to: "project",
@@ -275,12 +286,12 @@ test("a second moved tombstone returns its pointer without following again", asy
 
 test("other device scopes stay excluded from rules and attachment", async () => {
   const { call } = await setup();
-  const other = (await call("memory.add", {
+  const other = await accepted<{ id: string }>(call, {
     level: "device",
     scope: "other",
     text: "foreign rule",
     tags: ["rule", "on:deploy"],
-  })) as { id: string };
+  });
   expect(
     JSON.stringify(await call("memory.rules", { notes: true })),
   ).not.toContain("foreign rule");
