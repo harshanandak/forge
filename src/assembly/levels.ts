@@ -105,10 +105,10 @@ function identityOf(owner: StateOwner | undefined): string | undefined {
     ? value.id
     : undefined;
 }
-/** The manifest id this store accepted, recorded beside its own id. */
-function recordedProjectId(owner: StateOwner | undefined): string | undefined {
-  const value = owner?.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.value as
-    { projectId?: unknown } | undefined;
+const MAX_RECORD_ATTEMPTS = 8;
+/** The manifest id an identity record accepted, recorded beside its own id. */
+function recordedProjectId(record: unknown): string | undefined {
+  const value = record as { projectId?: unknown } | undefined;
   return typeof value?.projectId === "string" &&
     PROJECT_ID_PATTERN.test(value.projectId)
     ? value.projectId
@@ -188,6 +188,8 @@ export async function requireRegisteredStore(
 
 export function openLevels(options: {
   readonly root: string;
+  /** Where the committed project manifest lives: the checkout root; `root` when left out. */
+  readonly manifestRoot?: string;
   /** The folder holding the project store; registered so every git worktree records one place. */
   readonly stateRoot: string;
   /** The shared checkout label for device memory when no project is served. */
@@ -245,32 +247,35 @@ export function openLevels(options: {
       }
     }
   }
-  /** Record the manifest id beside the store id; an earlier different record wins and refuses. */
-  function recordProjectId(
-    owner: StateOwner,
-    storeId: string,
-    projectId: string,
-  ): void {
-    for (;;) {
+  /**
+   * Record the manifest id beside the store id. Each attempt reads one identity snapshot, checks
+   * its project id against the manifest and writes against that same snapshot's revision, so a
+   * different id recorded in between is a refusal and a revision conflict retries.
+   */
+  function recordProjectId(owner: StateOwner, projectId: string): void {
+    for (let attempt = 0; attempt < MAX_RECORD_ATTEMPTS; attempt++) {
+      const snapshot = owner.get(IDENTITY_NAMESPACE, IDENTITY_KEY);
+      const winner = recordedProjectId(snapshot?.value);
+      if (winner === projectId) return;
+      if (winner !== undefined) throw projectIdConflict(winner, projectId);
       try {
         owner.put(
           IDENTITY_NAMESPACE,
           IDENTITY_KEY,
-          { id: storeId, projectId },
+          { ...(snapshot?.value as object), projectId },
           actor,
-          {
-            expectRevision:
-              owner.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.revision ?? 0,
-          },
+          { expectRevision: snapshot?.revision ?? 0 },
         );
         return;
       } catch (error) {
         if (!conflict(error)) throw error;
-        const winner = recordedProjectId(owner);
-        if (winner === projectId) return;
-        if (winner !== undefined) throw projectIdConflict(winner, projectId);
       }
     }
+    throw new ForgeFailure({
+      code: "REVISION_CONFLICT",
+      message: "The project identity kept changing while recording its id",
+      retry: "safe",
+    });
   }
   /** Record where the project lives, skipping the write when nothing changed. */
   async function register(id: string, name: string): Promise<void> {
@@ -321,9 +326,11 @@ export function openLevels(options: {
     // A reader looks at the manifest only for a store that already has an identity.
     const manifest =
       owner && (options.write || id)
-        ? readProjectManifest(options.root)
+        ? readProjectManifest(options.manifestRoot ?? options.root)
         : undefined;
-    const recorded = recordedProjectId(owner);
+    const recorded = recordedProjectId(
+      owner?.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.value,
+    );
     if (
       options.write &&
       owner &&
@@ -335,7 +342,7 @@ export function openLevels(options: {
     if (options.write && owner) {
       id ??= mint(owner);
       await register(id, name);
-      if (manifest && !recorded) recordProjectId(owner, id, manifest.id);
+      if (manifest && !recorded) recordProjectId(owner, manifest.id);
     }
     if (!id) return undefined;
     return {

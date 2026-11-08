@@ -2,6 +2,7 @@ import { withCliOwnerApproval } from "../fixtures/owner-approval.mjs";
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -30,12 +31,12 @@ function fixture() {
     timeout: 20_000,
   });
   expect(init.status, init.stdout + init.stderr).toBe(0);
-  return {
-    root,
-    manifest: join(root, ".forge", "project.json"),
-    call: withCliOwnerApproval((args: string[]): ResultEnvelope => {
+  const nested = join(root, "src", "deep");
+  mkdirSync(nested, { recursive: true });
+  const callIn = (cwd: string) =>
+    withCliOwnerApproval((args: string[]): ResultEnvelope => {
       const result = spawnSync("node", [bin, ...args], {
-        cwd: root,
+        cwd,
         env: {
           ...process.env,
           FORGE_DEVICE_ROOT: device,
@@ -48,7 +49,13 @@ function fixture() {
       expect(result.error).toBeUndefined();
       expect(result.status).not.toBeNull();
       return JSON.parse(result.stdout) as ResultEnvelope;
-    }),
+    });
+  return {
+    root,
+    nested,
+    manifest: join(root, ".forge", "project.json"),
+    call: callIn(root),
+    callNested: callIn(nested),
     close() {
       rmSync(sandbox, { recursive: true, force: true });
     },
@@ -119,6 +126,38 @@ test("the init help says the id is never changed by init or config", () => {
     );
     expect(text).toContain("never overwrites");
     expect(text).toContain("owner");
+  } finally {
+    f.close();
+  }
+});
+
+test("project init from a nested folder writes at the checkout root, never in the folder", () => {
+  const f = fixture();
+  try {
+    const made = f.callNested(["project", "init"]);
+    expect(made).toMatchObject({ ok: true, op: "project.init" });
+    const { id } = (made as { result: { id: string } }).result;
+    expect(JSON.parse(readFileSync(f.manifest, "utf8"))).toEqual({
+      schema: 1,
+      id,
+    });
+    expect(existsSync(join(f.nested, ".forge", "project.json"))).toBe(false);
+  } finally {
+    f.close();
+  }
+});
+
+test("project init from a nested folder refuses when the checkout root has a manifest", () => {
+  const f = fixture();
+  try {
+    f.call(["project", "init"]);
+    const before = readFileSync(f.manifest);
+    expect(f.callNested(["project", "init"], 1)).toMatchObject({
+      ok: false,
+      error: { code: "PROJECT_MANIFEST_EXISTS" },
+    });
+    expect(readFileSync(f.manifest).equals(before)).toBe(true);
+    expect(existsSync(join(f.nested, ".forge", "project.json"))).toBe(false);
   } finally {
     f.close();
   }

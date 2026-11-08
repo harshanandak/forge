@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   mkdirSync,
+  symlinkSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -165,6 +166,64 @@ test("init refuses a name that is not plain label characters", () => {
       /name/,
     );
     expect(readProjectManifest(p.root)).toBeUndefined();
+  } finally {
+    p.close();
+  }
+}, 30_000);
+
+function thrown(work: () => unknown): unknown {
+  try {
+    work();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
+test("a symlinked manifest is one documented refusal, not an internal error", () => {
+  const p = project();
+  const target = mkdtempSync(join(tmpdir(), "forge-project-manifest-target-"));
+  try {
+    mkdirSync(join(p.root, ".forge"));
+    // A directory link is a junction on Windows, which needs no privilege; any symlink is refused.
+    symlinkSync(target, join(p.root, PROJECT_MANIFEST), "junction");
+    for (const work of [
+      () => readProjectManifest(p.root),
+      () => initProjectManifest(p.root),
+    ]) {
+      const error = thrown(work) as {
+        error?: { code: string; message: string };
+      };
+      expect(error.error?.code).toBe("PROJECT_MANIFEST_UNSAFE");
+      expect(error.error?.message).toContain(".forge/project.json");
+    }
+  } finally {
+    p.close();
+    rmSync(target, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("a directory where the manifest should be is the same refusal on every platform", () => {
+  const p = project();
+  try {
+    mkdirSync(join(p.root, PROJECT_MANIFEST), { recursive: true });
+    const error = thrown(() => readProjectManifest(p.root)) as {
+      error?: { code: string; message: string };
+    };
+    expect(error.error?.code).toBe("PROJECT_MANIFEST_UNSAFE");
+    expect(error.error?.message).toContain(".forge/project.json");
+  } finally {
+    p.close();
+  }
+}, 30_000);
+
+test("an oversized manifest keeps its own size-limit error", () => {
+  const p = project("x".repeat(5_000));
+  try {
+    const error = thrown(() => readProjectManifest(p.root)) as {
+      error?: { code: string };
+    };
+    expect(error.error?.code).toBe("LIMIT_EXCEEDED");
   } finally {
     p.close();
   }

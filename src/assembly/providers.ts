@@ -19,6 +19,7 @@ import { createRunnerOutput } from "../adapters/runner-output/index.ts";
 import {
   checkoutScopeRoot as gitCheckoutScopeRoot,
   mainCheckoutPath,
+  nearestCheckoutRoot,
   originRepositoryName,
 } from "../adapters/vcs-git/index.ts";
 import type { DetectionObservation } from "../generated/types.ts";
@@ -376,6 +377,14 @@ export function projectStateRoot(
   options: ProviderOptions = {},
 ): Promise<string> {
   return mainCheckoutPath(root, gitOptions(options));
+}
+
+/**
+ * Where the committed project manifest lives: the nearest checkout root, so a call from a nested
+ * folder reads the same file. A linked worktree has its own checked-out copy. Outside git, `root`.
+ */
+export function projectManifestRoot(root: string): string {
+  return nearestCheckoutRoot(root) ?? root;
 }
 
 /** The nearest checkout's shared root for device scope fallback; undefined outside git. */

@@ -31,12 +31,28 @@ function invalid(why: string): ForgeFailure {
   });
 }
 
+/**
+ * A symlink, a directory or any other entry Forge cannot read safely is one documented refusal.
+ * The size-limit failure keeps its own code.
+ */
+function unsafe(error: unknown): ForgeFailure {
+  if (error instanceof ForgeFailure) return error;
+  return new ForgeFailure({
+    code: "PROJECT_MANIFEST_UNSAFE",
+    message: `${PROJECT_MANIFEST} is not a plain file Forge can read safely (it may be a symlink, a directory or unreadable)`,
+    retry: "never",
+    repair: "Replace it with the committed plain file.",
+  });
+}
+
 /** The manifest at a checkout root, undefined when absent; anything malformed is refused. */
 export function readProjectManifest(root: string): ProjectManifest | undefined {
-  const bytes = nodeConfigFiles(root).read(
-    PROJECT_MANIFEST,
-    MAX_MANIFEST_BYTES,
-  );
+  let bytes: Uint8Array | undefined;
+  try {
+    bytes = nodeConfigFiles(root).read(PROJECT_MANIFEST, MAX_MANIFEST_BYTES);
+  } catch (error) {
+    throw unsafe(error);
+  }
   if (bytes === undefined) return undefined;
   let value: unknown;
   try {
@@ -69,7 +85,11 @@ export function readProjectManifest(root: string): ProjectManifest | undefined {
 
 /** True when a manifest file is present, readable or not. */
 export function projectManifestExists(root: string): boolean {
-  return nodeConfigFiles(root).list(".forge").includes("project.json");
+  try {
+    return nodeConfigFiles(root).list(".forge").includes("project.json");
+  } catch (error) {
+    throw unsafe(error);
+  }
 }
 
 export function manifestExists(): ForgeFailure {
@@ -96,7 +116,12 @@ export function initProjectManifest(
   const bytes = new TextEncoder().encode(
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
-  if (!nodeConfigFiles(root).createExclusive(PROJECT_MANIFEST, bytes))
-    throw manifestExists();
+  let created: boolean;
+  try {
+    created = nodeConfigFiles(root).createExclusive(PROJECT_MANIFEST, bytes);
+  } catch (error) {
+    throw unsafe(error);
+  }
+  if (!created) throw manifestExists();
   return manifest;
 }

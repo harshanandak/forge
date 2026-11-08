@@ -132,6 +132,7 @@ import {
   agentAdapterObservation,
   projectStateRoot,
   checkoutScopeRoot,
+  projectManifestRoot,
   type ProviderOptions,
 } from "./providers.ts";
 
@@ -282,6 +283,7 @@ export async function createAssembly(
   // Every git worktree of one repository shares one store; config and files stay at `root`.
   const stateRoot = await projectStateRoot(root, options.providers);
   const scopeRoot = await checkoutScopeRoot(root, options.providers);
+  const manifestRoot = projectManifestRoot(root);
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
@@ -1318,6 +1320,7 @@ export async function createAssembly(
             return await recovery.create(async (staged) => {
               const opened = openLevels({
                 root,
+                manifestRoot,
                 stateRoot,
                 projectState: staged,
                 deviceState,
@@ -1341,13 +1344,13 @@ export async function createAssembly(
             if (bound.context.variant !== "project")
               refuse("CONTEXT_MISSING", "Project init requires a project");
             // Refuse before asking the owner anything when the id already exists.
-            if (projectManifestExists(root)) throw manifestExists();
+            if (projectManifestExists(manifestRoot)) throw manifestExists();
             await approve(
               request,
-              `Create ${PROJECT_MANIFEST} with a new random project id for ${root}. The id is never changed by init.`,
+              `Create ${PROJECT_MANIFEST} with a new random project id for ${manifestRoot}. The id is never changed by init.`,
             );
             const made = initProjectManifest(
-              root,
+              manifestRoot,
               typeof input.name === "string" ? input.name : undefined,
             );
             return success(request.op, {
@@ -1997,6 +2000,7 @@ export async function createAssembly(
                     );
                   const opened = openLevels({
                     root,
+                    manifestRoot,
                     stateRoot,
                     ...(scopeRoot === undefined ? {} : { scopeRoot }),
                     deviceRoot,

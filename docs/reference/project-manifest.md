@@ -11,14 +11,14 @@
 ```
 
 - `schema` is `1`. `id` is a random lowercase UUID v4. `name` is optional, 1 to 64 letters, digits, dots, hyphens or underscores. Leave it out if the name could reveal a client.
-- Any other field is refused, so credentials, paths and account links cannot ride in the file. Project commands refuse a malformed manifest with `INPUT_INVALID`.
+- Any other field is refused, so credentials, paths and account links cannot ride in the file. Project commands refuse a malformed manifest with `INPUT_INVALID`. A symlink, a directory or any other entry that is not a plain file is refused with `PROJECT_MANIFEST_UNSAFE`; a file over 4 KiB keeps the size-limit error.
 - The id is a label, never a password. Knowing it grants no access to anyone's memory.
 
 ## Creating it
 
 `forge project init` is the only command that writes the file. It needs the owner's reply, writes a new random id, and refuses with `PROJECT_MANIFEST_EXISTS` when the file exists. It never overwrites, and neither init nor config can change an id. The id is never derived from the git remote, the root commit or the folder name. Commit the file.
 
-If your `.gitignore` ignores all of `.forge/`, allow the manifest:
+The file lives at the nearest checkout root (the first folder at or above the working folder that has a `.git` file or folder), so a command run from a nested folder reads and writes the same file. A linked worktree has its own checked-out copy. This repository ignores `.forge/*` and allows the committed files. If your `.gitignore` ignores all of `.forge/`, allow the manifest:
 
 ```gitignore
 .forge/*

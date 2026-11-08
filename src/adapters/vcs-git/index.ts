@@ -117,6 +117,11 @@ function nearestGitEntry(
   }
 }
 
+/** The nearest checkout root at or above `dir`, found by its `.git` entry; undefined outside git. */
+export function nearestCheckoutRoot(dir: string): string | undefined {
+  return nearestGitEntry(dir)?.root;
+}
+
 /**
  * The folder matching `dir` in the repository's main working tree, read from git's shared
  * directory (`--git-common-dir`), so every linked worktree of one repository resolves to the same
