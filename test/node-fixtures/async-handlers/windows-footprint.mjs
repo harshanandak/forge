@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 // Test measurement only: native counters avoid shell startup and WMI on loaded runners.
 // https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters
 // https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-threadentry32
+// https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w
 export function windowsFootprint() {
   assert.ok(["x64", "arm64"].includes(process.arch));
   const koffi = createRequire(import.meta.url)("koffi");
@@ -27,7 +28,46 @@ export function windowsFootprint() {
   ]);
   const first = bind("Thread32First", "int", ["uintptr_t", "void *"]);
   const next = bind("Thread32Next", "int", ["uintptr_t", "void *"]);
+  const firstProcess = bind("Process32FirstW", "int", ["uintptr_t", "void *"]);
+  const nextProcess = bind("Process32NextW", "int", ["uintptr_t", "void *"]);
   const lastError = bind("GetLastError", "uint32_t", []);
+  // PROCESSENTRY32W is 568 bytes on x64 and arm64; the process id is at 8 and the parent id at 32.
+  // Reads the real process table, so a helper process started beside the command shows up here
+  // whether or not any code path reported it.
+  const childrenOf = (host) => {
+    const handle = snapshot(2, 0);
+    assert.notEqual(handle, 0);
+    assert.notEqual(
+      BigInt(handle),
+      0xffffffffffffffffn,
+      "process snapshot failed",
+    );
+    const children = [];
+    try {
+      const entry = Buffer.alloc(568);
+      entry.writeUInt32LE(entry.length);
+      let present = firstProcess(handle, entry);
+      let scanned = 0;
+      while (present !== 0) {
+        assert.ok(
+          ++scanned <= 65536,
+          "process snapshot exceeded its inspection bound",
+        );
+        if (entry.readUInt32LE(32) === host)
+          children.push(entry.readUInt32LE(8));
+        entry.writeUInt32LE(entry.length);
+        present = nextProcess(handle, entry);
+      }
+      assert.equal(lastError(), 18, "process snapshot did not reach its end");
+    } finally {
+      assert.notEqual(
+        close(handle),
+        0,
+        "process snapshot handle did not close",
+      );
+    }
+    return children.toSorted((a, b) => a - b);
+  };
   return (host, helpers) => {
     const pids = [host, ...helpers];
     const counts = new Map(pids.map((pid) => [pid, 0]));
@@ -88,6 +128,8 @@ export function windowsFootprint() {
       hostResidentBytes: measurements[0].residentBytes,
       hostThreads: measurements[0].threads,
       helpers: measurements.slice(1),
+      // Direct child processes of the host, measured from the process table.
+      children: childrenOf(host),
     };
   };
 }

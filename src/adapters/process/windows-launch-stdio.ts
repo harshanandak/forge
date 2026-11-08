@@ -38,6 +38,8 @@ export interface LaunchHooks {
   }) => Promise<void>;
   /** Runs right after the command has started; a throw here must leave nothing running or open. */
   readonly afterLaunch?: (pid: number) => void;
+  /** Replaces the process-handle release that `dispose` performs, so a test can make it throw. */
+  readonly closeProcess?: (launched: LaunchedProcess) => void;
 }
 
 export interface CapturedLaunch {
@@ -189,7 +191,14 @@ export async function launchCapturedWith(
     });
     try {
       hooks.afterLaunch?.(launched.pid);
-      return attach(launched, stdout, stderr, stdin, options);
+      return attach(
+        launched,
+        stdout,
+        stderr,
+        stdin,
+        options,
+        hooks.closeProcess ?? closeLaunchedProcess,
+      );
     } catch (error) {
       // The command already runs in the job: end it and release the handle before failing.
       void job.stop().catch(() => undefined);
@@ -212,6 +221,7 @@ function attach(
   stderr: PipeServer,
   stdin: PipeServer | undefined,
   options: CapturedLaunchOptions,
+  closeProcess: (launched: LaunchedProcess) => void,
 ): CapturedLaunch {
   const sockets: Socket[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -322,7 +332,7 @@ function attach(
       clearTimeout(timer);
       for (const pipe of [stdout, stderr, stdin]) pipe?.abandon();
       for (const socket of sockets) socket.destroy();
-      closeLaunchedProcess(launched);
+      closeProcess(launched);
       // Settling a promise that already settled does nothing; one still open must not hang.
       const closed = new ProcessSpawnError(
         "SPAWN_FAILED",

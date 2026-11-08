@@ -252,7 +252,7 @@ async function tree(kind, containment = "supervised") {
   const grandchild = `process.chdir(require('node:os').tmpdir()); const fs=require('node:fs'); const socket=require('node:net').connect(${cleanupPort},'127.0.0.1',()=>{socket.write(process.pid+':');fs.writeFileSync(${JSON.stringify(`${ready}.tmp`)},String(process.pid));fs.renameSync(${JSON.stringify(`${ready}.tmp`)},${JSON.stringify(ready)});}); socket.on('data',()=>process.exit(0)); socket.on('error',()=>process.exit(1)); setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'escaped'),6000); setInterval(()=>{},1000);`;
   const childSource = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:${strict || process.platform === "win32"},stdio:${JSON.stringify(strict ? "ignore" : "inherit")},env:${JSON.stringify(env)}}); c.unref(); ${kind === "rootexit" ? `const check=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(check);process.exit(0);}},5);` : "setInterval(()=>{},1000);"}`;
   const f = fixture(
-    "async ({ input, services }) => { const result = await services.process.run(input.executable, input.args, input.options); if (result.exitCode !== 0) throw Error('child failed'); return 'root-exited'; }",
+    "async ({ input, services }) => { const result = await services.process.run(input.executable, input.args, input.options); if (result.exitCode !== 0) throw Error('child failed'); return 'root-exited:' + [result.outputEvidence?.stdout.complete, result.outputEvidence?.stderr.complete].join(','); }",
     kind === "timeout" ? 2000 : 6000,
     [],
     strict ? "strict" : undefined,
@@ -260,7 +260,13 @@ async function tree(kind, containment = "supervised") {
   f.request.input = {
     executable: { kind: "resolved", path: process.execPath },
     args: ["-e", childSource],
-    options: { cwd: root, env, timeoutMs: 8000, maxOutputBytes: 1024 },
+    options: {
+      cwd: root,
+      env,
+      timeoutMs: 8000,
+      maxOutputBytes: 1024,
+      capture: { headBytes: 256, tailBytes: 256 },
+    },
   };
   const controller = new AbortController();
   const pending = f
@@ -275,7 +281,13 @@ async function tree(kind, containment = "supervised") {
   const result = await pending;
   if (kind === "rootexit") {
     assert.equal(result.ok, true, "root exit must complete after tree cleanup");
-    assert.equal(result.result, "root-exited");
+    // The grandchild still holds the command's output when the root exits, so both pipes close only
+    // if the job was stopped. Kill-on-close would also end it later, after the pipes had timed out.
+    assert.equal(
+      result.result,
+      "root-exited:true,true",
+      "root exit must stop the job so no descendant holds the output pipes",
+    );
   } else {
     assert.equal(
       result.error?.code,
@@ -352,7 +364,11 @@ try {
   }
   for (const kind of ["timeout", "cancel", "rootexit"])
     if (
-      ["all", kind, kind === "rootexit" ? "default-cleanup" : ""].includes(mode)
+      [
+        "all",
+        kind,
+        ...(kind === "rootexit" ? ["default-cleanup", "post-exit-stop"] : []),
+      ].includes(mode)
     )
       await tree(kind);
   if (mode === "job-termination") await tree("cancel", "strict");

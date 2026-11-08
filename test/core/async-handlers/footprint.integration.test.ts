@@ -8,6 +8,8 @@ import { pathToFileURL } from "node:url";
 interface ProcessSample {
   readonly hostResidentBytes: number;
   readonly hostThreads: number | "NOT_MEASURED";
+  /** Direct child processes of the host, read from the Windows process table. */
+  readonly children?: readonly number[];
   readonly helpers: readonly {
     readonly pid: number;
     readonly residentBytes: number;
@@ -24,6 +26,7 @@ interface FootprintReport {
   readonly after: ProcessSample;
   readonly addedResidentBytes: number;
   readonly supervisorStarts: number;
+  readonly targetPids: readonly number[];
   readonly rejectedBeforeHelperSpawn: boolean;
   readonly allStopped: boolean;
   readonly dependencyDisk: {
@@ -72,8 +75,16 @@ test("one active built supervisor stays below the approved footprint and leaves 
   ).toBe(0);
   const report = JSON.parse(run.stdout) as FootprintReport;
   expect(report.artifact).toBe("built");
-  // POSIX starts the command through Node's spawn; Windows starts it natively and never calls it.
-  expect(report.supervisorStarts).toBe(process.platform === "win32" ? 0 : 1);
+  if (process.platform === "win32") {
+    // Measured from the process table: the command is the host's only child, and none exists before.
+    expect(report.before.children).toEqual([]);
+    expect(report.during.children).toEqual(
+      report.targetPids.toSorted((a, b) => a - b),
+    );
+  } else {
+    // POSIX starts the command through Node's spawn, so that one call is the command.
+    expect(report.supervisorStarts).toBe(1);
+  }
   expect(report.rejectedBeforeHelperSpawn).toBe(true);
   expect(report.addedResidentBytes).toBeLessThan(100_000_000);
   // No platform keeps a helper beside the command.
