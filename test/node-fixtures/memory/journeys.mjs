@@ -708,6 +708,16 @@ async function rules() {
       JSON.stringify({ text: marker, level, scope, tags }),
     ]).result;
   const device = add("device", "general", ["rule"]);
+  // An owner-tagged add is only proposed: the owner's relayed reply to memory accept serves it.
+  const claim = { by: "owner", quote: "Accept this rule." };
+  const accept = (approval) => JSON.stringify({ ids: [device.id], approval });
+  const asked = cli(["memory", "accept", "--input", accept(claim)], 1);
+  cli([
+    "memory",
+    "accept",
+    "--input",
+    accept(approvalReply(asked, undefined, claim.quote)),
+  ]);
   assert.equal(
     typeof device.note.createdAt,
     "string",

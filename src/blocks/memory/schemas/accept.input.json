@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 25,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "defs.json#/$defs/NoteRef"
+      },
+      "description": "The proposed notes to accept: at most 25, the most one call takes."
+    },
+    "approval": {
+      "type": "object",
+      "anyOf": [
+        {
+          "$ref": "defs.json#/$defs/Approval"
+        },
+        {
+          "$ref": "defs.json#/$defs/RelayedApproval"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": ["ids"]
+}

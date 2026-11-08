@@ -417,15 +417,23 @@ test("startup counts applicable scopes without text or ids in JSON or --text; co
     ["project", "general", []],
     ["project", "forge", ["rule"]],
     ["project", "another-project", []],
-  ] as const)
-    done(
+  ] as const) {
+    const added = done(
       await harness.call("memory.add", {
         level,
         text: marker,
         tags,
         scope: scope ?? null,
       }),
-    );
+    ) as { id: string };
+    if (tags.length)
+      done(
+        await harness.call("memory.accept", {
+          ids: [added.id],
+          approval: ownerApproval,
+        }),
+      );
+  }
   const forgotten = done(
     await harness.call("memory.add", {
       level: "device",

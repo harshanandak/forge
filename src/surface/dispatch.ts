@@ -239,9 +239,11 @@ async function dispatchRaw(
 const RELAYED_OPS = new Set([
   "memory.forget",
   "memory.restore",
+  "memory.accept",
+  "memory.reject",
   "decision.adopt",
 ]);
-/** Forget, restore and adopt need Forge's request first, then the owner's relayed reply. */
+/** Forget, restore, accept, reject and adopt need Forge's request first, then the owner's relayed reply. */
 function humanRepair(op: string): string {
   return RELAYED_OPS.has(op)
     ? `Retry once with approval: {by: "owner", quote: "asking"} to get result.request.ask and a request id. Ask the owner that question in this chat and wait for their reply. Then retry the same input with approval: {request, quote: <their reply, verbatim>, source: {harness, thread}}. Never invent a quote.`

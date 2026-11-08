@@ -251,9 +251,11 @@ export function directApproval(options: {
 const MEMORY_OWNER_OPS = new Set([
   "memory.forget",
   "memory.restore",
+  "memory.accept",
+  "memory.reject",
   "decision.adopt",
 ]);
-/** Memory forget, restore and adopt claim the owner's words, so they need a relayed reply. */
+/** Memory forget, restore, accept, reject and adopt claim the owner's words, so they need a relayed reply. */
 export function memoryOwnerOp(candidate: {
   blockId?: string | undefined;
   declaredOp?: string | undefined;
@@ -291,6 +293,14 @@ export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
   const id = typeof fields?.id === "string" ? fields.id : "";
   if (declaredOp === "decision.adopt")
     return `Adopt decision ${id} so it becomes a binding standing rule.`;
+  if (declaredOp === "memory.accept" || declaredOp === "memory.reject") {
+    const ids = Array.isArray(fields?.ids)
+      ? fields.ids.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    return declaredOp === "memory.accept"
+      ? `Accept the proposed notes ${ids.join(", ")} so they are served to every session.`
+      : `Reject the proposed notes ${ids.join(", ")}. They stay in history and are never served.`;
+  }
   if (declaredOp === "memory.restore") {
     const notes = Array.isArray(fields?.notes) ? fields.notes.length : 0;
     return `Restore ${notes} note${notes === 1 ? "" : "s"} from an export into Forge memory.`;

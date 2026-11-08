@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { approvalReply } from "../../fixtures/owner-approval.mjs";
 
 setDefaultTimeout(90_000);
 
@@ -62,12 +63,43 @@ test("integration: rendered memory command reads fresh rules from the installed 
     return envelope.result;
   };
   const add = (text: string, scope: string, tags: string[] = ["rule"]) =>
-    call([
+    call<{ id: string }>([
       "memory",
       "add",
       "--input",
       JSON.stringify({ level: "device", text, scope, tags }),
     ]);
+  // An owner-tagged add is only proposed: the owner's relayed reply to memory accept serves it.
+  const accept = (ids: string[]) => {
+    const send = (approval: unknown) => {
+      const result = spawnSync(
+        node,
+        [bin, "memory", "accept", "--input", JSON.stringify({ ids, approval })],
+        {
+          cwd: project,
+          env: { ...env, FORGE_AGENT: "memory-hook-test" },
+          encoding: "utf8",
+          timeout: 20_000,
+          windowsHide: true,
+        },
+      );
+      expect(result.error).toBeUndefined();
+      return JSON.parse(result.stdout) as {
+        ok: boolean;
+        error?: { code: string };
+        result?: { request?: { id: string } };
+      };
+    };
+    const asked = send({ by: "owner", quote: "Accept these rules." });
+    const done = send(
+      approvalReply(
+        asked,
+        { harness: "fixture", thread: "fixture" },
+        "Accept these rules.",
+      ),
+    );
+    expect(done.ok).toBe(true);
+  };
   try {
     const config = call<{ revision: string }>(["config", "show"]);
     call([
@@ -97,8 +129,10 @@ test("integration: rendered memory command reads fresh rules from the installed 
       return result.stdout;
     };
     // Render first, then add: a cached packet cannot satisfy these assertions.
-    add("fresh general rule", "general");
-    add("fresh project rule", "project");
+    accept([
+      add("fresh general rule", "general").id,
+      add("fresh project rule", "project").id,
+    ]);
     add("untagged private text", "project", []);
     const packet = execute();
     expect(packet).toMatch(
@@ -121,13 +155,14 @@ test("integration: rendered memory command reads fresh rules from the installed 
     env.FORGE_DEVICE_ROOT = join(root, "cap-device");
     const prefixLength = "- [general] device/note-1 (created YYYY-MM-DD) "
       .length;
-    for (const text of [
-      "a".repeat(3000),
-      "b".repeat(3000 - 2 * prefixLength - 1),
-      "drop one",
-      "drop two",
-    ])
-      add(text, "general");
+    accept(
+      [
+        "a".repeat(3000),
+        "b".repeat(3000 - 2 * prefixLength - 1),
+        "drop one",
+        "drop two",
+      ].map((text) => add(text, "general").id),
+    );
     const capped = execute();
     expect(capped).toContain("2 more rule notes did not fit; search them.\n");
     const lines = capped.split("\n").filter((line) => line.startsWith("- ["));

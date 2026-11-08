@@ -80,6 +80,19 @@ export const ownerApproval = {
   quote: "Confirmed by owner in conversation",
 } as const;
 
+/**
+ * Add a note and, as the owner would, accept it: an owner-tagged note starts proposed and is
+ * served as a rule only after memory.accept. Works with a direct entry call.
+ */
+export async function accepted<T extends { id: string }>(
+  call: (op: string, input: object) => unknown,
+  input: object,
+): Promise<T> {
+  const added = (await call("memory.add", input)) as T;
+  await call("memory.accept", { ids: [added.id], approval: ownerApproval });
+  return added;
+}
+
 /** Copy a block and emit its entry the way the build does, so the block runs as captured bytes. */
 export function stageBlock(name: BlockName, into: string): string {
   const target = join(into, name);

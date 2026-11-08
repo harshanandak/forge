@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
+import { approvalReply } from "../../fixtures/owner-approval.mjs";
 
 const bin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 
@@ -54,12 +55,15 @@ test("integration: built CLI loads moved project notes and resolves old ids once
     console.log(`FORGE_DEVICE_ROOT=${checked.stdout.trim()}`);
     expect(checked.status).toBe(0);
     expect(checked.stdout.trim()).toBe(device);
-    function cli(verb: string, input: object, cwd = project): unknown {
-      const run = spawnSync(
+    function raw(verb: string, input: object, cwd = project) {
+      return spawnSync(
         node!,
         [bin, "memory", verb, "--input", JSON.stringify(input)],
         { cwd, env, encoding: "utf8", timeout: 30_000, windowsHide: true },
       );
+    }
+    function cli(verb: string, input: object, cwd = project): unknown {
+      const run = raw(verb, input, cwd);
       expect(run.status, run.stderr || run.stdout).toBe(0);
       const result = JSON.parse(run.stdout) as ResultEnvelope;
       if (!result.ok) throw new Error(JSON.stringify(result));
@@ -77,10 +81,24 @@ test("integration: built CLI loads moved project notes and resolves old ids once
       text: "foreign rule",
       tags: ["rule", "on:deploy"],
     }) as { id: string };
+    // Owner-tagged adds are only proposed: the owner's relayed accept makes them served rules.
+    const ids = [old.id, foreign.id];
+    const claim = { by: "owner", quote: "Accept these rules." };
+    const asked = JSON.parse(
+      raw("accept", { ids, approval: claim }).stdout,
+    ) as ResultEnvelope;
+    cli("accept", {
+      ids,
+      approval: approvalReply(
+        asked,
+        { harness: "fixture", thread: "fixture" },
+        claim.quote,
+      ),
+    });
     const moved = cli("move", {
       id: old.id,
       to: "project",
-      expectRevision: 1,
+      expectRevision: 2,
     }) as { to: string };
     expect(cli("scope", {})).toEqual({ scope: "forge-new" });
     const rules = cli("rules", {}) as { text: { text: string } };
