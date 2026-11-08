@@ -3,14 +3,19 @@
 //   POST renew    { subject, holder, generation, ttlMs, requestId }
 //   POST release  { subject, holder, generation, requestId }
 //   GET  holder?subject=...
-// Request ids: one registry for all routes; a retry returns the first result while the fence holds.
+// Request ids: one registry for all routes; a retry never returns a stale lease (see #write).
 // The object handles one request at a time and every write below runs without an await, so a
 // claim race is decided in arrival order and exactly one caller wins.
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
-import type { LeaseHolder, LeaseRecord } from "../../src/generated/types.ts";
+import type {
+  ForgeError,
+  LeaseHolder,
+  LeaseRecord,
+} from "../../src/generated/types.ts";
+import type { SqlRow } from "../../src/ports/store.ts";
 import { validateLeaseHolder } from "../../src/generated/validators.ts";
 import { durableStore, PRAGMA_TABLE, type DurableState } from "./store.ts";
 
@@ -28,7 +33,7 @@ const domain = {
     {
       id: "001_cloud_requests",
       statements: [
-        `CREATE TABLE IF NOT EXISTS ${REQUESTS} (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL)`,
+        `CREATE TABLE IF NOT EXISTS ${REQUESTS} (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, outcome TEXT NOT NULL, result TEXT NOT NULL)`,
       ],
     },
   ],
@@ -135,9 +140,11 @@ export class Project {
     const ttlMs = route === "release" ? null : integer(input, "ttlMs");
     const generation = route === "claim" ? null : integer(input, "generation");
 
-    // One registry of request ids for all three routes. The same id with another route or another
-    // input is refused, whatever the key order inside the request. Keys are sorted before the
-    // comparison, the way the state owner compares its own claim requests.
+    // The one rule for request ids. Every valid write records its id, route and input (keys sorted,
+    // as the state owner sorts its own) on first sight, with its outcome, success or refusal.
+    // - Another route or input under that id is INPUT_CONFLICT, forever.
+    // - A recorded refusal is returned again, never re-run.
+    // - A recorded success never returns its old lease: the answer is read from the current lease.
     const fingerprint = canonicalJson({
       route,
       subject,
@@ -146,60 +153,93 @@ export class Project {
       ttlMs,
     });
     const prior = this.#db.get(
-      `SELECT fingerprint, result FROM ${REQUESTS} WHERE request_id=?`,
+      `SELECT fingerprint, outcome, result FROM ${REQUESTS} WHERE request_id=?`,
       [requestId],
     );
-    if (prior !== undefined && prior.fingerprint !== fingerprint)
-      throw new ForgeFailure({
-        code: "INPUT_CONFLICT",
-        message: "Request ID belongs to a different input",
-        retry: "reconcile_first",
-      });
-
-    // A claim replay goes back through the owner, which refuses it once the lease moved on.
-    if (route === "claim") {
-      const lease = this.#owner.acquire(
-        NAMESPACE,
-        subject,
-        holder,
-        ttlMs!,
-        requestId,
-      );
-      if (prior === undefined) this.#remember(requestId, fingerprint, lease);
-      return lease;
-    }
     if (prior !== undefined) {
-      // A retry returns the first result, so a lost response never extends a lease twice. It never
-      // outlives the fence: once another holder has the next generation, the replay is refused.
-      const cached = JSON.parse(String(prior.result)) as LeaseRecord;
-      const decision = decideLease(this.#owner.lease(NAMESPACE, subject), {
+      if (prior.fingerprint !== fingerprint)
+        throw new ForgeFailure({
+          code: "INPUT_CONFLICT",
+          message: "Request ID belongs to a different input",
+          retry: "reconcile_first",
+        });
+      return this.#replay(route, requestId, prior, subject, holder);
+    }
+    try {
+      const fence = { subject, holder, generation: generation ?? 0 };
+      const lease =
+        route === "claim"
+          ? this.#owner.acquire(NAMESPACE, subject, holder, ttlMs!, requestId)
+          : route === "renew"
+            ? this.#owner.renew(NAMESPACE, fence, ttlMs!)
+            : this.#owner.release(NAMESPACE, fence);
+      this.#record(requestId, fingerprint, "ok", lease);
+      return lease;
+    } catch (error) {
+      if (
+        error instanceof ForgeFailure &&
+        error.error.code.startsWith("LEASE_")
+      )
+        this.#record(requestId, fingerprint, error.error.code, error.error);
+      throw error;
+    }
+  }
+
+  #replay(
+    route: "claim" | "renew" | "release",
+    requestId: string,
+    prior: SqlRow,
+    subject: string,
+    holder: LeaseHolder,
+  ): LeaseRecord {
+    const recorded = JSON.parse(String(prior.result)) as
+      LeaseRecord | ForgeError;
+    if (prior.outcome !== "ok") throw new ForgeFailure(recorded as ForgeError);
+    const first = recorded as LeaseRecord;
+    const current = this.#owner.lease(NAMESPACE, subject);
+    if (route === "release") {
+      // A release took effect when that generation is still the current one and released.
+      if (
+        current?.generation === first.generation &&
+        current.releasedAt !== undefined
+      )
+        return first;
+    } else if (
+      current !== undefined &&
+      decideLease(current, {
         mode: "held",
         subject,
         holder,
-        generation: cached.generation,
+        generation: first.generation,
         nowMs: Date.now(),
-      });
-      // A released lease stays released, so only a newer generation refuses a release replay.
-      if (
-        !decision.ok &&
-        (route === "renew" || decision.error.code === "LEASE_STALE")
-      )
-        throw new ForgeFailure(decision.error);
-      return cached;
-    }
-    const fence = { subject, holder, generation: generation! };
-    const lease =
-      route === "renew"
-        ? this.#owner.renew(NAMESPACE, fence, ttlMs!)
-        : this.#owner.release(NAMESPACE, fence);
-    this.#remember(requestId, fingerprint, lease);
-    return lease;
+      }).ok
+    )
+      return current;
+    throw new ForgeFailure({
+      code: "LEASE_STALE",
+      message: `Request ${requestId} no longer matches the current lease on ${subject}`,
+      retry: "reconcile_first",
+      lease:
+        current === undefined
+          ? { subject }
+          : {
+              subject,
+              holder: current.holder,
+              generation: current.generation,
+              expiresAt: current.expiresAt,
+            },
+    });
   }
 
-  #remember(requestId: string, fingerprint: string, lease: LeaseRecord): void {
+  #record(
+    requestId: string,
+    fingerprint: string,
+    outcome: string,
+    result: LeaseRecord | ForgeError,
+  ): void {
     this.#db.run(
-      `INSERT INTO ${REQUESTS} (request_id, fingerprint, result) VALUES (?, ?, ?)`,
-      [requestId, fingerprint, JSON.stringify(lease)],
+      `INSERT INTO ${REQUESTS} (request_id, fingerprint, outcome, result) VALUES (?, ?, ?, ?)`,
+      [requestId, fingerprint, outcome, JSON.stringify(result)],
     );
   }
 }

@@ -305,8 +305,86 @@ if (phase === "main") {
       const again = `{"holder":${reordered},"ttlMs":600000,"subject":"${subject}","requestId":"order-claim"}`;
       assert.deepEqual(
         granted(await send(project, "POST", "claim", again)),
-        first,
+        renewed,
       );
+    },
+  );
+
+  await check(
+    "a replay returns the current lease, never an old expiry",
+    async () => {
+      const project = `${run}-current`;
+      const subject = "issue:work-11";
+      const holder = holderOf("current");
+      const long = granted(await claim(project, subject, holder, "long-grant"));
+      const shortRenewal = {
+        subject,
+        holder,
+        generation: long.generation,
+        ttlMs: 1_000,
+        requestId: "short-renew",
+      };
+      const short = granted(await send(project, "POST", "renew", shortRenewal));
+      assert.notEqual(short.expiresAt, long.expiresAt);
+      assert.deepEqual(
+        granted(await claim(project, subject, holder, "long-grant")),
+        short,
+      );
+      assert.deepEqual(
+        granted(await send(project, "POST", "renew", shortRenewal)),
+        short,
+      );
+      await sleep(1_300);
+      refused(
+        await claim(project, subject, holder, "long-grant"),
+        "LEASE_STALE",
+      );
+      refused(
+        await send(project, "POST", "renew", shortRenewal),
+        "LEASE_STALE",
+      );
+    },
+  );
+
+  await check(
+    "a refused request keeps its id: another input conflicts and a retry stays refused",
+    async () => {
+      const project = `${run}-refused`;
+      const owner = holderOf("owner");
+      const rival = holderOf("rival");
+      const held = granted(
+        await claim(project, "issue:work-12", owner, "owner-claim"),
+      );
+      refused(
+        await claim(project, "issue:work-12", rival, "rival-1"),
+        "LEASE_HELD",
+      );
+      refused(
+        await claim(project, "issue:work-13", rival, "rival-1"),
+        "INPUT_CONFLICT",
+      );
+      assert.equal(
+        (await holderLookup(project, "issue:work-13")).body.value ?? null,
+        null,
+      );
+      granted(
+        await send(project, "POST", "release", {
+          subject: "issue:work-12",
+          holder: owner,
+          generation: held.generation,
+          requestId: "owner-release",
+        }),
+      );
+      const again = refused(
+        await claim(project, "issue:work-12", rival, "rival-1"),
+        "LEASE_HELD",
+      );
+      assert.deepEqual(again.lease?.holder, owner);
+      assert.ok(
+        (await holderLookup(project, "issue:work-12")).body.value?.releasedAt,
+        "the retry did not take the lease",
+      );
+      granted(await claim(project, "issue:work-12", rival, "rival-2"));
     },
   );
 
