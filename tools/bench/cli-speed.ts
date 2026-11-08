@@ -82,16 +82,15 @@ writeFileSync(
 );
 writeFileSync(join(folder, "gitconfig"), "");
 // A preload records the child's own peak resident memory on exit; time includes Node start-up.
-const peakFile = join(folder, "peak.txt");
+// Each run gets its own file, so a missing or stale reading can never be taken for a new one.
+let runCounter = 0;
 const preload = join(folder, "peak.mjs");
 writeFileSync(
   preload,
   [
     'import { writeFileSync } from "node:fs";',
     'process.on("exit", () => {',
-    "  try {",
-    "    writeFileSync(process.env.FORGE_BENCH_PEAK, String(process.resourceUsage().maxRSS));",
-    "  } catch {}",
+    "  writeFileSync(process.env.FORGE_BENCH_PEAK, String(process.resourceUsage().maxRSS));",
     "});",
     "",
   ].join("\n"),
@@ -101,7 +100,6 @@ const env: Record<string, string> = {
   FORGE_DEVICE_ROOT: join(folder, "device"),
   FORGE_DEVICE_ID: "bench",
   FORGE_SESSION: "bench",
-  FORGE_BENCH_PEAK: peakFile,
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: join(folder, "gitconfig"),
 };
@@ -116,13 +114,15 @@ function run(
   ms: number;
   peakMb: number;
 } {
+  runCounter += 1;
+  const peakFile = join(folder, `peak-${runCounter}.txt`);
   const started = performance.now();
   const result = spawnSync(
     process.execPath,
     ["--import", pathToFileURL(preload).href, program, ...args],
     {
       cwd: project,
-      env,
+      env: { ...env, FORGE_BENCH_PEAK: peakFile },
       encoding: "utf8",
       timeout: 60_000,
       windowsHide: true,
@@ -133,11 +133,19 @@ function run(
     throw new Error(
       `forge ${args.join(" ")} failed (${result.status}): ${result.error?.message ?? result.stderr}\n${result.stdout}`,
     );
-  return {
-    stdout: result.stdout,
-    ms,
-    peakMb: Number(readFileSync(peakFile, "utf8")) / 1024,
-  };
+  // The reading must exist for this run and be a positive number; anything else fails the run
+  // instead of letting the memory gate pass on nothing.
+  if (!existsSync(peakFile))
+    throw new Error(
+      `forge ${args.join(" ")} wrote no peak memory reading (${peakFile} is missing)`,
+    );
+  const text = readFileSync(peakFile, "utf8").trim();
+  const peakKb = text === "" ? Number.NaN : Number(text);
+  if (!Number.isFinite(peakKb) || peakKb <= 0)
+    throw new Error(
+      `forge ${args.join(" ")} wrote an unusable peak memory reading: "${text}"`,
+    );
+  return { stdout: result.stdout, ms, peakMb: peakKb / 1024 };
 }
 
 const median = (values: readonly number[]): number =>

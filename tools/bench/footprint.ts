@@ -131,7 +131,9 @@ function variantBin(
   edit: (dir: string) => void,
   source: string = join(root, "dist"),
 ): string {
-  const dir = join(root, name);
+  // A new, uniquely named folder beside dist (the package's own node_modules still resolve from
+  // there). Only folders made here are recorded, so cleanup never touches one that already existed.
+  const dir = mkdtempSync(join(root, `${name}-`));
   copies.push(dir);
   cpSync(source, dir, { recursive: true });
   edit(dir);

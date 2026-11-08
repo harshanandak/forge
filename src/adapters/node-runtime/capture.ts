@@ -11,18 +11,35 @@ import { resolve, relative, isAbsolute, sep } from "node:path";
 import type { FileCapturePort } from "../../core/catalog/index.ts";
 import { refuse } from "../../core/trust/index.ts";
 
-// One native call per path instead of one `lstat` per path component in JavaScript: a block read
-// resolves four paths per file and a command reads over a hundred files. Root and file paths both
-// come from here, so the containment comparisons below stay like with like.
-const realpath = realpathSync.native;
-
-/** Each read closes its descriptor before returning immutable captured bytes. */
+/**
+ * Each read closes its descriptor before returning immutable captured bytes.
+ *
+ * Paths resolve with one native call each instead of one `lstat` per path component in JavaScript:
+ * a block read resolves four paths per file and a command reads over a hundred files. The native
+ * resolver can be unusable (musl without /proc fails every call), so the first root decides: if the
+ * native resolver fails but the JavaScript one succeeds, this capture port uses the JavaScript one
+ * for the root and every file. Root and file paths always come from the same resolver, so the
+ * containment comparisons below stay like with like. `nativeRealpath` is a seam for tests.
+ */
 export function createNodeFileCapture(
   beforeOpen?: () => void,
+  nativeRealpath: (path: string) => string = realpathSync.native,
 ): FileCapturePort {
+  let chosen: ((path: string) => string) | undefined;
   return {
     open(rootPath) {
-      const root = realpath(rootPath);
+      let root: string;
+      if (chosen === undefined) {
+        try {
+          root = nativeRealpath(rootPath);
+          chosen = nativeRealpath;
+        } catch {
+          // A root that does not exist fails here too, with the JavaScript resolver's own error.
+          root = realpathSync(rootPath);
+          chosen = realpathSync;
+        }
+      } else root = chosen(rootPath);
+      const realpath = chosen;
       const rootIdentity = statSync(root, { bigint: true });
       if (!rootIdentity.isDirectory())
         refuse("INPUT_INVALID", "capture root must be a directory");

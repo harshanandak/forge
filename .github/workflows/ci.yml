@@ -174,8 +174,10 @@ jobs:
           bun run build
       - name: CLI speed
         run: node tools/bench/cli-speed.ts --gate --base base/dist
+      # A report, not a gate: a failure here must not fail the required Speed check.
       - name: CLI footprint
         if: always()
+        continue-on-error: true
         env:
           FORGE_BASE_DIST: ${{ github.workspace }}/base/dist
         run: node tools/bench/footprint.ts
