@@ -5,6 +5,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SchemaRegistry } from "../../src/contract/schema.ts";
 import { writeGenerated } from "./write.ts";
 
 type Schema = boolean | Readonly<Record<string, unknown>>;
@@ -270,7 +271,7 @@ function generateSchemas(
 ): string {
   return [
     HEADER,
-    'import { asSchemaDocuments } from "../contract/documents.ts";',
+    'import { asBuildCheckedDocuments, asSchemaDocuments } from "../contract/documents.ts";',
     'import type { SchemaObject } from "../contract/schema.ts";',
     "",
     embed(
@@ -282,9 +283,8 @@ function generateSchemas(
       interfaces.map((d) => d.schema),
     ),
     "/** Every schema document in schemas/, by $id. */",
-    "export const SCHEMA_DOCUMENTS: readonly SchemaObject[] = asSchemaDocuments(",
-    "  JSON.parse(schemaText),",
-    ");",
+    "export const SCHEMA_DOCUMENTS: readonly SchemaObject[] =",
+    "  asBuildCheckedDocuments(JSON.parse(schemaText));",
     "",
     "/** Every interface document in schemas/interfaces/. */",
     "export const INTERFACE_DOCUMENTS: readonly SchemaObject[] = asSchemaDocuments(",
@@ -343,6 +343,8 @@ export function generate(root: string = repoRoot): Map<string, string> {
     join(schemaDir, "interfaces"),
   ).map(({ file, value }) => ({ file, schema: value }));
   const named = collectNames(documents);
+  // The registry checks every document; running it here lets the shipped CLI skip that walk.
+  new SchemaRegistry(documents.map((document) => document.schema));
   return new Map([
     [OUTPUTS.types, generateTypes(documents, named)],
     [OUTPUTS.schemas, generateSchemas(documents, interfaces)],

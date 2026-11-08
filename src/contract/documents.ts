@@ -1,4 +1,8 @@
-import { isSchemaObject, type SchemaObject } from "./schema.ts";
+import {
+  isSchemaObject,
+  markBuildChecked,
+  type SchemaObject,
+} from "./schema.ts";
 
 /** Base URI of every schema in schemas/; each schema's $id is this plus its file name. */
 export const SCHEMA_BASE: string =
@@ -10,4 +14,11 @@ export function asSchemaDocuments(value: unknown): readonly SchemaObject[] {
     throw new Error("embedded schema documents are not a list of objects");
   }
   return value;
+}
+
+/** The generated schema list: the build checked every document, so a registry need not. */
+export function asBuildCheckedDocuments(
+  value: unknown,
+): readonly SchemaObject[] {
+  return markBuildChecked(asSchemaDocuments(value));
 }

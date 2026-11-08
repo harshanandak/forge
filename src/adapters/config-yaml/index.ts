@@ -1,7 +1,7 @@
 // The config codec over the `yaml` package (decision 5): YAML 1.2 core schema in strict mode. Text
 // from disk is untrusted, so decoding refuses duplicate keys, aliases, custom tags and non-JSON
 // values, and enforces the parse budgets before and after parsing.
-import { parseDocument, stringify } from "yaml";
+import { parseDocument, stringify } from "./yaml.ts";
 import { editText } from "./edit.ts";
 import type { ForgeError, ParseLimits } from "../../generated/types.ts";
 import type {

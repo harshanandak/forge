@@ -23,7 +23,7 @@ interface Limit {
 const GATE_COMMAND = "issue show";
 const LIMITS: Readonly<Record<string, Limit>> = {
   win32: { maxMs: 400, maxPeakMb: 70 },
-  linux: { maxMs: 250 },
+  linux: { maxMs: 150, maxPeakMb: 70 },
 };
 
 interface Row {

@@ -1,4 +1,4 @@
-import { isMap, isNode, isScalar, parseDocument } from "yaml";
+import { isMap, isNode, isScalar, parseDocument } from "./yaml.ts";
 import type { ConfigTextEdit } from "../../ports/config-codec.ts";
 
 /** Protected lines must survive in order, including repeated lines and their endings. */

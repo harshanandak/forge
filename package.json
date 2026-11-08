@@ -72,7 +72,7 @@
     "prelint": "bun run gen",
     "prebuild": "bun run gen",
     "build": "tsc -p tsconfig.build.json",
-    "postbuild": "bun tools/build-assets.ts"
+    "postbuild": "bun tools/build-assets.ts && bun tools/bundle-yaml.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
