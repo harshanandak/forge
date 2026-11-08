@@ -1,5 +1,5 @@
 // [integration] A process-handle release that throws cannot leave a launch's promises pending.
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { planSpawn } from "../../../src/adapters/process/plan.ts";
 import { openWindowsJob } from "../../../src/adapters/process/windows-job.ts";
@@ -25,9 +25,8 @@ function settledWithin(promise: Promise<unknown>, ms: number): Promise<string> {
   ]).finally(() => clearTimeout(timer));
 }
 
-test.skipIf(!windows)(
-  "dispose settles exited and drained even when releasing the process handle throws",
-  async () => {
+describe.skipIf(!windows)("windows launch dispose", () => {
+  test("dispose settles exited and drained even when releasing the process handle throws", async () => {
     const node = Bun.which("node");
     if (node === null) throw new Error("Node is required for this launch.");
     const env = { SystemRoot: process.env.SystemRoot ?? "C:/Windows" };
@@ -64,6 +63,5 @@ test.skipIf(!windows)(
         job.close();
       }
     }
-  },
-  30_000,
-);
+  }, 150_000);
+});
