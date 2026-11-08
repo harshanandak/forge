@@ -105,7 +105,7 @@ export const counterfactuals: readonly Counterfactual[] = [
     evidence: "async handler awaits the actual process service",
   },
   {
-    // POSIX runs the command directly; Windows still runs it through the Job Object helper.
+    // Both platforms start the command directly; Windows inside its own Job Object.
     file:
       process.platform === "win32"
         ? "adapters/process/run.js"

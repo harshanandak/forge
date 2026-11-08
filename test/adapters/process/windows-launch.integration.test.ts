@@ -12,6 +12,7 @@ import {
   planFor,
   relativeScenario,
   type Case,
+  withoutHostCopies,
   type Echo,
   type GrandchildReport,
 } from "./windows-launch.fixture.ts";
@@ -95,7 +96,9 @@ describe.skipIf(!windows)("windows launcher", () => {
     for (const [index, result] of results.entries()) {
       const testCase = corpus()[index] as Case;
       expectedEcho(testCase, result.reference);
-      expect(result.launched, result.name).toEqual(result.reference);
+      expect(result.launched, result.name).toEqual(
+        withoutHostCopies(result.reference, testCase.env),
+      );
     }
   }, 150_000);
 
@@ -105,7 +108,10 @@ describe.skipIf(!windows)("windows launcher", () => {
       const { plan, out } = planFor(testCase, index, dir, "bun", nodePath);
       const launched = await launchedCase(testCase, plan, out);
       expect(launched, testCase.name).toEqual(
-        (results[index] as NodeRun["results"][number]).reference,
+        withoutHostCopies(
+          (results[index] as NodeRun["results"][number]).reference,
+          testCase.env,
+        ),
       );
     }
   }, 150_000);

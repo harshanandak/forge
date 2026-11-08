@@ -13,6 +13,8 @@ const ERROR_MORE_DATA = 234;
 const MAX_ASSOCIATED_PROCESSES = 4096;
 const MAX_CLEANUP_TIMEOUT_MS = 60_000;
 const MAX_POLL_INTERVAL_MS = 1_000;
+/** A terminated job usually empties within a few ms, so the first checks come quickly. */
+const EARLY_POLLS_MS = [1, 2, 4, 8];
 
 type NativeFunction<Arguments extends readonly unknown[], Result> = (
   ...args: Arguments
@@ -542,6 +544,7 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
         terminated += 1;
         terminateJob(api, handle);
         const deadline = performance.now() + options.cleanupTimeoutMs;
+        let polls = 0;
         while (activeProcesses(api, handle) !== 0) {
           const remaining = deadline - performance.now();
           if (remaining <= 0) {
@@ -550,7 +553,10 @@ export function openWindowsJob(options: WindowsJobOptions): WindowsJob {
               `The contained process tree did not stop within ${options.cleanupTimeoutMs} ms.`,
             );
           }
-          await delay(Math.min(options.pollIntervalMs, remaining));
+          // The configured interval stays the ceiling; early checks are never longer than it.
+          const wait = EARLY_POLLS_MS[polls] ?? options.pollIntervalMs;
+          polls += 1;
+          await delay(Math.min(wait, options.pollIntervalMs, remaining));
         }
         return stopped;
       })();

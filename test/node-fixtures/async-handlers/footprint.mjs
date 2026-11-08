@@ -231,14 +231,17 @@ try {
     false,
     "the refused workload must not run",
   );
-  assert.equal(supervisorStarts, 1, "only one process may be started");
-  if (process.platform === "win32") {
-    // Windows keeps the Job Object helper beside the command.
-    assert.equal(during.helpers.length, 1, "the helper must be measured");
-    assert.ok(
-      during.helpers.every((helper) => !targetPids.includes(helper.pid)),
-    );
-  }
+  // POSIX starts the command through Node's spawn; Windows starts it natively and has no helper.
+  assert.equal(
+    supervisorStarts,
+    process.platform === "win32" ? 0 : 1,
+    "no helper may be started",
+  );
+  assert.equal(
+    during.helpers.length,
+    0,
+    "no helper may run beside the command",
+  );
   for (const controller of controllers) controller.abort();
   const outcomes = await awaitDeadline(
     settled,
@@ -252,6 +255,15 @@ try {
       "cancellation cleanup must settle successfully",
     );
     assert.equal(outcome.value.supervision?.confirmed, true);
+    if (process.platform === "win32") {
+      // The launcher starts the command itself, so it is its own supervisor.
+      assert.equal(
+        outcome.value.supervision?.supervisorPid,
+        outcome.value.supervision?.commandPid,
+        "supervisorPid must equal commandPid",
+      );
+      assert.equal(outcome.value.supervision?.supervisorResidentBytes, 0);
+    }
     return outcome.value.supervision;
   });
   const supervisorPids = reports.map((report) => report.supervisorPid);

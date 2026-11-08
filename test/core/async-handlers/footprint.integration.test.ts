@@ -72,13 +72,12 @@ test("one active built supervisor stays below the approved footprint and leaves 
   ).toBe(0);
   const report = JSON.parse(run.stdout) as FootprintReport;
   expect(report.artifact).toBe("built");
-  expect(report.supervisorStarts).toBe(1);
+  // POSIX starts the command through Node's spawn; Windows starts it natively and never calls it.
+  expect(report.supervisorStarts).toBe(process.platform === "win32" ? 0 : 1);
   expect(report.rejectedBeforeHelperSpawn).toBe(true);
   expect(report.addedResidentBytes).toBeLessThan(100_000_000);
-  // POSIX starts the command itself; Windows keeps one Job Object helper beside it.
-  expect(report.during.helpers).toHaveLength(
-    process.platform === "win32" ? 1 : 0,
-  );
+  // No platform keeps a helper beside the command.
+  expect(report.during.helpers).toHaveLength(0);
   expect(report.after.helpers).toHaveLength(0);
   expect(report.allStopped).toBe(true);
   console.log(`PROCESS_FOOTPRINT ${JSON.stringify(report)}`);

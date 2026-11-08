@@ -10,9 +10,10 @@ import { runProcess } from "../../../src/adapters/process/run.ts";
 import { openWindowsJob } from "../../../src/adapters/process/windows-job.ts";
 import {
   launchCaptured,
+  launchCapturedWith,
   stopAfterExit,
   type CapturedLaunch,
-  type CapturedLaunchOptions,
+  type LaunchHooks,
 } from "../../../src/adapters/process/windows-launch-stdio.ts";
 import type {
   ProcessOutputEvidence,
@@ -53,6 +54,11 @@ export interface ForeignReport {
   readonly current: Report;
   /** Bytes the intruding clients received from the host. */
   readonly intruderBytes: number;
+  /** The host closed a client that sent 16 or more wrong bytes, or a short wrong prefix, on its own. */
+  readonly closedBeforeLaunch: {
+    readonly stdout: boolean;
+    readonly stderr: boolean;
+  };
 }
 export interface Scenarios {
   readonly evidence: { readonly launched: Report; readonly current: Report };
@@ -92,26 +98,26 @@ async function launchedRun(
   nodePath: string,
   args: readonly string[],
   spawnOptions: SpawnOptions,
-  beforeLaunch?: CapturedLaunchOptions["beforeLaunch"],
+  hooks: LaunchHooks = {},
 ): Promise<Report> {
   const owner = job();
   const { stdout, stderr } = captureStreams(spawnOptions);
   let launch: CapturedLaunch | undefined;
   try {
-    launch = await launchCaptured(
+    launch = await launchCapturedWith(
       planSpawn(nodePath, args, spawnOptions.env, "win32"),
       owner,
       {
         cwd: spawnOptions.cwd,
         env: spawnOptions.env,
         pollIntervalMs: 25,
-        ...(beforeLaunch === undefined ? {} : { beforeLaunch }),
         ...(spawnOptions.stdin === undefined
           ? {}
           : { stdin: spawnOptions.stdin }),
         onStdout: (chunk) => stdout.push(chunk),
         onStderr: (chunk) => stderr.push(chunk),
       },
+      hooks,
     );
     const exitCode = await launch.exited;
     await launch.drained;
@@ -213,25 +219,41 @@ export async function foreignScenario(
 ): Promise<ForeignReport> {
   const intruders: Socket[] = [];
   let intruderBytes = 0;
+  const closedBeforeLaunch = { stdout: false, stderr: false };
   try {
     const launched = await launchedRun(
       nodePath,
       [fixturePath, "child"],
       options("evidence"),
-      async (names) => {
-        for (const [stream, name] of Object.entries(names)) {
-          const socket = await new Promise<Socket>((resolve, reject) => {
-            const client = connect(name);
-            client.once("connect", () => resolve(client));
-            client.once("error", reject);
-          });
-          socket.on("error", () => undefined);
-          socket.on("data", (chunk: Buffer) => {
-            intruderBytes += chunk.length;
-          });
-          if (stream !== "stdin") socket.write(`FOREIGN ${stream}`);
-          intruders.push(socket);
-        }
+      {
+        beforeLaunch: async (names) => {
+          for (const [stream, name] of Object.entries(names)) {
+            const socket = await new Promise<Socket>((resolve, reject) => {
+              const client = connect(name);
+              client.once("connect", () => resolve(client));
+              client.once("error", reject);
+            });
+            socket.on("error", () => undefined);
+            socket.on("data", (chunk: Buffer) => {
+              intruderBytes += chunk.length;
+            });
+            intruders.push(socket);
+            if (stream === "stdin") continue;
+            // Stdout sends 16 or more wrong bytes (the full nonce length); stderr only a short
+            // wrong prefix. The host must close both at once, before the command starts.
+            socket.write(stream === "stdout" ? "FOREIGN stdout bytes" : "ZZZ");
+            const closed = await Promise.race([
+              new Promise<boolean>((resolve) =>
+                socket.once("close", () => resolve(true)),
+              ),
+              new Promise<boolean>((resolve) =>
+                setTimeout(() => resolve(false), 5000),
+              ),
+            ]);
+            if (stream === "stdout" || stream === "stderr")
+              closedBeforeLaunch[stream] = closed;
+          }
+        },
       },
     );
     return {
@@ -242,6 +264,7 @@ export async function foreignScenario(
         options("evidence"),
       ),
       intruderBytes,
+      closedBeforeLaunch,
     };
   } finally {
     for (const socket of intruders) socket.destroy();
