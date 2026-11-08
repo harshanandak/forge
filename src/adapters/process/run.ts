@@ -126,6 +126,12 @@ export async function runProcess(
 /**
  * Starts the command inside the scope's per-command job and waits for it. The job ends every
  * descendant when the command exits, times out or is cancelled; nothing outlives the call.
+ *
+ * Accepted limit: the deadline is a host timer. If the host event loop is blocked, the command keeps
+ * running until the loop recovers; if the host dies, closing the job handle ends it (kill-on-close).
+ * A job object has no wall-clock limit (its time limits count CPU time, not elapsed time), so a
+ * native deadline would need a helper thread or process, which this launcher exists to avoid. See
+ * docs/reference/windows-process-supervision.md.
  */
 async function runInJob(
   plan: SpawnPlan,
