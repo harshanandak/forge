@@ -294,15 +294,16 @@ export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
   if (declaredOp === "decision.adopt")
     return `Adopt decision ${id} so it becomes a binding standing rule.`;
   if (declaredOp === "memory.accept" || declaredOp === "memory.reject") {
-    // What the owner sees is what the call binds: each note's id, revision and proposed text.
+    // What the owner sees is what the call binds: each note's id, revision and its whole proposed
+    // text, never a first line or a cut. One call holds at most 10 items, so the ask stays bounded.
     const lines = (Array.isArray(fields?.items) ? fields.items : []).map(
       (entry: unknown) => {
         const item = object(entry);
         const text =
           typeof item?.text === "string"
-            ? (item.text.split(/\r?\n/u)[0] ?? "").slice(0, 160)
+            ? item.text.split(/\r?\n/u).join("\n    ")
             : "(text not shown)";
-        return `- ${String(item?.id)} (revision ${String(item?.revision)}): ${text}`;
+        return `- ${String(item?.id)} (revision ${String(item?.revision)}):\n    ${text}`;
       },
     );
     return declaredOp === "memory.accept"

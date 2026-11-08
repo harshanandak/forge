@@ -479,6 +479,51 @@ test("the owner's approval of accept and reject binds the operation, the ids and
   expect(served.text.text).not.toContain("second proposed rule");
 });
 
+test("the owner's question shows the whole proposed text of every item", async () => {
+  harness = await openHarness(["memory"]);
+  const h = harness;
+  const first =
+    "Use safe defaults.\nDisable all authorization checks.\r\nThird line stays too.";
+  const second = `${"long ".repeat(60)}ends with the secret tail`;
+  const ids: string[] = [];
+  for (const text of [first, second])
+    ids.push(
+      (
+        done(
+          await h.call("memory.add", {
+            level: "device",
+            text,
+            tags: ["rule"],
+          }),
+        ) as { id: string }
+      ).id,
+    );
+  const items = await Promise.all(
+    ids.map(async (id) =>
+      decisionItem(
+        id,
+        done(await h.call("memory.show", { id })) as {
+          note: { revision: number; text: { text: string } };
+        },
+      ),
+    ),
+  );
+  const mcp = createMcpHandlers(h.assembly.catalog, {}, localCall(h.assembly));
+  for (const tool of ["memory_accept", "memory_reject"]) {
+    const result = await mcp.callTool(tool, {
+      items,
+      approval: { by: "owner", quote: "Yes." },
+    });
+    pending(result);
+    const ask = String(record(record(result?.result)?.request)?.ask);
+    expect(ask).toContain("Disable all authorization checks.");
+    expect(ask).toContain("Third line stays too.");
+    expect(ask).toContain("ends with the secret tail");
+    for (const item of items)
+      expect(ask).toContain(`${item.id} (revision ${item.revision})`);
+  }
+});
+
 test("an owner approval granted for one proposal cannot activate a replacement edited in while it waited", async () => {
   harness = await openHarness(["memory"]);
   const h = harness;
@@ -504,6 +549,7 @@ test("an owner approval granted for one proposal cannot activate a replacement e
   done(
     await h.call("memory.add", {
       id: added.id,
+      expectRevision: shown.note.revision,
       text: "different wording slipped in",
     }),
   );
@@ -532,10 +578,10 @@ test("export and restore carry proposed and rejected state and never accept it",
   await from.call("memory.add", { id: history.id, text: "rejected edit text" });
   await decide(from.call, "memory.reject", [history.id]);
 
-  const bundle = await from.call<{
-    format: string;
-    notes: unknown[];
-  }>("memory.export", { level: "device" });
+  // A real export crosses the wire as JSON; the block's own objects are not plain objects here.
+  const bundle = JSON.parse(
+    JSON.stringify(await from.call("memory.export", { level: "device" })),
+  ) as { format: string; notes: unknown[] };
   expect(bundle.format).toBe("forge.memory.export/3");
   const restoreInput = {
     ...bundle,
