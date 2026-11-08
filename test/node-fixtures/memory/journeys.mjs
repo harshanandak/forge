@@ -710,8 +710,17 @@ async function rules() {
   const device = add("device", "general", ["rule"]);
   // An owner-tagged add is only proposed: the owner's relayed reply to memory accept serves it.
   const claim = { by: "owner", quote: "Accept this rule." };
-  const accept = (approval) => JSON.stringify({ ids: [device.id], approval });
   const acceptRule = () => {
+    // The approval binds the revision and text the owner is shown, so read them first.
+    const note = cli(["memory", "show", device.id]).result.note;
+    const items = [
+      {
+        id: device.id,
+        revision: note.revision,
+        text: (note.proposal ?? note).text.text,
+      },
+    ];
+    const accept = (approval) => JSON.stringify({ items, approval });
     const asked = cli(["memory", "accept", "--input", accept(claim)], 1);
     cli([
       "memory",

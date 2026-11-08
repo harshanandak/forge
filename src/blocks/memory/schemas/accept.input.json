@@ -2,15 +2,31 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "ids": {
+    "items": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 25,
-      "uniqueItems": true,
+      "maxItems": 10,
       "items": {
-        "$ref": "defs.json#/$defs/NoteRef"
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "defs.json#/$defs/NoteRef"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The note revision the owner was shown (note.revision from show or search). The call refuses if the note has changed."
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 8000,
+            "description": "The proposed text the owner was shown: the proposal text if the note has a pending revision, else the note text."
+          }
+        },
+        "additionalProperties": false,
+        "required": ["id", "revision", "text"]
       },
-      "description": "The proposed notes to accept: at most 25, the most one call takes."
+      "description": "The proposed notes to accept: at most 10, the most one call takes. Each item binds the owner approval to that note revision and text."
     },
     "approval": {
       "type": "object",
@@ -25,5 +41,5 @@
     }
   },
   "additionalProperties": false,
-  "required": ["ids"]
+  "required": ["items"]
 }

@@ -178,10 +178,27 @@ for (const route of ["cli", "mcp"] as const) {
         }),
       ) as { id: string; note: { revision: number } };
       // An owner-tagged note and its edit each wait for the owner's relayed accept to be served.
-      const accept = async () =>
-        done(
-          await h.call("memory.accept", { ids: [first.id], approval: owner }),
+      const accept = async () => {
+        const shown = done(await h.call("memory.show", { id: first.id })) as {
+          note: {
+            revision: number;
+            text: { text: string };
+            proposal?: { text: { text: string } };
+          };
+        };
+        return done(
+          await h.call("memory.accept", {
+            items: [
+              {
+                id: first.id,
+                revision: shown.note.revision,
+                text: (shown.note.proposal ?? shown.note).text.text,
+              },
+            ],
+            approval: owner,
+          }),
         );
+      };
       await accept();
       const accepted = done(await h.call("memory.show", { id: first.id })) as {
         note: { revision: number };

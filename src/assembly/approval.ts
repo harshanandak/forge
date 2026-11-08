@@ -294,12 +294,20 @@ export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
   if (declaredOp === "decision.adopt")
     return `Adopt decision ${id} so it becomes a binding standing rule.`;
   if (declaredOp === "memory.accept" || declaredOp === "memory.reject") {
-    const ids = Array.isArray(fields?.ids)
-      ? fields.ids.filter((entry): entry is string => typeof entry === "string")
-      : [];
+    // What the owner sees is what the call binds: each note's id, revision and proposed text.
+    const lines = (Array.isArray(fields?.items) ? fields.items : []).map(
+      (entry: unknown) => {
+        const item = object(entry);
+        const text =
+          typeof item?.text === "string"
+            ? (item.text.split(/\r?\n/u)[0] ?? "").slice(0, 160)
+            : "(text not shown)";
+        return `- ${String(item?.id)} (revision ${String(item?.revision)}): ${text}`;
+      },
+    );
     return declaredOp === "memory.accept"
-      ? `Accept the proposed notes ${ids.join(", ")} so they are served to every session.`
-      : `Reject the proposed notes ${ids.join(", ")}. They stay in history and are never served.`;
+      ? `Accept these proposed notes so they are served to every session:\n${lines.join("\n")}`
+      : `Reject these proposed notes; they stay in history and are never served:\n${lines.join("\n")}`;
   }
   if (declaredOp === "memory.restore") {
     const notes = Array.isArray(fields?.notes) ? fields.notes.length : 0;

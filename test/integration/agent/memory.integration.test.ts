@@ -71,10 +71,23 @@ test("integration: rendered memory command reads fresh rules from the installed 
     ]);
   // An owner-tagged add is only proposed: the owner's relayed reply to memory accept serves it.
   const accept = (ids: string[]) => {
+    // The owner is shown each note's revision and text; the approval binds exactly those.
+    const items = ids.map((id) => {
+      const shown = call<{
+        note: { revision: number; text: { text: string } };
+      }>(["memory", "show", id]);
+      return { id, revision: shown.note.revision, text: shown.note.text.text };
+    });
     const send = (approval: unknown) => {
       const result = spawnSync(
         node,
-        [bin, "memory", "accept", "--input", JSON.stringify({ ids, approval })],
+        [
+          bin,
+          "memory",
+          "accept",
+          "--input",
+          JSON.stringify({ items, approval }),
+        ],
         {
           cwd: project,
           env: { ...env, FORGE_AGENT: "memory-hook-test" },

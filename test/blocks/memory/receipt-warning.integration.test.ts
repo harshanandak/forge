@@ -63,16 +63,27 @@ module.exports["memory.rules"] = (args) => {
       ).envelope,
     ) as { id: string };
     // An owner-tagged add is only proposed: the owner's relayed accept makes it a served rule.
+    const shown = done(
+      (
+        await runCli(
+          assembly.catalog,
+          ["memory", "show", added.id, "--json"],
+          options,
+        )
+      ).envelope,
+    ) as { note: { revision: number; text: { text: string } } };
+    const items = [
+      {
+        id: added.id,
+        revision: shown.note.revision,
+        text: shown.note.text.text,
+      },
+    ];
     const accept = async (approval: unknown) =>
       (
         await runCli(
           assembly.catalog,
-          [
-            "memory",
-            "accept",
-            "--input",
-            JSON.stringify({ ids: [added.id], approval }),
-          ],
+          ["memory", "accept", "--input", JSON.stringify({ items, approval })],
           options,
         )
       ).envelope;

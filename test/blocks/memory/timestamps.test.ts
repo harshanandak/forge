@@ -1,6 +1,12 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import type { StateEvent, StateRecord } from "../../../src/generated/types.ts";
-import { accepted, loadEntry, memoryState, ownerApproval } from "./lib.ts";
+import {
+  accepted,
+  decisionItems,
+  loadEntry,
+  memoryState,
+  ownerApproval,
+} from "./lib.ts";
 
 setDefaultTimeout(30_000);
 const key = "note/000000001";
@@ -151,7 +157,7 @@ test("rule lines carry ids and UTC creation/change dates while ignoring metadata
   setDay(4);
   await call("memory.add", { id: "note-1", text: "changed rule" });
   await call("memory.accept", {
-    ids: ["device/note-1"],
+    items: await decisionItems(call, ["device/note-1"]),
     approval: ownerApproval,
   });
   expect(await line()).toBe(

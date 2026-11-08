@@ -82,13 +82,18 @@ test("integration: built CLI loads moved project notes and resolves old ids once
       tags: ["rule", "on:deploy"],
     }) as { id: string };
     // Owner-tagged adds are only proposed: the owner's relayed accept makes them served rules.
-    const ids = [old.id, foreign.id];
+    const items = [old.id, foreign.id].map((id) => {
+      const shown = cli("show", { id }) as {
+        note: { revision: number; text: { text: string } };
+      };
+      return { id, revision: shown.note.revision, text: shown.note.text.text };
+    });
     const claim = { by: "owner", quote: "Accept these rules." };
     const asked = JSON.parse(
-      raw("accept", { ids, approval: claim }).stdout,
+      raw("accept", { items, approval: claim }).stdout,
     ) as ResultEnvelope;
     cli("accept", {
-      ids,
+      items,
       approval: approvalReply(
         asked,
         { harness: "fixture", thread: "fixture" },

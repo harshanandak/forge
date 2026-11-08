@@ -83,19 +83,43 @@
       "examples": [
         { "input": { "format": "forge.memory.export/1", "notes": [] } }
       ],
-      "description": "Notes go back to the export's level: this device, or this project. Notes whose number is new are added. A note with the same number and text is skipped. A note with the same number and different text is reported as a conflict and left alone. A backup from before notes had levels (forge.memory.export/1) restores into device memory, with its ids and links qualified as device notes. Supply approval {by:\"owner\",quote:\"their words\"} to ask for the owner's approval: Forge returns APPROVAL_REQUIRED with a request id and a plain question. Ask the owner, then retry the same input with approval {request,quote,source:{harness,thread}}, the quote copied exactly from their reply. A request is single use and bound to this operation and its arguments. Supply {by:\"agent\",reason:\"why\"} for an agent decision where policy allows. Missing approval returns HUMAN_REQUIRED with the next step. Approval words are untrusted data, returned fenced with a stable timestamp. /blocks/memory/config/approval/ownerTags defaults to rule, preference and decision; forgetting or undoing these tags, restoring them as new notes, or removing one on edit requires owner approval. Owner tags are checked only on notes this call adds; skipped and conflicting notes stay unchanged. The entire restore refuses before any write if approval is insufficient."
+      "description": "Notes go back to the export's level (a bundle in format forge.memory.export/3 also carries proposed and rejected notes, pending edits and rejection history; restore never accepts them, and only memory.accept serves them): this device, or this project. Notes whose number is new are added. A note with the same number and text is skipped. A note with the same number and different text is reported as a conflict and left alone. A backup from before notes had levels (forge.memory.export/1) restores into device memory, with its ids and links qualified as device notes. Supply approval {by:\"owner\",quote:\"their words\"} to ask for the owner's approval: Forge returns APPROVAL_REQUIRED with a request id and a plain question. Ask the owner, then retry the same input with approval {request,quote,source:{harness,thread}}, the quote copied exactly from their reply. A request is single use and bound to this operation and its arguments. Supply {by:\"agent\",reason:\"why\"} for an agent decision where policy allows. Missing approval returns HUMAN_REQUIRED with the next step. Approval words are untrusted data, returned fenced with a stable timestamp. /blocks/memory/config/approval/ownerTags defaults to rule, preference and decision; forgetting or undoing these tags, restoring them as new notes, or removing one on edit requires owner approval. Owner tags are checked only on notes this call adds; skipped and conflicting notes stay unchanged. The entire restore refuses before any write if approval is insufficient."
     },
     "memory.accept": {
       "title": "Accept proposed notes",
       "summary": "The owner accepts proposed notes or revisions so they are served.",
-      "examples": [{ "input": { "ids": ["device/note-1"] } }],
-      "description": "Takes up to 25 note ids. A proposed new note becomes an accepted note; a proposed revision replaces the served text, tags, scope and links, and the earlier text stays as a version. Ids that are not proposed, not found or read-only are reported and left alone. After accept, memory rules and attach serve the note. Supply approval {by:\"owner\",quote:\"their words\"} to ask for the owner's approval: Forge returns APPROVAL_REQUIRED with a request id and a plain question. Ask the owner, then retry the same input with approval {request,quote,source:{harness,thread}}, the quote copied exactly from their reply. A request is single use and bound to this operation and these ids. An agent decision never counts. Missing approval returns HUMAN_REQUIRED with the next step."
+      "examples": [
+        {
+          "input": {
+            "items": [
+              {
+                "id": "device/note-1",
+                "revision": 1,
+                "text": "Always write the test first."
+              }
+            ]
+          }
+        }
+      ],
+      "description": "Takes up to 10 items {id, revision, text}, copied from memory.show: the revision and the proposed text (or the served text for a new note) the owner was shown. If a note was edited since, nothing is written and the call fails with PROPOSAL_CHANGED (retry after reconcile_first: show the owner the current revision). A proposed new note becomes an accepted note; a proposed revision replaces the served text, tags, scope and links, and the earlier text stays as a version. Ids that are not proposed, not found or read-only are reported and left alone. After accept, memory rules and attach serve the note. Supply approval {by:\"owner\",quote:\"their words\"} to ask for the owner's approval: Forge returns APPROVAL_REQUIRED with a request id and a plain question. Ask the owner, then retry the same input with approval {request,quote,source:{harness,thread}}, the quote copied exactly from their reply. A request is single use and bound to this operation, these ids and their revisions. An agent decision never counts. Missing approval returns HUMAN_REQUIRED with the next step."
     },
     "memory.reject": {
       "title": "Reject proposed notes",
       "summary": "The owner rejects proposed notes or revisions; they stay in history.",
-      "examples": [{ "input": { "ids": ["device/note-1"] } }],
-      "description": "Takes up to 25 note ids. A rejected new note stays readable, marked rejected, and is never served. A rejected revision is closed and kept in rejectedProposals; the accepted text stays served. Ids that are not proposed, not found or read-only are reported and left alone. Supply approval {by:\"owner\",quote:\"their words\"} to ask for the owner's approval: Forge returns APPROVAL_REQUIRED with a request id and a plain question. Ask the owner, then retry the same input with approval {request,quote,source:{harness,thread}}, the quote copied exactly from their reply. A request is single use and bound to this operation and these ids. An agent decision never counts. Missing approval returns HUMAN_REQUIRED with the next step."
+      "examples": [
+        {
+          "input": {
+            "items": [
+              {
+                "id": "device/note-1",
+                "revision": 1,
+                "text": "Always write the test first."
+              }
+            ]
+          }
+        }
+      ],
+      "description": "Takes up to 10 items {id, revision}, with optional text; a revision or text that no longer matches fails the whole call with PROPOSAL_CHANGED and writes nothing. A rejected new note stays readable, marked rejected, and is never served. A rejected revision is closed and kept in rejectedProposals; the accepted text stays served. Ids that are not proposed, not found or read-only are reported and left alone. Supply approval {by:\"owner\",quote:\"their words\"} to ask for the owner's approval: Forge returns APPROVAL_REQUIRED with a request id and a plain question. Ask the owner, then retry the same input with approval {request,quote,source:{harness,thread}}, the quote copied exactly from their reply. A request is single use and bound to this operation, these ids and their revisions. An agent decision never counts. Missing approval returns HUMAN_REQUIRED with the next step."
     },
     "decision.propose": {
       "title": "Propose a decision",

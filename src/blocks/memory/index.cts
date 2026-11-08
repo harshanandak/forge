@@ -69,6 +69,14 @@ interface NoteValue {
   /** Revisions the owner rejected, kept for history. */
   readonly rejectedProposals?: readonly Proposal[];
 }
+/** A proposal as an export carries it: its text is an untrusted-text object. */
+interface RestoredProposal {
+  readonly text: { readonly text: string };
+  readonly scope?: string;
+  readonly tags: readonly string[];
+  readonly links: readonly string[];
+  readonly at: string;
+}
 interface Proposal {
   readonly text: string;
   readonly scope?: string;
@@ -753,14 +761,21 @@ function resolvedScope(config: MemoryConfig, services: Services): string {
   );
 }
 
+interface DecideItem {
+  readonly id: string;
+  readonly revision: number;
+  readonly text?: string;
+}
 interface DecideArgs {
-  input: { ids: string[]; approval?: Approval };
+  input: { items: DecideItem[]; approval?: Approval };
   services: Services;
 }
 /**
  * The owner's decision on proposed notes and revisions. Accept makes a proposal the served note;
- * reject closes it and keeps it readable. Both need the owner's approval, checked before any read,
- * and the runtime relays that approval for exactly these ids.
+ * reject closes it and keeps it readable. Both need the owner's approval, checked before any read.
+ * The runtime relays that approval for exactly these items, so each names the note revision and the
+ * proposed text the owner was shown: a note edited since refuses the whole call before any write,
+ * and the write itself is fenced to that revision.
  */
 async function decide(
   { input, services }: DecideArgs,
@@ -772,7 +787,18 @@ async function decide(
     "proposed notes",
   );
   const results: { id: string; status: string }[] = [];
-  for (const requested of [...new Set(input.ids.map(qualified))]) {
+  const planned: {
+    id: string;
+    source: Source;
+    key: string;
+    existing: StateRecord;
+    old: NoteValue;
+  }[] = [];
+  const seen = new Set<string>();
+  for (const item of input.items) {
+    const requested = qualified(item.id);
+    if (seen.has(requested)) continue;
+    seen.add(requested);
     const found = await sourceFor(services, requested);
     if (unreached(found)) {
       results.push({ id: requested, status: "not_found" });
@@ -794,7 +820,21 @@ async function decide(
       results.push({ id: requested, status: "not_proposed" });
       continue;
     }
-    const at = approval.at;
+    const proposed = old.proposal?.text ?? old.text;
+    if (
+      existing.revision !== item.revision ||
+      (item.text === undefined
+        ? decision === "accept"
+        : neutralize(item.text) !== neutralize(proposed))
+    )
+      fail(
+        "PROPOSAL_CHANGED",
+        `${requested} is at revision ${existing.revision}, not the revision ${item.revision} the owner approved, or its proposed text differs; nothing was written. Show it again, ask the owner about what it says now, and retry with that revision and text.`,
+      );
+    planned.push({ id: requested, source, key, existing, old });
+  }
+  const at = approval.at;
+  for (const { id, source, key, existing, old } of planned) {
     const { status: _status, proposal, ...kept } = old;
     const base: NoteValue = {
       ...kept,
@@ -844,11 +884,11 @@ async function decide(
       source.state.put(key, value, { expectRevision: existing.revision });
     } catch (error) {
       if (!conflict(error)) throw error;
-      results.push({ id: requested, status: "conflict" });
+      results.push({ id, status: "conflict" });
       continue;
     }
     results.push({
-      id: requested,
+      id,
       status: decision === "accept" ? "accepted" : "rejected",
     });
   }
@@ -2387,13 +2427,39 @@ module.exports = {
           break;
         }
         chosen.push(note);
-        chars += note.value.text.length;
+        chars +=
+          note.value.text.length +
+          [
+            ...(note.value.proposal ? [note.value.proposal] : []),
+            ...(note.value.rejectedProposals ?? []),
+          ].reduce((sum, entry) => sum + entry.text.length, 0);
       }
       examined = note.number;
     }
     const more = stopped || records.length === EXPORT_READ;
+    // A bundle that carries proposal state is a newer format, so a restorer that predates it
+    // refuses the bundle instead of reading a proposed note as an accepted one.
+    const waiting = chosen.some(
+      (note) =>
+        note.value.status !== undefined ||
+        note.value.proposal !== undefined ||
+        (note.value.rejectedProposals?.length ?? 0) > 0,
+    );
+    const proposalOut = (proposal: Proposal, id: string) => ({
+      text: {
+        kind: "untrusted" as const,
+        source: `memory:${id}:proposal`,
+        text: proposal.text,
+      },
+      ...(proposal.scope === undefined ? {} : { scope: proposal.scope }),
+      tags: [...proposal.tags],
+      links: qualifiedLinks(proposal.links),
+      at: proposal.at,
+    });
     return {
-      format: "forge.memory.export/2" as const,
+      format: waiting
+        ? ("forge.memory.export/3" as const)
+        : ("forge.memory.export/2" as const),
       level: input.level,
       ...origin,
       count: chosen.length,
@@ -2410,6 +2476,19 @@ module.exports = {
           source: `memory:${note.id}`,
           text: note.value.text,
         },
+        ...(note.value.status === undefined
+          ? {}
+          : { status: note.value.status }),
+        ...(note.value.proposal === undefined
+          ? {}
+          : { proposal: proposalOut(note.value.proposal, note.id) }),
+        ...(note.value.rejectedProposals?.length
+          ? {
+              rejectedProposals: note.value.rejectedProposals.map((entry) =>
+                proposalOut(entry, note.id),
+              ),
+            }
+          : {}),
       })),
     };
   },
@@ -2420,7 +2499,10 @@ module.exports = {
     services,
   }: {
     input: {
-      format: "forge.memory.export/1" | "forge.memory.export/2";
+      format:
+        | "forge.memory.export/1"
+        | "forge.memory.export/2"
+        | "forge.memory.export/3";
       level?: Level;
       project?: ProjectIdentity;
       approval?: Approval;
@@ -2430,6 +2512,9 @@ module.exports = {
         tags: readonly string[];
         links: readonly string[];
         text: { text: string };
+        status?: "proposed" | "rejected";
+        proposal?: RestoredProposal;
+        rejectedProposals?: readonly RestoredProposal[];
       }[];
     };
     config?: MemoryConfig;
@@ -2501,10 +2586,23 @@ module.exports = {
         input.approval,
         "memory.restore",
         ownerTag(
-          adding.flatMap(({ note }) => note.tags),
+          adding.flatMap(({ note }) => [
+            ...note.tags,
+            ...(note.proposal?.tags ?? []),
+          ]),
           config,
         ),
       );
+      // Restore approval covers the notes as they were exported. A proposed or rejected note, or a
+      // pending revision, comes back in the same state and without approval: restoring never
+      // accepts what the owner has not accepted.
+      const restoredProposal = (entry: RestoredProposal): Proposal => ({
+        text: entry.text.text,
+        ...(entry.scope === undefined ? {} : { scope: entry.scope }),
+        tags: entry.tags,
+        links: relinked(entry.links, restored),
+        at: entry.at,
+      });
       for (const { key, note } of adding)
         entries.push({
           key,
@@ -2513,12 +2611,22 @@ module.exports = {
             createdAt: approval.at,
             changedAt: approval.at,
             textAt: approval.at,
-            versionApproval: approval,
+            ...(note.status === undefined
+              ? { versionApproval: approval, approval }
+              : { status: note.status }),
             ...(note.scope === undefined ? {} : { scope: note.scope }),
             tags: note.tags,
             links: relinked(note.links, restored),
             previous: [],
-            approval,
+            ...(note.proposal === undefined
+              ? {}
+              : { proposal: restoredProposal(note.proposal) }),
+            ...(note.rejectedProposals?.length
+              ? {
+                  rejectedProposals:
+                    note.rejectedProposals.map(restoredProposal),
+                }
+              : {}),
           },
           expectRevision: 0,
         });

@@ -5,6 +5,7 @@ import { localCall } from "../../../src/assembly/index.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import {
+  decisionItem,
   ownerApproval,
   done,
   loadEntry,
@@ -429,7 +430,14 @@ test("startup counts applicable scopes without text or ids in JSON or --text; co
     if (tags.length)
       done(
         await harness.call("memory.accept", {
-          ids: [added.id],
+          items: [
+            decisionItem(
+              added.id,
+              done(await harness.call("memory.show", { id: added.id })) as {
+                note: { revision: number; text: { text: string } };
+              },
+            ),
+          ],
           approval: ownerApproval,
         }),
       );

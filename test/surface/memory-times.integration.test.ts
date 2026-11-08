@@ -127,8 +127,25 @@ for (const route of ["cli", "mcp"] as const)
         by: "owner",
         quote: "Accept this rule.",
       };
-      const accept = (id: string) =>
-        call("memory.accept", { ids: [id], approval: acceptance });
+      const accept = async (id: string) => {
+        const shown = (await call("memory.show", { id })) as {
+          note: {
+            revision: number;
+            text: { text: string };
+            proposal?: { text: { text: string } };
+          };
+        };
+        return call("memory.accept", {
+          items: [
+            {
+              id,
+              revision: shown.note.revision,
+              text: (shown.note.proposal ?? shown.note).text.text,
+            },
+          ],
+          approval: acceptance,
+        });
+      };
       await accept(first.id);
       const created = first.note.createdAt;
       const date = created.slice(0, 10);
