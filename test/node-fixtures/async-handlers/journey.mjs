@@ -282,11 +282,12 @@ async function tree(kind, containment = "supervised") {
   if (kind === "rootexit") {
     assert.equal(result.ok, true, "root exit must complete after tree cleanup");
     // The grandchild still holds the command's output when the root exits, so both pipes close only
-    // if the job was stopped. Kill-on-close would also end it later, after the pipes had timed out.
+    // if the whole tree was ended: the job on Windows, the process group on POSIX. On Windows,
+    // kill-on-close would also end it later, after the pipes had timed out.
     assert.equal(
       result.result,
       "root-exited:true,true",
-      "root exit must stop the job so no descendant holds the output pipes",
+      "root exit must end the whole command tree so no descendant holds the output pipes",
     );
   } else {
     assert.equal(

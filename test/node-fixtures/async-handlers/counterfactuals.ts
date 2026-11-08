@@ -34,7 +34,10 @@ export function asyncCounterfactuals(platform: NodeJS.Platform) {
           from: "(await endProcessGroup(pid, supervision, undefined, exited))",
           to: "(child.kill('SIGKILL'), true)",
           mode: "default-cleanup",
-          evidence: "invocation must stop its entire process tree",
+          // Only the exited root is signaled, so the grandchild keeps stdout open and the pipes
+          // assertion in the rootexit journey fails before the liveness check does.
+          evidence:
+            "root exit must end the whole command tree so no descendant holds the output pipes",
         },
     ...(platform === "win32"
       ? [
@@ -47,7 +50,7 @@ export function asyncCounterfactuals(platform: NodeJS.Platform) {
             to: "return { stopped: job.members(), skipped: false };",
             mode: "post-exit-stop",
             evidence:
-              "root exit must stop the job so no descendant holds the output pipes",
+              "root exit must end the whole command tree so no descendant holds the output pipes",
           },
         ]
       : []),
