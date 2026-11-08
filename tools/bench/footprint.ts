@@ -4,14 +4,12 @@
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
-  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -421,80 +419,6 @@ try {
     ms: [] as number[],
     peak: [] as number[],
   });
-  // Probe: Node's module compile cache, kept in a folder of this run so nothing shared is touched.
-  const cacheDir = join(folder, "compile-cache");
-  const cacheBin = variantBin("dist-compile-cache", (dir) => {
-    const file = join(dir, "bin/forge.js");
-    const source = readFileSync(file, "utf8");
-    const changed = source.replace(
-      'setFlagsFromString("--semi-space-growth-factor=1");',
-      `setFlagsFromString("--semi-space-growth-factor=1"); (await import("node:module")).enableCompileCache(${JSON.stringify(cacheDir)});`,
-    );
-    if (changed === source) throw new Error("cap line not found");
-    writeFileSync(file, changed);
-  });
-  variants.push({
-    label: "module compile cache on, warm",
-    bin: cacheBin,
-    ms: [] as number[],
-    peak: [] as number[],
-  });
-  // Probe, not shipped: the whole command graph bundled into one file, to measure what a bundle
-  // would save. Its package.json and build.json sit where the bundled version reader looks.
-  const bundleDir = join(root, "dist-bundle-probe");
-  copies.push(bundleDir);
-  cpSync(join(root, "dist"), bundleDir, { recursive: true });
-  const bundled = spawnSync(
-    process.env.BUN ?? "bun",
-    [
-      "build",
-      join(bundleDir, "src/assembly/command.js"),
-      "--outfile",
-      join(bundleDir, "src/assembly/command.bundle.js"),
-      "--target",
-      "node",
-      "--format",
-      "esm",
-      "--minify-syntax",
-      "--minify-whitespace",
-      "--external",
-      "koffi",
-      "--external",
-      "@modelcontextprotocol/server",
-      "--external",
-      "../adapters/mcp-transport/index.js",
-    ],
-    { encoding: "utf8", timeout: 120_000, windowsHide: true },
-  );
-  if (bundled.status === 0) {
-    renameSync(
-      join(bundleDir, "src/assembly/command.bundle.js"),
-      join(bundleDir, "src/assembly/command.js"),
-    );
-    copyFileSync(join(root, "package.json"), join(bundleDir, "package.json"));
-    copyFileSync(
-      join(root, "dist/build.json"),
-      join(bundleDir, "src/build.json"),
-    );
-    try {
-      run(join(bundleDir, "bin/forge.js"), ["issue", "show", id]);
-      variants.push({
-        label: "probe, not shipped: whole command graph in one file",
-        bin: join(bundleDir, "bin/forge.js"),
-        ms: [] as number[],
-        peak: [] as number[],
-      });
-    } catch (error) {
-      lines.push(
-        `Bundle probe built but did not run: ${String(error).slice(0, 300)}`,
-        "",
-      );
-    }
-  } else
-    lines.push(
-      `Bundle probe did not build: ${(bundled.stderr || String(bundled.error)).slice(0, 300)}`,
-      "",
-    );
   for (let n = 0; n < 11; n += 1)
     for (const variant of variants) {
       const result = run(variant.bin, ["issue", "show", id]);
@@ -514,17 +438,6 @@ try {
     ),
     "",
   );
-  // Cold: the cache folder is emptied before each run, so each run compiles and writes the cache.
-  const cold: number[] = [];
-  for (let n = 0; n < 5; n += 1) {
-    rmSync(cacheDir, { recursive: true, force: true, maxRetries: 5 });
-    cold.push(run(cacheBin, ["issue", "show", id]).ms);
-  }
-  lines.push(
-    `Module compile cache, first run with an empty cache: median ${median(cold).toFixed(0)} ms of 5. Measured with the cache in a folder of this run. Called with no folder, Node writes to \`${join(tmpdir(), "node-compile-cache")}\` (the system temp folder, shared by every Node program of the user), never the project; the files hold compiled code, and another process that can write there could plant its own.`,
-    "",
-  );
-
   // node:sqlite in a fresh process: its import, an open and a first statement, read-only and read-write.
   const sqliteProbe = join(folder, "sqlite-probe.mjs");
   writeFileSync(

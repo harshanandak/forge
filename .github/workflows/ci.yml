@@ -160,24 +160,20 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - name: CLI speed
-        run: node tools/bench/cli-speed.ts --gate
-      # The footprint report times the base branch's build against this one on the same runner.
+      # The speed gate compares this build with the base branch's, built here and run on the same runner.
       - name: Check out the base branch
-        if: always() && github.event_name == 'pull_request'
-        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.before }}
           path: base
           persist-credentials: false
       - name: Build the base branch
-        if: always() && github.event_name == 'pull_request'
-        continue-on-error: true
         working-directory: base
         run: |
           bun install --frozen-lockfile
           bun run build
+      - name: CLI speed
+        run: node tools/bench/cli-speed.ts --gate --base base/dist
       - name: CLI footprint
         if: always()
         env:

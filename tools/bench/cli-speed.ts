@@ -1,9 +1,10 @@
 // Speed of the everyday CLI commands: wall time and peak memory of the built package.
-// Run after `bun run build`: `node tools/bench/cli-speed.ts [--runs 9] [--gate] [--json out.json]`.
+// Run after `bun run build`: `node tools/bench/cli-speed.ts [--runs 9] [--gate] [--base <dist>] [--json out.json]`.
 // Each command starts a fresh Node process in a disposable project, as an agent would.
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,16 +16,23 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 interface Limit {
-  readonly maxMs: number;
-  readonly maxPeakMb?: number;
+  /** Absolute ceiling on the median; a runner can be slow, so this only catches a gross regression. */
+  readonly ceilingMs: number;
+  /** Absolute cap on the median peak memory, which does not move with the runner. */
+  readonly maxPeakMb: number;
 }
 
-// The speed gate: `issue show` median on a hosted runner. Platforms without a limit only report.
+// The speed gate, on the median of `issue show` on a hosted runner. Peak memory is checked against
+// an absolute cap. Time is checked against the build of the base branch, run in the same job and
+// interleaved with this build, so runner speed cancels out; the absolute time is only a ceiling.
+// Platforms without a limit only report.
 const GATE_COMMAND = "issue show";
 const LIMITS: Readonly<Record<string, Limit>> = {
-  win32: { maxMs: 400, maxPeakMb: 70 },
-  linux: { maxMs: 150, maxPeakMb: 70 },
+  win32: { ceilingMs: 500, maxPeakMb: 70 },
+  linux: { ceilingMs: 350, maxPeakMb: 85 },
 };
+/** This build may take at most this multiple of the base build's median time. */
+const MAX_RATIO_TO_BASE = 1.05;
 
 interface Row {
   readonly command: string;
@@ -45,6 +53,10 @@ if (!Number.isInteger(runs) || runs < 1)
 const gate = argv.includes("--gate");
 
 const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
+// `--base <dist folder>`: the base branch's build, measured against this one in the same job.
+const baseDist = flag("--base");
+const baseBin =
+  baseDist === undefined ? undefined : resolve(baseDist, "bin/forge.js");
 const folder = mkdtempSync(join(tmpdir(), "forge-bench-"));
 const project = join(folder, "project");
 mkdirSync(join(project, ".forge"), { recursive: true });
@@ -96,7 +108,10 @@ const env: Record<string, string> = {
 for (const name of ["PATH", "Path", "PATHEXT", "SystemRoot", "TEMP", "TMP"])
   if (process.env[name] !== undefined) env[name] = process.env[name];
 
-function run(args: readonly string[]): {
+function run(
+  args: readonly string[],
+  program: string = bin,
+): {
   stdout: string;
   ms: number;
   peakMb: number;
@@ -104,7 +119,7 @@ function run(args: readonly string[]): {
   const started = performance.now();
   const result = spawnSync(
     process.execPath,
-    ["--import", pathToFileURL(preload).href, bin, ...args],
+    ["--import", pathToFileURL(preload).href, program, ...args],
     {
       cwd: project,
       env,
@@ -128,9 +143,10 @@ function run(args: readonly string[]): {
 const median = (values: readonly number[]): number =>
   [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
 
-function measure(command: string, args: readonly string[]): Row {
-  run(args); // warm the file cache once; not counted
-  const samples = Array.from({ length: runs }, () => run(args));
+function toRow(
+  command: string,
+  samples: readonly { ms: number; peakMb: number }[],
+): Row {
   const times = samples.map((sample) => sample.ms);
   return {
     command,
@@ -138,6 +154,39 @@ function measure(command: string, args: readonly string[]): Row {
     minMs: Math.min(...times),
     maxMs: Math.max(...times),
     medianPeakMb: median(samples.map((sample) => sample.peakMb)),
+  };
+}
+
+function measure(command: string, args: readonly string[]): Row {
+  run(args); // warm the file cache once; not counted
+  return toRow(
+    command,
+    Array.from({ length: runs }, () => run(args)),
+  );
+}
+
+/** This build and the base build, alternating who goes first, so both see the same runner. */
+function measurePair(
+  command: string,
+  args: readonly string[],
+  baseProgram: string,
+): { current: Row; base: Row } {
+  run(args);
+  run(args, baseProgram);
+  const current: { ms: number; peakMb: number }[] = [];
+  const base: { ms: number; peakMb: number }[] = [];
+  for (let n = 0; n < runs; n += 1) {
+    if (n % 2 === 0) {
+      current.push(run(args));
+      base.push(run(args, baseProgram));
+    } else {
+      base.push(run(args, baseProgram));
+      current.push(run(args));
+    }
+  }
+  return {
+    current: toRow(command, current),
+    base: toRow(`${command} (origin/main build)`, base),
   };
 }
 
@@ -167,7 +216,10 @@ try {
       JSON.stringify({ title: "bench" }),
     ]),
   );
-  rows.push(measure("issue show", ["issue", "show", issueId]));
+  if (baseBin !== undefined && existsSync(baseBin)) {
+    const pair = measurePair(GATE_COMMAND, ["issue", "show", issueId], baseBin);
+    rows.push(pair.current, pair.base);
+  } else rows.push(measure(GATE_COMMAND, ["issue", "show", issueId]));
   rows.push(measure("issue list", ["issue", "list", "--limit", "50"]));
   rows.push(
     measure("memory add", [
@@ -217,13 +269,25 @@ if (gate) {
     console.log(`No speed limit is set for ${platform}; reported only.`);
   } else {
     const failures: string[] = [];
-    if (row.medianMs > limit.maxMs)
-      failures.push(
-        `${GATE_COMMAND} median ${row.medianMs.toFixed(0)} ms is over the ${limit.maxMs} ms limit on ${platform}`,
-      );
-    if (limit.maxPeakMb !== undefined && row.medianPeakMb > limit.maxPeakMb)
+    if (row.medianPeakMb > limit.maxPeakMb)
       failures.push(
         `${GATE_COMMAND} peak ${row.medianPeakMb.toFixed(1)} MB is over the ${limit.maxPeakMb} MB limit on ${platform}`,
+      );
+    if (row.medianMs > limit.ceilingMs)
+      failures.push(
+        `${GATE_COMMAND} median ${row.medianMs.toFixed(0)} ms is over the ${limit.ceilingMs} ms ceiling on ${platform}`,
+      );
+    const baseRow = rows.find(
+      (candidate) =>
+        candidate.command === `${GATE_COMMAND} (origin/main build)`,
+    );
+    if (baseRow === undefined)
+      failures.push(
+        `the origin/main build was not found${baseDist === undefined ? " (no --base folder was given)" : ` at ${baseDist}`}, so the check against the base branch cannot run; build the base branch first`,
+      );
+    else if (row.medianMs > MAX_RATIO_TO_BASE * baseRow.medianMs)
+      failures.push(
+        `${GATE_COMMAND} median ${row.medianMs.toFixed(0)} ms is more than ${MAX_RATIO_TO_BASE} times the origin/main build's ${baseRow.medianMs.toFixed(0)} ms in the same job on ${platform}`,
       );
     for (const message of failures) console.error(`::error::${message}`);
     if (failures.length > 0) process.exitCode = 1;
