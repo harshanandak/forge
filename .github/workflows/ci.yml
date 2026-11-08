@@ -139,8 +139,7 @@ jobs:
         run: bun run check:attw "$RUNNER_TEMP/forge-workflow.tgz"
 
   # Speed gate (forge-955): the built CLI must stay fast and light. The table lands in the job
-  # summary; `issue show` over its limit fails the job. Not in ci-gate: the gate script's inputs
-  # are pinned by tests, so this job is a separate required-by-review check.
+  # summary; `issue show` over its limit fails the job, and ci-gate requires it.
   speed:
     name: Speed (${{ matrix.os }}, Node 24)
     needs: changes
@@ -320,7 +319,7 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [changes, pr-title, structure, static, pack, verify]
+    needs: [changes, pr-title, structure, static, pack, speed, verify]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -331,6 +330,7 @@ jobs:
           STRUCTURE: ${{ needs.structure.result }}
           STATIC: ${{ needs.static.result }}
           PACK: ${{ needs.pack.result }}
+          SPEED: ${{ needs.speed.result }}
           VERIFY: ${{ needs.verify.result }}
           STARTED: ${{ needs.changes.outputs.started }}
         run: |
@@ -355,10 +355,11 @@ jobs:
           if [ "$EVENT" = "pull_request" ]; then require "pr-title" "$PR_TITLE"; fi
           if [ "$SCOPE" = "full" ]; then
             require "pack" "$PACK"
+            require "speed" "$SPEED"
             require "verify" "$VERIFY"
           elif [ "$SCOPE" = "docs" ] && [ "$EVENT" = "pull_request" ]; then
-            if [ "$VERIFY" != "skipped" ] || [ "$PACK" != "skipped" ]; then
-              echo "::error::verify='$VERIFY', pack='$PACK' on a documentation-only change"
+            if [ "$VERIFY" != "skipped" ] || [ "$PACK" != "skipped" ] || [ "$SPEED" != "skipped" ]; then
+              echo "::error::verify='$VERIFY', pack='$PACK', speed='$SPEED' on a documentation-only change"
               ok=0
             fi
           else
