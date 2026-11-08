@@ -21,6 +21,8 @@ const root = resolve(import.meta.dirname, "../..");
 const folder = mkdtempSync(join(tmpdir(), "forge-footprint-"));
 const project = join(folder, "project");
 const copies: string[] = [];
+/** Variant patches that did not match the build; reported in the output and by the exit code. */
+const patchFailures: string[] = [];
 mkdirSync(join(project, ".forge"), { recursive: true });
 writeFileSync(
   join(project, ".forge/config.yaml"),
@@ -130,13 +132,21 @@ function variantBin(
   name: string,
   edit: (dir: string) => void,
   source: string = join(root, "dist"),
-): string {
+): string | undefined {
   // A new, uniquely named folder beside dist (the package's own node_modules still resolve from
   // there). Only folders made here are recorded, so cleanup never touches one that already existed.
   const dir = mkdtempSync(join(root, `${name}-`));
   copies.push(dir);
   cpSync(source, dir, { recursive: true });
-  edit(dir);
+  try {
+    edit(dir);
+  } catch (error) {
+    // A patch that no longer matches the build must be loud, but must not hide the rest of the report.
+    patchFailures.push(
+      `${name}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return undefined;
+  }
   return join(dir, "bin/forge.js");
 }
 
@@ -348,7 +358,12 @@ try {
   );
 
   // Same job, interleaved, each against the shipped build.
-  const variants = [
+  const variants: {
+    label: string;
+    bin: string | undefined;
+    ms: number[];
+    peak: number[];
+  }[] = [
     { label: "shipped", bin, ms: [] as number[], peak: [] as number[] },
     {
       label: "yaml package files instead of the bundle",
@@ -393,13 +408,18 @@ try {
   variants.push({
     label: "block capture resolving paths in JavaScript (as before)",
     bin: variantBin("dist-js-realpath", (dir) => {
+      // The native resolver is the default of the port's second parameter; the JavaScript one
+      // replaces it, so the first root picks it and every file follows.
       const file = join(dir, "src/adapters/node-runtime/capture.js");
       const source = readFileSync(file, "utf8");
       const changed = source.replace(
-        "const realpath = realpathSync.native;",
-        "const realpath = realpathSync;",
+        "nativeRealpath = realpathSync.native)",
+        "nativeRealpath = realpathSync)",
       );
-      if (changed === source) throw new Error("realpath line not found");
+      if (changed === source)
+        throw new Error(
+          "the default native resolver (nativeRealpath = realpathSync.native) was not found in capture.js",
+        );
       writeFileSync(file, changed);
     }),
     ms: [] as number[],
@@ -423,6 +443,7 @@ try {
   });
   for (let n = 0; n < 11; n += 1)
     for (const variant of variants) {
+      if (variant.bin === undefined) continue; // its patch did not apply; named in the table below
       const result = run(variant.bin, ["issue", "show", id]);
       if (n === 0) continue; // warm-up round
       variant.ms.push(result.ms);
@@ -434,9 +455,10 @@ try {
     "",
     "| Build | Median ms | Median peak MB |",
     "| ----- | --------: | -------------: |",
-    ...variants.map(
-      (v) =>
-        `| ${v.label} | ${median(v.ms).toFixed(0)} | ${median(v.peak).toFixed(1)} |`,
+    ...variants.map((v) =>
+      v.bin === undefined
+        ? `| ${v.label} | patch did not apply | patch did not apply |`
+        : `| ${v.label} | ${median(v.ms).toFixed(0)} | ${median(v.peak).toFixed(1)} |`,
     ),
     "",
   );
@@ -515,7 +537,13 @@ try {
       const path = join(dir, file);
       let source = readFileSync(path, "utf8");
       for (const [from, to] of edits) {
-        if (!source.includes(from)) continue;
+        if (!source.includes(from)) {
+          // Keep the marks that still apply, but say which one drifted.
+          patchFailures.push(
+            `dist-phases: ${file} no longer contains: ${from.slice(0, 70)}`,
+          );
+          continue;
+        }
         source = source.replace(from, () => to);
       }
       writeFileSync(path, source);
@@ -549,13 +577,17 @@ try {
       ],
     ]);
   });
-  const phased = spawnSync(process.execPath, [phaseDir, "issue", "show", id], {
-    cwd: project,
-    env,
-    encoding: "utf8",
-    timeout: 60_000,
-    windowsHide: true,
-  });
+  const phased = spawnSync(
+    process.execPath,
+    [phaseDir ?? bin, "issue", "show", id],
+    {
+      cwd: project,
+      env,
+      encoding: "utf8",
+      timeout: 60_000,
+      windowsHide: true,
+    },
+  );
   const marks = phased.stderr
     .split(String.fromCharCode(10))
     .filter((line) => line.startsWith("MARK|"))
@@ -727,7 +759,19 @@ try {
     rmSync(copy, { recursive: true, force: true, maxRetries: 5 });
   rmSync(folder, { recursive: true, force: true, maxRetries: 5 });
 }
+if (patchFailures.length > 0)
+  lines.push(
+    "",
+    "Variant patches that did not match this build (those rows are missing or incomplete):",
+    "",
+    ...patchFailures.map((failure) => `- ${failure}`),
+    "",
+  );
 const text = lines.join("\n");
 console.log(text);
 if (process.env.GITHUB_STEP_SUMMARY)
   appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}\n`);
+// Loud in the step output; the workflow step is a report (continue-on-error), so it does not gate.
+for (const failure of patchFailures)
+  console.error(`::error::footprint variant patch did not match: ${failure}`);
+if (patchFailures.length > 0) process.exitCode = 1;
