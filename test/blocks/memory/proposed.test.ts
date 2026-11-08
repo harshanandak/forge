@@ -100,7 +100,7 @@ test("a new rule note waits for the owner and is not served as a rule", async ()
   expect(served.receipt.selected).toEqual([]);
   expect(served.receipt.proposed).toEqual({
     count: 1,
-    message: "1 proposed rule awaits owner review",
+    message: "1 proposed note awaits owner review",
   });
   const attached = await call<{ receipt: { selected: unknown[] } }>(
     "memory.attach",
@@ -634,4 +634,121 @@ test("a bundle with no proposal state stays the format older restorers read", as
   expect(
     await call<{ format: string }>("memory.export", { level: "device" }),
   ).toMatchObject({ format: "forge.memory.export/2" });
+});
+
+test("accept checks every item before writing and treats note ids that resolve to one note as one", async () => {
+  const { call, rules, state } = setup();
+  const added = await propose(call, "alias rule");
+  const [item] = await decisionItems(call, [added.id]);
+  const alias = { ...item!, id: added.id.replace("note-", "note-0") };
+  const writes = state.counts.put + state.counts.putMany;
+  // A repeated id with a stale revision is still checked: nothing is written.
+  await refused(
+    () =>
+      call("memory.accept", {
+        items: [item, { ...item!, revision: item!.revision + 1 }],
+        approval: ownerApproval,
+      }),
+    "PROPOSAL_CHANGED",
+  );
+  expect(state.counts.put + state.counts.putMany).toBe(writes);
+  expect((await rules()).text.text).not.toContain("alias rule");
+  // note-1 and note-01 are the same note: written once, reported once.
+  const accepted = await call("memory.accept", {
+    items: [item, alias],
+    approval: ownerApproval,
+  });
+  expect(accepted.results).toEqual([{ id: added.id, status: "accepted" }]);
+  expect((await rules()).text.text).toContain("alias rule");
+});
+
+test("removing one owner tag while another stays never lets changed text skip the owner", async () => {
+  const { call, rules } = setup();
+  const added = await propose(call, "keep both tags", ["rule", "preference"]);
+  await decide(call, "memory.accept", [added.id]);
+  const edited = await call("memory.add", {
+    id: added.id,
+    text: "text changed with a tag removal",
+    tags: ["rule"],
+    approval: ownerApproval,
+  });
+  expect(edited.note.text.text).toBe("keep both tags");
+  expect(edited.note.tags).toEqual(["rule", "preference"]);
+  expect(edited.note.proposal?.text.text).toBe(
+    "text changed with a tag removal",
+  );
+  const served = await rules();
+  expect(served.text.text).toContain("keep both tags");
+  expect(served.text.text).not.toContain("text changed with a tag removal");
+  await decide(call, "memory.accept", [added.id]);
+  const shown = await call("memory.show", { id: added.id });
+  expect(shown.note.tags).toEqual(["rule"]);
+  expect(shown.note.text.text).toBe("text changed with a tag removal");
+});
+
+test("editing a rejected owner-tagged note proposes it again for the owner", async () => {
+  const { call, rules } = setup();
+  const added = await propose(call, "first try");
+  await decide(call, "memory.reject", [added.id]);
+  const edited = await call("memory.add", {
+    id: added.id,
+    text: "better try",
+  });
+  expect(edited.note.status).toBe("proposed");
+  expect(edited.notice).toContain("proposed again");
+  expect((await rules()).text.text).not.toContain("better try");
+  expect(await decide(call, "memory.accept", [added.id])).toMatchObject({
+    results: [{ id: added.id, status: "accepted" }],
+  });
+  expect((await rules()).text.text).toContain("better try");
+});
+
+test("search finds a pending revision by the tag it proposes", async () => {
+  const { call } = setup();
+  const plain = await call("memory.add", {
+    level: "device",
+    text: "release checklist",
+    tags: ["fact"],
+  });
+  await call("memory.add", {
+    id: plain.id,
+    text: "release checklist",
+    tags: ["fact", "rule"],
+  });
+  const found = await call<{ hits: { id: string }[] }>("memory.search", {
+    query: "release checklist",
+    tag: "rule",
+  });
+  expect(found.hits.map((hit) => hit.id)).toEqual([plain.id]);
+});
+
+test("restore leaves alone a note that is both never accepted and carrying a pending revision", async () => {
+  const { call, rules } = setup();
+  const proposal = {
+    text: { text: "pending text" },
+    tags: ["rule"],
+    links: [] as string[],
+    at: "2026-11-01T00:00:00Z",
+  };
+  const result = await call<{ added: number; conflicts: string[] }>(
+    "memory.restore",
+    {
+      format: "forge.memory.export/3",
+      level: "device",
+      notes: [
+        {
+          id: "device/note-5",
+          tags: ["rule"],
+          links: [],
+          text: { text: "unaccepted base text" },
+          status: "proposed",
+          proposal,
+        },
+      ],
+      approval: ownerApproval,
+    },
+  );
+  expect(result.added).toBe(0);
+  expect(result.conflicts).toEqual(["device/note-5"]);
+  expect((await rules()).text.text).not.toContain("unaccepted base text");
 });
