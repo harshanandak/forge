@@ -9,7 +9,7 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { LeaseHolder, LeaseRecord } from "../../src/generated/types.ts";
 import { validateLeaseHolder } from "../../src/generated/validators.ts";
-import { durableStore, PRAGMA_TABLE, type DurableStorage } from "./store.ts";
+import { durableStore, PRAGMA_TABLE, type DurableState } from "./store.ts";
 
 const NAMESPACE = "forge/work";
 const REQUESTS = "domain_cloud_requests";
@@ -61,7 +61,7 @@ export class Project {
   readonly #db;
   readonly #owner;
 
-  constructor(ctx: { readonly storage: DurableStorage }) {
+  constructor(ctx: DurableState) {
     this.#db = durableStore(ctx.storage);
     this.#owner = new StateOwner(this.#db, { now: () => Date.now() });
     this.#owner.initialize([domain]);
