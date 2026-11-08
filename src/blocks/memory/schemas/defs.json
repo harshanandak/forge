@@ -77,11 +77,36 @@
       "additionalProperties": false,
       "required": ["revision", "at"]
     },
+    "NoteStatus": {
+      "enum": ["proposed", "rejected"],
+      "description": "Absent on an accepted note. proposed: a new note with an owner tag that waits for the owner and is never served as a rule. rejected: the owner declined it; it stays readable."
+    },
+    "Proposal": {
+      "type": "object",
+      "properties": {
+        "text": { "$ref": "defs.json#/$defs/Untrusted" },
+        "scope": { "$ref": "defs.json#/$defs/Scope" },
+        "tags": { "$ref": "defs.json#/$defs/Tags" },
+        "links": { "$ref": "defs.json#/$defs/Links" },
+        "at": { "type": "string", "maxLength": 40 }
+      },
+      "additionalProperties": false,
+      "required": ["text", "tags", "links", "at"],
+      "description": "A revision of an accepted note that waits for the owner. The note's own text and tags stay served until the owner accepts it."
+    },
     "Note": {
       "type": "object",
       "properties": {
         "id": {
           "$ref": "defs.json#/$defs/NoteId"
+        },
+        "status": { "$ref": "defs.json#/$defs/NoteStatus" },
+        "proposal": { "$ref": "defs.json#/$defs/Proposal" },
+        "rejectedProposals": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "defs.json#/$defs/Proposal" },
+          "description": "Revisions the owner rejected, kept for history."
         },
         "level": {
           "$ref": "defs.json#/$defs/Level"

@@ -59,8 +59,94 @@
         "approval": {
           "type": "object",
           "anyOf": [
-            { "$ref": "defs.json#/$defs/Approval" },
-            { "$ref": "defs.json#/$defs/RelayedApproval" }
+            {
+              "$ref": "defs.json#/$defs/Approval"
+            },
+            {
+              "$ref": "defs.json#/$defs/RelayedApproval"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": ["format", "level", "notes"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "forge.memory.export/3"
+        },
+        "level": {
+          "$ref": "defs.json#/$defs/Level",
+          "description": "The level the notes go back to: an export's own level."
+        },
+        "project": {
+          "$ref": "defs.json#/$defs/Project"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "next": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "notes": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "defs.json#/$defs/NoteId"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "scope": {
+                "$ref": "defs.json#/$defs/Scope"
+              },
+              "tags": {
+                "$ref": "defs.json#/$defs/Tags"
+              },
+              "links": {
+                "$ref": "defs.json#/$defs/Links"
+              },
+              "text": {
+                "$ref": "defs.json#/$defs/Untrusted"
+              },
+              "status": {
+                "$ref": "defs.json#/$defs/NoteStatus"
+              },
+              "proposal": {
+                "$ref": "defs.json#/$defs/Proposal"
+              },
+              "rejectedProposals": {
+                "type": "array",
+                "maxItems": 5,
+                "items": {
+                  "$ref": "defs.json#/$defs/Proposal"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": ["id", "tags", "links", "text"]
+          }
+        },
+        "approval": {
+          "type": "object",
+          "anyOf": [
+            {
+              "$ref": "defs.json#/$defs/Approval"
+            },
+            {
+              "$ref": "defs.json#/$defs/RelayedApproval"
+            }
           ]
         }
       },
@@ -126,8 +212,12 @@
         "approval": {
           "type": "object",
           "anyOf": [
-            { "$ref": "defs.json#/$defs/Approval" },
-            { "$ref": "defs.json#/$defs/RelayedApproval" }
+            {
+              "$ref": "defs.json#/$defs/Approval"
+            },
+            {
+              "$ref": "defs.json#/$defs/RelayedApproval"
+            }
           ]
         }
       },

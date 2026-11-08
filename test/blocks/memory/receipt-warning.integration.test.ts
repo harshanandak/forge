@@ -62,7 +62,56 @@ module.exports["memory.rules"] = (args) => {
         )
       ).envelope,
     ) as { id: string };
+    // An owner-tagged add is only proposed: the owner's relayed accept makes it a served rule.
+    const shown = done(
+      (
+        await runCli(
+          assembly.catalog,
+          ["memory", "show", added.id, "--json"],
+          options,
+        )
+      ).envelope,
+    ) as { note: { revision: number; text: { text: string } } };
+    const items = [
+      {
+        id: added.id,
+        revision: shown.note.revision,
+        text: shown.note.text.text,
+      },
+    ];
+    const accept = async (approval: unknown) =>
+      (
+        await runCli(
+          assembly.catalog,
+          ["memory", "accept", "--input", JSON.stringify({ items, approval })],
+          options,
+        )
+      ).envelope;
+    done(
+      await accept(
+        approvalReply(
+          await accept(ownerApproval),
+          { harness: "fixture", thread: "fixture" },
+          ownerApproval.quote,
+        ),
+      ),
+    );
     // Restore writes a page of 25 notes in one transaction; 55 single adds outlast the deadline on Windows CI.
+    // Only decisions are owner-tagged here: a restored owner-tagged note would come back proposed
+    // and unserved, and this journey needs 55 served rules to overflow the packet.
+    if (large)
+      writeFileSync(
+        join(root, ".forge/config.yaml"),
+        JSON.stringify({
+          schemaVersion: "forge.config/1",
+          blocks: {
+            memory: {
+              source: { builtin: "forge/memory" },
+              config: { approval: { ownerTags: ["decision"] } },
+            },
+          },
+        }),
+      );
     if (large)
       for (let start = 0; start < 55; start += 25) {
         const page = {
@@ -134,7 +183,7 @@ module.exports["memory.rules"] = (args) => {
     };
     expect(result.text.text).toContain("retained device rule");
     expect(result.receipt?.selected).toEqual([
-      { id: added.id, revision: 1, scope: "general" },
+      { id: added.id, revision: 2, scope: "general" },
     ]);
     expect(result.receipt?.warnings).toEqual(cli.warnings);
     expect(result.receipt.warnings[0]?.code).toBe("PROJECT_CONFIG_UNAVAILABLE");

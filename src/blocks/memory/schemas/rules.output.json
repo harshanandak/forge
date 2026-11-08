@@ -14,6 +14,16 @@
           "type": "array",
           "items": { "$ref": "#/$defs/Rule" }
         },
+        "proposed": {
+          "type": "object",
+          "description": "Present when notes or edits wait for the owner. They are never in the packet.",
+          "properties": {
+            "count": { "type": "integer", "minimum": 1 },
+            "message": { "type": "string", "maxLength": 80 }
+          },
+          "required": ["count", "message"],
+          "additionalProperties": false
+        },
         "omitted": {
           "type": "array",
           "description": "The first 50 omitted rules in packet order; omittedCount includes all omitted rules.",

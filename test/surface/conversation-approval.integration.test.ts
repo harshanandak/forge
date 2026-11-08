@@ -177,13 +177,40 @@ for (const route of ["cli", "mcp"] as const) {
           links: ["device/note-2"],
         }),
       ) as { id: string; note: { revision: number } };
+      // An owner-tagged note and its edit each wait for the owner's relayed accept to be served.
+      const accept = async () => {
+        const shown = done(await h.call("memory.show", { id: first.id })) as {
+          note: {
+            revision: number;
+            text: { text: string };
+            proposal?: { text: { text: string } };
+          };
+        };
+        return done(
+          await h.call("memory.accept", {
+            items: [
+              {
+                id: first.id,
+                revision: shown.note.revision,
+                text: (shown.note.proposal ?? shown.note).text.text,
+              },
+            ],
+            approval: owner,
+          }),
+        );
+      };
+      await accept();
+      const accepted = done(await h.call("memory.show", { id: first.id })) as {
+        note: { revision: number };
+      };
       done(
         await h.call("memory.add", {
           id: first.id,
           text: "secret beta",
-          expectRevision: first.note.revision,
+          expectRevision: accepted.note.revision,
         }),
       );
+      await accept();
       const before = done(await h.call("memory.show", { id: first.id })) as {
         note: Record<string, unknown>;
       };
@@ -209,10 +236,10 @@ for (const route of ["cli", "mcp"] as const) {
         ["memory.rules", {}],
         ["memory.rules", { notes: true }],
         ["memory.export", { level: "device" }],
-        ["memory.move", { id: first.id, to: "project", expectRevision: 3 }],
+        ["memory.move", { id: first.id, to: "project", expectRevision: 5 }],
         [
           "memory.move",
-          { id: first.id, to: "project", expectRevision: 3, keep: true },
+          { id: first.id, to: "project", expectRevision: 5, keep: true },
         ],
       ] as const)
         expect(JSON.stringify(await h.call(op, input))).not.toContain("secret");
@@ -391,13 +418,8 @@ for (const route of ["cli", "mcp"] as const) {
       expect(
         done(await h.call("memory.show", { id: "device/note-3" })),
       ).toMatchObject({
-        note: {
-          approval: {
-            by: "owner",
-            quote: { text: owner.quote },
-            at: expect.any(String) as unknown,
-          },
-        },
+        // A restored owner-tagged note waits for the owner's accept, whatever the bundle says.
+        note: { status: "proposed" },
       });
       expect(
         await h.call("memory.restore", {

@@ -16,6 +16,11 @@
         "type": "string",
         "maxLength": 40
       }
+    },
+    "notice": {
+      "type": "string",
+      "maxLength": 400,
+      "description": "Present when owner-tagged notes were restored as proposals that wait for the owner."
     }
   },
   "additionalProperties": false,

@@ -1,7 +1,7 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { StateEvent, StateRecord } from "../../../src/generated/types.ts";
-import { loadEntry, memoryState } from "./lib.ts";
+import { accepted, loadEntry, memoryState } from "./lib.ts";
 
 setDefaultTimeout(30_000);
 const key = "note/000000001";
@@ -103,7 +103,7 @@ for (const change of ["marker", "links", "text", "tags", "scope"] as const)
 
 test("a new-format rule marker retains creation without a spurious updated date", async () => {
   const { call, line, setDay } = setup();
-  await call("memory.add", {
+  await accepted(call, {
     level: "device",
     scope: "general",
     text: "new owner rule",

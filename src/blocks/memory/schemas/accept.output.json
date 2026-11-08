@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "results": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "status": {
+            "enum": [
+              "accepted",
+              "not_proposed",
+              "not_found",
+              "read_only",
+              "conflict"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": ["id", "status"]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": ["results"]
+}

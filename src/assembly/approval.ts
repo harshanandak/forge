@@ -251,9 +251,11 @@ export function directApproval(options: {
 const MEMORY_OWNER_OPS = new Set([
   "memory.forget",
   "memory.restore",
+  "memory.accept",
+  "memory.reject",
   "decision.adopt",
 ]);
-/** Memory forget, restore and adopt claim the owner's words, so they need a relayed reply. */
+/** Memory forget, restore, accept, reject and adopt claim the owner's words, so they need a relayed reply. */
 export function memoryOwnerOp(candidate: {
   blockId?: string | undefined;
   declaredOp?: string | undefined;
@@ -291,6 +293,23 @@ export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
   const id = typeof fields?.id === "string" ? fields.id : "";
   if (declaredOp === "decision.adopt")
     return `Adopt decision ${id} so it becomes a binding standing rule.`;
+  if (declaredOp === "memory.accept" || declaredOp === "memory.reject") {
+    // What the owner sees is what the call binds: each note's id, revision and its whole proposed
+    // text, never a first line or a cut. One call holds at most 10 items, so the ask stays bounded.
+    const lines = (Array.isArray(fields?.items) ? fields.items : []).map(
+      (entry: unknown) => {
+        const item = object(entry);
+        const text =
+          typeof item?.text === "string"
+            ? item.text.split(/\r?\n/u).join("\n    ")
+            : "(text not shown)";
+        return `- ${String(item?.id)} (revision ${String(item?.revision)}):\n    ${text}`;
+      },
+    );
+    return declaredOp === "memory.accept"
+      ? `Accept these proposed notes so they are served to every session:\n${lines.join("\n")}`
+      : `Reject these proposed notes; they stay in history and are never served:\n${lines.join("\n")}`;
+  }
   if (declaredOp === "memory.restore") {
     const notes = Array.isArray(fields?.notes) ? fields.notes.length : 0;
     return `Restore ${notes} note${notes === 1 ? "" : "s"} from an export into Forge memory.`;
