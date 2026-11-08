@@ -4,12 +4,14 @@
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -64,7 +66,7 @@ writeFileSync(
     "  const mb = (bytes) => Math.round(bytes / 104857.6) / 10;",
     "  const memory = process.memoryUsage();",
     "  const status = {};",
-    "  try { for (const line of readFileSync('/proc/self/status', 'utf8').split(String.fromCharCode(10))) { const m = /^(VmRSS|RssAnon|RssFile|RssShmem|VmData): *([0-9]+) kB/.exec(line); if (m) status[m[1]] = Math.round(m[2] / 102.4) / 10; } } catch {}",
+    "  try { for (const line of readFileSync('/proc/self/status', 'utf8').split(String.fromCharCode(10))) { const i = line.indexOf(':'); const key = line.slice(0, i); if (['VmRSS', 'RssAnon', 'RssFile', 'RssShmem', 'VmData'].includes(key)) status[key] = Math.round(parseInt(line.slice(i + 1).trim(), 10) / 102.4) / 10; } } catch {}",
     "  const space = Object.fromEntries(v8.getHeapSpaceStatistics().map((s) => [s.space_name, mb(s.space_size)]));",
     "  writeFileSync(process.env.FORGE_FOOTPRINT, JSON.stringify({",
     "    peak: mb(process.resourceUsage().maxRSS * 1024), heapUsed: mb(memory.heapUsed), heapTotal: mb(memory.heapTotal),",
@@ -328,14 +330,15 @@ try {
     const pkg = /node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(url);
     return pkg ? `node_modules/${pkg[1]}` : "dist/bin";
   };
-  show.events.forEach(([label, rss], index) => {
+  show.events.forEach(([, rss], index) => {
     if (index === 0) return;
-    const key = groupOf(label);
-    growth.set(key, (growth.get(key) ?? 0) + rss - show.events[index - 1]![1]);
+    const [before, was] = show.events[index - 1]!;
+    const key = groupOf(before);
+    growth.set(key, (growth.get(key) ?? 0) + rss - was);
   });
   lines.push(
     "",
-    "Resident memory growth of one `issue show`, charged to the next module load or block run after each step (MB; `vm` rows are the block sandbox):",
+    "Resident memory growth of one `issue show`, that follows each step until the next module load or block run (loading the module and running Forge code before the next step) (MB; `vm` rows are the block sandbox):",
     "",
     ...[...growth]
       .sort((a, b) => b[1] - a[1])
@@ -436,6 +439,62 @@ try {
     ms: [] as number[],
     peak: [] as number[],
   });
+  // Probe, not shipped: the whole command graph bundled into one file, to measure what a bundle
+  // would save. Its package.json and build.json sit where the bundled version reader looks.
+  const bundleDir = join(root, "dist-bundle-probe");
+  copies.push(bundleDir);
+  cpSync(join(root, "dist"), bundleDir, { recursive: true });
+  const bundled = spawnSync(
+    process.env.BUN ?? "bun",
+    [
+      "build",
+      join(bundleDir, "src/assembly/command.js"),
+      "--outfile",
+      join(bundleDir, "src/assembly/command.bundle.js"),
+      "--target",
+      "node",
+      "--format",
+      "esm",
+      "--minify-syntax",
+      "--minify-whitespace",
+      "--external",
+      "koffi",
+      "--external",
+      "@modelcontextprotocol/server",
+      "--external",
+      "../adapters/mcp-transport/index.js",
+    ],
+    { encoding: "utf8", timeout: 120_000, windowsHide: true },
+  );
+  if (bundled.status === 0) {
+    renameSync(
+      join(bundleDir, "src/assembly/command.bundle.js"),
+      join(bundleDir, "src/assembly/command.js"),
+    );
+    copyFileSync(join(root, "package.json"), join(bundleDir, "package.json"));
+    copyFileSync(
+      join(root, "dist/build.json"),
+      join(bundleDir, "src/build.json"),
+    );
+    try {
+      run(join(bundleDir, "bin/forge.js"), ["issue", "show", id]);
+      variants.push({
+        label: "probe, not shipped: whole command graph in one file",
+        bin: join(bundleDir, "bin/forge.js"),
+        ms: [] as number[],
+        peak: [] as number[],
+      });
+    } catch (error) {
+      lines.push(
+        `Bundle probe built but did not run: ${String(error).slice(0, 300)}`,
+        "",
+      );
+    }
+  } else
+    lines.push(
+      `Bundle probe did not build: ${(bundled.stderr || String(bundled.error)).slice(0, 300)}`,
+      "",
+    );
   for (let n = 0; n < 11; n += 1)
     for (const variant of variants) {
       const result = run(variant.bin, ["issue", "show", id]);
@@ -465,6 +524,69 @@ try {
     `Module compile cache, first run with an empty cache: median ${median(cold).toFixed(0)} ms of 5. Measured with the cache in a folder of this run. Called with no folder, Node writes to \`${join(tmpdir(), "node-compile-cache")}\` (the system temp folder, shared by every Node program of the user), never the project; the files hold compiled code, and another process that can write there could plant its own.`,
     "",
   );
+
+  // node:sqlite in a fresh process: its import, an open and a first statement, read-only and read-write.
+  const sqliteProbe = join(folder, "sqlite-probe.mjs");
+  writeFileSync(
+    sqliteProbe,
+    [
+      'import { readFileSync } from "node:fs";',
+      "const status = () => { const o = {}; try { for (const line of readFileSync('/proc/self/status', 'utf8').split(String.fromCharCode(10))) { const i = line.indexOf(':'); const key = line.slice(0, i); if (key === 'RssAnon' || key === 'RssFile') o[key] = Math.round(parseInt(line.slice(i + 1).trim(), 10) / 102.4) / 10; } } catch {} return o; };",
+      "const rss = () => Math.round(process.memoryUsage.rss() / 104857.6) / 10;",
+      "const steps = [];",
+      "const mark = (label) => steps.push({ label, rss: rss(), ...status() });",
+      'mark("start");',
+      'const { DatabaseSync } = await import("node:sqlite");',
+      'mark("import node:sqlite");',
+      "const db = new DatabaseSync(process.argv[2], { readOnly: process.argv[3] === 'ro' });",
+      'mark("open");',
+      "db.prepare('select count(*) as n from sqlite_master').get();",
+      'mark("first statement");',
+      "db.exec('PRAGMA cache_size=0; PRAGMA mmap_size=0');",
+      'mark("cache_size 0 and mmap_size 0");',
+      "db.close();",
+      'mark("close");',
+      "console.log(JSON.stringify(steps));",
+      "",
+    ].join("\n"),
+  );
+  for (const mode of ["ro", "rw"] as const) {
+    const probed = spawnSync(
+      process.execPath,
+      [sqliteProbe, join(project, ".forge/state.sqlite"), mode],
+      {
+        cwd: project,
+        env,
+        encoding: "utf8",
+        timeout: 60_000,
+        windowsHide: true,
+      },
+    );
+    if (probed.status !== 0) {
+      lines.push(
+        `node:sqlite probe (${mode}) failed: ${probed.stderr.slice(0, 300)}`,
+        "",
+      );
+      continue;
+    }
+    const steps = JSON.parse(probed.stdout) as {
+      label: string;
+      rss: number;
+      RssAnon?: number;
+      RssFile?: number;
+    }[];
+    lines.push(
+      `node:sqlite in a fresh process, ${mode === "ro" ? "read-only open (as issue show does)" : "read-write open"} (MB):`,
+      "",
+      "| Step | RSS | Change | Anonymous | File-backed |",
+      "| ---- | --: | -----: | --------: | ----------: |",
+      ...steps.map(
+        (step, index) =>
+          `| ${step.label} | ${step.rss} | ${index === 0 ? "" : (step.rss - steps[index - 1]!.rss).toFixed(1)} | ${step.RssAnon ?? "n/a"} | ${step.RssFile ?? "n/a"} |`,
+      ),
+      "",
+    );
+  }
 
   // Starting one program through the process adapter: the first call pays module and native setup.
   const launchScript = join(folder, "launch.mjs");
