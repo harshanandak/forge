@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   PROJECT_MANIFEST,
+  type ProjectManifest,
   initProjectManifest,
   readProjectManifest,
 } from "../../src/assembly/project-manifest.ts";
@@ -40,10 +41,11 @@ test("a missing manifest reads as no manifest", () => {
 }, 30_000);
 
 test("a valid manifest reads back with and without a name", () => {
-  for (const manifest of [
+  const cases: ProjectManifest[] = [
     { schema: 1, id: ID },
     { schema: 1, id: ID, name: "demo-app" },
-  ]) {
+  ];
+  for (const manifest of cases) {
     const p = project(manifest);
     try {
       expect(readProjectManifest(p.root)).toEqual(manifest);

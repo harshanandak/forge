@@ -117,6 +117,12 @@ import { syncSkills, type TemplateFile } from "./skills.ts";
 import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
 import { openLevels, PROJECT_STATE, requireRegisteredStore } from "./levels.ts";
 import {
+  PROJECT_MANIFEST,
+  initProjectManifest,
+  manifestExists,
+  projectManifestExists,
+} from "./project-manifest.ts";
+import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
   createAssemblyProviders,
@@ -1329,6 +1335,25 @@ export async function createAssembly(
               } finally {
                 await opened.close();
               }
+            });
+          }
+          if (request.op === "project.init") {
+            if (bound.context.variant !== "project")
+              refuse("CONTEXT_MISSING", "Project init requires a project");
+            // Refuse before asking the owner anything when the id already exists.
+            if (projectManifestExists(root)) throw manifestExists();
+            await approve(
+              request,
+              `Create ${PROJECT_MANIFEST} with a new random project id for ${root}. The id is never changed by init.`,
+            );
+            const made = initProjectManifest(
+              root,
+              typeof input.name === "string" ? input.name : undefined,
+            );
+            return success(request.op, {
+              id: made.id,
+              ...(made.name === undefined ? {} : { name: made.name }),
+              path: PROJECT_MANIFEST,
             });
           }
           const configHandler = call.configOperations[request.op];

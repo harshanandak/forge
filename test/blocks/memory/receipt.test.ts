@@ -73,6 +73,7 @@ test("receipt names every selected device and project rule with its current revi
     project: () =>
       Promise.resolve({
         identity: { id: "0123456789abcdef", name: "project" },
+        projectId: "0123456789abcdef",
         state: project,
       }),
   });

@@ -9,6 +9,7 @@ test("startup notes include only live rule text in scope order, with the legacy 
     project: () =>
       Promise.resolve({
         identity: { id: "0123456789abcdef", name: "project" },
+        projectId: "0123456789abcdef",
         state: project,
       }),
   });
@@ -115,6 +116,7 @@ test("startup notes merge device and project by recorded timestamp within each s
     project: () =>
       Promise.resolve({
         identity: { id: "0123456789abcdef", name: "project" },
+        projectId: "0123456789abcdef",
         state: project,
       }),
   };

@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "approval": {},
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,64}$",
+      "description": "Optional label for the project; leave it out if the name could reveal a client."
+    }
+  },
+  "additionalProperties": false
+}

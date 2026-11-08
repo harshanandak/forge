@@ -38,6 +38,7 @@ async function setup(count = 3, globals: Record<string, unknown> = {}) {
     project: () =>
       Promise.resolve({
         identity: { id: projectId, name: "alpha" },
+        projectId,
         state: project,
       }),
   });
