@@ -1,6 +1,12 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import type { StateEvent, StateRecord } from "../../../src/generated/types.ts";
-import { loadEntry, memoryState, ownerApproval } from "./lib.ts";
+import {
+  accepted,
+  decisionItems,
+  loadEntry,
+  memoryState,
+  ownerApproval,
+} from "./lib.ts";
 
 setDefaultTimeout(30_000);
 const key = "note/000000001";
@@ -63,7 +69,7 @@ test("new notes durably retain creation time beyond retained versions and expose
   await call("memory.add", {
     level: "device",
     text: "retained original",
-    tags: ["rule"],
+    tags: ["fact"],
   });
   expect(state.get(key)!.value).toMatchObject({ createdAt: day(1) });
   for (let n = 2; n <= 9; n++) {
@@ -114,7 +120,7 @@ test("legacy creation time uses the oldest retained version and marks approximat
 test("rule lines carry ids and UTC creation/change dates while ignoring metadata and links-only updates", async () => {
   const { call, setDay, setTime } = setup();
   setTime("2026-10-01T23:30:00-05:00");
-  await call("memory.add", {
+  await accepted(call, {
     level: "device",
     scope: "general",
     text: "owner\n rule",
@@ -150,6 +156,10 @@ test("rule lines carry ids and UTC creation/change dates while ignoring metadata
   );
   setDay(4);
   await call("memory.add", { id: "note-1", text: "changed rule" });
+  await call("memory.accept", {
+    items: await decisionItems(call, ["device/note-1"]),
+    approval: ownerApproval,
+  });
   expect(await line()).toBe(
     "- [general] device/note-1 (created 2026-10-02, updated 2026-10-04) changed rule",
   );
@@ -174,13 +184,13 @@ test("rule lines carry ids and UTC creation/change dates while ignoring metadata
 test("the 6000 rule budget includes complete prefixes, ids, dates and separators while pointer stays identical", async () => {
   const { call } = setup();
   const prefix = "- [general] device/note-1 (created 2026-10-01) ";
-  await call("memory.add", {
+  await accepted(call, {
     level: "device",
     scope: "general",
     text: "x".repeat(6000 - prefix.length),
     tags: ["rule"],
   });
-  await call("memory.add", {
+  await accepted(call, {
     level: "device",
     scope: "general",
     text: "extra",
@@ -221,8 +231,22 @@ test("the 6000 rule budget includes complete prefixes, ids, dates and separators
 });
 
 test("show retains every version timestamp and only its approval after metadata churn; forget keeps explicit who/time", async () => {
-  const { call, setDay } = setup();
-  await call("memory.add", { level: "device", text: "first", tags: ["rule"] });
+  const { call, setDay, state } = setup();
+  // The value a first add wrote, with its owner tag already accepted.
+  state.put(
+    key,
+    {
+      text: "first",
+      createdAt: day(1),
+      changedAt: day(1),
+      textAt: day(1),
+      scope: "resolved",
+      tags: ["rule"],
+      links: [],
+      previous: [],
+    },
+    { expectRevision: 0 },
+  );
   setDay(2);
   await call("memory.add", {
     id: "note-1",

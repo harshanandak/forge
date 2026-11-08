@@ -23,6 +23,11 @@
           "proposedForget": {
             "$ref": "defs.json#/$defs/ProposedForget"
           },
+          "status": { "$ref": "defs.json#/$defs/NoteStatus" },
+          "pendingProposal": {
+            "const": true,
+            "description": "An edit of this accepted note waits for the owner; show returns it."
+          },
           "score": {
             "type": "number"
           },

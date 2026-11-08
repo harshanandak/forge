@@ -708,6 +708,28 @@ async function rules() {
       JSON.stringify({ text: marker, level, scope, tags }),
     ]).result;
   const device = add("device", "general", ["rule"]);
+  // An owner-tagged add is only proposed: the owner's relayed reply to memory accept serves it.
+  const claim = { by: "owner", quote: "Accept this rule." };
+  const acceptRule = () => {
+    // The approval binds the revision and text the owner is shown, so read them first.
+    const note = cli(["memory", "show", device.id]).result.note;
+    const items = [
+      {
+        id: device.id,
+        revision: note.revision,
+        text: (note.proposal ?? note).text.text,
+      },
+    ];
+    const accept = (approval) => JSON.stringify({ items, approval });
+    const asked = cli(["memory", "accept", "--input", accept(claim)], 1);
+    cli([
+      "memory",
+      "accept",
+      "--input",
+      accept(approvalReply(asked, undefined, claim.quote)),
+    ]);
+  };
+  acceptRule();
   assert.equal(
     typeof device.note.createdAt,
     "string",
@@ -776,11 +798,15 @@ async function rules() {
     "--input",
     JSON.stringify({
       id: device.id,
-      expectRevision: 1,
+      // The accept above wrote revision 2; read the current one rather than assume it.
+      expectRevision: cli(["memory", "show", device.id]).result.note.revision,
       text: "dated rule revision",
     }),
   ]).result.note;
   assert.equal(edited.createdAt, device.note.createdAt);
+  // A text edit of an owner-tagged note is only proposed until the owner accepts it.
+  assert.ok(!packet().includes("dated rule revision"));
+  acceptRule();
   assert.ok(
     packet().includes(
       `${device.id} (created ${createdDate}, updated ${edited.updatedAt.slice(0, 10)}) dated rule revision`,

@@ -282,7 +282,6 @@ test("linked worktree memory pointer scope uses the normalized shared checkout n
         text: `Device rule for ${scope}`,
         level: "device",
         scope,
-        tags: ["rule"],
       }),
     );
   const loaded = done(await fromLane("memory.rules", {})) as {

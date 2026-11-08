@@ -122,20 +122,45 @@ for (const route of ["cli", "mcp"] as const)
         tags: ["rule"],
       });
       expect(first.note.createdAt).toBeString();
+      // An owner-tagged note is proposed until the owner's relayed accept makes it a served rule.
+      const acceptance = {
+        by: "owner",
+        quote: "Accept this rule.",
+      };
+      const accept = async (id: string) => {
+        const shown = (await call("memory.show", { id })) as {
+          note: {
+            revision: number;
+            text: { text: string };
+            proposal?: { text: { text: string } };
+          };
+        };
+        return call("memory.accept", {
+          items: [
+            {
+              id,
+              revision: shown.note.revision,
+              text: (shown.note.proposal ?? shown.note).text.text,
+            },
+          ],
+          approval: acceptance,
+        });
+      };
+      await accept(first.id);
       const created = first.note.createdAt;
       const date = created.slice(0, 10);
       expect(await packet()).toContain(
         `- [general] ${first.id} (created ${date}) dated first rule`,
       );
-      let note = first.note;
-      for (let n = 0; n < 8; n++)
-        note = (
-          await add({
-            id: first.id,
-            expectRevision: note.revision,
-            text: `dated edit ${n}`,
-          })
-        ).note;
+      for (let n = 0; n < 8; n++) {
+        await add({
+          id: first.id,
+          expectRevision: (await show(first.id)).revision,
+          text: `dated edit ${n}`,
+        });
+        await accept(first.id);
+      }
+      const note = await show(first.id);
       expect((await show(first.id)).createdAt).toBe(created);
       expect(await call("memory.search", { query: "dated" })).toMatchObject({
         hits: [{ createdAt: created, updatedAt: note.updatedAt }],
@@ -148,6 +173,7 @@ for (const route of ["cli", "mcp"] as const)
         text: "unchanged rule",
         tags: ["rule"],
       });
+      await accept(second.id);
       const secondLine = (await packet())
         .split("\n")
         .find((line) => line.includes(second.id));

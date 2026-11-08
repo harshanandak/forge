@@ -3,7 +3,8 @@
   "type": "object",
   "properties": {
     "format": {
-      "const": "forge.memory.export/2"
+      "enum": ["forge.memory.export/2", "forge.memory.export/3"],
+      "description": "forge.memory.export/3 only when a note in the bundle carries proposal state."
     },
     "level": {
       "$ref": "defs.json#/$defs/Level"
@@ -47,6 +48,19 @@
           },
           "text": {
             "$ref": "defs.json#/$defs/Untrusted"
+          },
+          "status": {
+            "$ref": "defs.json#/$defs/NoteStatus"
+          },
+          "proposal": {
+            "$ref": "defs.json#/$defs/Proposal"
+          },
+          "rejectedProposals": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "$ref": "defs.json#/$defs/Proposal"
+            }
           }
         },
         "additionalProperties": false,

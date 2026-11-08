@@ -10,6 +10,11 @@
     },
     "note": {
       "$ref": "defs.json#/$defs/Note"
+    },
+    "notice": {
+      "type": "string",
+      "maxLength": 600,
+      "description": "Present when the note or edit waits for the owner: says so and how the owner accepts it."
     }
   },
   "additionalProperties": false,
