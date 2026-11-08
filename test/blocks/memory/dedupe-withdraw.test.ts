@@ -33,6 +33,7 @@ interface Reply {
   status: string;
   id: string;
   notice?: string;
+  similarTo?: string[];
   note: Note;
   results: { id: string; status: string }[];
 }
@@ -61,7 +62,7 @@ async function accept(call: Call, ids: string[]) {
 const withdraw = (call: Call, id: string, revision: number, reason = "dup") =>
   call("memory.withdraw", { items: [{ id, revision }], reason });
 
-// Ten distinct words; dropping one leaves 9 shared of 10 in the union: exactly the threshold.
+// Ten distinct words; dropping one leaves 9 shared of 10 in the union: exactly the similarity threshold.
 const TEN = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
 // Eighteen distinct words; swapping one leaves 17 shared of 19 in the union: just under it.
 const EIGHTEEN = Array.from({ length: 18 }, (_, i) => `word${i + 1}x`);
@@ -109,43 +110,60 @@ test("an active rule is reported as already active", async () => {
   expect(again.notice).toContain("already active");
 });
 
-test("the overlap threshold holds at its boundary", async () => {
-  const { call } = setup();
+test("close wording is kept as its own proposal with a similarTo hint, at the 0.9 boundary", async () => {
+  const { call, rules } = setup();
   const base = await propose(call, TEN);
-  // 9 of 10 words shared: exactly 0.9, the same proposal.
+  expect(base.similarTo).toBeUndefined();
+  // 9 of 10 words shared: exactly 0.9. Not suppressed; the hint names the close note.
   const minusOne = TEN.split(" ").slice(0, 9).join(" ");
-  expect(await propose(call, minusOne)).toMatchObject({
-    status: "exists",
-    id: base.id,
-  });
-  // 8 of 10 words shared: 0.8, a different proposal.
+  const close = await propose(call, minusOne);
+  expect(close.status).toBe("added");
+  expect(close.id).not.toBe(base.id);
+  expect(close.similarTo).toEqual([base.id]);
+  expect(close.notice).toContain(
+    `similar to ${base.id}; withdraw this one if it says the same thing`,
+  );
+  // 8 of 10 words shared: 0.8, and 8 of 9 against the note above: no hint.
   const minusTwo = TEN.split(" ").slice(0, 8).join(" ");
-  expect((await propose(call, minusTwo)).status).toBe("added");
+  expect((await propose(call, minusTwo)).similarTo).toBeUndefined();
 
   const long = await propose(call, EIGHTEEN.join(" "));
   const swapped = [...EIGHTEEN.slice(0, 17), "newword"].join(" ");
-  // 17 of 19 words in the union: 0.894, just under the threshold.
-  expect((await propose(call, swapped)).status).toBe("added");
-  // 17 of 18 in the union: 0.944, over it.
-  const dropped = EIGHTEEN.slice(0, 17).join(" ");
-  expect(await propose(call, dropped)).toMatchObject({
-    status: "exists",
-    id: long.id,
-  });
+  // 17 of 19 words in the union: 0.894, just under the threshold: no hint.
+  const under = await propose(call, swapped);
+  expect(under.status).toBe("added");
+  expect(under.similarTo).toBeUndefined();
+  // 17 of 18 in the union: 0.944, over it: still added, with a hint naming both notes.
+  const dropped = await propose(call, EIGHTEEN.slice(0, 17).join(" "));
+  expect(dropped.status).toBe("added");
+  expect(dropped.similarTo).toEqual([long.id, under.id]);
+  // Every one of them waits for the owner.
+  expect((await rules()).receipt.proposed?.count).toBe(6);
 });
 
-test("a flipped negation is a different rule however long the text", async () => {
-  const { call } = setup();
-  const body =
-    "agents merge the pull request on their own once hosted checks pass and the owner has read every comment in the thread today";
-  const always = await propose(call, `Always ${body}`);
-  // 21 of 23 words in the union: 0.913 overlap, still a different rule because of the negation.
-  const never = await propose(call, `Never ${body}`);
-  expect(never.status).toBe("added");
-  expect(never.id).not.toBe(always.id);
-  // The same overlap with an ordinary word swapped is the same rule.
-  const swapped = await propose(call, `Always ${body.replace("today", "now")}`);
-  expect(swapped).toMatchObject({ status: "exists", id: always.id });
+test("the same words in another order are a different rule and reach the owner", async () => {
+  const { call, rules } = setup();
+  const first = await propose(
+    call,
+    "Always encrypt backups; never delete originals.",
+  );
+  await accept(call, [first.id]);
+  const opposite = await propose(
+    call,
+    "Always delete originals; never encrypt backups.",
+  );
+  expect(opposite.status).toBe("added");
+  expect(opposite.id).not.toBe(first.id);
+  expect(opposite.note.status).toBe("proposed");
+  expect(opposite.similarTo).toEqual([first.id]);
+  expect(opposite.notice).toContain(
+    `similar to ${first.id}; withdraw this one if it says the same thing`,
+  );
+  expect(opposite.notice!.length).toBeLessThanOrEqual(600);
+  const served = await rules();
+  expect(served.text.text).toContain("Always encrypt backups");
+  expect(served.text.text).not.toContain("Always delete originals");
+  expect(served.receipt.proposed?.count).toBe(1);
 });
 
 test("only owner-tagged notes in the same scope are compared", async () => {
@@ -181,6 +199,60 @@ test("an edit that would repeat another owner note is not proposed", async () =>
   expect(shown.note.proposal).toBeUndefined();
   expect(shown.note.tags).toEqual(["fact"]);
   expect((await rules()).receipt.proposed).toBeUndefined();
+});
+
+test("an edit never turns another note into a second proposal of an owner note's exact text", async () => {
+  const { call } = setup();
+  const rule = await propose(call, "Write the test first.");
+  const pending = await propose(call, "Merge on green CI.");
+  const edited = await call("memory.add", {
+    id: pending.id,
+    text: "write the test, first!",
+  });
+  expect(edited).toMatchObject({ status: "exists", id: rule.id });
+  const kept = await call("memory.show", { id: pending.id });
+  expect(kept.note.text.text).toBe("Merge on green CI.");
+  expect(kept.note.status).toBe("proposed");
+
+  const withdrawn = await propose(call, "Review before merging.");
+  await withdraw(call, withdrawn.id, withdrawn.note.revision);
+  expect(
+    await call("memory.add", {
+      id: withdrawn.id,
+      text: "Write the test first.",
+    }),
+  ).toMatchObject({ status: "exists", id: rule.id });
+  expect((await call("memory.show", { id: withdrawn.id })).note.status).toBe(
+    "withdrawn",
+  );
+
+  const rejected = await propose(call, "Ship small changes.");
+  await call("memory.reject", {
+    items: await decisionItems(call, [rejected.id]),
+    approval: ownerApproval,
+  });
+  expect(
+    await call("memory.add", {
+      id: rejected.id,
+      text: "WRITE THE TEST FIRST",
+    }),
+  ).toMatchObject({ status: "exists", id: rule.id });
+  expect((await call("memory.show", { id: rejected.id })).note.status).toBe(
+    "rejected",
+  );
+});
+
+test("an edit to close wording is kept and names the close note", async () => {
+  const { call } = setup();
+  const base = await propose(call, TEN);
+  const other = await propose(call, "A different rule about releases.");
+  const edited = await call("memory.add", {
+    id: other.id,
+    text: TEN.split(" ").slice(0, 9).join(" "),
+  });
+  expect(edited.status).toBe("updated");
+  expect(edited.similarTo).toEqual([base.id]);
+  expect(edited.notice).toContain("similar to");
 });
 
 test("the add notice tells agents which tags need the owner and how to take a proposal back", async () => {

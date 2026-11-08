@@ -11,10 +11,18 @@
     "note": {
       "$ref": "defs.json#/$defs/Note"
     },
+    "similarTo": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "$ref": "defs.json#/$defs/NoteId"
+      },
+      "description": "Owner-tagged notes whose words overlap this proposal by 0.9 or more. The proposal was kept; withdraw it if it says the same thing."
+    },
     "notice": {
       "type": "string",
       "maxLength": 600,
-      "description": "Present when the note or edit waits for the owner, or when an identical owner-tagged note already exists (status exists, id names it): says so and what to do next."
+      "description": "Present when the note or edit waits for the owner, when an identical owner-tagged note already exists (status exists, id names it), or when a kept proposal is similar to another note (similarTo): says so and what to do next."
     }
   },
   "additionalProperties": false,

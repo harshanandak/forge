@@ -178,12 +178,10 @@ const MAX_VERSIONS = 5;
 const MAX_RETRIES = 8;
 const DEFAULT_LIMIT = 10;
 const SNIPPET_LENGTH = 200;
-// Two owner-tagged texts say the same thing when their word sets overlap at least this much.
+// Owner-tagged texts whose word sets overlap this much are reported as similar: a hint to the
+// agent, never a reason to drop a proposal, because word sets ignore order and negation.
 const NEAR_DUPLICATE_OVERLAP = 0.9;
-// A flipped one of these makes a long text a different rule even at a high overlap.
-const OPPOSITES = new Set(
-  "not no never dont don cannot without avoid stop always".split(" "),
-);
+const SIMILAR_LIMIT = 2;
 // A bare note-N is a note written before notes had levels: every one of those is a device note.
 const NOTE_REF = /^(?:(device|project\/([0-9a-f]{16}))\/)?note-([0-9]{1,9})$/;
 const LEGACY_REF = /^note-[0-9]{1,9}$/;
@@ -224,34 +222,37 @@ function words(text: string): string[] {
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean);
 }
-/** Equal after case, spacing and punctuation, or word sets that overlap by NEAR_DUPLICATE_OVERLAP. */
-function sameRule(a: string, b: string): boolean {
-  const left = words(a);
-  const right = words(b);
-  if (left.join(" ") === right.join(" ")) return true;
-  const one = new Set(left);
-  const two = new Set(right);
+/** The same words in the same order after case, spacing and punctuation. */
+function sameText(a: string, b: string): boolean {
+  return words(a).join(" ") === words(b).join(" ");
+}
+/** Word sets that overlap by NEAR_DUPLICATE_OVERLAP. */
+function similarText(a: string, b: string): boolean {
+  const one = new Set(words(a));
+  const two = new Set(words(b));
   let shared = 0;
   for (const word of one) if (two.has(word)) shared += 1;
   const union = one.size + two.size - shared;
-  if (union === 0 || shared / union < NEAR_DUPLICATE_OVERLAP) return false;
-  for (const word of one)
-    if (!two.has(word) && OPPOSITES.has(word)) return false;
-  for (const word of two)
-    if (!one.has(word) && OPPOSITES.has(word)) return false;
-  return true;
+  return union > 0 && shared / union >= NEAR_DUPLICATE_OVERLAP;
+}
+interface Twins {
+  /** An active or proposed owner-tagged note with exactly this text: nothing new is created. */
+  readonly exact?: { id: string; state: "active" | "proposed" };
+  /** Notes whose text is close but not the same: the new proposal is kept and these are named. */
+  readonly similar: string[];
 }
 /**
- * An active or proposed owner-tagged note in this store and scope that says the same as `text`,
- * so a second proposal for one decision is never created. `except` skips the note being edited.
+ * Active or proposed owner-tagged notes in this store and scope that say what `text` says.
+ * `except` skips the note being edited.
  */
-function twinOf(
+function twinsOf(
   source: Source,
   text: string,
   scope: string | undefined,
   config: MemoryConfig,
   except?: number,
-): { id: string; state: "active" | "proposed" } | undefined {
+): Twins {
+  const similar: string[] = [];
   const tagged = (tags: readonly string[]) =>
     ownerTag(tags, config) !== undefined;
   let after = 0;
@@ -263,27 +264,40 @@ function twinOf(
     });
     for (const { id, number, value } of page) {
       if (number === except || value.deleted === true) continue;
-      if (
-        value.scope === scope &&
-        tagged(value.tags) &&
-        (value.status === undefined || value.status === "proposed") &&
-        sameRule(value.text, text)
-      )
-        return {
-          id,
+      const candidates: {
+        text: string;
+        scope: string | undefined;
+        tags: readonly string[];
+        state: "active" | "proposed";
+      }[] = [];
+      if (value.status === undefined || value.status === "proposed")
+        candidates.push({
+          text: value.text,
+          scope: value.scope,
+          tags: value.tags,
           state: value.status === undefined ? "active" : "proposed",
-        };
-      const waiting = value.proposal;
-      if (
-        waiting !== undefined &&
-        waiting.scope === scope &&
-        tagged(waiting.tags) &&
-        sameRule(waiting.text, text)
-      )
-        return { id, state: "proposed" };
+        });
+      if (value.proposal !== undefined)
+        candidates.push({
+          text: value.proposal.text,
+          scope: value.proposal.scope,
+          tags: value.proposal.tags,
+          state: "proposed",
+        });
+      for (const candidate of candidates) {
+        if (candidate.scope !== scope || !tagged(candidate.tags)) continue;
+        if (sameText(candidate.text, text))
+          return { exact: { id, state: candidate.state }, similar: [] };
+        if (
+          similar.length < SIMILAR_LIMIT &&
+          !similar.includes(id) &&
+          similarText(candidate.text, text)
+        )
+          similar.push(id);
+      }
     }
     const last = page.at(-1);
-    if (page.length < LIST_LIMIT || !last) return undefined;
+    if (page.length < LIST_LIMIT || !last) return { similar };
     after = last.number;
   }
 }
@@ -291,6 +305,15 @@ function twinNotice(twin: { id: string; state: "active" | "proposed" }) {
   return twin.state === "active"
     ? `This rule is already active as ${twin.id}; nothing was added.`
     : `This rule is already proposed as ${twin.id}; nothing was added. It waits for the owner there.`;
+}
+/** The hint for a proposal that was kept: close notes, to withdraw this one if it says the same. */
+function similarity(similar: readonly string[]) {
+  return similar.length === 0
+    ? {}
+    : {
+        similarTo: [...similar],
+        notice: `It is similar to ${similar.join(", ")}; withdraw this one if it says the same thing.`,
+      };
 }
 function approved(
   approval: Approval | undefined,
@@ -1560,13 +1583,14 @@ module.exports = {
       ) {
         const scope =
           input.scope === undefined ? old.scope : (input.scope ?? undefined);
-        const twin = twinOf(source, input.text, scope, config, number);
-        if (twin)
+        const twins = twinsOf(source, input.text, scope, config, number);
+        if (twins.exact)
           return {
             status: "exists" as const,
-            id: twin.id,
-            notice: twinNotice(twin),
+            id: twins.exact.id,
+            notice: twinNotice(twins.exact),
           };
+        const hint = similarity(twins.similar);
         const waiting: NoteValue = {
           ...old,
           textRevision: old.textRevision ?? existing.revision,
@@ -1585,7 +1609,10 @@ module.exports = {
           status: "updated" as const,
           id: editing,
           note: present(source, editing, record, waiting, old.text),
-          notice: `This change waits for the owner. The accepted text and tags stay served until the owner accepts it with memory.accept: copy id, revision and the proposed text from memory.show ${editing} into items, then ask the owner and follow the approval request it returns.`,
+          notice: `This change waits for the owner. The accepted text and tags stay served until the owner accepts it with memory.accept: copy id, revision and the proposed text from memory.show ${editing} into items, then ask the owner and follow the approval request it returns.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
+          ...(hint.similarTo === undefined
+            ? {}
+            : { similarTo: hint.similarTo }),
         };
       }
       const stamps = shown(source.state, existing, old);
@@ -1611,6 +1638,21 @@ module.exports = {
         (old.status === "rejected" || old.status === "withdrawn") &&
         ownerTag(value.tags, config) !== undefined;
       if (resubmitted) Object.assign(value, { status: "proposed" });
+      // A pending note whose text changes, or a note put back in front of the owner, never becomes
+      // a second proposal of exactly what another owner note already says.
+      const twins =
+        (old.status === "proposed" || resubmitted) &&
+        ownerTag(value.tags, config) !== undefined &&
+        (resubmitted || input.text !== old.text)
+          ? twinsOf(source, input.text, value.scope, config, number)
+          : undefined;
+      if (twins?.exact)
+        return {
+          status: "exists" as const,
+          id: twins.exact.id,
+          notice: twinNotice(twins.exact),
+        };
+      const hint = similarity(twins?.similar ?? []);
       // Moves keep text version numbers while the destination store starts at revision one.
       if ((old.textRevision ?? 0) > existing.revision)
         Object.assign(value, { textRevision: old.textRevision! + 1 });
@@ -1637,11 +1679,19 @@ module.exports = {
           record.value as NoteValue,
           input.text,
         ),
-        ...(resubmitted
+        ...(resubmitted || hint.notice !== undefined
           ? {
-              notice: `${editing} was ${old.status} and is proposed again with this text. It waits for the owner; memory.accept needs id, revision and text from memory.show ${editing}.`,
+              notice: [
+                resubmitted
+                  ? `${editing} was ${old.status} and is proposed again with this text. It waits for the owner; memory.accept needs id, revision and text from memory.show ${editing}.`
+                  : undefined,
+                hint.notice,
+              ]
+                .filter((part) => part !== undefined)
+                .join(" "),
             }
           : {}),
+        ...(hint.similarTo === undefined ? {} : { similarTo: hint.similarTo }),
       };
     }
     const target = await writeTarget(
@@ -1662,16 +1712,17 @@ module.exports = {
       // An owner tag never reaches the served rules on an agent's say-so: the note starts proposed
       // and only the owner's relayed memory.accept activates it, whatever approval the add carries.
       const tag = ownerTag(value.tags, config);
-      const twin =
+      const twins =
         tag === undefined
           ? undefined
-          : twinOf(target, value.text, value.scope, config);
-      if (twin)
+          : twinsOf(target, value.text, value.scope, config);
+      if (twins?.exact)
         return {
           status: "exists" as const,
-          id: twin.id,
-          notice: twinNotice(twin),
+          id: twins.exact.id,
+          notice: twinNotice(twins.exact),
         };
+      const hint = similarity(twins?.similar ?? []);
       const stored: NoteValue =
         tag === undefined ? value : { ...value, status: "proposed" };
       const expected = canonical(stored);
@@ -1711,7 +1762,10 @@ module.exports = {
         ...(tag === undefined
           ? {}
           : {
-              notice: `${id} has the owner tag ${tag}, so it waits for the owner and is not served as a rule yet. Owner tags are only for directional choices the owner must make; a settled implementation fact or procedure takes the tag fact, procedure or reference and applies at once. Take back a duplicate or needless proposal with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id} into items, then follow the approval request it returns.`,
+              notice: `${id} has the owner tag ${tag}, so it waits for the owner and is not served yet. Owner tags are for directional choices only; settled implementation facts and procedures use the tag fact, procedure or reference and apply at once. Withdraw a duplicate with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id}, then follow the approval request.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
+              ...(hint.similarTo === undefined
+                ? {}
+                : { similarTo: hint.similarTo }),
             }),
       };
     });
