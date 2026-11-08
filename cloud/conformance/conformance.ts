@@ -204,6 +204,113 @@ if (phase === "main") {
   );
 
   await check(
+    "a cached renew or release is refused once the next generation exists",
+    async () => {
+      const project = `${run}-superseded`;
+      const subject = "issue:work-7";
+      const a = holderOf("a");
+      const first = granted(await claim(project, subject, a, "a-claim"));
+      const renewal = {
+        subject,
+        holder: a,
+        generation: first.generation,
+        ttlMs: 900_000,
+        requestId: "a-renew",
+      };
+      granted(await send(project, "POST", "renew", renewal));
+      const release = {
+        subject,
+        holder: a,
+        generation: first.generation,
+        requestId: "a-release",
+      };
+      granted(await send(project, "POST", "release", release));
+      const next = granted(
+        await claim(project, subject, holderOf("b"), "b-claim"),
+      );
+      assert.equal(next.generation, first.generation + 1);
+      refused(await send(project, "POST", "renew", renewal), "LEASE_STALE");
+      refused(await send(project, "POST", "release", release), "LEASE_STALE");
+      assert.deepEqual(granted(await holderLookup(project, subject)), next);
+    },
+  );
+
+  await check(
+    "one request id serves one route and one input across claim, renew and release",
+    async () => {
+      const project = `${run}-shared`;
+      const holder = holderOf("shared");
+      const held = granted(
+        await claim(project, "issue:work-8", holder, "shared-1"),
+      );
+      refused(
+        await send(project, "POST", "release", {
+          subject: "issue:work-8",
+          holder,
+          generation: held.generation,
+          requestId: "shared-1",
+        }),
+        "INPUT_CONFLICT",
+      );
+      assert.deepEqual(
+        granted(await holderLookup(project, "issue:work-8")),
+        held,
+      );
+      granted(
+        await send(project, "POST", "renew", {
+          subject: "issue:work-8",
+          holder,
+          generation: held.generation,
+          ttlMs: 900_000,
+          requestId: "shared-2",
+        }),
+      );
+      refused(
+        await claim(project, "issue:work-9", holder, "shared-2"),
+        "INPUT_CONFLICT",
+      );
+      assert.equal(
+        (await holderLookup(project, "issue:work-9")).body.value ?? null,
+        null,
+      );
+    },
+  );
+
+  await check(
+    "a retry with the same values in another key order is the same request",
+    async () => {
+      const project = `${run}-order`;
+      const subject = "issue:work-10";
+      const holder = holderOf("order");
+      const first = granted(
+        await claim(project, subject, holder, "order-claim"),
+      );
+      const { actor, session } = holder;
+      const reordered = `{"session":{"harness":${JSON.stringify(session.harness)},"agent":${JSON.stringify(session.agent)},"device":${JSON.stringify(session.device)},"id":${JSON.stringify(session.id)}},"actor":{"id":${JSON.stringify(actor.id)},"kind":"agent"}}`;
+      const renewal = `{"requestId":"order-renew","ttlMs":900000,"generation":${first.generation},"subject":"${subject}","holder":${reordered}}`;
+      const renewed = granted(
+        await send(project, "POST", "renew", {
+          subject,
+          holder,
+          generation: first.generation,
+          ttlMs: 900_000,
+          requestId: "order-renew",
+        }),
+      );
+      await sleep(50);
+      assert.deepEqual(
+        granted(await send(project, "POST", "renew", renewal)),
+        renewed,
+      );
+      const again = `{"holder":${reordered},"ttlMs":600000,"subject":"${subject}","requestId":"order-claim"}`;
+      assert.deepEqual(
+        granted(await send(project, "POST", "claim", again)),
+        first,
+      );
+    },
+  );
+
+  await check(
     "expiry and fencing: stale renew, release and claim replay are refused",
     async () => {
       const project = `${run}-fence`;

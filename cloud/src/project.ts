@@ -3,9 +3,12 @@
 //   POST renew    { subject, holder, generation, ttlMs, requestId }
 //   POST release  { subject, holder, generation, requestId }
 //   GET  holder?subject=...
+// Request ids: one registry for all routes; a retry returns the first result while the fence holds.
 // The object handles one request at a time and every write below runs without an await, so a
 // claim race is decided in arrival order and exactly one caller wins.
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { decideLease } from "../../src/contract/lease.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { LeaseHolder, LeaseRecord } from "../../src/generated/types.ts";
 import { validateLeaseHolder } from "../../src/generated/validators.ts";
@@ -129,48 +132,74 @@ export class Project {
         "holder must be { actor: { kind, id }, session: { id, device?, agent?, harness? } }",
       );
     const holder: LeaseHolder = checked.value;
-    if (route === "claim")
-      return this.#owner.acquire(
-        NAMESPACE,
-        subject,
-        holder,
-        integer(input, "ttlMs"),
-        requestId,
-      );
+    const ttlMs = route === "release" ? null : integer(input, "ttlMs");
+    const generation = route === "claim" ? null : integer(input, "generation");
 
-    // The owner remembers claim ids itself; renew and release are remembered here. A retry with the
-    // same id and input returns the first result, so a lost response never extends a lease twice.
-    const generation = integer(input, "generation");
-    const ttlMs = route === "renew" ? integer(input, "ttlMs") : 0;
-    const fingerprint = JSON.stringify([
+    // One registry of request ids for all three routes. The same id with another route or another
+    // input is refused, whatever the key order inside the request. Keys are sorted before the
+    // comparison, the way the state owner compares its own claim requests.
+    const fingerprint = canonicalJson({
       route,
       subject,
       holder,
       generation,
       ttlMs,
-    ]);
+    });
     const prior = this.#db.get(
       `SELECT fingerprint, result FROM ${REQUESTS} WHERE request_id=?`,
       [requestId],
     );
-    if (prior !== undefined) {
-      if (prior.fingerprint !== fingerprint)
-        throw new ForgeFailure({
-          code: "INPUT_CONFLICT",
-          message: "Request ID belongs to a different input",
-          retry: "reconcile_first",
-        });
-      return JSON.parse(String(prior.result)) as LeaseRecord;
+    if (prior !== undefined && prior.fingerprint !== fingerprint)
+      throw new ForgeFailure({
+        code: "INPUT_CONFLICT",
+        message: "Request ID belongs to a different input",
+        retry: "reconcile_first",
+      });
+
+    // A claim replay goes back through the owner, which refuses it once the lease moved on.
+    if (route === "claim") {
+      const lease = this.#owner.acquire(
+        NAMESPACE,
+        subject,
+        holder,
+        ttlMs!,
+        requestId,
+      );
+      if (prior === undefined) this.#remember(requestId, fingerprint, lease);
+      return lease;
     }
-    const fence = { subject, holder, generation };
+    if (prior !== undefined) {
+      // A retry returns the first result, so a lost response never extends a lease twice. It never
+      // outlives the fence: once another holder has the next generation, the replay is refused.
+      const cached = JSON.parse(String(prior.result)) as LeaseRecord;
+      const decision = decideLease(this.#owner.lease(NAMESPACE, subject), {
+        mode: "held",
+        subject,
+        holder,
+        generation: cached.generation,
+        nowMs: Date.now(),
+      });
+      // A released lease stays released, so only a newer generation refuses a release replay.
+      if (
+        !decision.ok &&
+        (route === "renew" || decision.error.code === "LEASE_STALE")
+      )
+        throw new ForgeFailure(decision.error);
+      return cached;
+    }
+    const fence = { subject, holder, generation: generation! };
     const lease =
       route === "renew"
-        ? this.#owner.renew(NAMESPACE, fence, ttlMs)
+        ? this.#owner.renew(NAMESPACE, fence, ttlMs!)
         : this.#owner.release(NAMESPACE, fence);
+    this.#remember(requestId, fingerprint, lease);
+    return lease;
+  }
+
+  #remember(requestId: string, fingerprint: string, lease: LeaseRecord): void {
     this.#db.run(
       `INSERT INTO ${REQUESTS} (request_id, fingerprint, result) VALUES (?, ?, ?)`,
       [requestId, fingerprint, JSON.stringify(lease)],
     );
-    return lease;
   }
 }
