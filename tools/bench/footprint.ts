@@ -48,19 +48,28 @@ const preload = join(folder, "dump.mjs");
 writeFileSync(
   preload,
   [
-    'import { registerHooks } from "node:module";',
-    'import { writeFileSync } from "node:fs";',
+    'import { registerHooks, syncBuiltinESMExports } from "node:module";',
+    'import { readFileSync, writeFileSync } from "node:fs";',
     'import v8 from "node:v8";',
+    'import vm from "node:vm";',
     "const loaded = [];",
-    "registerHooks({ load(url, context, next) { loaded.push(url); return next(url, context); } });",
+    "const events = [];",
+    "const mark = (label) => events.push([label, process.memoryUsage.rss() / 1048576]);",
+    'mark("start");',
+    'registerHooks({ load(url, context, next) { loaded.push(url); mark("load " + url); return next(url, context); } });',
+    'const makeContext = vm.createContext; vm.createContext = function (...a) { mark("vm.createContext"); try { return makeContext.apply(this, a); } finally { mark("vm.createContext done"); } };',
+    'const runScript = vm.Script.prototype.runInContext; vm.Script.prototype.runInContext = function (...a) { mark("vm run"); try { return runScript.apply(this, a); } finally { mark("vm run done"); } };',
+    "syncBuiltinESMExports();",
     'process.on("exit", () => {',
     "  const mb = (bytes) => Math.round(bytes / 104857.6) / 10;",
     "  const memory = process.memoryUsage();",
+    "  const status = {};",
+    "  try { for (const line of readFileSync('/proc/self/status', 'utf8').split(String.fromCharCode(10))) { const m = /^(VmRSS|RssAnon|RssFile|RssShmem|VmData): *([0-9]+) kB/.exec(line); if (m) status[m[1]] = Math.round(m[2] / 102.4) / 10; } } catch {}",
     "  const space = Object.fromEntries(v8.getHeapSpaceStatistics().map((s) => [s.space_name, mb(s.space_size)]));",
     "  writeFileSync(process.env.FORGE_FOOTPRINT, JSON.stringify({",
     "    peak: mb(process.resourceUsage().maxRSS * 1024), heapUsed: mb(memory.heapUsed), heapTotal: mb(memory.heapTotal),",
     "    external: mb(memory.external), arrayBuffers: mb(memory.arrayBuffers),",
-    "    newSpace: space.new_space, oldSpace: space.old_space, codeSpace: space.code_space, loaded,",
+    "    newSpace: space.new_space, oldSpace: space.old_space, codeSpace: space.code_space, loaded, events, status,",
     "  }));",
     "});",
     "",
@@ -87,6 +96,8 @@ interface Report {
   oldSpace: number;
   codeSpace: number;
   loaded: string[];
+  events: [string, number][];
+  status: Record<string, number>;
 }
 
 function run(
@@ -287,6 +298,52 @@ try {
   for (const [key, count] of [...groups].sort((a, b) => b[1] - a[1]))
     lines.push(`- ${key}: ${count}`);
 
+  // Resident memory outside the V8 heap: the Linux split, and growth by event.
+  if (show.status.VmRSS !== undefined)
+    lines.push(
+      "",
+      "Resident memory split (Linux, MB):",
+      "",
+      "| Command | VmRSS | Anonymous | File-backed | Shared | VmData |",
+      "| ------- | ----: | --------: | ----------: | -----: | -----: |",
+      ...(
+        [
+          ["--version", version],
+          ["issue show", show],
+        ] as const
+      ).map(
+        ([name, r]) =>
+          `| ${name} | ${r.status.VmRSS} | ${r.status.RssAnon} | ${r.status.RssFile} | ${r.status.RssShmem} | ${r.status.VmData} |`,
+      ),
+    );
+  const growth = new Map<string, number>();
+  const groupOf = (label: string): string => {
+    if (!label.startsWith("load ")) return label;
+    const url = label.slice(5);
+    if (url.startsWith("node:")) return url;
+    const inDist = /dist\/src\/((?:adapters|blocks|core)\/[^/]+|[^/.]+)/.exec(
+      url,
+    );
+    if (inDist) return `dist/src/${inDist[1]}`;
+    const pkg = /node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(url);
+    return pkg ? `node_modules/${pkg[1]}` : "dist/bin";
+  };
+  show.events.forEach(([label, rss], index) => {
+    if (index === 0) return;
+    const key = groupOf(label);
+    growth.set(key, (growth.get(key) ?? 0) + rss - show.events[index - 1]![1]);
+  });
+  lines.push(
+    "",
+    "Resident memory growth of one `issue show`, charged to the next module load or block run after each step (MB; `vm` rows are the block sandbox):",
+    "",
+    ...[...growth]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([key, mb]) => `- ${key}: ${mb.toFixed(1)}`),
+    "",
+  );
+
   // Same job, interleaved, each against the shipped build.
   const variants = [
     { label: "shipped", bin, ms: [] as number[], peak: [] as number[] },
@@ -345,6 +402,40 @@ try {
     ms: [] as number[],
     peak: [] as number[],
   });
+  // One-shot block reuse switched off: every block is read twice per command again.
+  variants.push({
+    label: "block reuse within one command switched off",
+    bin: variantBin("dist-no-reuse", (dir) => {
+      const file = join(dir, "src/assembly/command.js");
+      const source = readFileSync(file, "utf8");
+      const changed = source.replace(
+        'oneShot: argv[0] !== "--mcp"',
+        "oneShot: false",
+      );
+      if (changed === source) throw new Error("oneShot line not found");
+      writeFileSync(file, changed);
+    }),
+    ms: [] as number[],
+    peak: [] as number[],
+  });
+  // Probe: Node's module compile cache, kept in a folder of this run so nothing shared is touched.
+  const cacheDir = join(folder, "compile-cache");
+  const cacheBin = variantBin("dist-compile-cache", (dir) => {
+    const file = join(dir, "bin/forge.js");
+    const source = readFileSync(file, "utf8");
+    const changed = source.replace(
+      'setFlagsFromString("--semi-space-growth-factor=1");',
+      `setFlagsFromString("--semi-space-growth-factor=1"); (await import("node:module")).enableCompileCache(${JSON.stringify(cacheDir)});`,
+    );
+    if (changed === source) throw new Error("cap line not found");
+    writeFileSync(file, changed);
+  });
+  variants.push({
+    label: "module compile cache on, warm",
+    bin: cacheBin,
+    ms: [] as number[],
+    peak: [] as number[],
+  });
   for (let n = 0; n < 11; n += 1)
     for (const variant of variants) {
       const result = run(variant.bin, ["issue", "show", id]);
@@ -362,6 +453,16 @@ try {
       (v) =>
         `| ${v.label} | ${median(v.ms).toFixed(0)} | ${median(v.peak).toFixed(1)} |`,
     ),
+    "",
+  );
+  // Cold: the cache folder is emptied before each run, so each run compiles and writes the cache.
+  const cold: number[] = [];
+  for (let n = 0; n < 5; n += 1) {
+    rmSync(cacheDir, { recursive: true, force: true, maxRetries: 5 });
+    cold.push(run(cacheBin, ["issue", "show", id]).ms);
+  }
+  lines.push(
+    `Module compile cache, first run with an empty cache: median ${median(cold).toFixed(0)} ms of 5. Measured with the cache in a folder of this run. Called with no folder, Node writes to \`${join(tmpdir(), "node-compile-cache")}\` (the system temp folder, shared by every Node program of the user), never the project; the files hold compiled code, and another process that can write there could plant its own.`,
     "",
   );
 
