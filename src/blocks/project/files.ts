@@ -70,8 +70,16 @@ export function createFolderFiles(root: string): ProjectFiles {
   const absolute = (path: string): string | undefined => {
     if (path === ".") return root;
     const named = safeRelative(path);
-    if (named === undefined || !existsExactly(root, named)) return undefined;
+    if (named === undefined) return undefined;
     const target = join(root, named);
+    // A path that is missing is missing under an exact-spelling check too, and most probes miss.
+    // One stat answers those; the directory listings are only read for a path that exists.
+    try {
+      statSync(target);
+    } catch {
+      return undefined;
+    }
+    if (!existsExactly(root, named)) return undefined;
     // A link inside the project can point anywhere; only what it resolves to decides.
     let real: string;
     try {

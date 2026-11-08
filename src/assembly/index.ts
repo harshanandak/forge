@@ -82,6 +82,7 @@ import {
 import { firstPartyBlocks } from "./first-party.ts";
 import {
   configCandidates,
+  configOperationNames,
   coreDocs,
   validateConfigValue,
 } from "./declarations.ts";
@@ -197,6 +198,12 @@ export interface AssemblyOptions {
    */
   readonly project?: boolean;
   readonly providers?: ProviderOptions;
+  /**
+   * A host that runs one command and exits: the package's own blocks are read once and reused by
+   * later calls, where a long-lived host re-reads them on every call. Blocks from a project or a
+   * package are always re-read.
+   */
+  readonly oneShot?: boolean;
   /** The terminal a person types on; left out, the process's own stdin and stderr. */
   readonly terminal?: {
     readonly tty: () => { readonly stdin: boolean; readonly stderr: boolean };
@@ -386,6 +393,9 @@ export async function createAssembly(
     config: ReturnType<typeof createConfig>;
     configOperations: ReturnType<typeof createConfigOperations>;
   };
+  const sharedBuiltins = options.oneShot
+    ? new Map<string, CapturedBlock>()
+    : undefined;
   function callScope(derived: readonly DetectionObservation[] = []): CallScope {
     const warnings: Array<ResultEnvelope["warnings"][number]> = [];
     const ignoredConfig = new Map<
@@ -398,16 +408,21 @@ export async function createAssembly(
       const key = JSON.stringify(source);
       let found = captures.get(key);
       if (found === undefined) {
-        try {
-          // Only a builtin source reads the installed package's own block folder (resolveBlock).
-          found = captureBlock(
-            resolveConfiguredBlock(root, source),
-            blockCapture,
-            undefined,
-            "builtin" in source,
-          );
-        } catch (error) {
-          found = { failed: error };
+        const reusable = "builtin" in source ? sharedBuiltins : undefined;
+        found = reusable?.get(key);
+        if (found === undefined) {
+          try {
+            // Only a builtin source reads the installed package's own block folder (resolveBlock).
+            found = captureBlock(
+              resolveConfiguredBlock(root, source),
+              blockCapture,
+              undefined,
+              "builtin" in source,
+            );
+            reusable?.set(key, found);
+          } catch (error) {
+            found = { failed: error };
+          }
         }
         captures.set(key, found);
       }
@@ -1019,12 +1034,10 @@ export async function createAssembly(
       if (parseOperationName(op) === undefined) return undefined;
       const current = snapshot(callScope());
       if (
-        [
-          ...configCandidates,
-          grantCandidate,
-          ...discoveryOperations,
-          ...current.candidates,
-        ].some((entry) => entry.op === op) ||
+        configOperationNames.has(op) ||
+        [grantCandidate, ...discoveryOperations, ...current.candidates].some(
+          (entry) => entry.op === op,
+        ) ||
         current.problems.length === 0
       )
         return undefined;
@@ -1121,16 +1134,17 @@ export async function createAssembly(
           // An unreadable config has no healthy project candidates to retain.
         }
       }
-      return [...configCandidates, grantCandidate, ...candidates];
+      return [...configCandidates(), grantCandidate, ...candidates];
     },
     async invoke(request) {
       const derived: DetectionObservation[] = [];
       const deviceMemory = deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived);
       try {
-        const preview = configCandidates.find(
-          (entry) => entry.op === request.op && entry.op === "config.show",
-        );
+        const preview =
+          request.op === "config.show"
+            ? configCandidates().find((entry) => entry.op === request.op)
+            : undefined;
         if (
           preview &&
           !validateConfigValue(preview.declaration, "input", request.input)
@@ -1173,9 +1187,11 @@ export async function createAssembly(
               });
             },
           );
-        const core = configCandidates
-          .concat(grantCandidate, discoveryOperations)
-          .some((entry) => entry.op === request.op);
+        const core =
+          configOperationNames.has(request.op) ||
+          [grantCandidate, ...discoveryOperations].some(
+            (entry) => entry.op === request.op,
+          );
         if (core) derived.push(...(await prefix()));
         let workEnabled = false;
         const loaded = deviceMemory
@@ -1202,8 +1218,20 @@ export async function createAssembly(
           (workEnabled ||
             !blockCatalog?.list().includes(request.op) ||
             blockCatalog.resolve(request.op).operation.instance === "work")
-        )
-          derived.push(...(await prefix()));
+        ) {
+          // git answers in its own process. Read the enabled blocks while it runs, which the
+          // call does next anyway (a failed read is cached and reported there), not after it.
+          const pending = prefix();
+          for (const instance of loaded.instances) {
+            if (!instance.enabled) continue;
+            try {
+              call.captured(instance.source);
+            } catch {
+              // cached with its error; the call that needs this block reports it
+            }
+          }
+          derived.push(...(await pending));
+        }
       } catch (error) {
         return withCallWarnings(call, failure(request.op, error));
       }
@@ -1235,7 +1263,7 @@ export async function createAssembly(
         const checked = validateInvocationRequest(request);
         if (!checked.ok) refuse("INPUT_INVALID", "Invalid invocation");
         const entry = [
-          ...configCandidates,
+          ...(configOperationNames.has(request.op) ? configCandidates() : []),
           grantCandidate,
           ...discoveryOperations,
         ].find((candidate) => candidate.op === request.op);
@@ -2166,11 +2194,14 @@ function readConfirmation(op: string, ask?: string): Promise<boolean> {
 function localHarness(): string {
   return harnessIdentity(process.env);
 }
-export async function createLocalAssembly(): Promise<Assembly> {
+export async function createLocalAssembly(
+  options: { readonly oneShot?: boolean } = {},
+): Promise<Assembly> {
   const root = process.cwd();
   return createAssembly({
     root,
     deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
+    ...(options.oneShot === undefined ? {} : { oneShot: options.oneShot }),
   });
 }
 

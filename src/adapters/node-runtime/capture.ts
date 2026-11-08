@@ -11,13 +11,35 @@ import { resolve, relative, isAbsolute, sep } from "node:path";
 import type { FileCapturePort } from "../../core/catalog/index.ts";
 import { refuse } from "../../core/trust/index.ts";
 
-/** Each read closes its descriptor before returning immutable captured bytes. */
+/**
+ * Each read closes its descriptor before returning immutable captured bytes.
+ *
+ * Paths resolve with one native call each instead of one `lstat` per path component in JavaScript:
+ * a block read resolves four paths per file and a command reads over a hundred files. The native
+ * resolver can be unusable (musl without /proc fails every call), so the first root decides: if the
+ * native resolver fails but the JavaScript one succeeds, this capture port uses the JavaScript one
+ * for the root and every file. Root and file paths always come from the same resolver, so the
+ * containment comparisons below stay like with like. `nativeRealpath` is a seam for tests.
+ */
 export function createNodeFileCapture(
   beforeOpen?: () => void,
+  nativeRealpath: (path: string) => string = realpathSync.native,
 ): FileCapturePort {
+  let chosen: ((path: string) => string) | undefined;
   return {
     open(rootPath) {
-      const root = realpathSync(rootPath);
+      let root: string;
+      if (chosen === undefined) {
+        try {
+          root = nativeRealpath(rootPath);
+          chosen = nativeRealpath;
+        } catch {
+          // A root that does not exist fails here too, with the JavaScript resolver's own error.
+          root = realpathSync(rootPath);
+          chosen = realpathSync;
+        }
+      } else root = chosen(rootPath);
+      const realpath = chosen;
       const rootIdentity = statSync(root, { bigint: true });
       if (!rootIdentity.isDirectory())
         refuse("INPUT_INVALID", "capture root must be a directory");
@@ -25,7 +47,7 @@ export function createNodeFileCapture(
         ownership: "borrowed",
         value: {
           read(name, maxBytes) {
-            const path = realpathSync(resolve(root, name));
+            const path = realpath(resolve(root, name));
             const rel = relative(root, path);
             if (
               isAbsolute(name) ||
@@ -50,12 +72,12 @@ export function createNodeFileCapture(
             try {
               const opened = fstatSync(descriptor, { bigint: true });
               // Validate the opened identity before reading: textual containment alone races renames.
-              const openedPath = realpathSync(path);
+              const openedPath = realpath(path);
               const openedRelative = relative(root, openedPath);
               const currentRoot = statSync(root, { bigint: true });
               const currentFile = statSync(openedPath, { bigint: true });
               if (
-                realpathSync(root) !== root ||
+                realpath(root) !== root ||
                 currentRoot.dev !== rootIdentity.dev ||
                 currentRoot.ino !== rootIdentity.ino ||
                 openedRelative === ".." ||
