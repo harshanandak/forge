@@ -6,6 +6,8 @@ const gated = new Set(["block.admit", "config.grant", "store.reinit"]);
 const memoryGated = new Set([
   "memory.forget",
   "memory.restore",
+  "memory.accept",
+  "memory.reject",
   "decision.adopt",
 ]);
 
@@ -24,7 +26,8 @@ export function approvalReply(
 /** True when a memory call claims the owner's words and so needs a relayed reply. */
 export function claimsOwner(op, input) {
   return (
-    (memoryGated.has(op) || /\.(forget|restore|adopt)$/.test(op)) &&
+    (memoryGated.has(op) ||
+      /\.(forget|restore|adopt|accept|reject)$/.test(op)) &&
     input?.approval?.by === "owner" &&
     input.approval.request === undefined
   );
