@@ -7,8 +7,8 @@ import { ForgeFailure } from "../contract/failure.ts";
  * worktree of a repository names the same project. It holds nothing else; the strict schema keeps
  * credentials, paths and account links out. Only an explicit init creates it.
  */
-export const PROJECT_MANIFEST = ".forge/project.json";
-export const PROJECT_ID_PATTERN =
+export const PROJECT_MANIFEST: string = ".forge/project.json";
+export const PROJECT_ID_PATTERN: RegExp =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAME = /^[A-Za-z0-9._-]{1,64}$/;
 const NAME_RULE =
