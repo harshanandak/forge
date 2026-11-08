@@ -63,6 +63,15 @@ async function refused(run: () => unknown) {
   }
   throw new Error("expected HUMAN_REQUIRED");
 }
+/** An active rule: added (proposed), then accepted with the owner's approval. */
+async function activeRule(
+  call: ReturnType<typeof setup>["call"],
+  text: string,
+) {
+  const added = await propose(call, text);
+  await call("memory.accept", { ids: [added.id], approval: ownerApproval });
+  return added;
+}
 async function propose(
   call: ReturnType<typeof setup>["call"],
   text: string,
@@ -103,7 +112,7 @@ test("a new rule note waits for the owner and is not served as a rule", async ()
   });
 });
 
-test("notes without an owner tag, and adds with owner approval, take effect at once", async () => {
+test("notes without an owner tag take effect at once", async () => {
   const { call, rules } = setup();
   const plain = await call("memory.add", {
     level: "device",
@@ -117,16 +126,44 @@ test("notes without an owner tag, and adds with owner approval, take effect at o
     text: "untagged",
   });
   expect(untagged.note.status).toBeUndefined();
-  const owned = await call("memory.add", {
+  const served = await rules();
+  expect(served.receipt.proposed).toBeUndefined();
+});
+
+test("an inline owner approval on add never activates an owner-tagged note", async () => {
+  const { call, rules } = setup();
+  const claimed = await call("memory.add", {
     level: "device",
-    text: "owner stated rule",
+    text: "agent claims the owner agreed",
     tags: ["rule"],
     approval: ownerApproval,
   });
-  expect(owned.note.status).toBeUndefined();
+  expect(claimed.note.status).toBe("proposed");
   const served = await rules();
-  expect(served.text.text).toContain("owner stated rule");
-  expect(served.receipt.proposed).toBeUndefined();
+  expect(served.text.text).not.toContain("agent claims the owner agreed");
+  expect(served.receipt.proposed?.count).toBe(1);
+  // The same claim on an edit that changes an accepted rule's text or adds an owner tag.
+  const rule = await activeRule(call, "accepted rule text");
+  const edited = await call("memory.add", {
+    id: rule.id,
+    text: "claimed rewrite",
+    approval: ownerApproval,
+  });
+  expect(edited.note.text.text).toBe("accepted rule text");
+  expect(edited.note.proposal?.text.text).toBe("claimed rewrite");
+  const plain = await call("memory.add", {
+    level: "device",
+    text: "claimed tag",
+    tags: ["fact"],
+  });
+  const tagged = await call("memory.add", {
+    id: plain.id,
+    text: "claimed tag",
+    tags: ["fact", "rule"],
+    approval: ownerApproval,
+  });
+  expect(tagged.note.tags).toEqual(["fact"]);
+  expect((await rules()).text.text).not.toContain("claimed rewrite");
 });
 
 test("memory.accept with an owner approval makes the proposed rule served", async () => {
@@ -167,12 +204,7 @@ test("accept and reject refuse a missing or agent approval before any write", as
 
 test("an edit to an accepted rule keeps serving the old text until accepted", async () => {
   const { call, rules } = setup();
-  const added = await call("memory.add", {
-    level: "device",
-    text: "use bun",
-    tags: ["rule"],
-    approval: ownerApproval,
-  });
+  const added = await activeRule(call, "use bun");
   const edited = await call("memory.add", { id: added.id, text: "use npm" });
   expect(edited.status).toBe("updated");
   expect(edited.note.text.text).toBe("use bun");
@@ -239,12 +271,7 @@ test("reject closes the proposal and keeps it in history", async () => {
       await call(op, { ids: [added.id], approval: ownerApproval }),
     ).toMatchObject({ results: [{ id: added.id, status: "not_proposed" }] });
 
-  const rule = await call("memory.add", {
-    level: "device",
-    text: "keep this text",
-    tags: ["rule"],
-    approval: ownerApproval,
-  });
+  const rule = await activeRule(call, "keep this text");
   await call("memory.add", { id: rule.id, text: "worse text" });
   await call("memory.reject", { ids: [rule.id], approval: ownerApproval });
   const shown = await call("memory.show", { id: rule.id });
