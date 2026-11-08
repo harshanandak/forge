@@ -448,10 +448,30 @@ test.each(
         expected: 1,
       },
     ]),
-  ].map((entry) => ({ changes: "success", ...entry })),
+    ...["failure", "cancelled", "skipped"].map((speed) => ({
+      scope: "full",
+      event: "pull_request",
+      pack: "success",
+      verify: "success",
+      speed,
+      expected: 1,
+    })),
+    ...["success", "failure", "cancelled"].map((speed) => ({
+      scope: "docs",
+      event: "pull_request",
+      pack: "skipped",
+      verify: "skipped",
+      speed,
+      expected: 1,
+    })),
+  ].map((entry) => ({
+    changes: "success",
+    speed: entry.scope === "full" ? "success" : "skipped",
+    ...entry,
+  })),
 )(
   "CI Gate enforces scope and required results: %j",
-  ({ scope, event, pack, verify, expected, changes }) => {
+  ({ scope, event, pack, verify, expected, changes, speed }) => {
     const { jobs } = parse(
       readFileSync(resolve(".github/workflows/ci.yml"), "utf8"),
     ) as {
@@ -459,6 +479,7 @@ test.each(
     };
     const gate = jobs["ci-gate"]!;
     expect(gate.needs).toContain("verify");
+    expect(gate.needs).toContain("speed");
     const result = spawnSync("bash", ["-c", gate.steps[0]!.run], {
       env: {
         ...process.env,
@@ -472,6 +493,7 @@ test.each(
         ),
         VERIFY: verify,
         PACK: pack,
+        SPEED: speed,
         CHANGES: changes,
       },
       encoding: "utf8",

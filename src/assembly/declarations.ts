@@ -25,21 +25,30 @@ const fragment = JSON.parse(
     "utf8",
   ),
 ) as { operations: Record<string, OperationDeclaration> };
-const schemas = readdirSync(new URL("../core/config/schemas/", import.meta.url))
-  .filter((name) => name.endsWith(".json"))
-  .map(
-    (name) =>
-      JSON.parse(
-        readFileSync(
-          new URL(`../core/config/schemas/${name}`, import.meta.url),
-          "utf8",
-        ),
-      ) as SchemaObject,
-  );
-export const configRegistry: SchemaRegistry = new SchemaRegistry([
-  ...SCHEMA_DOCUMENTS,
-  ...schemas,
-]);
+/** The names of the config operations; enough to tell a config call from any other without building schemas. */
+export const configOperationNames: ReadonlySet<string> = new Set(
+  Object.keys(fragment.operations),
+);
+
+let registry: SchemaRegistry | undefined;
+/** The registry for the config schemas, built on first use: most commands never validate against it. */
+function configRegistry(): SchemaRegistry {
+  registry ??= new SchemaRegistry([
+    ...SCHEMA_DOCUMENTS,
+    ...readdirSync(new URL("../core/config/schemas/", import.meta.url))
+      .filter((name) => name.endsWith(".json"))
+      .map(
+        (name) =>
+          JSON.parse(
+            readFileSync(
+              new URL(`../core/config/schemas/${name}`, import.meta.url),
+              "utf8",
+            ),
+          ) as SchemaObject,
+      ),
+  ]);
+  return registry;
+}
 
 /** Catalog schemas are self-contained for every generated transport. */
 function inline(
@@ -53,11 +62,11 @@ function inline(
   const object = value as Record<string, unknown>;
   const reference =
     typeof object.$ref === "string"
-      ? configRegistry.resolve(object.$ref, base)
+      ? configRegistry().resolve(object.$ref, base)
       : undefined;
   if (reference && ancestors.includes(reference))
     throw new Error("Recursive config schema cannot be inlined");
-  const target = reference ? configRegistry.lookup(reference) : undefined;
+  const target = reference ? configRegistry().lookup(reference) : undefined;
   if (reference && target === undefined)
     throw new Error(`Missing schema ${reference}`);
   const expanded =
@@ -80,28 +89,35 @@ function inline(
     ),
   };
 }
-export const configCandidates: readonly McpCandidate[] = Object.entries(
-  fragment.operations,
-).map(([op, declaration]) => ({
-  op,
-  admitted: true,
-  declaration,
-  docs: coreDocs[op]!,
-  inputSchema: inline(
-    configRegistry.lookup(`${BASE}${declaration.input}`),
-    `${BASE}${declaration.input}`,
-  ) as McpCandidate["inputSchema"],
-  outputSchema: inline(
-    configRegistry.lookup(`${BASE}${declaration.output}`),
-    `${BASE}${declaration.output}`,
-  ) as JsonSchema & McpCandidate["inputSchema"],
-}));
+function buildCandidates(): readonly McpCandidate[] {
+  return Object.entries(fragment.operations).map(([op, declaration]) => ({
+    op,
+    admitted: true,
+    declaration,
+    docs: coreDocs[op]!,
+    inputSchema: inline(
+      configRegistry().lookup(`${BASE}${declaration.input}`),
+      `${BASE}${declaration.input}`,
+    ) as McpCandidate["inputSchema"],
+    outputSchema: inline(
+      configRegistry().lookup(`${BASE}${declaration.output}`),
+      `${BASE}${declaration.output}`,
+    ) as JsonSchema & McpCandidate["inputSchema"],
+  }));
+}
+
+let candidates: readonly McpCandidate[] | undefined;
+/** The config operations with their inlined schemas, built on first use. */
+export function configCandidates(): readonly McpCandidate[] {
+  candidates ??= buildCandidates();
+  return candidates;
+}
 export function validateConfigValue(
   declaration: OperationDeclaration,
   side: "input" | "output",
   value: unknown,
 ): boolean {
   return (
-    configRegistry.validate(`${BASE}${declaration[side]}`, value).length === 0
+    configRegistry().validate(`${BASE}${declaration[side]}`, value).length === 0
   );
 }

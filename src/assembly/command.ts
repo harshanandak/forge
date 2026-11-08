@@ -10,7 +10,10 @@ export async function runLocalCommand(
   argv: readonly string[],
 ): Promise<number> {
   try {
-    const assembly = await createLocalAssembly();
+    // Only a served connection stays up across calls; every other command exits after one.
+    const assembly = await createLocalAssembly({
+      oneShot: argv[0] !== "--mcp",
+    });
     try {
       return await runCommand(argv, {
         catalog: assembly.catalog,

@@ -92,6 +92,9 @@ const TYPES: ReadonlySet<string> = new Set([
 ]);
 
 const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+/** Bound on remembered references; a registry sees a fixed set, but callers may pass any reference. */
+const MEMO_LIMIT = 4096;
+
 const DATE_TIME =
   /^([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt]([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]+)?(?:[Zz]|[+-]([0-9]{2}):([0-9]{2}))$/u;
 
@@ -271,6 +274,21 @@ interface Located {
   readonly base: string;
 }
 
+/** Documents the build already checked in full; a registry that holds them skips checking them again. */
+const BUILD_CHECKED = new WeakSet<object>();
+
+/**
+ * Mark documents as fully checked at build time (tools/gen/types.ts runs the same check over the
+ * same bytes and fails the build on a problem), so startup does not walk them on every command.
+ * Only the generated schema list uses this; a document from a block or project is always checked.
+ */
+export function markBuildChecked<T extends readonly SchemaObject[]>(
+  documents: T,
+): T {
+  for (const document of documents) BUILD_CHECKED.add(document);
+  return documents;
+}
+
 /**
  * Every schema document Forge knows, by `$id`. Built once; refuses unknown keywords, unresolvable
  * `$ref`s and invalid patterns up front.
@@ -279,6 +297,10 @@ export class SchemaRegistry {
   readonly #documents = new Map<string, SchemaObject>();
   readonly #patterns = new Map<string, RegExp>();
   readonly #validators = new Map<string, Validator<unknown>>();
+  // Documents never change after construction, so a reference resolves and locates the same
+  // way every time; validating one value follows the same few references over and over.
+  readonly #resolved = new Map<string, string>();
+  readonly #located = new Map<string, Located | undefined>();
   readonly #base: string;
 
   /** `base` resolves short references such as `block.json#/$defs/X` given to `validator`. */
@@ -296,13 +318,19 @@ export class SchemaRegistry {
       this.#documents.set(uri, document);
     }
     for (const [uri, document] of this.#documents) {
-      this.#check(document, uri, "", true);
+      if (!BUILD_CHECKED.has(document)) this.#check(document, uri, "", true);
     }
   }
 
   /** The full URI a short reference resolves to. */
   resolve(reference: string, base: string = this.#base): string {
-    return new URL(reference, base).href;
+    const key = `${base}\u0000${reference}`;
+    let uri = this.#resolved.get(key);
+    if (uri === undefined) {
+      uri = new URL(reference, base).href;
+      if (this.#resolved.size < MEMO_LIMIT) this.#resolved.set(key, uri);
+    }
+    return uri;
   }
 
   /** The schema a reference points at, or undefined. */
@@ -440,6 +468,13 @@ export class SchemaRegistry {
   }
 
   #locate(uri: string): Located | undefined {
+    if (this.#located.has(uri)) return this.#located.get(uri);
+    const found = this.#find(uri);
+    if (this.#located.size < MEMO_LIMIT) this.#located.set(uri, found);
+    return found;
+  }
+
+  #find(uri: string): Located | undefined {
     const base = documentUri(uri);
     const document = this.#documents.get(base);
     if (document === undefined) return undefined;
