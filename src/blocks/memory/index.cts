@@ -222,11 +222,16 @@ function words(text: string): string[] {
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean);
 }
-/** The same words in the same order after case, spacing and punctuation. */
+/**
+ * The same text after only trimming, collapsing runs of whitespace and folding case. Punctuation,
+ * symbols, digits and signs are never touched: "replicas >= 3" and "replicas <= 3" differ.
+ */
 function sameText(a: string, b: string): boolean {
-  return words(a).join(" ") === words(b).join(" ");
+  const flat = (text: string) =>
+    text.trim().replace(/\s+/gu, " ").toLowerCase();
+  return flat(a) === flat(b);
 }
-/** Word sets that overlap by NEAR_DUPLICATE_OVERLAP. */
+/** Word sets (punctuation ignored) that overlap by NEAR_DUPLICATE_OVERLAP: a hint only. */
 function similarText(a: string, b: string): boolean {
   const one = new Set(words(a));
   const two = new Set(words(b));
@@ -1638,12 +1643,12 @@ module.exports = {
         (old.status === "rejected" || old.status === "withdrawn") &&
         ownerTag(value.tags, config) !== undefined;
       if (resubmitted) Object.assign(value, { status: "proposed" });
-      // A pending note whose text changes, or a note put back in front of the owner, never becomes
-      // a second proposal of exactly what another owner note already says.
+      // A pending note whose text or scope changes, or a note put back in front of the owner, never
+      // becomes a second proposal of exactly what another owner note already says.
       const twins =
         (old.status === "proposed" || resubmitted) &&
         ownerTag(value.tags, config) !== undefined &&
-        (resubmitted || input.text !== old.text)
+        (resubmitted || input.text !== old.text || value.scope !== old.scope)
           ? twinsOf(source, input.text, value.scope, config, number)
           : undefined;
       if (twins?.exact)

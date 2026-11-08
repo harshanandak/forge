@@ -93,18 +93,75 @@ test("a clearly different rule still creates its own proposal", async () => {
   expect((await rules()).receipt.proposed?.count).toBe(2);
 });
 
-test("case, spacing and punctuation never make a second proposal", async () => {
+test("case and spacing never make a second proposal, but punctuation does", async () => {
   const { call } = setup();
   const first = await propose(call, "Write the test first.");
-  const again = await propose(call, "  WRITE   the test, first!! ");
+  const again = await propose(call, "  WRITE    the   test first.  ");
   expect(again).toMatchObject({ status: "exists", id: first.id });
+  // Only trimming, whitespace and case are folded: a different mark is a separate proposal.
+  const marked = await propose(call, "Write the test, first!!");
+  expect(marked.status).toBe("added");
+  expect(marked.similarTo).toEqual([first.id]);
+});
+
+const OPPOSITE_PAIRS = [
+  ["Require replicas >= 3", "Require replicas <= 3"],
+  ["Keep storage at -5 C", "Keep storage at +5 C"],
+  ["Don't merge on red", "Do merge on red"],
+] as const;
+
+test("texts that differ in a sign, symbol or word are separate proposals on add", async () => {
+  for (const [one, two] of OPPOSITE_PAIRS) {
+    const { call, rules } = setup();
+    const first = await propose(call, one);
+    await accept(call, [first.id]);
+    const second = await propose(call, two);
+    expect(second.status).toBe("added");
+    expect(second.id).not.toBe(first.id);
+    expect(second.note.status).toBe("proposed");
+    expect((await rules()).receipt.proposed?.count).toBe(1);
+  }
+});
+
+test("texts that differ in a sign, symbol or word are separate proposals on edit", async () => {
+  for (const [one, two] of OPPOSITE_PAIRS) {
+    // A pending note edited to the other text.
+    const pendingSide = setup();
+    const first = await propose(pendingSide.call, one);
+    await accept(pendingSide.call, [first.id]);
+    const pending = await propose(
+      pendingSide.call,
+      "An unrelated rule about releases.",
+    );
+    const moved = await pendingSide.call("memory.add", {
+      id: pending.id,
+      text: two,
+    });
+    expect(moved.status).toBe("updated");
+    expect(moved.note.text.text).toBe(two);
+    // An accepted note edited to the other text gets a pending revision.
+    const activeSide = setup();
+    const kept = await propose(activeSide.call, one);
+    await accept(activeSide.call, [kept.id]);
+    const active = await propose(
+      activeSide.call,
+      "Another unrelated rule about naming.",
+    );
+    await accept(activeSide.call, [active.id]);
+    const revised = await activeSide.call("memory.add", {
+      id: active.id,
+      text: two,
+    });
+    expect(revised.status).toBe("updated");
+    expect(revised.note.proposal?.text.text).toBe(two);
+  }
 });
 
 test("an active rule is reported as already active", async () => {
   const { call } = setup();
   const first = await propose(call, "Write the test first.");
   await accept(call, [first.id]);
-  const again = await propose(call, "write the test first");
+  const again = await propose(call, "write the test first.");
   expect(again.status).toBe("exists");
   expect(again.id).toBe(first.id);
   expect(again.notice).toContain("already active");
@@ -186,12 +243,12 @@ test("an edit that would repeat another owner note is not proposed", async () =>
   await accept(call, [rule.id]);
   const plain = await call("memory.add", {
     level: "device",
-    text: "write the test first",
+    text: "write the test first.",
     tags: ["fact"],
   });
   const edited = await call("memory.add", {
     id: plain.id,
-    text: "write the test first",
+    text: "write the test first.",
     tags: ["rule"],
   });
   expect(edited).toMatchObject({ status: "exists", id: rule.id });
@@ -207,7 +264,7 @@ test("an edit never turns another note into a second proposal of an owner note's
   const pending = await propose(call, "Merge on green CI.");
   const edited = await call("memory.add", {
     id: pending.id,
-    text: "write the test, first!",
+    text: "WRITE THE TEST   FIRST.",
   });
   expect(edited).toMatchObject({ status: "exists", id: rule.id });
   const kept = await call("memory.show", { id: pending.id });
@@ -234,12 +291,28 @@ test("an edit never turns another note into a second proposal of an owner note's
   expect(
     await call("memory.add", {
       id: rejected.id,
-      text: "WRITE THE TEST FIRST",
+      text: "WRITE THE TEST FIRST.",
     }),
   ).toMatchObject({ status: "exists", id: rule.id });
   expect((await call("memory.show", { id: rejected.id })).note.status).toBe(
     "rejected",
   );
+});
+
+test("a scope-only edit of a pending rule never makes a second proposal of another note's text", async () => {
+  const { call } = setup();
+  const first = await propose(call, "Write the test first.", { scope: "one" });
+  const other = await propose(call, "Write the test first.", { scope: "two" });
+  expect(other.status).toBe("added");
+  const moved = await call("memory.add", {
+    id: other.id,
+    text: "Write the test first.",
+    scope: "one",
+  });
+  expect(moved).toMatchObject({ status: "exists", id: first.id });
+  const kept = await call("memory.show", { id: other.id });
+  expect(kept.note.status).toBe("proposed");
+  expect((kept.note as { scope?: string }).scope).toBe("two");
 });
 
 test("an edit to close wording is kept and names the close note", async () => {
