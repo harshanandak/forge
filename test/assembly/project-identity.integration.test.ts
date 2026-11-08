@@ -28,13 +28,15 @@ function fixture() {
   const memory = () => new LocalState(":memory:", createSqliteStore(sandbox));
   const device = memory();
   const stores: LocalState[] = [device];
-  const checkout = (name: string, committed?: string) => {
+  /** Each in-memory store is held open for the test; its data is gone once the last lease closes. */
+  const checkout = async (name: string, committed?: string) => {
     const root = join(sandbox, name);
     mkdirSync(join(root, ".forge"), { recursive: true });
     if (committed !== undefined)
       writeFileSync(join(root, ".forge", "project.json"), committed);
     const state = memory();
     stores.push(state);
+    await state.open(true);
     return { root, state };
   };
   const open = (
@@ -55,7 +57,7 @@ function fixture() {
     });
   /** The project's identity as the store holds it, for checking what was recorded beside it. */
   const recorded = async (state: LocalState) =>
-    (await state.open(false))?.get(IDENTITY, "identity");
+    (await state.open(true))?.get(IDENTITY, "identity");
   const projectOf = async (
     where: { root: string; state: LocalState },
     options?: { write?: boolean; stateRoot?: string },
@@ -83,8 +85,8 @@ function fixture() {
 test("two checkouts with one committed manifest report one project id (fails when the manifest is not read)", async () => {
   const f = fixture();
   try {
-    const a = f.checkout("a", manifest());
-    const b = f.checkout("b", manifest());
+    const a = await f.checkout("a", manifest());
+    const b = await f.checkout("b", manifest());
     const first = await f.projectOf(a);
     const second = await f.projectOf(b);
     expect(first?.projectId).toBe(MANIFEST_ID);
@@ -100,8 +102,8 @@ test("two checkouts with one committed manifest report one project id (fails whe
 test("without a manifest each checkout reports its own store id, as before", async () => {
   const f = fixture();
   try {
-    const a = f.checkout("a");
-    const b = f.checkout("b");
+    const a = await f.checkout("a");
+    const b = await f.checkout("b");
     const first = await f.projectOf(a);
     const second = await f.projectOf(b);
     expect(first?.projectId).toBe(first?.identity.id);
@@ -119,7 +121,7 @@ test("without a manifest each checkout reports its own store id, as before", asy
 test("the project id is recorded beside the store id and never replaces it", async () => {
   const f = fixture();
   try {
-    const a = f.checkout("a", manifest());
+    const a = await f.checkout("a", manifest());
     const first = await f.projectOf(a);
     expect((await f.recorded(a.state))?.value).toEqual({
       id: first?.identity.id,
@@ -136,7 +138,7 @@ test("the project id is recorded beside the store id and never replaces it", asy
 test("a read reports the manifest id but never writes it into the store", async () => {
   const f = fixture();
   try {
-    const a = f.checkout("a");
+    const a = await f.checkout("a");
     const minted = await f.projectOf(a);
     writeFileSync(join(a.root, ".forge", "project.json"), manifest());
     const before = await f.recorded(a.state);
@@ -152,7 +154,7 @@ test("a read reports the manifest id but never writes it into the store", async 
 test("a store that recorded another project id refuses writes and names both ids", async () => {
   const f = fixture();
   try {
-    const a = f.checkout("a", manifest());
+    const a = await f.checkout("a", manifest());
     await f.projectOf(a);
     // The same store now sits under a checkout whose committed manifest says something else.
     writeFileSync(join(a.root, ".forge", "project.json"), manifest(OTHER_ID));
@@ -180,7 +182,7 @@ test("a store that recorded another project id refuses writes and names both ids
 test("a recorded project id outlives a branch that has no manifest", async () => {
   const f = fixture();
   try {
-    const a = f.checkout("a", manifest());
+    const a = await f.checkout("a", manifest());
     await f.projectOf(a);
     rmSync(join(a.root, ".forge", "project.json"));
     expect((await f.projectOf(a))?.projectId).toBe(MANIFEST_ID);
@@ -195,7 +197,7 @@ test("a recorded project id outlives a branch that has no manifest", async () =>
 test("a manifest with an unknown field is refused before any project work", async () => {
   const f = fixture();
   try {
-    const a = f.checkout("a", manifest());
+    const a = await f.checkout("a", manifest());
     await f.projectOf(a);
     writeFileSync(
       join(a.root, ".forge", "project.json"),
@@ -229,7 +231,7 @@ function git(cwd: string, ...args: string[]): void {
 test("a git worktree reports the manifest id of the repository it belongs to", async () => {
   const f = fixture();
   try {
-    const main = f.checkout("main", manifest());
+    const main = await f.checkout("main", manifest());
     git(main.root, "init");
     git(main.root, "add", "-f", ".forge/project.json");
     git(main.root, "commit", "-m", "fixture");
