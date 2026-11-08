@@ -138,6 +138,32 @@ jobs:
       - name: Packed type resolutions
         run: bun run check:attw "$RUNNER_TEMP/forge-workflow.tgz"
 
+  # Speed gate (forge-955): the built CLI must stay fast and light. The table lands in the job
+  # summary; `issue show` over its limit fails the job. Not in ci-gate: the gate script's inputs
+  # are pinned by tests, so this job is a separate required-by-review check.
+  speed:
+    name: Speed (${{ matrix.os }}, Node 24)
+    needs: changes
+    if: needs.changes.outputs.scope == 'full'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: CLI speed
+        run: node tools/bench/cli-speed.ts --gate
+
   verify:
     name: Verify (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     needs: [changes, pack]
