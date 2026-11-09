@@ -44,7 +44,10 @@ const BUILTINS = new Set(
   builtinModules.map((m) => m.replace(/^node:/, "").split("/")[0]),
 );
 
-const scanner = new Bun.Transpiler({ loader: "ts" });
+const scanners = {
+  ts: new Bun.Transpiler({ loader: "ts" }),
+  tsx: new Bun.Transpiler({ loader: "tsx" }),
+};
 
 /** Import specifiers of a code file, including `import type` (erased at run time, but still a leak). */
 export function importsOf(
@@ -53,18 +56,24 @@ export function importsOf(
 ): string[] {
   if (!CODE_FILE.test(file.path)) return [];
   const found = new Set<string>();
+  // Keep type-only dependencies visible in JavaScript-named inputs too.
+  const loader = /\.[jt]sx$/.test(file.path) ? "tsx" : "ts";
+  const source = file.text.replace(/^\uFEFF/, "").replace(/^#![^\r\n]*/, "");
   try {
-    for (const entry of scanner.scanImports(file.text)) found.add(entry.path);
-  } catch {
-    // unparsable files are reported by the type check, not here
+    for (const entry of scanners[loader].scan(source).imports)
+      found.add(entry.path);
+  } catch (cause) {
+    throw new Error(`Cannot parse ${file.path} for dependency scanning`, {
+      cause,
+    });
   }
   const typeImports =
     /^[ \t]*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm;
-  for (const match of file.text.matchAll(typeImports)) {
+  for (const match of source.matchAll(typeImports)) {
     if (match[1] !== undefined) found.add(match[1]);
   }
-  const withStrings = maskSource(file.text, false);
-  const codeOnly = maskSource(file.text, true);
+  const withStrings = maskSource(source, false);
+  const codeOnly = maskSource(source, true);
   const calls =
     /(?<![\w$.])(?:import|require)\s*\(\s*(?:["']([^"']+)["']\s*[,)]|)/g;
   for (const match of withStrings.matchAll(calls)) {
@@ -103,6 +112,15 @@ function packageTargets(value: unknown): string[] {
   if (typeof value === "string") return [value];
   if (value === null || typeof value !== "object") return [];
   return Object.values(value).flatMap(packageTargets);
+}
+
+function schemaTargets(value: unknown): string[] {
+  if (value === null || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, child]) =>
+    key === "$schema" || key === "$ref"
+      ? packageTargets(child)
+      : schemaTargets(child),
+  );
 }
 
 function aliasTargets(specifier: string, pkg: PackageJson): string[] {
@@ -200,6 +218,9 @@ export function findDependencyViolations(
     };
     if (/\.jsonc?$/i.test(file.path)) {
       const config = JSON.parse(maskSource(file.text, false)) as {
+        exports?: unknown;
+        bin?: unknown;
+        files?: unknown;
         compilerOptions?: {
           baseUrl?: string;
           paths?: Record<string, string[]>;
@@ -217,6 +238,22 @@ export function findDependencyViolations(
           reportTeam(
             `paths alias "${alias}" targets removable team/; keep public configuration independent`,
           );
+      const targets = /(?:^|\/)adapter\.json$/.test(file.path)
+        ? packageTargets(config)
+        : [
+            ...schemaTargets(config),
+            ...(/(?:^|\/)package\.json$/.test(file.path)
+              ? [config.exports, config.bin, config.files].flatMap(
+                  packageTargets,
+                )
+              : []),
+          ];
+      for (const target of targets) {
+        const path = slashPath(target).split(/[?#]/)[0]!;
+        if (!path || /^[a-z][\w+.-]*:|^\/\//i.test(path)) continue;
+        if (inTeam(posix.join(posix.dirname(file.path), path)))
+          reportTeam(`manifest path "${target}" reaches removable team/`);
+      }
     }
     if (publicCode) {
       if (
