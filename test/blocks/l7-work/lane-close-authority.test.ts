@@ -97,6 +97,10 @@ async function fixture() {
     failComment: false,
     failCleanup: false,
     run: 0,
+    checkout: "",
+    prBranch: "",
+    localHead: "",
+    ancestor: true,
   };
   const services = {
     state: {
@@ -142,7 +146,7 @@ async function fixture() {
         if (args[0] === "pr")
           stdout = JSON.stringify({
             state: "MERGED",
-            headRefName: lane.branch,
+            headRefName: flags.prBranch || lane.branch,
             headRefOid: head,
             mergeCommit: { oid: merge },
             url,
@@ -150,9 +154,11 @@ async function fixture() {
         else if (args[0] === "worktree" && args[1] === "list")
           stdout = "worktree /project\0branch refs/heads/main\0\0";
         else if (args[0] === "for-each-ref")
-          stdout = flags.branch ? `refs/heads/${lane.branch}` : "";
-        else if (args[0] === "rev-parse") stdout = head;
-        else if (args[0] === "symbolic-ref") stdout = lane.branch;
+          stdout = flags.branch ? args[2]! : "";
+        else if (args[0] === "rev-parse") stdout = flags.localHead || head;
+        else if (args.includes("symbolic-ref"))
+          stdout = flags.checkout || lane.branch;
+        else if (args[0] === "merge-base") exitCode = flags.ancestor ? 0 : 1;
         else if (args[0] === "-C") {
           stdout = "true";
           if (!flags.present) exitCode = 1;
@@ -357,6 +363,47 @@ test("two no-PR drops with the same reason append two distinct landing notes", a
     expect(
       [...f.files.keys()].filter((path) => path.includes("close-no-pr-")),
     ).toHaveLength(2);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("a lane that switched its checkout to a new branch closes with the PR from that branch", async () => {
+  const f = await fixture();
+  try {
+    f.flags.checkout = "feature-b";
+    f.flags.prBranch = "feature-b";
+    const closed = (await f.close()) as { removed: boolean; status: string };
+    expect(closed.removed).toBe(true);
+    expect(closed.status).toBe("closed");
+    expect(f.flags.present).toBe(false);
+    expect(f.files.get("forge-lanes.json")).not.toContain(id);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("a switched lane still refuses a PR whose branch matches neither recorded nor checkout branch", async () => {
+  const f = await fixture();
+  try {
+    f.flags.checkout = "feature-b";
+    f.flags.prBranch = "feature-c";
+    await expect(f.close()).rejects.toThrow("INPUT_CONFLICT");
+    expect(f.flags.present).toBe(true);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("a switched lane still refuses a checkout with unpushed commits", async () => {
+  const f = await fixture();
+  try {
+    f.flags.checkout = "feature-b";
+    f.flags.prBranch = "feature-b";
+    f.flags.localHead = "c".repeat(40);
+    f.flags.ancestor = false;
+    await expect(f.close()).rejects.toThrow("INPUT_CONFLICT");
+    expect(f.flags.present).toBe(true);
   } finally {
     await f.dispose();
   }
