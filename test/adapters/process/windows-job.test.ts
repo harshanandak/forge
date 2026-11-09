@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
   processIds,
+  waitForExit,
+  type ExitApi,
   type JobIdQueryApi,
 } from "../../../src/adapters/process/windows-job.ts";
 
@@ -100,4 +102,141 @@ test("a buffer that is still full and short at the 4096 ceiling throws a message
   expect(() => processIds(api, 1n)).toThrow(
     /exceeds 4096.*succeeded=1.*assigned=4097.*listed=4096.*capacity=4096/s,
   );
+}, 5_000);
+
+const ERROR_INVALID_PARAMETER = 87;
+
+interface FakeProcess {
+  /** How OpenProcess answers: a handle, or "gone" (ERROR_INVALID_PARAMETER). */
+  readonly open: "ok" | "gone";
+  /** Successive WaitForSingleObject results (0 signaled, 258 timeout); the last one repeats. */
+  readonly waits?: readonly number[];
+  readonly started?: bigint;
+  /** GetProcessTimes fails. */
+  readonly timesFail?: boolean;
+}
+
+function fakeExitApi(processes: Readonly<Record<number, FakeProcess>>) {
+  let lastError = 0;
+  const closed: number[] = [];
+  const opened: number[] = [];
+  const waited: number[] = [];
+  const api: ExitApi = {
+    getLastError: () => lastError,
+    openProcess: (_access, _inherit, pid) => {
+      const spec = processes[pid]!;
+      if (spec.open === "ok") {
+        opened.push(pid);
+        return BigInt(pid + 1000);
+      }
+      lastError = ERROR_INVALID_PARAMETER;
+      return 0n;
+    },
+    getProcessTimes: (handle, created) => {
+      const spec = processes[Number(handle) - 1000]!;
+      if (spec.timesFail) return 0;
+      created.writeBigUInt64LE(spec.started ?? 1n);
+      return 1;
+    },
+    waitForSingleObject: (handle) => {
+      const pid = Number(handle) - 1000;
+      waited.push(pid);
+      const waits = processes[pid]!.waits ?? [0];
+      const count = waited.filter((item) => item === pid).length;
+      return waits[Math.min(count, waits.length) - 1]!;
+    },
+    closeHandle: (handle) => {
+      closed.push(Number(handle) - 1000);
+      return 1;
+    },
+  };
+  return { api, closed, opened, waited };
+}
+
+test("waitForExit reports each killed process whose object is signaled", async () => {
+  const fake = fakeExitApi({ 11: { open: "ok" }, 12: { open: "ok" } });
+  const seen: string[] = [];
+  const states = await waitForExit(
+    [{ pid: 11 }, { pid: 12 }, { pid: 11 }],
+    {
+      deadlineMs: 1_000,
+      onStates: (all) =>
+        seen.push(all.map((s) => `${s.pid}:${s.state}`).join()),
+    },
+    fake.api,
+  );
+  expect(states).toEqual([
+    { pid: 11, state: "signaled" },
+    { pid: 12, state: "signaled" },
+  ]);
+  expect(seen).toEqual(["11:signaled,12:signaled"]);
+  // The duplicate pid is opened once, so every opened handle is closed exactly once.
+  expect(fake.opened.sort()).toEqual([11, 12]);
+  expect(fake.closed.sort()).toEqual([11, 12]);
+}, 5_000);
+
+test("waitForExit counts a process that no longer exists as gone without waiting on it", async () => {
+  const fake = fakeExitApi({ 11: { open: "gone" } });
+  expect(
+    await waitForExit([{ pid: 11 }], { deadlineMs: 1_000 }, fake.api),
+  ).toEqual([{ pid: 11, state: "gone" }]);
+  expect(fake.waited).toEqual([]);
+}, 5_000);
+
+test("waitForExit waits on a mixed set and never on a reused PID", async () => {
+  const fake = fakeExitApi({
+    11: { open: "ok", waits: [258, 258, 0] },
+    12: { open: "gone" },
+    13: { open: "ok", started: 9n },
+    14: { open: "ok" },
+  });
+  const states = await waitForExit(
+    [{ pid: 11 }, { pid: 12 }, { pid: 13, started: "5" }, { pid: 14 }],
+    { deadlineMs: 1_000, pollIntervalMs: 1 },
+    fake.api,
+  );
+  expect(states).toEqual([
+    { pid: 11, state: "signaled" },
+    { pid: 12, state: "gone" },
+    { pid: 13, state: "gone" },
+    { pid: 14, state: "signaled" },
+  ]);
+  expect(fake.waited).not.toContain(13);
+  expect(fake.waited.filter((pid) => pid === 11)).toHaveLength(3);
+  expect(fake.closed.sort()).toEqual([11, 13, 14]);
+}, 5_000);
+
+test("waitForExit fails at one shared deadline and names the processes still running", async () => {
+  const fake = fakeExitApi({
+    11: { open: "ok", waits: [258] },
+    12: { open: "ok", waits: [258] },
+    13: { open: "ok" },
+  });
+  let final: readonly string[] = [];
+  const started = performance.now();
+  await expect(
+    waitForExit(
+      [{ pid: 11 }, { pid: 12 }, { pid: 13 }],
+      {
+        deadlineMs: 40,
+        pollIntervalMs: 2,
+        onStates: (all) => {
+          final = all.map((s) => `${s.pid}:${s.state}`);
+        },
+      },
+      fake.api,
+    ),
+  ).rejects.toThrow(/still running 40 ms.*: 11, 12\./);
+  expect(performance.now() - started).toBeLessThan(500);
+  expect(final).toEqual(["11:running", "12:running", "13:signaled"]);
+  expect(fake.closed.sort()).toEqual([11, 12, 13]);
+}, 5_000);
+
+test("waitForExit treats a failed start-time query as an error, not as a reused PID", async () => {
+  const fake = fakeExitApi({ 11: { open: "ok", timesFail: true } });
+  await expect(
+    waitForExit([{ pid: 11, started: "5" }], { deadlineMs: 1_000 }, fake.api),
+  ).rejects.toThrow("Could not read the start time of process 11");
+  expect(fake.closed).toEqual([11]);
+  expect(fake.waited).toEqual([]);
 }, 5_000);

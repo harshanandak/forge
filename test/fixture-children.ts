@@ -7,8 +7,11 @@ import {
 import { fileURLToPath } from "node:url";
 import {
   openWindowsJob,
+  waitForExit,
+  windowsProcessStartTime,
   type WindowsJob,
 } from "../src/adapters/process/windows-job.ts";
+import { recordExitStates } from "./exit-states.ts";
 
 // One second for cooperative shutdown, then one second to end the tree and drain pipes.
 const CLEANUP_DEADLINE_MS = 2_000;
@@ -87,11 +90,25 @@ export class FixtureChildren {
     return child;
   }
 
-  private async endJob(entry: OwnedChild): Promise<void> {
+  // The job's active count reaches 0 before a killed process's handle table closes, and that table
+  // holds its working directory. Wait until each killed process object is signaled, within the same
+  // deadline as the rest of cleanup, so the caller never removes a folder a dying process holds.
+  private async endJob(
+    entry: OwnedChild,
+    deadlineAt = performance.now() + CLEANUP_DEADLINE_MS,
+  ): Promise<void> {
     if (!entry.job) return;
     try {
       entry.members = entry.job.members();
+      const targets = entry.members.map((pid) => ({
+        pid,
+        started: windowsProcessStartTime(pid),
+      }));
       await entry.job.stop();
+      await waitForExit(targets, {
+        deadlineMs: Math.max(0, deadlineAt - performance.now()),
+        onStates: recordExitStates,
+      });
     } finally {
       entry.job.close();
     }
@@ -217,7 +234,7 @@ export class FixtureChildren {
             }
           }
           await within(
-            this.endJob(entry),
+            this.endJob(entry, deadline),
             deadline - performance.now(),
             describe,
           );
