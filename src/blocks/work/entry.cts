@@ -855,10 +855,17 @@ async function laneMainBranch(
 
 // Private refs live in one namespace. Naming a destination does not switch off
 // the configured fetch mappings, so these flags keep the fetch from also moving
-// remote-tracking branches, following tags or pruning.
-const PRIVATE_FETCH_FLAGS = ["--refmap=", "--no-tags", "--no-prune"];
+// remote-tracking branches, following tags, pruning or fetching submodules
+// (which would not get the empty refmap).
+const PRIVATE_FETCH_FLAGS = [
+  "--refmap=",
+  "--no-tags",
+  "--no-prune",
+  "--no-recurse-submodules",
+];
 const PRIVATE_REF_MAX_AGE_MS = 3600000;
-const PRIVATE_REF = /^refs\/forge\/lane-(?:close|base)\/(?:(\d+)-)?[\w.-]+$/;
+const PRIVATE_REF =
+  /^refs\/forge\/lane-(?:close|base)\/(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function privateRefName(kind: "lane-close" | "lane-base", id: string): string {
   return `refs/forge/${kind}/${Date.now()}-${id}`;
 }
@@ -894,10 +901,16 @@ async function dropPrivateRefs(
   refs: string[],
 ): Promise<void> {
   for (const ref of refs)
-    await bestEffortGit(executor, git, cwd, env, ["update-ref", "-d", ref]);
+    // --no-deref: a symbolic ref must be removed itself, never its target.
+    await bestEffortGit(executor, git, cwd, env, [
+      "update-ref",
+      "-d",
+      ref,
+      "--no-deref",
+    ]);
 }
-// Removes private refs a cancelled or timed-out call left behind: those with
-// no timestamp or older than an hour. A recent one may belong to a running call.
+// Removes private refs a cancelled or timed-out call left behind: those named
+// <ms>-<uuid> and older than an hour. A recent one may belong to a running call.
 async function sweepPrivateRefs(
   executor: ProcessService,
   git: Parameters<ProcessService["run"]>[0],
@@ -913,9 +926,7 @@ async function sweepPrivateRefs(
   const stale = listed.split(/\r?\n/).filter((ref) => {
     const match = PRIVATE_REF.exec(ref);
     return (
-      match !== null &&
-      (match[1] === undefined ||
-        Date.now() - Number(match[1]) > PRIVATE_REF_MAX_AGE_MS)
+      match !== null && Date.now() - Number(match[1]) > PRIVATE_REF_MAX_AGE_MS
     );
   });
   await dropPrivateRefs(executor, git, cwd, env, stale);

@@ -580,7 +580,12 @@ test("the private fetch writes only its own ref", async () => {
   try {
     await f.close();
     const fetch = f.flags.calls.find((args) => args[0] === "fetch");
-    expect(fetch?.slice(3)).toEqual(["--refmap=", "--no-tags", "--no-prune"]);
+    expect(fetch?.slice(3)).toEqual([
+      "--refmap=",
+      "--no-tags",
+      "--no-prune",
+      "--no-recurse-submodules",
+    ]);
   } finally {
     await f.dispose();
   }
@@ -640,9 +645,11 @@ test("a deadline that expires right after the fetch reports the original error a
 
 test("the next close removes a stale private ref and keeps a fresh one", async () => {
   const f = await fixture(),
-    fresh = `refs/forge/lane-close/${Date.now()}-fresh`;
+    fresh = `refs/forge/lane-close/${Date.now()}-11111111-2222-4333-8444-555555555555`;
   try {
-    f.flags.privateRefs.add("refs/forge/lane-close/1-stale");
+    f.flags.privateRefs.add(
+      "refs/forge/lane-close/1-11111111-2222-4333-8444-555555555555",
+    );
     f.flags.privateRefs.add(fresh);
     await f.close();
     expect([...f.flags.privateRefs]).toEqual([fresh]);

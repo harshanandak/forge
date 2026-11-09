@@ -171,9 +171,17 @@ test("a refused lane close leaves tracking refs and tags alone and leaves no pri
 test("the next lane close removes a stale private ref and keeps a fresh one", () => {
   const id = offMainLane(),
     commit = git(["rev-parse", "HEAD"]),
-    fresh = `refs/forge/lane-close/${Date.now()}-fresh`;
-  git(["update-ref", "refs/forge/lane-close/1-stale", commit]);
-  git(["update-ref", "refs/forge/lane-base/1-stale", commit]);
+    fresh = `refs/forge/lane-close/${Date.now()}-11111111-2222-4333-8444-555555555555`;
+  git([
+    "update-ref",
+    "refs/forge/lane-close/1-11111111-2222-4333-8444-555555555555",
+    commit,
+  ]);
+  git([
+    "update-ref",
+    "refs/forge/lane-base/1-11111111-2222-4333-8444-555555555555",
+    commit,
+  ]);
   git(["update-ref", fresh, commit]);
   expect(closeLane(id).error?.code).toBe("PR_NOT_MERGED");
   expect(privateRefs()).toBe(fresh);
@@ -183,10 +191,121 @@ test("the next lane close removes a stale private ref and keeps a fresh one", ()
 test("the next lane start removes a stale private ref", () => {
   git([
     "update-ref",
-    "refs/forge/lane-base/1-stale",
+    "refs/forge/lane-base/1-11111111-2222-4333-8444-555555555555",
     git(["rev-parse", "HEAD"]),
   ]);
   const started = start(newIssue());
   expect(started.ok, JSON.stringify(started)).toBe(true);
   expect(privateRefs()).toBe("");
+}, 30000);
+
+const UUID = "11111111-2222-4333-8444-555555555555";
+
+test("the sweep removes a stale symbolic private ref without deleting the branch it points at", () => {
+  const commit = git(["rev-parse", "HEAD"]);
+  git(["update-ref", "refs/heads/sentinel-symref", commit]);
+  git([
+    "symbolic-ref",
+    `refs/forge/lane-base/1-${UUID}`,
+    "refs/heads/sentinel-symref",
+  ]);
+  try {
+    const started = start(newIssue());
+    expect(started.ok, JSON.stringify(started)).toBe(true);
+    expect(privateRefs()).toBe("");
+    expect(git(["rev-parse", "refs/heads/sentinel-symref"])).toBe(commit);
+  } finally {
+    git(["update-ref", "-d", "refs/heads/sentinel-symref"]);
+  }
+}, 30000);
+
+/** Runs one lane fetch under a hostile configuration and shows what survives. */
+function hostileFetch(op: "start" | "close") {
+  let act: () => void;
+  if (op === "start")
+    act = () => {
+      const started = start(newIssue());
+      expect(started.ok, JSON.stringify(started)).toBe(true);
+    };
+  else {
+    const id = offMainLane();
+    act = () => expect(closeLane(id).error?.code).toBe("PR_NOT_MERGED");
+  }
+  const commit = git(["rev-parse", "HEAD"]);
+  git(["update-ref", "refs/heads/sentinel", commit]);
+  git(["update-ref", "refs/remotes/origin/gone", commit]);
+  git(["tag", "local-only"]);
+  git([
+    "config",
+    "--add",
+    "remote.origin.fetch",
+    "+refs/heads/main:refs/heads/sentinel",
+  ]);
+  git(["config", "fetch.prune", "true"]);
+  git(["config", "fetch.pruneTags", "true"]);
+  try {
+    advanceOrigin();
+    const before = tracked();
+    act();
+    expect(git(["rev-parse", "refs/heads/sentinel"])).toBe(commit);
+    expect(tracked()).toBe(before);
+    expect(tracked()).toContain("refs/remotes/origin/gone");
+    expect(tracked()).toContain("refs/tags/local-only");
+    expect(privateRefs()).toBe("");
+  } finally {
+    git(["config", "--unset", "remote.origin.fetch", "sentinel"]);
+    git(["config", "--unset", "fetch.prune"]);
+    git(["config", "--unset", "fetch.pruneTags"]);
+    git(["tag", "-d", "local-only"]);
+    git(["update-ref", "-d", "refs/remotes/origin/gone"]);
+    git(["update-ref", "-d", "refs/heads/sentinel"]);
+  }
+}
+test("lane start's fetch ignores a forced custom mapping and fetch.prune", () => {
+  hostileFetch("start");
+}, 30000);
+test("lane close's fetch ignores a forced custom mapping and fetch.prune", () => {
+  hostileFetch("close");
+}, 30000);
+
+test("the private fetch leaves a populated submodule's remote-tracking refs alone", () => {
+  const subOrigin = join(root, "sub-origin.git"),
+    subWork = join(root, "sub-work"),
+    sub = join(repo, "sub"),
+    submoduleRefs = () =>
+      git(
+        ["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"],
+        sub,
+      );
+  git(["init", "--bare", "--initial-branch=main", subOrigin], root);
+  git(["clone", subOrigin, subWork], root);
+  git(["config", "user.name", "Lane test"], subWork);
+  git(["config", "user.email", "lane@example.test"], subWork);
+  writeFileSync(join(subWork, "file"), "one\n");
+  git(["add", "file"], subWork);
+  git(["commit", "-m", "one"], subWork);
+  git(["push", "origin", "main"], subWork);
+  git([
+    "-c",
+    "protocol.file.allow=always",
+    "submodule",
+    "add",
+    subOrigin,
+    "sub",
+  ]);
+  git(["commit", "-m", "add submodule"]);
+  git(["config", "protocol.file.allow", "always"]);
+  git(["config", "protocol.file.allow", "always"], sub);
+  git(["config", "fetch.recurseSubmodules", "true"]);
+  writeFileSync(join(subWork, "file"), "two\n");
+  git(["commit", "-am", "two"], subWork);
+  git(["push", "origin", "main"], subWork);
+  try {
+    const before = submoduleRefs();
+    const started = start(newIssue());
+    expect(started.ok, JSON.stringify(started)).toBe(true);
+    expect(submoduleRefs()).toBe(before);
+  } finally {
+    git(["config", "--unset", "fetch.recurseSubmodules"]);
+  }
 }, 30000);

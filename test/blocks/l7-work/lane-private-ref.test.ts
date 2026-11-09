@@ -59,7 +59,7 @@ function fixture() {
       lock: () => ({ release() {} }),
     },
     environment: { platform: "linux", select: () => ({}) },
-    crypto: { randomUUID: () => "invocation-1" },
+    crypto: { randomUUID: () => "11111111-2222-4333-8444-555555555555" },
     process: {
       resolve: () => ({ kind: "resolved", path: "git" }),
       run: (
@@ -113,7 +113,12 @@ test("the base fetch writes only its own ref", async () => {
   const f = fixture();
   await f.run();
   const fetch = f.calls.find((args) => args[0] === "fetch");
-  expect(fetch?.slice(3)).toEqual(["--refmap=", "--no-tags", "--no-prune"]);
+  expect(fetch?.slice(3)).toEqual([
+    "--refmap=",
+    "--no-tags",
+    "--no-prune",
+    "--no-recurse-submodules",
+  ]);
 }, 30_000);
 
 /** The next start runs well after a call that was cancelled or timed out. */
@@ -170,8 +175,8 @@ test("a failed cleanup does not replace the original error", async () => {
 
 test("the next start removes a stale private ref and keeps a fresh one", async () => {
   const f = fixture(),
-    fresh = `refs/forge/lane-base/${Date.now()}-fresh`;
-  f.refs.add("refs/forge/lane-base/1-stale");
+    fresh = `refs/forge/lane-base/${Date.now()}-11111111-2222-4333-8444-555555555555`;
+  f.refs.add("refs/forge/lane-base/1-11111111-2222-4333-8444-555555555555");
   f.refs.add(fresh);
   await f.run();
   expect([...f.refs]).toEqual([fresh]);
