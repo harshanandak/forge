@@ -4034,14 +4034,13 @@ const operations: Operations<WorkOperations> = {
           ...(leaveDirectory ? { leaveDirectory } : {}),
         });
         eligible();
-        // Truncated output is never parsed; a call with an overflow message refuses with it.
-        if (overflow && result.truncated && !result.timedOut)
-          fail("INPUT_CONFLICT", overflow);
-        if (result.timedOut || result.truncated)
+        const unavailable = () =>
           fail(
             "UNAVAILABLE",
             "Git timed out or exceeded the lane output limit",
           );
+        // Name the cause in order: a timeout, then unfinished pipes, then a real overflow.
+        if (result.timedOut) unavailable();
         // A clean exit can still hide unread output; only complete streams may be parsed.
         if (
           !result.outputEvidence?.stdout.complete ||
@@ -4051,6 +4050,11 @@ const operations: Operations<WorkOperations> = {
             "INPUT_CONFLICT",
             "Git output was incomplete; inspect the lane before releasing",
           );
+        // Truncated output is never parsed; a call with an overflow message refuses with it.
+        if (result.truncated) {
+          if (overflow) fail("INPUT_CONFLICT", overflow);
+          unavailable();
+        }
         if (result.exitCode !== 0)
           fail(
             "INPUT_CONFLICT",

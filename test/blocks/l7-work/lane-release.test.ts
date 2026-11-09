@@ -72,6 +72,7 @@ async function fixture() {
     canonicalWorktree: lane.worktree,
     indexEntries: "H visible.txt\0",
     truncateIndex: false,
+    timeoutIndex: false,
     evidence: undefined as
       { command: string; mode: "incomplete" | "missing" } | undefined,
     afterRead: undefined as (() => void) | undefined,
@@ -158,7 +159,7 @@ async function fixture() {
         stderr: "",
         exitCode,
         signal: null,
-        timedOut: false,
+        timedOut: flags.timeoutIndex && args[0] === "ls-files",
         truncated,
         durationMs: 0,
         ...(evidence === "missing"
@@ -550,6 +551,76 @@ for (const mode of ["reported truncation", "output over the cap"] as const) {
     }
   }, 30_000);
 }
+
+// A reported truncation below the cap with unfinished pipes is incomplete output, not too many files.
+test("release names incomplete output when ls-files is truncated below the cap with incomplete evidence", async () => {
+  const f = await fixture();
+  try {
+    f.flags.truncateIndex = true;
+    f.flags.evidence = { command: "ls-files", mode: "incomplete" };
+    f.flags.indexEntries = "H visible.txt";
+    const before = f.snapshot();
+    const result = await f.invoke("lane.release", { id: "sample-1" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "INPUT_CONFLICT",
+        message: "Git output was incomplete; inspect the lane before releasing",
+      },
+    });
+    expect(
+      f.calls.some((args) => args[0] === "worktree" && args[1] === "remove"),
+    ).toBe(false);
+    expect(f.calls.some((args) => args[0] === "status")).toBe(false);
+    expect(f.snapshot()).toBe(before);
+    expect(f.mutations).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+test("release keeps the too-many-files message when ls-files is truncated with complete evidence", async () => {
+  const f = await fixture();
+  try {
+    f.flags.truncateIndex = true;
+    f.flags.indexEntries = "H visible.txt";
+    const before = f.snapshot();
+    const result = await f.invoke("lane.release", { id: "sample-1" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT", message: tooMany },
+    });
+    expect(f.snapshot()).toBe(before);
+    expect(f.mutations).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+test("release reports UNAVAILABLE when ls-files times out, even with truncation and incomplete evidence", async () => {
+  const f = await fixture();
+  try {
+    f.flags.timeoutIndex = true;
+    f.flags.truncateIndex = true;
+    f.flags.evidence = { command: "ls-files", mode: "incomplete" };
+    const before = f.snapshot();
+    const result = await f.invoke("lane.release", { id: "sample-1" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "UNAVAILABLE",
+        message: "Git timed out or exceeded the lane output limit",
+      },
+    });
+    expect(
+      f.calls.some((args) => args[0] === "worktree" && args[1] === "remove"),
+    ).toBe(false);
+    expect(f.snapshot()).toBe(before);
+    expect(f.mutations).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
 
 test("only the ls-files check gets the larger output cap", async () => {
   const f = await fixture();
