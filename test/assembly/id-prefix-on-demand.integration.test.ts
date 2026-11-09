@@ -257,6 +257,10 @@ async function fixture(workEnabled: boolean, idPrefix?: string) {
       root,
       git,
       diagnostics,
+      restoreSpies() {
+        processes.mockRestore();
+        capture.mockRestore();
+      },
       failOrigin(value: OriginFailure) {
         originFails = value;
       },
@@ -728,6 +732,7 @@ test("a project store that cannot open refuses without writing another project's
     await other.call(["issue", "create", "--title", "Other project's issue"]);
     const path = join(other.root, ".forge/state.sqlite");
     const before = readFileSync(path);
+    other.restoreSpies();
     const blocked = await fixture(true);
     try {
       mkdirSync(join(blocked.root, ".forge/state.sqlite"));
