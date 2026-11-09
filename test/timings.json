@@ -253,7 +253,6 @@
     "test/tools/gen-write-race.test.ts": 1449,
     "test/tools/gen-write.test.ts": 270,
     "test/tools/integration-schedule.test.ts": 83,
-    "test/tools/lane-close.integration.test.ts": 76159,
     "test/tools/lane-run.integration.test.ts": 177669,
     "test/tools/lane.integration.test.ts": 54698,
     "test/tools/pack-smoke/bounded.integration.test.ts": 5525,

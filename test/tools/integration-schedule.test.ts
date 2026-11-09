@@ -57,7 +57,6 @@ test.each(["test:integration", "test:changed"])(
       ["assembly/shared-store", "shared-store"],
       ["tools", "lane-run"],
       ["tools", "lane"],
-      ["tools", "lane-close"],
     ];
     for (const [folder, name] of files) {
       const path = `test/${folder}/${name}.integration.test.ts`;
