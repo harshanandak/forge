@@ -23,6 +23,8 @@ export class Project extends Shipped {
           },
         },
         transactionSync: (body) => ctx.storage.transactionSync(body),
+        get: (key) => ctx.storage.get(key),
+        put: (key, value) => ctx.storage.put(key, value),
       },
     });
     this.#armed = armed;

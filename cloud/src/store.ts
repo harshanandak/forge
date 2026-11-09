@@ -15,6 +15,8 @@ export interface DurableStorage {
     ): { toArray(): Record<string, unknown>[] };
   };
   transactionSync<T>(body: () => T): T;
+  get(key: string): Promise<unknown>;
+  put(key: string, value: unknown): Promise<void>;
 }
 
 /** The only table that records the schema version: Durable Object SQLite has no PRAGMA user_version. */

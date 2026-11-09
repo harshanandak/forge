@@ -3,7 +3,7 @@
 // Every request needs a bearer token. The admin routes (devices, revoke) are checked here against the
 // ADMIN_TOKEN secret, before the project's object is touched; the others are checked by the object.
 export { Project } from "./project.ts";
-import { bearer, same, sha256 } from "./tokens.ts";
+import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 
 interface Env {
   readonly ADMIN_TOKEN?: string;
@@ -52,6 +52,8 @@ export default {
       !(await isAdmin(presented, env.ADMIN_TOKEN))
     )
       return unauthorized("AUTH_INVALID", "An admin token is required");
+    if (!ADMIN_ROUTES.has(match![2]!) && !wellFormed(presented))
+      return unauthorized("AUTH_INVALID", "Token is not valid");
     return env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(request);
   },
 };

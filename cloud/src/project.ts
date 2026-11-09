@@ -15,9 +15,14 @@ import type {
   LeaseHolder,
   LeaseRecord,
 } from "../../src/generated/types.ts";
-import type { SqlRow } from "../../src/ports/store.ts";
+import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { validateLeaseHolder } from "../../src/generated/validators.ts";
-import { durableStore, PRAGMA_TABLE, type DurableState } from "./store.ts";
+import {
+  durableStore,
+  PRAGMA_TABLE,
+  type DurableState,
+  type DurableStorage,
+} from "./store.ts";
 import {
   authorize,
   issueToken,
@@ -31,6 +36,9 @@ import {
 const NAMESPACE = "forge/work";
 const REQUESTS = "domain_cloud_requests";
 const MAX_BODY = 8192;
+// Set in the object's key-value storage when an admin first issues a token. Until then the object
+// runs no SQL at all, so a request that is not authenticated never makes a project database.
+const PROVISIONED = "provisioned";
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 // Registers the tables this server adds beside the state owner's own. The digest is checked for its
@@ -95,14 +103,56 @@ function object(body: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+// Reads the body up to MAX_BODY bytes and stops there, so a large body is never held in full.
+async function bounded(request: Request): Promise<string> {
+  const tooBig = (): ForgeFailure =>
+    fail("INPUT_INVALID", `body is over ${MAX_BODY} bytes`);
+  if (Number(request.headers.get("content-length")) > MAX_BODY) throw tooBig();
+  const reader = request.body?.getReader();
+  if (reader === undefined) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const chunk = (await reader.read()) as {
+      done: boolean;
+      value?: Uint8Array;
+    };
+    const value = chunk.value;
+    if (chunk.done || value === undefined) break;
+    size += value.byteLength;
+    if (size > MAX_BODY) {
+      await reader.cancel();
+      throw tooBig();
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
+}
+
 export class Project {
-  readonly #db;
-  readonly #owner;
+  readonly #storage: DurableStorage;
+  #opened: { db: SqlDatabase; owner: StateOwner } | undefined;
+  #provisioned = false;
 
   constructor(ctx: DurableState) {
-    this.#db = durableStore(ctx.storage);
-    this.#owner = new StateOwner(this.#db, { now: () => Date.now() });
-    this.#owner.initialize([domain]);
+    this.#storage = ctx.storage;
+  }
+
+  // Creates the schema on first use. Only provisioned projects get here.
+  #open(): { db: SqlDatabase; owner: StateOwner } {
+    if (this.#opened === undefined) {
+      const db = durableStore(this.#storage);
+      const owner = new StateOwner(db, { now: () => Date.now() });
+      owner.initialize([domain]);
+      this.#opened = { db, owner };
+    }
+    return this.#opened;
+  }
+
+  async #isProvisioned(): Promise<boolean> {
+    if (!this.#provisioned)
+      this.#provisioned = (await this.#storage.get(PROVISIONED)) === true;
+    return this.#provisioned;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -111,9 +161,11 @@ export class Project {
       const route = url.pathname.split("/")[3] ?? "";
       // The Worker has already checked the admin token before it forwards these two routes.
       if (request.method === "POST" && route === "devices") {
-        const input = object(await request.text());
+        const input = object(await bounded(request));
+        await this.#storage.put(PROVISIONED, true);
+        this.#provisioned = true;
         const value = await issueToken(
-          this.#db,
+          this.#open().db,
           {
             device: text(input, "device"),
             session: optional(input, "session"),
@@ -126,12 +178,19 @@ export class Project {
         return Response.json({ ok: true, value });
       }
       if (request.method === "POST" && route === "revoke") {
-        const input = object(await request.text());
+        const input = object(await bounded(request));
+        if (!(await this.#isProvisioned()))
+          throw fail("INPUT_INVALID", "No such device token");
         return Response.json({
           ok: true,
-          value: revokeToken(this.#db, text(input, "id"), Date.now()),
+          value: revokeToken(this.#open().db, text(input, "id"), Date.now()),
         });
       }
+      if (request.method === "GET" && route === "status")
+        return Response.json({
+          ok: true,
+          value: { initialized: await this.#isProvisioned() },
+        });
       const reads = request.method === "GET" && route === "holder";
       const writes =
         request.method === "POST" &&
@@ -141,25 +200,26 @@ export class Project {
           "UNKNOWN_COMMAND",
           `No route for ${request.method} /${route}`,
         );
-      // Device check first. Everything after the one await below is synchronous up to the write, so a
-      // revoke cannot land between the check and the write.
+      // The device is checked before the body is read, and again right before the write: nothing
+      // awaits between that second check and the write, so a revoke cannot land between them.
       const presented = bearer(request);
       if (presented === undefined)
         throw fail("AUTH_REQUIRED", "A device token is required");
-      const body = writes ? await request.text() : "";
       const parts = await tokenParts(presented);
-      const device = authorize(this.#db, parts, Date.now());
+      if (!(await this.#isProvisioned()))
+        throw fail("AUTH_INVALID", "Token is not valid");
+      authorize(this.#open().db, parts, Date.now());
+      const body = writes ? await bounded(request) : "";
+      const device = authorize(this.#open().db, parts, Date.now());
       if (reads) {
         const subject = url.searchParams.get("subject");
         if (subject === null || subject === "")
           throw fail("INPUT_INVALID", "subject is required");
         return Response.json({
           ok: true,
-          value: this.#owner.lease(NAMESPACE, subject) ?? null,
+          value: this.#open().owner.lease(NAMESPACE, subject) ?? null,
         });
       }
-      if (body.length > MAX_BODY)
-        throw fail("INPUT_INVALID", `body is over ${MAX_BODY} characters`);
       return Response.json({
         ok: true,
         value: this.#write(
@@ -236,7 +296,7 @@ export class Project {
       generation,
       ttlMs,
     });
-    const prior = this.#db.get(
+    const prior = this.#open().db.get(
       `SELECT fingerprint, outcome, result FROM ${REQUESTS} WHERE request_id=?`,
       [requestId],
     );
@@ -252,14 +312,20 @@ export class Project {
     try {
       // The change and its receipt commit together: if the receipt insert fails, the change rolls
       // back, so a retry after the 500 starts from the state the caller last saw.
-      return this.#db.transaction(() => {
+      return this.#open().db.transaction(() => {
         const fence = { subject, holder, generation: generation ?? 0 };
         const lease =
           route === "claim"
-            ? this.#owner.acquire(NAMESPACE, subject, holder, ttlMs!, requestId)
+            ? this.#open().owner.acquire(
+                NAMESPACE,
+                subject,
+                holder,
+                ttlMs!,
+                requestId,
+              )
             : route === "renew"
-              ? this.#owner.renew(NAMESPACE, fence, ttlMs!)
-              : this.#owner.release(NAMESPACE, fence);
+              ? this.#open().owner.renew(NAMESPACE, fence, ttlMs!)
+              : this.#open().owner.release(NAMESPACE, fence);
         this.#record(requestId, fingerprint, "ok", lease);
         return lease;
       });
@@ -269,7 +335,7 @@ export class Project {
         error instanceof ForgeFailure &&
         error.error.code.startsWith("LEASE_")
       )
-        this.#db.transaction(() =>
+        this.#open().db.transaction(() =>
           this.#record(requestId, fingerprint, error.error.code, error.error),
         );
       throw error;
@@ -287,7 +353,7 @@ export class Project {
       LeaseRecord | ForgeError;
     if (prior.outcome !== "ok") throw new ForgeFailure(recorded as ForgeError);
     const first = recorded as LeaseRecord;
-    const current = this.#owner.lease(NAMESPACE, subject);
+    const current = this.#open().owner.lease(NAMESPACE, subject);
     // A recorded release returns the same released result at any generation: it grants nothing.
     if (route === "release") return first;
     if (
@@ -323,7 +389,7 @@ export class Project {
     outcome: string,
     result: LeaseRecord | ForgeError,
   ): void {
-    this.#db.run(
+    this.#open().db.run(
       `INSERT INTO ${REQUESTS} (request_id, fingerprint, outcome, result) VALUES (?, ?, ?, ?)`,
       [requestId, fingerprint, outcome, JSON.stringify(result)],
     );
