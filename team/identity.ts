@@ -1,4 +1,4 @@
-import { isVerifiedIdentity } from "../src/ports/identity-mint.ts";
+import { isVerifiedIdentity } from "../src/ports/identity.ts";
 export interface Person {
   readonly id: string;
 }
