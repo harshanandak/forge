@@ -58,6 +58,8 @@ export function nodeProjectFiles(
         }
       }
       const leaf = walked.get(current)!;
+      // Opening a FIFO with no writer blocks forever, so refuse a special file before opening it.
+      if (!leaf.isFile() && !leaf.isDirectory()) refuse("not a regular file");
       options.beforeOpen?.();
       const fd = openSync(current, "r");
       try {
