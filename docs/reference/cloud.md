@@ -14,10 +14,24 @@ Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>
 | `devices`                   | POST   | admin  | Issue a device token: `{ device, session?, agent?, harness?, ttlMs }`. The token is shown once.                                                                               |
 | `revoke`                    | POST   | admin  | Revoke a device token by id. It is refused on its next request.                                                                                                               |
 | `status`                    | GET    | admin  | Whether the project has a database yet.                                                                                                                                       |
-| `dump`                      | GET    | admin  | The project as JSON: issues, leases, events and receipts. No tokens, no hashes.                                                                                               |
+| `dump`                      | GET    | admin  | The project as JSON: issues, leases, events and receipts. No tokens, no hashes. `?cursor=start` dumps in pages (see below).                                                   |
 | `restore`                   | POST   | admin  | Write a dump into an empty project. Body up to 8 MiB (`RESTORE_TOO_LARGE` over it). A row that is not valid state is refused as `RESTORE_INVALID_ROW` and nothing is written. |
 
-A dump is a single response with fixed caps (50,000 rows per table, 262,144 characters per value); paged export is tracked in forge-1020.
+A whole dump (`GET dump`) is one response for a small project: up to 3 MiB stored, 10,000 rows per table and 262,144 characters per value. A larger project is refused as `DUMP_TOO_LARGE` (413); a project with more than 10,000 rows in a table cannot be dumped at all yet (see the limits below).
+
+## Dump and restore in pages
+
+Use pages when a project is too big for one dump. The limits are counted in SQL, not by loading rows.
+
+1. `GET dump?cursor=start` returns page 0. Each page is `{ format: "forge-cloud-dump-page/1", page, last, next, tables }` and holds at most about 4 MiB of rows. A row is never split.
+2. While `last` is false, `GET dump?cursor=<next>` (URL-encode `next`) returns the following page. Keep every page. If the project is written to between two pages, the next page is refused as `DUMP_CHANGED` (409): start again from `cursor=start`.
+3. `POST restore` each page, unchanged and in order, into an empty project. A page other than the next one is refused as `INPUT_INVALID`. Earlier pages only stage rows. The last page runs the same row checks as a whole restore over everything staged (`RESTORE_INVALID_ROW` names the table and row) and then provisions the project.
+
+Limits: a project over 8 MiB stored, or with more than 10,000 rows in any table, is refused as `DUMP_TOO_LARGE` at page 0. A restore is checked after every staged page, in the same transaction, so the page that crosses either limit is refused (`RESTORE_TOO_LARGE`) and nothing stays staged. The last page's row checks hold the whole staged project in memory, which is why both limits exist; streaming those checks would lift them. The conformance run sets smaller values in `wrangler.test.jsonc`; `wrangler.jsonc` sets none.
+
+Staged rows are never served: a project is not provisioned until the last page, and every device route stops at that check before it runs any SQL.
+
+To abandon a half restore, stop. To retry, send page 0 again: it clears the staged rows. Any refused restore request (an out-of-order page, a page over a limit, a bad document or a body that is too large) also clears them, so the next try starts at page 0. A whole `POST restore` clears them too.
 
 A device token acts only as its own device. The admin token is the Worker secret `ADMIN_TOKEN`.
 
