@@ -31,15 +31,20 @@ export async function sha256(value: string): Promise<string> {
   return hex(new Uint8Array(digest));
 }
 
-/** Compares two strings without stopping at the first difference. */
+interface Subtle {
+  timingSafeEqual(a: ArrayBufferView, b: ArrayBufferView): boolean;
+}
+
+/** Constant-time compare of two digests. Different lengths are simply not equal: the native call would throw. */
 export function same(left: string, right: string): boolean {
   const a = new TextEncoder().encode(left);
   const b = new TextEncoder().encode(right);
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < Math.max(a.length, b.length); i += 1)
-    diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
-  return diff === 0;
+  if (a.byteLength !== b.byteLength) return false;
+  return (crypto.subtle as unknown as Subtle).timingSafeEqual(a, b);
 }
+
+/** True when the text has the shape of a device token; the Worker refuses anything else unseen. */
+export const wellFormed = (presented: string): boolean => TOKEN.test(presented);
 
 export function bearer(request: Request): string | undefined {
   return /^Bearer (\S+)$/i.exec(
