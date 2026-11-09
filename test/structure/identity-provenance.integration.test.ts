@@ -112,3 +112,53 @@ for (const path of [
     ).toEqual([path]);
   }, 30_000);
 }
+
+for (const path of [
+  "src/adapters/oidc/other.test.ts",
+  "src/adapters/oidc/other.spec.ts",
+  "src/adapters/oidc/identity-mint.test.backup.test.ts",
+]) {
+  test(`${path} cannot use the mint unit test exemption`, () => {
+    const text = fixtures["named import"]!.replace(
+      "TARGET",
+      posix.relative(posix.dirname(path), mint),
+    );
+    const found = findIdentityMintViolations([
+      { path, text },
+      {
+        path: "src/assembly/consumer.ts",
+        text: `import "${posix.relative("src/assembly", path)}";`,
+      },
+    ]);
+    expect(found.map((violation) => violation.file)).toEqual([path]);
+    expect(found[0]?.message).toContain("identity-mint");
+  }, 30_000);
+}
+
+const calls = readJson(
+  "test/structure/fixtures/identity-mint-calls.json",
+) as Record<string, string>;
+
+for (const path of [
+  "src/adapters/oidc/index.ts",
+  "src/adapters/oidc/identity-mint.test.ts",
+  "test/contract/lib/identity-verifier.ts",
+]) {
+  for (const [name, source] of Object.entries(calls)) {
+    test(`${path} permits a ${name} without exposing the binding`, () => {
+      const text = source.replace(
+        "TARGET",
+        posix.relative(posix.dirname(path), mint),
+      );
+      expect(
+        findIdentityMintViolations([
+          { path, text },
+          {
+            path: "src/assembly/consumer.ts",
+            text: `import { verify } from "${posix.relative("src/assembly", path)}";`,
+          },
+        ]),
+      ).toEqual([]);
+    }, 30_000);
+  }
+}
