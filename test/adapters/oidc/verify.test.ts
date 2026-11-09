@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   createOidcVerifier,
   type OidcConfig,
+  type OidcHttpPort,
 } from "../../../src/adapters/oidc/index.ts";
 import type {
   IdentityRefusal,
@@ -15,6 +16,7 @@ const config: OidcConfig = {
   jwksUrl: "https://issuer.example/keys",
   cacheTtlMs: 60_000,
   refreshIntervalMs: 1_000,
+  fetchTimeoutMs: 25,
 };
 const claims = {
   iss: config.issuer,
@@ -63,7 +65,7 @@ async function token(
   );
   return `${input}.${Buffer.from(signature).toString("base64url")}`;
 }
-async function fixture() {
+async function fixture(get?: OidcHttpPort["get"]) {
   const pairs = await keys;
   let now = 100_000,
     fetches = 0;
@@ -72,10 +74,10 @@ async function fixture() {
   const verifier = createOidcVerifier(
     config,
     {
-      get: (url) => {
+      get: (url, signal) => {
         fetches++;
         urls.push(url);
-        return Promise.resolve(jwks);
+        return get ? get(url, signal) : Promise.resolve(JSON.stringify(jwks));
       },
     },
     { now: () => now },
@@ -188,4 +190,51 @@ test("plain object cannot type-check as verified identity", () => {
     authenticatedAt: 50_000,
   };
   expect(forged.subject).toBe(claims.sub);
+}, 5_000);
+
+test("stalled HTTP ignores abort but the deadline clears pending for a later refresh", async () => {
+  const body = JSON.stringify({ keys: [(await keys)[0]!.jwk] });
+  const signals: AbortSignal[] = [];
+  const f = await fixture((_url, signal) => {
+    signals.push(signal);
+    return signals.length === 1
+      ? new Promise<string>(() => {})
+      : Promise.resolve(body);
+  });
+  const proof = await token();
+  const sentinel = Promise.withResolvers<string>();
+  const timer = setTimeout(() => sentinel.resolve("deadline missed"), 500);
+  const result = await Promise.race([f.verify(proof), sentinel.promise]);
+  clearTimeout(timer);
+  expect(result).toEqual(refused());
+  expect(signals[0]?.aborted).toBe(true);
+  expect(await f.verify(proof)).toEqual(refused());
+  expect(f.fetches()).toBe(1);
+  f.advance(config.refreshIntervalMs);
+  expect(await f.verify(proof)).toMatchObject({ ok: true });
+  expect(f.fetches()).toBe(2);
+}, 5_000);
+
+test("oversized text is refused before parsing, including its UTF-8 byte size", async () => {
+  for (const padding of ["x".repeat(65_536), "é".repeat(34_000)]) {
+    const body = JSON.stringify({ keys: [(await keys)[0]!.jwk], padding });
+    const f = await fixture(() => Promise.resolve(body));
+    expect(await f.verify(await token())).toEqual(refused());
+  }
+}, 5_000);
+
+test("oversized key fields are refused", async () => {
+  for (const field of [
+    { kid: "k".repeat(129) },
+    { n: "A".repeat(684) },
+    { e: "A".repeat(9) },
+  ]) {
+    const jwk = { ...(await keys)[0]!.jwk, ...field };
+    const f = await fixture(() =>
+      Promise.resolve(JSON.stringify({ keys: [jwk] })),
+    );
+    expect(await f.verify(await token({}, { kid: jwk.kid }))).toEqual(
+      refused(),
+    );
+  }
 }, 5_000);

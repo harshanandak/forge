@@ -10,6 +10,7 @@ export interface OidcConfig {
   readonly jwksUrl: string;
   readonly cacheTtlMs: number;
   readonly refreshIntervalMs: number;
+  readonly fetchTimeoutMs: number;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -34,8 +35,33 @@ function timestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value * 1_000);
 }
 
+function publicKey(value: unknown) {
+  const key = object(value);
+  if (
+    key.kty !== "RSA" ||
+    typeof key.kid !== "string" ||
+    !key.kid ||
+    key.kid.length > 128 ||
+    typeof key.n !== "string" ||
+    key.n.length > 683 ||
+    bytes(key.n).length > 512 ||
+    typeof key.e !== "string" ||
+    key.e.length > 8 ||
+    !bytes(key.e).length ||
+    (key.alg !== undefined && key.alg !== "RS256") ||
+    (key.use !== undefined && key.use !== "sig") ||
+    (key.key_ops !== undefined &&
+      (!Array.isArray(key.key_ops) ||
+        !key.key_ops.every((op) => typeof op === "string") ||
+        !key.key_ops.includes("verify"))) ||
+    ["d", "p", "q", "dp", "dq", "qi"].some((field) => field in key)
+  )
+    throw new Error("Invalid public key");
+  return { kid: key.kid, n: key.n, e: key.e };
+}
+
 export interface OidcHttpPort {
-  get(url: string): Promise<unknown>;
+  get(url: string, signal: AbortSignal): Promise<string>;
 }
 
 export function createOidcVerifier(
@@ -44,7 +70,7 @@ export function createOidcVerifier(
   clock: ClockPort,
 ): IdentityVerifier {
   const config = { ...input, algorithms: [...input.algorithms] };
-  let keys: Record<string, unknown>[] = [];
+  let keys: ReturnType<typeof publicKey>[] = [];
   let expiresAt = -Infinity,
     refreshedAt = -Infinity;
   let pending: Promise<void> | undefined;
@@ -55,14 +81,37 @@ export function createOidcVerifier(
     // Reserve before awaiting HTTP so concurrent and failed requests share the limit.
     refreshedAt = at;
     pending = (async () => {
-      const jwks = object(await http.get(config.jwksUrl));
-      if (!Array.isArray(jwks.keys) || jwks.keys.length > 100)
-        throw new Error("Invalid key set");
-      const next = jwks.keys.map(object);
-      const freshUntil = clock.now() + config.cacheTtlMs;
-      if (!Number.isFinite(freshUntil)) throw new Error("Invalid clock");
-      keys = next;
-      expiresAt = freshUntil;
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const deadline = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error("Key fetch deadline"));
+            controller.abort();
+          }, config.fetchTimeoutMs);
+        });
+        // Race independently of abort: a broken port may ignore the signal.
+        const body = await Promise.race([
+          http.get(config.jwksUrl, controller.signal),
+          deadline,
+        ]);
+        if (
+          typeof body !== "string" ||
+          body.length > 65_536 ||
+          Buffer.byteLength(body, "utf8") > 65_536
+        )
+          throw new Error("Key set too large");
+        const jwks = object(JSON.parse(body));
+        if (!Array.isArray(jwks.keys) || jwks.keys.length > 100)
+          throw new Error("Invalid key set");
+        const next = jwks.keys.map(publicKey);
+        const freshUntil = clock.now() + config.cacheTtlMs;
+        if (!Number.isFinite(freshUntil)) throw new Error("Invalid clock");
+        keys = next;
+        expiresAt = freshUntil;
+      } finally {
+        clearTimeout(timer);
+      }
     })();
     try {
       await pending;
@@ -86,7 +135,10 @@ export function createOidcVerifier(
           !Number.isFinite(config.cacheTtlMs) ||
           config.cacheTtlMs <= 0 ||
           !Number.isFinite(config.refreshIntervalMs) ||
-          config.refreshIntervalMs <= 0
+          config.refreshIntervalMs <= 0 ||
+          !Number.isSafeInteger(config.fetchTimeoutMs) ||
+          config.fetchTimeoutMs <= 0 ||
+          config.fetchTimeoutMs > 2_147_483_647
         )
           return invalid;
         const parts = proof.split(".");
@@ -98,6 +150,7 @@ export function createOidcVerifier(
           !config.algorithms.includes(header.alg) ||
           typeof header.kid !== "string" ||
           !header.kid ||
+          header.kid.length > 128 ||
           ["jku", "x5u", "jwk", "crit", "b64"].some((field) => field in header)
         )
           return invalid;
@@ -111,23 +164,14 @@ export function createOidcVerifier(
         const matching = keys.filter((key) => key.kid === header.kid);
         if (matching.length !== 1) return invalid;
         const jwk = matching[0]!;
-        if (
-          jwk.kty !== "RSA" ||
-          typeof jwk.n !== "string" ||
-          jwk.n.length > 1_400 ||
-          typeof jwk.e !== "string" ||
-          jwk.e.length > 8 ||
-          (jwk.alg !== undefined && jwk.alg !== header.alg) ||
-          (jwk.use !== undefined && jwk.use !== "sig") ||
-          (jwk.key_ops !== undefined &&
-            (!Array.isArray(jwk.key_ops) || !jwk.key_ops.includes("verify"))) ||
-          ["d", "p", "q", "dp", "dq", "qi"].some((field) => field in jwk)
-        )
-          return invalid;
         const algorithm = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
-        const key = await subtle.importKey("jwk", jwk, algorithm, false, [
-          "verify",
-        ]);
+        const key = await subtle.importKey(
+          "jwk",
+          { kty: "RSA", n: jwk.n, e: jwk.e },
+          algorithm,
+          false,
+          ["verify"],
+        );
         if (
           !("modulusLength" in key.algorithm) ||
           typeof key.algorithm.modulusLength !== "number" ||
