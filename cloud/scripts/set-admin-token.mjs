@@ -29,12 +29,19 @@ const wrangler = fileURLToPath(
 );
 const token = randomBytes(32).toString("base64url");
 
+// Blanks and deletes the temp file, if there is one. Blanking and deleting are separate steps, so a
+// failed blank never skips the delete; a failed delete names the leftover path (never its content).
 function discard() {
+  if (!existsSync(temp)) return;
   try {
     writeFileSync(temp, "");
+  } catch {
+    /* the delete below still runs */
+  }
+  try {
     unlinkSync(temp);
   } catch {
-    /* nothing was written or it is already gone */
+    console.error(`Could not delete the temp file ${temp}. Delete it by hand.`);
   }
 }
 function stop(message, liveChanged = false) {
@@ -46,6 +53,44 @@ function stop(message, liveChanged = false) {
     );
   process.exit(1);
 }
+
+const folder = dirname(target);
+const me = userInfo().username;
+
+// Why the token folder is not private to this user, or undefined when it is. It is checked before any
+// file is created in it: a handle opened on a file while the folder was open to others would outlive a
+// later permission change. Administrators and SYSTEM can already read everything, so they are allowed.
+function folderProblem() {
+  if (process.platform === "win32") {
+    const shown = spawnSync("icacls", [folder], { encoding: "utf8" });
+    if (shown.status !== 0) return "has permissions that could not be read";
+    const allowed = [
+      `${process.env.USERDOMAIN}\\${me}`,
+      `${process.env.COMPUTERNAME}\\${me}`,
+      "NT AUTHORITY\\SYSTEM",
+      "BUILTIN\\Administrators",
+    ].map((name) => name.toLowerCase());
+    const entries = `${shown.stdout}`
+      .split(/\r?\n/)
+      .filter((line) => line.includes(":("));
+    if (entries.length === 0)
+      return "has no permission entries that could be read";
+    for (const line of entries) {
+      const who = line.slice(0, line.indexOf(":(")).trimEnd().toLowerCase();
+      if (!allowed.some((name) => who === name || who.endsWith(` ${name}`)))
+        return "is open to someone besides you";
+    }
+    return undefined;
+  }
+  const info = statSync(folder);
+  return (info.mode & 0o077) !== 0 || info.uid !== process.getuid()
+    ? "is open to someone besides you"
+    : undefined;
+}
+const fix =
+  process.platform === "win32"
+    ? `icacls "${folder}" /inheritance:r /grant:r "${me}:(OI)(CI)F"`
+    : `chmod 700 "${folder}"`;
 
 // Proves the temp file can be read by this user only. Throws if not.
 function restrict() {
@@ -78,7 +123,16 @@ function restrict() {
 if (!existsSync(wrangler))
   stop("Run `bun install` in cloud/ first: wrangler is not installed.");
 try {
-  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+  if (!existsSync(folder)) mkdirSync(folder, { recursive: true, mode: 0o700 });
+} catch (error) {
+  stop(`Could not create ${folder}: ${error.message}`);
+}
+const problem = folderProblem();
+if (problem !== undefined)
+  stop(
+    `Refusing to write: ${folder} ${problem}. Fix it yourself, then run this again: ${fix}`,
+  );
+try {
   writeFileSync(temp, "", { flag: "wx", mode: 0o600 });
   restrict();
 } catch (error) {

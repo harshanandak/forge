@@ -17,6 +17,8 @@ Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>
 | `dump`                      | GET    | admin  | The project as JSON: issues, leases, events and receipts. No tokens, no hashes.                 |
 | `restore`                   | POST   | admin  | Write a dump into an empty project. Body up to 8 MiB (`RESTORE_TOO_LARGE` over it).             |
 
+A dump is a single response with fixed caps (50,000 rows per table, 262,144 characters per value); paged export is tracked in forge-1020.
+
 A device token acts only as its own device. The admin token is the Worker secret `ADMIN_TOKEN`.
 
 ## Deploy
