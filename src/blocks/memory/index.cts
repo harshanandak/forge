@@ -166,6 +166,9 @@ const DECISION_PREFIX = "decision/";
 const DECISION_END = "decision/\u{10FFFF}";
 const DECISION_ID_PREFIX = "decision-id/";
 const DECISION_COUNTER = "meta/decision-counter";
+// The longest text that waits for an owner accept. The accept schema caps item text at the same
+// 8000 characters, so a restored proposal can always be accepted unchanged.
+const MAX_TEXT_CHARS = 8000;
 const SEARCH_WINDOW = 1000;
 const EXPORT_READ = 100;
 // The runtime stops a block after one second and refuses output over 1 MiB. A write costs a few
@@ -322,6 +325,12 @@ function similarity(similar: readonly string[]) {
         notice:
           "It is similar to the notes in similarTo; withdraw this one if it says the same thing.",
       };
+}
+// Characters the way a JSON schema maxLength counts them: code points, not UTF-16 units.
+function overLimit(text: string): boolean {
+  return (
+    text.length > MAX_TEXT_CHARS && Array.from(text).length > MAX_TEXT_CHARS
+  );
 }
 function approved(
   approval: Approval | undefined,
@@ -2849,11 +2858,27 @@ module.exports = {
       for (const { key, note } of adding) {
         const ownerTagged = ownerTag(note.tags, config) !== undefined;
         const status =
-          note.status === "rejected" || note.status === "withdrawn"
-            ? note.status
+          note.status === "withdrawn"
+            ? "withdrawn"
             : ownerTagged || note.status === "proposed"
               ? "proposed"
+              : note.status === "rejected"
+                ? "rejected"
+                : undefined;
+        // Text that waits for an owner accept must fit what memory.accept takes, or it could be
+        // restored but never accepted unchanged. Notes that are never accepted (plain, rejected,
+        // withdrawn, history) keep any size. Nothing is truncated; the restore refuses before it writes.
+        const pending =
+          status === "proposed"
+            ? note.text.text
+            : status === undefined
+              ? note.proposal?.text.text
               : undefined;
+        if (pending !== undefined && overLimit(pending))
+          fail(
+            "RESTORE_TEXT_TOO_LONG",
+            `${qualified(note.id)} waits for owner accept but its text is longer than ${MAX_TEXT_CHARS} characters, the most memory.accept takes; nothing was restored. Shorten it in the export and retry.`,
+          );
         if (ownerTagged && status === "proposed") proposals += 1;
         entries.push({
           key,

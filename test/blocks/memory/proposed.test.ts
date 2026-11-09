@@ -609,22 +609,23 @@ test("export and restore keep proposed and rejected state and never accept a new
     added: 5,
     conflicts: [],
     notice:
-      "3 owner-tagged notes restored as proposals; accept them with memory.accept.",
+      "4 owner-tagged notes restored as proposals; accept them with memory.accept.",
   });
-  // A bundle is never proof of acceptance: every owner-tagged note comes back waiting or rejected.
+  // A bundle is never proof of acceptance: every owner-tagged note comes back waiting.
   const served = await into.rules();
   expect(served.text.text).not.toMatch(
     /proposed stays|rejected stays|accepted text|history text|pending edit|rejected edit/,
   );
   expect(served.receipt.selected).toEqual([]);
-  expect(served.receipt.proposed?.count).toBe(4);
+  expect(served.receipt.proposed?.count).toBe(5);
   expect(await into.call("memory.show", { id: proposed.id })).toMatchObject({
     note: { status: "proposed", text: { text: "proposed stays proposed" } },
   });
   const restoredRejected = await into.call("memory.show", {
     id: rejected.id,
   });
-  expect(restoredRejected.note.status).toBe("rejected");
+  // A new owner-tagged note always restores as a proposal, even one that was rejected where it was exported.
+  expect(restoredRejected.note.status).toBe("proposed");
   expect(restoredRejected.note.approval).toBeUndefined();
   // A rule that was accepted where it was exported comes back as a proposal of its served text.
   const restoredEdited = await into.call("memory.show", { id: edited.id });
@@ -699,6 +700,112 @@ test("restore stores a new owner-tagged note as a proposal whatever status the b
   const after = (await rules()).text.text;
   expect(after).toContain("rule with no status");
   expect(after).toContain("rule claiming to be active");
+});
+
+test("restore brings a rejected owner-tagged note back as a proposal the owner can accept", async () => {
+  const { call, rules } = setup();
+  await call("memory.restore", {
+    format: "forge.memory.export/3",
+    level: "device",
+    notes: [
+      {
+        id: "device/note-1",
+        tags: ["rule"],
+        links: [],
+        text: { text: "rule that was rejected" },
+        status: "rejected",
+      },
+    ],
+    approval: ownerApproval,
+  });
+  expect((await call("memory.show", { id: "device/note-1" })).note.status).toBe(
+    "proposed",
+  );
+  expect((await rules()).text.text).not.toContain("rule that was rejected");
+  await decide(call, "memory.accept", ["device/note-1"]);
+  expect((await rules()).text.text).toContain("rule that was rejected");
+});
+
+const restoreLimit = 8000;
+const restoreShapes = {
+  "an owner-tagged note": (text: string) => ({
+    tags: ["rule"],
+    text: { text },
+  }),
+  "a rejected owner-tagged note": (text: string) => ({
+    tags: ["rule"],
+    text: { text },
+    status: "rejected",
+  }),
+  "a pending proposal": (text: string) => ({
+    tags: ["fact"],
+    text: { text: "short" },
+    proposal: {
+      text: { kind: "untrusted", source: "export", text },
+      tags: ["fact"],
+      links: [],
+      at: "2026-01-01T00:00:00Z",
+    },
+  }),
+} as const;
+
+for (const [name, shape] of Object.entries(restoreShapes)) {
+  test(`restore refuses ${name} over the accept limit before writing anything`, async () => {
+    const { call, state } = setup();
+    const writes = state.counts.put + state.counts.putMany;
+    await refused(
+      () =>
+        call("memory.restore", {
+          format: "forge.memory.export/3",
+          level: "device",
+          notes: [
+            {
+              id: "device/note-1",
+              links: [],
+              ...shape("x".repeat(restoreLimit + 1)),
+            },
+            {
+              id: "device/note-2",
+              tags: ["fact"],
+              links: [],
+              text: { text: "a fine note" },
+            },
+          ],
+          approval: ownerApproval,
+        }),
+      "RESTORE_TEXT_TOO_LONG",
+    );
+    expect(state.counts.put + state.counts.putMany).toBe(writes);
+    expect(
+      await call<{ hits: unknown[] }>("memory.search", {
+        level: "device",
+        query: "fine",
+      }),
+    ).toMatchObject({ hits: [] });
+  });
+}
+
+test("restore accepts text of exactly the accept limit, and the owner can accept it unchanged", async () => {
+  const { call } = setup();
+  const text = "y".repeat(restoreLimit);
+  const result = await call<{ added: number }>("memory.restore", {
+    format: "forge.memory.export/3",
+    level: "device",
+    notes: [
+      {
+        id: "device/note-1",
+        tags: ["rule"],
+        links: [],
+        text: { text },
+      },
+    ],
+    approval: ownerApproval,
+  });
+  expect(result.added).toBe(1);
+  await decide(call, "memory.accept", ["device/note-1"]);
+  expect(
+    (await call("memory.show", { id: "device/note-1" })).note.status,
+  ).toBeUndefined();
 });
 
 test("a bundle with no proposal state stays the format older restorers read", async () => {
