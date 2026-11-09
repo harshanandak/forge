@@ -103,8 +103,10 @@ async function fixture(seedLink = true) {
     localHead: "",
     ancestor: true,
     prBase: "main",
-    onMain: true,
+    mergeBase: "match",
+    shallow: false,
     calls: [] as string[][],
+    privateRefs: new Set<string>(),
   };
   const services = {
     state: {
@@ -148,6 +150,8 @@ async function fixture(seedLink = true) {
         let stdout = "",
           exitCode = 0;
         flags.calls.push(args);
+        if (args[0] === "fetch" && args[2]?.includes(":refs/forge/lane-close/"))
+          flags.privateRefs.add(args[2].split(":")[1]!);
         if (args[0] === "pr")
           stdout = JSON.stringify({
             state: "MERGED",
@@ -161,21 +165,32 @@ async function fixture(seedLink = true) {
           stdout = "worktree /project\0branch refs/heads/main\0\0";
         else if (args[0] === "for-each-ref")
           stdout = flags.branch ? args[2]! : "";
+        else if (
+          args[0] === "rev-parse" &&
+          args[1] === "--is-shallow-repository"
+        )
+          stdout = String(flags.shallow);
         else if (args[0] === "rev-parse") stdout = flags.localHead || head;
         else if (args.includes("refs/remotes/origin/HEAD"))
           stdout = "refs/remotes/origin/main";
         else if (args.includes("symbolic-ref"))
           stdout = flags.checkout || lane.branch;
-        else if (args[0] === "merge-base" && args[1] !== "--is-ancestor")
-          stdout = flags.onMain ? args[1]! : "";
-        else if (args[0] === "merge-base") exitCode = flags.ancestor ? 0 : 1;
+        else if (args[0] === "merge-base" && args[1] !== "--is-ancestor") {
+          if (flags.mergeBase === "match") stdout = args[1]!;
+          else if (flags.mergeBase === "other") stdout = "c".repeat(40);
+          else if (flags.mergeBase === "none") exitCode = 1;
+        } else if (args[0] === "merge-base") exitCode = flags.ancestor ? 0 : 1;
         else if (args[0] === "-C") {
           stdout = "true";
           if (!flags.present) exitCode = 1;
         } else if (args[0] === "worktree") {
           if (flags.failCleanup) exitCode = 1;
           else flags.present = false;
-        } else if (args[0] === "update-ref") flags.branch = false;
+        } else if (args[0] === "update-ref") {
+          if (args[2]?.startsWith("refs/forge/lane-close/"))
+            flags.privateRefs.delete(args[2]);
+          else flags.branch = false;
+        }
         return Promise.resolve({
           stdout,
           exitCode,
@@ -438,46 +453,90 @@ const snapshot = (f: Awaited<ReturnType<typeof fixture>>) =>
     comments: f.comments(),
   });
 
-for (const [name, setup] of [
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+const refusals: [string, string, (f: Fixture) => void][] = [
   [
     "a PR merged into a branch other than main",
-    (f: Awaited<ReturnType<typeof fixture>>) => {
+    "PR_NOT_MERGED",
+    (f) => {
       f.flags.prBase = "release";
     },
   ],
   [
-    "a PR merged into main whose merge commit is not on fetched main",
-    (f: Awaited<ReturnType<typeof fixture>>) => {
-      f.flags.onMain = false;
+    "a merge commit with no common ancestor with fetched main",
+    "PR_NOT_MERGED",
+    (f) => {
+      f.flags.mergeBase = "none";
     },
   ],
-] as const) {
-  test(`${name} is refused and nothing is written or removed`, async () => {
+  [
+    "a merge commit whose merge base with fetched main is another commit",
+    "PR_NOT_MERGED",
+    (f) => {
+      f.flags.mergeBase = "other";
+    },
+  ],
+  [
+    "a merge commit that cannot be found on fetched main",
+    "PR_NOT_MERGED",
+    (f) => {
+      f.flags.mergeBase = "empty";
+    },
+  ],
+  [
+    "a failed ancestry check in a shallow clone",
+    "MERGE_UNVERIFIABLE",
+    (f) => {
+      f.flags.mergeBase = "none";
+      f.flags.shallow = true;
+    },
+  ],
+];
+
+for (const [name, code, setup] of refusals) {
+  test(`${name} is refused with ${code} and nothing is written or removed`, async () => {
     const f = await fixture();
     try {
       setup(f);
       const before = snapshot(f);
-      await expect(f.close()).rejects.toThrow("PR_NOT_MERGED");
+      await expect(f.close()).rejects.toThrow(code);
       expect(snapshot(f)).toBe(before);
       expect(f.flags.present).toBe(true);
       expect(f.flags.branch).toBe(true);
+      expect(f.flags.privateRefs.size).toBe(0);
     } finally {
       await f.dispose();
     }
   }, 30_000);
 }
 
+test("a failed ancestry check outside a shallow clone is not reported as shallow", async () => {
+  const f = await fixture();
+  try {
+    f.flags.mergeBase = "none";
+    await expect(f.close()).rejects.toThrow("PR_NOT_MERGED");
+    expect(f.flags.calls).toContainEqual([
+      "rev-parse",
+      "--is-shallow-repository",
+    ]);
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
 test("a PR merged into main with its merge commit on fetched main still closes", async () => {
   const f = await fixture();
   try {
     const closed = (await f.close()) as { removed: boolean; status: string };
     expect(closed).toMatchObject({ removed: true, status: "closed" });
-    expect(f.flags.calls).toContainEqual([
-      "fetch",
-      "origin",
-      "refs/heads/main",
-    ]);
-    expect(f.flags.calls).toContainEqual(["merge-base", merge, "FETCH_HEAD"]);
+    const fetch = f.flags.calls.find(
+      (args) => args[0] === "fetch" && args[2]?.startsWith("+refs/heads/main:"),
+    );
+    expect(fetch).toBeDefined();
+    const mainRef = fetch![2]!.split(":")[1]!;
+    expect(mainRef).toMatch(/^refs\/forge\/lane-close\//);
+    expect(f.flags.calls).toContainEqual(["merge-base", merge, mainRef]);
+    expect(f.flags.privateRefs.size).toBe(0);
   } finally {
     await f.dispose();
   }

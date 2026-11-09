@@ -4056,15 +4056,39 @@ const operations: Operations<WorkOperations> = {
         );
         if (pull.baseRefName !== main)
           refuse("PR_NOT_MERGED", `PR must be merged into ${main}`);
-        await run(["fetch", "origin", `refs/heads/${main}`]);
-        const common = await run(
-          ["merge-base", mergeCommit, "FETCH_HEAD"],
-          checkout,
-          false,
-          true,
-        );
-        if (common.toLowerCase() !== mergeCommit.toLowerCase())
-          refuse("PR_NOT_MERGED", `Merge commit is not on ${main}`);
+        // Fetch main into a ref only this call uses: FETCH_HEAD is shared, and
+        // any other fetch in the repository can overwrite it.
+        const mainRef = `refs/forge/lane-close/${
+          bound.crypto?.randomUUID() ??
+          fail("UNAVAILABLE", "Lane close requires crypto")
+        }`;
+        try {
+          await run(["fetch", "origin", `+refs/heads/${main}:${mainRef}`]);
+          const common = await run(
+            ["merge-base", mergeCommit, mainRef],
+            checkout,
+            false,
+            true,
+          );
+          if (common.toLowerCase() !== mergeCommit.toLowerCase()) {
+            // A shallow clone may simply lack the history that proves it.
+            if (
+              (await run(
+                ["rev-parse", "--is-shallow-repository"],
+                checkout,
+                false,
+                true,
+              )) === "true"
+            )
+              refuse(
+                "MERGE_UNVERIFIABLE",
+                `This clone has shallow history, so the merge commit cannot be checked against ${main}. Run git fetch --unshallow origin and retry`,
+              );
+            refuse("PR_NOT_MERGED", `Merge commit is not on ${main}`);
+          }
+        } finally {
+          await run(["update-ref", "-d", mainRef]);
+        }
       }
       const hasBranch = (
         await run(["for-each-ref", "--format=%(refname)", ref])
