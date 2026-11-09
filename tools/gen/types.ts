@@ -363,4 +363,7 @@ if (import.meta.main) {
   write();
   const { writeCoreManifest } = await import("./core.ts");
   writeCoreManifest();
+  // Assembly loads these docs at run time; check them here with its validator.
+  const { checkBlockDocsIn } = await import("./block-docs.ts");
+  checkBlockDocsIn();
 }
