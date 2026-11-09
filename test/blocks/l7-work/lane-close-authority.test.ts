@@ -110,7 +110,11 @@ async function fixture(seedLink = true) {
     afterFetch: undefined as (() => void) | undefined,
     refuse: false,
   };
+  // The handler reads time from this clock; tests never touch the global Date.
+  // It is separate from the state clock, so moving it does not expire the lease.
+  const time = { value: Date.now() };
   const services = {
+    clock: { now: () => time.value },
     state: {
       ...state,
       now: () => now,
@@ -239,6 +243,7 @@ async function fixture(seedLink = true) {
     lane,
     files,
     flags,
+    time,
     close,
     comments,
     expire: () => {
@@ -593,15 +598,10 @@ test("the private fetch writes only its own ref", async () => {
 
 /** The next close runs well after a call that was cancelled or timed out. */
 async function closeLater(f: Awaited<ReturnType<typeof fixture>>) {
-  const realNow = Date.now;
   f.flags.refuse = false;
   f.flags.afterFetch = undefined;
-  Date.now = () => realNow() + 2 * 3600000;
-  try {
-    await f.close();
-  } finally {
-    Date.now = realNow;
-  }
+  f.time.value += 2 * 3600000;
+  await f.close();
 }
 
 test("a signal aborted right after the fetch reports the original error and the next close removes the leftover ref", async () => {
@@ -624,28 +624,25 @@ test("a signal aborted right after the fetch reports the original error and the 
 
 test("a deadline that expires right after the fetch reports the original error and the next close removes the leftover ref", async () => {
   const f = await fixture(),
-    realNow = Date.now,
-    deadline = Date.now() + 60_000;
+    deadline = f.time.value + 60_000;
   try {
     f.flags.afterFetch = () => {
-      Date.now = () => deadline + 1;
+      f.time.value = deadline + 1;
       f.flags.refuse = true;
     };
     await expect(f.close({}, { deadline })).rejects.toThrow(
       "INVOCATION_TIMEOUT",
     );
-    Date.now = realNow;
     await closeLater(f);
     expect(f.flags.privateRefs.size).toBe(0);
   } finally {
-    Date.now = realNow;
     await f.dispose();
   }
 }, 30_000);
 
 test("the next close removes a stale private ref and keeps a fresh one", async () => {
   const f = await fixture(),
-    fresh = `refs/forge/lane-close/${Date.now()}-11111111-2222-4333-8444-555555555555`;
+    fresh = `refs/forge/lane-close/${f.time.value}-11111111-2222-4333-8444-555555555555`;
   try {
     f.flags.privateRefs.add(
       "refs/forge/lane-close/1-11111111-2222-4333-8444-555555555555",

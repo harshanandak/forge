@@ -866,8 +866,18 @@ const PRIVATE_FETCH_FLAGS = [
 const PRIVATE_REF_MAX_AGE_MS = 3600000;
 const PRIVATE_REF =
   /^refs\/forge\/lane-(?:close|base)\/(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function privateRefName(kind: "lane-close" | "lane-base", id: string): string {
-  return `refs/forge/${kind}/${Date.now()}-${id}`;
+// Lane time comes from an optional clock service, so a test can move it without
+// touching the global Date. No clock is provided in production.
+function laneClock(services: unknown): () => number {
+  const clock = (services as { clock?: { now?: () => number } }).clock;
+  return () => clock?.now?.() ?? Date.now();
+}
+function privateRefName(
+  kind: "lane-close" | "lane-base",
+  id: string,
+  now: number,
+): string {
+  return `refs/forge/${kind}/${now}-${id}`;
 }
 // Cleanup never throws and never reads the call's deadline or signal: a
 // cancelled call must still report its own error. If the process service
@@ -916,6 +926,7 @@ async function sweepPrivateRefs(
   git: Parameters<ProcessService["run"]>[0],
   cwd: string,
   env: Readonly<Record<string, string>>,
+  now: number,
 ): Promise<void> {
   const listed = await bestEffortGit(executor, git, cwd, env, [
     "for-each-ref",
@@ -925,9 +936,7 @@ async function sweepPrivateRefs(
   ]);
   const stale = listed.split(/\r?\n/).filter((ref) => {
     const match = PRIVATE_REF.exec(ref);
-    return (
-      match !== null && Date.now() - Number(match[1]) > PRIVATE_REF_MAX_AGE_MS
-    );
+    return match !== null && now - Number(match[1]) > PRIVATE_REF_MAX_AGE_MS;
   });
   await dropPrivateRefs(executor, git, cwd, env, stale);
 }
@@ -3741,8 +3750,9 @@ const operations: Operations<WorkOperations> = {
     const git = executor.resolve("git", env);
     if (git.kind !== "resolved")
       fail("UNAVAILABLE", "Install Git and put it on PATH to start a lane");
+    const clock = laneClock(services);
     const run = async (args: string[], optional = false): Promise<string> => {
-      const remaining = deadline - Date.now();
+      const remaining = deadline - clock();
       if (remaining <= 0)
         fail("INVOCATION_TIMEOUT", "Lane start deadline expired");
       const result = await executor.run(git, args, {
@@ -3772,8 +3782,12 @@ const operations: Operations<WorkOperations> = {
     const remoteHead = await laneMainBranch(config, () =>
       run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], true),
     );
-    await sweepPrivateRefs(executor, git, files.root, env);
-    const baseRef = privateRefName("lane-base", bound.crypto.randomUUID());
+    await sweepPrivateRefs(executor, git, files.root, env, clock());
+    const baseRef = privateRefName(
+      "lane-base",
+      bound.crypto.randomUUID(),
+      clock(),
+    );
     let base: string;
     try {
       await run([
@@ -3941,6 +3955,7 @@ const operations: Operations<WorkOperations> = {
       }
     };
     let checkout = files.root;
+    const clock = laneClock(services);
     const run = async (
       args: string[],
       cwd = checkout,
@@ -3948,7 +3963,7 @@ const operations: Operations<WorkOperations> = {
       optional = false,
       leaveDirectory?: string,
     ) => {
-      const remaining = deadline - Date.now();
+      const remaining = deadline - clock();
       if (remaining <= 0)
         refuse("INVOCATION_TIMEOUT", "Lane close deadline expired");
       const executable = github ? gh : git;
@@ -4143,8 +4158,9 @@ const operations: Operations<WorkOperations> = {
           "lane-close",
           bound.crypto?.randomUUID() ??
             fail("UNAVAILABLE", "Lane close requires crypto"),
+          clock(),
         );
-        await sweepPrivateRefs(executor, git, checkout, env);
+        await sweepPrivateRefs(executor, git, checkout, env, clock());
         try {
           await run([
             "fetch",
