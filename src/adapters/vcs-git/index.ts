@@ -246,7 +246,7 @@ export function createVcsPort(options: VcsAdapterOptions): VcsPort {
         timeoutMs: options.timeoutMs,
         maxOutputBytes: options.maxOutputBytes,
       });
-      if (result.truncated) {
+      if (!result.timedOut && result.truncated) {
         // Partial output parses as a different answer (a clean tree, a short hash); refuse it outright.
         throw new GitCommandError(
           "GIT_OUTPUT_LIMIT",

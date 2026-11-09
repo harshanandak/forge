@@ -161,7 +161,7 @@ export async function runBunProcessTree(
     stdout: stdout.text(),
     stderr: stderr.text(),
     timedOut,
-    truncated: stdout.truncated || stderr.truncated,
+    truncated: !pipesClosed || stdout.truncated || stderr.truncated,
     durationMs: Math.round(performance.now() - started),
     ...(diagnostics === undefined ? {} : { diagnostics }),
     supervision: {
