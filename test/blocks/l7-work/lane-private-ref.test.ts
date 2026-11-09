@@ -46,6 +46,8 @@ function fixture() {
       refuse: false,
     };
   let pinned = "";
+  // Names of the exclusion locks a call holds right now.
+  const held = new Set<string>();
   // The handler reads time from this clock; tests never touch the global Date.
   const time = { value: Date.now() };
   const services = {
@@ -59,7 +61,11 @@ function fixture() {
       root: "/project",
       read: (path: string) => (path === "forge-lanes.json" ? undefined : brief),
       write() {},
-      lock: () => ({ release() {} }),
+      lock: ([name]: string[]) => {
+        if (held.has(name!)) throw new Error(`held: ${name}`);
+        held.add(name!);
+        return { release: () => void held.delete(name!) };
+      },
     },
     environment: { platform: "linux", select: () => ({}) },
     crypto: { randomUUID: () => "11111111-2222-4333-8444-555555555555" },
@@ -109,7 +115,7 @@ function fixture() {
       signal: call.signal ?? new AbortController().signal,
       deadline: call.deadline ?? Number.MAX_SAFE_INTEGER,
     });
-  return { calls, refs, hooks, run, time };
+  return { calls, refs, held, hooks, run, time };
 }
 
 test("the base fetch writes only its own ref", async () => {
@@ -172,4 +178,50 @@ test("the next start removes a stale private ref and keeps a fresh one", async (
   f.refs.add(fresh);
   await f.run();
   expect([...f.refs]).toEqual([fresh]);
+}, 30_000);
+
+const own = "forge-lane-ref-11111111-2222-4333-8444-555555555555.lock";
+const stale = (ms: number, uuid: string) =>
+  `refs/forge/lane-base/${ms}-${uuid}`;
+
+test("the start holds an exclusion lock for its ref while it fetches and releases it after", async () => {
+  const f = fixture();
+  let heldDuringFetch = false;
+  f.hooks.afterFetch = () => {
+    heldDuringFetch = f.held.has(own);
+  };
+  await f.run();
+  expect(heldDuringFetch).toBe(true);
+  expect(f.held.size).toBe(0);
+}, 30_000);
+
+test("the sweep keeps a ref older than an hour while its owner still holds the lock", async () => {
+  const f = fixture(),
+    uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    behind = stale(f.time.value - 3 * 3600000, uuid);
+  f.refs.add(behind);
+  f.held.add(`forge-lane-ref-${uuid}.lock`);
+  await f.run();
+  expect([...f.refs]).toEqual([behind]);
+}, 30_000);
+
+test("the sweep removes a ref dated more than an hour ahead when no owner holds it", async () => {
+  const f = fixture(),
+    ahead = stale(
+      f.time.value + 3 * 3600000,
+      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    );
+  f.refs.add(ahead);
+  await f.run();
+  expect(f.refs.size).toBe(0);
+}, 30_000);
+
+test("the sweep keeps a ref dated more than an hour ahead while its owner holds the lock", async () => {
+  const f = fixture(),
+    uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    ahead = stale(f.time.value + 3 * 3600000, uuid);
+  f.refs.add(ahead);
+  f.held.add(`forge-lane-ref-${uuid}.lock`);
+  await f.run();
+  expect([...f.refs]).toEqual([ahead]);
 }, 30_000);

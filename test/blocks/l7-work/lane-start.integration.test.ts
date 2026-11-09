@@ -330,7 +330,9 @@ test("lane fetch uses its own ref despite another fetch replacing FETCH_HEAD", a
         read: (path: string) =>
           path === "forge-lanes.json" ? undefined : text,
         write() {},
-        lock: () => {
+        // Only the registry lock matters here; the call's own ref lock does not.
+        lock: ([name]: string[]) => {
+          if (!name?.includes("registry")) return { release() {} };
           held = true;
           return {
             release: () => {
