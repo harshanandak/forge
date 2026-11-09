@@ -8,6 +8,7 @@
 // directory, then rename).
 import {
   closeSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -17,14 +18,23 @@ import {
   rmdirSync,
   rmSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  win32,
+} from "node:path";
 import type { ConfigFiles } from "../../core/config/files.ts";
 import {
   MAX_CONFIG_FILE_BYTES,
   MAX_LOCK_FILE_BYTES,
 } from "../../core/config/files.ts";
+import { publishExclusive, removeDurable } from "./durable-io.ts";
 import { nodeProjectFiles } from "./project-files.ts";
 
 function errorCode(error: unknown): string | undefined {
@@ -188,19 +198,34 @@ export function nodeConfigFiles(
     createExclusive(path, bytes) {
       mkdirSync(dirname(resolveIn(root, path, "refuse")), { recursive: true });
       const target = resolveIn(root, path, "refuse");
-      let fd: number;
+      // Write and sync a sibling file, then publish it with a link that fails if the target exists,
+      // so a crash never leaves an empty, partial or unsynced file at the target.
+      const temporary = join(
+        dirname(target),
+        `.${basename(target)}.${randomUUID()}.tmp`,
+      );
+      const fd = openSync(temporary, "wx");
       try {
-        fd = openSync(target, "wx");
-      } catch (error) {
-        if (errorCode(error) === "EEXIST") return false;
-        throw error;
-      }
-      try {
-        writeSync(fd, bytes);
+        try {
+          writeFileSync(fd, bytes);
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+        try {
+          publishExclusive(temporary, target);
+        } catch (error) {
+          if (errorCode(error) === "EEXIST") return false;
+          throw error;
+        }
+        return true;
       } finally {
-        closeSync(fd);
+        try {
+          removeDurable(temporary);
+        } catch {
+          /* A leftover hidden temporary file must not turn a published create into a failure. */
+        }
       }
-      return true;
     },
   };
 }

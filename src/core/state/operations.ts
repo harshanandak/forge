@@ -10,4 +10,13 @@ export const operations: Record<string, OperationDeclaration> = {
     stability: "stable",
     callers: ["human"],
   },
+  "project.init": {
+    input: "state/project-init.input.schema.json",
+    output: "state/project-init.output.schema.json",
+    context: "project",
+    effects: ["project:write"],
+    idempotent: false,
+    stability: "stable",
+    callers: ["human"],
+  },
 };

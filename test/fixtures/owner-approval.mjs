@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const gated = new Set(["block.admit", "config.grant", "store.reinit"]);
+const gated = new Set([
+  "block.admit",
+  "config.grant",
+  "store.reinit",
+  "project.init",
+]);
 const memoryGated = new Set([
   "memory.forget",
   "memory.restore",

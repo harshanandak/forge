@@ -15,6 +15,7 @@ import { refuse } from "../core/trust/index.ts";
 import { createStateClient } from "./state-client.ts";
 import { LocalState } from "./state.ts";
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
+import { PROJECT_ID_PATTERN, readProjectManifest } from "./project-manifest.ts";
 
 /** The project's own identity record, in its project store. */
 const IDENTITY_NAMESPACE = "forge/core-project";
@@ -33,7 +34,13 @@ export interface ProjectIdentity {
   readonly name: string;
 }
 export interface ProjectStore {
+  /** The store's own id and label. The id keys note ids and the device registry. */
   readonly identity: ProjectIdentity;
+  /**
+   * The project's shared id: the manifest id this store recorded, else the manifest's, else the
+   * store's own id as before.
+   */
+  readonly projectId: string;
   readonly state: ExtendedStateClient;
 }
 export type PeerLookup =
@@ -91,12 +98,33 @@ export function projectName(root: string): string {
       .slice(0, 64) || "project"
   );
 }
-function identityOf(owner: StateOwner | undefined): string | undefined {
-  const value = owner?.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.value as
-    { id?: unknown } | undefined;
+/** The store id an identity record carries, if any. */
+function storeIdOf(record: unknown): string | undefined {
+  const value = record as { id?: unknown } | undefined;
   return typeof value?.id === "string" && PROJECT_ID.test(value.id)
     ? value.id
     : undefined;
+}
+function identityOf(owner: StateOwner | undefined): string | undefined {
+  return storeIdOf(owner?.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.value);
+}
+const MAX_RECORD_ATTEMPTS = 8;
+/** The manifest id an identity record accepted, recorded beside its own id. */
+function recordedProjectId(record: unknown): string | undefined {
+  const value = record as { projectId?: unknown } | undefined;
+  return typeof value?.projectId === "string" &&
+    PROJECT_ID_PATTERN.test(value.projectId)
+    ? value.projectId
+    : undefined;
+}
+function projectIdConflict(recorded: string, manifest: string): ForgeFailure {
+  return new ForgeFailure({
+    code: "PROJECT_ID_CONFLICT",
+    message: `This store belongs to project ${recorded}, but .forge/project.json says ${manifest}. Writes that depend on project identity are refused.`,
+    retry: "never",
+    repair:
+      "Restore the manifest, or ask the owner to adopt or migrate the store; Forge never switches a project id silently.",
+  });
 }
 function registered(
   value: unknown,
@@ -163,6 +191,8 @@ export async function requireRegisteredStore(
 
 export function openLevels(options: {
   readonly root: string;
+  /** Where the committed project manifest lives: the checkout root; `root` when left out. */
+  readonly manifestRoot?: string;
   /** The folder holding the project store; registered so every git worktree records one place. */
   readonly stateRoot: string;
   /** The shared checkout label for device memory when no project is served. */
@@ -202,7 +232,9 @@ export function openLevels(options: {
 
   function mint(owner: StateOwner): string {
     for (;;) {
-      const existing = identityOf(owner);
+      // One snapshot per attempt: the id check and the write's revision come from the same read.
+      const current = owner.get(IDENTITY_NAMESPACE, IDENTITY_KEY);
+      const existing = storeIdOf(current?.value);
       if (existing) return existing;
       try {
         owner.put(
@@ -210,15 +242,42 @@ export function openLevels(options: {
           IDENTITY_KEY,
           { id: randomBytes(8).toString("hex") },
           actor,
-          {
-            expectRevision:
-              owner.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.revision ?? 0,
-          },
+          { expectRevision: current?.revision ?? 0 },
         );
       } catch (error) {
         if (!conflict(error)) throw error;
       }
     }
+  }
+  /**
+   * Record the manifest id beside the store id. Each attempt reads one identity snapshot, checks
+   * its project id against the manifest and writes against that same snapshot's revision, so a
+   * different id recorded in between is a refusal and a revision conflict retries.
+   */
+  function recordProjectId(owner: StateOwner, projectId: string): void {
+    for (let attempt = 0; attempt < MAX_RECORD_ATTEMPTS; attempt++) {
+      const snapshot = owner.get(IDENTITY_NAMESPACE, IDENTITY_KEY);
+      const winner = recordedProjectId(snapshot?.value);
+      if (winner === projectId) return;
+      if (winner !== undefined) throw projectIdConflict(winner, projectId);
+      try {
+        owner.put(
+          IDENTITY_NAMESPACE,
+          IDENTITY_KEY,
+          { ...(snapshot?.value as object), projectId },
+          actor,
+          { expectRevision: snapshot?.revision ?? 0 },
+        );
+        return;
+      } catch (error) {
+        if (!conflict(error)) throw error;
+      }
+    }
+    throw new ForgeFailure({
+      code: "REVISION_CONFLICT",
+      message: "The project identity kept changing while recording its id",
+      retry: "safe",
+    });
   }
   /** Record where the project lives, skipping the write when nothing changed. */
   async function register(id: string, name: string): Promise<void> {
@@ -266,13 +325,31 @@ export function openLevels(options: {
     const owner = lease.value;
     const name = projectName(options.stateRoot);
     let id = identityOf(owner);
+    // A reader looks at the manifest only for a store that already has an identity.
+    const manifest =
+      owner && (options.write || id)
+        ? readProjectManifest(options.manifestRoot ?? options.root)
+        : undefined;
+    const recorded = recordedProjectId(
+      owner?.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.value,
+    );
+    if (
+      options.write &&
+      owner &&
+      manifest &&
+      recorded &&
+      recorded !== manifest.id
+    )
+      throw projectIdConflict(recorded, manifest.id);
     if (options.write && owner) {
       id ??= mint(owner);
       await register(id, name);
+      if (manifest && !recorded) recordProjectId(owner, manifest.id);
     }
     if (!id) return undefined;
     return {
       identity: { id, name },
+      projectId: recorded ?? manifest?.id ?? id,
       state: createStateClient({
         owner,
         namespace,

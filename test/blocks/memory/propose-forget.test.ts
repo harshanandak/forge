@@ -200,6 +200,7 @@ test("moves and copies carry a proposed note's marker to the destination", async
       project: () =>
         Promise.resolve({
           identity: { id: "0123456789abcdef", name: "project" },
+          projectId: "0123456789abcdef",
           state: project,
         }),
     });
@@ -402,6 +403,7 @@ test("another project's note remains read-only and missing proposals write nothi
       Promise.resolve({
         status: "found",
         identity: { id: "0123456789abcdef", name: "peer" },
+        projectId: "0123456789abcdef",
         state: peer,
       }),
   });

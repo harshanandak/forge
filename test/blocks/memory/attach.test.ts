@@ -99,6 +99,7 @@ test("only rules scopes and levels apply even to asked ids, with asked order the
     project: () =>
       Promise.resolve({
         identity: { id: "0123456789abcdef", name: "forge" },
+        projectId: "0123456789abcdef",
         state: project,
       }),
     peer: () => {
