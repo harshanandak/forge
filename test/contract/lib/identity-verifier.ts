@@ -1,15 +1,20 @@
-import type {
-  IdentityRefusal,
+import {
+  type IdentityClaims,
+  type IdentityRefusal,
   IdentityVerifier,
-  VerifiedIdentity,
+  type IdentityResult,
 } from "../../../src/ports/identity.ts";
 
 /** Test-only opaque proofs; never use this fixture to authenticate real callers. */
 export function testIdentityVerifier(
-  proofs: ReadonlyMap<string, VerifiedIdentity>,
+  proofs: ReadonlyMap<string, IdentityClaims>,
 ): IdentityVerifier {
-  return {
-    verify(proof, expectedAudience, now) {
+  return new (class extends IdentityVerifier {
+    verify(
+      proof: unknown,
+      expectedAudience: string,
+      now: number,
+    ): Promise<IdentityResult> {
       const identity =
         typeof proof === "string" ? proofs.get(proof) : undefined;
       if (identity === undefined)
@@ -28,9 +33,9 @@ export function testIdentityVerifier(
       else if (now >= identity.expiresAt) reason = "expired";
       return Promise.resolve(
         reason === undefined
-          ? { ok: true, identity: { ...identity } }
+          ? { ok: true, identity: this.identity(identity) }
           : { ok: false, reason },
       );
-    },
-  };
+    }
+  })();
 }

@@ -2,11 +2,11 @@ import { expect, test } from "bun:test";
 import type { ClockPort } from "../../src/ports/clock.ts";
 import type {
   IdentityVerifier,
-  VerifiedIdentity,
+  IdentityClaims,
 } from "../../src/ports/identity.ts";
 import { testIdentityVerifier } from "./lib/identity-verifier.ts";
 
-const identity: VerifiedIdentity = {
+const identity: IdentityClaims = {
   issuer: "https://first.example",
   subject: "Person-A",
   audience: "forge",
@@ -15,7 +15,7 @@ const identity: VerifiedIdentity = {
 };
 const clock: ClockPort = { now: () => 1_000 };
 
-function verifier(overrides: Partial<VerifiedIdentity> = {}): IdentityVerifier {
+function verifier(overrides: Partial<IdentityClaims> = {}): IdentityVerifier {
   return testIdentityVerifier(
     new Map([["known", { ...identity, ...overrides }]]),
   );
@@ -31,8 +31,8 @@ test("verified identities retain exact issuer and subject pairs", async () => {
   );
   const firstResult = await verify.verify("first", "forge", clock.now());
   const secondResult = await verify.verify("second", "forge", clock.now());
-  expect(firstResult).toEqual({ ok: true, identity });
-  expect(secondResult).toEqual({ ok: true, identity: second });
+  expect<unknown>(firstResult).toEqual({ ok: true, identity });
+  expect<unknown>(secondResult).toEqual({ ok: true, identity: second });
   if (!firstResult.ok || !secondResult.ok)
     throw new Error("Expected verified identities");
   expect([
@@ -44,12 +44,12 @@ test("verified identities retain exact issuer and subject pairs", async () => {
     { subject: "person-a" },
     { subject: " Person-A " },
   ]) {
-    expect(await verifier(exact).verify("known", "forge", clock.now())).toEqual(
-      {
-        ok: true,
-        identity: { ...identity, ...exact },
-      },
-    );
+    expect<unknown>(
+      await verifier(exact).verify("known", "forge", clock.now()),
+    ).toEqual({
+      ok: true,
+      identity: { ...identity, ...exact },
+    });
   }
 }, 1_000);
 
@@ -79,7 +79,9 @@ test("proof audience must equal the expected audience", async () => {
 test("expiry refuses at the exact boundary using injected time", async () => {
   for (const now of [1_999, 2_000, 2_001]) {
     const at: ClockPort = { now: () => now };
-    expect(await verifier().verify("known", "forge", at.now())).toEqual(
+    expect<unknown>(
+      await verifier().verify("known", "forge", at.now()),
+    ).toEqual(
       now < identity.expiresAt
         ? { ok: true, identity }
         : { ok: false, reason: "expired" },
