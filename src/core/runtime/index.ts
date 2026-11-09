@@ -37,6 +37,22 @@ export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
 
 export type ServiceHandle = Handle<unknown>;
 
+function onlyPendingLockCleanup(error: unknown, depth = 0): boolean {
+  if (depth >= 32) return false;
+  if (error instanceof AggregateError)
+    return (
+      error.errors.length > 0 &&
+      (error.errors as unknown[]).every((nested) =>
+        onlyPendingLockCleanup(nested, depth + 1),
+      )
+    );
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    error.code === "LOCK_CLEANUP_PENDING"
+  );
+}
+
 export interface ServiceScope {
   readonly op: string;
   readonly effects: readonly string[];
@@ -539,21 +555,34 @@ export class Runtime {
       processCleanupFailed = true;
     }
     let serviceCleanupFailed = false;
+    let lockCleanupPending = false;
     try {
       if (handle?.ownership === "owned") await handle.close();
-    } catch {
-      serviceCleanupFailed = true;
+    } catch (error) {
+      if (onlyPendingLockCleanup(error)) lockCleanupPending = true;
+      else {
+        serviceCleanupFailed = true;
+        result = {
+          ok: false,
+          ...(request === undefined ? {} : { op: request.op }),
+          status: "INCOMPLETE",
+          error: {
+            code: "INTERNAL",
+            message: "owned service cleanup failed",
+            retry: "reconcile_first",
+          },
+          warnings: [],
+        };
+      }
     }
-    if (processCleanupFailed)
+    if (processCleanupFailed && !serviceCleanupFailed)
       result = {
         ok: false,
         ...(request === undefined ? {} : { op: request.op }),
         status: "INCOMPLETE",
         error: {
-          code: serviceCleanupFailed ? "INTERNAL" : "PROCESS_CLEANUP_FAILED",
-          message: serviceCleanupFailed
-            ? "owned service cleanup failed"
-            : "The process tree could not be confirmed stopped",
+          code: "PROCESS_CLEANUP_FAILED",
+          message: "The process tree could not be confirmed stopped",
           retry: "reconcile_first",
         },
         warnings: [],
@@ -562,7 +591,7 @@ export class Runtime {
       ...result,
       warnings: [
         ...result.warnings,
-        ...(serviceCleanupFailed
+        ...(lockCleanupPending
           ? [
               {
                 code: "SERVICE_CLEANUP_FAILED",

@@ -147,7 +147,10 @@ function recoverableLock(
       removeDurable(join(target, name));
     } catch (error) {
       if (errorCode(error) === "ENOENT") return;
-      throw error;
+      throw Object.assign(
+        new Error("Clone lock marker cleanup pending", { cause: error }),
+        { code: "LOCK_CLEANUP_PENDING" },
+      );
     }
     removeEmpty();
   };

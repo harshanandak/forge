@@ -911,6 +911,48 @@ test("runtime uses the injected evaluator and closes both owned handles on every
   }
 }, 5000);
 
+for (const aggregate of [false, true]) {
+  test(`unclassified service close failure stays fatal, aggregate=${aggregate}`, async () => {
+    const f = fixture();
+    try {
+      admit(f.trust, f.block.digest);
+      const runtime = new Runtime(f.catalog, f.trust, {
+        isolation: nodeRunIsolation,
+        services: () =>
+          Promise.resolve({
+            ownership: "owned",
+            value: {},
+            close: () =>
+              Promise.reject(
+                aggregate
+                  ? new AggregateError([
+                      new AggregateError([
+                        Object.assign(new Error("pending marker"), {
+                          code: "LOCK_CLEANUP_PENDING",
+                        }),
+                      ]),
+                      new Error("database close failed"),
+                    ])
+                  : new Error("service close failed"),
+              ),
+          }),
+      });
+      assert.partialDeepStrictEqual(await runtime.invoke(f.request), {
+        ok: false,
+        status: "INCOMPLETE",
+        error: {
+          code: "INTERNAL",
+          message: "owned service cleanup failed",
+          retry: "reconcile_first",
+        },
+        warnings: [],
+      });
+    } finally {
+      f.close();
+    }
+  }, 5000);
+}
+
 for (const fails of [false, true]) {
   test(`failed lock cleanup warns without replacing the call's ${fails ? "error" : "result"}`, async () => {
     const f = fixture(
