@@ -34,5 +34,8 @@ jobs:
           decision="$(bun tools/ci-unacquired.ts < "$RUNNER_TEMP/ci-jobs.json")"
           printf '%s\n' "$decision" | tee "$GITHUB_STEP_SUMMARY"
           if grep -qx 'rerun=true' <<< "$decision"; then
-            gh api --method POST "repos/$GH_REPO/actions/runs/$RUN_ID/rerun-failed-jobs"
+            # Jobs that were never created are not failed jobs, so only a full rerun recreates them.
+            endpoint=rerun-failed-jobs
+            if grep -qx 'scope=all' <<< "$decision"; then endpoint=rerun; fi
+            gh api --method POST "repos/$GH_REPO/actions/runs/$RUN_ID/$endpoint"
           fi
