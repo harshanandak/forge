@@ -39,7 +39,7 @@ test.skipIf(!windows)(
       const exited = await waitForExit([target], { deadlineMs: 5_000 });
       expect(exited).toHaveLength(1);
       expect(exited[0]?.pid).toBe(pid);
-      expect(["signaled", "gone"]).toContain(exited[0]?.state);
+      expect(["signaled", "gone"]).toContain(exited[0]!.state);
     } finally {
       child.kill();
       job.close();
