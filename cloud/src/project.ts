@@ -65,11 +65,20 @@ function integer(input: Record<string, unknown>, key: string): number {
   return value;
 }
 
+// Test-only: conformance starts `wrangler dev` with CLOUD_TEST_FAULTS=on so a request can ask for its
+// receipt insert to fail. The deployed config never sets it, so the header is ignored there.
+interface FaultEnv {
+  CLOUD_TEST_FAULTS?: string;
+}
+const FAULT_HEADER = "x-cloud-fault";
+
 export class Project {
   readonly #db;
   readonly #owner;
+  readonly #faults: boolean;
 
-  constructor(ctx: DurableState) {
+  constructor(ctx: DurableState, env: FaultEnv = {}) {
+    this.#faults = env.CLOUD_TEST_FAULTS === "on";
     this.#db = durableStore(ctx.storage);
     this.#owner = new StateOwner(this.#db, { now: () => Date.now() });
     this.#owner.initialize([domain]);
@@ -95,7 +104,13 @@ export class Project {
         const body = await request.text();
         if (body.length > MAX_BODY)
           throw fail("INPUT_INVALID", `body is over ${MAX_BODY} characters`);
-        return Response.json({ ok: true, value: this.#write(route, body) });
+        const fault =
+          this.#faults &&
+          request.headers.get(FAULT_HEADER) === "receipt-insert";
+        return Response.json({
+          ok: true,
+          value: this.#write(route, body, fault),
+        });
       }
       throw fail("UNKNOWN_COMMAND", `No route for ${request.method} /${route}`);
     } catch (error) {
@@ -116,7 +131,11 @@ export class Project {
     }
   }
 
-  #write(route: "claim" | "renew" | "release", body: string): LeaseRecord {
+  #write(
+    route: "claim" | "renew" | "release",
+    body: string,
+    fault: boolean,
+  ): LeaseRecord {
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);
@@ -173,14 +192,20 @@ export class Project {
           : route === "renew"
             ? this.#owner.renew(NAMESPACE, fence, ttlMs!)
             : this.#owner.release(NAMESPACE, fence);
-      this.#record(requestId, fingerprint, "ok", lease);
+      this.#record(requestId, fingerprint, "ok", lease, fault);
       return lease;
     } catch (error) {
       if (
         error instanceof ForgeFailure &&
         error.error.code.startsWith("LEASE_")
       )
-        this.#record(requestId, fingerprint, error.error.code, error.error);
+        this.#record(
+          requestId,
+          fingerprint,
+          error.error.code,
+          error.error,
+          fault,
+        );
       throw error;
     }
   }
@@ -231,7 +256,9 @@ export class Project {
     fingerprint: string,
     outcome: string,
     result: LeaseRecord | ForgeError,
+    fault: boolean,
   ): void {
+    if (fault) throw new Error("Injected receipt insert failure");
     this.#db.run(
       `INSERT INTO ${REQUESTS} (request_id, fingerprint, outcome, result) VALUES (?, ?, ?, ?)`,
       [requestId, fingerprint, outcome, JSON.stringify(result)],

@@ -46,13 +46,14 @@ async function send(
   method: "GET" | "POST",
   route: string,
   payload?: string | object,
+  headers: Record<string, string> = {},
 ): Promise<Reply> {
   const response = await fetch(`${base}/p/${project}/${route}`, {
     method,
     ...(payload === undefined
       ? {}
       : {
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...headers },
           body: typeof payload === "string" ? payload : JSON.stringify(payload),
         }),
     signal: AbortSignal.timeout(20_000),
@@ -200,6 +201,57 @@ if (phase === "main") {
         released,
       );
       assert.deepEqual(granted(await holderLookup(project, subject)), released);
+    },
+  );
+
+  await check(
+    "a failed receipt insert rolls the mutation back, and a retry gives the correct result",
+    async () => {
+      const project = `${run}-atomic`;
+      const subject = "issue:work-12";
+      const holder = holderOf("atomic");
+      const fault = { "x-cloud-fault": "receipt-insert" };
+      const failedClaim = await send(
+        project,
+        "POST",
+        "claim",
+        { subject, holder, ttlMs: 600_000, requestId: "atomic-claim" },
+        fault,
+      );
+      assert.equal(failedClaim.status, 500, JSON.stringify(failedClaim.body));
+      assert.equal(failedClaim.body.error?.code, "INTERNAL");
+      assert.equal(
+        (await holderLookup(project, subject)).body.value ?? null,
+        null,
+        "a failed claim leaves no lease",
+      );
+      const first = granted(
+        await claim(project, subject, holder, "atomic-claim"),
+      );
+
+      const renewal = {
+        subject,
+        holder,
+        generation: first.generation,
+        ttlMs: 900_000,
+        requestId: "atomic-renew",
+      };
+      const failedRenew = await send(project, "POST", "renew", renewal, fault);
+      assert.equal(failedRenew.status, 500, JSON.stringify(failedRenew.body));
+      assert.deepEqual(
+        granted(await holderLookup(project, subject)),
+        first,
+        "a failed renew leaves the lease as it was",
+      );
+      await sleep(50);
+      const renewed = granted(await send(project, "POST", "renew", renewal));
+      assert.notEqual(renewed.expiresAt, first.expiresAt);
+      assert.deepEqual(granted(await holderLookup(project, subject)), renewed);
+      assert.deepEqual(
+        granted(await send(project, "POST", "renew", renewal)),
+        renewed,
+        "the retry is now recorded and replays the current lease",
+      );
     },
   );
 
