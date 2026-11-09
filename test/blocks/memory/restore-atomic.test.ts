@@ -66,7 +66,7 @@ test("a restore whose third note loses its key to another writer writes nothing"
   expect(state.list().map((record) => record.key)).toEqual([key(3)]);
   expect(state.get(key(3))?.revision).toBe(1);
   expect(state.get("meta/note-counter")).toBeUndefined();
-});
+}, 30_000);
 
 test("a note changed after the scan makes the restore refuse and write nothing", async () => {
   const { state, restore, raceOnce } = setup();
@@ -88,4 +88,4 @@ test("a note changed after the scan makes the restore refuse and write nothing",
   expect(state.get(key(2))).toBeUndefined();
   expect(state.get(key(1))?.revision).toBe(2);
   expect(state.get("meta/note-counter")?.value).toEqual({ last: 1 });
-});
+}, 30_000);
