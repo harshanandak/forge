@@ -69,3 +69,46 @@ test("comments, strings and neighboring modules do not mint", () => {
     ]),
   ).toEqual([]);
 }, 30_000);
+
+const reexports = readJson(
+  "test/structure/fixtures/identity-mint-reexports.json",
+) as Record<string, string>;
+
+for (const path of [
+  "src/adapters/oidc/bridge.ts",
+  "test/contract/lib/identity-verifier.ts",
+]) {
+  for (const [name, source] of Object.entries(reexports)) {
+    test(`verifier refuses ${name} mint re-export to public code`, () => {
+      const text = source.replace(
+        "TARGET",
+        posix.relative(posix.dirname(path), mint),
+      );
+      const found = findIdentityMintViolations([
+        { path, text },
+        {
+          path: "src/assembly/consumer.ts",
+          text: `import { mintIdentity } from "${posix.relative("src/assembly", path)}";`,
+        },
+      ]);
+      expect(found.map((violation) => violation.file)).toContain(path);
+      expect(found[0]?.message).toContain("re-exported");
+    }, 30_000);
+  }
+}
+
+for (const path of [
+  "test/contract/lib/other-verifier.ts",
+  "test/adapters/oidc/fixture.test.ts",
+  "test/contract/lib/identity-verifier.ts.backup.ts",
+]) {
+  test(`${path} cannot import minting directly`, () => {
+    const text = fixtures["named import"]!.replace(
+      "TARGET",
+      posix.relative(posix.dirname(path), mint),
+    );
+    expect(
+      findIdentityMintViolations([{ path, text }]).map((v) => v.file),
+    ).toEqual([path]);
+  }, 30_000);
+}
