@@ -421,6 +421,8 @@ test("derives needed job names from a workflow's gate", () => {
 }, 1000);
 
 // The entry point's output is what the workflow greps, built from the real ci.yml.
+// Every Verify leg is dropped: one leg missing while its siblings exist is forge-1085.
+const noVerify = complete.filter((job) => !job.name.startsWith("Verify ("));
 const output = (jobs: CiJob[], run_attempt = 1) =>
   decisionOutput(
     [{ jobs: jobs.slice(0, 3) }, { jobs: jobs.slice(3) }],
@@ -430,7 +432,7 @@ const output = (jobs: CiJob[], run_attempt = 1) =>
   ).split("\n");
 
 test("outputs rerun=true and scope=all for a job missing from the real ci.yml", () => {
-  const lines = output([...complete.slice(0, -1), gate]);
+  const lines = output([...noVerify, gate]);
   expect(lines).toContain("rerun=true");
   expect(lines).toContain("scope=all");
 }, 1000);
@@ -448,7 +450,7 @@ test("outputs scope=failed for a never-acquired job with no missing job", () => 
 
 test("outputs rerun=false for a real failure alongside a missing job", () => {
   const lines = output([
-    ...complete.slice(0, -1),
+    ...noVerify,
     { ...realFailure, name: "Unit tests" },
     gate,
   ]);
