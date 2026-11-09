@@ -462,6 +462,8 @@ export class RestoreConsistencyFailure extends ForgeFailure {
 }
 
 const restorePageSize = 16;
+/** Largest accepted restore page size; a larger value is rejected, never clamped. */
+const restorePageMax: number = 1000;
 
 function* restoredRows(
   db: SqlDatabase,
@@ -491,7 +493,11 @@ export function verifyEventDerivedState(
 ): void {
   if (!Number.isSafeInteger(highWaterMark) || highWaterMark < 0)
     throw new RestoreConsistencyFailure("state_events", "high-water mark");
-  if (!Number.isSafeInteger(pageSize) || pageSize <= 0)
+  if (
+    !Number.isSafeInteger(pageSize) ||
+    pageSize <= 0 ||
+    pageSize > restorePageMax
+  )
     throw new RestoreConsistencyFailure("state_events", "high-water mark");
   const rows = (table: string, columns: string, keys: readonly string[]) =>
     restoredRows(candidate, table, columns, keys, pageSize);
