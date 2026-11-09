@@ -38,7 +38,7 @@ function setup() {
   const entry = loadEntry("memory");
   const state = memoryState();
   const services = { state, levels: state };
-  const call = <T = Record<string, never>>(op: string, input: unknown) =>
+  const call = <T = unknown>(op: string, input: unknown) =>
     entry[op]!({ input, services }) as Promise<T>;
   const queue = (input: object = {}) => call<Queue>("memory.proposals", input);
   return { call, queue, state };
