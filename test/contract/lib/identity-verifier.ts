@@ -23,7 +23,8 @@ export function testIdentityVerifier(
         reason = "invalid_proof";
       else if (identity.issuer.length === 0) reason = "empty_issuer";
       else if (identity.subject.length === 0) reason = "empty_subject";
-      else if (identity.audience !== expectedAudience) reason = "wrong_audience";
+      else if (identity.audience !== expectedAudience)
+        reason = "wrong_audience";
       else if (now >= identity.expiresAt) reason = "expired";
       return Promise.resolve(
         reason === undefined
