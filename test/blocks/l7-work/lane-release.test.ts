@@ -1,0 +1,362 @@
+import { expect, spyOn, test } from "bun:test";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createAssembly } from "../../../src/assembly/index.ts";
+import * as providers from "../../../src/assembly/providers.ts";
+import { blockCapture } from "../../../src/assembly/capture.ts";
+import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
+import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
+import { StateOwner } from "../../../src/core/state/index.ts";
+
+const namespace = "forge/work",
+  head = "a".repeat(40),
+  merge = "b".repeat(40);
+const actor = { kind: "agent" as const, id: "worker" };
+const session = { id: "release", device: "fixture" };
+
+/** Real assembly, schemas and state authority; only clone files and external commands are fake. */
+async function fixture() {
+  const folder = mkdtempSync(join(tmpdir(), "forge-release-")),
+    root = join(folder, "project");
+  mkdirSync(join(root, ".forge"), { recursive: true });
+  writeFileSync(
+    join(root, ".forge/config.yaml"),
+    JSON.stringify({
+      schemaVersion: "forge.config/1",
+      blocks: {
+        work: {
+          source: { builtin: "forge/work" },
+          config: { idPrefix: "sample", lanes: { base: "main" } },
+        },
+      },
+    }),
+  );
+  const source = fileURLToPath(firstPartyBlocks["forge/work"]!),
+    target = join(folder, "work");
+  cpSync(source, target, {
+    recursive: true,
+    filter: (path) => !path.endsWith(".cts"),
+  });
+  writeFileSync(
+    join(target, "entry.cjs"),
+    new Bun.Transpiler({ loader: "ts" }).transformSync(
+      readFileSync(join(source, "entry.cts"), "utf8"),
+    ),
+  );
+  const lane = {
+    issue: "work-1",
+    branch: "feature",
+    worktree: join(root, ".worktrees", "feature"),
+    brief: "",
+    base: head,
+  };
+  const files = new Map([["forge-lanes.json", JSON.stringify([lane])]]);
+  const flags = {
+    present: true,
+    branch: true,
+    locked: false,
+    merged: false,
+    dropped: false,
+    localHead: head,
+    afterRead: undefined as (() => void) | undefined,
+  };
+  const calls: string[][] = [];
+  const mutations: string[] = [];
+  const process: providers.ProcessService = {
+    cwd: root,
+    capability: "forge.process/v1",
+    resolve: (path) => ({ kind: "resolved", path }),
+    async run(_executable, args) {
+      calls.push([...args]);
+      let stdout = "",
+        exitCode = 0;
+      if (
+        ["fetch", "update-ref", "merge", "reset"].includes(args[0]!) ||
+        (args[0] === "branch" && args.some((arg) => /^-[dD]$/.test(arg))) ||
+        (args[0] === "worktree" && args[1] === "remove")
+      )
+        mutations.push(args.join(" "));
+      if (args[0] === "pr")
+        stdout = JSON.stringify({
+          state: flags.dropped ? "CLOSED" : "MERGED",
+          headRefName: lane.branch,
+          baseRefName: "main",
+          headRefOid: head,
+          mergeCommit: flags.dropped ? null : { oid: merge },
+          url: "https://github.com/example/repo/pull/1",
+        });
+      else if (args[0] === "worktree" && args[1] === "list")
+        stdout = `worktree ${root}\0branch refs/heads/main\0\0worktree ${lane.worktree}\0branch refs/heads/feature\0\0`;
+      else if (args[0] === "worktree" && args[1] === "remove")
+        flags.present = false;
+      else if (args[0] === "update-ref" && args[2] === "refs/heads/feature")
+        flags.branch = false;
+      else if (args[0] === "branch" && args.some((arg) => /^-[dD]$/.test(arg)))
+        flags.branch = false;
+      else if (args.includes("--is-inside-work-tree")) {
+        stdout = "true";
+        exitCode = flags.present ? 0 : 1;
+      } else if (args.includes("symbolic-ref"))
+        stdout = args.includes("refs/remotes/origin/HEAD")
+          ? "refs/remotes/origin/main"
+          : lane.branch;
+      else if (args[0] === "for-each-ref")
+        stdout = args[2]?.startsWith("refs/forge/")
+          ? ""
+          : flags.branch
+            ? "refs/heads/feature"
+            : "";
+      else if (args[0] === "rev-parse") stdout = flags.localHead;
+      else if (args[0] === "merge-base") {
+        stdout = args[1] === "--is-ancestor" ? "" : args[1]!;
+        exitCode = flags.merged ? 0 : 1;
+      }
+      // The hook runs after the command yields, while the lane lock must still be held.
+      await Promise.resolve();
+      const hook = flags.afterRead;
+      flags.afterRead = undefined;
+      hook?.();
+      return {
+        stdout,
+        stderr: "",
+        exitCode,
+        signal: null,
+        timedOut: false,
+        truncated: false,
+        durationMs: 0,
+      };
+    },
+  };
+  const cloneFiles: providers.FilesService = {
+    root,
+    roots: { project: root, git: root, common: root },
+    read: (path) => files.get(path),
+    write: (path, text) => {
+      mutations.push(`write ${path}`);
+      files.set(path, text);
+    },
+    remove: (path) => {
+      mutations.push(`remove ${path}`);
+      files.delete(path);
+    },
+    inspect: () => undefined,
+    list: () => [],
+    lock: () => {
+      flags.locked = true;
+      return {
+        release: () => {
+          flags.locked = false;
+        },
+      };
+    },
+    snapshot: () => Promise.resolve({ head, filesDigest: head }),
+  };
+  const open = blockCapture.open.bind(blockCapture),
+    factory = providers.createAssemblyProviders;
+  const mocks = [
+    spyOn(blockCapture, "open").mockImplementation((path) =>
+      open(path === source ? target : path),
+    ),
+    spyOn(providers, "projectStateRoot").mockResolvedValue(root),
+    spyOn(providers, "checkoutScopeRoot").mockResolvedValue(root),
+    spyOn(providers, "idPrefixObservation").mockResolvedValue([]),
+    spyOn(providers, "createAssemblyProviders").mockImplementation(
+      (...args) => ({
+        ...factory(...args),
+        process: () => process,
+        openFiles: () =>
+          Promise.resolve({
+            ownership: "owned" as const,
+            value: cloneFiles,
+            close: () => Promise.resolve(),
+          }),
+      }),
+    ),
+  ];
+  const assembly = await createAssembly({
+    root,
+    deviceRoot: join(folder, "device"),
+    providers: { env: {} },
+  });
+  let request = 0;
+  const invoke = (op: string, input: object, leased = false) =>
+    assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: `release-${++request}`,
+      op,
+      input,
+      caller: "agent",
+      context: {
+        actor,
+        session,
+        project: { id: root, root },
+        ...(leased ? { leaseGeneration: 1 } : {}),
+      },
+    });
+  const created = await invoke("issue.create", { title: "Release" });
+  expect(created.ok, JSON.stringify(created)).toBe(true);
+  const opened = await createSqliteStore(folder).open({
+    path: join(root, ".forge", "state.sqlite"),
+    readOnly: false,
+  });
+  if (!opened.ok) throw new Error(opened.unavailable.reason);
+  const owner = new StateOwner(opened.handle.value, { now: () => Date.now() });
+  const change = (extra: object) => {
+    const row = owner.get(namespace, "issue:work-1")!;
+    owner.put(
+      namespace,
+      row.key,
+      { ...(row.value as object), ...extra },
+      actor,
+      { expectRevision: row.revision },
+    );
+  };
+  change({ status: "closed", withoutReceipt: "closed by hand" });
+  const snapshot = () =>
+    JSON.stringify({
+      files: [...files],
+      present: flags.present,
+      branch: flags.branch,
+    });
+  return {
+    flags,
+    calls,
+    mutations,
+    files,
+    owner,
+    change,
+    invoke,
+    snapshot,
+    claim: () =>
+      owner.acquire(
+        namespace,
+        "issue:work-1",
+        { actor, session },
+        60_000,
+        `claim-${++request}`,
+      ),
+    async close() {
+      await opened.handle.close();
+      await assembly.close();
+      for (const mock of mocks.reverse()) mock.mockRestore();
+      rmSync(folder, { recursive: true, force: true });
+    },
+  };
+}
+
+test("release through the assembly needs no lease, removes the lane and preserves its unmerged branch", async () => {
+  const f = await fixture();
+  try {
+    const result = await f.invoke("lane.release", { id: "sample-1" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(f.flags.present).toBe(false);
+    expect(f.flags.branch).toBe(true);
+    expect(JSON.parse(f.files.get("forge-lanes.json")!)).toEqual([]);
+    expect(JSON.stringify(result.result)).toMatch(/feature/);
+    expect(JSON.stringify(result.result)).toMatch(/kept|retain/i);
+    expect(f.owner.get(namespace, "issue:work-1")!.value).toMatchObject({
+      status: "closed",
+    });
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+for (const reason of ["open", "live lease", "receipt"] as const) {
+  test(`assembly release refuses ${reason} without git or file mutations`, async () => {
+    const f = await fixture();
+    try {
+      if (reason === "open") f.change({ status: "open" });
+      if (reason === "live lease") f.claim();
+      if (reason === "receipt") f.change({ receipt: "proof" });
+      const before = f.snapshot();
+      const result = await f.invoke("lane.release", { id: "sample-1" });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_CONFLICT" },
+      });
+      expect(f.snapshot()).toBe(before);
+      expect(f.mutations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+for (const race of ["reopened", "claimed"] as const) {
+  test(`assembly release refuses an issue ${race} after its first awaited git read`, async () => {
+    const f = await fixture();
+    try {
+      let injected = false;
+      f.flags.afterRead = () => {
+        expect(f.flags.locked).toBe(true);
+        injected = true;
+        if (race === "reopened") f.change({ status: "open" });
+        else f.claim();
+      };
+      const before = f.snapshot();
+      const result = await f.invoke("lane.release", { id: "sample-1" });
+      expect(injected).toBe(true);
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_CONFLICT" },
+      });
+      expect(f.snapshot()).toBe(before);
+      expect(f.mutations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+for (const mode of ["keep-open", "dropped"] as const) {
+  test(`assembly refuses lane close with ${mode} before any mutating git call`, async () => {
+    const f = await fixture();
+    try {
+      if (mode === "keep-open") f.claim();
+      else {
+        f.change({ status: "open" });
+        f.owner.acquire(
+          namespace,
+          "issue:work-1",
+          { actor, session: { ...session, id: "other" } },
+          60_000,
+          "foreign",
+        );
+        f.flags.localHead = "c".repeat(40);
+      }
+      f.flags.dropped = mode === "dropped";
+      f.flags.merged = true;
+      const before = f.snapshot();
+      const result = await f.invoke(
+        "lane.close",
+        {
+          id: "sample-1",
+          pr: 1,
+          ...(mode === "dropped"
+            ? { dropped: "Superseded" }
+            : {
+                receipt: "proof",
+                ...(mode === "keep-open" ? { keepOpen: true } : {}),
+              }),
+        },
+        true,
+      );
+      expect(result.ok, JSON.stringify(result)).toBe(false);
+      expect(f.calls.length).toBeGreaterThan(0);
+      expect(f.snapshot()).toBe(before);
+      expect(f.mutations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
