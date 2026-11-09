@@ -1007,7 +1007,6 @@ function createCloneFilesAccess(
   return {
     service,
     close(): void {
-      if (closed) return;
       closed = true;
       releaseAll([...locks], [...recoverable, ...pendingCleanup]);
     },
