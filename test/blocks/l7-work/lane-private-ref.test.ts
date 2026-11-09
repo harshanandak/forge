@@ -167,8 +167,8 @@ test("a failed cleanup does not replace the original error", async () => {
 
 test("the next start removes a stale private ref and keeps a fresh one", async () => {
   const f = fixture(),
-    fresh = `refs/forge/lane-base/${f.time.value}-11111111-2222-4333-8444-555555555555`;
-  f.refs.add("refs/forge/lane-base/1-11111111-2222-4333-8444-555555555555");
+    fresh = `refs/forge/lane-base/${f.time.value}-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee`;
+  f.refs.add("refs/forge/lane-base/1-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
   f.refs.add(fresh);
   await f.run();
   expect([...f.refs]).toEqual([fresh]);
