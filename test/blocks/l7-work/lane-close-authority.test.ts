@@ -102,6 +102,9 @@ async function fixture(seedLink = true) {
     prBranch: "",
     localHead: "",
     ancestor: true,
+    prBase: "main",
+    onMain: true,
+    calls: [] as string[][],
   };
   const services = {
     state: {
@@ -144,9 +147,11 @@ async function fixture(seedLink = true) {
       run: (_executable: unknown, args: string[]) => {
         let stdout = "",
           exitCode = 0;
+        flags.calls.push(args);
         if (args[0] === "pr")
           stdout = JSON.stringify({
             state: "MERGED",
+            baseRefName: flags.prBase,
             headRefName: flags.prBranch || lane.branch,
             headRefOid: head,
             mergeCommit: { oid: merge },
@@ -157,8 +162,12 @@ async function fixture(seedLink = true) {
         else if (args[0] === "for-each-ref")
           stdout = flags.branch ? args[2]! : "";
         else if (args[0] === "rev-parse") stdout = flags.localHead || head;
+        else if (args.includes("refs/remotes/origin/HEAD"))
+          stdout = "refs/remotes/origin/main";
         else if (args.includes("symbolic-ref"))
           stdout = flags.checkout || lane.branch;
+        else if (args[0] === "merge-base" && args[1] !== "--is-ancestor")
+          stdout = flags.onMain ? args[1]! : "";
         else if (args[0] === "merge-base") exitCode = flags.ancestor ? 0 : 1;
         else if (args[0] === "-C") {
           stdout = "true";
@@ -418,3 +427,58 @@ test("a switched lane still refuses a checkout with unpushed commits", async () 
     await f.dispose();
   }
 });
+
+const snapshot = (f: Awaited<ReturnType<typeof fixture>>) =>
+  JSON.stringify({
+    files: [...f.files.entries()],
+    present: f.flags.present,
+    branch: f.flags.branch,
+    issue: f.owner.get(namespace, `issue:${id}`),
+    links: f.owner.list(namespace, `link:${id}:`),
+    comments: f.comments(),
+  });
+
+for (const [name, setup] of [
+  [
+    "a PR merged into a branch other than main",
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      f.flags.prBase = "release";
+    },
+  ],
+  [
+    "a PR merged into main whose merge commit is not on fetched main",
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      f.flags.onMain = false;
+    },
+  ],
+] as const) {
+  test(`${name} is refused and nothing is written or removed`, async () => {
+    const f = await fixture();
+    try {
+      setup(f);
+      const before = snapshot(f);
+      await expect(f.close()).rejects.toThrow("PR_NOT_MERGED");
+      expect(snapshot(f)).toBe(before);
+      expect(f.flags.present).toBe(true);
+      expect(f.flags.branch).toBe(true);
+    } finally {
+      await f.dispose();
+    }
+  }, 30_000);
+}
+
+test("a PR merged into main with its merge commit on fetched main still closes", async () => {
+  const f = await fixture();
+  try {
+    const closed = (await f.close()) as { removed: boolean; status: string };
+    expect(closed).toMatchObject({ removed: true, status: "closed" });
+    expect(f.flags.calls).toContainEqual([
+      "fetch",
+      "origin",
+      "refs/heads/main",
+    ]);
+    expect(f.flags.calls).toContainEqual(["merge-base", merge, "FETCH_HEAD"]);
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
