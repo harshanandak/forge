@@ -384,6 +384,7 @@ function createCloneFilesAccess(
   }
   const locks = new Set<OwnedLock>();
   const recoverable = new Set<CloneFileLock>();
+  const pendingCleanup = new Set<CloneFileLock>();
   function checkActive(): void {
     if (closed) failure("SERVICE_EXPIRED", "Clone file service has closed");
     active(options);
@@ -740,8 +741,22 @@ function createCloneFilesAccess(
       closeSync(lock.fd);
     }
   }
-  function releaseAll(owned: readonly OwnedLock[]): void {
+  function releaseAll(
+    owned: readonly OwnedLock[],
+    held: readonly CloneFileLock[] = [],
+  ): void {
     const errors: unknown[] = [];
+    for (const lock of held) {
+      if (!recoverable.delete(lock) && !pendingCleanup.has(lock)) continue;
+      // Caller release frees its slot even while the marker still excludes other owners.
+      pendingCleanup.add(lock);
+      try {
+        lock.release();
+        pendingCleanup.delete(lock);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     for (const lock of owned) {
       try {
         releaseLock(lock);
@@ -814,10 +829,7 @@ function createCloneFilesAccess(
       const held: CloneFileLock[] = [];
       const result = {
         release() {
-          for (const lock of held) {
-            lock.release();
-            recoverable.delete(lock);
-          }
+          releaseAll([], held);
         },
       };
       try {
@@ -993,8 +1005,7 @@ function createCloneFilesAccess(
     close(): void {
       if (closed) return;
       closed = true;
-      for (const lock of recoverable) lock.release();
-      releaseAll([...locks]);
+      releaseAll([...locks], [...recoverable, ...pendingCleanup]);
     },
     readBytes(path: string, maxBytes: number): Uint8Array | undefined {
       checkActive();

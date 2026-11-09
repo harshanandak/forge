@@ -543,33 +543,35 @@ export class Runtime {
       if (handle?.ownership === "owned") await handle.close();
     } catch {
       serviceCleanupFailed = true;
-      result = {
-        ok: false,
-        ...(request === undefined ? {} : { op: request.op }),
-        status: "INCOMPLETE",
-        error: {
-          code: "INTERNAL",
-          message: "owned service cleanup failed",
-          retry: "reconcile_first",
-        },
-        warnings: [],
-      };
     }
-    if (processCleanupFailed && !serviceCleanupFailed)
+    if (processCleanupFailed)
       result = {
         ok: false,
         ...(request === undefined ? {} : { op: request.op }),
         status: "INCOMPLETE",
         error: {
-          code: "PROCESS_CLEANUP_FAILED",
-          message: "The process tree could not be confirmed stopped",
+          code: serviceCleanupFailed ? "INTERNAL" : "PROCESS_CLEANUP_FAILED",
+          message: serviceCleanupFailed
+            ? "owned service cleanup failed"
+            : "The process tree could not be confirmed stopped",
           retry: "reconcile_first",
         },
         warnings: [],
       };
     result = {
       ...result,
-      warnings: [...result.warnings, ...(invocation?.warnings() ?? [])],
+      warnings: [
+        ...result.warnings,
+        ...(serviceCleanupFailed
+          ? [
+              {
+                code: "SERVICE_CLEANUP_FAILED",
+                message: "owned service cleanup failed",
+              },
+            ]
+          : []),
+        ...(invocation?.warnings() ?? []),
+      ],
     };
     const processes = result.ok ? undefined : invocation?.diagnostics();
     if (processes && !result.ok) {
