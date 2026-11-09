@@ -1,6 +1,9 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   decideRerun,
+  neededJobNames,
   type CiJob,
   type CiRun,
   type CurrentRun,
@@ -247,3 +250,171 @@ for (const [name, latest] of [
     expect(decision.reason.length).toBeGreaterThan(0);
   });
 }
+
+// Jobs GitHub never created: absent from the attempt's job list, not skipped.
+// The CI Gate reports them as 'abandoned'. Names mirror ci.yml's `needs`.
+const needed = [
+  "Changes",
+  "PR title",
+  "Structure guards",
+  "Lint and format",
+  "Pack artifact",
+  "Speed (${{ matrix.os }}, Node 24)",
+  "Verify (${{ matrix.os }}, Node ${{ matrix.node }})",
+];
+const named = (name: string): CiJob => ({ ...success, name });
+const created = [
+  named("Changes"),
+  named("PR title"),
+  named("Structure guards"),
+  named("Lint and format"),
+];
+const decide = (
+  jobs: CiJob[],
+  run_attempt = 1,
+  conclusion: string | null = "failure",
+) =>
+  decideRerun(
+    { conclusion, run_attempt, jobs },
+    { ...current, run_attempt },
+    needed,
+  );
+
+test("reruns everything when needed jobs were never created", () => {
+  for (const run_attempt of [1, 2]) {
+    const decision = decide([...created, gate], run_attempt);
+    expect(decision.rerun).toBe(true);
+    expect(decision.scope).toBe("all");
+    expect(decision.reason).toContain("never created");
+  }
+}, 1000);
+
+test("reruns everything when a docs-only run lost its verify job", () => {
+  const jobs = [
+    ...created,
+    { ...skipped, name: "Pack artifact" },
+    { ...skipped, name: "Speed (${{ matrix.os }}, Node 24)" },
+    gate,
+  ];
+  const decision = decide(jobs);
+  expect(decision.rerun).toBe(true);
+  expect(decision.scope).toBe("all");
+}, 1000);
+
+test("does not rerun a real failure alongside missing jobs", () => {
+  const jobs = [...created, { ...realFailure, name: "Unit tests" }, gate];
+  expect(decide(jobs).rerun).toBe(false);
+}, 1000);
+
+test("does not rerun missing jobs on the third attempt or later", () => {
+  for (const run_attempt of [3, 4]) {
+    expect(decide([...created, gate], run_attempt).rerun).toBe(false);
+  }
+}, 1000);
+
+test("does not rerun missing jobs when the CI Gate job is absent", () => {
+  expect(decide(created).rerun).toBe(false);
+}, 1000);
+
+test("does not rerun missing jobs when the run did not fail", () => {
+  for (const conclusion of ["success", "cancelled", null]) {
+    expect(decide([...created, gate], 1, conclusion).rerun).toBe(false);
+  }
+}, 1000);
+
+test("does not treat missing jobs as a problem without a needed list", () => {
+  const decision = decideRerun(
+    { ...run, run_attempt: 1, jobs: [...created, gate] },
+    { ...current, run_attempt: 1 },
+  );
+  expect(decision.rerun).toBe(false);
+}, 1000);
+
+const complete = [
+  ...created,
+  named("Pack artifact"),
+  named("Speed (ubuntu-latest, Node 24)"),
+  named("Speed (windows-latest, Node 24)"),
+  named("Verify (ubuntu-latest, Node 24, shard 1)"),
+  named("Verify (windows-latest, Node 26)"),
+];
+
+test("does not rerun when every needed job exists and only the gate failed", () => {
+  expect(decide([...complete, gate]).rerun).toBe(false);
+}, 1000);
+
+test("keeps rerun-failed-jobs for a never-acquired job when no job is missing", () => {
+  const rest = complete.filter((job) => job.name !== "Pack artifact");
+  const jobs = [...rest, { ...unacquired, name: "Pack artifact" }, gate];
+  const decision = decide(jobs);
+  expect(decision.rerun).toBe(true);
+  expect(decision.scope).toBe("failed");
+}, 1000);
+
+test("reruns everything when a never-acquired job and a missing job mix", () => {
+  const jobs = [...created, { ...unacquired, name: "Pack artifact" }, gate];
+  const decision = decide(jobs);
+  expect(decision.rerun).toBe(true);
+  expect(decision.scope).toBe("all");
+}, 1000);
+
+// Drift guard: the needed jobs come from ci.yml's CI Gate, never a second list.
+const ciWorkflow = readFileSync(
+  join(import.meta.dir, "../../.github/workflows/ci.yml"),
+  "utf8",
+);
+
+test("reads the needed jobs from the CI Gate in ci.yml", () => {
+  const detected = neededJobNames(ciWorkflow);
+  const gateNeeds = (
+    Bun.YAML.parse(ciWorkflow) as {
+      jobs: Record<string, { needs: string[] }>;
+    }
+  ).jobs["ci-gate"]?.needs;
+  expect(detected).toHaveLength(gateNeeds?.length ?? -1);
+  const jobs = [...complete, gate];
+  expect(
+    decideRerun(
+      { ...run, run_attempt: 1, jobs },
+      { ...current, run_attempt: 1 },
+      detected,
+    ).rerun,
+  ).toBe(false);
+  for (const prefix of [
+    "Changes",
+    "PR title",
+    "Structure guards",
+    "Lint and format",
+    "Pack artifact",
+    "Speed (",
+    "Verify (",
+  ]) {
+    const withoutJob = jobs.filter((job) => !job.name.startsWith(prefix));
+    const decision = decideRerun(
+      { ...run, run_attempt: 1, jobs: withoutJob },
+      { ...current, run_attempt: 1 },
+      detected,
+    );
+    expect(decision.scope).toBe("all");
+    expect(decision.rerun).toBe(true);
+  }
+}, 1000);
+
+test("derives needed job names from a workflow's gate", () => {
+  const workflow = [
+    "jobs:",
+    "  alpha:",
+    "    name: Alpha job",
+    "  beta:",
+    "    name: Beta (${{ matrix.os }})",
+    "  gamma: {}",
+    "  ci-gate:",
+    "    needs: [alpha, beta, gamma]",
+  ].join("\n");
+  expect(neededJobNames(workflow)).toEqual([
+    "Alpha job",
+    "Beta (${{ matrix.os }})",
+    "gamma",
+  ]);
+  expect(() => neededJobNames("jobs:\n  alpha: {}\n")).toThrow();
+}, 1000);

@@ -14,17 +14,27 @@ export type CurrentRun = {
   status: string;
   conclusion: string | null;
 };
+// Names (or name templates) of the jobs the CI Gate needs, from `neededJobNames`.
+export function neededJobNames(_ciWorkflow: string): string[] {
+  return [];
+}
 export function decideRerun(
   run: CiRun,
   current: CurrentRun,
+  _needed: readonly string[] = [],
 ): {
   rerun: boolean;
   reason: string;
+  scope: "failed" | "all";
 } {
   if (run.conclusion !== "failure")
-    return { rerun: false, reason: "CI run did not fail" };
+    return { rerun: false, reason: "CI run did not fail", scope: "failed" };
   if (!(run.run_attempt < 3))
-    return { rerun: false, reason: "Runner-allocation attempt limit reached" };
+    return {
+      rerun: false,
+      reason: "Runner-allocation attempt limit reached",
+      scope: "failed",
+    };
   if (
     current.run_attempt !== run.run_attempt ||
     current.status !== "completed" ||
@@ -33,6 +43,7 @@ export function decideRerun(
     return {
       rerun: false,
       reason: "Current run is no longer the judged failed attempt",
+      scope: "failed",
     };
   const unacquired = (job: CiJob) =>
     (job.conclusion === "cancelled" || job.conclusion === null) &&
@@ -49,6 +60,7 @@ export function decideRerun(
     );
   return {
     rerun,
+    scope: "failed",
     reason: rerun
       ? "Only skipped, never-acquired jobs and CI Gate are non-success; rerun failed jobs"
       : "Real failure or no never-acquired job; keep CI failed",
