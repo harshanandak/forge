@@ -476,6 +476,7 @@ export async function createAssembly(
       warn: (message: string) =>
         warnings.push({ code: "CONFIG_FORMATTING_LOST", message }),
       files: nodeConfigFiles(root),
+      projectRoot: root,
       codec: yamlConfigCodec,
       clock: { now: () => Date.now() },
       detect: () => [
