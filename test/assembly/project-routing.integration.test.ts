@@ -211,10 +211,14 @@ for (const fault of ["config", "store"] as const) {
         expect(existsSync(join(broken, ".forge/state.sqlite"))).toBe(false);
       expect(refused).toMatchObject({
         ok: false,
-        error: {
-          code: fault === "config" ? "INPUT_INVALID" : "UNAVAILABLE",
-          retry: "never",
-        },
+        error:
+          fault === "config"
+            ? {
+                code: "INPUT_INVALID",
+                retry: "reconcile_first",
+                reconcileWith: "config.show",
+              }
+            : { code: "UNAVAILABLE", retry: "never" },
       });
       if (refused.ok)
         throw new Error("Broken project unexpectedly accepted the write");
