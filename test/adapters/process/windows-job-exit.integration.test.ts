@@ -34,9 +34,12 @@ test.skipIf(!windows)(
         `still running 150 ms after their job ended: ${pid}.`,
       );
       await job.stop();
-      expect(await waitForExit([target], { deadlineMs: 5_000 })).toEqual([
-        { pid, state: "signaled" },
-      ]);
+      // Node may close its handle to the dead child first, so Windows can already have destroyed
+      // the process object: "gone" and "signaled" both mean it exited. "running" would not.
+      const exited = await waitForExit([target], { deadlineMs: 5_000 });
+      expect(exited).toHaveLength(1);
+      expect(exited[0]?.pid).toBe(pid);
+      expect(["signaled", "gone"]).toContain(exited[0]?.state);
     } finally {
       child.kill();
       job.close();
