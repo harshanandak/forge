@@ -265,6 +265,104 @@ test("failed marker removal frees every caller slot, preserves exclusion and ret
   expect(existsSync(path)).toBe(false);
 }, 30_000);
 
+test("repeated close retries pending marker cleanup while its owner process is live", () => {
+  const { files, options, commonDirectory, lease } = fixture();
+  const contender = createCloneFilesLease(options);
+  const path = join(commonDirectory, "pending-close.lock");
+  files.lock(["pending-close.lock"], { recoverDeadOwner: true });
+  const name = readdirSync(path)[0]!;
+  expect(name.startsWith(`owner-${process.pid}-`)).toBe(true);
+  const marker = join(path, name);
+  const content = readFileSync(marker, "utf8");
+  rmSync(marker);
+  mkdirSync(marker);
+  try {
+    expect(() => lease.close()).toThrow("Clone lock cleanup failed");
+    expect(existsSync(marker)).toBe(true);
+    expect(() => files.lock(["other.lock"])).toThrow(/SERVICE_EXPIRED/);
+    expect(() =>
+      contender.service.lock(["pending-close.lock"], {
+        recoverDeadOwner: true,
+      }),
+    ).toThrow(/INPUT_CONFLICT/);
+    rmSync(marker, { recursive: true });
+    writeFileSync(marker, content);
+    lease.close();
+    expect(existsSync(path)).toBe(false);
+    const acquired = contender.service.lock(["pending-close.lock"], {
+      recoverDeadOwner: true,
+    });
+    acquired.release();
+    lease.close();
+    expect(() => files.list(".", 10)).toThrow(/SERVICE_EXPIRED/);
+  } finally {
+    contender.close();
+  }
+}, 30_000);
+
+test("close cleanup retry preserves another process's replacement marker", () => {
+  const { files, commonDirectory, lease } = fixture();
+  const path = join(commonDirectory, "replaced-close.lock");
+  files.lock(["replaced-close.lock"], { recoverDeadOwner: true });
+  const name = readdirSync(path)[0]!;
+  const marker = join(path, name);
+  const content = readFileSync(marker, "utf8");
+  rmSync(marker);
+  mkdirSync(marker);
+  expect(() => lease.close()).toThrow("Clone lock cleanup failed");
+  rmSync(marker, { recursive: true });
+  writeFileSync(marker, content);
+  const moved = path + ".moved";
+  renameSync(path, moved);
+  mkdirSync(path);
+  const otherName = `owner-${process.ppid}-00000000-0000-4000-8000-000000000000`;
+  writeFileSync(join(path, otherName), "another process");
+  lease.close();
+  expect(readdirSync(path)).toEqual([otherName]);
+  expect(readFileSync(join(path, otherName), "utf8")).toBe("another process");
+  expect(readFileSync(join(moved, name), "utf8")).toBe(content);
+}, 30_000);
+
+test.each(["restored", "blocked"])(
+  "a new lease retries only recorded markers: %s",
+  (kind) => {
+    const { files, options, commonDirectory, lease } = fixture();
+    files.lock(["retry.lock"], { recoverDeadOwner: true });
+    const path = join(commonDirectory, "retry.lock");
+    const marker = join(path, readdirSync(path)[0]!);
+    const content = readFileSync(marker, "utf8");
+    rmSync(marker);
+    mkdirSync(marker);
+    expect(() => lease.close()).toThrow("Clone lock cleanup failed");
+    const restore = () => {
+      rmSync(marker, { recursive: true });
+      writeFileSync(marker, content);
+    };
+    const unknown = join(commonDirectory, "unrecorded.lock");
+    mkdirSync(unknown);
+    const name = `owner-${process.pid}-00000000-0000-4000-8000-000000000000`;
+    writeFileSync(join(unknown, name), "unrecorded owner");
+    if (kind === "restored") restore();
+    const next = createCloneFilesLease(options);
+    const held = next.service.lock(["own.lock"], { recoverDeadOwner: true });
+    expect(existsSync(join(commonDirectory, "own.lock"))).toBe(true);
+    held.release();
+    expect(existsSync(marker)).toBe(kind === "blocked");
+    expect(readdirSync(unknown)).toEqual([name]);
+    expect(readFileSync(join(unknown, name), "utf8")).toBe("unrecorded owner");
+    if (kind === "blocked") {
+      restore();
+      next.service.lock(["own.lock"], { recoverDeadOwner: true }).release();
+    }
+    const third = createCloneFilesLease(options);
+    third.service.lock(["retry.lock"], { recoverDeadOwner: true }).release();
+    expect(existsSync(path)).toBe(false);
+    next.close();
+    third.close();
+  },
+  30_000,
+);
+
 test.each([
   "matching",
   "different",
