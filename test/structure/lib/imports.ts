@@ -104,7 +104,8 @@ function declared(pkg: PackageJson): Set<string> {
 }
 
 function adapterOf(path: string): string | undefined {
-  return /^src\/adapters\/([^/]+)\//.exec(path)?.[1];
+  const match = /^(cloud\/)?src\/adapters\/([^/]+)\//.exec(path);
+  return match === null ? undefined : `${match[1] ?? ""}${match[2]}`;
 }
 
 /** Inspect every conditional target: public code must remain independent in every build. */
@@ -185,15 +186,46 @@ export function findDependencyViolations(
   const violations: Violation[] = [];
   const knownPackages = declared(pkg);
   const runtime = new Set(Object.keys(pkg.dependencies ?? {}));
+  const cloudText = files.find(
+    (file) => file.path === "cloud/package.json",
+  )?.text;
+  const cloud = (
+    cloudText === undefined ? {} : JSON.parse(cloudText)
+  ) as PackageJson;
+  const cloudPackages = declared(cloud);
+  const cloudRuntime = new Set(Object.keys(cloud.dependencies ?? {}));
   const owners = new Map<string, string[]>();
-  for (const adapter of adapters) {
+  const cloudAdapters: AdapterManifest[] = [];
+  for (const file of files) {
+    const name = /^cloud\/src\/adapters\/([^/]+)\/adapter\.json$/.exec(
+      file.path,
+    )?.[1];
+    if (name === undefined) continue;
+    const value: unknown = JSON.parse(file.text);
+    if (typeof value !== "object" || value === null) continue;
+    const raw = value as { package?: unknown; port?: unknown };
+    if (typeof raw.port !== "string") continue;
+    const packages =
+      typeof raw.package === "string"
+        ? [raw.package]
+        : Array.isArray(raw.package)
+          ? raw.package.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [];
+    cloudAdapters.push({ name: `cloud/${name}`, packages, executables: [] });
+  }
+  for (const adapter of [...adapters, ...cloudAdapters]) {
     for (const name of adapter.packages)
-      owners.set(name, [...(owners.get(name) ?? []), adapter.name]);
+      owners.set(name, [
+        ...new Set([...(owners.get(name) ?? []), adapter.name]),
+      ]);
   }
 
   for (const file of files) {
     const here = adapterOf(file.path);
-    const inShipped = /^(?:src|bin)\//.test(file.path);
+    const inCloud = file.path.startsWith("cloud/");
+    const inShipped = /^(?:src|bin|cloud\/src)\//.test(file.path);
     const isTest = isTestFile(file.path);
     const unownedFilesystem =
       file.path.startsWith("src/") && !FILESYSTEM_OWNERS.has(file.path);
@@ -305,6 +337,15 @@ export function findDependencyViolations(
         });
       };
 
+      if (
+        !inCloud &&
+        inShipped &&
+        targets.some((target) => target.startsWith("cloud/"))
+      ) {
+        fail("open core cannot import cloud-only code");
+        continue;
+      }
+
       if (specifier.startsWith(".")) {
         const target = posix.normalize(
           posix.join(posix.dirname(file.path), specifier),
@@ -347,19 +388,29 @@ export function findDependencyViolations(
 
       const name = packageOf(specifier);
       if (name === PACKAGE_NAME) continue;
-      if (!knownPackages.has(name)) {
+      if (!knownPackages.has(name) && !(inCloud && cloudPackages.has(name))) {
         fail(`"${name}" is not declared in package.json`);
         continue;
       }
       if (!inShipped) continue;
-      if (!runtime.has(name)) {
+      if (
+        !(inCloud && cloudPackages.has(name)
+          ? cloudRuntime.has(name)
+          : runtime.has(name))
+      ) {
         fail(
           `"${name}" is not in dependencies, so the published package would break for users; move it out of devDependencies`,
         );
         continue;
       }
-      const owner = owners.get(name);
-      if (owner === undefined) {
+      const owner = owners
+        .get(name)
+        ?.filter(
+          (candidate) =>
+            candidate.startsWith("cloud/") ===
+            (inCloud && cloudPackages.has(name)),
+        );
+      if (owner === undefined || owner.length === 0) {
         fail(
           `"${name}" has no adapter; declare it in src/adapters/<name>/adapter.json`,
         );

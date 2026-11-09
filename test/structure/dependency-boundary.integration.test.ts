@@ -19,7 +19,14 @@ import {
 const pkg = readJson("package.json") as PackageJson;
 const paths = listRepoFiles();
 const { dirs, manifests } = scanAdapters(paths);
-const code = readRepoFiles(paths.filter((p) => CODE_FILE.test(p)));
+const code = readRepoFiles(
+  paths.filter(
+    (p) =>
+      CODE_FILE.test(p) ||
+      p === "cloud/package.json" ||
+      /^cloud\/src\/adapters\/[^/]+\/adapter\.json$/.test(p),
+  ),
+);
 
 test("every dependency is imported only inside its own adapter", () => {
   expect(format(findDependencyViolations(code, pkg, manifests))).toEqual([]);

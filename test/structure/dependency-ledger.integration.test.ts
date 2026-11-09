@@ -5,13 +5,19 @@ import {
   LEDGER_PATH,
   type LedgerPackageJson,
 } from "./lib/ledger.ts";
-import { format, listRepoFiles, readJson, readTextFile } from "./lib/repo.ts";
+import {
+  format,
+  listRepoFiles,
+  readJson,
+  readTextFile,
+  repoRoot,
+} from "./lib/repo.ts";
 
 test("every dependency and override has a complete entry in docs/dependencies.md", () => {
   const paths = listRepoFiles();
   const pkg = readJson("package.json") as LedgerPackageJson;
   const ledger = paths.includes(LEDGER_PATH)
-    ? readTextFile(LEDGER_PATH)
+    ? readTextFile(LEDGER_PATH)?.split(/^## Cloud dependencies\s*$/m)[0]
     : undefined;
   const { manifests } = scanAdapters(paths);
   expect(
@@ -61,6 +67,23 @@ test("the real cloud package has its own complete ledger section", () => {
         ledger,
         readJson("cloud/package.json") as LedgerPackageJson,
         [],
+        new Date(),
+      ),
+    ),
+  ).toEqual([]);
+}, 30_000);
+
+test("cloud ledger adapters match their recorded owners", () => {
+  const cloudPaths = listRepoFiles()
+    .filter((path) => path.startsWith("cloud/"))
+    .map((path) => path.slice(6));
+  const cloud = scanAdapters(cloudPaths, `${repoRoot}/cloud`);
+  expect(
+    format(
+      findLedgerViolations(
+        readTextFile(LEDGER_PATH)?.split(/^## Cloud dependencies\s*$/m)[1],
+        readJson("cloud/package.json") as LedgerPackageJson,
+        cloud.manifests,
         new Date(),
       ),
     ),
