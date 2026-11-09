@@ -11,7 +11,7 @@
     "skip": {
       "type": "integer",
       "minimum": 0,
-      "description": "Items to pass over, from the previous result's next."
+      "description": "Items to pass over, from the previous result's next. next is valid only while the queue is unchanged: after accept, reject or withdraw, restart at 0."
     }
   },
   "additionalProperties": false
