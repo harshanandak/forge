@@ -141,8 +141,6 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Conservatively retains Node command/configuration literals.",
   "test/tools/cleanup-attribution.integration.test.ts":
     "Names node.exe as a fixture process in the injected host evidence response.",
-  "test/tools/lane-close.integration.test.ts":
-    "Imports fixture process ownership and its selected Node launch path.",
   "test/tools/lane-run.integration.test.ts":
     "Launches selected Node for lane run coverage.",
   "test/tools/lane.integration.test.ts":
