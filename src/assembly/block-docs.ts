@@ -6,7 +6,7 @@ import type { DocsRecords } from "../generated/types.ts";
 
 /**
  * Parse and check a block's docs file against the docs schema and its declared operations.
- * Assembly runs this when it loads a block and `bun run gen` runs it on every first-party block,
+ * Assembly runs this when it loads a block and the gen step runs it on every first-party block,
  * so both refuse the same docs with the same message.
  */
 export function checkBlockDocs(
