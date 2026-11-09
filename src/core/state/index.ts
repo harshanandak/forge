@@ -25,7 +25,7 @@ import type {
   PutOptions,
   RangeOptions,
 } from "../../ports/state.ts";
-import type { SqlDatabase, SqlRow } from "../../ports/store.ts";
+import type { SqlDatabase, SqlRow, SqlValue } from "../../ports/store.ts";
 import type { Handle } from "../../ports/lifetime.ts";
 import {
   baseline,
@@ -255,7 +255,14 @@ function changedLeaseEvent(
   };
 }
 
-function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
+function validateReceipt(
+  row: SqlRow,
+  events: {
+    event: StateEvent | undefined;
+    revision: (key: string) => number;
+    lease: (subject: string) => LeaseRecord | undefined;
+  },
+): void {
   let input: Record<string, unknown>;
   let result: unknown;
   try {
@@ -272,25 +279,11 @@ function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
   } catch {
     invalid("Invalid imported request JSON");
   }
-  const matches = events.filter(
-    (event) =>
-      event.namespace === row.namespace && event.requestId === row.request_id,
-  );
-  if (matches.length !== 1)
-    invalid("Imported request needs exactly one matching event");
-  const event = matches[0]!;
+  const event = events.event;
+  if (!event) invalid("Imported request needs exactly one matching event");
   if (input.kind === "put") {
     const record = result as StateRecord;
     const readSet = copyReadSet(input.readSet);
-    const revisions = new Map<string, number>();
-    for (const prior of events) {
-      if (prior === event) break;
-      if (prior.namespace !== event.namespace) continue;
-      if (prior.type === `${event.namespace}:record.updated@1`)
-        revisions.set(prior.key, prior.revision);
-      else if (prior.type === `${event.namespace}:record.deleted@1`)
-        revisions.delete(prior.key);
-    }
     if (
       !validateStateRecord(record).ok ||
       !Number.isSafeInteger(record.revision) ||
@@ -310,7 +303,7 @@ function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
           key: event.key,
           value: event.data,
           actor: event.actor,
-          revision: revisions.get(event.key) ?? 0,
+          revision: events.revision(event.key),
           fence: input.fence,
           ...(readSet === undefined ? {} : { readSet }),
         })
@@ -318,7 +311,7 @@ function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
       invalid("Imported put receipt does not match its operation");
     if (readSet !== undefined) {
       for (const read of readSet)
-        if ((revisions.get(read.key) ?? 0) !== read.expectRevision)
+        if (events.revision(read.key) !== read.expectRevision)
           invalid("Imported request read set does not match accepted history");
     }
     if (input.fence !== null) {
@@ -337,25 +330,9 @@ function validateReceipt(row: SqlRow, events: readonly StateEvent[]): void {
           })
       )
         invalid("Invalid imported request fence");
-      let lease: LeaseRecord | undefined;
-      for (const prior of events) {
-        if (prior === event) break;
-        if (prior.namespace !== event.namespace || prior.key !== fence.subject)
-          continue;
-        if (
-          prior.type === `${event.namespace}:lease.acquired@1` ||
-          prior.type === `${event.namespace}:lease.reacquired@1`
-        )
-          lease = (prior.data as { lease?: LeaseRecord } | null)?.lease;
-        else if (
-          prior.type === `${event.namespace}:lease.renewed@1` ||
-          prior.type === `${event.namespace}:lease.released@1`
-        )
-          lease = prior.data as LeaseRecord;
-        else continue;
-        if (!validateLeaseRecord(lease).ok)
-          invalid("Invalid imported request lease history");
-      }
+      const lease = events.lease(fence.subject);
+      if (lease !== undefined && !validateLeaseRecord(lease).ok)
+        invalid("Invalid imported request lease history");
       if (
         !decideLease(lease, {
           mode: "held",
@@ -430,19 +407,91 @@ export class RestoreConsistencyFailure extends ForgeFailure {
   }
 }
 
+function* restoredRows(
+  db: SqlDatabase,
+  table: string,
+  columns: string,
+  keys: readonly string[],
+  pageSize: number,
+): Generator<SqlRow> {
+  let after: readonly SqlValue[] | undefined;
+  for (;;) {
+    const rows = db.all(
+      `SELECT ${columns} FROM ${table}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
+      [...(after ?? []), pageSize],
+    );
+    for (const row of rows) yield row;
+    if (rows.length < pageSize) return;
+    after = keys.map((column) => rows.at(-1)![column]!);
+  }
+}
+
 /** Reproduce all event-derived tables before accepting an image. Domain tables and
  * registration/migration ledgers have no event provenance; schema and FK checks cover them. */
 export function verifyEventDerivedState(
   candidate: SqlDatabase,
   highWaterMark: number,
+  pageSize = 16,
 ): void {
   if (!Number.isSafeInteger(highWaterMark) || highWaterMark < 0)
     throw new RestoreConsistencyFailure("state_events", "high-water mark");
-  const records = new Map<string, StateRecord>();
-  const recordRevisions = new Map<string, number>();
-  const leases = new Map<string, LeaseRecord>();
-  const requests = new Map<string, StateEvent>();
-  const events: StateEvent[] = [];
+  if (!Number.isSafeInteger(pageSize) || pageSize <= 0)
+    throw new RestoreConsistencyFailure("state_events", "high-water mark");
+  const rows = (table: string, columns: string, keys: readonly string[]) =>
+    restoredRows(candidate, table, columns, keys, pageSize);
+  const eventRows = () =>
+    rows("state_events", "sequence,namespace,key,body", ["sequence"]);
+  // Read only a predecessor, never retain another key's history or parsed bodies.
+  const prior = (
+    namespace: string,
+    name: string,
+    through: number,
+    family: "record" | "lease",
+  ): StateEvent | undefined => {
+    const types =
+      family === "record"
+        ? ["updated", "deleted"]
+        : ["acquired", "reacquired", "renewed", "released"];
+    const row = candidate.get(
+      `SELECT body FROM state_events WHERE namespace=? AND key=? AND sequence<=? AND json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.type') IN (${types.map(() => "?").join(",")}) ORDER BY sequence DESC LIMIT 1`,
+      [
+        namespace,
+        name,
+        through,
+        ...types.map((type) => `${namespace}:${family}.${type}@1`),
+      ],
+    );
+    return row === undefined
+      ? undefined
+      : (JSON.parse(String(row.body)) as StateEvent);
+  };
+  const recordOf = (event: StateEvent | undefined): StateRecord | undefined =>
+    event !== undefined && event.type === `${event.namespace}:record.updated@1`
+      ? {
+          namespace: event.namespace,
+          key: event.key,
+          revision: event.revision,
+          value: event.data,
+          updatedAt: event.at,
+          updatedBy: event.actor,
+        }
+      : undefined;
+  const leaseOf = (event: StateEvent | undefined): LeaseRecord | undefined =>
+    event === undefined
+      ? undefined
+      : event.type === `${event.namespace}:lease.acquired@1` ||
+          event.type === `${event.namespace}:lease.reacquired@1`
+        ? (event.data as { lease: LeaseRecord }).lease
+        : (event.data as LeaseRecord);
+  const matching = (
+    namespace: string,
+    requestId: string,
+    through: number,
+  ): SqlRow | undefined =>
+    candidate.get(
+      "SELECT sequence,body FROM state_events WHERE namespace=? AND sequence<=? AND json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.requestId')=? ORDER BY sequence LIMIT 1",
+      [namespace, through, requestId],
+    );
   const key = (namespace: string, name: string): string =>
     json([namespace, name]);
   const reject = (table: string, name: string): never => {
@@ -457,9 +506,7 @@ export function verifyEventDerivedState(
     }
   };
   let sequence = 0;
-  for (const row of candidate.all(
-    "SELECT sequence,namespace,key,body FROM state_events ORDER BY sequence",
-  )) {
+  for (const row of eventRows()) {
     const id = key(String(row.namespace), String(row.key));
     sequence++;
     if (row.sequence !== sequence && row.sequence !== BigInt(sequence))
@@ -473,14 +520,18 @@ export function verifyEventDerivedState(
         event.key !== row.key
       )
         reject("state_events", id);
-      events.push(event);
       if (event.requestId !== undefined) {
         const request = key(event.namespace, event.requestId);
-        if (requests.has(request)) reject("state_requests", request);
-        requests.set(request, event);
+        if (matching(event.namespace, event.requestId, sequence - 1))
+          reject("state_requests", request);
       }
       if (event.type === `${event.namespace}:record.updated@1`) {
-        if (event.revision !== (recordRevisions.get(id) ?? 0) + 1)
+        if (
+          event.revision !==
+          (prior(event.namespace, event.key, sequence - 1, "record")
+            ?.revision ?? 0) +
+            1
+        )
           reject("state_records", id);
         const record: StateRecord = {
           namespace: event.namespace,
@@ -492,19 +543,19 @@ export function verifyEventDerivedState(
         };
         if (json(event) !== json(recordEvent(record, event.requestId)))
           reject("state_events", id);
-        records.set(id, record);
-        recordRevisions.set(id, record.revision);
       } else if (event.type === `${event.namespace}:record.deleted@1`) {
-        const previous = records.get(id);
+        const previous = recordOf(
+          prior(event.namespace, event.key, sequence - 1, "record"),
+        );
         if (
           !previous ||
           json(event) !== json(deletionEvent(previous, event.actor, event.at))
         )
           reject("state_records", id);
-        records.delete(id);
-        recordRevisions.set(id, event.revision);
       } else {
-        const prior = leases.get(id);
+        const previous = leaseOf(
+          prior(event.namespace, event.key, sequence - 1, "lease"),
+        );
         let lease: LeaseRecord;
         if (
           event.type === `${event.namespace}:lease.acquired@1` ||
@@ -521,7 +572,7 @@ export function verifyEventDerivedState(
                 acquisitionEvent(
                   event.namespace,
                   lease,
-                  prior,
+                  previous,
                   event.at,
                   event.requestId!,
                 ),
@@ -529,7 +580,7 @@ export function verifyEventDerivedState(
             !validateLeaseRecord(lease).ok
           )
             reject("state_leases", id);
-          const decision = decideLease(prior, {
+          const decision = decideLease(previous, {
             mode: "acquire",
             subject: event.key,
             holder: lease.holder,
@@ -551,11 +602,11 @@ export function verifyEventDerivedState(
           event.type === `${event.namespace}:lease.released@1`
         ) {
           lease = event.data as LeaseRecord;
-          if (!prior || !validateLeaseRecord(lease).ok)
+          if (!previous || !validateLeaseRecord(lease).ok)
             reject("state_leases", id);
           if (event.type === `${event.namespace}:lease.renewed@1`) {
             if (
-              !decideLease(prior, {
+              !decideLease(previous, {
                 mode: "held",
                 subject: event.key,
                 holder: lease.holder,
@@ -566,7 +617,7 @@ export function verifyEventDerivedState(
                 json(
                   changedLeaseEvent(
                     event.namespace,
-                    prior!,
+                    previous!,
                     lease.holder,
                     event.at,
                     lease.expiresAt,
@@ -576,7 +627,7 @@ export function verifyEventDerivedState(
             )
               reject("state_leases", id);
           } else if (
-            !decideLease(prior, {
+            !decideLease(previous, {
               mode: "held",
               subject: event.key,
               holder: lease.holder,
@@ -587,7 +638,7 @@ export function verifyEventDerivedState(
               json(
                 changedLeaseEvent(
                   event.namespace,
-                  prior!,
+                  previous!,
                   lease.holder,
                   event.at,
                 ),
@@ -602,57 +653,122 @@ export function verifyEventDerivedState(
           json(lease.holder.actor) !== json(event.actor)
         )
           reject("state_leases", id);
-        leases.set(id, lease);
       }
     });
   }
   if (sequence !== highWaterMark) reject("state_events", "high-water mark");
-  for (const row of candidate.all(
-    "SELECT namespace,key,revision,body FROM state_records",
-  )) {
+  for (const row of rows("state_records", "namespace,key,revision,body", [
+    "namespace",
+    "key",
+  ])) {
     const id = key(String(row.namespace), String(row.key));
     inspect("state_records", id, () => {
       const record = JSON.parse(String(row.body)) as StateRecord;
       if (
         !validateStateRecord(record).ok ||
-        !records.has(id) ||
-        json(record) !== json(records.get(id)) ||
+        json(record) !==
+          json(
+            recordOf(
+              prior(
+                String(row.namespace),
+                String(row.key),
+                highWaterMark,
+                "record",
+              ),
+            ),
+          ) ||
         record.revision !== Number(row.revision)
       )
         reject("state_records", id);
-      records.delete(id);
     });
   }
-  if (records.size) reject("state_records", records.keys().next().value!);
-  for (const row of candidate.all(
-    "SELECT namespace,subject,generation,body FROM state_leases",
-  )) {
+  for (const row of eventRows()) {
+    const event = JSON.parse(String(row.body)) as StateEvent;
+    if (
+      event.type === `${event.namespace}:record.updated@1` &&
+      recordOf(prior(event.namespace, event.key, highWaterMark, "record")) &&
+      !candidate.get(
+        "SELECT 1 FROM state_records WHERE namespace=? AND key=?",
+        [event.namespace, event.key],
+      )
+    )
+      reject("state_records", key(event.namespace, event.key));
+  }
+  for (const row of rows("state_leases", "namespace,subject,generation,body", [
+    "namespace",
+    "subject",
+  ])) {
     const id = key(String(row.namespace), String(row.subject));
     inspect("state_leases", id, () => {
       const lease = JSON.parse(String(row.body)) as LeaseRecord;
       if (
-        !leases.has(id) ||
-        json(lease) !== json(leases.get(id)) ||
+        json(lease) !==
+          json(
+            leaseOf(
+              prior(
+                String(row.namespace),
+                String(row.subject),
+                highWaterMark,
+                "lease",
+              ),
+            ),
+          ) ||
         lease.generation !== Number(row.generation)
       )
         reject("state_leases", id);
-      leases.delete(id);
     });
   }
-  if (leases.size) reject("state_leases", leases.keys().next().value!);
-  for (const row of candidate.all(
-    "SELECT namespace,request_id,fingerprint,result FROM state_requests",
+  for (const row of eventRows()) {
+    const event = JSON.parse(String(row.body)) as StateEvent;
+    if (
+      event.type.startsWith(`${event.namespace}:lease.`) &&
+      !candidate.get(
+        "SELECT 1 FROM state_leases WHERE namespace=? AND subject=?",
+        [event.namespace, event.key],
+      )
+    )
+      reject("state_leases", key(event.namespace, event.key));
+  }
+  for (const row of rows(
+    "state_requests",
+    "namespace,request_id,fingerprint,result",
+    ["namespace", "request_id"],
   )) {
     const id = key(String(row.namespace), String(row.request_id));
     inspect("state_requests", id, () => {
       namespaceValid(String(row.namespace));
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(row.request_id)))
         reject("state_requests", id);
+      const namespace = String(row.namespace);
+      const match = matching(namespace, String(row.request_id), highWaterMark);
+      const events = {
+        event:
+          match === undefined
+            ? undefined
+            : (JSON.parse(String(match.body)) as StateEvent),
+        revision: (name: string): number =>
+          recordOf(
+            prior(namespace, name, Number(match?.sequence) - 1, "record"),
+          )?.revision ?? 0,
+        lease: (subject: string): LeaseRecord | undefined =>
+          leaseOf(
+            prior(namespace, subject, Number(match?.sequence) - 1, "lease"),
+          ),
+      };
       validateReceipt(row, events);
-      requests.delete(id);
     });
   }
-  if (requests.size) reject("state_requests", requests.keys().next().value!);
+  for (const row of eventRows()) {
+    const event = JSON.parse(String(row.body)) as StateEvent;
+    if (
+      event.requestId !== undefined &&
+      !candidate.get(
+        "SELECT 1 FROM state_requests WHERE namespace=? AND request_id=?",
+        [event.namespace, event.requestId],
+      )
+    )
+      reject("state_requests", key(event.namespace, event.requestId));
+  }
 }
 
 // Only these ledgers contain setup metadata that restore may replace in a nonempty store.
