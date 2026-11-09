@@ -94,18 +94,33 @@ export function decideRerun(
       : "Real failure or no never-acquired job; keep CI failed",
   };
 }
-if (import.meta.main) {
-  const pages = (await Bun.stdin.json()) as { jobs: CiJob[] }[];
-  const current = (await Bun.file(
-    `${process.env.RUNNER_TEMP}/ci-current.json`,
-  ).json()) as CurrentRun;
+// The text the workflow reads: rerun=, scope= and reason= lines.
+export function decisionOutput(
+  pages: readonly { jobs: readonly CiJob[] }[],
+  current: CurrentRun,
+  env: Readonly<Record<string, string | undefined>>,
+  ciWorkflow: string,
+): string {
   const decision = decideRerun(
     {
-      conclusion: process.env.RUN_CONCLUSION ?? null,
-      run_attempt: Number(process.env.RUN_ATTEMPT),
+      conclusion: env.RUN_CONCLUSION ?? null,
+      run_attempt: Number(env.RUN_ATTEMPT),
       jobs: pages.flatMap((page) => page.jobs),
     },
     current,
+    neededJobNames(ciWorkflow),
   );
-  console.log(`rerun=${decision.rerun}\nreason=${decision.reason}`);
+  return `rerun=${decision.rerun}\nscope=${decision.scope}\nreason=${decision.reason}`;
+}
+if (import.meta.main) {
+  console.log(
+    decisionOutput(
+      (await Bun.stdin.json()) as { jobs: CiJob[] }[],
+      (await Bun.file(
+        `${process.env.RUNNER_TEMP}/ci-current.json`,
+      ).json()) as CurrentRun,
+      process.env,
+      await Bun.file(".github/workflows/ci.yml").text(),
+    ),
+  );
 }

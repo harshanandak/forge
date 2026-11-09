@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   decideRerun,
+  decisionOutput,
   neededJobNames,
   type CiJob,
   type CiRun,
@@ -417,4 +418,40 @@ test("derives needed job names from a workflow's gate", () => {
     "gamma",
   ]);
   expect(() => neededJobNames("jobs:\n  alpha: {}\n")).toThrow();
+}, 1000);
+
+// The entry point's output is what the workflow greps, built from the real ci.yml.
+const output = (jobs: CiJob[], run_attempt = 1) =>
+  decisionOutput(
+    [{ jobs: jobs.slice(0, 3) }, { jobs: jobs.slice(3) }],
+    { ...current, run_attempt },
+    { RUN_CONCLUSION: "failure", RUN_ATTEMPT: String(run_attempt) },
+    ciWorkflow,
+  ).split("\n");
+
+test("outputs rerun=true and scope=all for a job missing from the real ci.yml", () => {
+  const lines = output([...complete.slice(0, -1), gate]);
+  expect(lines).toContain("rerun=true");
+  expect(lines).toContain("scope=all");
+}, 1000);
+
+test("outputs scope=failed for a never-acquired job with no missing job", () => {
+  const rest = complete.filter((job) => job.name !== "Pack artifact");
+  const lines = output([
+    ...rest,
+    { ...unacquired, name: "Pack artifact" },
+    gate,
+  ]);
+  expect(lines).toContain("rerun=true");
+  expect(lines).toContain("scope=failed");
+}, 1000);
+
+test("outputs rerun=false for a real failure alongside a missing job", () => {
+  const lines = output([
+    ...complete.slice(0, -1),
+    { ...realFailure, name: "Unit tests" },
+    gate,
+  ]);
+  expect(lines).toContain("rerun=false");
+  expect(lines.some((line) => line.startsWith("reason="))).toBe(true);
 }, 1000);
