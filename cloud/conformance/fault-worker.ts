@@ -11,22 +11,26 @@ const RECEIPT_INSERT = /^\s*INSERT INTO domain_cloud_requests\b/i;
 export class Project extends Shipped {
   #armed: { value: boolean };
 
-  constructor(ctx: DurableState) {
+  constructor(ctx: DurableState, env?: unknown) {
     const armed = { value: false };
-    super({
-      storage: {
-        sql: {
-          exec: (statement, ...bindings) => {
-            if (armed.value && RECEIPT_INSERT.test(statement))
-              throw new Error("Injected receipt insert failure");
-            return ctx.storage.sql.exec(statement, ...bindings);
+    super(
+      {
+        storage: {
+          sql: {
+            exec: (statement, ...bindings) => {
+              if (armed.value && RECEIPT_INSERT.test(statement))
+                throw new Error("Injected receipt insert failure");
+              return ctx.storage.sql.exec(statement, ...bindings);
+            },
           },
+          transactionSync: (body) => ctx.storage.transactionSync(body),
+          get: (key) => ctx.storage.get(key),
+          put: (key, value) => ctx.storage.put(key, value),
+          delete: (key) => ctx.storage.delete(key),
         },
-        transactionSync: (body) => ctx.storage.transactionSync(body),
-        get: (key) => ctx.storage.get(key),
-        put: (key, value) => ctx.storage.put(key, value),
       },
-    });
+      env,
+    );
     this.#armed = armed;
   }
 

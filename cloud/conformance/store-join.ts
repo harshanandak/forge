@@ -9,6 +9,7 @@ function fake(): { storage: DurableStorage; outcomes: string[] } {
     sql: { exec: () => ({ toArray: () => [] }) },
     get: () => Promise.resolve(undefined),
     put: () => Promise.resolve(),
+    delete: () => Promise.resolve(false),
     transactionSync: (body) => {
       try {
         const result = body();

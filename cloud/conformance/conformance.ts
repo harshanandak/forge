@@ -1350,6 +1350,19 @@ if (phase === "main") {
         assert.equal(reply.status, 200, JSON.stringify(reply.body));
       }
       assert.deepEqual(await dumpOf(target), await dumpOf(source));
+
+      // Issuing a device token provisions a project, so it clears staged rows that were never checked.
+      const issued = `${run}-page-issued`;
+      assert.equal((await sendPage(issued, pages[0])).status, 200);
+      assert.equal((await sendPage(issued, pages[1])).status, 200);
+      await issue(issued, "tablet");
+      for (const rows of Object.values((await dumpOf(issued)).tables))
+        assert.equal(rows.length, 0, "no staged row survives a token");
+      assert.equal(
+        (await sendPage(issued, pages[2])).status,
+        409,
+        "provisioned",
+      );
     },
   );
 

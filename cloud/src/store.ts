@@ -17,6 +17,7 @@ export interface DurableStorage {
   transactionSync<T>(body: () => T): T;
   get(key: string): Promise<unknown>;
   put(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<unknown>;
 }
 
 /** The only table that records the schema version: Durable Object SQLite has no PRAGMA user_version. */
