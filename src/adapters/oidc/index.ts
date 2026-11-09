@@ -1,5 +1,6 @@
 import { subtle } from "node:crypto";
 import type { ClockPort } from "../../ports/clock.ts";
+import { mintIdentity } from "../../ports/identity-mint.ts";
 import { IdentityVerifier, type IdentityResult } from "../../ports/identity.ts";
 
 export interface OidcConfig {
@@ -228,7 +229,7 @@ export function createOidcVerifier(
           return { ok: false, reason: "expired" };
         return {
           ok: true,
-          identity: this.identity({
+          identity: mintIdentity({
             issuer: config.issuer,
             subject: payload.sub,
             audience: config.audience,

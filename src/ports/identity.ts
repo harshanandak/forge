@@ -30,14 +30,11 @@ export type IdentityResult =
  * Refuse empty identity fields, a different audience, and now >= expiresAt.
  */
 export abstract class IdentityVerifier {
-  /** Trusted verifiers mint this only after authenticating the proof. */
-  protected identity(claims: IdentityClaims): VerifiedIdentity {
-    return Object.freeze({ ...claims }) as VerifiedIdentity;
-  }
-
   abstract verify(
     proof: unknown,
     expectedAudience: string,
     now: number,
   ): Promise<IdentityResult>;
 }
+
+export { isVerifiedIdentity } from "./identity-mint.ts";
