@@ -129,6 +129,13 @@ async function bounded(request: Request): Promise<string> {
   return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
 }
 
+// A refusal before the body is read drops the body, so nothing reads the stream after the response.
+async function discard(request: Request): Promise<void> {
+  const body = request.body;
+  if (body !== null && !body.locked && !request.bodyUsed)
+    await body.cancel().catch(() => undefined);
+}
+
 export class Project {
   readonly #storage: DurableStorage;
   #opened: { db: SqlDatabase; owner: StateOwner } | undefined;
@@ -229,6 +236,7 @@ export class Project {
         ),
       });
     } catch (error) {
+      await discard(request);
       if (!(error instanceof ForgeFailure)) {
         console.error(error);
         return Response.json(
