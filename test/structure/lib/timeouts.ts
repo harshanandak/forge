@@ -8,6 +8,8 @@ import { TEST_FILE } from "./repo.ts";
  */
 
 const FILE_DEFAULT = /^[ \t]*setDefaultTimeout\(\s*\d[\d_]*\s*\)/m;
+/** Modifiers that return the real test function: `test.each(table)(name, fn, timeout)`, `test.skipIf(cond)(...)`. */
+const CURRIED = ["each", "skipIf", "if", "todoIf"];
 const TEST_CALL = /(?<![\w.$])(?:test|it)((?:\.\w+)*)\s*\(/g;
 
 function blank(text: string, from: number, to: number): string {
@@ -115,12 +117,12 @@ export function findMissingTimeouts(files: readonly SourceFile[]): Violation[] {
       )
         continue;
       let open = start + match[0].length - 1;
-      if (modifiers.includes("each")) {
+      if (modifiers.some((m) => CURRIED.includes(m))) {
         // test.each(table)(name, fn, timeout): the call is the second parenthesised group
-        const table = callArguments(code, open);
-        const next = /^\s*\(/.exec(code.slice(table.end));
+        const first = callArguments(code, open);
+        const next = /^\s*\(/.exec(code.slice(first.end));
         if (next === null) continue;
-        open = table.end + next[0].length - 1;
+        open = first.end + next[0].length - 1;
       }
       const timeout = callArguments(code, open).args[2]?.trim();
       if (timeout === undefined || timeout === "") {

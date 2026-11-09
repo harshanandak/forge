@@ -28,6 +28,18 @@ test("the guard accepts a per-test timeout, an options object and a file default
   expect(check('test.todo("a");\ntest.skip("b", () => {});\n')).toBe(0);
 }, 30_000);
 
+test("the guard reads the timeout in the curried call of skipIf, if and todoIf", () => {
+  for (const form of ["skipIf", "if", "todoIf"]) {
+    expect(check(`test.${form}(x)("n", () => {}, 30_000);\n`)).toBe(0);
+    expect(
+      check(`test.${form}(x)("n", () => {}, { timeout: 30_000 });\n`),
+    ).toBe(0);
+    expect(check(`test.${form}(x)("n", () => {});\n`)).toBe(1);
+    expect(check(`it.${form}(x)("n", () => {});\n`)).toBe(1);
+    expect(check(`it.${form}(x)("n", () => {}, 30_000);\n`)).toBe(0);
+  }
+}, 30_000);
+
 test("the guard ignores test-like text in strings and comments", () => {
   expect(
     check(
