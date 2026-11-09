@@ -1,0 +1,15 @@
+{
+  "static import": "import { secret } from '../../team/secret.ts';",
+  "type-only import": "import type { Secret } from '../../team/secret.ts';",
+  "star re-export": "export * from '../../team/secret.ts';",
+  "named re-export": "export { secret } from '../../team/secret.ts';",
+  "literal dynamic import": "export const load = () => import('../../team/secret.ts');",
+  "literal require": "const secret = require('../../team/secret.ts');",
+  "nonliteral import": "export const load = (path: string) => import(path);",
+  "nonliteral require": "export const load = (path: string) => require(path);",
+  "computed template import": "export const load = (name: string) => import(`../../team/${name}.ts`);",
+  "barrel entry": "export * from './bridge.ts';",
+  "barrel bridge": "export * from '../../team/secret.ts';",
+  "package imports alias": "import { secret } from '#private/secret';",
+  "package exports alias": "export { secret } from 'forge-workflow/private/secret';"
+}
