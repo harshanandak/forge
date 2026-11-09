@@ -325,9 +325,28 @@ function emptyExtendedLimits(): Readonly<Record<string, unknown>> {
   };
 }
 
-function processIds(api: NativeApi, job: bigint): readonly number[] {
+/** The two native calls the PID snapshot uses; a test can supply a fake. */
+export type JobIdQueryApi = Pick<
+  NativeApi,
+  "queryInformationJobObject" | "getLastError"
+>;
+
+/**
+ * Snapshots the process IDs in a job. The buffer grows only when it was too small: the call fails
+ * with ERROR_MORE_DATA or ERROR_INSUFFICIENT_BUFFER, or it succeeds with a full buffer that does
+ * not hold every assigned process.
+ *
+ * A success is complete when the buffer has room to spare, or when it holds every assigned process
+ * (`listed >= assigned`, such as exactly 4096 listable processes in a 4096 buffer).
+ * `NumberOfAssignedProcesses` can still count a process that is exiting and no longer listable, so
+ * `listed < assigned` with `listed < capacity` is not a reason to grow: the call had space for more
+ * IDs and returned none. This drops no live process, because a running process is listable.
+ * Terminating the job still ends the whole job either way.
+ */
+export function processIds(api: JobIdQueryApi, job: bigint): readonly number[] {
   const pointerBytes = process.arch === "ia32" ? 4 : 8;
   let capacity = 16;
+  let last = "no query ran";
   while (capacity <= MAX_ASSOCIATED_PROCESSES) {
     const buffer = Buffer.alloc(8 + capacity * pointerBytes);
     const succeeded = api.queryInformationJobObject(
@@ -339,7 +358,7 @@ function processIds(api: NativeApi, job: bigint): readonly number[] {
     );
     const assigned = buffer.readUInt32LE(0);
     const listed = buffer.readUInt32LE(4);
-    if (succeeded !== 0 && listed >= assigned) {
+    if (succeeded !== 0 && (listed < capacity || listed >= assigned)) {
       const result: number[] = [];
       for (let index = 0; index < listed; index += 1) {
         const offset = 8 + index * pointerBytes;
@@ -352,8 +371,12 @@ function processIds(api: NativeApi, job: bigint): readonly number[] {
       return result;
     }
 
-    const error = succeeded === 0 ? api.getLastError() : ERROR_MORE_DATA;
-    if (error !== ERROR_MORE_DATA && error !== ERROR_INSUFFICIENT_BUFFER) {
+    const error = succeeded === 0 ? api.getLastError() : 0;
+    if (
+      succeeded === 0 &&
+      error !== ERROR_MORE_DATA &&
+      error !== ERROR_INSUFFICIENT_BUFFER
+    ) {
       throw new ProcessSpawnError(
         "TREE_KILL_FAILED",
         "Could not snapshot the contained process tree.",
@@ -362,6 +385,7 @@ function processIds(api: NativeApi, job: bigint): readonly number[] {
         ),
       );
     }
+    last = `succeeded=${succeeded !== 0 ? 1 : 0}, assigned=${assigned}, listed=${listed}, capacity=${capacity}, windowsError=${error}`;
     const needed = Math.max(capacity + 1, assigned);
     if (needed > MAX_ASSOCIATED_PROCESSES) break;
     capacity = Math.min(
@@ -371,7 +395,7 @@ function processIds(api: NativeApi, job: bigint): readonly number[] {
   }
   throw new ProcessSpawnError(
     "TREE_KILL_FAILED",
-    `The contained process tree exceeds ${MAX_ASSOCIATED_PROCESSES} processes.`,
+    `The contained process tree exceeds ${MAX_ASSOCIATED_PROCESSES} processes (${last}).`,
   );
 }
 
