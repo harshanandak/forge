@@ -10,5 +10,12 @@
   "local assignment": "import { mintIdentity } from \"TARGET\"; const make = mintIdentity; export { make };",
   "dynamic default": "const identities = await import(\"TARGET\"); export default identities.mintIdentity;",
   "require default": "const identities = require(\"TARGET\"); export default identities.mintIdentity;",
-  "require destructured": "const { mintIdentity: make } = require(\"TARGET\"); export { make };"
+  "require destructured": "const { mintIdentity: make } = require(\"TARGET\"); export { make };",
+  "export assignment": "import { mintIdentity } from \"TARGET\"; export = mintIdentity;",
+  "factory return": "import { mintIdentity } from \"TARGET\"; export function factory() { return mintIdentity; }",
+  "aliased factory return": "import { mintIdentity as mint } from \"TARGET\"; export function factory() { return mint; }",
+  "exported object": "import { mintIdentity } from \"TARGET\"; export const identities = { mintIdentity };",
+  "exported array": "import { mintIdentity } from \"TARGET\"; export const identities = [mintIdentity];",
+  "argument escape": "import { mintIdentity } from \"TARGET\"; function expose(value) { return value; } export const factory = expose(mintIdentity);",
+  "local assignment escape": "import { mintIdentity } from \"TARGET\"; const make = mintIdentity; export function factory() { return make; }"
 }

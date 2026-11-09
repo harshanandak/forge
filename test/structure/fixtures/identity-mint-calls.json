@@ -1,0 +1,4 @@
+{
+  "named direct call": "import { mintIdentity } from \"TARGET\"; export function verify(claims) { return mintIdentity(claims); }",
+  "aliased direct call": "import { mintIdentity as mint } from \"TARGET\"; export function verify(claims) { return mint(claims); }"
+}
