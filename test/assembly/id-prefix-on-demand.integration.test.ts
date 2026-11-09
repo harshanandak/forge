@@ -638,6 +638,33 @@ test("a copied forge pin reports a reversible repair without rewriting config on
   }
 }, 30_000);
 
+test.each([
+  { pin: "forge", origin: "Forge" },
+  { pin: "configured", origin: "acme" },
+  { pin: undefined, origin: "acme" },
+])(
+  "prefix $pin with origin $origin has no copied-pin warning",
+  async ({ pin, origin }) => {
+    const project = await fixture(true, pin);
+    try {
+      project.git(
+        "remote",
+        "set-url",
+        "origin",
+        `https://example.invalid/team/${origin}.git`,
+      );
+      const shown = await project.invoke("config.show");
+      expect(shown.ok).toBe(true);
+      expect(shown.warnings.map(({ code }) => code)).not.toContain(
+        "ID_PREFIX_MISMATCH",
+      );
+    } finally {
+      await project.close();
+    }
+  },
+  30_000,
+);
+
 test("explicit prefix repair preserves old aliases, numbers and reversal while refusing foreign ids", async () => {
   const project = await fixture(true, "forge");
   try {
