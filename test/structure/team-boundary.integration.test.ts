@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   rmSync,
@@ -13,9 +14,11 @@ import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { scanAdapters } from "./lib/adapters.ts";
 import { findDependencyViolations, type PackageJson } from "./lib/imports.ts";
+import { maskSource } from "./lib/platform.ts";
 import {
   CODE_FILE,
   format,
+  isTestFile,
   listRepoFiles,
   readJson,
   readRepoFiles,
@@ -38,6 +41,155 @@ const fixture = (name: string): string => {
   if (text === undefined) throw new Error(`missing fixture: ${name}`);
   return text;
 };
+
+const declarations = readJson(
+  "test/structure/fixtures/team-declarations.json",
+) as {
+  configs: Record<string, unknown>;
+  manifests: { name: string; path: string; value: unknown }[];
+};
+const compilerConfigs = (
+  root: string,
+  files: readonly string[],
+): SourceFile[] => {
+  const found = new Map<string, SourceFile>();
+  const visit = (path: string): void => {
+    if (found.has(path)) return;
+    const file = readRepoFiles([path], root)[0];
+    if (!file) throw new Error(`Cannot read compiler config ${path}`);
+    found.set(path, file);
+    const config = JSON.parse(maskSource(file.text, false)) as {
+      extends?: string | string[];
+    };
+    for (const base of [config.extends ?? []].flat()) {
+      if (!base.startsWith("."))
+        throw new Error(
+          `Compiler config ${path} must extend a local relative path`,
+        );
+      let target = posix.normalize(
+        posix.join(posix.dirname(path), base.replaceAll("\\", "/")),
+      );
+      if (!existsSync(join(root, target))) target += ".json";
+      if (!/\.jsonc?$/.test(target))
+        throw new Error(`Unsupported compiler config ${target}`);
+      visit(target);
+    }
+  };
+  for (const path of files.filter((path) =>
+    /(?:^|\/)tsconfig[^/]*\.json$/.test(path),
+  ))
+    visit(path);
+  return [...found.values()];
+};
+
+test("the real scan includes sources from every public root", () => {
+  const sources = readRepoFiles(paths.filter((path) => CODE_FILE.test(path)));
+  expect(sources.length).toBeGreaterThan(0);
+  for (const root of ["src/", "bin/", "cloud/src/"])
+    expect(
+      sources.filter((file) => file.path.startsWith(root)).length,
+    ).toBeGreaterThan(0);
+}, 30_000);
+
+test("compiler discovery follows differently named bases into team aliases", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "forge-config-chain-"));
+  try {
+    for (const [path, config] of Object.entries(declarations.configs)) {
+      mkdirSync(join(scratch, posix.dirname(path)), { recursive: true });
+      writeFileSync(join(scratch, path), JSON.stringify(config));
+    }
+    const found = compilerConfigs(scratch, Object.keys(declarations.configs));
+    expect(boundary(found).map((v) => v.file)).toEqual([
+      "config/base.json",
+      "config/options.json",
+    ]);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}, 30_000);
+
+for (const [path, name] of [
+  ["src/assembly/view.tsx", "TSX side-effect import"],
+  ["src/assembly/view.jsx", "JSX side-effect import"],
+] as const) {
+  test(`${path} refuses side-effect imports alongside JSX`, () => {
+    expect(
+      boundary([{ path, text: fixture(name) }]).map((v) => v.file),
+    ).toEqual([path]);
+  }, 30_000);
+}
+
+for (const path of ["src/assembly/view.tsx", "src/assembly/view.jsx"]) {
+  test(`${path} accepts public JSX`, () => {
+    expect(boundary([{ path, text: fixture("public JSX") }])).toEqual([]);
+  }, 30_000);
+  test(`${path} fails closed on a parse error`, () => {
+    expect(() => boundary([{ path, text: fixture("parse failure") }])).toThrow(
+      path,
+    );
+  }, 30_000);
+}
+
+for (const name of [
+  "shebang side-effect import",
+  "BOM shebang side-effect import",
+]) {
+  test(`public code refuses ${name}`, () => {
+    expect(
+      boundary([{ path: "bin/forge.ts", text: fixture(name) }]).map(
+        (v) => v.file,
+      ),
+    ).toEqual(["bin/forge.ts"]);
+  }, 30_000);
+}
+
+for (const { name, path, value } of declarations.manifests) {
+  test(`shipped JSON refuses a team ${name}`, () => {
+    const found = boundary([{ path, text: JSON.stringify(value) }]);
+    expect(found.map((v) => v.file)).toEqual([path]);
+    expect(found[0]?.message).toContain("team/");
+  }, 30_000);
+}
+
+test("shipped JSON allows public paths, prose and external schema URLs", () => {
+  expect(
+    boundary([
+      {
+        path: "package.json",
+        text: JSON.stringify({
+          exports: "./dist/src/index.js",
+          bin: "./dist/bin/forge.js",
+          files: ["dist", "templates"],
+        }),
+      },
+      {
+        path: "src/adapters/sample/adapter.json",
+        text: JSON.stringify({
+          entry: "./teamwork.js",
+          description: "Ask the team/ owner",
+        }),
+      },
+      {
+        path: "schemas/public.json",
+        text: JSON.stringify({
+          $schema: "https://example.com/team/schema.json",
+          $ref: "#/$defs/team",
+          $defs: { team: { description: "team/ is removable" } },
+        }),
+      },
+    ]),
+  ).toEqual([]);
+}, 30_000);
+
+test("the real shipped JSON declarations do not depend on team", () => {
+  const manifests = paths.filter(
+    (path) =>
+      path === "package.json" ||
+      /^(?:src|bin|cloud|schemas|templates|examples)\/.*\.json$/.test(path),
+  );
+  expect(manifests.length).toBeGreaterThan(0);
+  expect(boundary(readRepoFiles(manifests))).toEqual([]);
+}, 30_000);
 
 test("the real public tree has no dependency on team", () => {
   expect(
@@ -171,13 +323,7 @@ for (const path of [
   }
 }
 test("public compiler configurations reject root and extended paths into team", () => {
-  expect(
-    boundary(
-      readRepoFiles(
-        paths.filter((path) => /(?:^|\/)tsconfig[^/]*\.json$/.test(path)),
-      ),
-    ),
-  ).toEqual([]);
+  expect(boundary(compilerConfigs(repoRoot, paths))).toEqual([]);
   for (const [path, target] of [
     ["tsconfig.json", "./team/*"],
     ["config/base.json", "../Team/*"],
@@ -205,19 +351,56 @@ test("public sources compile in a copy with team removed and emit no team files"
       join(scratch, "node_modules"),
       "junction",
     );
-    const config = readJson("tsconfig.json") as {
-      compilerOptions: Record<string, unknown>;
-    };
-    Object.assign(config, {
-      include: ["bin", "src", "cloud/src"],
-      exclude: (readJson("tsconfig.build.json") as { exclude: string[] })
-        .exclude,
-    });
-    Object.assign(config.compilerOptions, { noEmit: false, outDir: "./dist" });
-    writeFileSync(join(scratch, "tsconfig.json"), JSON.stringify(config));
+    const node = Bun.which("node");
+    if (node === null)
+      throw new Error("Node is required to resolve compiler configs");
+    const resolved = spawnSync(
+      node,
+      [
+        "--input-type=module",
+        "--eval",
+        fixture("config resolver"),
+        "tsconfig.build.json",
+        "tsconfig.json",
+      ],
+      { cwd: scratch, encoding: "utf8", timeout: 10_000, windowsHide: true },
+    );
+    if (resolved.error || resolved.status !== 0)
+      throw new Error(resolved.stdout + resolved.stderr, {
+        cause: resolved.error,
+      });
+    const configs = JSON.parse(resolved.stdout) as Record<
+      string,
+      {
+        options: Record<string, unknown>;
+        fileNames: string[];
+      }
+    >;
+    const production = configs["tsconfig.build.json"]!;
+    writeFileSync(
+      join(scratch, "tsconfig.public.json"),
+      JSON.stringify({
+        extends: "./tsconfig.build.json",
+        files: production.fileNames,
+      }),
+    );
+    const cloud = configs["tsconfig.json"]!;
+    writeFileSync(
+      join(scratch, "tsconfig.cloud.json"),
+      JSON.stringify({
+        extends: "./tsconfig.json",
+        compilerOptions: { noEmit: false, outDir: "./dist", rootDir: "." },
+        files: cloud.fileNames.filter(
+          (path) =>
+            /\/cloud\/src\//.test(path.replaceAll("\\", "/")) &&
+            !isTestFile(path.replaceAll("\\", "/")),
+        ),
+        include: [],
+      }),
+    );
     const compiler = join(scratch, "node_modules/typescript/bin/tsc");
-    const compile = () =>
-      spawnSync(process.execPath, [compiler, "-p", "tsconfig.json"], {
+    const compile = (config = "tsconfig.public.json") =>
+      spawnSync(process.execPath, [compiler, "-p", config], {
         cwd: scratch,
         encoding: "utf8",
         timeout: 10_000,
@@ -228,6 +411,11 @@ test("public sources compile in a copy with team removed and emit no team files"
     if (built.error || built.status !== 0)
       throw new Error(built.stdout + built.stderr, { cause: built.error });
     expect(built.status).toBe(0);
+    const cloudBuilt = compile("tsconfig.cloud.json");
+    if (cloudBuilt.error || cloudBuilt.status !== 0)
+      throw new Error(cloudBuilt.stdout + cloudBuilt.stderr, {
+        cause: cloudBuilt.error,
+      });
     const output = readdirSync(join(scratch, "dist"), {
       recursive: true,
       encoding: "utf8",
@@ -246,6 +434,9 @@ test("public sources compile in a copy with team removed and emit no team files"
     expect(broken.status).not.toBe(0);
     expect((broken.stdout + broken.stderr).replaceAll("\\", "/")).toContain(
       "team/private.d.ts",
+    );
+    console.info(
+      "team-removal probe executed: compiler refused team/private.d.ts",
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
