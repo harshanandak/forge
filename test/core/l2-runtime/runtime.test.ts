@@ -8,9 +8,18 @@ const addBlock = (root: string, trust: TrustStore) =>
 import { operations as catalogOperations } from "../../../src/core/catalog/operations.ts";
 import { operations as trustOperations } from "../../../src/core/trust/operations.ts";
 import { operations as stateOperations } from "../../../src/core/state/operations.ts";
-import { test } from "bun:test";
+import { spyOn, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  unlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,6 +31,8 @@ import {
 import { secretReference } from "../../../src/core/trust/index.ts";
 import { TrustStore, admit, grant } from "../../fixtures/owner-approval.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
+import { createCloneFilesLease } from "../../../src/adapters/fs/clone-files.ts";
+import * as durableIO from "../../../src/adapters/fs/durable-io.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import type { SurfaceCatalog } from "../../../src/surface/catalog.ts";
 import type {
@@ -901,6 +912,174 @@ test("runtime uses the injected evaluator and closes both owned handles on every
     }
   }
 }, 5000);
+
+for (const aggregate of [false, true]) {
+  test(`unclassified service close failure stays fatal, aggregate=${aggregate}`, async () => {
+    const f = fixture();
+    try {
+      admit(f.trust, f.block.digest);
+      const runtime = new Runtime(f.catalog, f.trust, {
+        isolation: nodeRunIsolation,
+        services: () =>
+          Promise.resolve({
+            ownership: "owned",
+            value: {},
+            close: () =>
+              Promise.reject(
+                aggregate
+                  ? new AggregateError([
+                      new AggregateError([
+                        Object.assign(new Error("pending marker"), {
+                          code: "LOCK_CLEANUP_PENDING",
+                        }),
+                      ]),
+                      new Error("database close failed"),
+                    ])
+                  : new Error("service close failed"),
+              ),
+          }),
+      });
+      assert.partialDeepStrictEqual(await runtime.invoke(f.request), {
+        ok: false,
+        status: "INCOMPLETE",
+        error: {
+          code: "INTERNAL",
+          message: "owned service cleanup failed",
+          retry: "reconcile_first",
+        },
+        warnings: [],
+      });
+    } finally {
+      f.close();
+    }
+  }, 5000);
+}
+
+test("post-unlink sync failure stays fatal at shutdown", async () => {
+  const f = fixture();
+  const root = realpathSync(f.root);
+  const metadata = join(root, "metadata");
+  mkdirSync(metadata);
+  const lease = createCloneFilesLease({
+    projectRoot: root,
+    commonDirectory: metadata,
+    gitDirectory: metadata,
+    read: true,
+    write: true,
+    signal: new AbortController().signal,
+  });
+  lease.service.lock(["pending.lock"], { recoverDeadOwner: true });
+  const path = join(metadata, "pending.lock");
+  const marker = join(path, readdirSync(path)[0]!);
+  const removeDurable = durableIO.removeDurable;
+  const injected = Object.assign(new Error("directory sync failed"), {
+    code: "EIO",
+    syscall: "fsync",
+  });
+  const remove = spyOn(durableIO, "removeDurable");
+  remove.mockImplementation((path) => {
+    if (path !== marker) return removeDurable(path);
+    unlinkSync(path);
+    throw injected;
+  });
+  try {
+    admit(f.trust, f.block.digest);
+    const runtime = new Runtime(f.catalog, f.trust, {
+      isolation: nodeRunIsolation,
+      services: () =>
+        Promise.resolve({
+          ownership: "owned",
+          value: { files: lease.service },
+          close: () => {
+            lease.close();
+            return Promise.resolve();
+          },
+        }),
+    });
+    const result = await runtime.invoke(f.request);
+    assert.equal(
+      remove.mock.calls.some(([path]) => path === marker),
+      true,
+    );
+    assert.equal(existsSync(marker), false);
+    assert.partialDeepStrictEqual(result, {
+      ok: false,
+      status: "INCOMPLETE",
+      error: {
+        code: "INTERNAL",
+        message: "owned service cleanup failed",
+        retry: "reconcile_first",
+      },
+      warnings: [],
+    });
+  } finally {
+    remove.mockRestore();
+    f.close();
+  }
+}, 5000);
+
+for (const fails of [false, true]) {
+  test(`failed lock cleanup warns without replacing the call's ${fails ? "error" : "result"}`, async () => {
+    const f = fixture(
+      fails
+        ? 'services.files.read("../escape", 1); return input'
+        : "return input",
+    );
+    const root = realpathSync(f.root);
+    const metadata = join(root, "metadata");
+    mkdirSync(metadata);
+    const lease = createCloneFilesLease({
+      projectRoot: root,
+      commonDirectory: metadata,
+      gitDirectory: metadata,
+      read: true,
+      write: true,
+      signal: new AbortController().signal,
+      deadline: Date.now() + 60_000,
+    });
+    const held = lease.service.lock(["pending.lock"], {
+      recoverDeadOwner: true,
+    });
+    const path = join(metadata, "pending.lock");
+    const marker = join(path, readdirSync(path)[0]!);
+    // Keep the owner name in place, but make marker removal fail at release and close.
+    rmSync(marker);
+    mkdirSync(marker);
+    try {
+      assert.throws(() => held.release());
+      admit(f.trust, f.block.digest);
+      let closed = 0;
+      const runtime = new Runtime(f.catalog, f.trust, {
+        isolation: nodeRunIsolation,
+        services: () =>
+          Promise.resolve({
+            ownership: "owned",
+            value: { files: lease.service },
+            close: () => {
+              closed++;
+              lease.close();
+              return Promise.resolve();
+            },
+          }),
+      });
+      const result = await runtime.invoke(f.request);
+      assert.equal(closed, 1);
+      assert.equal(existsSync(marker), true);
+      assert.partialDeepStrictEqual(
+        result,
+        fails
+          ? { ok: false, status: "FAIL", error: { code: "INPUT_INVALID" } }
+          : { ok: true, status: "OK", result: "hello" },
+      );
+      assert.ok(
+        result.warnings.some((warning) => /cleanup/i.test(warning.message)),
+        "lock cleanup failure must appear in the result warning channel",
+      );
+    } finally {
+      f.close();
+    }
+  }, 5000);
+}
 
 test("missing evaluator fails closed after admission without activating code", async () => {
   const f = fixture("throw Error('must not run')");

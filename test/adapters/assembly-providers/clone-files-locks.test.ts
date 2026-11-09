@@ -237,6 +237,34 @@ test("recoverable locks preserve live owners and replacement directory generatio
   expect(readdirSync(path)).toEqual(["other-owner"]);
 });
 
+test("failed marker removal frees every caller slot, preserves exclusion and retries at shutdown", () => {
+  const { files, options, commonDirectory, lease } = fixture();
+  const contender = createCloneFilesLease(options);
+  const path = join(commonDirectory, "pending.lock");
+  const held = files.lock(["pending.lock"], { recoverDeadOwner: true });
+  const marker = join(path, readdirSync(path)[0]!);
+  const content = readFileSync(marker, "utf8");
+  // A directory at the marker path makes unlink fail on every supported platform.
+  rmSync(marker);
+  mkdirSync(marker);
+  try {
+    expect(() => held.release()).toThrow();
+    expect(existsSync(marker)).toBe(true);
+    expect(() =>
+      contender.service.lock(["pending.lock"], { recoverDeadOwner: true }),
+    ).toThrow(/INPUT_CONFLICT/);
+    const full = files.lock(["one.lock", "two.lock", "three.lock"]);
+    expect(() => files.lock(["four.lock"])).toThrow(/LIMIT_EXCEEDED/);
+    full.release();
+  } finally {
+    rmSync(marker, { recursive: true });
+    writeFileSync(marker, content);
+    contender.close();
+    lease.close();
+  }
+  expect(existsSync(path)).toBe(false);
+}, 30_000);
+
 test.each([
   "matching",
   "different",
