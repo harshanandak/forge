@@ -14,7 +14,7 @@
     "next": {
       "type": "integer",
       "minimum": 1,
-      "description": "Pass as skip for the next batch; absent on the last."
+      "description": "Pass as skip for the next batch; absent on the last. Valid only while the queue is unchanged: after accept, reject or withdraw, restart at 0."
     },
     "groups": {
       "type": "array",
@@ -84,7 +84,7 @@
                 "proposedAt"
               ]
             },
-            "description": "Near-identical proposals of one level and scope; one decision covers them."
+            "description": "Near-identical proposals of one level and scope, grouped as a reading hint only. A group is not a shared decision: review each item's full text before putting it into a memory.accept batch."
           }
         },
         "additionalProperties": false,
