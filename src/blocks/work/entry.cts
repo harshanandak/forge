@@ -4111,6 +4111,15 @@ const operations: Operations<WorkOperations> = {
       )
         fail("INPUT_CONFLICT", "Lane checkout is unavailable");
       if (
+        (await run(["ls-files", "-v", "-z"], worktree))
+          .split("\0")
+          .some((entry) => /^[a-zS]/.test(entry))
+      )
+        fail(
+          "INPUT_CONFLICT",
+          "Clear assume-unchanged or skip-worktree flags before releasing the lane",
+        );
+      if (
         await run(
           ["status", "--porcelain", "--untracked-files=all", "--ignored"],
           worktree,

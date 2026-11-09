@@ -70,6 +70,7 @@ async function fixture() {
     registeredWorktree: lane.worktree,
     registeredBranch: lane.branch,
     canonicalWorktree: lane.worktree,
+    indexEntries: "H visible.txt\0",
     afterRead: undefined as (() => void) | undefined,
   };
   const calls: string[][] = [];
@@ -121,6 +122,7 @@ async function fixture() {
       else if (args.includes("--show-toplevel"))
         stdout = args[0] === "-C" ? flags.canonicalWorktree : root;
       else if (args[0] === "rev-parse") stdout = flags.localHead;
+      else if (args[0] === "ls-files") stdout = flags.indexEntries;
       else if (args[0] === "merge-base") {
         stdout = args[1] === "--is-ancestor" ? "" : args[1]!;
         exitCode = flags.merged ? 0 : 1;
@@ -291,6 +293,37 @@ for (const reason of ["open", "live lease", "receipt"] as const) {
         ok: false,
         error: { code: "INPUT_CONFLICT" },
       });
+      expect(f.snapshot()).toBe(before);
+      expect(f.mutations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+for (const [flag, tag] of [
+  ["assume-unchanged", "h"],
+  ["skip-worktree", "S"],
+] as const) {
+  test(`assembly release refuses ${flag} before status or cleanup`, async () => {
+    const f = await fixture();
+    try {
+      f.flags.indexEntries = `H visible.txt\0${tag} hidden.txt\0`;
+      const before = f.snapshot();
+      const result = await f.invoke("lane.release", { id: "sample-1" });
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "INPUT_CONFLICT",
+          message:
+            "Clear assume-unchanged or skip-worktree flags before releasing the lane",
+        },
+      });
+      expect(f.calls).toContainEqual(["ls-files", "-v", "-z"]);
+      expect(f.calls.some((args) => args[0] === "status")).toBe(false);
+      expect(
+        f.calls.some((args) => args[0] === "worktree" && args[1] === "remove"),
+      ).toBe(false);
       expect(f.snapshot()).toBe(before);
       expect(f.mutations).toEqual([]);
     } finally {
