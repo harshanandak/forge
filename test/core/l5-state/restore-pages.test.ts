@@ -102,11 +102,19 @@ for (const pageSize of [1, 2, undefined]) {
             failure = error;
           }
           expect(failure).toBeInstanceOf(RestoreConsistencyFailure);
-          expect(failure).toMatchObject({
-            table,
-            key,
+          if (!(failure instanceof RestoreConsistencyFailure))
+            throw new Error("Expected a restore consistency failure", {
+              cause: failure,
+            });
+          expect(failure.table).toBe(table);
+          expect(failure.key).toBe(key);
+          expect(failure.message).toBe(
+            `INPUT_INVALID: Inconsistent imported ${table} key ${key}`,
+          );
+          expect(failure.error).toEqual({
+            code: "INPUT_INVALID",
             message: `Inconsistent imported ${table} key ${key}`,
-            error: { code: "INPUT_INVALID", retry: "never" },
+            retry: "never",
           });
         }
       } finally {
@@ -117,6 +125,9 @@ for (const pageSize of [1, 2, undefined]) {
   test(`restore reads bounded key-ordered pages, page size ${label}`, async () => {
     const { db, highWaterMark, close } = await open();
     const observed = new Map<string, number[]>();
+    const rejectWrite = (): never => {
+      throw new Error("Verification must not write");
+    };
     const candidate: SqlDatabase = {
       ...db,
       all(sql, params) {
@@ -141,12 +152,8 @@ for (const pageSize of [1, 2, undefined]) {
         observed.set(table, [...(observed.get(table) ?? []), rows.length]);
         return rows;
       },
-      exec() {
-        throw new Error("Verification must not write");
-      },
-      run() {
-        throw new Error("Verification must not write");
-      },
+      exec: rejectWrite,
+      run: rejectWrite,
     };
     try {
       verify(candidate, highWaterMark, pageSize);
