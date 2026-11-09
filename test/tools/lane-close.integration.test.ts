@@ -1087,7 +1087,6 @@ type State = {
   pr: {
     state: string;
     headRefName: string;
-    baseRefName: string;
     headRefOid: string;
     mergeCommit: { oid: string } | null;
     url: string;
@@ -1345,7 +1344,6 @@ process.exitCode=await laneClose(process.argv.slice(3),()=>({root,common,load:()
     pr: {
       state: "MERGED",
       headRefName: "lane/one",
-      baseRefName: "main",
       headRefOid: head,
       mergeCommit: { oid: merge },
       url: "https://github.com/fixture/repo/pull/42",
@@ -1996,14 +1994,7 @@ test("close claims, links, closes with the merge receipt, verifies and comments 
     .find((call) => call.command === "gh" && call.args[0] === "pr");
   expect(pr?.args).toContain("42");
   expect(pr?.args[pr.args.indexOf("--json") + 1]?.split(",").sort()).toEqual(
-    [
-      "state",
-      "headRefName",
-      "baseRefName",
-      "headRefOid",
-      "mergeCommit",
-      "url",
-    ].sort(),
+    ["state", "headRefName", "headRefOid", "mergeCommit", "url"].sort(),
   );
   f.cleaned();
 });

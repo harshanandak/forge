@@ -537,6 +537,17 @@ test("a PR merged into main with its merge commit on fetched main still closes",
     expect(mainRef).toMatch(/^refs\/forge\/lane-close\//);
     expect(f.flags.calls).toContainEqual(["merge-base", merge, mainRef]);
     expect(f.flags.privateRefs.size).toBe(0);
+    const view = f.flags.calls.find((args) => args[0] === "pr");
+    expect(view?.[view.indexOf("--json") + 1]?.split(",").sort()).toEqual(
+      [
+        "state",
+        "headRefName",
+        "baseRefName",
+        "headRefOid",
+        "mergeCommit",
+        "url",
+      ].sort(),
+    );
   } finally {
     await f.dispose();
   }
