@@ -85,13 +85,22 @@ export function gateDecision(
     failures.push(
       `${command} peak ${row.medianPeakMb.toFixed(1)} MB is over the ${limit.maxPeakMb} MB limit on ${platform}`,
     );
-  if (row.medianMs > limit.ceilingMs)
-    failures.push(
-      `${command} median ${row.medianMs.toFixed(0)} ms is over the ${limit.ceilingMs} ms ceiling on ${platform}`,
-    );
-  if (baseRow === undefined) failures.push(where.baseMissing);
-  else {
+  const overCeiling = row.medianMs > limit.ceilingMs;
+  const ceilingMessage = `${command} median ${row.medianMs.toFixed(0)} ms is over the ${limit.ceilingMs} ms ceiling on ${platform}`;
+  if (baseRow === undefined) {
+    if (overCeiling) failures.push(ceilingMessage);
+    failures.push(where.baseMissing);
+  } else {
     const verdict = compareToBase(row.timesMs, baseRow.timesMs);
+    if (overCeiling) {
+      // Runner speed does not cancel in an absolute time, so the ceiling fails the job only when
+      // the same-job comparison with the base build fails too; otherwise it only warns.
+      if (verdict.passed)
+        warnings.push(
+          `${ceilingMessage}, but the same-job origin/main build's median is ${baseRow.medianMs.toFixed(0)} ms and the comparison passed, so this is not failing`,
+        );
+      else failures.push(ceilingMessage);
+    }
     if (!verdict.passed)
       failures.push(
         `${command} ${SCORE_LABEL} ${verdict.currentMs.toFixed(0)} ms is more than ${MAX_RATIO_TO_BASE} times the origin/main build's ${verdict.baseMs.toFixed(0)} ms in the same job on ${platform}`,

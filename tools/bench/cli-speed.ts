@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url";
 import { gateDecision, sampleOrder } from "./speed-compare.ts";
 
 interface Limit {
-  /** Absolute ceiling on the median; a runner can be slow, so this only catches a gross regression. */
+  /** Absolute ceiling on the median. A slow runner can pass it, so it fails the job only when the same-job comparison with the base build fails too (or the base is missing); otherwise it warns. */
   readonly ceilingMs: number;
   /** Absolute cap on the median peak memory, which does not move with the runner. */
   readonly maxPeakMb: number;
@@ -25,7 +25,8 @@ interface Limit {
 
 // The speed gate, on `issue show` on a hosted runner. Peak memory is checked against
 // an absolute cap. Time is checked against the build of the base branch, run in the same job and
-// interleaved with this build, so runner speed cancels out; the absolute time is only a ceiling.
+// interleaved with this build, so runner speed cancels out. The absolute time is a ceiling that only
+// warns while that comparison passes.
 // Platforms without a limit only report.
 const GATE_COMMAND = "issue show";
 const LIMITS: Readonly<Record<string, Limit>> = {
