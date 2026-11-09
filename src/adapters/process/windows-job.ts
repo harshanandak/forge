@@ -493,10 +493,15 @@ export async function waitForExit(
   const deadline = performance.now() + options.deadlineMs;
   const states = new Map<number, PidExit["state"]>();
   const open = new Map<number, bigint>();
+  // Each pid is opened at most once, so a duplicate cannot overwrite (and leak) a handle.
+  const unique = targets.filter(
+    (target, index) =>
+      targets.findIndex((other) => other.pid === target.pid) === index,
+  );
   const report = (): readonly PidExit[] =>
-    targets.map(({ pid }) => ({ pid, state: states.get(pid) ?? "running" }));
+    unique.map(({ pid }) => ({ pid, state: states.get(pid) ?? "running" }));
   try {
-    for (const { pid, started } of targets) {
+    for (const { pid, started } of unique) {
       const handle = api.openProcess(
         SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
         0,
@@ -510,10 +515,25 @@ export async function waitForExit(
             nativeError(api, "OpenProcess"),
           );
         states.set(pid, "gone");
-      } else if (started !== undefined && startTime(api, handle) !== started) {
-        api.closeHandle(handle);
-        states.set(pid, "gone");
-      } else open.set(pid, handle);
+      } else if (started === undefined) open.set(pid, handle);
+      else {
+        const current = startTime(api, handle);
+        if (current === undefined) {
+          // A failed query proves nothing about PID reuse, so it is an error, not "gone".
+          const failure = nativeError(api, "GetProcessTimes");
+          api.closeHandle(handle);
+          throw new ProcessSpawnError(
+            "TREE_KILL_FAILED",
+            `Could not read the start time of process ${pid} to confirm it is the one that was killed.`,
+            failure,
+          );
+        }
+        if (current === started) open.set(pid, handle);
+        else {
+          api.closeHandle(handle);
+          states.set(pid, "gone");
+        }
+      }
     }
     for (;;) {
       for (const [pid, handle] of open) {

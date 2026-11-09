@@ -112,22 +112,30 @@ interface FakeProcess {
   /** Successive WaitForSingleObject results (0 signaled, 258 timeout); the last one repeats. */
   readonly waits?: readonly number[];
   readonly started?: bigint;
+  /** GetProcessTimes fails. */
+  readonly timesFail?: boolean;
 }
 
 function fakeExitApi(processes: Readonly<Record<number, FakeProcess>>) {
   let lastError = 0;
   const closed: number[] = [];
+  const opened: number[] = [];
   const waited: number[] = [];
   const api: ExitApi = {
     getLastError: () => lastError,
     openProcess: (_access, _inherit, pid) => {
       const spec = processes[pid]!;
-      if (spec.open === "ok") return BigInt(pid + 1000);
+      if (spec.open === "ok") {
+        opened.push(pid);
+        return BigInt(pid + 1000);
+      }
       lastError = ERROR_INVALID_PARAMETER;
       return 0n;
     },
     getProcessTimes: (handle, created) => {
-      created.writeBigUInt64LE(processes[Number(handle) - 1000]!.started ?? 1n);
+      const spec = processes[Number(handle) - 1000]!;
+      if (spec.timesFail) return 0;
+      created.writeBigUInt64LE(spec.started ?? 1n);
       return 1;
     },
     waitForSingleObject: (handle) => {
@@ -142,14 +150,14 @@ function fakeExitApi(processes: Readonly<Record<number, FakeProcess>>) {
       return 1;
     },
   };
-  return { api, closed, waited };
+  return { api, closed, opened, waited };
 }
 
 test("waitForExit reports each killed process whose object is signaled", async () => {
   const fake = fakeExitApi({ 11: { open: "ok" }, 12: { open: "ok" } });
   const seen: string[] = [];
   const states = await waitForExit(
-    [{ pid: 11 }, { pid: 12 }],
+    [{ pid: 11 }, { pid: 12 }, { pid: 11 }],
     {
       deadlineMs: 1_000,
       onStates: (all) =>
@@ -162,6 +170,8 @@ test("waitForExit reports each killed process whose object is signaled", async (
     { pid: 12, state: "signaled" },
   ]);
   expect(seen).toEqual(["11:signaled,12:signaled"]);
+  // The duplicate pid is opened once, so every opened handle is closed exactly once.
+  expect(fake.opened.sort()).toEqual([11, 12]);
   expect(fake.closed.sort()).toEqual([11, 12]);
 }, 5_000);
 
@@ -220,4 +230,13 @@ test("waitForExit fails at one shared deadline and names the processes still run
   expect(performance.now() - started).toBeLessThan(500);
   expect(final).toEqual(["11:running", "12:running", "13:signaled"]);
   expect(fake.closed.sort()).toEqual([11, 12, 13]);
+}, 5_000);
+
+test("waitForExit treats a failed start-time query as an error, not as a reused PID", async () => {
+  const fake = fakeExitApi({ 11: { open: "ok", timesFail: true } });
+  await expect(
+    waitForExit([{ pid: 11, started: "5" }], { deadlineMs: 1_000 }, fake.api),
+  ).rejects.toThrow("Could not read the start time of process 11");
+  expect(fake.closed).toEqual([11]);
+  expect(fake.waited).toEqual([]);
 }, 5_000);

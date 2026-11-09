@@ -216,8 +216,6 @@ function windowsEvidence(
     errorPath: path,
     errorIsRoot: resolve(path) === resolve(root),
     rootExists: existsSync(root),
-    // Whether each process a fixture killed had really exited when its job ended.
-    exitStates: exitStatesLine(),
     ...treeEvidence(root),
   };
   try {
@@ -318,7 +316,8 @@ export function cleanupAttribution(
               ? evidence
               : { inspected: evidence };
         // Evidence comes first so the attribution JSON stays the last line of the message.
-        error.message += `\nCleanup evidence: ${serialize({ ...base, ...secondAttempt(cleanup, sleep) })}`;
+        // exitStates (whether each killed process really exited) does not depend on Handle.exe.
+        error.message += `\nCleanup evidence: ${serialize({ ...base, exitStates: exitStatesLine(), ...secondAttempt(cleanup, sleep) })}`;
       } catch {
         // The original cleanup error is rethrown below even if its message cannot be extended.
       }
