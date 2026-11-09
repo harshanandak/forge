@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Proposals waiting in all."
+    },
+    "returned": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "next": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Pass as skip for the next batch; absent on the last."
+    },
+    "groups": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "$ref": "defs.json#/$defs/NoteId"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "kind": {
+                  "enum": ["note", "revision"],
+                  "description": "note: a new note that was never accepted. revision: a pending edit of an accepted note."
+                },
+                "level": {
+                  "$ref": "defs.json#/$defs/Level"
+                },
+                "scope": {
+                  "$ref": "defs.json#/$defs/Scope"
+                },
+                "tags": {
+                  "$ref": "defs.json#/$defs/Tags"
+                },
+                "text": {
+                  "$ref": "defs.json#/$defs/Untrusted"
+                },
+                "proposedBy": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "maxLength": 40
+                    },
+                    "id": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": ["kind", "id"]
+                },
+                "proposedAt": {
+                  "type": "string",
+                  "maxLength": 40
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "revision",
+                "kind",
+                "level",
+                "tags",
+                "text",
+                "proposedBy",
+                "proposedAt"
+              ]
+            },
+            "description": "Near-identical proposals of one level and scope; one decision covers them."
+          }
+        },
+        "additionalProperties": false,
+        "required": ["items"]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": ["total", "returned", "groups"]
+}
