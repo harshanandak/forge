@@ -34,11 +34,7 @@ const id = "work-1",
   merge = "b".repeat(40);
 const url = "https://github.com/example/repo/pull/1";
 const namespace = "forge/work";
-async function fixture(
-  seedLink = true,
-  generation = 1,
-  caller?: { id: string },
-) {
+async function fixture(seedLink = true) {
   const opened = await createSqliteStore(tmpdir()).open({
     path: ":memory:",
     readOnly: false,
@@ -54,10 +50,9 @@ async function fixture(
   const context: BoundContext = {
     variant: "leased",
     ...holder,
-    ...(caller ? { session: { id: caller.id, device: "device" } } : {}),
     project: { id: "project" },
     leaseMode: "held",
-    leaseGeneration: generation,
+    leaseGeneration: 1,
   };
   owner.put(
     namespace,
@@ -107,8 +102,6 @@ async function fixture(
     prBranch: "",
     localHead: "",
     ancestor: true,
-    dirty: false,
-    prState: "MERGED",
   };
   const services = {
     state: {
@@ -126,9 +119,7 @@ async function fixture(
       get: (receipt: string) =>
         receipt === "proof"
           ? { id: receipt, status: "PASS", subject: merge }
-          : receipt === "elsewhere"
-            ? { id: receipt, status: "PASS", subject: "d".repeat(40) }
-            : undefined,
+          : undefined,
     },
     crypto: {
       randomUUID: () =>
@@ -155,15 +146,13 @@ async function fixture(
           exitCode = 0;
         if (args[0] === "pr")
           stdout = JSON.stringify({
-            state: flags.prState,
+            state: "MERGED",
             headRefName: flags.prBranch || lane.branch,
             headRefOid: head,
-            mergeCommit: flags.prState === "MERGED" ? { oid: merge } : null,
+            mergeCommit: { oid: merge },
             url,
           });
-        else if (args[0] === "status" && !args.includes("--ignored")) {
-          if (flags.dirty) stdout = " M file";
-        } else if (args[0] === "worktree" && args[1] === "list")
+        else if (args[0] === "worktree" && args[1] === "list")
           stdout = "worktree /project\0branch refs/heads/main\0\0";
         else if (args[0] === "for-each-ref")
           stdout = flags.branch ? args[2]! : "";
@@ -197,7 +186,6 @@ async function fixture(
     });
   const comments = () => owner.list(namespace, `comment:${id}:`);
   return {
-    services,
     owner,
     state,
     holder,
@@ -430,227 +418,3 @@ test("a switched lane still refuses a checkout with unpushed commits", async () 
     await f.dispose();
   }
 });
-
-/** The issue was closed by hand with an exemption and its claim is gone: the state forge-980 was left in. */
-function closeByHand(f: Awaited<ReturnType<typeof fixture>>) {
-  const issue = f.owner.get(namespace, `issue:${id}`)!;
-  f.owner.release(namespace, {
-    subject: `issue:${id}`,
-    holder: f.holder,
-    generation: 1,
-  });
-  f.owner.put(
-    namespace,
-    `issue:${id}`,
-    {
-      ...(issue.value as object),
-      status: "closed",
-      withoutReceipt: "closed by hand",
-    },
-    f.holder.actor,
-    { expectRevision: issue.revision },
-  );
-  return f.owner.get(namespace, `issue:${id}`)!;
-}
-const laneLeft = (f: Awaited<ReturnType<typeof fixture>>) =>
-  f.files.get("forge-lanes.json")!.includes(id);
-
-for (const linked of [true, false])
-  test(`a lane whose issue was closed by hand is released with no lease (PR ${linked ? "linked" : "not linked"})`, async () => {
-    const f = await fixture(linked, 0);
-    try {
-      const before = closeByHand(f);
-      const links = f.owner.list(namespace, `link:${id}:`).length;
-      const released = (await f.close()) as {
-        removed: boolean;
-        status: string;
-      };
-      expect(released).toMatchObject({ removed: true, status: "closed" });
-      expect(f.flags.present).toBe(false);
-      expect(f.flags.branch).toBe(false);
-      expect(laneLeft(f)).toBe(false);
-      expect(f.owner.get(namespace, `issue:${id}`)).toEqual(before);
-      expect(f.owner.list(namespace, `link:${id}:`)).toHaveLength(links);
-      expect(f.comments()).toHaveLength(0);
-    } finally {
-      await f.dispose();
-    }
-  }, 30_000);
-
-for (const [name, setup, code] of [
-  [
-    "a dirty worktree",
-    (f: Awaited<ReturnType<typeof fixture>>) => (f.flags.dirty = true),
-    "INPUT_CONFLICT",
-  ],
-  [
-    "unpushed commits",
-    (f: Awaited<ReturnType<typeof fixture>>) => {
-      f.flags.localHead = "c".repeat(40);
-      f.flags.ancestor = false;
-    },
-    "INPUT_CONFLICT",
-  ],
-  [
-    "a PR that is not merged",
-    (f: Awaited<ReturnType<typeof fixture>>) => (f.flags.prState = "OPEN"),
-    "PR_NOT_MERGED",
-  ],
-] as const)
-  test(`a closed-by-hand lane is still refused for ${name}`, async () => {
-    const f = await fixture(true, 0);
-    try {
-      const before = closeByHand(f);
-      setup(f);
-      await expect(f.close()).rejects.toThrow(code);
-      expect(f.flags.present).toBe(true);
-      expect(f.flags.branch).toBe(true);
-      expect(laneLeft(f)).toBe(true);
-      expect(f.owner.get(namespace, `issue:${id}`)).toEqual(before);
-    } finally {
-      await f.dispose();
-    }
-  }, 30_000);
-
-for (const [receipt, code] of [
-  ["missing", "RECEIPT_INVALID"],
-  ["elsewhere", "RECEIPT_HEAD_MISMATCH"],
-] as const)
-  test(`a closed-by-hand lane is refused when its receipt is ${receipt}`, async () => {
-    const f = await fixture(true, 0);
-    try {
-      closeByHand(f);
-      await expect(f.close({ receipt })).rejects.toThrow(code);
-      expect(f.flags.present).toBe(true);
-      expect(laneLeft(f)).toBe(true);
-    } finally {
-      await f.dispose();
-    }
-  }, 30_000);
-
-test("a lane whose issue was closed with another receipt is still refused without a lease", async () => {
-  const f = await fixture(true, 0);
-  try {
-    const issue = f.owner.get(namespace, `issue:${id}`)!;
-    f.owner.put(
-      namespace,
-      `issue:${id}`,
-      { ...(issue.value as object), status: "closed", receipt: "elsewhere" },
-      f.holder.actor,
-      { expectRevision: issue.revision },
-    );
-    await expect(f.close()).rejects.toThrow();
-    expect(f.flags.present).toBe(true);
-    expect(laneLeft(f)).toBe(true);
-  } finally {
-    await f.dispose();
-  }
-}, 30_000);
-
-test("a lane whose issue is open still needs its lease", async () => {
-  const f = await fixture(true, 0);
-  try {
-    await expect(f.close()).rejects.toThrow();
-    expect(f.flags.present).toBe(true);
-    expect(f.flags.branch).toBe(true);
-    expect(laneLeft(f)).toBe(true);
-    expect(
-      (f.owner.get(namespace, `issue:${id}`)!.value as { status: string })
-        .status,
-    ).toBe("open");
-  } finally {
-    await f.dispose();
-  }
-}, 30_000);
-
-for (const [name, extra] of [
-  ["a drop", { dropped: "replaced" }],
-  ["a close that keeps the issue open", { keepOpen: true }],
-] as const)
-  test(`a closed-by-hand lane is still refused for ${name} without a lease`, async () => {
-    const f = await fixture(true, 0);
-    try {
-      const before = closeByHand(f);
-      f.flags.prState = "CLOSED";
-      await expect(f.close(extra)).rejects.toThrow();
-      expect(f.flags.present).toBe(true);
-      expect(f.flags.branch).toBe(true);
-      expect(laneLeft(f)).toBe(true);
-      expect(f.owner.get(namespace, `issue:${id}`)).toEqual(before);
-    } finally {
-      await f.dispose();
-    }
-  }, 30_000);
-
-const shown = (f: Awaited<ReturnType<typeof fixture>>) =>
-  operations["lane.show"]!({
-    input: { id },
-    services: f.services,
-    signal: new AbortController().signal,
-    deadline: Number.MAX_SAFE_INTEGER,
-  }) as Promise<{ leaseWaiver?: { reason: string }; lease?: unknown }>;
-
-test("lane show waives the lease only for an issue closed without a receipt that holds none", async () => {
-  const f = await fixture(true, 0);
-  try {
-    expect((await shown(f)).leaseWaiver).toBeUndefined();
-    const issue = f.owner.get(namespace, `issue:${id}`)!;
-    f.owner.release(namespace, {
-      subject: `issue:${id}`,
-      holder: f.holder,
-      generation: 1,
-    });
-    f.owner.put(
-      namespace,
-      `issue:${id}`,
-      { ...(issue.value as object), status: "closed", receipt: "proof" },
-      f.holder.actor,
-      { expectRevision: issue.revision },
-    );
-    expect((await shown(f)).leaseWaiver).toBeUndefined();
-  } finally {
-    await f.dispose();
-  }
-}, 30_000);
-
-test("lane show waives the lease for a lane whose issue was closed by hand", async () => {
-  const f = await fixture(true, 0);
-  try {
-    closeByHand(f);
-    const result = await shown(f);
-    expect(result.leaseWaiver?.reason).toContain("closed without a receipt");
-    expect(result.lease).toBeUndefined();
-  } finally {
-    await f.dispose();
-  }
-}, 30_000);
-
-test("a lane whose issue was closed by hand but still has a live lease is refused for another session", async () => {
-  const f = await fixture(true, 1, { id: "intruder" });
-  try {
-    const issue = f.owner.get(namespace, `issue:${id}`)!;
-    f.owner.put(
-      namespace,
-      `issue:${id}`,
-      {
-        ...(issue.value as object),
-        status: "closed",
-        withoutReceipt: "closed by hand",
-      },
-      f.holder.actor,
-      { expectRevision: issue.revision },
-    );
-    const before = f.owner.get(namespace, `issue:${id}`);
-    const lease = f.owner.lease(namespace, `issue:${id}`);
-    expect(lease?.releasedAt).toBeUndefined();
-    await expect(f.close()).rejects.toThrow();
-    expect(f.flags.present).toBe(true);
-    expect(f.flags.branch).toBe(true);
-    expect(laneLeft(f)).toBe(true);
-    expect(f.owner.get(namespace, `issue:${id}`)).toEqual(before);
-    expect(f.owner.lease(namespace, `issue:${id}`)).toEqual(lease);
-    expect((await shown(f)).leaseWaiver).toBeUndefined();
-  } finally {
-    await f.dispose();
-  }
-}, 30_000);

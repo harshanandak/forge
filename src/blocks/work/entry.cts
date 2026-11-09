@@ -112,10 +112,7 @@ type Lane = {
   base?: string;
 };
 type LaneInput = ItemRef & { branch: string; brief: string };
-type LaneOutput = Lane & {
-  lease?: TrackerItem["lease"];
-  leaseWaiver?: { reason: string };
-};
+type LaneOutput = Lane & { lease?: TrackerItem["lease"] };
 type CloseIssue = (
   call: HandlerCall<TrackerOperations<"issue">["issue.close"][0]>,
   validateOnly?: boolean,
@@ -396,14 +393,6 @@ function live(state: LeaseStateClient, id: string) {
     Date.parse(lease.expiresAt) > state.now()
     ? lease
     : undefined;
-}
-/** An issue closed without a receipt and holding no live lease cannot be claimed again, so its lane needs no lease. */
-function needsNoLease(issue: TrackerItem): boolean {
-  return (
-    issue.status === "closed" &&
-    issue.receipt === undefined &&
-    issue.lease === undefined
-  );
 }
 function item(
   state: LeaseStateClient,
@@ -837,6 +826,18 @@ function laneRegistry(files: FilesService): {
   )
     fail("INPUT_INVALID", "Repair the invalid lane registry before retrying");
   return { text, lanes: value as Lane[] };
+}
+/**
+ * A registered lane holds a slot against the lane cap while its issue is open or still leased. A
+ * lane whose issue is closed with no live lease needs nothing more from its owner, and a lane whose
+ * issue cannot be found keeps its slot.
+ */
+function holdsSlot(state: LeaseStateClient, lane: Lane): boolean {
+  const id = laneIdentity(lane),
+    record = state.get(key(id));
+  return (
+    !record || stored(record).status === "open" || live(state, id) !== undefined
+  );
 }
 function laneIdentity(lane: Lane): string {
   // Registry ids belong to this project; legacy writers stored a display prefix.
@@ -3592,19 +3593,10 @@ const operations: Operations<WorkOperations> = {
       accepted.generation === state.lease(key(identity))?.generation
         ? state.lease(key(identity))
         : undefined);
-    const waived = needsNoLease(issue);
     return {
       ...lane,
       issue: issue.id,
       ...(lease ? { lease } : {}),
-      ...(waived
-        ? {
-            leaseWaiver: {
-              reason:
-                "The issue was closed without a receipt and cannot be claimed",
-            },
-          }
-        : {}),
     };
   },
   "lane.start": async ({ input, services, config, signal, deadline }) => {
@@ -3762,7 +3754,10 @@ const operations: Operations<WorkOperations> = {
           ...(issue.lease ? { lease: issue.lease } : {}),
         };
       }
-      if (lanes.length >= (laneConfig?.max ?? 3))
+      if (
+        lanes.filter((lane) => holdsSlot(state, lane)).length >=
+        (laneConfig?.max ?? 3)
+      )
         fail(
           "LIMIT_REACHED",
           `Active lane cap ${laneConfig?.max ?? 3} reached; finish a lane first`,
@@ -3816,7 +3811,6 @@ const operations: Operations<WorkOperations> = {
         process?: ProcessService;
         environment?: EnvironmentService;
         crypto?: CryptoService;
-        receipts?: ReceiptsService;
       };
     if (!bound.process || !bound.environment)
       fail("UNAVAILABLE", "Lane close needs process and environment");
@@ -4150,26 +4144,7 @@ const operations: Operations<WorkOperations> = {
           const link = record.value as LinkInput;
           return link.relation === "delivers" && link.url === pull.url;
         });
-      // An issue closed by hand without a receipt has no lease to hold and cannot be claimed again.
-      // Its lane is released on the same evidence, checked here, and no state is written. While a
-      // live lease remains, only its holder may close, so that case keeps the fenced path.
-      const releasing = !dropped && !keepOpen && needsNoLease(current);
-      if (releasing) {
-        const proof = bound.receipts?.get(receipt);
-        if (!proof || proof.status !== "PASS")
-          refuse(
-            "RECEIPT_INVALID",
-            "Closing requires an existing verified PASS receipt",
-          );
-        else if (
-          proof.subject !== pull.headRefOid &&
-          proof.subject !== mergeCommit
-        )
-          refuse(
-            "RECEIPT_HEAD_MISMATCH",
-            "Receipt must cover the delivered PR's final head or merge commit",
-          );
-      } else if (
+      if (
         (!dropped && keepOpen && current.status !== "open") ||
         (!keepOpen &&
           current.status === "closed" &&
@@ -4217,7 +4192,7 @@ const operations: Operations<WorkOperations> = {
         current.status === "closed" &&
         accepted !== undefined &&
         canonical(accepted.value) === canonical(landing);
-      if (!recovering && !releasing) {
+      if (!recovering) {
         // An empty batch asserts the caller's holder and generation without recording a write.
         state.putMany([], { subject: key(id) });
       }
@@ -4248,7 +4223,7 @@ const operations: Operations<WorkOperations> = {
           reason: `PR #${input.pr} merged as ${mergeCommit.slice(0, 7)}`,
         },
       };
-      if (!dropped && !releasing) {
+      if (!dropped) {
         if (!linked)
           await operations["issue.link"]({
             ...call,
@@ -4269,7 +4244,7 @@ const operations: Operations<WorkOperations> = {
           false,
           pull.url,
         );
-      if (!matching && !releasing) {
+      if (!matching) {
         const prefix = `comment:${id}:`,
           commentId = prefix + (state.count(prefix) + 1);
         const written = recovering

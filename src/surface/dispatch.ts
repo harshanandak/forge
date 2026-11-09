@@ -288,15 +288,12 @@ async function heldContext(
   } catch {
     return context;
   }
-  const found = shown.ok ? record(shown.result) : undefined;
-  const generation = record(found?.lease)?.generation;
-  if (typeof generation === "number")
-    return { ...context, leaseGeneration: generation };
-  // The block may state that this subject needs no lease. Generation 0 is never a real generation
-  // (they start at 1), so every lease-fenced write made under it is refused by the state owner.
-  return record(found?.leaseWaiver) === undefined
-    ? context
-    : { ...context, leaseGeneration: 0 };
+  const generation = shown.ok
+    ? record(record(shown.result)?.lease)?.generation
+    : undefined;
+  return typeof generation === "number"
+    ? { ...context, leaseGeneration: generation }
+    : context;
 }
 
 export function record(
