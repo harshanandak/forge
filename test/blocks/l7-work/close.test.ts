@@ -98,6 +98,7 @@ test("lane close retries an injected landing-comment write failure exactly once"
       },
     },
     receipts: { get: () => ({ id: "proof", status: "PASS", subject: merge }) },
+    crypto: { randomUUID: () => "00000000-0000-4000-8000-000000000001" },
     files: {
       root: "/project",
       read: (path: string) => files.get(path),
@@ -118,6 +119,7 @@ test("lane close retries an injected landing-comment write failure exactly once"
           stdout = JSON.stringify({
             ...merged,
             headRefName: lane.branch,
+            baseRefName: "main",
             url: pr,
           });
         else if (args[0] === "worktree" && args[1] === "list")
@@ -125,12 +127,18 @@ test("lane close retries an injected landing-comment write failure exactly once"
         else if (args[0] === "for-each-ref")
           stdout = flags.branch ? `refs/heads/${lane.branch}` : "";
         else if (args[0] === "rev-parse") stdout = head;
+        else if (args.includes("refs/remotes/origin/HEAD"))
+          stdout = "refs/remotes/origin/main";
+        else if (args[0] === "merge-base") stdout = args[1]!;
         else if (args[0] === "symbolic-ref") stdout = lane.branch;
         else if (args[0] === "-C") {
           stdout = "true";
           if (!flags.present) exitCode = 1;
         } else if (args[0] === "worktree") flags.present = false;
-        else if (args[0] === "update-ref") flags.branch = false;
+        else if (args[0] === "update-ref") {
+          if (!args[2]?.startsWith("refs/forge/lane-close/"))
+            flags.branch = false;
+        }
         return Promise.resolve({
           stdout,
           exitCode,

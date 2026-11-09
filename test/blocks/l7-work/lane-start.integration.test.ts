@@ -515,6 +515,7 @@ function closeFixture() {
   const pull = {
     state: "MERGED",
     headRefName: closeRecord.branch,
+    baseRefName: "main",
     headRefOid: head,
     mergeCommit: { oid: head },
     url: "https://github.com/example/project/pull/42",
