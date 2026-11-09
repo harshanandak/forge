@@ -681,6 +681,8 @@ function appended(
     );
 }
 const CALL_WINDOW = 30 * 3600_000;
+/** Release reads the whole index to check flags: 32 MiB covers about 750,000 tracked files. */
+const RELEASE_INDEX_OUTPUT_BYTES = 33554432;
 function callBudget(state: LeaseStateClient, ids: Ids, given: string) {
   let id = ids.stored(given);
   const visited = new Set<string>();
@@ -4014,6 +4016,8 @@ const operations: Operations<WorkOperations> = {
         args: string[],
         cwd = files.root,
         leaveDirectory?: string,
+        maxOutputBytes = 262144,
+        overflow?: string,
       ) => {
         eligible();
         const remaining = deadline - clock();
@@ -4024,10 +4028,13 @@ const operations: Operations<WorkOperations> = {
           env,
           signal,
           timeoutMs: Math.min(20000, remaining),
-          maxOutputBytes: 262144,
+          maxOutputBytes,
           ...(leaveDirectory ? { leaveDirectory } : {}),
         });
         eligible();
+        // Truncated output is never parsed; a call with an overflow message refuses with it.
+        if (overflow && result.truncated && !result.timedOut)
+          fail("INPUT_CONFLICT", overflow);
         if (result.timedOut || result.truncated)
           fail(
             "UNAVAILABLE",
@@ -4111,7 +4118,15 @@ const operations: Operations<WorkOperations> = {
       )
         fail("INPUT_CONFLICT", "Lane checkout is unavailable");
       if (
-        (await run(["ls-files", "-v", "-z"], worktree))
+        (
+          await run(
+            ["ls-files", "-v", "-z"],
+            worktree,
+            undefined,
+            RELEASE_INDEX_OUTPUT_BYTES,
+            "Too many tracked files to verify flags; release the lane by hand",
+          )
+        )
           .split("\0")
           .some((entry) => /^[a-zS]/.test(entry))
       )
