@@ -157,7 +157,8 @@ for (const mode of ["deadline", "cancel"] as const) {
       // Keep live cleanup connections, rather than signalling saved PIDs that could be reused.
       const control = `const socket=require('node:net').connect(${address.port},'127.0.0.1');socket.on('close',()=>process.exit(0));socket.on('error',()=>process.exit(1));`;
       const grandchild = `${control}process.stdout.write('grandchild:'+process.pid+'\\n');setInterval(()=>{},1000);`;
-      const parent = `${control}require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:['ignore','inherit','inherit'],detached:process.platform==='win32'});process.stdout.write('child:'+process.pid+'\\n');setInterval(()=>{},1000);`;
+      // Write the child line before spawning: the grandchild line then always follows it in the shared pipe, so a cancel on the grandchild line cannot kill the child before its own line is written.
+      const parent = `${control}process.stdout.write('child:'+process.pid+'\\n');require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:['ignore','inherit','inherit'],detached:process.platform==='win32'});setInterval(()=>{},1000);`;
       const controller = new AbortController();
       let observed = "";
       const result = await run(executable, ["-e", parent], {
@@ -181,8 +182,8 @@ for (const mode of ["deadline", "cancel"] as const) {
         timedOut: mode === "deadline",
         truncated: false,
       });
-      expect(result.stdout).toMatch(/child:\d+\n/);
-      expect(result.stdout).toMatch(/grandchild:\d+\n/);
+      expect(result.stdout).toMatch(/(^|\n)child:\d+\n/);
+      expect(result.stdout).toMatch(/(^|\n)grandchild:\d+\n/);
       expect(pids).toHaveLength(2);
       expect(await waitUntilGone(pids)).toBe(true);
     } finally {
