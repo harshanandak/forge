@@ -219,7 +219,6 @@ function coverShards(count: number) {
     "shared-store",
     "lane-run",
     "lane",
-    "lane-close",
   ];
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
     scripts: Record<string, string>;
