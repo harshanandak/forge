@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { decideLease } from "../../contract/lease.ts";
 import {
@@ -194,7 +195,7 @@ function recordEvent(record: StateRecord, requestId?: string): StateEvent {
   };
 }
 function deletionEvent(
-  record: StateRecord,
+  record: Pick<StateRecord, "namespace" | "key" | "revision">,
   actor: Actor,
   at: string,
 ): StateEvent {
@@ -255,12 +256,60 @@ function changedLeaseEvent(
   };
 }
 
+interface ReceiptPlan {
+  fingerprint: string;
+  result: string;
+  kind: "put" | "acquire";
+  readSet: WriteOptions["readSet"];
+  fence: Fence | null;
+  durationMs: number | undefined;
+}
+function digest(value: unknown): string {
+  return createHash("sha256").update(json(value)).digest("hex");
+}
+function receiptPlan(row: SqlRow): ReceiptPlan {
+  const input = JSON.parse(String(row.fingerprint)) as Record<string, unknown>;
+  const result = JSON.parse(String(row.result)) as unknown;
+  if (
+    !input ||
+    Array.isArray(input) ||
+    json(input) !== row.fingerprint ||
+    (input.kind !== "put" && input.kind !== "acquire")
+  )
+    invalid("Invalid imported request JSON");
+  const fence = input.kind === "put" ? (input.fence as Fence | null) : null;
+  if (
+    fence !== null &&
+    (!fence ||
+      typeof fence.subject !== "string" ||
+      !validateLeaseHolder(fence.holder).ok ||
+      !Number.isSafeInteger(fence.generation) ||
+      json(fence) !==
+        json({
+          subject: fence.subject,
+          holder: fence.holder,
+          generation: fence.generation,
+        }))
+  )
+    invalid("Invalid imported request fence");
+  return {
+    fingerprint: digest(input),
+    result: digest(result),
+    kind: input.kind,
+    readSet: input.kind === "put" ? copyReadSet(input.readSet) : undefined,
+    fence,
+    durationMs:
+      typeof input.durationMs === "number" ? input.durationMs : undefined,
+  };
+}
+
 function validateReceipt(
   row: SqlRow,
   events: {
     event: StateEvent | undefined;
     revision: (key: string) => number;
     lease: (subject: string) => LeaseRecord | undefined;
+    plan: ReceiptPlan;
   },
 ): void {
   let input: Record<string, unknown>;
@@ -281,6 +330,11 @@ function validateReceipt(
   }
   const event = events.event;
   if (!event) invalid("Imported request needs exactly one matching event");
+  if (
+    digest(input) !== events.plan.fingerprint ||
+    digest(result) !== events.plan.result
+  )
+    invalid("Invalid imported request JSON");
   if (input.kind === "put") {
     const record = result as StateRecord;
     const readSet = copyReadSet(input.readSet);
@@ -439,59 +493,11 @@ export function verifyEventDerivedState(
     throw new RestoreConsistencyFailure("state_events", "high-water mark");
   const rows = (table: string, columns: string, keys: readonly string[]) =>
     restoredRows(candidate, table, columns, keys, pageSize);
-  const eventRows = () =>
-    rows("state_events", "sequence,namespace,key,body", ["sequence"]);
-  // Read only a predecessor, never retain another key's history or parsed bodies.
-  const prior = (
-    namespace: string,
-    name: string,
-    through: number,
-    family: "record" | "lease",
-  ): StateEvent | undefined => {
-    const types =
-      family === "record"
-        ? ["updated", "deleted"]
-        : ["acquired", "reacquired", "renewed", "released"];
-    const row = candidate.get(
-      `SELECT body FROM state_events WHERE namespace=? AND key=? AND sequence<=? AND json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.type') IN (${types.map(() => "?").join(",")}) ORDER BY sequence DESC LIMIT 1`,
-      [
-        namespace,
-        name,
-        through,
-        ...types.map((type) => `${namespace}:${family}.${type}@1`),
-      ],
-    );
-    return row === undefined
-      ? undefined
-      : (JSON.parse(String(row.body)) as StateEvent);
-  };
-  const recordOf = (event: StateEvent | undefined): StateRecord | undefined =>
-    event !== undefined && event.type === `${event.namespace}:record.updated@1`
-      ? {
-          namespace: event.namespace,
-          key: event.key,
-          revision: event.revision,
-          value: event.data,
-          updatedAt: event.at,
-          updatedBy: event.actor,
-        }
-      : undefined;
-  const leaseOf = (event: StateEvent | undefined): LeaseRecord | undefined =>
-    event === undefined
-      ? undefined
-      : event.type === `${event.namespace}:lease.acquired@1` ||
-          event.type === `${event.namespace}:lease.reacquired@1`
-        ? (event.data as { lease: LeaseRecord }).lease
-        : (event.data as LeaseRecord);
-  const matching = (
-    namespace: string,
-    requestId: string,
-    through: number,
-  ): SqlRow | undefined =>
-    candidate.get(
-      "SELECT sequence,body FROM state_events WHERE namespace=? AND sequence<=? AND json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.requestId')=? ORDER BY sequence LIMIT 1",
-      [namespace, through, requestId],
-    );
+  const records = new Map<string, { revision: number; digest: string }>();
+  const recordRevisions = new Map<string, number>();
+  const leases = new Map<string, LeaseRecord>();
+  const requests = new Set<string>();
+  const plans = new Map<string, ReceiptPlan | boolean>();
   const key = (namespace: string, name: string): string =>
     json([namespace, name]);
   const reject = (table: string, name: string): never => {
@@ -505,8 +511,23 @@ export function verifyEventDerivedState(
       reject(table, name);
     }
   };
+  // Read only receipt constraints and digests before replay, never retain their value bodies.
+  for (const row of rows(
+    "state_requests",
+    "namespace,request_id,fingerprint,result",
+    ["namespace", "request_id"],
+  )) {
+    const id = key(String(row.namespace), String(row.request_id));
+    try {
+      plans.set(id, receiptPlan(row));
+    } catch {
+      plans.set(id, false);
+    }
+  }
   let sequence = 0;
-  for (const row of eventRows()) {
+  for (const row of rows("state_events", "sequence,namespace,key,body", [
+    "sequence",
+  ])) {
     const id = key(String(row.namespace), String(row.key));
     sequence++;
     if (row.sequence !== sequence && row.sequence !== BigInt(sequence))
@@ -520,18 +541,67 @@ export function verifyEventDerivedState(
         event.key !== row.key
       )
         reject("state_events", id);
+
       if (event.requestId !== undefined) {
         const request = key(event.namespace, event.requestId);
-        if (matching(event.namespace, event.requestId, sequence - 1))
-          reject("state_requests", request);
+        if (requests.has(request)) reject("state_requests", request);
+        requests.add(request);
+        const plan = plans.get(request);
+        if (plan && typeof plan !== "boolean") {
+          try {
+            const result =
+              plan.kind === "put"
+                ? {
+                    namespace: event.namespace,
+                    key: event.key,
+                    revision: event.revision,
+                    value: event.data,
+                    updatedAt: event.at,
+                    updatedBy: event.actor,
+                  }
+                : (event.data as { lease: LeaseRecord }).lease;
+            const input =
+              plan.kind === "put"
+                ? {
+                    kind: "put",
+                    key: event.key,
+                    value: event.data,
+                    actor: event.actor,
+                    revision: records.get(id)?.revision ?? 0,
+                    fence: plan.fence,
+                    ...(plan.readSet === undefined
+                      ? {}
+                      : { readSet: plan.readSet }),
+                  }
+                : {
+                    kind: "acquire",
+                    subject: event.key,
+                    holder: (result as LeaseRecord).holder,
+                    durationMs: plan.durationMs,
+                  };
+            const row = {
+              namespace: event.namespace,
+              request_id: event.requestId,
+              fingerprint: json(input),
+              result: json(result),
+            };
+            const events = {
+              event,
+              plan,
+              revision: (name: string): number =>
+                records.get(key(event.namespace, name))?.revision ?? 0,
+              lease: (subject: string): LeaseRecord | undefined =>
+                leases.get(key(event.namespace, subject)),
+            };
+            validateReceipt(row, events);
+            plans.set(request, true);
+          } catch {
+            plans.set(request, false);
+          }
+        }
       }
       if (event.type === `${event.namespace}:record.updated@1`) {
-        if (
-          event.revision !==
-          (prior(event.namespace, event.key, sequence - 1, "record")
-            ?.revision ?? 0) +
-            1
-        )
+        if (event.revision !== (recordRevisions.get(id) ?? 0) + 1)
           reject("state_records", id);
         const record: StateRecord = {
           namespace: event.namespace,
@@ -543,19 +613,30 @@ export function verifyEventDerivedState(
         };
         if (json(event) !== json(recordEvent(record, event.requestId)))
           reject("state_events", id);
+        records.set(id, { revision: record.revision, digest: digest(record) });
+        recordRevisions.set(id, record.revision);
       } else if (event.type === `${event.namespace}:record.deleted@1`) {
-        const previous = recordOf(
-          prior(event.namespace, event.key, sequence - 1, "record"),
-        );
+        const previous = records.get(id);
         if (
           !previous ||
-          json(event) !== json(deletionEvent(previous, event.actor, event.at))
+          json(event) !==
+            json(
+              deletionEvent(
+                {
+                  namespace: event.namespace,
+                  key: event.key,
+                  revision: previous.revision,
+                },
+                event.actor,
+                event.at,
+              ),
+            )
         )
           reject("state_records", id);
+        records.delete(id);
+        recordRevisions.set(id, event.revision);
       } else {
-        const previous = leaseOf(
-          prior(event.namespace, event.key, sequence - 1, "lease"),
-        );
+        const prior = leases.get(id);
         let lease: LeaseRecord;
         if (
           event.type === `${event.namespace}:lease.acquired@1` ||
@@ -572,7 +653,7 @@ export function verifyEventDerivedState(
                 acquisitionEvent(
                   event.namespace,
                   lease,
-                  previous,
+                  prior,
                   event.at,
                   event.requestId!,
                 ),
@@ -580,7 +661,7 @@ export function verifyEventDerivedState(
             !validateLeaseRecord(lease).ok
           )
             reject("state_leases", id);
-          const decision = decideLease(previous, {
+          const decision = decideLease(prior, {
             mode: "acquire",
             subject: event.key,
             holder: lease.holder,
@@ -602,11 +683,11 @@ export function verifyEventDerivedState(
           event.type === `${event.namespace}:lease.released@1`
         ) {
           lease = event.data as LeaseRecord;
-          if (!previous || !validateLeaseRecord(lease).ok)
+          if (!prior || !validateLeaseRecord(lease).ok)
             reject("state_leases", id);
           if (event.type === `${event.namespace}:lease.renewed@1`) {
             if (
-              !decideLease(previous, {
+              !decideLease(prior, {
                 mode: "held",
                 subject: event.key,
                 holder: lease.holder,
@@ -617,7 +698,7 @@ export function verifyEventDerivedState(
                 json(
                   changedLeaseEvent(
                     event.namespace,
-                    previous!,
+                    prior!,
                     lease.holder,
                     event.at,
                     lease.expiresAt,
@@ -627,7 +708,7 @@ export function verifyEventDerivedState(
             )
               reject("state_leases", id);
           } else if (
-            !decideLease(previous, {
+            !decideLease(prior, {
               mode: "held",
               subject: event.key,
               holder: lease.holder,
@@ -638,7 +719,7 @@ export function verifyEventDerivedState(
               json(
                 changedLeaseEvent(
                   event.namespace,
-                  previous!,
+                  prior!,
                   lease.holder,
                   event.at,
                 ),
@@ -653,6 +734,7 @@ export function verifyEventDerivedState(
           json(lease.holder.actor) !== json(event.actor)
         )
           reject("state_leases", id);
+        leases.set(id, lease);
       }
     });
   }
@@ -666,34 +748,15 @@ export function verifyEventDerivedState(
       const record = JSON.parse(String(row.body)) as StateRecord;
       if (
         !validateStateRecord(record).ok ||
-        json(record) !==
-          json(
-            recordOf(
-              prior(
-                String(row.namespace),
-                String(row.key),
-                highWaterMark,
-                "record",
-              ),
-            ),
-          ) ||
+        !records.has(id) ||
+        digest(record) !== records.get(id)?.digest ||
         record.revision !== Number(row.revision)
       )
         reject("state_records", id);
+      records.delete(id);
     });
   }
-  for (const row of eventRows()) {
-    const event = JSON.parse(String(row.body)) as StateEvent;
-    if (
-      event.type === `${event.namespace}:record.updated@1` &&
-      recordOf(prior(event.namespace, event.key, highWaterMark, "record")) &&
-      !candidate.get(
-        "SELECT 1 FROM state_records WHERE namespace=? AND key=?",
-        [event.namespace, event.key],
-      )
-    )
-      reject("state_records", key(event.namespace, event.key));
-  }
+  if (records.size) reject("state_records", records.keys().next().value!);
   for (const row of rows("state_leases", "namespace,subject,generation,body", [
     "namespace",
     "subject",
@@ -702,33 +765,15 @@ export function verifyEventDerivedState(
     inspect("state_leases", id, () => {
       const lease = JSON.parse(String(row.body)) as LeaseRecord;
       if (
-        json(lease) !==
-          json(
-            leaseOf(
-              prior(
-                String(row.namespace),
-                String(row.subject),
-                highWaterMark,
-                "lease",
-              ),
-            ),
-          ) ||
+        !leases.has(id) ||
+        json(lease) !== json(leases.get(id)) ||
         lease.generation !== Number(row.generation)
       )
         reject("state_leases", id);
+      leases.delete(id);
     });
   }
-  for (const row of eventRows()) {
-    const event = JSON.parse(String(row.body)) as StateEvent;
-    if (
-      event.type.startsWith(`${event.namespace}:lease.`) &&
-      !candidate.get(
-        "SELECT 1 FROM state_leases WHERE namespace=? AND subject=?",
-        [event.namespace, event.key],
-      )
-    )
-      reject("state_leases", key(event.namespace, event.key));
-  }
+  if (leases.size) reject("state_leases", leases.keys().next().value!);
   for (const row of rows(
     "state_requests",
     "namespace,request_id,fingerprint,result",
@@ -739,36 +784,11 @@ export function verifyEventDerivedState(
       namespaceValid(String(row.namespace));
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(row.request_id)))
         reject("state_requests", id);
-      const namespace = String(row.namespace);
-      const match = matching(namespace, String(row.request_id), highWaterMark);
-      const events = {
-        event:
-          match === undefined
-            ? undefined
-            : (JSON.parse(String(match.body)) as StateEvent),
-        revision: (name: string): number =>
-          recordOf(
-            prior(namespace, name, Number(match?.sequence) - 1, "record"),
-          )?.revision ?? 0,
-        lease: (subject: string): LeaseRecord | undefined =>
-          leaseOf(
-            prior(namespace, subject, Number(match?.sequence) - 1, "lease"),
-          ),
-      };
-      validateReceipt(row, events);
+      if (plans.get(id) !== true) reject("state_requests", id);
+      requests.delete(id);
     });
   }
-  for (const row of eventRows()) {
-    const event = JSON.parse(String(row.body)) as StateEvent;
-    if (
-      event.requestId !== undefined &&
-      !candidate.get(
-        "SELECT 1 FROM state_requests WHERE namespace=? AND request_id=?",
-        [event.namespace, event.requestId],
-      )
-    )
-      reject("state_requests", key(event.namespace, event.requestId));
-  }
+  if (requests.size) reject("state_requests", requests.values().next().value!);
 }
 
 // Only these ledgers contain setup metadata that restore may replace in a nonempty store.
