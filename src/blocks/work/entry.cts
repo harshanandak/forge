@@ -221,6 +221,10 @@ type WorkOperations = TrackerOperations<"issue"> & {
   ];
   readonly "lane.start": readonly [LaneInput, LaneOutput];
   readonly "lane.show": readonly [ItemRef, LaneOutput];
+  readonly "lane.release": readonly [
+    ItemRef,
+    { issue: string; removed: boolean; keptBranch: string },
+  ];
   readonly "lane.close": readonly [
     CloseLaneInput,
     {
@@ -3943,6 +3947,214 @@ const operations: Operations<WorkOperations> = {
     }
   },
 
+  "lane.release": async ({ input, services, config, signal, deadline }) => {
+    const state = client(services),
+      ids = idsFor(state, config),
+      id = ids.stored(input.id),
+      files = laneFiles(services);
+    const bound = services as {
+      process?: ProcessService;
+      environment?: EnvironmentService;
+    };
+    if (!bound.process || !bound.environment)
+      fail("UNAVAILABLE", "Lane release needs process and environment");
+    const executor = bound.process,
+      env = bound.environment.select([
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "windir",
+        "ComSpec",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+      ]),
+      git = executor.resolve("git", env),
+      clock = laneClock(services);
+    if (git.kind !== "resolved")
+      fail("UNAVAILABLE", "Install Git and put it on PATH");
+    const lock = files.lock([registryLock], { recoverDeadOwner: true });
+    let runLock: ReturnType<FilesService["lock"]> | undefined;
+    try {
+      const saved = laneRegistry(files),
+        lane = saved.lanes.find((row) => laneIdentity(row) === id);
+      if (!lane) fail("NOT_FOUND", `No recorded lane for ${input.id}`);
+      const eligible = () => {
+        const issue = stored(get(state, id, input.id));
+        if (
+          issue.status !== "closed" ||
+          issue.receipt ||
+          live(state, id) ||
+          closeJournal(files, id, lane).value ||
+          state.list(`landing:${id}:`).length
+        )
+          fail(
+            "INPUT_CONFLICT",
+            "Release requires a closed issue without a merge receipt, pending close or live lease",
+          );
+      };
+      eligible();
+      for (const name of new Set([input.id, lane.issue, id])) {
+        const path = `forge-lane-${name}.lock`,
+          info = files.inspect(path, "common");
+        if (
+          info &&
+          (info.regular
+            ? info.size > 0
+            : files.list(path, 10, "common").length > 0)
+        )
+          fail("INPUT_CONFLICT", `Lane run lock is held: ${path}`);
+      }
+      runLock = files.lock([`forge-lane-${lane.issue}.lock`], {
+        recoverDeadOwner: true,
+      });
+      const run = async (
+        args: string[],
+        cwd = files.root,
+        leaveDirectory?: string,
+      ) => {
+        eligible();
+        const remaining = deadline - clock();
+        if (remaining <= 0)
+          fail("INVOCATION_TIMEOUT", "Lane release deadline expired");
+        const result = await executor.run(git, args, {
+          cwd,
+          env,
+          signal,
+          timeoutMs: Math.min(20000, remaining),
+          maxOutputBytes: 262144,
+          ...(leaveDirectory ? { leaveDirectory } : {}),
+        });
+        eligible();
+        if (result.timedOut || result.truncated)
+          fail(
+            "UNAVAILABLE",
+            "Git timed out or exceeded the lane output limit",
+          );
+        if (result.exitCode !== 0)
+          fail(
+            "INPUT_CONFLICT",
+            `git ${args[0]} failed; inspect the lane before releasing`,
+          );
+        return result.stdout.trim();
+      };
+      const pathKey = (path: string) => {
+        const normalized = slash(path).replace(/\/+$/, "");
+        return bound.environment!.platform === "win32"
+          ? normalized.toLowerCase()
+          : normalized;
+      };
+      const absolute = (path: string) => /^(?:\/|[a-z]:\/)/i.test(slash(path));
+      if (
+        !absolute(lane.worktree) ||
+        /\p{Cc}/u.test(lane.worktree) ||
+        slash(lane.worktree).split("/").includes("..")
+      )
+        fail(
+          "INPUT_CONFLICT",
+          "Lane worktree must be an absolute path without traversal",
+        );
+      const trees = (await run(["worktree", "list", "--porcelain", "-z"]))
+        .split("\0\0")
+        .filter(Boolean)
+        .map((row) => {
+          const fields = row.split("\0");
+          return {
+            path:
+              fields.find((field) => field.startsWith("worktree "))?.slice(9) ??
+              "",
+            branch: fields
+              .find((field) => field.startsWith("branch "))
+              ?.slice(7),
+          };
+        });
+      if (!trees[0] || !absolute(trees[0].path))
+        fail("INPUT_CONFLICT", "Main checkout is unavailable");
+      const checkout = await run(
+        ["rev-parse", "--path-format=absolute", "--show-toplevel"],
+        trees[0].path,
+      );
+      // Absolute path output resolves symlinks; a nonempty prefix would name a subdirectory.
+      const worktree = await run(
+        [
+          "-C",
+          lane.worktree,
+          "rev-parse",
+          "--path-format=absolute",
+          "--show-toplevel",
+          "--show-prefix",
+        ],
+        checkout,
+      );
+      if (
+        !absolute(checkout) ||
+        !absolute(worktree) ||
+        /[\r\n]/.test(checkout + worktree) ||
+        !pathKey(worktree).startsWith(`${pathKey(checkout)}/.worktrees/`) ||
+        !trees.some(
+          (tree) =>
+            pathKey(tree.path) === pathKey(worktree) &&
+            tree.branch === `refs/heads/${lane.branch}`,
+        )
+      )
+        fail(
+          "INPUT_CONFLICT",
+          "Lane worktree must match its registered branch strictly inside the main checkout's .worktrees directory",
+        );
+      if (
+        (await run(
+          ["-C", worktree, "rev-parse", "--is-inside-work-tree"],
+          checkout,
+        )) !== "true"
+      )
+        fail("INPUT_CONFLICT", "Lane checkout is unavailable");
+      if (
+        (await run(["ls-files", "-v", "-z"], worktree))
+          .split("\0")
+          .some((entry) => /^[a-zS]/.test(entry))
+      )
+        fail(
+          "INPUT_CONFLICT",
+          "Clear assume-unchanged or skip-worktree flags before releasing the lane",
+        );
+      if (
+        await run(
+          ["status", "--porcelain", "--untracked-files=all", "--ignored"],
+          worktree,
+        )
+      )
+        fail(
+          "INPUT_CONFLICT",
+          "Preserve dirty, untracked or ignored work before releasing the lane",
+        );
+      await run(["worktree", "remove", worktree], checkout, worktree);
+      eligible();
+      files.write(
+        registryPath,
+        JSON.stringify(
+          saved.lanes.filter((row) => laneIdentity(row) !== id),
+          null,
+          2,
+        ) + "\n",
+        { area: "common", expected: saved.text },
+      );
+      // Retaining every branch avoids guessing merge ancestry from stale local refs.
+      return {
+        issue: item(state, get(state, id), ids).id,
+        removed: true,
+        keptBranch: lane.branch,
+      };
+    } finally {
+      try {
+        runLock?.release();
+      } finally {
+        lock.release();
+      }
+    }
+  },
+
   "lane.close": async (call) => {
     const { input, services, config, signal, deadline } = call;
     const state = client(services),
@@ -4178,64 +4390,6 @@ const operations: Operations<WorkOperations> = {
         );
       const mergeCommit = pull.mergeCommit?.oid ?? "",
         ref = `refs/heads/${branch}`;
-      if (!dropped) {
-        // A merge into another branch has not landed. Check before any write.
-        const main = await laneMainBranch(config, () =>
-          run(
-            ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
-            checkout,
-            false,
-            true,
-          ),
-        );
-        if (pull.baseRefName !== main)
-          refuse("PR_NOT_MERGED", `PR must be merged into ${main}`);
-        // Fetch main into a ref only this call uses: FETCH_HEAD is shared, and
-        // any other fetch in the repository can overwrite it.
-        await sweepPrivateRefs(executor, git, checkout, env, clock(), files);
-        const mainId =
-            bound.crypto?.randomUUID() ??
-            fail("UNAVAILABLE", "Lane close requires crypto"),
-          mainLock = files.lock([privateRefLock(mainId)], {
-            recoverDeadOwner: true,
-          }),
-          mainRef = privateRefName("lane-close", mainId, clock());
-        try {
-          await run([
-            "fetch",
-            "origin",
-            `+refs/heads/${main}:${mainRef}`,
-            ...PRIVATE_FETCH_FLAGS,
-          ]);
-          const common = await run(
-            ["merge-base", mergeCommit, mainRef],
-            checkout,
-            false,
-            true,
-          );
-          if (common.toLowerCase() !== mergeCommit.toLowerCase()) {
-            // A shallow clone may simply lack the history that proves it.
-            if (
-              (await run(
-                ["rev-parse", "--is-shallow-repository"],
-                checkout,
-                false,
-                true,
-              )) === "true"
-            )
-              refuse(
-                "MERGE_UNVERIFIABLE",
-                `This clone has shallow history, so the merge commit cannot be checked against ${main}. Run git fetch --unshallow origin and retry`,
-              );
-            refuse("PR_NOT_MERGED", `Merge commit is not on ${main}`);
-          }
-        } finally {
-          // Best effort: a leftover private ref is harmless and must not mask
-          // the check result. The next lane command sweeps it.
-          await dropPrivateRefs(executor, git, checkout, env, [mainRef]);
-          releaseRefLock(mainLock);
-        }
-      }
       const hasBranch = (
         await run(["for-each-ref", "--format=%(refname)", ref])
       )
@@ -4314,6 +4468,99 @@ const operations: Operations<WorkOperations> = {
       };
       if (await exists()) await clean();
       else if (!progress) refuse("INPUT_CONFLICT", "Lane checkout is missing");
+      current = item(state, get(state, id, input.id), ids);
+      const links = appended(state, `link:${id}:`),
+        linked = links.some((record) => {
+          const link = record.value as LinkInput;
+          return link.relation === "delivers" && link.url === pull.url;
+        });
+      if (
+        (!dropped && keepOpen && current.status !== "open") ||
+        (!keepOpen &&
+          current.status === "closed" &&
+          (!linked || current.receipt !== receipt))
+      )
+        refuse("INPUT_CONFLICT", "Issue was closed by another landing");
+      const landingKey = `landing:${id}:${input.pr}`;
+      const accepted = state.get(landingKey);
+      const generation = state.lease(key(id))?.generation;
+      // Recovery is authorized only by the exact fenced landing, never by a file journal.
+      const resumingLanding =
+        !dropped &&
+        !keepOpen &&
+        current.status === "closed" &&
+        accepted !== undefined &&
+        canonical(accepted.value) ===
+          canonical({
+            id,
+            pr: input.pr,
+            receipt,
+            branch,
+            worktree,
+            generation,
+            head,
+            mergeCommit,
+            note: `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}`,
+          });
+      if (!resumingLanding) state.putMany([], { subject: key(id) });
+      if (!dropped) {
+        // A merge into another branch has not landed. Check before any write.
+        const main = await laneMainBranch(config, () =>
+          run(
+            ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+            checkout,
+            false,
+            true,
+          ),
+        );
+        if (pull.baseRefName !== main)
+          refuse("PR_NOT_MERGED", `PR must be merged into ${main}`);
+        // Fetch main into a ref only this call uses: FETCH_HEAD is shared, and
+        // any other fetch in the repository can overwrite it.
+        await sweepPrivateRefs(executor, git, checkout, env, clock(), files);
+        const mainId =
+            bound.crypto?.randomUUID() ??
+            fail("UNAVAILABLE", "Lane close requires crypto"),
+          mainLock = files.lock([privateRefLock(mainId)], {
+            recoverDeadOwner: true,
+          }),
+          mainRef = privateRefName("lane-close", mainId, clock());
+        try {
+          await run([
+            "fetch",
+            "origin",
+            `+refs/heads/${main}:${mainRef}`,
+            ...PRIVATE_FETCH_FLAGS,
+          ]);
+          const common = await run(
+            ["merge-base", mergeCommit, mainRef],
+            checkout,
+            false,
+            true,
+          );
+          if (common.toLowerCase() !== mergeCommit.toLowerCase()) {
+            // A shallow clone may simply lack the history that proves it.
+            if (
+              (await run(
+                ["rev-parse", "--is-shallow-repository"],
+                checkout,
+                false,
+                true,
+              )) === "true"
+            )
+              refuse(
+                "MERGE_UNVERIFIABLE",
+                `This clone has shallow history, so the merge commit cannot be checked against ${main}. Run git fetch --unshallow origin and retry`,
+              );
+            refuse("PR_NOT_MERGED", `Merge commit is not on ${main}`);
+          }
+        } finally {
+          // Best effort: a leftover private ref is harmless and must not mask
+          // the check result. The next lane command sweeps it.
+          await dropPrivateRefs(executor, git, checkout, env, [mainRef]);
+          releaseRefLock(mainLock);
+        }
+      }
       if (!dropped && head !== pull.headRefOid) {
         next = [
           ["git", "-C", worktree, "fetch", "origin", `pull/${input.pr}/head`],
@@ -4344,18 +4591,6 @@ const operations: Operations<WorkOperations> = {
           : "";
       if (noPr && head !== pull.headRefOid)
         await run(["merge-base", "--is-ancestor", pull.headRefOid!, head]);
-      const links = appended(state, `link:${id}:`),
-        linked = links.some((record) => {
-          const link = record.value as LinkInput;
-          return link.relation === "delivers" && link.url === pull.url;
-        });
-      if (
-        (!dropped && keepOpen && current.status !== "open") ||
-        (!keepOpen &&
-          current.status === "closed" &&
-          (!linked || current.receipt !== receipt))
-      )
-        refuse("INPUT_CONFLICT", "Issue was closed by another landing");
       const archive =
         progress?.archive ??
         `close-${input.pr ?? `no-pr-${bound.crypto?.randomUUID() ?? fail("UNAVAILABLE", "No-PR close requires crypto")}`}.json`;
@@ -4377,9 +4612,6 @@ const operations: Operations<WorkOperations> = {
           body === note || (!dropped && body?.startsWith(note + "\nChecks: "))
         );
       });
-      const landingKey = `landing:${id}:${input.pr}`;
-      const accepted = state.get(landingKey);
-      const generation = state.lease(key(id))?.generation;
       const landing = {
         id,
         pr: input.pr,
