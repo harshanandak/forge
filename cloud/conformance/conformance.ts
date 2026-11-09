@@ -3,6 +3,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -140,6 +142,45 @@ async function adminCall(
     status: response.status,
     body: (await response.json()) as AdminBody,
   };
+}
+// An admin restore that declares `length` bytes in Content-Length and sends none of them. The reply is
+// read as soon as the Worker sends it, then the request is dropped.
+function refusedBeforeUpload(
+  project: string,
+  length: number,
+): Promise<{ status: number; body: AdminBody }> {
+  const url = new URL(`${base}/p/${project}/restore`);
+  return new Promise((resolve, reject) => {
+    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const call = send(
+      url,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "content-length": String(length),
+        },
+        timeout: 20_000,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () => {
+          resolve({
+            status: response.statusCode ?? 0,
+            body: JSON.parse(
+              Buffer.concat(chunks).toString("utf8"),
+            ) as AdminBody,
+          });
+          call.destroy();
+        });
+        response.on("error", reject);
+      },
+    );
+    call.on("timeout", () => call.destroy(new Error("no reply in 20 seconds")));
+    call.on("error", reject);
+    call.flushHeaders();
+  });
 }
 async function dumpOf(project: string): Promise<Dump> {
   const reply = await adminCall(project, "GET", "dump");
@@ -1059,6 +1100,146 @@ if (phase === "main") {
   );
 
   await check(
+    "a restore whose rows are not valid state is refused as RESTORE_INVALID_ROW and writes nothing",
+    async () => {
+      const source = `${run}-invalid-src`;
+      const holder = holderOf("invalid");
+      const first = granted(
+        await claim(source, "issue:bad-1", holder, "invalid-1"),
+      );
+      granted(
+        await send(source, "POST", "renew", {
+          subject: "issue:bad-1",
+          holder,
+          generation: first.generation,
+          ttlMs: 900_000,
+          requestId: "invalid-renew",
+        }),
+      );
+      granted(await claim(source, "issue:bad-2", holder, "invalid-2"));
+      const dump = await dumpOf(source);
+      assert.ok(dump.tables.state_events!.length >= 3, "events");
+      assert.ok(dump.tables.state_requests!.length >= 2, "owner receipts");
+      assert.ok(dump.tables.domain_cloud_requests!.length >= 3, "receipts");
+
+      // Each case copies the valid dump and breaks one body, keeping every row well shaped.
+      type Edit = (tables: Record<string, Record<string, unknown>[]>) => void;
+      const cases: Record<string, { table: string; edit: Edit }> = {
+        "lease body is not JSON": {
+          table: "state_leases",
+          edit: (tables) => {
+            tables.state_leases![0]!.body = "not json";
+          },
+        },
+        "lease body is an empty object": {
+          table: "state_leases",
+          edit: (tables) => {
+            tables.state_leases![0]!.body = "{}";
+          },
+        },
+        "lease body generation differs from its column": {
+          table: "state_leases",
+          edit: (tables) => {
+            const row = tables.state_leases![0]!;
+            const lease = JSON.parse(String(row.body)) as {
+              generation: number;
+            };
+            lease.generation += 1;
+            row.body = JSON.stringify(lease);
+          },
+        },
+        "lease body names another subject": {
+          table: "state_leases",
+          edit: (tables) => {
+            const row = tables.state_leases![0]!;
+            const lease = JSON.parse(String(row.body)) as { subject: string };
+            lease.subject = `${lease.subject}-other`;
+            row.body = JSON.stringify(lease);
+          },
+        },
+        "event body is not an event": {
+          table: "state_events",
+          edit: (tables) => {
+            tables.state_events![0]!.body = '{"type":"nope"}';
+          },
+        },
+        "event body is not JSON": {
+          table: "state_events",
+          edit: (tables) => {
+            tables.state_events![1]!.body = "not json";
+          },
+        },
+        "owner receipt result is not JSON": {
+          table: "state_requests",
+          edit: (tables) => {
+            tables.state_requests![0]!.result = "not json";
+          },
+        },
+        "server receipt result is not JSON": {
+          table: "domain_cloud_requests",
+          edit: (tables) => {
+            tables.domain_cloud_requests![0]!.result = "not json";
+          },
+        },
+        "server receipt result is another subject's lease": {
+          table: "domain_cloud_requests",
+          edit: (tables) => {
+            const row = tables.domain_cloud_requests!.find(
+              (candidate) => candidate.outcome === "ok",
+            )!;
+            const lease = JSON.parse(String(row.result)) as { subject: string };
+            lease.subject = `${lease.subject}-other`;
+            row.result = JSON.stringify(lease);
+          },
+        },
+      };
+      const target = `${run}-invalid-dst`;
+      for (const [name, { table, edit }] of Object.entries(cases)) {
+        const tables = (
+          JSON.parse(JSON.stringify(dump)) as {
+            tables: Record<string, Record<string, unknown>[]>;
+          }
+        ).tables;
+        edit(tables);
+        const reply = await adminCall(
+          target,
+          "POST",
+          "restore",
+          JSON.stringify({ format: dump.format, tables }),
+        );
+        assert.equal(
+          reply.status,
+          400,
+          `${name}: ${JSON.stringify(reply.body)}`,
+        );
+        assert.equal(reply.body.error?.code, "RESTORE_INVALID_ROW", name);
+        assert.ok(
+          reply.body.error?.message.includes(table),
+          `${name}: the refusal names ${table}: ${reply.body.error?.message}`,
+        );
+        assert.equal(await initialized(target), false, name);
+        const after = await dumpOf(target);
+        for (const rows of Object.values(after.tables))
+          assert.equal(rows.length, 0, `${name}: nothing was written`);
+      }
+
+      // A refused restore leaves the project empty, so the valid dump still restores and reads back identical.
+      const valid = await adminCall(
+        target,
+        "POST",
+        "restore",
+        JSON.stringify(dump),
+      );
+      assert.equal(valid.status, 200, JSON.stringify(valid.body));
+      assert.deepEqual(await dumpOf(target), dump, "read back identical");
+      assert.deepEqual(
+        granted(await holderLookup(target, "issue:bad-1")),
+        granted(await holderLookup(source, "issue:bad-1")),
+      );
+    },
+  );
+
+  await check(
     "a restore with deep nesting or an extra top-level field is refused before anything is built",
     async () => {
       const head = '{"format":"forge-cloud-dump/1","tables":';
@@ -1093,8 +1274,10 @@ if (phase === "main") {
     "a restore over its size bound is refused as RESTORE_TOO_LARGE and creates nothing",
     async () => {
       const project = `${run}-restore-big`;
-      const body = "x".repeat(9 * 1024 * 1024);
-      const reply = await adminCall(project, "POST", "restore", body);
+      // The Worker refuses from the Content-Length header and closes the connection, so a client that
+      // is still uploading 9 MiB can lose the reply (ECONNRESET). This request sends the header and
+      // no body, so it always reads the 413.
+      const reply = await refusedBeforeUpload(project, 9 * 1024 * 1024);
       assert.equal(reply.status, 413, JSON.stringify(reply.body));
       assert.equal(reply.body.error?.code, "RESTORE_TOO_LARGE");
       assert.equal(await initialized(project), false);

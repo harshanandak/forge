@@ -7,15 +7,15 @@ subject. The code is in `cloud/`.
 
 Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>`.
 
-| Route                       | Method | Token  | What it does                                                                                    |
-| --------------------------- | ------ | ------ | ----------------------------------------------------------------------------------------------- |
-| `claim`, `renew`, `release` | POST   | device | Change a lease. Each carries a `requestId`; a retry returns the right result.                   |
-| `holder?subject=...`        | GET    | device | Read a lease.                                                                                   |
-| `devices`                   | POST   | admin  | Issue a device token: `{ device, session?, agent?, harness?, ttlMs }`. The token is shown once. |
-| `revoke`                    | POST   | admin  | Revoke a device token by id. It is refused on its next request.                                 |
-| `status`                    | GET    | admin  | Whether the project has a database yet.                                                         |
-| `dump`                      | GET    | admin  | The project as JSON: issues, leases, events and receipts. No tokens, no hashes.                 |
-| `restore`                   | POST   | admin  | Write a dump into an empty project. Body up to 8 MiB (`RESTORE_TOO_LARGE` over it).             |
+| Route                       | Method | Token  | What it does                                                                                                                                                                  |
+| --------------------------- | ------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claim`, `renew`, `release` | POST   | device | Change a lease. Each carries a `requestId`; a retry returns the right result.                                                                                                 |
+| `holder?subject=...`        | GET    | device | Read a lease.                                                                                                                                                                 |
+| `devices`                   | POST   | admin  | Issue a device token: `{ device, session?, agent?, harness?, ttlMs }`. The token is shown once.                                                                               |
+| `revoke`                    | POST   | admin  | Revoke a device token by id. It is refused on its next request.                                                                                                               |
+| `status`                    | GET    | admin  | Whether the project has a database yet.                                                                                                                                       |
+| `dump`                      | GET    | admin  | The project as JSON: issues, leases, events and receipts. No tokens, no hashes.                                                                                               |
+| `restore`                   | POST   | admin  | Write a dump into an empty project. Body up to 8 MiB (`RESTORE_TOO_LARGE` over it). A row that is not valid state is refused as `RESTORE_INVALID_ROW` and nothing is written. |
 
 A dump is a single response with fixed caps (50,000 rows per table, 262,144 characters per value); paged export is tracked in forge-1020.
 
