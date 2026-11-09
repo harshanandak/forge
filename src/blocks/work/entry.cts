@@ -853,6 +853,74 @@ async function laneMainBranch(
   return name;
 }
 
+// Private refs live in one namespace. Naming a destination does not switch off
+// the configured fetch mappings, so these flags keep the fetch from also moving
+// remote-tracking branches, following tags or pruning.
+const PRIVATE_FETCH_FLAGS = ["--refmap=", "--no-tags", "--no-prune"];
+const PRIVATE_REF_MAX_AGE_MS = 3600000;
+const PRIVATE_REF = /^refs\/forge\/lane-(?:close|base)\/(?:(\d+)-)?[\w.-]+$/;
+function privateRefName(kind: "lane-close" | "lane-base", id: string): string {
+  return `refs/forge/${kind}/${Date.now()}-${id}`;
+}
+// Cleanup never throws and never reads the call's deadline or signal: a
+// cancelled call must still report its own error. If the process service
+// refuses the call, the next lane command sweeps the ref.
+async function bestEffortGit(
+  executor: ProcessService,
+  git: Parameters<ProcessService["run"]>[0],
+  cwd: string,
+  env: Readonly<Record<string, string>>,
+  args: string[],
+): Promise<string> {
+  try {
+    const result = await executor.run(git, args, {
+      cwd,
+      env,
+      timeoutMs: 5000,
+      maxOutputBytes: 65536,
+    });
+    return result.exitCode === 0 && !result.timedOut
+      ? result.stdout.trim()
+      : "";
+  } catch {
+    return "";
+  }
+}
+async function dropPrivateRefs(
+  executor: ProcessService,
+  git: Parameters<ProcessService["run"]>[0],
+  cwd: string,
+  env: Readonly<Record<string, string>>,
+  refs: string[],
+): Promise<void> {
+  for (const ref of refs)
+    await bestEffortGit(executor, git, cwd, env, ["update-ref", "-d", ref]);
+}
+// Removes private refs a cancelled or timed-out call left behind: those with
+// no timestamp or older than an hour. A recent one may belong to a running call.
+async function sweepPrivateRefs(
+  executor: ProcessService,
+  git: Parameters<ProcessService["run"]>[0],
+  cwd: string,
+  env: Readonly<Record<string, string>>,
+): Promise<void> {
+  const listed = await bestEffortGit(executor, git, cwd, env, [
+    "for-each-ref",
+    "--format=%(refname)",
+    "refs/forge/lane-close/",
+    "refs/forge/lane-base/",
+  ]);
+  const stale = listed.split(/\r?\n/).filter((ref) => {
+    const match = PRIVATE_REF.exec(ref);
+    return (
+      match !== null &&
+      (match[1] === undefined ||
+        Date.now() - Number(match[1]) > PRIVATE_REF_MAX_AGE_MS)
+    );
+  });
+  await dropPrivateRefs(executor, git, cwd, env, stale);
+}
+
 function laneIdentity(lane: Lane): string {
   // Registry ids belong to this project; legacy writers stored a display prefix.
   const number = QUALIFIED.exec(lane.issue)?.[2];
@@ -3693,17 +3761,19 @@ const operations: Operations<WorkOperations> = {
     const remoteHead = await laneMainBranch(config, () =>
       run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], true),
     );
-    const baseRef = "refs/forge/lane-base/" + bound.crypto.randomUUID();
+    await sweepPrivateRefs(executor, git, files.root, env);
+    const baseRef = privateRefName("lane-base", bound.crypto.randomUUID());
     let base: string;
     try {
       await run([
         "fetch",
         "origin",
         "+refs/heads/" + remoteHead + ":" + baseRef,
+        ...PRIVATE_FETCH_FLAGS,
       ]);
       base = await run(["rev-parse", "--verify", baseRef + "^{commit}"]);
     } finally {
-      await run(["update-ref", "-d", baseRef]);
+      await dropPrivateRefs(executor, git, files.root, env, [baseRef]);
     }
     let lock: ReturnType<FilesService["lock"]>;
     try {
@@ -4058,12 +4128,19 @@ const operations: Operations<WorkOperations> = {
           refuse("PR_NOT_MERGED", `PR must be merged into ${main}`);
         // Fetch main into a ref only this call uses: FETCH_HEAD is shared, and
         // any other fetch in the repository can overwrite it.
-        const mainRef = `refs/forge/lane-close/${
+        const mainRef = privateRefName(
+          "lane-close",
           bound.crypto?.randomUUID() ??
-          fail("UNAVAILABLE", "Lane close requires crypto")
-        }`;
+            fail("UNAVAILABLE", "Lane close requires crypto"),
+        );
+        await sweepPrivateRefs(executor, git, checkout, env);
         try {
-          await run(["fetch", "origin", `+refs/heads/${main}:${mainRef}`]);
+          await run([
+            "fetch",
+            "origin",
+            `+refs/heads/${main}:${mainRef}`,
+            ...PRIVATE_FETCH_FLAGS,
+          ]);
           const common = await run(
             ["merge-base", mergeCommit, mainRef],
             checkout,
@@ -4088,8 +4165,8 @@ const operations: Operations<WorkOperations> = {
           }
         } finally {
           // Best effort: a leftover private ref is harmless and must not mask
-          // the check result.
-          await run(["update-ref", "-d", mainRef], checkout, false, true);
+          // the check result. The next lane command sweeps it.
+          await dropPrivateRefs(executor, git, checkout, env, [mainRef]);
         }
       }
       const hasBranch = (

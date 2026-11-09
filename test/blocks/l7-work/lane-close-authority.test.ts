@@ -108,6 +108,7 @@ async function fixture(seedLink = true) {
     calls: [] as string[][],
     privateRefs: new Set<string>(),
     afterFetch: undefined as (() => void) | undefined,
+    refuse: false,
   };
   const services = {
     state: {
@@ -154,8 +155,8 @@ async function fixture(seedLink = true) {
       ) => {
         let stdout = "",
           exitCode = 0;
-        // A cancelled invocation cannot start another call that carries its signal.
-        if (options?.signal?.aborted)
+        // A cancelled or expired invocation refuses every further process call.
+        if (flags.refuse || options?.signal?.aborted)
           return Promise.reject(new Error(`SERVICE_EXPIRED: ${args[0]}`));
         flags.calls.push(args);
         if (
@@ -585,31 +586,51 @@ test("the private fetch writes only its own ref", async () => {
   }
 }, 30_000);
 
-test("a signal aborted right after the fetch still deletes the private ref and keeps the original error", async () => {
+/** The next close runs well after a call that was cancelled or timed out. */
+async function closeLater(f: Awaited<ReturnType<typeof fixture>>) {
+  const realNow = Date.now;
+  f.flags.refuse = false;
+  f.flags.afterFetch = undefined;
+  Date.now = () => realNow() + 2 * 3600000;
+  try {
+    await f.close();
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+test("a signal aborted right after the fetch reports the original error and the next close removes the leftover ref", async () => {
   const f = await fixture();
   try {
     const controller = new AbortController();
-    f.flags.afterFetch = () => controller.abort();
+    f.flags.afterFetch = () => {
+      controller.abort();
+      f.flags.refuse = true;
+    };
     await expect(f.close({}, { signal: controller.signal })).rejects.toThrow(
       "SERVICE_EXPIRED: merge-base",
     );
+    await closeLater(f);
     expect(f.flags.privateRefs.size).toBe(0);
   } finally {
     await f.dispose();
   }
 }, 30_000);
 
-test("a deadline that expires right after the fetch still deletes the private ref", async () => {
+test("a deadline that expires right after the fetch reports the original error and the next close removes the leftover ref", async () => {
   const f = await fixture(),
     realNow = Date.now,
     deadline = Date.now() + 60_000;
   try {
     f.flags.afterFetch = () => {
       Date.now = () => deadline + 1;
+      f.flags.refuse = true;
     };
     await expect(f.close({}, { deadline })).rejects.toThrow(
       "INVOCATION_TIMEOUT",
     );
+    Date.now = realNow;
+    await closeLater(f);
     expect(f.flags.privateRefs.size).toBe(0);
   } finally {
     Date.now = realNow;

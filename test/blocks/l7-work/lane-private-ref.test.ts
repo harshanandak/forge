@@ -43,6 +43,7 @@ function fixture() {
       afterFetch: undefined as (() => void) | undefined,
       failRevParse: false,
       failUpdateRef: false,
+      refuse: false,
     };
   let pinned = "";
   const services = {
@@ -66,8 +67,8 @@ function fixture() {
         args: string[],
         options?: { signal?: AbortSignal },
       ) => {
-        // A cancelled invocation cannot start another call that carries its signal.
-        if (options?.signal?.aborted)
+        // A cancelled or expired invocation refuses every further process call.
+        if (hooks.refuse || options?.signal?.aborted)
           return Promise.reject(new Error(`SERVICE_EXPIRED: ${args[0]}`));
         calls.push(args);
         let stdout = "",
@@ -115,25 +116,45 @@ test("the base fetch writes only its own ref", async () => {
   expect(fetch?.slice(3)).toEqual(["--refmap=", "--no-tags", "--no-prune"]);
 }, 30_000);
 
-test("a signal aborted right after the fetch still deletes the private ref and keeps the original error", async () => {
+/** The next start runs well after a call that was cancelled or timed out. */
+async function runLater(f: ReturnType<typeof fixture>) {
+  const realNow = Date.now;
+  f.hooks.refuse = false;
+  f.hooks.afterFetch = undefined;
+  Date.now = () => realNow() + 2 * 3600000;
+  try {
+    await f.run();
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+test("a signal aborted right after the fetch reports the original error and the next start removes the leftover ref", async () => {
   const f = fixture(),
     controller = new AbortController();
-  f.hooks.afterFetch = () => controller.abort();
+  f.hooks.afterFetch = () => {
+    controller.abort();
+    f.hooks.refuse = true;
+  };
   await expect(f.run({ signal: controller.signal })).rejects.toThrow(
     "SERVICE_EXPIRED: rev-parse",
   );
+  await runLater(f);
   expect(f.refs.size).toBe(0);
 }, 30_000);
 
-test("a deadline that expires right after the fetch still deletes the private ref", async () => {
+test("a deadline that expires right after the fetch reports the original error and the next start removes the leftover ref", async () => {
   const f = fixture(),
     realNow = Date.now,
     deadline = Date.now() + 60_000;
   try {
     f.hooks.afterFetch = () => {
       Date.now = () => deadline + 1;
+      f.hooks.refuse = true;
     };
     await expect(f.run({ deadline })).rejects.toThrow("INVOCATION_TIMEOUT");
+    Date.now = realNow;
+    await runLater(f);
     expect(f.refs.size).toBe(0);
   } finally {
     Date.now = realNow;
