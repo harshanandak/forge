@@ -1,10 +1,12 @@
 // Isolate transport faults so module mocks cannot affect other process tests.
-import { mock } from "bun:test";
+import { mock, spyOn } from "bun:test";
+import * as childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { stopCaptured } from "../../../src/adapters/process/windows-launch-stdio.ts";
 
 let held = "";
+const backend = process.argv[2];
 const complete = (name: string): boolean => held !== name && held !== "both";
 const job = {
   activeCount: () => 0,
@@ -28,24 +30,23 @@ await mock.module(
       }),
   }),
 );
-await mock.module("node:child_process", () => ({
-  spawn: () => {
-    const child = Object.assign(new EventEmitter(), {
-      pid: 123,
-      exitCode: 0,
-      signalCode: null,
-      stdout: new PassThrough(),
-      stderr: new PassThrough(),
-    });
-    queueMicrotask(() => {
-      for (const name of ["stdout", "stderr"] as const)
-        if (complete(name)) child[name].end();
-      child.emit("exit", 0, null);
-      if (!held) setImmediate(() => child.emit("close"));
-    });
-    return child;
-  },
-}));
+const eventSpawn = spyOn(childProcess, "spawn").mockImplementation((() => {
+  const child = Object.assign(new EventEmitter(), {
+    pid: 123,
+    exitCode: null as number | null,
+    signalCode: null,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  });
+  queueMicrotask(() => {
+    for (const name of ["stdout", "stderr"] as const)
+      if (complete(name)) child[name].end();
+    child.exitCode = 0;
+    child.emit("exit", child.exitCode, child.signalCode);
+    if (!held) setImmediate(() => child.emit("close"));
+  });
+  return child;
+}) as unknown as typeof childProcess.spawn);
 Object.defineProperty(process, "kill", {
   value: () => {
     throw Object.assign(new Error("group gone"), { code: "ESRCH" });
@@ -60,24 +61,25 @@ const { runProcessTree } =
 const { runBunProcessTree } =
   await import("../../../src/adapters/process/bun-process-tree.ts");
 const { runProcess } = await import("../../../src/adapters/process/run.ts");
-Object.defineProperty(Bun, "spawn", {
-  value: () => ({
-    pid: 123,
-    exitCode: 0,
-    signalCode: null,
-    exited: Promise.resolve(0),
-    ...Object.fromEntries(
-      ["stdout", "stderr"].map((name) => [
-        name,
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            if (complete(name)) controller.close();
-          },
-        }),
-      ]),
-    ),
-  }),
-});
+if (backend === "native")
+  Object.defineProperty(Bun, "spawn", {
+    value: () => ({
+      pid: 123,
+      exitCode: 0,
+      signalCode: null,
+      exited: Promise.resolve(0),
+      ...Object.fromEntries(
+        ["stdout", "stderr"].map((name) => [
+          name,
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              if (complete(name)) controller.close();
+            },
+          }),
+        ]),
+      ),
+    }),
+  });
 const supervision = {
   cleanupTimeoutMs: 100,
   pollIntervalMs: 1,
@@ -86,7 +88,6 @@ const supervision = {
 };
 const plan = { file: "fixture.exe", args: [], windowsVerbatimArguments: false };
 const results = [];
-const backend = process.argv[2];
 for (const capture of [false, true])
   for (held of ["", "stdout", "stderr", "both"]) {
     const options = {
@@ -106,6 +107,11 @@ for (const capture of [false, true])
             supervision,
             started,
           );
+    if (
+      backend === "event" &&
+      eventSpawn.mock.calls.length !== results.length + 1
+    )
+      throw new Error("Event backend did not use the spawn fixture");
     results.push({ backend, capture, held, result });
   }
 console.log(JSON.stringify(results));
