@@ -1,0 +1,9 @@
+{
+  "name": "forge-cloud",
+  "private": true,
+  "type": "module",
+  "description": "The Forge claim server: a Cloudflare Worker with one SQLite Durable Object per project.",
+  "devDependencies": {
+    "wrangler": "4.152.0"
+  }
+}

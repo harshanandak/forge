@@ -17,5 +17,5 @@
     "noEmit": true,
     "types": ["bun", "node"]
   },
-  "include": ["bin", "src", "test", "tools"]
+  "include": ["bin", "cloud", "src", "test", "tools"]
 }
