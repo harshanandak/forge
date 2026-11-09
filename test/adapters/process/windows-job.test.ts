@@ -50,23 +50,38 @@ test("an exiting process counted as assigned but not listable does not grow the 
 }, 5_000);
 
 test("a full buffer on success grows until the whole list fits", () => {
-  const listable = Array.from({ length: 40 }, (_, index) => 1000 + index);
+  const listable = Array.from({ length: 30 }, (_, index) => 1000 + index);
   const api = fakeApi({ listable, overflow: "truncate" });
   expect(processIds(api, 1n)).toEqual(listable);
-  expect(api.capacities).toEqual([16, 32, 64]);
+  expect(api.capacities).toEqual([16, 32]);
 }, 5_000);
 
 test("ERROR_MORE_DATA grows the buffer until the whole list fits", () => {
-  const listable = Array.from({ length: 40 }, (_, index) => 1000 + index);
+  const listable = Array.from({ length: 30 }, (_, index) => 1000 + index);
   const api = fakeApi({ listable, overflow: "more-data" });
   expect(processIds(api, 1n)).toEqual(listable);
-  expect(api.capacities).toEqual([16, 40]);
+  expect(api.capacities).toEqual([16, 32]);
 }, 5_000);
 
-test("a list that fills the 4096 ceiling throws a message naming the counts", () => {
+test("a success that exactly fills the buffer is queried again with a larger one", () => {
+  const listable = Array.from({ length: 16 }, (_, index) => 1000 + index);
+  const api = fakeApi({ listable, overflow: "more-data" });
+  expect(processIds(api, 1n)).toEqual(listable);
+  expect(api.capacities).toEqual([16, 32]);
+}, 5_000);
+
+test("a job assigned more than 4096 processes throws a message naming the counts", () => {
   const listable = Array.from({ length: 5000 }, (_, index) => 1000 + index);
   const api = fakeApi({ listable, overflow: "truncate" });
   expect(() => processIds(api, 1n)).toThrow(
-    /exceeds 4096.*succeeded=1.*assigned=5000.*listed=4096.*capacity=4096/s,
+    /exceeds 4096.*succeeded=1.*assigned=5000.*listed=16.*capacity=16/s,
+  );
+}, 5_000);
+
+test("a buffer that is still full at the 4096 ceiling throws a message naming the counts", () => {
+  const listable = Array.from({ length: 5000 }, (_, index) => 1000 + index);
+  const api = fakeApi({ listable, assigned: 4096, overflow: "truncate" });
+  expect(() => processIds(api, 1n)).toThrow(
+    /exceeds 4096.*succeeded=1.*assigned=4096.*listed=4096.*capacity=4096/s,
   );
 }, 5_000);
