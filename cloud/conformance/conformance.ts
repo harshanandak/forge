@@ -150,10 +150,14 @@ const holderOf = (name: string, index = 0): Holder => ({
   actor: { kind: "agent", id: `agent-${name}` },
   session: {
     id: `session-${name}-${index}`,
-    device: `device-${index % 5}`,
+    device: "device-default",
     agent: `agent-${name}`,
     harness: "conformance",
   },
+});
+const onDevice = (holder: Holder, device: string): Holder => ({
+  ...holder,
+  session: { ...holder.session, device },
 });
 const claim = (
   project: string,
@@ -221,7 +225,12 @@ const revokeCheck = (): Promise<void> =>
         project,
         "POST",
         "claim",
-        { subject, holder, ttlMs: 600_000, requestId: `claim-${subject}` },
+        {
+          subject,
+          holder: onDevice(holder, device.device),
+          ttlMs: 600_000,
+          requestId: `claim-${subject}`,
+        },
         asDevice(device),
       );
     const first = granted(await attempt("issue:revoke-1", phone));
@@ -265,7 +274,7 @@ if (phase === "main") {
       const device = await issue(project, "tablet");
       const body = {
         subject: "issue:auth-1",
-        holder: holderOf("auth"),
+        holder: onDevice(holderOf("auth"), "tablet"),
         ttlMs: 600_000,
         requestId: "auth-1",
       };
@@ -310,6 +319,31 @@ if (phase === "main") {
       granted(await send(project, "POST", "claim", body, asDevice(device)));
     },
   );
+
+  await check("a device token claims only as its own device", async () => {
+    const project = `${run}-device`;
+    const tablet = await issue(project, "tablet");
+    const claimAs = (named: object, requestId: string): Promise<Reply> =>
+      send(
+        project,
+        "POST",
+        "claim",
+        { subject: "issue:device-1", holder: named, ttlMs: 600_000, requestId },
+        asDevice(tablet),
+      );
+    const holder = holderOf("device");
+    const reply = await claimAs(onDevice(holder, "phone"), "device-1");
+    assert.equal(reply.status, 403, JSON.stringify(reply.body));
+    assert.equal(reply.body.error?.code, "AUTH_DEVICE_MISMATCH");
+    for (const part of ["tablet", "phone"])
+      assert.ok(reply.body.error?.message.includes(part), `names ${part}`);
+    const none = await lookup(project, "issue:device-1", asDevice(tablet));
+    assert.equal(none.body.value ?? null, null, "the mismatch took no lease");
+    // A holder with no device gets the token's device.
+    const { device: _device, ...session } = holder.session;
+    const lease = granted(await claimAs({ ...holder, session }, "device-2"));
+    assert.equal(lease.holder.session.device, "tablet");
+  });
 
   await check("an expired token is refused, naming the holder", async () => {
     const project = `${run}-expiry`;
