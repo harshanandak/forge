@@ -333,12 +333,15 @@ export type JobIdQueryApi = Pick<
 
 /**
  * Snapshots the process IDs in a job. The buffer grows only when it was too small: the call fails
- * with ERROR_MORE_DATA or ERROR_INSUFFICIENT_BUFFER, or it succeeds with the buffer full.
+ * with ERROR_MORE_DATA or ERROR_INSUFFICIENT_BUFFER, or it succeeds with a full buffer that does
+ * not hold every assigned process.
  *
- * A success with room to spare is complete. `NumberOfAssignedProcesses` can still count a process
- * that is exiting and no longer listable, so `listed < assigned` with `listed < capacity` is not a
- * reason to grow: the call had space for more IDs and returned none. This drops no live process,
- * because a running process is listable. Terminating the job still ends the whole job either way.
+ * A success is complete when the buffer has room to spare, or when it holds every assigned process
+ * (`listed >= assigned`, such as exactly 4096 listable processes in a 4096 buffer).
+ * `NumberOfAssignedProcesses` can still count a process that is exiting and no longer listable, so
+ * `listed < assigned` with `listed < capacity` is not a reason to grow: the call had space for more
+ * IDs and returned none. This drops no live process, because a running process is listable.
+ * Terminating the job still ends the whole job either way.
  */
 export function processIds(api: JobIdQueryApi, job: bigint): readonly number[] {
   const pointerBytes = process.arch === "ia32" ? 4 : 8;
@@ -355,7 +358,7 @@ export function processIds(api: JobIdQueryApi, job: bigint): readonly number[] {
     );
     const assigned = buffer.readUInt32LE(0);
     const listed = buffer.readUInt32LE(4);
-    if (succeeded !== 0 && listed < capacity) {
+    if (succeeded !== 0 && (listed < capacity || listed >= assigned)) {
       const result: number[] = [];
       for (let index = 0; index < listed; index += 1) {
         const offset = 8 + index * pointerBytes;
