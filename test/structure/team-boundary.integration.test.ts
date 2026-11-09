@@ -12,7 +12,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
-import { API } from "typescript/unstable/sync";
 import { scanAdapters } from "./lib/adapters.ts";
 import { findDependencyViolations, type PackageJson } from "./lib/imports.ts";
 import { maskSource } from "./lib/platform.ts";
@@ -128,6 +127,19 @@ for (const path of ["src/assembly/view.tsx", "src/assembly/view.jsx"]) {
     expect(() => boundary([{ path, text: fixture("parse failure") }])).toThrow(
       path,
     );
+  }, 30_000);
+}
+
+for (const name of [
+  "shebang side-effect import",
+  "BOM shebang side-effect import",
+]) {
+  test(`public code refuses ${name}`, () => {
+    expect(
+      boundary([{ path: "bin/forge.ts", text: fixture(name) }]).map(
+        (v) => v.file,
+      ),
+    ).toEqual(["bin/forge.ts"]);
   }, 30_000);
 }
 
@@ -339,35 +351,53 @@ test("public sources compile in a copy with team removed and emit no team files"
       join(scratch, "node_modules"),
       "junction",
     );
-    const api = new API({ cwd: scratch });
-    try {
-      const production = api.parseConfigFile(
-        join(scratch, "tsconfig.build.json"),
-      );
-      writeFileSync(
-        join(scratch, "tsconfig.public.json"),
-        JSON.stringify({
-          extends: "./tsconfig.build.json",
-          files: production.fileNames,
-        }),
-      );
-      const cloud = api.parseConfigFile(join(scratch, "tsconfig.json"));
-      writeFileSync(
-        join(scratch, "tsconfig.cloud.json"),
-        JSON.stringify({
-          extends: "./tsconfig.json",
-          compilerOptions: { noEmit: false, outDir: "./dist", rootDir: "." },
-          files: cloud.fileNames.filter(
-            (path) =>
-              /\/cloud\/src\//.test(path.replaceAll("\\", "/")) &&
-              !isTestFile(path.replaceAll("\\", "/")),
-          ),
-          include: [],
-        }),
-      );
-    } finally {
-      api.close();
-    }
+    const node = Bun.which("node");
+    if (node === null)
+      throw new Error("Node is required to resolve compiler configs");
+    const resolved = spawnSync(
+      node,
+      [
+        "--input-type=module",
+        "--eval",
+        fixture("config resolver"),
+        "tsconfig.build.json",
+        "tsconfig.json",
+      ],
+      { cwd: scratch, encoding: "utf8", timeout: 10_000, windowsHide: true },
+    );
+    if (resolved.error || resolved.status !== 0)
+      throw new Error(resolved.stdout + resolved.stderr, {
+        cause: resolved.error,
+      });
+    const configs = JSON.parse(resolved.stdout) as Record<
+      string,
+      {
+        options: Record<string, unknown>;
+        fileNames: string[];
+      }
+    >;
+    const production = configs["tsconfig.build.json"]!;
+    writeFileSync(
+      join(scratch, "tsconfig.public.json"),
+      JSON.stringify({
+        extends: "./tsconfig.build.json",
+        files: production.fileNames,
+      }),
+    );
+    const cloud = configs["tsconfig.json"]!;
+    writeFileSync(
+      join(scratch, "tsconfig.cloud.json"),
+      JSON.stringify({
+        extends: "./tsconfig.json",
+        compilerOptions: { noEmit: false, outDir: "./dist", rootDir: "." },
+        files: cloud.fileNames.filter(
+          (path) =>
+            /\/cloud\/src\//.test(path.replaceAll("\\", "/")) &&
+            !isTestFile(path.replaceAll("\\", "/")),
+        ),
+        include: [],
+      }),
+    );
     const compiler = join(scratch, "node_modules/typescript/bin/tsc");
     const compile = (config = "tsconfig.public.json") =>
       spawnSync(process.execPath, [compiler, "-p", config], {
@@ -404,6 +434,9 @@ test("public sources compile in a copy with team removed and emit no team files"
     expect(broken.status).not.toBe(0);
     expect((broken.stdout + broken.stderr).replaceAll("\\", "/")).toContain(
       "team/private.d.ts",
+    );
+    console.info(
+      "team-removal probe executed: compiler refused team/private.d.ts",
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });

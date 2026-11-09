@@ -23,5 +23,8 @@
   "TSX side-effect import": "import '../../team/secret.ts'; export const view = <main />;",
   "JSX side-effect import": "import '../../team/secret.ts'; export const view = <main />;",
   "public JSX": "import './teamwork.js'; export const view = <main />;",
-  "parse failure": "import '../../team/secret.ts'; export const view = <main>;"
+  "parse failure": "import '../../team/secret.ts'; export const view = <main>;",
+  "shebang side-effect import": "#!/usr/bin/env node\nimport '../team/secret.ts';",
+  "BOM shebang side-effect import": "\ufeff#!/usr/bin/env node\nimport '../team/secret.ts';",
+  "config resolver": "import { API } from 'typescript/unstable/sync'; import { resolve } from 'node:path'; const api = new API({ cwd: process.cwd() }); try { process.stdout.write(JSON.stringify(Object.fromEntries(process.argv.slice(1).map(path => [path, api.parseConfigFile(resolve(path))])))); } finally { api.close(); }"
 }

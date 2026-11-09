@@ -36,6 +36,11 @@
       "value": { "files": ["dist", "./TEAM/**/*"] }
     },
     {
+      "name": "files path with spaces",
+      "path": "package.json",
+      "value": { "files": ["./team/private schema.json"] }
+    },
+    {
       "name": "adapter entry",
       "path": "src/adapters/sample/adapter.json",
       "value": { "entry": "../../../team/adapter.js" }

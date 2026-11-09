@@ -105,6 +105,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Conservatively retains synthetic npm/npx-launch guard fixtures.",
   "test/structure/process-lane.integration.test.ts":
     "Conservatively retains synthetic Node-launch guard fixtures.",
+  "test/structure/team-boundary.integration.test.ts":
+    "Launches selected Node to resolve effective compiler configs for the team-removal smoke.",
   "test/surface/conversation-approval.integration.test.ts":
     "Launches selected Node for conversation approval coverage.",
   "test/surface/example-quoting.integration.test.ts":

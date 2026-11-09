@@ -47,8 +47,6 @@ const BUILTINS = new Set(
 const scanners = {
   ts: new Bun.Transpiler({ loader: "ts" }),
   tsx: new Bun.Transpiler({ loader: "tsx" }),
-  js: new Bun.Transpiler({ loader: "js" }),
-  jsx: new Bun.Transpiler({ loader: "jsx" }),
 };
 
 /** Import specifiers of a code file, including `import type` (erased at run time, but still a leak). */
@@ -58,15 +56,11 @@ export function importsOf(
 ): string[] {
   if (!CODE_FILE.test(file.path)) return [];
   const found = new Set<string>();
-  const loader = file.path.endsWith(".tsx")
-    ? "tsx"
-    : file.path.endsWith(".jsx")
-      ? "jsx"
-      : /\.[cm]?js$/.test(file.path)
-        ? "js"
-        : "ts";
+  // Keep type-only dependencies visible in JavaScript-named inputs too.
+  const loader = /\.[jt]sx$/.test(file.path) ? "tsx" : "ts";
+  const source = file.text.replace(/^\uFEFF/, "").replace(/^#![^\r\n]*/, "");
   try {
-    for (const entry of scanners[loader].scan(file.text).imports)
+    for (const entry of scanners[loader].scan(source).imports)
       found.add(entry.path);
   } catch (cause) {
     throw new Error(`Cannot parse ${file.path} for dependency scanning`, {
@@ -75,11 +69,11 @@ export function importsOf(
   }
   const typeImports =
     /^[ \t]*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm;
-  for (const match of file.text.matchAll(typeImports)) {
+  for (const match of source.matchAll(typeImports)) {
     if (match[1] !== undefined) found.add(match[1]);
   }
-  const withStrings = maskSource(file.text, false);
-  const codeOnly = maskSource(file.text, true);
+  const withStrings = maskSource(source, false);
+  const codeOnly = maskSource(source, true);
   const calls =
     /(?<![\w$.])(?:import|require)\s*\(\s*(?:["']([^"']+)["']\s*[,)]|)/g;
   for (const match of withStrings.matchAll(calls)) {
@@ -256,7 +250,7 @@ export function findDependencyViolations(
           ];
       for (const target of targets) {
         const path = slashPath(target).split(/[?#]/)[0]!;
-        if (!path || /\s|^[a-z][\w+.-]*:|^\/\//i.test(path)) continue;
+        if (!path || /^[a-z][\w+.-]*:|^\/\//i.test(path)) continue;
         if (inTeam(posix.join(posix.dirname(file.path), path)))
           reportTeam(`manifest path "${target}" reaches removable team/`);
       }
