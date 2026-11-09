@@ -2033,7 +2033,18 @@ export async function createAssembly(
                 ownership: "owned",
                 value: Object.freeze(clients),
                 async close() {
-                  await Promise.all(leases.map((lease) => lease.close()));
+                  const closed = await Promise.allSettled(
+                    leases.map(async (lease) => {
+                      await lease.close();
+                    }),
+                  );
+                  const errors = closed.flatMap((result) =>
+                    result.status === "rejected"
+                      ? [result.reason as unknown]
+                      : [],
+                  );
+                  if (errors.length)
+                    throw new AggregateError(errors, "Service cleanup failed");
                 },
               };
             } catch (error) {
