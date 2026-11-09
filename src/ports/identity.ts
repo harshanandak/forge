@@ -1,5 +1,5 @@
 /** The exact (issuer, subject) pair identifies a principal; neither field is normalized. */
-export interface VerifiedIdentity {
+export interface IdentityClaims {
   readonly issuer: string;
   readonly subject: string;
   readonly audience: string;
@@ -7,6 +7,11 @@ export interface VerifiedIdentity {
   readonly expiresAt: number;
   /** Authentication time in milliseconds since the Unix epoch. */
   readonly authenticatedAt: number;
+}
+
+declare const verified: unique symbol;
+export interface VerifiedIdentity extends IdentityClaims {
+  readonly [verified]: true;
 }
 
 export type IdentityRefusal =
@@ -24,8 +29,13 @@ export type IdentityResult =
  * Authenticate opaque proof using configured trust roots before returning identity.
  * Refuse empty identity fields, a different audience, and now >= expiresAt.
  */
-export interface IdentityVerifier {
-  verify(
+export abstract class IdentityVerifier {
+  /** Trusted verifiers mint this only after authenticating the proof. */
+  protected identity(claims: IdentityClaims): VerifiedIdentity {
+    return Object.freeze({ ...claims }) as VerifiedIdentity;
+  }
+
+  abstract verify(
     proof: unknown,
     expectedAudience: string,
     now: number,

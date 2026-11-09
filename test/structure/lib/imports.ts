@@ -37,6 +37,7 @@ export const RESTRICTED_BUILTINS: ReadonlyMap<string, string> = new Map([
 const BUILTIN_PROVIDERS: ReadonlyMap<string, string> = new Map([
   ...RESTRICTED_BUILTINS,
   ["fs", "fs"],
+  ["crypto", "oidc"],
 ]);
 
 const BUILTINS = new Set(
