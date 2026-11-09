@@ -291,9 +291,54 @@ async function heldContext(
   const generation = shown.ok
     ? record(record(shown.result)?.lease)?.generation
     : undefined;
-  return typeof generation === "number"
-    ? { ...context, leaseGeneration: generation }
+  if (typeof generation === "number")
+    return { ...context, leaseGeneration: generation };
+  return (await releasableLane(catalog, op, input, options, context))
+    ? { ...context, leaseGeneration: 0 }
     : context;
+}
+
+/**
+ * `lane close` on a lane whose issue was closed without a receipt and holds no lease. Such an issue
+ * can never be claimed again, so no real generation exists. The handler makes no fenced write on this
+ * path, and generation 0 is never a real generation (they start at 1), so the state owner refuses
+ * every fenced write made under it.
+ */
+async function releasableLane(
+  catalog: SurfaceCatalog,
+  op: string,
+  input: unknown,
+  options: CallOptions,
+  context: AmbientContext,
+): Promise<boolean> {
+  const args = record(input);
+  if (
+    op !== "lane.close" ||
+    typeof args?.id !== "string" ||
+    typeof args.receipt !== "string" ||
+    args.dropped !== undefined ||
+    args.keepOpen === true ||
+    args.noPr === true
+  )
+    return false;
+  try {
+    const shown = await catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: randomUUID(),
+      op: "issue.show",
+      input: { id: args.id },
+      caller: options.caller,
+      context,
+    });
+    const issue = shown.ok ? record(shown.result) : undefined;
+    return (
+      issue?.status === "closed" &&
+      issue.receipt === undefined &&
+      issue.lease === undefined
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function record(

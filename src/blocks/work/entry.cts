@@ -3796,6 +3796,7 @@ const operations: Operations<WorkOperations> = {
         process?: ProcessService;
         environment?: EnvironmentService;
         crypto?: CryptoService;
+        receipts?: ReceiptsService;
       };
     if (!bound.process || !bound.environment)
       fail("UNAVAILABLE", "Lane close needs process and environment");
@@ -4129,7 +4130,29 @@ const operations: Operations<WorkOperations> = {
           const link = record.value as LinkInput;
           return link.relation === "delivers" && link.url === pull.url;
         });
-      if (
+      // An issue closed by hand without a receipt has no lease to hold and cannot be claimed again.
+      // Its lane is released on the same evidence, checked here, and no state is written.
+      const releasing =
+        !dropped &&
+        !keepOpen &&
+        current.status === "closed" &&
+        current.receipt === undefined;
+      if (releasing) {
+        const proof = bound.receipts?.get(receipt);
+        if (!proof || proof.status !== "PASS")
+          refuse(
+            "RECEIPT_INVALID",
+            "Closing requires an existing verified PASS receipt",
+          );
+        else if (
+          proof.subject !== pull.headRefOid &&
+          proof.subject !== mergeCommit
+        )
+          refuse(
+            "RECEIPT_HEAD_MISMATCH",
+            "Receipt must cover the delivered PR's final head or merge commit",
+          );
+      } else if (
         (!dropped && keepOpen && current.status !== "open") ||
         (!keepOpen &&
           current.status === "closed" &&
@@ -4177,7 +4200,7 @@ const operations: Operations<WorkOperations> = {
         current.status === "closed" &&
         accepted !== undefined &&
         canonical(accepted.value) === canonical(landing);
-      if (!recovering) {
+      if (!recovering && !releasing) {
         // An empty batch asserts the caller's holder and generation without recording a write.
         state.putMany([], { subject: key(id) });
       }
@@ -4208,7 +4231,7 @@ const operations: Operations<WorkOperations> = {
           reason: `PR #${input.pr} merged as ${mergeCommit.slice(0, 7)}`,
         },
       };
-      if (!dropped) {
+      if (!dropped && !releasing) {
         if (!linked)
           await operations["issue.link"]({
             ...call,
@@ -4229,7 +4252,7 @@ const operations: Operations<WorkOperations> = {
           false,
           pull.url,
         );
-      if (!matching) {
+      if (!matching && !releasing) {
         const prefix = `comment:${id}:`,
           commentId = prefix + (state.count(prefix) + 1);
         const written = recovering
