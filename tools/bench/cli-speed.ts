@@ -14,15 +14,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  MAX_RATIO_TO_BASE,
-  SCORE_LABEL,
-  compareToBase,
-  sampleOrder,
-} from "./speed-compare.ts";
+import { gateDecision, sampleOrder } from "./speed-compare.ts";
 
 interface Limit {
-  /** Absolute ceiling on the median; a runner can be slow, so this only catches a gross regression. */
+  /** Absolute ceiling on the median. A slow runner can pass it, so it fails the job only when the same-job comparison with the base build fails too (or the base is missing); otherwise it warns. */
   readonly ceilingMs: number;
   /** Absolute cap on the median peak memory, which does not move with the runner. */
   readonly maxPeakMb: number;
@@ -30,7 +25,8 @@ interface Limit {
 
 // The speed gate, on `issue show` on a hosted runner. Peak memory is checked against
 // an absolute cap. Time is checked against the build of the base branch, run in the same job and
-// interleaved with this build, so runner speed cancels out; the absolute time is only a ceiling.
+// interleaved with this build, so runner speed cancels out. The absolute time is a ceiling that only
+// warns while that comparison passes.
 // Platforms without a limit only report.
 const GATE_COMMAND = "issue show";
 const LIMITS: Readonly<Record<string, Limit>> = {
@@ -278,30 +274,16 @@ if (gate) {
   if (limit === undefined) {
     console.log(`No speed limit is set for ${platform}; reported only.`);
   } else {
-    const failures: string[] = [];
-    if (row.medianPeakMb > limit.maxPeakMb)
-      failures.push(
-        `${GATE_COMMAND} peak ${row.medianPeakMb.toFixed(1)} MB is over the ${limit.maxPeakMb} MB limit on ${platform}`,
-      );
-    if (row.medianMs > limit.ceilingMs)
-      failures.push(
-        `${GATE_COMMAND} median ${row.medianMs.toFixed(0)} ms is over the ${limit.ceilingMs} ms ceiling on ${platform}`,
-      );
     const baseRow = rows.find(
       (candidate) =>
         candidate.command === `${GATE_COMMAND} (origin/main build)`,
     );
-    if (baseRow === undefined)
-      failures.push(
-        `the origin/main build was not found${baseDist === undefined ? " (no --base folder was given)" : ` at ${baseDist}`}, so the check against the base branch cannot run; build the base branch first`,
-      );
-    else {
-      const verdict = compareToBase(row.timesMs, baseRow.timesMs);
-      if (!verdict.passed)
-        failures.push(
-          `${GATE_COMMAND} ${SCORE_LABEL} ${verdict.currentMs.toFixed(0)} ms is more than ${MAX_RATIO_TO_BASE} times the origin/main build's ${verdict.baseMs.toFixed(0)} ms in the same job on ${platform}`,
-        );
-    }
+    const { failures, warnings } = gateDecision(limit, row, baseRow, {
+      command: GATE_COMMAND,
+      platform,
+      baseMissing: `the origin/main build was not found${baseDist === undefined ? " (no --base folder was given)" : ` at ${baseDist}`}, so the check against the base branch cannot run; build the base branch first`,
+    });
+    for (const message of warnings) console.log(`::warning::${message}`);
     for (const message of failures) console.error(`::error::${message}`);
     if (failures.length > 0) process.exitCode = 1;
     else console.log(`Speed gate passed on ${platform}.`);
