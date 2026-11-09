@@ -668,8 +668,10 @@ if (phase === "main") {
     async () => {
       const project = `${run}-overlap`;
       await tokenFor(project);
-      const fault = { "x-cloud-fault": "receipt-insert" };
       const pairs = Array.from({ length: 12 }, (_, index) => index);
+      // Each pair is forced to overlap inside the fault wrapper: the faulted claim pauses there until
+      // its plain partner has entered, then resumes while the partner is still running. A serial run
+      // cannot get past the pause, and a fault flag shared between requests is lost to the partner.
       const sent = await Promise.all(
         pairs.flatMap((index) => [
           send(
@@ -682,13 +684,22 @@ if (phase === "main") {
               ttlMs: 600_000,
               requestId: `overlap-fault-${index}`,
             },
-            fault,
+            {
+              "x-cloud-fault": "receipt-insert",
+              "x-cloud-hold": `overlap-${index}`,
+            },
           ),
-          claim(
+          send(
             project,
-            `issue:overlap-plain-${index}`,
-            holderOf("overlap", index),
-            `overlap-plain-${index}`,
+            "POST",
+            "claim",
+            {
+              subject: `issue:overlap-plain-${index}`,
+              holder: holderOf("overlap", index),
+              ttlMs: 600_000,
+              requestId: `overlap-plain-${index}`,
+            },
+            { "x-cloud-after": `overlap-${index}` },
           ),
         ]),
       );
