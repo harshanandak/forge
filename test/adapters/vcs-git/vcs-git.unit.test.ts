@@ -80,6 +80,29 @@ test("a timeout is reported, not mistaken for 'no such ref'", async () => {
   });
 }, 30_000);
 
+test("a timeout with an incomplete drain keeps its timeout classification below the byte limit", async () => {
+  const stdout = "partial";
+  expect(Buffer.byteLength(stdout)).toBeLessThan(base.maxOutputBytes);
+  const vcs = createVcsPort({
+    ...base,
+    process: fakeProcess(["git"], () => ({
+      exitCode: null,
+      timedOut: true,
+      truncated: true,
+      stdout,
+    })),
+  });
+  expect(await vcs.revision("/x", "main")).toMatchObject({
+    kind: "unavailable",
+    reason: "git did not finish in time",
+    remedy: "Retry, or check that the repository is on a responsive disk.",
+  });
+  await expect(vcs.status("/x")).rejects.toMatchObject({
+    code: "GIT_FAILED",
+    message: "git status failed: git did not finish in time",
+  });
+}, 30_000);
+
 test("a ref is passed after --end-of-options so it can never be read as a flag", async () => {
   const process = fakeProcess(["git"], () => ({ stdout: "abc123\n" }));
   const vcs = createVcsPort({ ...base, process });
