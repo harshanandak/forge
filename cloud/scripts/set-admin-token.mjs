@@ -57,31 +57,44 @@ function stop(message, liveChanged = false) {
 const folder = dirname(target);
 const me = userInfo().username;
 
+// The only principals allowed on the token folder and the token file on Windows: this user, SYSTEM and
+// Administrators. The last two can already read everything, so they are outside the threat model.
+// The folder check and the file check share this list and aclProblem, so they cannot drift apart.
+const yours = [
+  `${process.env.USERDOMAIN}\\${me}`,
+  `${process.env.COMPUTERNAME}\\${me}`,
+].map((name) => name.toLowerCase());
+const allowed = [...yours, "nt authority\\system", "builtin\\administrators"];
+
+// Why a Windows path is open to someone besides this user, or undefined when it is not. Fails closed:
+// an unreadable ACL, an unknown principal and any DENY entry are all refused. With requireFull, this
+// user must also hold full control (F).
+function aclProblem(path, requireFull) {
+  const shown = spawnSync("icacls", [path], { encoding: "utf8" });
+  if (shown.status !== 0) return "has permissions that could not be read";
+  const entries = `${shown.stdout}`
+    .split(/\r?\n/)
+    .filter((line) => line.includes(":("));
+  if (entries.length === 0)
+    return "has no permission entries that could be read";
+  let full = false;
+  for (const line of entries) {
+    const cut = line.indexOf(":(");
+    const who = line.slice(0, cut).trimEnd().toLowerCase();
+    const name = allowed.find((n) => who === n || who.endsWith(` ${n}`));
+    if (name === undefined) return "is open to someone besides you";
+    const rights = line.slice(cut).toLowerCase();
+    if (rights.includes("(deny)")) return "has a deny entry";
+    if (yours.includes(name) && rights.includes("(f)")) full = true;
+  }
+  return requireFull && !full ? "does not give you full control" : undefined;
+}
+
 // Why the token folder is not private to this user, or undefined when it is. It is checked before any
 // file is created in it: a handle opened on a file while the folder was open to others would outlive a
-// later permission change. Administrators and SYSTEM can already read everything, so they are allowed.
+// later permission change.
 function folderProblem() {
-  if (process.platform === "win32") {
-    const shown = spawnSync("icacls", [folder], { encoding: "utf8" });
-    if (shown.status !== 0) return "has permissions that could not be read";
-    const allowed = [
-      `${process.env.USERDOMAIN}\\${me}`,
-      `${process.env.COMPUTERNAME}\\${me}`,
-      "NT AUTHORITY\\SYSTEM",
-      "BUILTIN\\Administrators",
-    ].map((name) => name.toLowerCase());
-    const entries = `${shown.stdout}`
-      .split(/\r?\n/)
-      .filter((line) => line.includes(":("));
-    if (entries.length === 0)
-      return "has no permission entries that could be read";
-    for (const line of entries) {
-      const who = line.slice(0, line.indexOf(":(")).trimEnd().toLowerCase();
-      if (!allowed.some((name) => who === name || who.endsWith(` ${name}`)))
-        return "is open to someone besides you";
-    }
-    return undefined;
-  }
+  if (process.platform === "win32") return aclProblem(folder, false);
   const info = statSync(folder);
   return (info.mode & 0o077) !== 0 || info.uid !== process.getuid()
     ? "is open to someone besides you"
@@ -104,15 +117,8 @@ function restrict() {
       },
     );
     if (set.status !== 0) throw new Error("icacls could not restrict the file");
-    const shown = spawnSync("icacls", [temp], { encoding: "utf8" });
-    const grants = [...`${shown.stdout}`.matchAll(/(\S+):\(/g)].map(
-      (m) => m[1],
-    );
-    const only =
-      grants.length === 1 &&
-      grants[0].split("\\").pop().toLowerCase() === user.toLowerCase();
-    if (shown.status !== 0 || !only || !`${shown.stdout}`.includes(":(F)"))
-      throw new Error("the file is readable by someone besides this user");
+    const problem = aclProblem(temp, true);
+    if (problem !== undefined) throw new Error(`the file ${problem}`);
   } else {
     const info = statSync(temp);
     if ((info.mode & 0o777) !== 0o600 || info.uid !== process.getuid())
