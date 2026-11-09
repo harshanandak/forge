@@ -1,5 +1,5 @@
 // [integration] A killed process counts as exited only once its process object is signaled.
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
 import {
   openWindowsJob,
@@ -8,6 +8,9 @@ import {
 } from "../../../src/adapters/process/windows-job.ts";
 
 const windows = process.platform === "win32";
+
+// The guard reads a file default, not the timeout after a skipIf call; the test also passes its own.
+setDefaultTimeout(30_000);
 
 test.skipIf(!windows)(
   "waitForExit signals for a job-killed process and names one that is still running",
