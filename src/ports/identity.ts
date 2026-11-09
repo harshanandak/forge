@@ -20,7 +20,10 @@ export type IdentityResult =
   | { readonly ok: true; readonly identity: VerifiedIdentity }
   | { readonly ok: false; readonly reason: IdentityRefusal };
 
-/** Implementations authenticate opaque proof using configured trust roots before returning identity. */
+/**
+ * Authenticate opaque proof using configured trust roots before returning identity.
+ * Refuse empty identity fields, a different audience, and now >= expiresAt.
+ */
 export interface IdentityVerifier {
   verify(
     proof: unknown,
