@@ -325,7 +325,13 @@ function emptyExtendedLimits(): Readonly<Record<string, unknown>> {
   };
 }
 
-function processIds(api: NativeApi, job: bigint): readonly number[] {
+/** The two native calls the PID snapshot uses; a test can supply a fake. */
+export type JobIdQueryApi = Pick<
+  NativeApi,
+  "queryInformationJobObject" | "getLastError"
+>;
+
+export function processIds(api: JobIdQueryApi, job: bigint): readonly number[] {
   const pointerBytes = process.arch === "ia32" ? 4 : 8;
   let capacity = 16;
   while (capacity <= MAX_ASSOCIATED_PROCESSES) {
