@@ -3311,9 +3311,12 @@ async function laneStatus(
     lanes = laneRegistry(laneFiles(services)).lanes,
     listed = activeLanes(state, laneFiles(services));
   let flags: GlobalState;
+  let holding: number;
   let rows: LaneRow[];
   try {
     flags = readGlobal(state).value;
+    // Count slots the way lane start does, so the two never disagree on the cap.
+    holding = lanes.filter((lane) => holdsSlot(state, lane)).length;
     rows = listed.map((id) => {
       const used = usageOf(state, ids, id, limits);
       const recorded = beforeMerge(state, id);
@@ -3349,7 +3352,7 @@ async function laneStatus(
     load = undefined;
   }
   if (!validLoad(load)) load = undefined;
-  const decision = startDecision(lanes.length, limits, load);
+  const decision = startDecision(holding, limits, load);
   return {
     enabled: limits.enabled,
     stopped: flags.stopAll !== undefined,
