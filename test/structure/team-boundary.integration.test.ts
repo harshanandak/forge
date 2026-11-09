@@ -12,11 +12,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
+import { API } from "typescript/unstable/sync";
 import { scanAdapters } from "./lib/adapters.ts";
 import { findDependencyViolations, type PackageJson } from "./lib/imports.ts";
+import { maskSource } from "./lib/platform.ts";
 import {
   CODE_FILE,
   format,
+  isTestFile,
   listRepoFiles,
   readJson,
   readRepoFiles,
@@ -49,11 +52,36 @@ const declarations = readJson(
 const compilerConfigs = (
   root: string,
   files: readonly string[],
-): SourceFile[] =>
-  readRepoFiles(
-    files.filter((path) => /(?:^|\/)tsconfig[^/]*\.json$/.test(path)),
-    root,
-  );
+): SourceFile[] => {
+  const found = new Map<string, SourceFile>();
+  const visit = (path: string): void => {
+    if (found.has(path)) return;
+    const file = readRepoFiles([path], root)[0];
+    if (!file) throw new Error(`Cannot read compiler config ${path}`);
+    found.set(path, file);
+    const config = JSON.parse(maskSource(file.text, false)) as {
+      extends?: string | string[];
+    };
+    for (const base of [config.extends ?? []].flat()) {
+      if (!base.startsWith("."))
+        throw new Error(
+          `Compiler config ${path} must extend a local relative path`,
+        );
+      let target = posix.normalize(
+        posix.join(posix.dirname(path), base.replaceAll("\\", "/")),
+      );
+      if (!existsSync(join(root, target))) target += ".json";
+      if (!/\.jsonc?$/.test(target))
+        throw new Error(`Unsupported compiler config ${target}`);
+      visit(target);
+    }
+  };
+  for (const path of files.filter((path) =>
+    /(?:^|\/)tsconfig[^/]*\.json$/.test(path),
+  ))
+    visit(path);
+  return [...found.values()];
+};
 
 test("the real scan includes sources from every public root", () => {
   const sources = readRepoFiles(paths.filter((path) => CODE_FILE.test(path)));
@@ -283,13 +311,7 @@ for (const path of [
   }
 }
 test("public compiler configurations reject root and extended paths into team", () => {
-  expect(
-    boundary(
-      readRepoFiles(
-        paths.filter((path) => /(?:^|\/)tsconfig[^/]*\.json$/.test(path)),
-      ),
-    ),
-  ).toEqual([]);
+  expect(boundary(compilerConfigs(repoRoot, paths))).toEqual([]);
   for (const [path, target] of [
     ["tsconfig.json", "./team/*"],
     ["config/base.json", "../Team/*"],
@@ -317,19 +339,38 @@ test("public sources compile in a copy with team removed and emit no team files"
       join(scratch, "node_modules"),
       "junction",
     );
-    const config = readJson("tsconfig.json") as {
-      compilerOptions: Record<string, unknown>;
-    };
-    Object.assign(config, {
-      include: ["bin", "src", "cloud/src"],
-      exclude: (readJson("tsconfig.build.json") as { exclude: string[] })
-        .exclude,
-    });
-    Object.assign(config.compilerOptions, { noEmit: false, outDir: "./dist" });
-    writeFileSync(join(scratch, "tsconfig.json"), JSON.stringify(config));
+    const api = new API({ cwd: scratch });
+    try {
+      const production = api.parseConfigFile(
+        join(scratch, "tsconfig.build.json"),
+      );
+      writeFileSync(
+        join(scratch, "tsconfig.public.json"),
+        JSON.stringify({
+          extends: "./tsconfig.build.json",
+          files: production.fileNames,
+        }),
+      );
+      const cloud = api.parseConfigFile(join(scratch, "tsconfig.json"));
+      writeFileSync(
+        join(scratch, "tsconfig.cloud.json"),
+        JSON.stringify({
+          extends: "./tsconfig.json",
+          compilerOptions: { noEmit: false, outDir: "./dist", rootDir: "." },
+          files: cloud.fileNames.filter(
+            (path) =>
+              /\/cloud\/src\//.test(path.replaceAll("\\", "/")) &&
+              !isTestFile(path.replaceAll("\\", "/")),
+          ),
+          include: [],
+        }),
+      );
+    } finally {
+      api.close();
+    }
     const compiler = join(scratch, "node_modules/typescript/bin/tsc");
-    const compile = () =>
-      spawnSync(process.execPath, [compiler, "-p", "tsconfig.json"], {
+    const compile = (config = "tsconfig.public.json") =>
+      spawnSync(process.execPath, [compiler, "-p", config], {
         cwd: scratch,
         encoding: "utf8",
         timeout: 10_000,
@@ -340,6 +381,11 @@ test("public sources compile in a copy with team removed and emit no team files"
     if (built.error || built.status !== 0)
       throw new Error(built.stdout + built.stderr, { cause: built.error });
     expect(built.status).toBe(0);
+    const cloudBuilt = compile("tsconfig.cloud.json");
+    if (cloudBuilt.error || cloudBuilt.status !== 0)
+      throw new Error(cloudBuilt.stdout + cloudBuilt.stderr, {
+        cause: cloudBuilt.error,
+      });
     const output = readdirSync(join(scratch, "dist"), {
       recursive: true,
       encoding: "utf8",
