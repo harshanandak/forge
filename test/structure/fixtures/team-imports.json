@@ -11,5 +11,13 @@
   "barrel entry": "export * from './bridge.ts';",
   "barrel bridge": "export * from '../../team/secret.ts';",
   "package imports alias": "import { secret } from '#private/secret';",
-  "package exports alias": "export { secret } from 'forge-workflow/private/secret';"
+  "package exports alias": "export { secret } from 'forge-workflow/private/secret';",
+  "Windows case": "require('../Team/secret.cjs');",
+  "Windows backslash": "require('..\\\\team\\\\secret.cjs');",
+  "createRequire alias": "import { createRequire as loader } from 'node:module';",
+  "triple-slash reference": "/// <reference path='../Team/secret.d.ts' />",
+  "test-named bridge": "export * from './bridge.test.ts';",
+  "test-folder bridge": "export * from './test/bridge.ts';",
+  "template import": "export const load = () => import(`../team/secret.ts`);",
+  "test declaration bridge": "export type { Value } from './bridge.test.d.ts';"
 }

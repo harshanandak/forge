@@ -1,5 +1,16 @@
 import { expect, test } from "bun:test";
-import { posix } from "node:path";
+import { spawnSync } from "node:child_process";
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, posix } from "node:path";
 import { scanAdapters } from "./lib/adapters.ts";
 import { findDependencyViolations, type PackageJson } from "./lib/imports.ts";
 import {
@@ -8,6 +19,7 @@ import {
   listRepoFiles,
   readJson,
   readRepoFiles,
+  repoRoot,
   type SourceFile,
 } from "./lib/repo.ts";
 
@@ -123,4 +135,119 @@ test("team may import open code and public lookalikes are allowed", () => {
       { path: "test/team/example.ts", text: fixture("static import") },
     ]),
   ).toEqual([]);
+}, 30_000);
+
+for (const name of [
+  "Windows case",
+  "Windows backslash",
+  "createRequire alias",
+  "triple-slash reference",
+  "test-named bridge",
+  "test-folder bridge",
+  "test declaration bridge",
+]) {
+  test(`public code refuses ${name}`, () => {
+    expect(
+      boundary([{ path: "bin/forge.cjs", text: fixture(name) }]),
+    ).not.toEqual([]);
+  }, 30_000);
+}
+for (const path of [
+  "src/core/load.ts",
+  "src/blocks/sample/load.ts",
+  "src/adapters/new-loader/index.ts",
+  "cloud/src/load.ts",
+]) {
+  for (const name of [
+    "nonliteral import",
+    "nonliteral require",
+    "computed template import",
+    "template import",
+    "createRequire alias",
+  ]) {
+    test(`${path} refuses ${name} outside composition`, () => {
+      expect(boundary([{ path, text: fixture(name) }])).not.toEqual([]);
+    }, 30_000);
+  }
+}
+test("public compiler configurations reject root and extended paths into team", () => {
+  expect(
+    boundary(
+      readRepoFiles(
+        paths.filter((path) => /(?:^|\/)tsconfig[^/]*\.json$/.test(path)),
+      ),
+    ),
+  ).toEqual([]);
+  for (const [path, target] of [
+    ["tsconfig.json", "./team/*"],
+    ["config/base.json", "../Team/*"],
+    ["tsconfig.build.json", ".\\TEAM\\*"],
+  ] as const) {
+    const text = JSON.stringify({
+      compilerOptions: { baseUrl: ".", paths: { private: [target] } },
+    });
+    expect(boundary([{ path, text }])).toHaveLength(1);
+  }
+}, 30_000);
+test("public sources compile in a copy with team removed and emit no team files", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "forge-public-"));
+  try {
+    for (const path of paths.filter(
+      (path) => !/^(?:team|test)\//i.test(path),
+    )) {
+      cpSync(join(repoRoot, path), join(scratch, path));
+    }
+    cpSync(join(repoRoot, "src/generated"), join(scratch, "src/generated"), {
+      recursive: true,
+    });
+    symlinkSync(
+      join(repoRoot, "node_modules"),
+      join(scratch, "node_modules"),
+      "junction",
+    );
+    const config = readJson("tsconfig.json") as {
+      compilerOptions: Record<string, unknown>;
+    };
+    Object.assign(config, {
+      include: ["bin", "src", "cloud/src"],
+      exclude: (readJson("tsconfig.build.json") as { exclude: string[] })
+        .exclude,
+    });
+    Object.assign(config.compilerOptions, { noEmit: false, outDir: "./dist" });
+    writeFileSync(join(scratch, "tsconfig.json"), JSON.stringify(config));
+    const compiler = join(scratch, "node_modules/typescript/bin/tsc");
+    const compile = () =>
+      spawnSync(process.execPath, [compiler, "-p", "tsconfig.json"], {
+        cwd: scratch,
+        encoding: "utf8",
+        timeout: 10_000,
+        windowsHide: true,
+      });
+    expect(existsSync(join(scratch, "team"))).toBe(false);
+    const built = compile();
+    if (built.error || built.status !== 0)
+      throw new Error(built.stdout + built.stderr, { cause: built.error });
+    expect(built.status).toBe(0);
+    const output = readdirSync(join(scratch, "dist"), {
+      recursive: true,
+      encoding: "utf8",
+    }).map((path) => path.replaceAll("\\", "/"));
+    expect(output).toContain("src/index.js");
+    expect(output).toContain("cloud/src/worker.js");
+    expect(output.filter((path) => /(?:^|\/)team(?:\/|$)/i.test(path))).toEqual(
+      [],
+    );
+    writeFileSync(
+      join(scratch, "src/team-removal-probe.ts"),
+      "/// <reference path='../team/private.d.ts' />\n",
+    );
+    const broken = compile();
+    expect(broken.error).toBeUndefined();
+    expect(broken.status).not.toBe(0);
+    expect((broken.stdout + broken.stderr).replaceAll("\\", "/")).toContain(
+      "team/private.d.ts",
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }, 30_000);

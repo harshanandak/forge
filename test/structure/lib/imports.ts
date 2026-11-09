@@ -3,7 +3,7 @@ import { posix } from "node:path";
 import { FILESYSTEM_OWNERS } from "./filesystem-owners.ts";
 import { maskSource } from "./platform.ts";
 import type { SourceFile, Violation } from "./repo.ts";
-import { CODE_FILE, DETECTOR_MODULE, TEST_FILE } from "./repo.ts";
+import { CODE_FILE, DETECTOR_MODULE, isTestFile } from "./repo.ts";
 import { findWords } from "./words.ts";
 
 export const PACKAGE_NAME = "forge-workflow";
@@ -146,6 +146,17 @@ function aliasTargets(specifier: string, pkg: PackageJson): string[] {
   );
 }
 
+const TEAM_LOADING_SITES: Readonly<Record<string, string>> = {
+  "src/adapters/store-sqlite/index.ts": "Selects Bun or Node SQLite.",
+  "src/adapters/process/windows-acl.ts": "Loads the koffi ACL binding.",
+  "src/adapters/process/windows-job.ts": "Loads the koffi job binding.",
+  "src/assembly/capture.ts": "Resolves installed package roots.",
+};
+
+const slashPath = (path: string): string => path.replaceAll("\\", "/");
+const inTeam = (path: string): boolean =>
+  /^(?:dist\/)?team(?:\/|$)/i.test(posix.normalize(slashPath(path)));
+
 /** R1/R2: a dependency is imported only inside its adapter, and ports are the only way in. */
 export function findDependencyViolations(
   files: readonly SourceFile[],
@@ -164,8 +175,7 @@ export function findDependencyViolations(
   for (const file of files) {
     const here = adapterOf(file.path);
     const inShipped = /^(?:src|bin)\//.test(file.path);
-    const isTest =
-      TEST_FILE.test(file.path) || /(?:^|\/)test\//.test(file.path);
+    const isTest = isTestFile(file.path);
     const unownedFilesystem =
       file.path.startsWith("src/") && !FILESYSTEM_OWNERS.has(file.path);
     if (unownedFilesystem && CODE_FILE.test(file.path)) {
@@ -181,33 +191,72 @@ export function findDependencyViolations(
     }
 
     const publicCode =
-      CODE_FILE.test(file.path) && !isTest && !file.path.startsWith("team/");
+      CODE_FILE.test(file.path) &&
+      !isTest &&
+      !/^team\//i.test(slashPath(file.path));
     const reportTeam = (message: string): void => {
       violations.push({ rule: "team-boundary", file: file.path, message });
     };
-    const composition =
-      /^(?:src\/assembly\/|bin\/|cloud\/src\/|templates\/|tools\/(?:build|bundle)[^/]*\.)/.test(
-        file.path,
+    if (/\.jsonc?$/i.test(file.path)) {
+      const config = JSON.parse(maskSource(file.text, false)) as {
+        compilerOptions?: {
+          baseUrl?: string;
+          paths?: Record<string, string[]>;
+        };
+      };
+      const options = config.compilerOptions;
+      const base = posix.join(
+        posix.dirname(file.path),
+        slashPath(options?.baseUrl ?? "."),
       );
+      for (const [alias, targets] of Object.entries(options?.paths ?? {}))
+        if (
+          targets.some((target) => inTeam(posix.join(base, slashPath(target))))
+        )
+          reportTeam(
+            `paths alias "${alias}" targets removable team/; keep public configuration independent`,
+          );
+    }
+    if (publicCode) {
+      if (
+        !(file.path in TEAM_LOADING_SITES) &&
+        /\bcreateRequire\b/.test(maskSource(file.text, true))
+      )
+        reportTeam(
+          "createRequire can hide team/; use literal imports or an inventoried loader",
+        );
+      for (const match of file.text.matchAll(
+        /^[ \t]*\/\/\/[ \t]*<reference\s+path\s*=\s*["']([^"']+)["']/gim,
+      ))
+        if (inTeam(posix.join(posix.dirname(file.path), slashPath(match[1]!))))
+          reportTeam("triple-slash reference reaches removable team/");
+    }
     for (const specifier of importsOf(file, () => {
-      if (publicCode && composition)
+      if (publicCode && !(file.path in TEAM_LOADING_SITES))
         reportTeam(
           "nonliteral module loading can hide team/; use literal imports and inject providers",
         );
     })) {
       const targets = specifier.startsWith(".")
-        ? [posix.join(posix.dirname(file.path), specifier)]
+        ? [posix.join(posix.dirname(file.path), slashPath(specifier))]
         : aliasTargets(specifier, pkg).map((target) =>
             target.replace(/^\.\//, ""),
           );
+      if (publicCode && targets.some(inTeam))
+        reportTeam(
+          `imports "${specifier}" into removable team/; inject a public contract instead`,
+        );
+
       if (
         publicCode &&
-        targets.some((target) =>
-          /^(?:dist\/)?team(?:\/|$)/.test(posix.normalize(target)),
+        targets.some(
+          (target) =>
+            isTestFile(posix.normalize(slashPath(target)).toLowerCase()) ||
+            /\.test\./i.test(target),
         )
       )
         reportTeam(
-          `imports "${specifier}" into removable team/; inject a public contract instead`,
+          `imports test-named bridge "${specifier}"; public code must not depend on test files`,
         );
 
       const fail = (message: string): void => {
