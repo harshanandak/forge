@@ -34,7 +34,11 @@ const id = "work-1",
   merge = "b".repeat(40);
 const url = "https://github.com/example/repo/pull/1";
 const namespace = "forge/work";
-async function fixture(seedLink = true, generation = 1) {
+async function fixture(
+  seedLink = true,
+  generation = 1,
+  caller?: { id: string },
+) {
   const opened = await createSqliteStore(tmpdir()).open({
     path: ":memory:",
     readOnly: false,
@@ -50,6 +54,7 @@ async function fixture(seedLink = true, generation = 1) {
   const context: BoundContext = {
     variant: "leased",
     ...holder,
+    ...(caller ? { session: { id: caller.id, device: "device" } } : {}),
     project: { id: "project" },
     leaseMode: "held",
     leaseGeneration: generation,
@@ -615,6 +620,36 @@ test("lane show waives the lease for a lane whose issue was closed by hand", asy
     const result = await shown(f);
     expect(result.leaseWaiver?.reason).toContain("closed without a receipt");
     expect(result.lease).toBeUndefined();
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
+test("a lane whose issue was closed by hand but still has a live lease is refused for another session", async () => {
+  const f = await fixture(true, 1, { id: "intruder" });
+  try {
+    const issue = f.owner.get(namespace, `issue:${id}`)!;
+    f.owner.put(
+      namespace,
+      `issue:${id}`,
+      {
+        ...(issue.value as object),
+        status: "closed",
+        withoutReceipt: "closed by hand",
+      },
+      f.holder.actor,
+      { expectRevision: issue.revision },
+    );
+    const before = f.owner.get(namespace, `issue:${id}`);
+    const lease = f.owner.lease(namespace, `issue:${id}`);
+    expect(lease?.releasedAt).toBeUndefined();
+    await expect(f.close()).rejects.toThrow();
+    expect(f.flags.present).toBe(true);
+    expect(f.flags.branch).toBe(true);
+    expect(laneLeft(f)).toBe(true);
+    expect(f.owner.get(namespace, `issue:${id}`)).toEqual(before);
+    expect(f.owner.lease(namespace, `issue:${id}`)).toEqual(lease);
+    expect((await shown(f)).leaseWaiver).toBeUndefined();
   } finally {
     await f.dispose();
   }

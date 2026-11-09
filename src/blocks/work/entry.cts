@@ -397,6 +397,14 @@ function live(state: LeaseStateClient, id: string) {
     ? lease
     : undefined;
 }
+/** An issue closed without a receipt and holding no live lease cannot be claimed again, so its lane needs no lease. */
+function needsNoLease(issue: TrackerItem): boolean {
+  return (
+    issue.status === "closed" &&
+    issue.receipt === undefined &&
+    issue.lease === undefined
+  );
+}
 function item(
   state: LeaseStateClient,
   record: StateRecord,
@@ -3584,9 +3592,7 @@ const operations: Operations<WorkOperations> = {
       accepted.generation === state.lease(key(identity))?.generation
         ? state.lease(key(identity))
         : undefined);
-    // Closed without a receipt, such as by hand: it can never be claimed, so no lease can exist.
-    const waived =
-      !lease && issue.status === "closed" && issue.receipt === undefined;
+    const waived = needsNoLease(issue);
     return {
       ...lane,
       issue: issue.id,
@@ -4145,12 +4151,9 @@ const operations: Operations<WorkOperations> = {
           return link.relation === "delivers" && link.url === pull.url;
         });
       // An issue closed by hand without a receipt has no lease to hold and cannot be claimed again.
-      // Its lane is released on the same evidence, checked here, and no state is written.
-      const releasing =
-        !dropped &&
-        !keepOpen &&
-        current.status === "closed" &&
-        current.receipt === undefined;
+      // Its lane is released on the same evidence, checked here, and no state is written. While a
+      // live lease remains, only its holder may close, so that case keeps the fenced path.
+      const releasing = !dropped && !keepOpen && needsNoLease(current);
       if (releasing) {
         const proof = bound.receipts?.get(receipt);
         if (!proof || proof.status !== "PASS")
