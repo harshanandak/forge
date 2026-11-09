@@ -12,6 +12,7 @@ async function setup() {
     project: () =>
       Promise.resolve({
         identity: { id: projectId, name: "forge-new" },
+        projectId,
         state: project,
       }),
   });

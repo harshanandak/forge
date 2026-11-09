@@ -41,6 +41,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for leased coverage.",
   "test/assembly/memory-recovery.integration.test.ts":
     "Launches selected Node for memory recovery coverage.",
+  "test/assembly/project-init.integration.test.ts":
+    "Launches selected Node for project init coverage.",
   "test/assembly/read-modules.integration.test.ts":
     "Launches selected Node for read modules coverage.",
   "test/assembly/shared-store/shared-store.integration.test.ts":

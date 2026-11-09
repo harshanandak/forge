@@ -5,6 +5,11 @@
       "summary": "Create a new empty project store and identity, replacing its old device registration. Refuse if a store is present.",
       "examples": [{ "input": {} }]
     },
+    "project.init": {
+      "title": "Create the project id",
+      "summary": "Write .forge/project.json with a new random project id, so every checkout of this repository shares one id. Commit the file. Needs the owner's reply. Refuses with PROJECT_MANIFEST_EXISTS when the file exists: init never overwrites it, and neither init nor config can change the id. Changing it needs the owner's approval through a later fork or migrate step.",
+      "examples": [{ "input": {} }]
+    },
     "owner.policy": {
       "title": "Set the unattended policy",
       "summary": "List the operations scripts and CI may run with no agent session and no approval: block.admit and config.grant. Writes owner.json in the device folder and needs the owner's reply.",
