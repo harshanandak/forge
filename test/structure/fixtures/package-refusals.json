@@ -1,0 +1,7 @@
+{
+  "alias": "import '#oauth';",
+  "bridge": "import '../lib/oauth.ts';",
+  "cloud runtime package": "import 'cloud-lib';",
+  "cloud tooling package": "import 'cloud-tool';",
+  "root runtime package": "import 'root-lib';"
+}

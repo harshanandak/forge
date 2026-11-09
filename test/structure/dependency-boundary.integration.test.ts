@@ -127,6 +127,37 @@ test("cloud files cannot bypass root runtime adapter ownership or use cloud tool
   }
 }, 30_000);
 
+const { bridge, ...refusals } = readJson(
+  "test/structure/fixtures/package-refusals.json",
+) as Record<string, string>;
+for (const [name, text] of Object.entries(refusals)) {
+  test(`cloud source refuses ${name} indirection`, () => {
+    const alias = name === "alias";
+    const found = findDependencyViolations(
+      [
+        alias
+          ? {
+              ...cloudManifest,
+              text: JSON.stringify({
+                ...packageFixtures.cloud,
+                imports: { "#oauth": "cloud-lib" },
+              }),
+            }
+          : cloudManifest,
+        { path: "cloud/src/worker.ts", text: alias ? text : bridge! },
+        ...(alias ? [] : [{ path: "cloud/lib/oauth.ts", text }]),
+      ],
+      packageFixtures.root,
+      packageFixtures.adapters,
+    );
+    expect(found.map((violation) => violation.file)).toEqual(
+      alias
+        ? ["cloud/package.json", "cloud/src/worker.ts"]
+        : ["cloud/src/worker.ts"],
+    );
+  }, 30_000);
+}
+
 test("the guard rejects a package imported outside its adapter, and allows it inside", () => {
   const outside = [
     { path: "src/core/config/a.ts", text: 'import YAML from "yaml";\n' },

@@ -186,14 +186,17 @@ export function findDependencyViolations(
   const violations: Violation[] = [];
   const knownPackages = declared(pkg);
   const runtime = new Set(Object.keys(pkg.dependencies ?? {}));
-  const cloudText = files.find(
-    (file) => file.path === "cloud/package.json",
-  )?.text;
-  const cloud = (
-    cloudText === undefined ? {} : JSON.parse(cloudText)
+  const cloud = JSON.parse(
+    files.find((file) => file.path === "cloud/package.json")?.text ?? "{}",
   ) as PackageJson;
   const cloudPackages = declared(cloud);
   const cloudRuntime = new Set(Object.keys(cloud.dependencies ?? {}));
+  if ("imports" in cloud)
+    violations.push({
+      rule: "dependency-boundary",
+      file: "cloud/package.json",
+      message: "cloud package imports aliases are not supported",
+    });
   const owners = new Map<string, string[]>();
   const cloudAdapters: AdapterManifest[] = [];
   for (const file of files) {
@@ -205,14 +208,9 @@ export function findDependencyViolations(
     if (typeof value !== "object" || value === null) continue;
     const raw = value as { package?: unknown; port?: unknown };
     if (typeof raw.port !== "string") continue;
-    const packages =
-      typeof raw.package === "string"
-        ? [raw.package]
-        : Array.isArray(raw.package)
-          ? raw.package.filter(
-              (value): value is string => typeof value === "string",
-            )
-          : [];
+    const packages = (
+      Array.isArray(raw.package) ? raw.package : [raw.package]
+    ).filter((value): value is string => typeof value === "string");
     cloudAdapters.push({ name: `cloud/${name}`, packages, executables: [] });
   }
   for (const adapter of [...adapters, ...cloudAdapters]) {
@@ -337,6 +335,11 @@ export function findDependencyViolations(
         });
       };
 
+      if (inCloud && specifier.startsWith("#")) {
+        fail("cloud import aliases are not supported");
+        continue;
+      }
+
       if (
         !inCloud &&
         inShipped &&
@@ -350,6 +353,14 @@ export function findDependencyViolations(
         const target = posix.normalize(
           posix.join(posix.dirname(file.path), specifier),
         );
+        if (
+          file.path.startsWith("cloud/src/") &&
+          targets[0]!.startsWith("cloud/") &&
+          !targets[0]!.startsWith("cloud/src/")
+        ) {
+          fail("cloud source cannot import outside cloud/src/");
+          continue;
+        }
         const into = adapterOf(target.endsWith("/") ? target : `${target}/`);
         const assembly = file.path.startsWith("src/assembly/");
         if (inShipped && into !== undefined && into !== here && !assembly) {
