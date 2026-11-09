@@ -17,6 +17,7 @@ import type {
 } from "../../src/generated/types.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { validateLeaseHolder } from "../../src/generated/validators.ts";
+import { dumpOf, parseDump, restoreDump } from "./dump.ts";
 import {
   durableStore,
   PRAGMA_TABLE,
@@ -36,6 +37,10 @@ import {
 const NAMESPACE = "forge/work";
 const REQUESTS = "domain_cloud_requests";
 const MAX_BODY = 8192;
+// A restore carries a whole project, so its own bound is 8 MiB: far above a device request, and
+// about a third of the 128 MB a Worker has to hold the text, parse it and write it. It is enforced
+// while the body streams, and over it the request is refused as RESTORE_TOO_LARGE (413).
+const MAX_RESTORE_BODY = 8 * 1024 * 1024;
 // Set in the object's key-value storage when an admin first issues a token. Until then the object
 // runs no SQL at all, so a request that is not authenticated never makes a project database.
 const PROVISIONED = "provisioned";
@@ -64,6 +69,8 @@ const STATUS: Record<string, number> = {
   INPUT_INVALID: 400,
   UNKNOWN_COMMAND: 404,
   INPUT_CONFLICT: 409,
+  RESTORE_TARGET_NOT_EMPTY: 409,
+  RESTORE_TOO_LARGE: 413,
   AUTH_REQUIRED: 401,
   AUTH_INVALID: 401,
   AUTH_REVOKED: 401,
@@ -104,10 +111,13 @@ function object(body: string): Record<string, unknown> {
 }
 
 // Reads the body up to MAX_BODY bytes and stops there, so a large body is never held in full.
-async function bounded(request: Request): Promise<string> {
-  const tooBig = (): ForgeFailure =>
-    fail("INPUT_INVALID", `body is over ${MAX_BODY} bytes`);
-  if (Number(request.headers.get("content-length")) > MAX_BODY) throw tooBig();
+async function bounded(
+  request: Request,
+  max = MAX_BODY,
+  code = "INPUT_INVALID",
+): Promise<string> {
+  const tooBig = (): ForgeFailure => fail(code, `body is over ${max} bytes`);
+  if (Number(request.headers.get("content-length")) > max) throw tooBig();
   const reader = request.body?.getReader();
   if (reader === undefined) return "";
   const chunks: Uint8Array[] = [];
@@ -120,7 +130,7 @@ async function bounded(request: Request): Promise<string> {
     const value = chunk.value;
     if (chunk.done || value === undefined) break;
     size += value.byteLength;
-    if (size > MAX_BODY) {
+    if (size > max) {
       await reader.cancel();
       throw tooBig();
     }
@@ -192,6 +202,28 @@ export class Project {
           ok: true,
           value: revokeToken(this.#open().db, text(input, "id"), Date.now()),
         });
+      }
+      if (request.method === "GET" && route === "dump")
+        return Response.json({
+          ok: true,
+          value: dumpOf(
+            (await this.#isProvisioned()) ? this.#open().db : undefined,
+          ),
+        });
+      if (request.method === "POST" && route === "restore") {
+        const dump = parseDump(
+          await bounded(request, MAX_RESTORE_BODY, "RESTORE_TOO_LARGE"),
+        );
+        if (await this.#isProvisioned())
+          throw new ForgeFailure({
+            code: "RESTORE_TARGET_NOT_EMPTY",
+            message: "A dump restores only into an empty project",
+            retry: "never",
+          });
+        const restored = restoreDump(this.#open().db, dump);
+        await this.#storage.put(PROVISIONED, true);
+        this.#provisioned = true;
+        return Response.json({ ok: true, value: { restored } });
       }
       if (request.method === "GET" && route === "status")
         return Response.json({

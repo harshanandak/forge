@@ -1,6 +1,6 @@
 // Routes /p/<projectId>/<route> to the Durable Object of that project. A project's claims live
 // in exactly one object, so there is exactly one authority per project.
-// Every request needs a bearer token. The admin routes (devices, revoke, status) are checked here against the
+// Every request needs a bearer token. The admin routes (devices, revoke, status, dump, restore) are checked here against the
 // ADMIN_TOKEN secret, before the project's object is touched; the others are checked by the object.
 export { Project } from "./project.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
@@ -14,7 +14,13 @@ interface Env {
 }
 
 const PATH = /^\/p\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})\/([a-z]+)$/;
-const ADMIN_ROUTES = new Set(["devices", "revoke", "status"]);
+const ADMIN_ROUTES = new Set([
+  "devices",
+  "revoke",
+  "status",
+  "dump",
+  "restore",
+]);
 
 // A refusal drops the request body unread, so nothing reads the stream after the response is sent.
 const unauthorized = (
