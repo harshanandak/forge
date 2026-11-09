@@ -43,17 +43,18 @@ export const PAGE_FORMAT = "forge-cloud-dump-page/1";
 // Limits on a dump, on the way out and on the way in. The depth is exactly what the format needs:
 // document, tables, rows array, row. The caps keep a hostile or broken document from filling the isolate.
 const MAX_DEPTH = 4;
-const MAX_ROWS_PER_TABLE = 50_000;
+const MAX_ROWS_PER_TABLE = 10_000;
 const MAX_VALUE_LENGTH = 262_144;
 // A whole (unpaged) dump stays well under the 8 MiB restore body: JSON escaping can double its size.
 const WHOLE_DUMP_BYTES = 3 * 1024 * 1024;
 // Rows are read this many at a time, so a page never holds more than a page plus one batch.
 const BATCH = 16;
 
-/** Page size and project size, in bytes. A deploy uses the defaults; the test config lowers them. */
+/** Page and project size in bytes, and rows per table. A deploy uses the defaults; the test config lowers them. */
 export interface Limits {
   readonly pageBytes: number;
   readonly maxBytes: number;
+  readonly maxRows: number;
 }
 export function limitsFrom(env: unknown): Limits {
   const vars = (env ?? {}) as Record<string, unknown>;
@@ -63,7 +64,8 @@ export function limitsFrom(env: unknown): Limits {
   };
   return {
     pageBytes: read("DUMP_PAGE_BYTES", 4 * 1024 * 1024),
-    maxBytes: read("DUMP_MAX_BYTES", 16 * 1024 * 1024),
+    maxBytes: read("DUMP_MAX_BYTES", 8 * 1024 * 1024),
+    maxRows: read("DUMP_MAX_ROWS", MAX_ROWS_PER_TABLE),
   };
 }
 
@@ -80,9 +82,10 @@ export interface Page extends Dump {
   next: string | null;
 }
 interface Cursor {
-  p: number;
-  t: number;
-  k: Key | null;
+  p: number; // page number
+  t: number; // table index
+  k: Key | null; // last key written in that table
+  w: string; // the project's write watermark when page 0 was cut
 }
 
 const invalid = (message: string): ForgeFailure =>
@@ -94,25 +97,33 @@ const counts = (tables: Record<string, Row[]>): Record<string, number> =>
     Object.entries(tables).map(([table, rows]) => [table, rows.length]),
   );
 
-// The stored size of every row, summed by SQLite, so a size check loads no row.
-function assertSize(
+// The row count and stored size of the five tables, counted and summed by SQLite, so a check loads no
+// row. Validation holds a whole project in memory, so both are bounded before it runs.
+function assertLimits(
   db: SqlDatabase,
-  max: number,
+  limits: Limits,
   code: string,
   what: string,
+  maxBytes = limits.maxBytes,
   hint = "",
 ): void {
   let bytes = 0;
-  for (const [table, { columns }] of Object.entries(TABLES))
-    bytes += Number(
-      db.get(
-        `SELECT COALESCE(SUM(${columns.map((column) => `LENGTH(CAST(${column} AS BLOB))`).join(" + ")}), 0) AS bytes FROM ${table}`,
-      )!.bytes,
-    );
-  if (bytes > max)
+  for (const [table, { columns }] of Object.entries(TABLES)) {
+    const found = db.get(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(${columns.map((column) => `LENGTH(CAST(${column} AS BLOB))`).join(" + ")}), 0) AS bytes FROM ${table}`,
+    )!;
+    if (Number(found.n) > limits.maxRows)
+      throw new ForgeFailure({
+        code,
+        message: `${table} has ${Number(found.n)} rows, over the ${limits.maxRows} row limit.`,
+        retry: "never",
+      });
+    bytes += Number(found.bytes);
+  }
+  if (bytes > maxBytes)
     throw new ForgeFailure({
       code,
-      message: `${what} holds ${bytes} bytes, over the ${max} byte limit.${hint}`,
+      message: `${what} holds ${bytes} bytes, over the ${maxBytes} byte limit.${hint}`,
       retry: "never",
     });
 }
@@ -166,11 +177,12 @@ function* rowsFrom(
 export function dumpOf(db: SqlDatabase | undefined, limits?: Limits): Dump {
   if (db === undefined) return { format: DUMP_FORMAT, tables: emptyTables() };
   if (limits !== undefined)
-    assertSize(
+    assertLimits(
       db,
-      Math.min(limits.maxBytes, WHOLE_DUMP_BYTES),
+      limits,
       "DUMP_TOO_LARGE",
       "The project",
+      Math.min(limits.maxBytes, WHOLE_DUMP_BYTES),
       " Dump it in pages with GET dump?cursor=start.",
     );
   const tables = emptyTables();
@@ -189,7 +201,7 @@ export function dumpOf(db: SqlDatabase | undefined, limits?: Limits): Dump {
 }
 
 function parseCursor(text: string): Cursor {
-  if (text === "start") return { p: 0, t: 0, k: null };
+  if (text === "start") return { p: 0, t: 0, k: null, w: "" };
   const bad = (): ForgeFailure =>
     invalid("The cursor must be start or a cursor a page returned");
   let value: unknown;
@@ -198,26 +210,43 @@ function parseCursor(text: string): Cursor {
   } catch {
     throw bad();
   }
-  const cursor = value as { p?: unknown; t?: unknown; k?: unknown } | null;
-  const table = Object.values(TABLES)[Number(cursor?.t)];
+  const cursor = value as Record<string, unknown> | null;
   if (
     cursor === null ||
     typeof cursor !== "object" ||
-    Object.keys(cursor).sort().join() !== "k,p,t" ||
+    Object.keys(cursor).sort().join() !== "k,p,t,w" ||
     !Number.isSafeInteger(cursor.p) ||
     (cursor.p as number) < 0 ||
+    typeof cursor.w !== "string" ||
+    !Number.isSafeInteger(cursor.t) ||
+    (cursor.t as number) < 0
+  )
+    throw bad();
+  const table = Object.values(TABLES)[cursor.t as number];
+  // Page 0 is always the start of the first table. Every other key has its table's types.
+  if (
     table === undefined ||
+    (cursor.p === 0 && (cursor.t !== 0 || cursor.k !== null)) ||
     (cursor.k !== null &&
       (!Array.isArray(cursor.k) ||
         cursor.k.length !== table.keys.length ||
-        cursor.k.some(
-          (part: unknown) =>
-            typeof part !== "string" &&
-            !(typeof part === "number" && Number.isSafeInteger(part)),
+        cursor.k.some((part: unknown, index) =>
+          table.keys[index] === "sequence"
+            ? !Number.isSafeInteger(part)
+            : typeof part !== "string",
         )))
   )
     throw bad();
-  return cursor as Cursor;
+  return cursor as unknown as Cursor;
+}
+
+// Where the project's writes have got to. Every write to the five dumped tables is a receipt (a
+// domain_cloud_requests row, whose rowid only grows) or an event (state_events, whose sequence only
+// grows), and the Worker writes the receipt with the event in one transaction. Rows are never deleted,
+// so a changed project has a different pair. The dump takes it at page 0 and checks it on every page.
+function watermark(db: SqlDatabase): string {
+  const last = (sql: string): number => Number(db.get(sql)!.n);
+  return `${last("SELECT COALESCE(MAX(sequence), 0) AS n FROM state_events")}.${last("SELECT COALESCE(MAX(rowid), 0) AS n FROM domain_cloud_requests")}`;
 }
 
 const pageOf = (
@@ -241,11 +270,20 @@ export function dumpPage(
   const from = parseCursor(cursorText);
   const tables = emptyTables();
   if (db === undefined) return pageOf(from.p, tables, null);
-  if (cursorText === "start")
-    assertSize(db, limits.maxBytes, "DUMP_TOO_LARGE", "The project");
+  // A page is cut in one synchronous call, so a write cannot land inside it. A write between pages
+  // would give a dump with a lease body and no event for it, which cannot be restored.
+  const now = watermark(db);
+  if (from.p === 0) assertLimits(db, limits, "DUMP_TOO_LARGE", "The project");
+  else if (from.w !== now)
+    throw new ForgeFailure({
+      code: "DUMP_CHANGED",
+      message:
+        "The project changed during the export; start again from cursor=start",
+      retry: "never",
+    });
   const names = Object.keys(TABLES);
   let used = 0;
-  let next: Cursor = { p: from.p + 1, t: from.t, k: from.k };
+  let next: Cursor = { p: from.p + 1, t: from.t, k: from.k, w: now };
   for (const { table, row } of rowsFrom(db, from.t, from.k)) {
     const size = new TextEncoder().encode(JSON.stringify(row)).length;
     if (used > 0 && used + size > limits.pageBytes)
@@ -256,6 +294,7 @@ export function dumpPage(
       p: from.p + 1,
       t: table,
       k: TABLES[names[table]!]!.keys.map((column) => row[column]!),
+      w: now,
     };
   }
   return pageOf(from.p, tables, null);
@@ -466,25 +505,21 @@ export function clearStaged(db: SqlDatabase): void {
 }
 
 /**
- * Stages one page of a paged restore. Page 0 clears what an earlier try staged. The last page runs the
- * row checks over everything staged, so a refusal there rolls that page back; the caller then clears
- * the rest. The size is checked in SQL before the new rows are written and before the checks load them.
+ * Stages one page of a paged restore. Page 0 clears what an earlier try staged. The limits are checked
+ * after every page is written, in the same transaction, so the page that crosses one is the page that
+ * is refused. The last page then runs the row checks over everything staged; a refusal rolls that page
+ * back, and the caller clears the rest.
  */
 export function restorePage(
   db: SqlDatabase,
   page: Page,
   limits: Limits,
 ): Record<string, number> {
-  const guard = (): void =>
-    assertSize(db, limits.maxBytes, "RESTORE_TOO_LARGE", "The staged restore");
   return db.transaction(() => {
     if (page.page === 0) clearStaged(db);
-    else guard();
     insertRows(db, page.tables);
-    if (page.last) {
-      guard();
-      verifyRestored(db);
-    }
+    assertLimits(db, limits, "RESTORE_TOO_LARGE", "The staged restore");
+    if (page.last) verifyRestored(db);
     return counts(page.tables);
   });
 }

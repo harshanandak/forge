@@ -1343,6 +1343,10 @@ if (phase === "main") {
       assert.equal(skipped.body.error?.code, "INPUT_INVALID");
       const repeated = await sendPage(target, pages[1]);
       assert.equal(repeated.status, 400, JSON.stringify(repeated.body));
+      assert.ok(
+        repeated.body.error?.message.includes("send page 0 first"),
+        "the refused skip ended the session",
+      );
       assert.equal(await initialized(target), false, "half restored");
       // Abandon: page 0 again clears what was staged, then the whole set goes in.
       for (const page of pages) {
@@ -1363,6 +1367,63 @@ if (phase === "main") {
         409,
         "provisioned",
       );
+
+      // A refused page ends the session: after page 0 and a skipped page, page 1 needs page 0 first.
+      const order = `${run}-page-order`;
+      assert.equal((await sendPage(order, pages[0])).status, 200);
+      assert.equal((await sendPage(order, pages[2])).status, 400, "skipped");
+      const late = await sendPage(order, pages[1]);
+      assert.equal(late.status, 400, JSON.stringify(late.body));
+      assert.ok(late.body.error?.message.includes("send page 0 first"));
+    },
+  );
+
+  await check(
+    "a write between dump pages makes the next page DUMP_CHANGED, and a fresh export restores identical",
+    async () => {
+      const race = `${run}-page-race`;
+      const holder = holderOf("race");
+      const first = granted(
+        await claim(race, "issue:race-0", holder, "race-0"),
+      );
+      for (let i = 1; i < 12; i += 1)
+        granted(await claim(race, `issue:race-${i}`, holder, `race-${i}`));
+      const next = async (cursor: string): ReturnType<typeof adminCall> =>
+        adminCall(race, "GET", `dump?cursor=${encodeURIComponent(cursor)}`);
+      const changed = (reply: Awaited<ReturnType<typeof adminCall>>): void => {
+        assert.equal(reply.status, 409, JSON.stringify(reply.body));
+        assert.equal(reply.body.error?.code, "DUMP_CHANGED");
+      };
+
+      // A renewal (an event and a receipt) between page 0 and page 1.
+      const page0 = (await next("start")).body.value as DumpPage;
+      assert.ok(page0.next !== null, "more than one page");
+      granted(
+        await send(race, "POST", "renew", {
+          subject: "issue:race-0",
+          holder,
+          generation: first.generation,
+          ttlMs: 900_000,
+          requestId: "race-renew",
+        }),
+      );
+      changed(await next(page0.next));
+
+      // A refused claim writes a receipt only, and that changes the project too.
+      const again = (await next("start")).body.value as DumpPage;
+      refused(
+        await claim(race, "issue:race-0", holderOf("rival"), "race-rival"),
+        "LEASE_HELD",
+      );
+      changed(await next(again.next!));
+
+      // With nothing written between pages, the export restores identical.
+      const pages = await pagesOf(race);
+      assert.ok(pages.length >= 3, `${pages.length} pages`);
+      const target = `${run}-page-race-copy`;
+      for (const page of pages)
+        assert.equal((await sendPage(target, page)).status, 200);
+      assert.deepEqual(await dumpOf(target), await dumpOf(race));
     },
   );
 
@@ -1434,17 +1495,50 @@ if (phase === "main") {
           domain_cloud_requests: [],
         },
       });
+      // The page that crosses the limit is the page that is refused: 80,000 fits, 160,000 does not.
       assert.equal((await sendPage(target, record(0))).status, 200);
-      assert.equal((await sendPage(target, record(1))).status, 200);
-      const over = await sendPage(target, record(2));
+      const over = await sendPage(target, record(1));
       assert.equal(over.status, 413, JSON.stringify(over.body));
       assert.equal(over.body.error?.code, "RESTORE_TOO_LARGE");
       assert.equal(await initialized(target), false);
-      assert.equal(
-        (await sendPage(target, record(2))).status,
-        400,
-        "abandoned",
-      );
+      const late = await sendPage(target, record(1));
+      assert.equal(late.status, 400, JSON.stringify(late.body));
+      assert.ok(late.body.error?.message.includes("send page 0 first"));
+
+      // The row limit (100 per table in the test config) is checked in SQL the same way.
+      const many = record(0) as { tables: Record<string, unknown[]> };
+      many.tables.state_records = Array.from({ length: 101 }, (_, i) => ({
+        namespace: "n",
+        key: `k${i}`,
+        revision: 1,
+        body: "{}",
+      }));
+      const crowded = await sendPage(`${run}-page-rows`, many);
+      assert.equal(crowded.status, 413, JSON.stringify(crowded.body));
+      assert.equal(crowded.body.error?.code, "RESTORE_TOO_LARGE");
+      assert.ok(crowded.body.error?.message.includes("state_records"));
+
+      // A cursor must have an integer table index and a key of that table's types, and a page-0
+      // cursor starts the first table and runs the same guard as "start".
+      const cursor = (value: object): ReturnType<typeof adminCall> =>
+        adminCall(
+          big,
+          "GET",
+          `dump?cursor=${encodeURIComponent(JSON.stringify(value))}`,
+        );
+      for (const bad of [
+        { p: 0, t: "1", k: null, w: "" },
+        { p: 0, t: null, k: null, w: "" },
+        { p: 0, t: 1, k: null, w: "" },
+        { p: 1, t: 1, k: ["x"], w: "" },
+        { p: 1, t: 1, k: [1], w: 5 },
+      ]) {
+        const reply = await cursor(bad);
+        assert.equal(reply.status, 400, JSON.stringify([bad, reply.body]));
+      }
+      const skipGuard = await cursor({ p: 0, t: 0, k: null, w: "" });
+      assert.equal(skipGuard.status, 413, JSON.stringify(skipGuard.body));
+      assert.equal(skipGuard.body.error?.code, "DUMP_TOO_LARGE");
     },
   );
 

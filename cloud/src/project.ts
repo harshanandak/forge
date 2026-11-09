@@ -85,6 +85,7 @@ const STATUS: Record<string, number> = {
   UNKNOWN_COMMAND: 404,
   INPUT_CONFLICT: 409,
   DUMP_TOO_LARGE: 413,
+  DUMP_CHANGED: 409,
   RESTORE_INVALID_ROW: 400,
   RESTORE_TARGET_NOT_EMPTY: 409,
   RESTORE_TOO_LARGE: 413,
@@ -244,50 +245,18 @@ export class Project {
         });
       }
       if (request.method === "POST" && route === "restore") {
-        const dump = parseDump(
-          await bounded(request, MAX_RESTORE_BODY, "RESTORE_TOO_LARGE"),
-        );
-        if (await this.#isProvisioned())
-          throw new ForgeFailure({
-            code: "RESTORE_TARGET_NOT_EMPTY",
-            message: "A dump restores only into an empty project",
-            retry: "never",
-          });
-        const staged = (await this.#storage.get(STAGED)) as number | undefined;
-        let value: Record<string, unknown>;
-        if (dump.format === DUMP_FORMAT) {
-          if (staged !== undefined) await this.#abandon();
-          value = { restored: restoreDump(this.#open().db, dump) };
-        } else {
-          const page = dump as Page;
-          // Page 0 starts again; any other page must be the one the last accepted page named.
-          if (page.page !== 0 && page.page !== staged)
-            throw fail(
-              "INPUT_INVALID",
-              staged === undefined
-                ? "No restore is under way: send page 0 first"
-                : `Expected page ${staged}, or page 0 to start again`,
-            );
-          try {
-            value = {
-              restored: restorePage(this.#open().db, page, this.#limits),
-              page: page.page,
-              done: page.last,
-            };
-          } catch (error) {
-            // Whatever refused a page, nothing stays staged: the next try starts at page 0.
+        try {
+          return await this.#restore(request);
+        } catch (error) {
+          // Any refusal of a restore into an unprovisioned project, whatever its cause, ends the session:
+          // nothing stays staged. A provisioned project is never touched.
+          if (
+            !(await this.#isProvisioned()) &&
+            (await this.#storage.get(STAGED)) !== undefined
+          )
             await this.#abandon();
-            throw error;
-          }
-          if (!page.last) {
-            await this.#storage.put(STAGED, page.page + 1);
-            return Response.json({ ok: true, value });
-          }
-          await this.#storage.delete(STAGED);
+          throw error;
         }
-        await this.#storage.put(PROVISIONED, true);
-        this.#provisioned = true;
-        return Response.json({ ok: true, value });
       }
       if (request.method === "GET" && route === "status")
         return Response.json({
@@ -348,6 +317,48 @@ export class Project {
         { status: STATUS[error.error.code] ?? 500 },
       );
     }
+  }
+
+  // One restore request: a whole dump, or one page of a paged restore.
+  async #restore(request: Request): Promise<Response> {
+    const dump = parseDump(
+      await bounded(request, MAX_RESTORE_BODY, "RESTORE_TOO_LARGE"),
+    );
+    if (await this.#isProvisioned())
+      throw new ForgeFailure({
+        code: "RESTORE_TARGET_NOT_EMPTY",
+        message: "A dump restores only into an empty project",
+        retry: "never",
+      });
+    const staged = (await this.#storage.get(STAGED)) as number | undefined;
+    let value: Record<string, unknown>;
+    if (dump.format === DUMP_FORMAT) {
+      if (staged !== undefined) await this.#abandon();
+      value = { restored: restoreDump(this.#open().db, dump) };
+    } else {
+      const page = dump as Page;
+      // Page 0 starts again; any other page must be the one the last accepted page named.
+      if (page.page !== 0 && page.page !== staged)
+        throw fail(
+          "INPUT_INVALID",
+          staged === undefined
+            ? "No restore is under way: send page 0 first"
+            : `Expected page ${staged}, or page 0 to start again`,
+        );
+      value = {
+        restored: restorePage(this.#open().db, page, this.#limits),
+        page: page.page,
+        done: page.last,
+      };
+      if (!page.last) {
+        await this.#storage.put(STAGED, page.page + 1);
+        return Response.json({ ok: true, value });
+      }
+      await this.#storage.delete(STAGED);
+    }
+    await this.#storage.put(PROVISIONED, true);
+    this.#provisioned = true;
+    return Response.json({ ok: true, value });
   }
 
   #write(
