@@ -1283,6 +1283,22 @@ test("auto reads the Claude tester verdict through the same parser as Codex", ()
   expect(f.attempts()[1]!.args).toContain("claude-sonnet-5-5");
 });
 
+// macOS answers kill() with EPERM, not ESRCH, when every process left in the
+// target has exited but is not yet reaped (a zombie). Cleanup may treat that
+// as already gone, and only that: a live member means a real permission error.
+function hasNoLiveProcess(pid: number, group: boolean) {
+  const listing = spawnSync("ps", ["-A", "-o", "pid=,pgid=,stat="], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  if (listing.status !== 0) return false;
+  return listing.stdout.split(/\r?\n/).every((line) => {
+    const [procPid, procPgid, stat] = line.trim().split(/\s+/);
+    if (!procPid || Number(group ? procPgid : procPid) !== pid) return true;
+    return stat?.startsWith("Z") === true;
+  });
+}
+
 function killFixture(pid: number, group = false) {
   if (process.platform === "win32") {
     childLaunches++;
@@ -1295,7 +1311,12 @@ function killFixture(pid: number, group = false) {
     try {
       process.kill(group ? -pid : pid, "SIGKILL");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      const zombieOnly =
+        code === "EPERM" &&
+        process.platform === "darwin" &&
+        hasNoLiveProcess(pid, group);
+      if (code !== "ESRCH" && !zombieOnly) throw error;
     }
   }
 }
