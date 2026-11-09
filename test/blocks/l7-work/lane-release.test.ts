@@ -67,6 +67,9 @@ async function fixture() {
     merged: false,
     dropped: false,
     localHead: head,
+    registeredWorktree: lane.worktree,
+    registeredBranch: lane.branch,
+    canonicalWorktree: lane.worktree,
     afterRead: undefined as (() => void) | undefined,
   };
   const calls: string[][] = [];
@@ -95,7 +98,7 @@ async function fixture() {
           url: "https://github.com/example/repo/pull/1",
         });
       else if (args[0] === "worktree" && args[1] === "list")
-        stdout = `worktree ${root}\0branch refs/heads/main\0\0worktree ${lane.worktree}\0branch refs/heads/feature\0\0`;
+        stdout = `worktree ${root}\0branch refs/heads/main\0\0worktree ${flags.registeredWorktree}\0branch refs/heads/${flags.registeredBranch}\0\0`;
       else if (args[0] === "worktree" && args[1] === "remove")
         flags.present = false;
       else if (args[0] === "update-ref" && args[2] === "refs/heads/feature")
@@ -115,6 +118,8 @@ async function fixture() {
           : flags.branch
             ? "refs/heads/feature"
             : "";
+      else if (args.includes("--show-toplevel"))
+        stdout = args[0] === "-C" ? flags.canonicalWorktree : root;
       else if (args[0] === "rev-parse") stdout = flags.localHead;
       else if (args[0] === "merge-base") {
         stdout = args[1] === "--is-ancestor" ? "" : args[1]!;
@@ -228,6 +233,8 @@ async function fixture() {
       branch: flags.branch,
     });
   return {
+    root,
+    lane,
     flags,
     calls,
     mutations,
@@ -278,6 +285,60 @@ for (const reason of ["open", "live lease", "receipt"] as const) {
       if (reason === "open") f.change({ status: "open" });
       if (reason === "live lease") f.claim();
       if (reason === "receipt") f.change({ receipt: "proof" });
+      const before = f.snapshot();
+      const result = await f.invoke("lane.release", { id: "sample-1" });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_CONFLICT" },
+      });
+      expect(f.snapshot()).toBe(before);
+      expect(f.mutations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+for (const path of [
+  "traversal",
+  "outside",
+  "another lane",
+  "root folder",
+  "symlink escape",
+] as const) {
+  test(`assembly release refuses ${path} without git mutation or registry write`, async () => {
+    const f = await fixture();
+    try {
+      const target =
+        path === "traversal"
+          ? `${f.root}/.worktrees/../outside`
+          : path === "outside"
+            ? join(f.root, "outside")
+            : path === "root folder"
+              ? join(f.root, ".worktrees")
+              : join(f.root, ".worktrees", "other");
+      f.flags.canonicalWorktree =
+        path === "symlink escape" || path === "traversal"
+          ? join(f.root, "outside")
+          : target;
+      f.flags.registeredWorktree = f.flags.canonicalWorktree;
+      f.flags.registeredBranch = path === "another lane" ? "other" : "feature";
+      f.files.set(
+        "forge-lanes.json",
+        JSON.stringify([
+          { ...f.lane, worktree: target },
+          ...(path === "another lane"
+            ? [
+                {
+                  ...f.lane,
+                  issue: "work-2",
+                  worktree: target,
+                  branch: "other",
+                },
+              ]
+            : []),
+        ]),
+      );
       const before = f.snapshot();
       const result = await f.invoke("lane.release", { id: "sample-1" });
       expect(result).toMatchObject({

@@ -4002,12 +4002,72 @@ const operations: Operations<WorkOperations> = {
           );
         return result.stdout.trim();
       };
-      const checkout = (await run(["worktree", "list", "--porcelain", "-z"]))
-        .split("\0")[0]!
-        .slice(9);
+      const pathKey = (path: string) => {
+        const normalized = slash(path).replace(/\/+$/, "");
+        return bound.environment!.platform === "win32"
+          ? normalized.toLowerCase()
+          : normalized;
+      };
+      const absolute = (path: string) => /^(?:\/|[a-z]:\/)/i.test(slash(path));
+      if (
+        !absolute(lane.worktree) ||
+        /\p{Cc}/u.test(lane.worktree) ||
+        slash(lane.worktree).split("/").includes("..")
+      )
+        fail(
+          "INPUT_CONFLICT",
+          "Lane worktree must be an absolute path without traversal",
+        );
+      const trees = (await run(["worktree", "list", "--porcelain", "-z"]))
+        .split("\0\0")
+        .filter(Boolean)
+        .map((row) => {
+          const fields = row.split("\0");
+          return {
+            path:
+              fields.find((field) => field.startsWith("worktree "))?.slice(9) ??
+              "",
+            branch: fields
+              .find((field) => field.startsWith("branch "))
+              ?.slice(7),
+          };
+        });
+      if (!trees[0] || !absolute(trees[0].path))
+        fail("INPUT_CONFLICT", "Main checkout is unavailable");
+      const checkout = await run(
+        ["rev-parse", "--path-format=absolute", "--show-toplevel"],
+        trees[0].path,
+      );
+      // Absolute path output resolves symlinks; a nonempty prefix would name a subdirectory.
+      const worktree = await run(
+        [
+          "-C",
+          lane.worktree,
+          "rev-parse",
+          "--path-format=absolute",
+          "--show-toplevel",
+          "--show-prefix",
+        ],
+        checkout,
+      );
+      if (
+        !absolute(checkout) ||
+        !absolute(worktree) ||
+        /[\r\n]/.test(checkout + worktree) ||
+        !pathKey(worktree).startsWith(`${pathKey(checkout)}/.worktrees/`) ||
+        !trees.some(
+          (tree) =>
+            pathKey(tree.path) === pathKey(worktree) &&
+            tree.branch === `refs/heads/${lane.branch}`,
+        )
+      )
+        fail(
+          "INPUT_CONFLICT",
+          "Lane worktree must match its registered branch strictly inside the main checkout's .worktrees directory",
+        );
       if (
         (await run(
-          ["-C", lane.worktree, "rev-parse", "--is-inside-work-tree"],
+          ["-C", worktree, "rev-parse", "--is-inside-work-tree"],
           checkout,
         )) !== "true"
       )
@@ -4015,14 +4075,14 @@ const operations: Operations<WorkOperations> = {
       if (
         await run(
           ["status", "--porcelain", "--untracked-files=all", "--ignored"],
-          lane.worktree,
+          worktree,
         )
       )
         fail(
           "INPUT_CONFLICT",
           "Preserve dirty, untracked or ignored work before releasing the lane",
         );
-      await run(["worktree", "remove", lane.worktree], checkout, lane.worktree);
+      await run(["worktree", "remove", worktree], checkout, worktree);
       eligible();
       files.write(
         registryPath,
