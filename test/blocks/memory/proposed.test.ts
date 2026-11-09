@@ -727,29 +727,30 @@ test("restore brings a rejected owner-tagged note back as a proposal the owner c
 });
 
 const restoreLimit = 8000;
-function restoreNote(text: string, shape: "note" | "proposal" | "history") {
-  const entry = (at: string) => ({
-    text: { kind: "untrusted", source: "export", text },
+const restoreShapes = {
+  "an owner-tagged note": (text: string) => ({
+    tags: ["rule"],
+    text: { text },
+  }),
+  "a rejected owner-tagged note": (text: string) => ({
+    tags: ["rule"],
+    text: { text },
+    status: "rejected",
+  }),
+  "a pending proposal": (text: string) => ({
     tags: ["fact"],
-    links: [],
-    at,
-  });
-  return {
-    id: "device/note-1",
-    tags: ["fact"],
-    links: [],
-    text: { text: shape === "note" ? text : "short" },
-    ...(shape === "proposal"
-      ? { proposal: entry("2026-01-01T00:00:00Z") }
-      : {}),
-    ...(shape === "history"
-      ? { rejectedProposals: [entry("2026-01-01T00:00:00Z")] }
-      : {}),
-  };
-}
+    text: { text: "short" },
+    proposal: {
+      text: { kind: "untrusted", source: "export", text },
+      tags: ["fact"],
+      links: [],
+      at: "2026-01-01T00:00:00Z",
+    },
+  }),
+} as const;
 
-for (const shape of ["note", "proposal", "history"] as const) {
-  test(`restore refuses ${shape} text over the accept limit before writing anything`, async () => {
+for (const [name, shape] of Object.entries(restoreShapes)) {
+  test(`restore refuses ${name} over the accept limit before writing anything`, async () => {
     const { call, state } = setup();
     const writes = state.counts.put + state.counts.putMany;
     await refused(
@@ -758,7 +759,11 @@ for (const shape of ["note", "proposal", "history"] as const) {
           format: "forge.memory.export/3",
           level: "device",
           notes: [
-            restoreNote("x".repeat(restoreLimit + 1), shape),
+            {
+              id: "device/note-1",
+              links: [],
+              ...shape("x".repeat(restoreLimit + 1)),
+            },
             {
               id: "device/note-2",
               tags: ["fact"],
