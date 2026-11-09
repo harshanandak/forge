@@ -107,8 +107,14 @@ async function fixture(seedLink = true) {
     shallow: false,
     calls: [] as string[][],
     privateRefs: new Set<string>(),
+    afterFetch: undefined as (() => void) | undefined,
+    refuse: false,
   };
+  // The handler reads time from this clock; tests never touch the global Date.
+  // It is separate from the state clock, so moving it does not expire the lease.
+  const time = { value: Date.now() };
   const services = {
+    clock: { now: () => time.value },
     state: {
       ...state,
       now: () => now,
@@ -146,12 +152,24 @@ async function fixture(seedLink = true) {
     environment: { select: () => ({}) },
     process: {
       resolve: (path: string) => ({ kind: "resolved", path }),
-      run: (_executable: unknown, args: string[]) => {
+      run: (
+        _executable: unknown,
+        args: string[],
+        options?: { signal?: AbortSignal },
+      ) => {
         let stdout = "",
           exitCode = 0;
+        // A cancelled or expired invocation refuses every further process call.
+        if (flags.refuse || options?.signal?.aborted)
+          return Promise.reject(new Error(`SERVICE_EXPIRED: ${args[0]}`));
         flags.calls.push(args);
-        if (args[0] === "fetch" && args[2]?.includes(":refs/forge/lane-close/"))
+        if (
+          args[0] === "fetch" &&
+          args[2]?.includes(":refs/forge/lane-close/")
+        ) {
           flags.privateRefs.add(args[2].split(":")[1]!);
+          flags.afterFetch?.();
+        }
         if (args[0] === "pr")
           stdout = JSON.stringify({
             state: "MERGED",
@@ -163,6 +181,11 @@ async function fixture(seedLink = true) {
           });
         else if (args[0] === "worktree" && args[1] === "list")
           stdout = "worktree /project\0branch refs/heads/main\0\0";
+        else if (
+          args[0] === "for-each-ref" &&
+          args[2]?.startsWith("refs/forge/")
+        )
+          stdout = [...flags.privateRefs].join("\n");
         else if (args[0] === "for-each-ref")
           stdout = flags.branch ? args[2]! : "";
         else if (
@@ -201,12 +224,15 @@ async function fixture(seedLink = true) {
       },
     },
   };
-  const close = (extra = {}) =>
+  const close = (
+    extra = {},
+    call: { signal?: AbortSignal; deadline?: number } = {},
+  ) =>
     operations["lane.close"]!({
       input: { id, pr: 1, receipt: "proof", ...extra },
       services,
-      signal: new AbortController().signal,
-      deadline: Number.MAX_SAFE_INTEGER,
+      signal: call.signal ?? new AbortController().signal,
+      deadline: call.deadline ?? Number.MAX_SAFE_INTEGER,
     });
   const comments = () => owner.list(namespace, `comment:${id}:`);
   return {
@@ -217,6 +243,7 @@ async function fixture(seedLink = true) {
     lane,
     files,
     flags,
+    time,
     close,
     comments,
     expire: () => {
@@ -548,6 +575,81 @@ test("a PR merged into main with its merge commit on fetched main still closes",
         "url",
       ].sort(),
     );
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
+test("the private fetch writes only its own ref", async () => {
+  const f = await fixture();
+  try {
+    await f.close();
+    const fetch = f.flags.calls.find((args) => args[0] === "fetch");
+    expect(fetch?.slice(3)).toEqual([
+      "--refmap=",
+      "--no-tags",
+      "--no-prune",
+      "--no-recurse-submodules",
+    ]);
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
+/** The next close runs well after a call that was cancelled or timed out. */
+async function closeLater(f: Awaited<ReturnType<typeof fixture>>) {
+  f.flags.refuse = false;
+  f.flags.afterFetch = undefined;
+  f.time.value += 2 * 3600000;
+  await f.close();
+}
+
+test("a signal aborted right after the fetch reports the original error and the next close removes the leftover ref", async () => {
+  const f = await fixture();
+  try {
+    const controller = new AbortController();
+    f.flags.afterFetch = () => {
+      controller.abort();
+      f.flags.refuse = true;
+    };
+    await expect(f.close({}, { signal: controller.signal })).rejects.toThrow(
+      "SERVICE_EXPIRED: merge-base",
+    );
+    await closeLater(f);
+    expect(f.flags.privateRefs.size).toBe(0);
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
+test("a deadline that expires right after the fetch reports the original error and the next close removes the leftover ref", async () => {
+  const f = await fixture(),
+    deadline = f.time.value + 60_000;
+  try {
+    f.flags.afterFetch = () => {
+      f.time.value = deadline + 1;
+      f.flags.refuse = true;
+    };
+    await expect(f.close({}, { deadline })).rejects.toThrow(
+      "INVOCATION_TIMEOUT",
+    );
+    await closeLater(f);
+    expect(f.flags.privateRefs.size).toBe(0);
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
+test("the next close removes a stale private ref and keeps a fresh one", async () => {
+  const f = await fixture(),
+    fresh = `refs/forge/lane-close/${f.time.value}-11111111-2222-4333-8444-555555555555`;
+  try {
+    f.flags.privateRefs.add(
+      "refs/forge/lane-close/1-11111111-2222-4333-8444-555555555555",
+    );
+    f.flags.privateRefs.add(fresh);
+    await f.close();
+    expect([...f.flags.privateRefs]).toEqual([fresh]);
   } finally {
     await f.dispose();
   }
