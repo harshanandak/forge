@@ -121,7 +121,7 @@ interface Dump {
 }
 interface AdminBody {
   readonly value?: unknown;
-  readonly error?: { readonly code: string };
+  readonly error?: { readonly code: string; readonly message: string };
 }
 async function adminCall(
   project: string,
@@ -1054,6 +1054,37 @@ if (phase === "main") {
           (await adminCall(`${run}-x`, "POST", "restore", text, token)).status,
           401,
         );
+      }
+    },
+  );
+
+  await check(
+    "a restore with deep nesting or an extra top-level field is refused before anything is built",
+    async () => {
+      const head = '{"format":"forge-cloud-dump/1","tables":';
+      const tables = [
+        "state_records",
+        "state_events",
+        "state_leases",
+        "state_requests",
+        "domain_cloud_requests",
+      ].map((table) => `"${table}":[]`);
+      const documents = {
+        "dump-deep": `${head}${"[".repeat(50_000)}${"]".repeat(50_000)}}`,
+        "dump-extra": `${head}{${tables.join(",")}},"extra":1}`,
+      };
+      for (const [name, document] of Object.entries(documents)) {
+        const reply = await adminCall(
+          `${run}-${name}`,
+          "POST",
+          "restore",
+          document,
+        );
+        assert.equal(reply.status, 400, JSON.stringify(reply.body));
+        assert.equal(reply.body.error?.code, "INPUT_INVALID");
+        assert.equal(await initialized(`${run}-${name}`), false);
+        if (name === "dump-deep")
+          assert.ok(reply.body.error?.message.includes("nests deeper"));
       }
     },
   );

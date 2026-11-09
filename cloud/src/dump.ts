@@ -29,6 +29,12 @@ const TABLES: Record<string, { columns: string[]; order: string }> = {
   },
 };
 
+// Limits on a dump, on the way out and on the way in. The depth is exactly what the format needs:
+// document, tables, rows array, row. The caps keep a hostile or broken document from filling the isolate.
+const MAX_DEPTH = 4;
+const MAX_ROWS_PER_TABLE = 50_000;
+const MAX_VALUE_LENGTH = 262_144;
+
 type Row = Record<string, string | number>;
 export interface Dump {
   format: string;
@@ -44,31 +50,58 @@ const emptyTables = (): Record<string, Row[]> =>
 export function dumpOf(db: SqlDatabase | undefined): Dump {
   if (db === undefined) return { format: DUMP_FORMAT, tables: emptyTables() };
   const tables = emptyTables();
-  for (const [table, { columns, order }] of Object.entries(TABLES))
-    tables[table] = db
-      .all(`SELECT ${columns.join(", ")} FROM ${table} ORDER BY ${order}`)
-      .map((row) =>
-        Object.fromEntries(
-          columns.map((column) => {
-            const value = row[column];
-            if (
-              typeof value === "string" ||
-              (typeof value === "number" && Number.isSafeInteger(value))
-            )
-              return [column, value];
-            throw new ForgeFailure({
-              code: "DUMP_UNSAFE_VALUE",
-              message: `${table}.${column} holds a value that is not a string or safe integer`,
-              retry: "never",
-            });
-          }),
-        ),
-      );
+  for (const [table, { columns, order }] of Object.entries(TABLES)) {
+    const found = db.all(
+      `SELECT ${columns.join(", ")} FROM ${table} ORDER BY ${order} LIMIT ${MAX_ROWS_PER_TABLE + 1}`,
+    );
+    if (found.length > MAX_ROWS_PER_TABLE)
+      throw new ForgeFailure({
+        code: "DUMP_TOO_LARGE",
+        message: `${table} has more than ${MAX_ROWS_PER_TABLE} rows`,
+        retry: "never",
+      });
+    tables[table] = found.map((row) =>
+      Object.fromEntries(
+        columns.map((column) => {
+          const value = row[column];
+          if (
+            (typeof value === "string" && value.length <= MAX_VALUE_LENGTH) ||
+            (typeof value === "number" && Number.isSafeInteger(value))
+          )
+            return [column, value];
+          throw new ForgeFailure({
+            code: "DUMP_UNSAFE_VALUE",
+            message: `${table}.${column} holds a value that is not a string (up to ${MAX_VALUE_LENGTH} characters) or a safe integer`,
+            retry: "never",
+          });
+        }),
+      ),
+    );
+  }
   return { format: DUMP_FORMAT, tables };
+}
+
+// One pass over the text, before JSON.parse builds anything: refuses nesting deeper than the format has.
+function checkDepth(text: string): void {
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      if (char === "\\") i += 1;
+      else if (char === '"') inString = false;
+    } else if (char === '"') inString = true;
+    else if (char === "{" || char === "[") {
+      depth += 1;
+      if (depth > MAX_DEPTH)
+        throw invalid(`The dump nests deeper than ${MAX_DEPTH} levels`);
+    } else if (char === "}" || char === "]") depth -= 1;
+  }
 }
 
 /** Checks a dump document strictly and returns it with every row in column order. */
 export function parseDump(text: string): Dump {
+  checkDepth(text);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -78,6 +111,8 @@ export function parseDump(text: string): Dump {
   const document = parsed as { format?: unknown; tables?: unknown } | null;
   if (document === null || typeof document !== "object")
     throw invalid("The dump must be a JSON object");
+  if (Object.keys(document).sort().join() !== "format,tables")
+    throw invalid("The dump must have exactly format and tables");
   if (document.format !== DUMP_FORMAT)
     throw invalid(`The dump format must be ${DUMP_FORMAT}`);
   const given = document.tables as Record<string, unknown> | null;
@@ -90,6 +125,8 @@ export function parseDump(text: string): Dump {
   for (const [table, { columns }] of Object.entries(TABLES)) {
     const rows = given[table];
     if (!Array.isArray(rows)) throw invalid(`${table} must be an array`);
+    if (rows.length > MAX_ROWS_PER_TABLE)
+      throw invalid(`${table} has more than ${MAX_ROWS_PER_TABLE} rows`);
     tables[table] = (rows as Record<string, unknown>[]).map((row) => {
       if (
         row === null ||
@@ -101,12 +138,12 @@ export function parseDump(text: string): Dump {
         columns.map((column) => {
           const value = row[column];
           if (
-            typeof value === "string" ||
+            (typeof value === "string" && value.length <= MAX_VALUE_LENGTH) ||
             (typeof value === "number" && Number.isSafeInteger(value))
           )
             return [column, value];
           throw invalid(
-            `${table}.${column} must be a string or a safe integer (53 bits)`,
+            `${table}.${column} must be a string (up to ${MAX_VALUE_LENGTH} characters) or a safe integer (53 bits)`,
           );
         }),
       );
