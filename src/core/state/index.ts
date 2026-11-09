@@ -432,7 +432,7 @@ export class RestoreConsistencyFailure extends ForgeFailure {
 
 /** Reproduce all event-derived tables before accepting an image. Domain tables and
  * registration/migration ledgers have no event provenance; schema and FK checks cover them. */
-function verifyEventDerivedState(
+export function verifyEventDerivedState(
   candidate: SqlDatabase,
   highWaterMark: number,
 ): void {
