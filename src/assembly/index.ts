@@ -42,12 +42,11 @@ import {
   nounCollisions,
   parseOperationName,
 } from "../contract/naming.ts";
+import { checkBlockDocs } from "./block-docs.ts";
 import { validateConfiguration } from "../blocks/check/budget.ts";
 import type { CheckConfig } from "../blocks/check/types.ts";
 import {
-  registry,
   validateConfigDocument,
-  validateDocsRecords,
   validateInvocationRequest,
   validateBlockManifest,
 } from "../generated/validators.ts";
@@ -646,28 +645,11 @@ export async function createAssembly(
     call: CallScope,
   ): { docs: DocsRecords; instance: BlockInstance } {
     let configured = instance;
-    const value: unknown = JSON.parse(block.text(block.manifest.docs));
-    const docs = validateDocsRecords(value);
-    const problems = docs.ok
-      ? validateWithSchema(
-          { type: "object", required: Object.keys(block.manifest.operations) },
-          docs.value.operations,
-        ).map((problem) => ({
-          ...problem,
-          pointer: `/operations${problem.pointer}`,
-        }))
-      : registry.validate("docs.json", value, true);
-    if (!docs.ok || problems.length > 0)
-      throw new ForgeFailure(
-        inputError(
-          `block docs ${block.manifest.docs}`,
-          problems,
-          undefined,
-          {},
-          [],
-          block.manifest.docs,
-        ),
-      );
+    const docs = checkBlockDocs(
+      block.text(block.manifest.docs),
+      Object.keys(block.manifest.operations),
+      block.manifest.docs,
+    );
     if (block.manifest.configSchema) {
       const config = instance.config ?? {};
       const checked = compatibleConfig(
@@ -725,7 +707,7 @@ export async function createAssembly(
           );
       }
     }
-    return { docs: docs.value, instance: configured };
+    return { docs, instance: configured };
   }
   function readyBindings(catalog: Catalog, name: string): void {
     for (const binding of catalog.bindings(name)) {
