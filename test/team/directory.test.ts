@@ -16,15 +16,13 @@ async function mint(
   const claims = {
     issuer,
     subject,
-    email,
-    displayName: "Same name",
     audience: "forge",
     expiresAt: 2_000,
     authenticatedAt: 500,
   };
-  const result = await testIdentityVerifier(
-    new Map([["proof", claims]]),
-  ).verify("proof", "forge", 1_000);
+  const proof = JSON.stringify([issuer, subject, email, "Same name"]);
+  const verifier = testIdentityVerifier(new Map([[proof, claims]]));
+  const result = await verifier.verify(proof, "forge", 1_000);
   if (!result.ok) throw new Error("Fixture verification failed");
   return result.identity;
 }
