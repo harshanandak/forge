@@ -155,6 +155,16 @@
       "stability": "stable",
       "timeoutMs": 15000
     },
+    "memory.proposals": {
+      "input": "schemas/proposals.input.json",
+      "output": "schemas/proposals.output.json",
+      "context": "device",
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "stable",
+      "timeoutMs": 5000
+    },
     "decision.propose": {
       "input": "schemas/propose.input.json",
       "output": "schemas/propose.output.json",
