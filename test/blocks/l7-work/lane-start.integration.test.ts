@@ -379,7 +379,12 @@ test("lane fetch uses its own ref despite another fetch replacing FETCH_HEAD", a
     });
     expect(result.base).toBe("a".repeat(40));
     expect(checkout).toBe(result.base);
-    expect(recorded).toContainEqual(["update-ref", "-d", pinned!]);
+    expect(recorded).toContainEqual([
+      "update-ref",
+      "-d",
+      pinned!,
+      "--no-deref",
+    ]);
     expect(
       recorded.some((args) => args.some((arg) => arg.includes("FETCH_HEAD"))),
     ).toBe(false);
