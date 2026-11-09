@@ -18,6 +18,15 @@ import type {
 import type { SqlRow } from "../../src/ports/store.ts";
 import { validateLeaseHolder } from "../../src/generated/validators.ts";
 import { durableStore, PRAGMA_TABLE, type DurableState } from "./store.ts";
+import {
+  authorize,
+  issueToken,
+  revokeToken,
+  TOKEN_MIGRATION,
+  TOKENS,
+  tokenParts,
+  bearer,
+} from "./tokens.ts";
 
 const NAMESPACE = "forge/work";
 const REQUESTS = "domain_cloud_requests";
@@ -36,8 +45,9 @@ const domain = {
         `CREATE TABLE IF NOT EXISTS ${REQUESTS} (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, outcome TEXT NOT NULL, result TEXT NOT NULL)`,
       ],
     },
+    TOKEN_MIGRATION,
   ],
-  tables: [PRAGMA_TABLE, REQUESTS],
+  tables: [PRAGMA_TABLE, REQUESTS, TOKENS],
 };
 
 const fail = (code: string, message: string): ForgeFailure =>
@@ -46,6 +56,11 @@ const STATUS: Record<string, number> = {
   INPUT_INVALID: 400,
   UNKNOWN_COMMAND: 404,
   INPUT_CONFLICT: 409,
+  AUTH_REQUIRED: 401,
+  AUTH_INVALID: 401,
+  AUTH_REVOKED: 401,
+  AUTH_EXPIRED: 401,
+  AUTH_DEVICE_MISMATCH: 403,
   LEASE_HELD: 409,
   LEASE_STALE: 409,
   LEASE_NOT_HELD: 409,
@@ -65,6 +80,21 @@ function integer(input: Record<string, unknown>, key: string): number {
   return value;
 }
 
+function optional(input: Record<string, unknown>, key: string): string | null {
+  return input[key] === undefined ? null : text(input, key);
+}
+function object(body: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw fail("INPUT_INVALID", "body must be JSON");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    throw fail("INPUT_INVALID", "body must be a JSON object");
+  return parsed as Record<string, unknown>;
+}
+
 export class Project {
   readonly #db;
   readonly #owner;
@@ -79,7 +109,47 @@ export class Project {
     try {
       const url = new URL(request.url);
       const route = url.pathname.split("/")[3] ?? "";
-      if (request.method === "GET" && route === "holder") {
+      // The Worker has already checked the admin token before it forwards these two routes.
+      if (request.method === "POST" && route === "devices") {
+        const input = object(await request.text());
+        const value = await issueToken(
+          this.#db,
+          {
+            device: text(input, "device"),
+            session: optional(input, "session"),
+            agent: optional(input, "agent"),
+            harness: optional(input, "harness"),
+            ttlMs: integer(input, "ttlMs"),
+          },
+          Date.now(),
+        );
+        return Response.json({ ok: true, value });
+      }
+      if (request.method === "POST" && route === "revoke") {
+        const input = object(await request.text());
+        return Response.json({
+          ok: true,
+          value: revokeToken(this.#db, text(input, "id"), Date.now()),
+        });
+      }
+      const reads = request.method === "GET" && route === "holder";
+      const writes =
+        request.method === "POST" &&
+        (route === "claim" || route === "renew" || route === "release");
+      if (!reads && !writes)
+        throw fail(
+          "UNKNOWN_COMMAND",
+          `No route for ${request.method} /${route}`,
+        );
+      // Device check first. Everything after the one await below is synchronous up to the write, so a
+      // revoke cannot land between the check and the write.
+      const presented = bearer(request);
+      if (presented === undefined)
+        throw fail("AUTH_REQUIRED", "A device token is required");
+      const body = writes ? await request.text() : "";
+      const parts = await tokenParts(presented);
+      const device = authorize(this.#db, parts, Date.now());
+      if (reads) {
         const subject = url.searchParams.get("subject");
         if (subject === null || subject === "")
           throw fail("INPUT_INVALID", "subject is required");
@@ -88,16 +158,16 @@ export class Project {
           value: this.#owner.lease(NAMESPACE, subject) ?? null,
         });
       }
-      if (
-        request.method === "POST" &&
-        (route === "claim" || route === "renew" || route === "release")
-      ) {
-        const body = await request.text();
-        if (body.length > MAX_BODY)
-          throw fail("INPUT_INVALID", `body is over ${MAX_BODY} characters`);
-        return Response.json({ ok: true, value: this.#write(route, body) });
-      }
-      throw fail("UNKNOWN_COMMAND", `No route for ${request.method} /${route}`);
+      if (body.length > MAX_BODY)
+        throw fail("INPUT_INVALID", `body is over ${MAX_BODY} characters`);
+      return Response.json({
+        ok: true,
+        value: this.#write(
+          route as "claim" | "renew" | "release",
+          body,
+          device,
+        ),
+      });
     } catch (error) {
       if (!(error instanceof ForgeFailure)) {
         console.error(error);
@@ -116,7 +186,11 @@ export class Project {
     }
   }
 
-  #write(route: "claim" | "renew" | "release", body: string): LeaseRecord {
+  #write(
+    route: "claim" | "renew" | "release",
+    body: string,
+    device: string,
+  ): LeaseRecord {
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);
@@ -136,7 +210,17 @@ export class Project {
         "INPUT_INVALID",
         "holder must be { actor: { kind, id }, session: { id, device?, agent?, harness? } }",
       );
-    const holder: LeaseHolder = checked.value;
+    // A device token acts only as its own device: the server sets the holder's device from the token.
+    const named = checked.value.session.device;
+    if (named !== undefined && named !== device)
+      throw fail(
+        "AUTH_DEVICE_MISMATCH",
+        `Token is for device ${device} but the request names device ${named}`,
+      );
+    const holder: LeaseHolder = {
+      ...checked.value,
+      session: { ...checked.value.session, device },
+    };
     const ttlMs = route === "release" ? null : integer(input, "ttlMs");
     const generation = route === "claim" ? null : integer(input, "generation");
 

@@ -32,6 +32,8 @@ jobs:
     timeout-minutes: 15
     env:
       CLOUD_BASE: http://127.0.0.1:8787
+      # A throwaway admin token for this job only; no deployed Worker uses it.
+      CLOUD_ADMIN_TOKEN: ci-conformance-admin-token
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -53,7 +55,7 @@ jobs:
           export CONFORMANCE_STATE="$RUNNER_TEMP/conformance-state.json"
           persist="$RUNNER_TEMP/wrangler-state"
           start() {
-            bun x wrangler dev --local --config wrangler.test.jsonc --persist-to "$persist" > "$RUNNER_TEMP/wrangler-$1.log" 2>&1 &
+            bun x wrangler dev --local --config wrangler.test.jsonc --var ADMIN_TOKEN:"$CLOUD_ADMIN_TOKEN" --persist-to "$persist" > "$RUNNER_TEMP/wrangler-$1.log" 2>&1 &
             echo $! > "$RUNNER_TEMP/wrangler.pid"
             for _ in $(seq 1 60); do
               if curl -s -o /dev/null "$CLOUD_BASE/p/ready/holder?subject=ready"; then return 0; fi
@@ -82,6 +84,19 @@ jobs:
           stop
           start second
           bun conformance/conformance.ts restart
+          stop
+          # Counterfactual: with the revoked-token check skipped, the revoke check must fail.
+          sed -i 's/=> row.revoked_at !== null;/=> false;/' src/tokens.ts
+          grep -q 'boolean => false;' src/tokens.ts || { echo "::error::the counterfactual edit did not apply"; exit 1; }
+          persist="$RUNNER_TEMP/wrangler-counterfactual"
+          start counterfactual
+          if bun conformance/conformance.ts revoke > "$RUNNER_TEMP/counterfactual.out" 2>&1; then
+            echo "::error::the revoke check passed with the revoked-token check skipped"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/counterfactual.out"
+          grep -q 'FAIL a revoked token is refused on its next request' "$RUNNER_TEMP/counterfactual.out" || { echo "::error::the counterfactual failed for another reason"; exit 1; }
+          git checkout -- src/tokens.ts
       - name: wrangler log
         if: failure()
         run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log || true
