@@ -49,6 +49,15 @@ const scanners = {
   tsx: new Bun.Transpiler({ loader: "tsx" }),
 };
 
+/** Normalize TypeScript syntax without removing unused value references. */
+export function parsedSource(file: SourceFile): string {
+  const loader = /\.[jt]sx$/.test(file.path) ? "tsx" : "ts";
+  return new Bun.Transpiler({
+    loader,
+    deadCodeElimination: false,
+  }).transformSync(file.text);
+}
+
 /** Import specifiers of a code file, including `import type` (erased at run time, but still a leak). */
 export function importsOf(
   file: SourceFile,
