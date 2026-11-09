@@ -28,7 +28,7 @@ interface Limit {
   readonly maxPeakMb: number;
 }
 
-// The speed gate, on the median of `issue show` on a hosted runner. Peak memory is checked against
+// The speed gate, on `issue show` on a hosted runner. Peak memory is checked against
 // an absolute cap. Time is checked against the build of the base branch, run in the same job and
 // interleaved with this build, so runner speed cancels out; the absolute time is only a ceiling.
 // Platforms without a limit only report.

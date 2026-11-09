@@ -24,11 +24,18 @@ export function sampleOrder(pairs: number): Side[] {
 const sorted = (values: readonly number[]): number[] =>
   [...values].sort((a, b) => a - b);
 
-/** The time a build is scored by. */
-export const SCORE_LABEL = "median";
+/** What a build is scored by, named in the failure message. */
+export const SCORE_LABEL = "25th percentile";
+
+/**
+ * A build's score is its 25th percentile run (nearest rank: the 3rd fastest of 9). Runner load only
+ * ever slows a run, so the fast end of the samples tracks the build's true cost, while the middle
+ * of them tracks the runner's mood. It is not the minimum: one lucky fast run cannot hide a real
+ * regression, because the 2 faster runs would have to be lucky too.
+ */
 export function score(times: readonly number[]): number {
   if (times.length === 0) throw new Error("no timings to score");
-  return sorted(times)[Math.floor(times.length / 2)]!;
+  return sorted(times)[Math.floor((times.length - 1) / 4)]!;
 }
 
 export interface Comparison {
