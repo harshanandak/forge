@@ -238,3 +238,46 @@ test("oversized key fields are refused", async () => {
     );
   }
 }, 5_000);
+
+test("mixed JWKS skips unrelated and malformed public keys", async () => {
+  const signing = (await keys)[0]!.jwk;
+  const body = JSON.stringify({
+    keys: [
+      { ...signing, use: "enc" },
+      { kty: "EC", kid: signing.kid },
+      { ...signing, alg: "RS512" },
+      { ...signing, key_ops: ["encrypt"] },
+      { ...signing, n: "A".repeat(684) },
+      { ...signing, n: "invalid!" },
+      null,
+      signing,
+    ],
+  });
+  const f = await fixture(() => Promise.resolve(body));
+  expect(await f.verify(await token())).toMatchObject({ ok: true });
+}, 5_000);
+
+test("only non-applicable keys never verify a token", async () => {
+  const signing = (await keys)[0]!.jwk;
+  const body = JSON.stringify({
+    keys: [
+      { ...signing, use: "enc" },
+      { kty: "EC", kid: signing.kid },
+      { ...signing, alg: "RS512" },
+      { ...signing, key_ops: ["encrypt"] },
+    ],
+  });
+  const f = await fixture(() => Promise.resolve(body));
+  expect(await f.verify(await token())).toEqual(refused());
+}, 5_000);
+
+test("private fields refuse the whole set even on unrelated entries", async () => {
+  const signing = (await keys)[0]!.jwk;
+  for (const field of ["d", "p", "q", "dp", "dq", "qi"]) {
+    const body = JSON.stringify({
+      keys: [signing, { kty: "EC", [field]: "private" }],
+    });
+    const f = await fixture(() => Promise.resolve(body));
+    expect(await f.verify(await token())).toEqual(refused());
+  }
+}, 5_000);

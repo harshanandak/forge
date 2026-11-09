@@ -36,28 +36,35 @@ function timestamp(value: unknown): value is number {
 }
 
 function publicKey(value: unknown) {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return undefined;
   const key = object(value);
-  if (
-    key.kty !== "RSA" ||
-    typeof key.kid !== "string" ||
-    !key.kid ||
-    key.kid.length > 128 ||
-    typeof key.n !== "string" ||
-    key.n.length > 683 ||
-    bytes(key.n).length > 512 ||
-    typeof key.e !== "string" ||
-    key.e.length > 8 ||
-    !bytes(key.e).length ||
-    (key.alg !== undefined && key.alg !== "RS256") ||
-    (key.use !== undefined && key.use !== "sig") ||
-    (key.key_ops !== undefined &&
-      (!Array.isArray(key.key_ops) ||
-        !key.key_ops.every((op) => typeof op === "string") ||
-        !key.key_ops.includes("verify"))) ||
-    ["d", "p", "q", "dp", "dq", "qi"].some((field) => field in key)
-  )
-    throw new Error("Invalid public key");
-  return { kid: key.kid, n: key.n, e: key.e };
+  if (["d", "p", "q", "dp", "dq", "qi"].some((field) => field in key))
+    throw new Error("Private key material in key set");
+  try {
+    if (
+      key.kty !== "RSA" ||
+      typeof key.kid !== "string" ||
+      !key.kid ||
+      key.kid.length > 128 ||
+      typeof key.n !== "string" ||
+      key.n.length > 683 ||
+      bytes(key.n).length > 512 ||
+      typeof key.e !== "string" ||
+      key.e.length > 8 ||
+      !bytes(key.e).length ||
+      (key.alg !== undefined && key.alg !== "RS256") ||
+      (key.use !== undefined && key.use !== "sig") ||
+      (key.key_ops !== undefined &&
+        (!Array.isArray(key.key_ops) ||
+          !key.key_ops.every((op) => typeof op === "string") ||
+          !key.key_ops.includes("verify")))
+    )
+      return undefined;
+    return { kid: key.kid, n: key.n, e: key.e };
+  } catch {
+    return undefined;
+  }
 }
 
 export interface OidcHttpPort {
@@ -70,7 +77,7 @@ export function createOidcVerifier(
   clock: ClockPort,
 ): IdentityVerifier {
   const config = { ...input, algorithms: [...input.algorithms] };
-  let keys: ReturnType<typeof publicKey>[] = [];
+  let keys: NonNullable<ReturnType<typeof publicKey>>[] = [];
   let expiresAt = -Infinity,
     refreshedAt = -Infinity;
   let pending: Promise<void> | undefined;
@@ -104,7 +111,9 @@ export function createOidcVerifier(
         const jwks = object(JSON.parse(body));
         if (!Array.isArray(jwks.keys) || jwks.keys.length > 100)
           throw new Error("Invalid key set");
-        const next = jwks.keys.map(publicKey);
+        const next = jwks.keys
+          .map(publicKey)
+          .filter((key) => key !== undefined);
         const freshUntil = clock.now() + config.cacheTtlMs;
         if (!Number.isFinite(freshUntil)) throw new Error("Invalid clock");
         keys = next;
