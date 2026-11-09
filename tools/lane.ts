@@ -38,7 +38,6 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { interruptLaneRuns, laneHistory, laneRun } from "./lane-run.ts";
 import { laneTier } from "./lane-tier.ts";
-import { laneClose } from "./lane-close.ts";
 import { lockLaneRegistry } from "./lane-registry.ts";
 import { runCommand } from "./run-command.ts";
 
@@ -119,10 +118,7 @@ function briefProblems(text: string): string[] {
     )
     .map((name) => `brief requires non-empty section: ${name}`);
 }
-function options(
-  argv: string[],
-): Options | "list" | "run" | "auto" | "tier" | "close" {
-  if (argv[0] === "close") return "close";
+function options(argv: string[]): Options | "list" | "run" | "auto" | "tier" {
   if (argv[0] === "run") return "run";
   if (argv[0] === "auto") return "auto";
   if (
@@ -143,7 +139,7 @@ function options(
     issue === ".."
   )
     throw new Error(
-      "usage: start <issue-id> --branch <name> --brief <file> [--max N], tier <issue-id>, list, or close <issue-id> --pr N (--receipt <id> [--keep-open] | --dropped <reason>) [--discard-ignored]",
+      "usage: start <issue-id> --branch <name> --brief <file> [--max N], tier <issue-id>, or list",
     );
   const values = new Map<string, string>();
   for (let i = 0; i < flags.length; i += 2) {
@@ -629,7 +625,7 @@ export async function main(): Promise<number> {
     );
     return 2;
   }
-  let parsed: Options | "list" | "run" | "auto" | "tier" | "close";
+  let parsed: Options | "list" | "run" | "auto" | "tier";
   let target: string | null = null;
   const reply = (
     reason: string | string[],
@@ -683,7 +679,6 @@ export async function main(): Promise<number> {
         lock: (id: string) => acquireLaneLock(common, id, owner),
       };
     };
-    if (parsed === "close") return laneClose(process.argv.slice(3), context);
     const { common, root, lock: lockLane } = context();
     const registry = join(common, "forge-lanes.json");
     if (parsed === "tier") {
