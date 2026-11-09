@@ -71,16 +71,21 @@ async function fixture() {
     registeredBranch: lane.branch,
     canonicalWorktree: lane.worktree,
     indexEntries: "H visible.txt\0",
+    truncateIndex: false,
+    evidence: undefined as
+      { command: string; mode: "incomplete" | "missing" } | undefined,
     afterRead: undefined as (() => void) | undefined,
   };
   const calls: string[][] = [];
+  const limits: { args: string[]; maxOutputBytes: number }[] = [];
   const mutations: string[] = [];
   const process: providers.ProcessService = {
     cwd: root,
     capability: "forge.process/v1",
     resolve: (path) => ({ kind: "resolved", path }),
-    async run(_executable, args) {
+    async run(_executable, args, options) {
       calls.push([...args]);
+      limits.push({ args: [...args], maxOutputBytes: options.maxOutputBytes });
       let stdout = "",
         exitCode = 0;
       if (
@@ -127,19 +132,43 @@ async function fixture() {
         stdout = args[1] === "--is-ancestor" ? "" : args[1]!;
         exitCode = flags.merged ? 0 : 1;
       }
+      // Like the real runner, cut output at the caller's cap and report truncation.
+      let truncated = flags.truncateIndex && args[0] === "ls-files";
+      if (Buffer.byteLength(stdout) > options.maxOutputBytes) {
+        truncated = true;
+        stdout = stdout.slice(0, options.maxOutputBytes);
+      }
       // The hook runs after the command yields, while the lane lock must still be held.
       await Promise.resolve();
       const hook = flags.afterRead;
       flags.afterRead = undefined;
       hook?.();
+      const stream = (complete: boolean) => ({
+        head: "",
+        tail: "",
+        encoding: "base64" as const,
+        totalBytes: Buffer.byteLength(stdout),
+        digest: "sha256:fixture",
+        complete,
+      });
+      const mark = flags.evidence;
+      const evidence = mark && mark.command === args[0] ? mark.mode : undefined;
       return {
         stdout,
         stderr: "",
         exitCode,
         signal: null,
         timedOut: false,
-        truncated: false,
+        truncated,
         durationMs: 0,
+        ...(evidence === "missing"
+          ? {}
+          : {
+              outputEvidence: {
+                stdout: stream(evidence !== "incomplete"),
+                stderr: stream(true),
+              },
+            }),
       };
     },
   };
@@ -239,6 +268,7 @@ async function fixture() {
     lane,
     flags,
     calls,
+    limits,
     mutations,
     files,
     owner,
@@ -447,6 +477,121 @@ for (const mode of ["keep-open", "dropped"] as const) {
       );
       expect(result.ok, JSON.stringify(result)).toBe(false);
       expect(f.calls.length).toBeGreaterThan(0);
+      expect(f.snapshot()).toBe(before);
+      expect(f.mutations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+const lsFilesLimit = 33_554_432,
+  defaultLimit = 262_144,
+  tooMany = "Too many tracked files to verify flags; release the lane by hand";
+const clean = (bytes: number) =>
+  "H clean-file-name.txt\0".repeat(Math.ceil(bytes / 22));
+
+test("release proceeds when a clean ls-files reply exceeds the default git output cap", async () => {
+  const f = await fixture();
+  try {
+    f.flags.indexEntries = clean(defaultLimit * 2);
+    expect(f.flags.indexEntries.length).toBeGreaterThan(defaultLimit);
+    const result = await f.invoke("lane.release", { id: "sample-1" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(f.flags.present).toBe(false);
+    expect(JSON.parse(f.files.get("forge-lanes.json")!)).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+test("release refuses a flagged entry placed after the first default-cap bytes", async () => {
+  const f = await fixture();
+  try {
+    f.flags.indexEntries = `${clean(defaultLimit * 2)}h hidden.txt\0`;
+    const before = f.snapshot();
+    const result = await f.invoke("lane.release", { id: "sample-1" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "INPUT_CONFLICT",
+        message:
+          "Clear assume-unchanged or skip-worktree flags before releasing the lane",
+      },
+    });
+    expect(f.calls.some((args) => args[0] === "status")).toBe(false);
+    expect(f.snapshot()).toBe(before);
+    expect(f.mutations).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+for (const mode of ["reported truncation", "output over the cap"] as const) {
+  test(`release refuses with the too-many-files message on ${mode}`, async () => {
+    const f = await fixture();
+    try {
+      if (mode === "reported truncation") f.flags.truncateIndex = true;
+      else f.flags.indexEntries = `H ${"a".repeat(lsFilesLimit)}\0`;
+      const before = f.snapshot();
+      const result = await f.invoke("lane.release", { id: "sample-1" });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_CONFLICT", message: tooMany },
+      });
+      expect(f.calls.some((args) => args[0] === "status")).toBe(false);
+      expect(
+        f.calls.some((args) => args[0] === "worktree" && args[1] === "remove"),
+      ).toBe(false);
+      expect(f.snapshot()).toBe(before);
+      expect(f.mutations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+test("only the ls-files check gets the larger output cap", async () => {
+  const f = await fixture();
+  try {
+    const result = await f.invoke("lane.release", { id: "sample-1" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    const flagged = f.limits.filter((row) => row.args[0] === "ls-files");
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]!.maxOutputBytes).toBe(lsFilesLimit);
+    const others = f.limits.filter((row) => row.args[0] !== "ls-files");
+    expect(others.length).toBeGreaterThan(1);
+    for (const row of others) expect(row.maxOutputBytes).toBe(defaultLimit);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+for (const [command, mode] of [
+  ["ls-files", "incomplete"],
+  ["status", "incomplete"],
+  ["ls-files", "missing"],
+  ["status", "missing"],
+] as const) {
+  test(`release refuses when ${command} output evidence is ${mode}`, async () => {
+    const f = await fixture();
+    try {
+      f.flags.evidence = { command, mode };
+      // An unread tail could hold a flagged entry or dirty work; the prefix alone looks clean.
+      f.flags.indexEntries = "H visible.txt ";
+      const before = f.snapshot();
+      const result = await f.invoke("lane.release", { id: "sample-1" });
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "INPUT_CONFLICT",
+          message:
+            "Git output was incomplete; inspect the lane before releasing",
+        },
+      });
+      expect(
+        f.calls.some((args) => args[0] === "worktree" && args[1] === "remove"),
+      ).toBe(false);
       expect(f.snapshot()).toBe(before);
       expect(f.mutations).toEqual([]);
     } finally {
