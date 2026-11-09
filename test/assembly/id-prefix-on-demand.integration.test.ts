@@ -721,3 +721,33 @@ test("explicit prefix repair preserves old aliases, numbers and reversal while r
     await project.close();
   }
 }, 30_000);
+
+test("a project store that cannot open refuses without writing another project's store", async () => {
+  const other = await fixture(true, "forge");
+  try {
+    await other.call(["issue", "create", "--title", "Other project's issue"]);
+    const path = join(other.root, ".forge/state.sqlite");
+    const before = readFileSync(path);
+    const blocked = await fixture(true);
+    try {
+      mkdirSync(join(blocked.root, ".forge/state.sqlite"));
+      const result = await blocked.invoke("issue.create", {
+        title: "Must stay in the blocked project",
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE" },
+      });
+      if (result.ok) throw new Error("Blocked project unexpectedly wrote");
+      expect(result.error.message).toContain(`Project ${blocked.root}:`);
+      expect(readFileSync(path)).toEqual(before);
+      expect(done(await other.invoke("issue.list"))).toMatchObject({
+        items: [{ id: "forge-1", title: "Other project's issue" }],
+      });
+    } finally {
+      await blocked.close();
+    }
+  } finally {
+    await other.close();
+  }
+}, 30_000);
