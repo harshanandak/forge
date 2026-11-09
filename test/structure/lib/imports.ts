@@ -3,13 +3,15 @@ import { posix } from "node:path";
 import { FILESYSTEM_OWNERS } from "./filesystem-owners.ts";
 import { maskSource } from "./platform.ts";
 import type { SourceFile, Violation } from "./repo.ts";
-import { CODE_FILE, DETECTOR_MODULE, TEST_FILE } from "./repo.ts";
+import { CODE_FILE, DETECTOR_MODULE, isTestFile } from "./repo.ts";
 import { findWords } from "./words.ts";
 
 export const PACKAGE_NAME = "forge-workflow";
 
 export interface PackageJson {
   readonly name?: string;
+  readonly imports?: unknown;
+  readonly exports?: unknown;
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly devDependencies?: Readonly<Record<string, string>>;
   readonly optionalDependencies?: Readonly<Record<string, string>>;
@@ -44,7 +46,10 @@ const BUILTINS = new Set(
 const scanner = new Bun.Transpiler({ loader: "ts" });
 
 /** Import specifiers of a code file, including `import type` (erased at run time, but still a leak). */
-export function importsOf(file: SourceFile): string[] {
+export function importsOf(
+  file: SourceFile,
+  onNonliteral?: () => void,
+): string[] {
   if (!CODE_FILE.test(file.path)) return [];
   const found = new Set<string>();
   try {
@@ -59,10 +64,12 @@ export function importsOf(file: SourceFile): string[] {
   }
   const withStrings = maskSource(file.text, false);
   const codeOnly = maskSource(file.text, true);
-  const calls = /(?<![\w$.])(?:import|require)\s*\(\s*["']([^"']+)["']\s*[,)]/g;
+  const calls =
+    /(?<![\w$.])(?:import|require)\s*\(\s*(?:["']([^"']+)["']\s*[,)]|)/g;
   for (const match of withStrings.matchAll(calls)) {
-    if (codeOnly[match.index] === match[0][0] && match[1] !== undefined)
-      found.add(match[1]);
+    if (codeOnly[match.index] !== match[0][0]) continue;
+    if (match[1] === undefined) onNonliteral?.();
+    else found.add(match[1]);
   }
   return [...found];
 }
@@ -90,6 +97,66 @@ function adapterOf(path: string): string | undefined {
   return /^src\/adapters\/([^/]+)\//.exec(path)?.[1];
 }
 
+/** Inspect every conditional target: public code must remain independent in every build. */
+function packageTargets(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (value === null || typeof value !== "object") return [];
+  return Object.values(value).flatMap(packageTargets);
+}
+
+function aliasTargets(specifier: string, pkg: PackageJson): string[] {
+  const name = pkg.name ?? PACKAGE_NAME;
+  const internal = specifier.startsWith("#");
+  const key = internal
+    ? specifier
+    : specifier === name
+      ? "."
+      : specifier.startsWith(name + "/")
+        ? "." + specifier.slice(name.length)
+        : undefined;
+  if (key === undefined) return [];
+  const map = internal ? pkg.imports : pkg.exports;
+  if (map === null || typeof map !== "object" || Array.isArray(map))
+    return key === "." ? packageTargets(map) : [];
+  const entries = Object.entries(map);
+  if (!internal && entries.every(([pattern]) => !pattern.startsWith(".")))
+    return key === "." ? packageTargets(map) : [];
+  const exact = entries.find(([pattern]) => pattern === key);
+  if (exact !== undefined) return packageTargets(exact[1]);
+  const matches = entries
+    .filter(([pattern]) => {
+      const [prefix, suffix] = pattern.split("*");
+      return (
+        suffix !== undefined &&
+        key.startsWith(prefix ?? "") &&
+        key.endsWith(suffix) &&
+        key.length >= (prefix?.length ?? 0) + suffix.length
+      );
+    })
+    .sort(([a], [b]) => b.indexOf("*") - a.indexOf("*") || b.length - a.length);
+  const match = matches[0];
+  if (match === undefined) return [];
+  const [prefix, suffix] = match[0].split("*");
+  const capture = key.slice(
+    prefix?.length ?? 0,
+    key.length - (suffix?.length ?? 0),
+  );
+  return packageTargets(match[1]).map((target) =>
+    target.replaceAll("*", capture),
+  );
+}
+
+const TEAM_LOADING_SITES: Readonly<Record<string, string>> = {
+  "src/adapters/store-sqlite/index.ts": "Selects Bun or Node SQLite.",
+  "src/adapters/process/windows-acl.ts": "Loads the koffi ACL binding.",
+  "src/adapters/process/windows-job.ts": "Loads the koffi job binding.",
+  "src/assembly/capture.ts": "Resolves installed package roots.",
+};
+
+const slashPath = (path: string): string => path.replaceAll("\\", "/");
+const inTeam = (path: string): boolean =>
+  /^(?:dist\/)?team(?:\/|$)/i.test(posix.normalize(slashPath(path)));
+
 /** R1/R2: a dependency is imported only inside its adapter, and ports are the only way in. */
 export function findDependencyViolations(
   files: readonly SourceFile[],
@@ -108,8 +175,7 @@ export function findDependencyViolations(
   for (const file of files) {
     const here = adapterOf(file.path);
     const inShipped = /^(?:src|bin)\//.test(file.path);
-    const isTest =
-      TEST_FILE.test(file.path) || /(?:^|\/)test\//.test(file.path);
+    const isTest = isTestFile(file.path);
     const unownedFilesystem =
       file.path.startsWith("src/") && !FILESYSTEM_OWNERS.has(file.path);
     if (unownedFilesystem && CODE_FILE.test(file.path)) {
@@ -124,7 +190,75 @@ export function findDependencyViolations(
       }
     }
 
-    for (const specifier of importsOf(file)) {
+    const publicCode =
+      CODE_FILE.test(file.path) &&
+      !isTest &&
+      !/^team\//i.test(slashPath(file.path));
+    const reportTeam = (message: string): void => {
+      violations.push({ rule: "team-boundary", file: file.path, message });
+    };
+    if (/\.jsonc?$/i.test(file.path)) {
+      const config = JSON.parse(maskSource(file.text, false)) as {
+        compilerOptions?: {
+          baseUrl?: string;
+          paths?: Record<string, string[]>;
+        };
+      };
+      const options = config.compilerOptions;
+      const base = posix.join(
+        posix.dirname(file.path),
+        slashPath(options?.baseUrl ?? "."),
+      );
+      for (const [alias, targets] of Object.entries(options?.paths ?? {}))
+        if (
+          targets.some((target) => inTeam(posix.join(base, slashPath(target))))
+        )
+          reportTeam(
+            `paths alias "${alias}" targets removable team/; keep public configuration independent`,
+          );
+    }
+    if (publicCode) {
+      if (
+        !(file.path in TEAM_LOADING_SITES) &&
+        /\bcreateRequire\b/.test(maskSource(file.text, true))
+      )
+        reportTeam(
+          "createRequire can hide team/; use literal imports or an inventoried loader",
+        );
+      for (const match of file.text.matchAll(
+        /^[ \t]*\/\/\/[ \t]*<reference\s+path\s*=\s*["']([^"']+)["']/gim,
+      ))
+        if (inTeam(posix.join(posix.dirname(file.path), slashPath(match[1]!))))
+          reportTeam("triple-slash reference reaches removable team/");
+    }
+    for (const specifier of importsOf(file, () => {
+      if (publicCode && !(file.path in TEAM_LOADING_SITES))
+        reportTeam(
+          "nonliteral module loading can hide team/; use literal imports and inject providers",
+        );
+    })) {
+      const targets = specifier.startsWith(".")
+        ? [posix.join(posix.dirname(file.path), slashPath(specifier))]
+        : aliasTargets(specifier, pkg).map((target) =>
+            target.replace(/^\.\//, ""),
+          );
+      if (publicCode && targets.some(inTeam))
+        reportTeam(
+          `imports "${specifier}" into removable team/; inject a public contract instead`,
+        );
+
+      if (
+        publicCode &&
+        targets.some(
+          (target) =>
+            isTestFile(posix.normalize(slashPath(target)).toLowerCase()) ||
+            /\.test\./i.test(target),
+        )
+      )
+        reportTeam(
+          `imports test-named bridge "${specifier}"; public code must not depend on test files`,
+        );
+
       const fail = (message: string): void => {
         violations.push({
           rule: "dependency-boundary",
