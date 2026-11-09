@@ -51,11 +51,16 @@ export interface StoreDeps {
   readonly codec: ConfigCodecPort;
   readonly clock: ClockPort;
   readonly limits?: ParseLimits;
+  readonly projectRoot?: string;
 }
 
 const EMPTY = new Uint8Array();
 
 export function readProject(deps: StoreDeps): ProjectConfig {
+  const file =
+    deps.projectRoot === undefined
+      ? CONFIG_FILE
+      : `Project ${deps.projectRoot}: ${CONFIG_FILE}`;
   const bytes = readProjectFile(deps.files, CONFIG_FILE, MAX_CONFIG_FILE_BYTES);
   const revision = digestBytes(bytes ?? EMPTY);
   const base = { bytes, revision, problems: [] };
@@ -70,7 +75,7 @@ export function readProject(deps: StoreDeps): ProjectConfig {
       document: undefined,
       unreadable: {
         code: "INPUT_INVALID",
-        message: `${CONFIG_FILE} is not valid UTF-8`,
+        message: `${file} is not valid UTF-8`,
         retry: "never",
       },
     };
@@ -84,7 +89,7 @@ export function readProject(deps: StoreDeps): ProjectConfig {
       document: undefined,
       unreadable: {
         ...decoded.error,
-        message: `${CONFIG_FILE}: ${decoded.error.message}. Fix: correct the YAML syntax at the reported location, then run config show.`,
+        message: `${file}: ${decoded.error.message}. Fix: correct the YAML syntax at the reported location, then run config show.`,
       },
     };
   }
@@ -96,7 +101,7 @@ export function readProject(deps: StoreDeps): ProjectConfig {
       document: undefined,
       unreadable: {
         code: "INPUT_INVALID",
-        message: `${CONFIG_FILE} must hold a mapping at the top level`,
+        message: `${file} must hold a mapping at the top level`,
         retry: "never",
       },
     };
