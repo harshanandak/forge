@@ -34,7 +34,7 @@ const id = "work-1",
   merge = "b".repeat(40);
 const url = "https://github.com/example/repo/pull/1";
 const namespace = "forge/work";
-async function fixture() {
+async function fixture(seedLink = true) {
   const opened = await createSqliteStore(tmpdir()).open({
     path: ":memory:",
     readOnly: false,
@@ -68,13 +68,14 @@ async function fixture() {
     holder.actor,
     { expectRevision: 0 },
   );
-  owner.put(
-    namespace,
-    `link:${id}:1`,
-    { id, relation: "delivers", url },
-    holder.actor,
-    { expectRevision: 0 },
-  );
+  if (seedLink)
+    owner.put(
+      namespace,
+      `link:${id}:1`,
+      { id, relation: "delivers", url },
+      holder.actor,
+      { expectRevision: 0 },
+    );
   owner.acquire(namespace, `issue:${id}`, holder, 60000, "claim");
   const state = createStateClient({
     owner,
@@ -369,7 +370,7 @@ test("two no-PR drops with the same reason append two distinct landing notes", a
 });
 
 test("a lane that switched its checkout to a new branch closes with the PR from that branch", async () => {
-  const f = await fixture();
+  const f = await fixture(false);
   try {
     f.flags.checkout = "feature-b";
     f.flags.prBranch = "feature-b";
@@ -378,6 +379,15 @@ test("a lane that switched its checkout to a new branch closes with the PR from 
     expect(closed.status).toBe("closed");
     expect(f.flags.present).toBe(false);
     expect(f.files.get("forge-lanes.json")).not.toContain(id);
+    const links = f.owner
+      .list(namespace, `link:${id}:`)
+      .map((row) => row.value as { relation: string; url: string });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toMatchObject({ relation: "delivers", url });
+    expect(
+      (f.owner.get(namespace, `issue:${id}`)?.value as { status: string })
+        .status,
+    ).toBe("closed");
   } finally {
     await f.dispose();
   }
