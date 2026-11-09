@@ -58,7 +58,7 @@ export interface ProcessResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly timedOut: boolean;
-  /** Output exceeded the requested capture bounds; retained bytes are still returned. */
+  /** Output exceeded the capture bounds or did not finish draining; retained bytes are still returned. */
   readonly truncated: boolean;
   readonly durationMs: number;
   /** Runtime state observed at the deadline, before timeout cleanup. */
