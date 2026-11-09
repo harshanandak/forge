@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   rmSync,
@@ -38,6 +39,117 @@ const fixture = (name: string): string => {
   if (text === undefined) throw new Error(`missing fixture: ${name}`);
   return text;
 };
+
+const declarations = readJson(
+  "test/structure/fixtures/team-declarations.json",
+) as {
+  configs: Record<string, unknown>;
+  manifests: { name: string; path: string; value: unknown }[];
+};
+const compilerConfigs = (
+  root: string,
+  files: readonly string[],
+): SourceFile[] =>
+  readRepoFiles(
+    files.filter((path) => /(?:^|\/)tsconfig[^/]*\.json$/.test(path)),
+    root,
+  );
+
+test("the real scan includes sources from every public root", () => {
+  const sources = readRepoFiles(paths.filter((path) => CODE_FILE.test(path)));
+  expect(sources.length).toBeGreaterThan(0);
+  for (const root of ["src/", "bin/", "cloud/src/"])
+    expect(
+      sources.filter((file) => file.path.startsWith(root)).length,
+    ).toBeGreaterThan(0);
+}, 30_000);
+
+test("compiler discovery follows differently named bases into team aliases", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "forge-config-chain-"));
+  try {
+    for (const [path, config] of Object.entries(declarations.configs)) {
+      mkdirSync(join(scratch, posix.dirname(path)), { recursive: true });
+      writeFileSync(join(scratch, path), JSON.stringify(config));
+    }
+    const found = compilerConfigs(scratch, Object.keys(declarations.configs));
+    expect(boundary(found).map((v) => v.file)).toEqual([
+      "config/base.json",
+      "config/options.json",
+    ]);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}, 30_000);
+
+for (const [path, name] of [
+  ["src/assembly/view.tsx", "TSX side-effect import"],
+  ["src/assembly/view.jsx", "JSX side-effect import"],
+] as const) {
+  test(`${path} refuses side-effect imports alongside JSX`, () => {
+    expect(
+      boundary([{ path, text: fixture(name) }]).map((v) => v.file),
+    ).toEqual([path]);
+  }, 30_000);
+}
+
+for (const path of ["src/assembly/view.tsx", "src/assembly/view.jsx"]) {
+  test(`${path} accepts public JSX`, () => {
+    expect(boundary([{ path, text: fixture("public JSX") }])).toEqual([]);
+  }, 30_000);
+  test(`${path} fails closed on a parse error`, () => {
+    expect(() => boundary([{ path, text: fixture("parse failure") }])).toThrow(
+      path,
+    );
+  }, 30_000);
+}
+
+for (const { name, path, value } of declarations.manifests) {
+  test(`shipped JSON refuses a team ${name}`, () => {
+    const found = boundary([{ path, text: JSON.stringify(value) }]);
+    expect(found.map((v) => v.file)).toEqual([path]);
+    expect(found[0]?.message).toContain("team/");
+  }, 30_000);
+}
+
+test("shipped JSON allows public paths, prose and external schema URLs", () => {
+  expect(
+    boundary([
+      {
+        path: "package.json",
+        text: JSON.stringify({
+          exports: "./dist/src/index.js",
+          bin: "./dist/bin/forge.js",
+          files: ["dist", "templates"],
+        }),
+      },
+      {
+        path: "src/adapters/sample/adapter.json",
+        text: JSON.stringify({
+          entry: "./teamwork.js",
+          description: "Ask the team/ owner",
+        }),
+      },
+      {
+        path: "schemas/public.json",
+        text: JSON.stringify({
+          $schema: "https://example.com/team/schema.json",
+          $ref: "#/$defs/team",
+          $defs: { team: { description: "team/ is removable" } },
+        }),
+      },
+    ]),
+  ).toEqual([]);
+}, 30_000);
+
+test("the real shipped JSON declarations do not depend on team", () => {
+  const manifests = paths.filter(
+    (path) =>
+      path === "package.json" ||
+      /^(?:src|bin|cloud|schemas|templates|examples)\/.*\.json$/.test(path),
+  );
+  expect(manifests.length).toBeGreaterThan(0);
+  expect(boundary(readRepoFiles(manifests))).toEqual([]);
+}, 30_000);
 
 test("the real public tree has no dependency on team", () => {
   expect(

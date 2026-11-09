@@ -1,0 +1,61 @@
+{
+  "configs": {
+    "tsconfig.json": { "extends": "./config/base.json" },
+    "config/base.json": {
+      "extends": "./options.json",
+      "compilerOptions": { "paths": { "private/*": ["../team/*"] } }
+    },
+    "config/options.json": {
+      "compilerOptions": {
+        "baseUrl": "..",
+        "paths": { "private/*": ["./Team/*"] }
+      }
+    }
+  },
+  "manifests": [
+    {
+      "name": "unused conditional export",
+      "path": "package.json",
+      "value": {
+        "exports": { "./private": { "types": "./dist/team/private.d.ts" } }
+      }
+    },
+    {
+      "name": "bin map",
+      "path": "package.json",
+      "value": { "bin": { "forge": "./team/cli.js" } }
+    },
+    {
+      "name": "bin string",
+      "path": "package.json",
+      "value": { "bin": "./Team/cli.js" }
+    },
+    {
+      "name": "files glob",
+      "path": "package.json",
+      "value": { "files": ["dist", "./TEAM/**/*"] }
+    },
+    {
+      "name": "adapter entry",
+      "path": "src/adapters/sample/adapter.json",
+      "value": { "entry": "../../../team/adapter.js" }
+    },
+    {
+      "name": "schema path",
+      "path": "schemas/public.json",
+      "value": { "$schema": "../team/schema.json" }
+    },
+    {
+      "name": "nested schema reference",
+      "path": "schemas/public.json",
+      "value": {
+        "$defs": { "secret": { "$ref": "../Team/schema.json#/$defs/secret" } }
+      }
+    },
+    {
+      "name": "Windows adapter path",
+      "path": "src/adapters/sample/adapter.json",
+      "value": { "entry": "..\\..\\..\\team\\adapter.js" }
+    }
+  ]
+}

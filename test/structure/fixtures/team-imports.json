@@ -19,5 +19,9 @@
   "test-named bridge": "export * from './bridge.test.ts';",
   "test-folder bridge": "export * from './test/bridge.ts';",
   "template import": "export const load = () => import(`../team/secret.ts`);",
-  "test declaration bridge": "export type { Value } from './bridge.test.d.ts';"
+  "test declaration bridge": "export type { Value } from './bridge.test.d.ts';",
+  "TSX side-effect import": "import '../../team/secret.ts'; export const view = <main />;",
+  "JSX side-effect import": "import '../../team/secret.ts'; export const view = <main />;",
+  "public JSX": "import './teamwork.js'; export const view = <main />;",
+  "parse failure": "import '../../team/secret.ts'; export const view = <main>;"
 }
