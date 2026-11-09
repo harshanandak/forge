@@ -1,5 +1,10 @@
 {
   "operations": {
+    "lane.release": {
+      "title": "Release lane",
+      "summary": "Release a lane closed by hand without a lease. Refuse open issues, live leases, merge receipts, pending closes and dirty or ignored work. Remove the worktree and registry entry; keep and report the branch.",
+      "examples": [{ "input": { "id": "demo-1" } }]
+    },
     "lane.close": {
       "title": "Close lane",
       "summary": "Claim the issue first. Close a merged lane with a PASS receipt, or a CLOSED unmerged PR with a dropped reason. Refuse active run locks and dirty work; resume matching close journals. keepOpen preserves the issue; discardIgnored authorizes other ignored files.",
