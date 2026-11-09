@@ -78,8 +78,8 @@
       "required": ["revision", "at"]
     },
     "NoteStatus": {
-      "enum": ["proposed", "rejected"],
-      "description": "Absent on an accepted note. proposed: a new note with an owner tag that waits for the owner and is never served as a rule. rejected: the owner declined it; it stays readable."
+      "enum": ["proposed", "rejected", "withdrawn"],
+      "description": "Absent on an accepted note. proposed: a new note with an owner tag that waits for the owner and is never served as a rule. rejected: the owner declined it; it stays readable. withdrawn: an agent took the proposal back; it stays readable and is never served."
     },
     "Proposal": {
       "type": "object",
@@ -88,7 +88,18 @@
         "scope": { "$ref": "defs.json#/$defs/Scope" },
         "tags": { "$ref": "defs.json#/$defs/Tags" },
         "links": { "$ref": "defs.json#/$defs/Links" },
-        "at": { "type": "string", "maxLength": 40 }
+        "at": { "type": "string", "maxLength": 40 },
+        "withdrawn": {
+          "type": "object",
+          "properties": {
+            "by": { "type": "string", "maxLength": 40 },
+            "reason": { "$ref": "defs.json#/$defs/Untrusted" },
+            "at": { "type": "string", "maxLength": 40 }
+          },
+          "additionalProperties": false,
+          "required": ["by", "reason", "at"],
+          "description": "Present when an agent withdrew this proposal, with who and why. The owner never decided it."
+        }
       },
       "additionalProperties": false,
       "required": ["text", "tags", "links", "at"],
@@ -106,7 +117,7 @@
           "type": "array",
           "maxItems": 5,
           "items": { "$ref": "defs.json#/$defs/Proposal" },
-          "description": "Revisions the owner rejected, kept for history."
+          "description": "Revisions the owner rejected or an agent withdrew, kept for history."
         },
         "level": {
           "$ref": "defs.json#/$defs/Level"

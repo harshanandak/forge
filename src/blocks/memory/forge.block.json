@@ -145,6 +145,16 @@
       "stability": "stable",
       "timeoutMs": 15000
     },
+    "memory.withdraw": {
+      "input": "schemas/withdraw.input.json",
+      "output": "schemas/withdraw.output.json",
+      "context": "device",
+      "effects": ["memory:write"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "stable",
+      "timeoutMs": 15000
+    },
     "decision.propose": {
       "input": "schemas/propose.input.json",
       "output": "schemas/propose.output.json",
