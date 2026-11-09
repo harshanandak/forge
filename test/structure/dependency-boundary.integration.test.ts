@@ -4,6 +4,7 @@ import {
   findAdapterViolations,
   findDependencyViolations,
   findToolchainNames,
+  type AdapterManifest,
   type PackageJson,
 } from "./lib/imports.ts";
 import {
@@ -12,6 +13,7 @@ import {
   listRepoFiles,
   readJson,
   readRepoFiles,
+  repoRoot,
 } from "./lib/repo.ts";
 
 const pkg = readJson("package.json") as PackageJson;
@@ -40,6 +42,83 @@ const yamlAdapter = {
   packages: ["yaml"],
   executables: [],
 };
+
+const packageFixtures = readJson(
+  "test/structure/fixtures/package-dependencies.json",
+) as {
+  root: PackageJson;
+  cloud: PackageJson;
+  imports: Record<string, string>;
+  adapters: AdapterManifest[];
+};
+const cloudManifest = {
+  path: "cloud/package.json",
+  text: JSON.stringify(packageFixtures.cloud),
+};
+
+test("every cloud runtime dependency has a cloud adapter", () => {
+  const cloud = scanAdapters(
+    paths
+      .filter((path) => path.startsWith("cloud/"))
+      .map((path) => path.slice(6)),
+    `${repoRoot}/cloud`,
+  );
+  expect(
+    format(
+      findAdapterViolations(
+        cloud.dirs,
+        cloud.manifests,
+        readJson("cloud/package.json") as PackageJson,
+      ),
+    ),
+  ).toEqual([]);
+  const missing = findAdapterViolations([], [], packageFixtures.cloud);
+  expect(missing.map((violation) => violation.message)).toEqual([
+    'runtime dependency "cloud-lib" has no adapter; each dependency sits behind one src/adapters/<name>/',
+  ]);
+}, 30_000);
+
+for (const [kind, text] of Object.entries(packageFixtures.imports)) {
+  for (const path of [
+    "cloud/src/worker.ts",
+    "cloud/src/adapters/other/index.ts",
+    "src/core/cloud.ts",
+    "src/adapters/oauth/index.ts",
+    "bin/cloud.ts",
+  ]) {
+    test(`${path} refuses cloud-only dependency through ${kind}`, () => {
+      const found = findDependencyViolations(
+        [cloudManifest, { path, text }],
+        packageFixtures.root,
+        packageFixtures.adapters,
+      );
+      expect(found.map((violation) => violation.file)).toEqual([path]);
+      expect(found[0]?.message).toContain("cloud-lib");
+    }, 30_000);
+  }
+  test(`the owning cloud adapter accepts ${kind}`, () => {
+    expect(
+      findDependencyViolations(
+        [cloudManifest, { path: "cloud/src/adapters/oauth/index.ts", text }],
+        packageFixtures.root,
+        packageFixtures.adapters,
+      ),
+    ).toEqual([]);
+  }, 30_000);
+}
+
+test("cloud files cannot bypass root runtime adapter ownership or use cloud tooling", () => {
+  for (const name of ["root-lib", "cloud-tool"]) {
+    const path = "cloud/src/worker.ts";
+    const found = findDependencyViolations(
+      [cloudManifest, { path, text: `import '${name}';` }],
+      packageFixtures.root,
+      packageFixtures.adapters,
+    );
+    expect(found.map((violation) => violation.file)).toEqual([path]);
+    expect(found[0]?.message).toContain(name);
+  }
+}, 30_000);
 
 test("the guard rejects a package imported outside its adapter, and allows it inside", () => {
   const outside = [

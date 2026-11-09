@@ -34,6 +34,39 @@ const full = (adapter?: string): string =>
 const today = new Date("2026-10-16T00:00:00Z");
 const adapters = [{ name: "config-yaml", packages: ["yaml"], executables: [] }];
 
+const cloudFixture = (
+  readJson("test/structure/fixtures/package-dependencies.json") as {
+    cloud: LedgerPackageJson;
+  }
+).cloud;
+
+test("cloud declarations in every dependency group and overrides need ledger entries", () => {
+  const found = findLedgerViolations("", cloudFixture, [], today);
+  expect(found.map((violation) => violation.message)).toEqual([
+    'dependency "cloud-lib" has no ledger entry (### cloud-lib)',
+    'dependency "cloud-tool" has no ledger entry (### cloud-tool)',
+    'dependency "cloud-optional" has no ledger entry (### cloud-optional)',
+    'dependency "cloud-peer" has no ledger entry (### cloud-peer)',
+    'override "cloud-transitive" needs an entry (### override: cloud-transitive) with Issue and Expires',
+  ]);
+}, 30_000);
+
+test("the real cloud package has its own complete ledger section", () => {
+  const ledger = readTextFile(LEDGER_PATH)?.split(
+    /^## Cloud dependencies\s*$/m,
+  )[1];
+  expect(
+    format(
+      findLedgerViolations(
+        ledger,
+        readJson("cloud/package.json") as LedgerPackageJson,
+        [],
+        new Date(),
+      ),
+    ),
+  ).toEqual([]);
+}, 30_000);
+
 test("the guard rejects a dependency with no entry or an incomplete entry", () => {
   const pkg = {
     dependencies: { yaml: "2.0.0" },
