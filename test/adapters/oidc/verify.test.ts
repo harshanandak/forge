@@ -4,9 +4,10 @@ import {
   type OidcConfig,
   type OidcHttpPort,
 } from "../../../src/adapters/oidc/index.ts";
-import type {
-  IdentityRefusal,
-  VerifiedIdentity,
+import {
+  isVerifiedIdentity,
+  type IdentityRefusal,
+  type VerifiedIdentity,
 } from "../../../src/ports/identity.ts";
 
 const config: OidcConfig = {
@@ -280,4 +281,14 @@ test("private fields refuse the whole set even on unrelated entries", async () =
     const f = await fixture(() => Promise.resolve(body));
     expect(await f.verify(await token())).toEqual(refused());
   }
+}, 5_000);
+
+test("signed OIDC proof yields runtime-verified identity", async () => {
+  const f = await fixture();
+  const result = await f.verify(await token());
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("Expected verified identity");
+  expect(isVerifiedIdentity(result.identity)).toBe(true);
+  expect(Object.isFrozen(result.identity)).toBe(true);
+  expect(isVerifiedIdentity({ ...result.identity })).toBe(false);
 }, 5_000);
