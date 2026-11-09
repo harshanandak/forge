@@ -1,5 +1,5 @@
 // Makes a new admin token inside this process and stores it two ways: as the Worker secret ADMIN_TOKEN
-// (piped to the locally installed wrangler over stdin) and in ~/.agent-secrets/forge-cloud-dev.token for
+// (piped to the locally installed wrangler over stdin) and in ~/.forge-cloud/forge-cloud-dev.token for
 // this user only. The token is never printed, logged or put on a command line. Run it from cloud/ with
 // CLOUDFLARE_ACCOUNT_ID set. It is the first-time setup and the rotation: the old token stops working.
 //
@@ -22,7 +22,7 @@ import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const target = join(homedir(), ".agent-secrets", "forge-cloud-dev.token");
+const target = join(homedir(), ".forge-cloud", "forge-cloud-dev.token");
 const temp = `${target}.${randomBytes(6).toString("hex")}.tmp`;
 const wrangler = fileURLToPath(
   new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url),

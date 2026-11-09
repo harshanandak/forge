@@ -28,13 +28,13 @@ From `cloud/`, with `CLOUDFLARE_ACCOUNT_ID` set and an existing wrangler login (
 1. `bun x wrangler whoami` shows the login, the account and the token scopes. It needs Workers write access.
 2. `bun x wrangler deploy` deploys `wrangler.jsonc` (never `wrangler.test.jsonc`, which is for CI).
 3. `node scripts/set-admin-token.mjs` sets the admin token. It is not printed; it is saved to
-   `~/.agent-secrets/forge-cloud-dev.token`, readable by your user only. Run it again to rotate: the old token stops working at once.
+   `~/.forge-cloud/forge-cloud-dev.token`, readable by your user only. Run it again to rotate: the old token stops working at once.
 
 ## Check a live Worker
 
 ```sh
 CLOUD_BASE=https://<worker>.workers.dev CLOUD_LIVE=1 \
-  CLOUD_ADMIN_TOKEN_FILE=~/.agent-secrets/forge-cloud-dev.token \
+  CLOUD_ADMIN_TOKEN_FILE=~/.forge-cloud/forge-cloud-dev.token \
   bun conformance/conformance.ts main
 ```
 
