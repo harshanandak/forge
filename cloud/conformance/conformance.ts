@@ -297,8 +297,11 @@ function granted(reply: Reply): Lease {
   assert.ok(reply.body.value, "a grant carries the lease");
   return reply.body.value;
 }
-// A holder lookup that reports no lease.
+// A holder lookup that succeeded and reports no lease. An error reply has no value either, so the
+// status and the ok flag are checked first.
 function noLease(reply: Reply): void {
+  assert.equal(reply.status, 200, JSON.stringify(reply.body));
+  assert.equal(reply.body.ok, true, JSON.stringify(reply.body));
   assert.equal(reply.body.value ?? null, null, JSON.stringify(reply.body));
 }
 function refused(
