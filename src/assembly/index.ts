@@ -1190,6 +1190,30 @@ export async function createAssembly(
             ? (call.configOperations[request.op]!(request.input) as ShowResult)
             : call.config.show();
         collectCompatibilityWarnings(call, loaded);
+        const prefixPath = "/blocks/work/config/idPrefix";
+        const detectedPrefix = derived.find(({ key }) => key === prefixPath);
+        if (
+          request.op === "config.show" &&
+          typeof detectedPrefix?.value === "string" &&
+          detectedPrefix.value !== "forge" &&
+          loaded.values.some(
+            ({ pointer, layer, value }) =>
+              pointer === prefixPath &&
+              layer === "project" &&
+              value === "forge",
+          )
+        ) {
+          const patch = [{ op: "remove", path: prefixPath }];
+          const preview = JSON.stringify({ patch });
+          const apply = JSON.stringify({
+            expectRevision: loaded.revision,
+            patch,
+          });
+          call.warnings.push({
+            code: "ID_PREFIX_MISMATCH",
+            message: `The configured issue prefix forge overrides this project's derived prefix ${detectedPrefix.value}. If this pin was copied, preview its removal with config.preview --input '${preview}', then run config.apply --input '${apply}'. Existing numbers and minted-prefix aliases are preserved. To restore the prior prefix, use config.apply to set ${prefixPath} to forge at the latest config revision. No config was changed by this read.`,
+          });
+        }
         for (const instance of loaded.instances) {
           workEnabled ||= instance.enabled && instance.name === "work";
           if (
