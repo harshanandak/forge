@@ -461,6 +461,8 @@ export class RestoreConsistencyFailure extends ForgeFailure {
   }
 }
 
+const restorePageSize = 16;
+
 function* restoredRows(
   db: SqlDatabase,
   table: string,
@@ -485,7 +487,7 @@ function* restoredRows(
 export function verifyEventDerivedState(
   candidate: SqlDatabase,
   highWaterMark: number,
-  pageSize = 16,
+  pageSize: number = restorePageSize,
 ): void {
   if (!Number.isSafeInteger(highWaterMark) || highWaterMark < 0)
     throw new RestoreConsistencyFailure("state_events", "high-water mark");
@@ -1449,7 +1451,11 @@ export class StateOwner {
     return { ...snapshot!, image: Buffer.from(image).toString("base64") };
   }
   /** Validate without mutating the candidate; only the adapter can replace database storage. */
-  restore(snapshot: Snapshot, verifyRecovery?: () => void): void {
+  restore(
+    snapshot: Snapshot,
+    verifyRecovery?: () => void,
+    pageSize: number = restorePageSize,
+  ): void {
     if (
       snapshot.format !== "forge.state/1" ||
       typeof snapshot.image !== "string"
@@ -1500,7 +1506,7 @@ export class StateOwner {
       assertRegistered(candidate);
       if (migrated && signature(candidate) !== expected)
         invalid("Snapshot schema or reviewed table registration differs");
-      verifyEventDerivedState(candidate, eventHighWaterMark);
+      verifyEventDerivedState(candidate, eventHighWaterMark, pageSize);
     };
     imageStore.restoreImage(
       image,
@@ -1511,8 +1517,13 @@ export class StateOwner {
         // Preserve lease counters and receipts, but never revive authority from a backup.
         const at = new Date(this.#now()).toISOString();
         candidate.transaction(() => {
-          for (const row of candidate.all(
-            "SELECT namespace,subject,body FROM state_leases",
+          // Only body changes below, never the (namespace, subject) keyset, so paging stays exact.
+          for (const row of restoredRows(
+            candidate,
+            "state_leases",
+            "namespace,subject,body",
+            ["namespace", "subject"],
+            pageSize,
           )) {
             const lease = JSON.parse(String(row.body)) as LeaseRecord;
             if (!validateLeaseRecord(lease).ok)
