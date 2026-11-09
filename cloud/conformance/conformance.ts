@@ -40,6 +40,75 @@ const stateFile =
   join(tmpdir(), "forge-cloud-conformance.json");
 const phase = process.argv[2] ?? "main";
 const run = `c${Date.now()}`;
+const adminToken = process.env.CLOUD_ADMIN_TOKEN ?? "";
+
+interface Device {
+  readonly id: string;
+  readonly token: string;
+  readonly device: string;
+  readonly session: string;
+  readonly agent: string;
+  readonly harness: string;
+  readonly expiresAt: string;
+}
+interface AdminReply {
+  readonly status: number;
+  readonly body: {
+    readonly ok: boolean;
+    readonly value?: Device;
+    readonly error?: { readonly code: string; readonly message: string };
+  };
+}
+
+// Admin calls name the token they use. Device calls use the project's own device token unless the
+// caller passes an `authorization` header ("" sends none).
+async function admin(
+  project: string,
+  route: "devices" | "revoke",
+  payload: object,
+  token = adminToken,
+): Promise<AdminReply> {
+  const response = await fetch(`${base}/p/${project}/${route}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(token === "" ? {} : { authorization: `Bearer ${token}` }),
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(20_000),
+  });
+  return {
+    status: response.status,
+    body: (await response.json()) as AdminReply["body"],
+  };
+}
+async function issue(
+  project: string,
+  device: string,
+  ttlMs = 3_600_000,
+): Promise<Device> {
+  const reply = await admin(project, "devices", {
+    device,
+    session: `session-${device}`,
+    agent: `agent-${device}`,
+    harness: "conformance",
+    ttlMs,
+  });
+  assert.equal(reply.status, 200, JSON.stringify(reply.body));
+  return reply.body.value!;
+}
+const projectTokens = new Map<string, Promise<string>>();
+const tokenFor = (project: string): Promise<string> => {
+  let token = projectTokens.get(project);
+  if (token === undefined) {
+    token = issue(project, "device-default").then((device) => device.token);
+    projectTokens.set(project, token);
+  }
+  return token;
+};
+const asDevice = (device: Device): Record<string, string> => ({
+  authorization: `Bearer ${device.token}`,
+});
 
 async function send(
   project: string,
@@ -48,12 +117,21 @@ async function send(
   payload?: string | object,
   headers: Record<string, string> = {},
 ): Promise<Reply> {
+  const auth =
+    "authorization" in headers
+      ? headers
+      : { ...headers, authorization: `Bearer ${await tokenFor(project)}` };
   const response = await fetch(`${base}/p/${project}/${route}`, {
     method,
+    headers: {
+      ...(payload === undefined ? {} : { "content-type": "application/json" }),
+      ...Object.fromEntries(
+        Object.entries(auth).filter(([, value]) => value !== ""),
+      ),
+    },
     ...(payload === undefined
       ? {}
       : {
-          headers: { "content-type": "application/json", ...headers },
           body: typeof payload === "string" ? payload : JSON.stringify(payload),
         }),
     signal: AbortSignal.timeout(20_000),
@@ -72,10 +150,14 @@ const holderOf = (name: string, index = 0): Holder => ({
   actor: { kind: "agent", id: `agent-${name}` },
   session: {
     id: `session-${name}-${index}`,
-    device: `device-${index % 5}`,
+    device: "device-default",
     agent: `agent-${name}`,
     harness: "conformance",
   },
+});
+const onDevice = (holder: Holder, device: string): Holder => ({
+  ...holder,
+  session: { ...holder.session, device },
 });
 const claim = (
   project: string,
@@ -119,7 +201,163 @@ async function check(name: string, body: () => Promise<void>): Promise<void> {
   }
 }
 
+const lookup = (
+  project: string,
+  subject: string,
+  headers: Record<string, string>,
+): Promise<Reply> =>
+  send(
+    project,
+    "GET",
+    `holder?subject=${encodeURIComponent(subject)}`,
+    undefined,
+    headers,
+  );
+
+const revokeCheck = (): Promise<void> =>
+  check("a revoked token is refused on its next request", async () => {
+    const project = `${run}-revoke`;
+    const phone = await issue(project, "phone");
+    const laptop = await issue(project, "laptop");
+    const holder = holderOf("revoke");
+    const attempt = (subject: string, device: Device): Promise<Reply> =>
+      send(
+        project,
+        "POST",
+        "claim",
+        {
+          subject,
+          holder: onDevice(holder, device.device),
+          ttlMs: 600_000,
+          requestId: `claim-${subject}`,
+        },
+        asDevice(device),
+      );
+    const first = granted(await attempt("issue:revoke-1", phone));
+    const revoked = await admin(project, "revoke", { id: phone.id });
+    assert.equal(revoked.status, 200, JSON.stringify(revoked.body));
+
+    // The next request with the revoked token is refused, naming the holder.
+    for (const reply of [
+      await lookup(project, "issue:revoke-1", asDevice(phone)),
+      await attempt("issue:revoke-2", phone),
+    ]) {
+      assert.equal(reply.status, 401, JSON.stringify(reply.body));
+      assert.equal(reply.body.error?.code, "AUTH_REVOKED");
+      for (const part of [
+        phone.device,
+        phone.session,
+        phone.agent,
+        phone.harness,
+        phone.expiresAt,
+      ])
+        assert.ok(reply.body.error?.message.includes(part), `names ${part}`);
+    }
+    // The refused claim granted nothing, and the other device still works.
+    const none = await lookup(project, "issue:revoke-2", asDevice(laptop));
+    assert.equal(none.body.value ?? null, null);
+    assert.deepEqual(
+      granted(await lookup(project, "issue:revoke-1", asDevice(laptop))),
+      first,
+    );
+  });
+
+if (phase === "revoke") await revokeCheck();
+
 if (phase === "main") {
+  await revokeCheck();
+
+  await check(
+    "no token, a wrong token, or a device token on an admin route is refused before any state is read",
+    async () => {
+      const project = `${run}-auth`;
+      const device = await issue(project, "tablet");
+      const body = {
+        subject: "issue:auth-1",
+        holder: onDevice(holderOf("auth"), "tablet"),
+        ttlMs: 600_000,
+        requestId: "auth-1",
+      };
+      const [id, secret] = device.token.split(".") as [string, string];
+      const wrong = `${id}.${"A".repeat(secret.length)}`;
+      for (const [authorization, code] of [
+        ["", "AUTH_REQUIRED"],
+        [`Bearer ${wrong}`, "AUTH_INVALID"],
+        ["Bearer not-a-token", "AUTH_INVALID"],
+        [`Bearer fct_${"0".repeat(16)}.${secret}`, "AUTH_INVALID"],
+      ] as const) {
+        for (const reply of [
+          await send(project, "POST", "claim", body, { authorization }),
+          await lookup(project, "issue:auth-1", { authorization }),
+        ]) {
+          assert.equal(reply.status, 401, JSON.stringify(reply.body));
+          assert.equal(reply.body.error?.code, code);
+        }
+      }
+      const none = await lookup(project, "issue:auth-1", asDevice(device));
+      assert.equal(
+        none.body.value ?? null,
+        null,
+        "no refused claim took a lease",
+      );
+      for (const token of ["", device.token, wrong]) {
+        const reply = await admin(
+          project,
+          "devices",
+          { device: "x", ttlMs: 1_000 },
+          token,
+        );
+        assert.equal(reply.status, 401, JSON.stringify(reply.body));
+      }
+      const revoke = await admin(
+        project,
+        "revoke",
+        { id: device.id },
+        device.token,
+      );
+      assert.equal(revoke.status, 401, JSON.stringify(revoke.body));
+      granted(await send(project, "POST", "claim", body, asDevice(device)));
+    },
+  );
+
+  await check("a device token claims only as its own device", async () => {
+    const project = `${run}-device`;
+    const tablet = await issue(project, "tablet");
+    const claimAs = (named: object, requestId: string): Promise<Reply> =>
+      send(
+        project,
+        "POST",
+        "claim",
+        { subject: "issue:device-1", holder: named, ttlMs: 600_000, requestId },
+        asDevice(tablet),
+      );
+    const holder = holderOf("device");
+    const reply = await claimAs(onDevice(holder, "phone"), "device-1");
+    assert.equal(reply.status, 403, JSON.stringify(reply.body));
+    assert.equal(reply.body.error?.code, "AUTH_DEVICE_MISMATCH");
+    for (const part of ["tablet", "phone"])
+      assert.ok(reply.body.error?.message.includes(part), `names ${part}`);
+    const none = await lookup(project, "issue:device-1", asDevice(tablet));
+    assert.equal(none.body.value ?? null, null, "the mismatch took no lease");
+    // A holder with no device gets the token's device.
+    const { device: _device, ...session } = holder.session;
+    const lease = granted(await claimAs({ ...holder, session }, "device-2"));
+    assert.equal(lease.holder.session.device, "tablet");
+  });
+
+  await check("an expired token is refused, naming the holder", async () => {
+    const project = `${run}-expiry`;
+    const device = await issue(project, "watch", 300);
+    const before = await lookup(project, "issue:expiry-1", asDevice(device));
+    assert.equal(before.status, 200, JSON.stringify(before.body));
+    await sleep(600);
+    const reply = await lookup(project, "issue:expiry-1", asDevice(device));
+    assert.equal(reply.status, 401, JSON.stringify(reply.body));
+    assert.equal(reply.body.error?.code, "AUTH_EXPIRED");
+    for (const part of [device.device, device.agent, device.expiresAt])
+      assert.ok(reply.body.error?.message.includes(part), `names ${part}`);
+  });
+
   await check(
     "100 concurrent claims: 1 grant, 99 refusals naming the holder",
     async () => {
@@ -611,7 +849,7 @@ if (phase === "main") {
   );
   writeFileSync(stateFile, JSON.stringify({ project, holder, claimed, freed }));
   console.log(`saved restart state for ${project}`);
-} else {
+} else if (phase === "restart") {
   const saved = JSON.parse(readFileSync(stateFile, "utf8")) as {
     project: string;
     holder: Holder;
