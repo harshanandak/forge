@@ -166,21 +166,28 @@ export class Project {
       return this.#replay(route, requestId, prior, subject, holder);
     }
     try {
-      const fence = { subject, holder, generation: generation ?? 0 };
-      const lease =
-        route === "claim"
-          ? this.#owner.acquire(NAMESPACE, subject, holder, ttlMs!, requestId)
-          : route === "renew"
-            ? this.#owner.renew(NAMESPACE, fence, ttlMs!)
-            : this.#owner.release(NAMESPACE, fence);
-      this.#record(requestId, fingerprint, "ok", lease);
-      return lease;
+      // The change and its receipt commit together: if the receipt insert fails, the change rolls
+      // back, so a retry after the 500 starts from the state the caller last saw.
+      return this.#db.transaction(() => {
+        const fence = { subject, holder, generation: generation ?? 0 };
+        const lease =
+          route === "claim"
+            ? this.#owner.acquire(NAMESPACE, subject, holder, ttlMs!, requestId)
+            : route === "renew"
+              ? this.#owner.renew(NAMESPACE, fence, ttlMs!)
+              : this.#owner.release(NAMESPACE, fence);
+        this.#record(requestId, fingerprint, "ok", lease);
+        return lease;
+      });
     } catch (error) {
+      // A refusal changed no lease state (its transaction rolled back), so its receipt is one insert.
       if (
         error instanceof ForgeFailure &&
         error.error.code.startsWith("LEASE_")
       )
-        this.#record(requestId, fingerprint, error.error.code, error.error);
+        this.#db.transaction(() =>
+          this.#record(requestId, fingerprint, error.error.code, error.error),
+        );
       throw error;
     }
   }

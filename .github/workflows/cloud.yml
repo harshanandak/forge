@@ -53,7 +53,7 @@ jobs:
           export CONFORMANCE_STATE="$RUNNER_TEMP/conformance-state.json"
           persist="$RUNNER_TEMP/wrangler-state"
           start() {
-            bun x wrangler dev --local --persist-to "$persist" > "$RUNNER_TEMP/wrangler-$1.log" 2>&1 &
+            bun x wrangler dev --local --config wrangler.test.jsonc --persist-to "$persist" > "$RUNNER_TEMP/wrangler-$1.log" 2>&1 &
             echo $! > "$RUNNER_TEMP/wrangler.pid"
             for _ in $(seq 1 60); do
               if curl -s -o /dev/null "$CLOUD_BASE/p/ready/holder?subject=ready"; then return 0; fi
@@ -76,6 +76,7 @@ jobs:
             return 1
           }
           trap 'pkill -f workerd || true' EXIT
+          bun conformance/store-join.ts
           start first
           bun conformance/conformance.ts main
           stop

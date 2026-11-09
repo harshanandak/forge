@@ -1,6 +1,6 @@
 // A synchronous SqlDatabase over a Durable Object's SQLite storage, so Forge's state owner runs
 // in the Durable Object unchanged. Reads and writes go through ctx.storage.sql.exec; a transaction
-// is ctx.storage.transactionSync.
+// is ctx.storage.transactionSync, and a nested one joins the outer.
 import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
 
 type Binding = string | number | null | ArrayBuffer;
@@ -31,9 +31,17 @@ function bind(value: SqlValue): Binding {
   return value instanceof Uint8Array ? value.slice().buffer : value;
 }
 
+function synchronous<T>(body: () => T): T {
+  const result = body();
+  if (result instanceof Promise)
+    throw new Error("A transaction body must be synchronous");
+  return result;
+}
+
 export function durableStore(storage: DurableStorage): SqlDatabase {
   const { sql } = storage;
   let active = false;
+  let innerFailed = false;
   sql.exec(
     `CREATE TABLE IF NOT EXISTS ${PRAGMA_TABLE} (name TEXT PRIMARY KEY, value INTEGER NOT NULL)`,
   );
@@ -83,16 +91,30 @@ export function durableStore(storage: DurableStorage): SqlDatabase {
     get: (statement, params = []) => rows(statement, params)[0],
     all: (statement, params = []) => rows(statement, params),
     transaction<T>(body: () => T): T {
-      if (active) throw new Error("Nested transactions are refused");
+      // A transaction inside another joins it: its writes commit or roll back with the outer one.
+      // If the inner body throws, the outer one is marked failed and aborts even when its own code
+      // catches that error, so a failed inner write is never committed.
+      if (active) {
+        try {
+          return synchronous(body);
+        } catch (error) {
+          innerFailed = true;
+          throw error;
+        }
+      }
       return storage.transactionSync(() => {
         active = true;
+        innerFailed = false;
         try {
-          const result = body();
-          if (result instanceof Promise)
-            throw new Error("A transaction body must be synchronous");
+          const result = synchronous(body);
+          if (innerFailed)
+            throw new Error(
+              "An inner transaction failed, so the outer one aborts",
+            );
           return result;
         } finally {
           active = false;
+          innerFailed = false;
         }
       });
     },
