@@ -116,6 +116,7 @@ function startTimeFormat(value: string | undefined): string | undefined {
     ? format
     : undefined;
 }
+const pendingMarkerCleanup = new Map<string, () => void>();
 /** Owner filenames make dead-owner cleanup generation-specific; unknown locks stay untouched. */
 function recoverableLock(
   target: string,
@@ -224,11 +225,18 @@ function recoverableLock(
     if (current && sameFile(current, identity)) removeEmpty();
     throw error;
   }
-  return {
-    release() {
+  const marker = join(target, owner);
+  const cleanup = () => {
+    try {
       release(owner, identity);
-    },
+      pendingMarkerCleanup.delete(marker);
+    } catch (error) {
+      if (errorCode(error) === "LOCK_CLEANUP_PENDING")
+        pendingMarkerCleanup.set(marker, cleanup);
+      throw error;
+    }
   };
+  return { release: cleanup };
 }
 function active(options: CloneFilesOptions): void {
   options.signal.throwIfAborted();
@@ -829,6 +837,13 @@ function createCloneFilesAccess(
       seen.add(identity);
       return { area, path: local, target };
     });
+    for (const cleanup of pendingMarkerCleanup.values()) {
+      try {
+        cleanup();
+      } catch {
+        // Retain failed cleanup without replacing this acquisition's result.
+      }
+    }
     if (lockOptions?.recoverDeadOwner) {
       const held: CloneFileLock[] = [];
       const result = {

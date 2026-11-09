@@ -323,6 +323,46 @@ test("close cleanup retry preserves another process's replacement marker", () =>
   expect(readFileSync(join(moved, name), "utf8")).toBe(content);
 }, 30_000);
 
+test.each(["restored", "blocked"])(
+  "a new lease retries only recorded markers: %s",
+  (kind) => {
+    const { files, options, commonDirectory, lease } = fixture();
+    files.lock(["retry.lock"], { recoverDeadOwner: true });
+    const path = join(commonDirectory, "retry.lock");
+    const marker = join(path, readdirSync(path)[0]!);
+    const content = readFileSync(marker, "utf8");
+    rmSync(marker);
+    mkdirSync(marker);
+    expect(() => lease.close()).toThrow("Clone lock cleanup failed");
+    const restore = () => {
+      rmSync(marker, { recursive: true });
+      writeFileSync(marker, content);
+    };
+    const unknown = join(commonDirectory, "unrecorded.lock");
+    mkdirSync(unknown);
+    const name = `owner-${process.pid}-00000000-0000-4000-8000-000000000000`;
+    writeFileSync(join(unknown, name), "unrecorded owner");
+    if (kind === "restored") restore();
+    const next = createCloneFilesLease(options);
+    const held = next.service.lock(["own.lock"], { recoverDeadOwner: true });
+    expect(existsSync(join(commonDirectory, "own.lock"))).toBe(true);
+    held.release();
+    expect(existsSync(marker)).toBe(kind === "blocked");
+    expect(readdirSync(unknown)).toEqual([name]);
+    expect(readFileSync(join(unknown, name), "utf8")).toBe("unrecorded owner");
+    if (kind === "blocked") {
+      restore();
+      next.service.lock(["own.lock"], { recoverDeadOwner: true }).release();
+    }
+    const third = createCloneFilesLease(options);
+    third.service.lock(["retry.lock"], { recoverDeadOwner: true }).release();
+    expect(existsSync(path)).toBe(false);
+    next.close();
+    third.close();
+  },
+  30_000,
+);
+
 test.each([
   "matching",
   "different",
