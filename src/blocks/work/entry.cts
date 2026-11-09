@@ -112,7 +112,10 @@ type Lane = {
   base?: string;
 };
 type LaneInput = ItemRef & { branch: string; brief: string };
-type LaneOutput = Lane & { lease?: TrackerItem["lease"] };
+type LaneOutput = Lane & {
+  lease?: TrackerItem["lease"];
+  leaseWaiver?: { reason: string };
+};
 type CloseIssue = (
   call: HandlerCall<TrackerOperations<"issue">["issue.close"][0]>,
   validateOnly?: boolean,
@@ -3581,10 +3584,21 @@ const operations: Operations<WorkOperations> = {
       accepted.generation === state.lease(key(identity))?.generation
         ? state.lease(key(identity))
         : undefined);
+    // Closed without a receipt, such as by hand: it can never be claimed, so no lease can exist.
+    const waived =
+      !lease && issue.status === "closed" && issue.receipt === undefined;
     return {
       ...lane,
       issue: issue.id,
       ...(lease ? { lease } : {}),
+      ...(waived
+        ? {
+            leaseWaiver: {
+              reason:
+                "The issue was closed without a receipt and cannot be claimed",
+            },
+          }
+        : {}),
     };
   },
   "lane.start": async ({ input, services, config, signal, deadline }) => {

@@ -18,6 +18,13 @@
     "base": {
       "type": "string"
     },
+    "leaseWaiver": {
+      "description": "The lane's issue holds no lease and cannot be claimed again, so lane close needs none. The reason says why.",
+      "type": "object",
+      "required": ["reason"],
+      "properties": { "reason": { "type": "string" } },
+      "additionalProperties": false
+    },
     "lease": {
       "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/state.json#/$defs/LeaseRecord"
     }

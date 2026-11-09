@@ -192,6 +192,7 @@ async function fixture(seedLink = true, generation = 1) {
     });
   const comments = () => owner.list(namespace, `comment:${id}:`);
   return {
+    services,
     owner,
     state,
     holder,
@@ -552,6 +553,68 @@ test("a lane whose issue is open still needs its lease", async () => {
       (f.owner.get(namespace, `issue:${id}`)!.value as { status: string })
         .status,
     ).toBe("open");
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
+for (const [name, extra] of [
+  ["a drop", { dropped: "replaced" }],
+  ["a close that keeps the issue open", { keepOpen: true }],
+] as const)
+  test(`a closed-by-hand lane is still refused for ${name} without a lease`, async () => {
+    const f = await fixture(true, 0);
+    try {
+      const before = closeByHand(f);
+      f.flags.prState = "CLOSED";
+      await expect(f.close(extra)).rejects.toThrow();
+      expect(f.flags.present).toBe(true);
+      expect(f.flags.branch).toBe(true);
+      expect(laneLeft(f)).toBe(true);
+      expect(f.owner.get(namespace, `issue:${id}`)).toEqual(before);
+    } finally {
+      await f.dispose();
+    }
+  }, 30_000);
+
+const shown = (f: Awaited<ReturnType<typeof fixture>>) =>
+  operations["lane.show"]!({
+    input: { id },
+    services: f.services,
+    signal: new AbortController().signal,
+    deadline: Number.MAX_SAFE_INTEGER,
+  }) as Promise<{ leaseWaiver?: { reason: string }; lease?: unknown }>;
+
+test("lane show waives the lease only for an issue closed without a receipt that holds none", async () => {
+  const f = await fixture(true, 0);
+  try {
+    expect((await shown(f)).leaseWaiver).toBeUndefined();
+    const issue = f.owner.get(namespace, `issue:${id}`)!;
+    f.owner.release(namespace, {
+      subject: `issue:${id}`,
+      holder: f.holder,
+      generation: 1,
+    });
+    f.owner.put(
+      namespace,
+      `issue:${id}`,
+      { ...(issue.value as object), status: "closed", receipt: "proof" },
+      f.holder.actor,
+      { expectRevision: issue.revision },
+    );
+    expect((await shown(f)).leaseWaiver).toBeUndefined();
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
+test("lane show waives the lease for a lane whose issue was closed by hand", async () => {
+  const f = await fixture(true, 0);
+  try {
+    closeByHand(f);
+    const result = await shown(f);
+    expect(result.leaseWaiver?.reason).toContain("closed without a receipt");
+    expect(result.lease).toBeUndefined();
   } finally {
     await f.dispose();
   }
