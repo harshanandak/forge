@@ -1,4 +1,9 @@
-import type { VerifiedIdentity } from "../../../src/ports/identity.ts";
+import type {
+  IdentityClaims,
+  VerifiedIdentity,
+} from "../../../src/ports/identity.ts";
+import { isVerifiedIdentity } from "../../../src/ports/identity-mint.ts";
+import { same, sha256 as hash } from "../tokens.ts";
 
 export interface DeviceInfo {
   readonly label: string;
@@ -35,12 +40,11 @@ export interface ChallengeRecord {
   interval: number;
   nextPoll: number;
   status: "pending" | "approved" | "denied" | "consumed";
-  identity?: VerifiedIdentity;
+  identity?: IdentityClaims;
 }
 export interface ChallengeState {
   challenges: ChallengeRecord[];
-  attempts: number;
-  resetAt: number;
+  attempts: Record<string, { failed: number; resetAt: number }>;
 }
 /**
  * Run the callback as one atomic conditional update of shared storage, including
@@ -56,8 +60,10 @@ export interface DeviceLoginOptions {
   readonly store: ChallengeStore;
   readonly now: () => number;
   readonly random: (length: number) => Uint8Array;
+  /** Shared HMAC-SHA-256 key supplied by composition; never persisted here. */
+  readonly userCodeKey: Parameters<typeof crypto.subtle.sign>[1];
   readonly issue: (
-    identity: VerifiedIdentity,
+    identity: IdentityClaims,
     device: DeviceInfo,
   ) => Promise<string>;
 }
@@ -67,7 +73,6 @@ export interface DeviceLogin {
   deny(code: string, identity: VerifiedIdentity): Promise<LoginDecision>;
   poll(code: string): Promise<LoginResult>;
 }
-
 export class DeviceLoginFailure extends Error {
   readonly code: LoginError;
   constructor(code: LoginError) {
@@ -76,7 +81,6 @@ export class DeviceLoginFailure extends Error {
     this.code = code;
   }
 }
-
 const ALPHABET = "BCDFGHJKLMNPQRSTVWXYZ";
 const LIFETIME = 600;
 const INTERVAL = 5;
@@ -87,24 +91,8 @@ const refuse = (error: LoginError, interval?: number): LoginRefusal =>
   interval === undefined
     ? { ok: false, error }
     : { ok: false, error, interval };
-async function hash(code: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(code),
-  );
-  return Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-}
-/** Both operands are fixed-width SHA-256 hex digests. No prefix or early exit. */
-function equalHash(left: string, right: string): boolean {
-  let difference = 0;
-  for (let i = 0; i < 64; i++)
-    difference |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  return difference === 0;
-}
 /** Copy only authenticated claims; provider credentials cannot follow extra fields. */
-function identityClaims(identity: VerifiedIdentity): VerifiedIdentity {
+function identityClaims(identity: IdentityClaims): IdentityClaims {
   const { issuer, subject, audience, expiresAt, authenticatedAt } = identity;
   return Object.freeze({
     issuer,
@@ -112,11 +100,34 @@ function identityClaims(identity: VerifiedIdentity): VerifiedIdentity {
     audience,
     expiresAt,
     authenticatedAt,
-  }) as VerifiedIdentity;
+  });
 }
 
 export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
-  const { store, now, random, issue } = options;
+  const { store, now, random, issue, userCodeKey } = options;
+  const algorithm = userCodeKey.algorithm as {
+    name: string;
+    hash: { name: string };
+    length: number;
+  };
+  if (
+    userCodeKey.type !== "secret" ||
+    algorithm.name !== "HMAC" ||
+    algorithm.hash.name !== "SHA-256" ||
+    algorithm.length < 256 ||
+    !userCodeKey.usages.includes("sign")
+  )
+    throw new DeviceLoginFailure("unavailable");
+  async function keyedUserHash(code: string): Promise<string> {
+    const signature = await crypto.subtle.sign(
+      "HMAC",
+      userCodeKey,
+      new TextEncoder().encode("forge/device-login/user-code/v1\0" + code),
+    );
+    return Array.from(new Uint8Array(signature), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  }
   function bytes(length: number): Uint8Array {
     const value = random(length);
     if (value.length !== length) throw new DeviceLoginFailure("unavailable");
@@ -139,10 +150,11 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
     identity: VerifiedIdentity,
     approve: boolean,
   ): Promise<LoginDecision> {
-    const userHash = await hash(code);
+    const presented = await keyedUserHash(code);
     return store.conditionalUpdate((state) => {
       const time = now();
       if (
+        !isVerifiedIdentity(identity) ||
         !Number.isFinite(time) ||
         !Number.isFinite(identity.expiresAt) ||
         time >= identity.expiresAt ||
@@ -150,17 +162,31 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
         !identity.subject
       )
         return refuse("access_denied");
-      if (time >= state.resetAt) {
-        state.attempts = 0;
-        state.resetAt = time + WINDOW_MS;
-      }
-      if (state.attempts >= ATTEMPTS) return refuse("rate_limited");
-      state.attempts++;
+      const principal = JSON.stringify([identity.issuer, identity.subject]);
+      const budget = state.attempts[principal];
+      if (
+        budget !== undefined &&
+        time < budget.resetAt &&
+        budget.failed >= ATTEMPTS
+      )
+        return refuse("rate_limited");
       const record = state.challenges.find((row) =>
-        equalHash(row.userHash, userHash),
+        same(row.userHash, presented),
       );
-      if (record === undefined || record.status !== "pending")
+      if (record === undefined) {
+        state.attempts[principal] = {
+          failed:
+            budget !== undefined && time < budget.resetAt
+              ? budget.failed + 1
+              : 1,
+          resetAt:
+            budget !== undefined && time < budget.resetAt
+              ? budget.resetAt
+              : time + WINDOW_MS,
+        };
         return refuse("invalid_user_code");
+      }
+      if (record.status !== "pending") return refuse("invalid_user_code");
       if (time >= record.expiresAt) return refuse("expired_token");
       record.status = approve ? "approved" : "denied";
       if (approve) record.identity = identityClaims(identity);
@@ -177,7 +203,7 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
         const user_code = userCode();
         const [deviceHash, userHash] = await Promise.all([
           hash(device_code),
-          hash(user_code),
+          keyedUserHash(user_code),
         ]);
         const inserted = store.conditionalUpdate((state) => {
           const time = now();
@@ -186,8 +212,8 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
           if (
             state.challenges.some(
               (row) =>
-                equalHash(row.deviceHash, deviceHash) ||
-                equalHash(row.userHash, userHash),
+                same(row.deviceHash, deviceHash) ||
+                same(row.userHash, userHash),
             )
           )
             return false;
@@ -218,7 +244,7 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
       const deviceHash = await hash(code);
       const result = store.conditionalUpdate((state) => {
         const record = state.challenges.find((row) =>
-          equalHash(row.deviceHash, deviceHash),
+          same(row.deviceHash, deviceHash),
         );
         if (record === undefined || record.status === "consumed")
           return refuse("invalid_grant");

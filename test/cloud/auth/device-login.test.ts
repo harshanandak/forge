@@ -4,8 +4,14 @@ import {
   type ChallengeState,
   type ChallengeStore,
 } from "../../../cloud/src/auth/device-login.ts";
-import type { VerifiedIdentity } from "../../../src/ports/identity.ts";
+import type { IdentityClaims } from "../../../src/ports/identity.ts";
 import { testIdentityVerifier } from "../../contract/lib/identity-verifier.ts";
+
+// Bridge the Worker extension to the test runtime's native comparator.
+if (!("timingSafeEqual" in crypto.subtle))
+  Object.defineProperty(crypto.subtle, "timingSafeEqual", {
+    value: crypto.timingSafeEqual.bind(crypto),
+  });
 
 const sentinel = "upstream-credential-must-never-escape";
 const device = { label: "laptop" };
@@ -19,7 +25,7 @@ function refused(value: unknown, error: string, interval?: number) {
 async function fixture() {
   let now = 1_000,
     sequence = 0;
-  const state: ChallengeState = { challenges: [], attempts: 0, resetAt: 0 };
+  const state: ChallengeState = { challenges: [], attempts: {} };
   const store: ChallengeStore = {
     conditionalUpdate: (operation) => {
       // Synchronous execution models one atomic shared-storage conditional write.
@@ -37,7 +43,6 @@ async function fixture() {
     audience: "forge",
     expiresAt: 1_000_000,
     authenticatedAt: 500,
-    providerCredential: sentinel,
   };
   const verified = await testIdentityVerifier(
     new Map([[sentinel, claims]]),
@@ -45,10 +50,15 @@ async function fixture() {
   if (!verified.ok) throw new Error("Fixture identity refused");
   const options = {
     store,
+    userCodeKey: await crypto.subtle.generateKey(
+      { name: "HMAC", hash: "SHA-256", length: 256 },
+      false,
+      ["sign"],
+    ),
     now: () => now,
     random: (length: number) =>
       Uint8Array.from({ length }, () => ++sequence % 256),
-    issue: (identity: VerifiedIdentity, info: typeof device) => {
+    issue: (identity: IdentityClaims, info: typeof device) => {
       calls.push({ identity, info });
       return Promise.resolve("forge-device-credential");
     },
@@ -88,11 +98,23 @@ test("start returns distinct secret codes and an unambiguous human code stored o
         "SHA-256",
         new TextEncoder().encode(raw),
       );
-      expect(digest).toBe(
-        Array.from(new Uint8Array(hash), (n) =>
-          n.toString(16).padStart(2, "0"),
-        ).join(""),
-      );
+      const plain = Array.from(new Uint8Array(hash), (n) =>
+        n.toString(16).padStart(2, "0"),
+      ).join("");
+      if (raw === challenge.device_code) expect(digest).toBe(plain);
+      else {
+        expect(digest).not.toBe(plain);
+        const keyed = await crypto.subtle.sign(
+          "HMAC",
+          f.options.userCodeKey,
+          new TextEncoder().encode("forge/device-login/user-code/v1\0" + raw),
+        );
+        expect(digest).toBe(
+          Array.from(new Uint8Array(keyed), (n) =>
+            n.toString(16).padStart(2, "0"),
+          ).join(""),
+        );
+      }
       expect(JSON.stringify(f.state)).not.toContain(raw!);
     }
   }
@@ -252,4 +274,54 @@ test("storage and entropy failures are typed and hide injected error details", a
       message: "Device login could not complete",
     });
   }
+}, 1_000);
+
+test("successful approvals cost no guesses and exhausted principals cannot lock out others", async () => {
+  for (const alternate of [
+    { subject: "Human-B" },
+    { issuer: "https://other.example" },
+  ]) {
+    const f = await fixture();
+    const first = await f.login.start(device),
+      blocked = await f.login.start(device);
+    const allowed = await f.login.start(device);
+    expect(await f.login.approve(first.user_code, f.identity)).toEqual({
+      ok: true,
+    });
+    const guesses = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        createDeviceLogin(f.options).approve("WRNG-CODE", f.identity),
+      ),
+    );
+    for (const guess of guesses) refused(guess, "invalid_user_code");
+    refused(await f.login.deny(blocked.user_code, f.identity), "rate_limited");
+    const other = await testIdentityVerifier(
+      new Map([
+        [
+          "other",
+          {
+            ...f.identity,
+            ...alternate,
+          },
+        ],
+      ]),
+    ).verify("other", "forge", f.options.now());
+    if (!other.ok) throw new Error("Fixture identity refused");
+    expect(
+      await createDeviceLogin(f.options).approve(
+        allowed.user_code,
+        other.identity,
+      ),
+    ).toEqual({ ok: true });
+    expect(JSON.stringify(f.state)).not.toContain("userCodeKey");
+  }
+}, 1_000);
+test("a spread copy of a minted identity cannot approve a challenge", async () => {
+  const f = await fixture(),
+    c = await f.login.start(device);
+  refused(
+    await f.login.approve(c.user_code, { ...f.identity }),
+    "access_denied",
+  );
+  expect(f.calls).toHaveLength(0);
 }, 1_000);
