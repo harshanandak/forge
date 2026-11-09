@@ -827,6 +827,18 @@ function laneRegistry(files: FilesService): {
     fail("INPUT_INVALID", "Repair the invalid lane registry before retrying");
   return { text, lanes: value as Lane[] };
 }
+/**
+ * A registered lane holds a slot against the lane cap while its issue is open or still leased. A
+ * lane whose issue is closed with no live lease needs nothing more from its owner, and a lane whose
+ * issue cannot be found keeps its slot.
+ */
+function holdsSlot(state: LeaseStateClient, lane: Lane): boolean {
+  const id = laneIdentity(lane),
+    record = state.get(key(id));
+  return (
+    !record || stored(record).status === "open" || live(state, id) !== undefined
+  );
+}
 function laneIdentity(lane: Lane): string {
   // Registry ids belong to this project; legacy writers stored a display prefix.
   const number = QUALIFIED.exec(lane.issue)?.[2];
@@ -3742,7 +3754,10 @@ const operations: Operations<WorkOperations> = {
           ...(issue.lease ? { lease: issue.lease } : {}),
         };
       }
-      if (lanes.length >= (laneConfig?.max ?? 3))
+      if (
+        lanes.filter((lane) => holdsSlot(state, lane)).length >=
+        (laneConfig?.max ?? 3)
+      )
         fail(
           "LIMIT_REACHED",
           `Active lane cap ${laneConfig?.max ?? 3} reached; finish a lane first`,
