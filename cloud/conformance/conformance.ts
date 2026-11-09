@@ -1058,6 +1058,18 @@ if (phase === "main") {
     },
   );
 
+  await check(
+    "a restore over its size bound is refused as RESTORE_TOO_LARGE and creates nothing",
+    async () => {
+      const project = `${run}-restore-big`;
+      const body = "x".repeat(9 * 1024 * 1024);
+      const reply = await adminCall(project, "POST", "restore", body);
+      assert.equal(reply.status, 413, JSON.stringify(reply.body));
+      assert.equal(reply.body.error?.code, "RESTORE_TOO_LARGE");
+      assert.equal(await initialized(project), false);
+    },
+  );
+
   const project = `${run}-persist`;
   const holder = holderOf("persist");
   const claimed = granted(
