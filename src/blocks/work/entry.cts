@@ -4087,7 +4087,9 @@ const operations: Operations<WorkOperations> = {
             refuse("PR_NOT_MERGED", `Merge commit is not on ${main}`);
           }
         } finally {
-          await run(["update-ref", "-d", mainRef]);
+          // Best effort: a leftover private ref is harmless and must not mask
+          // the check result.
+          await run(["update-ref", "-d", mainRef], checkout, false, true);
         }
       }
       const hasBranch = (
