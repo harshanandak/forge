@@ -17,7 +17,8 @@ export type LoginError =
   | "invalid_grant"
   | "invalid_user_code"
   | "rate_limited"
-  | "issuance_failed";
+  | "issuance_failed"
+  | "unavailable";
 export type LoginRefusal = {
   readonly ok: false;
   readonly error: LoginError;
@@ -41,9 +42,15 @@ export interface ChallengeState {
   attempts: number;
   resetAt: number;
 }
-/** The storage adapter serializes the entire synchronous operation across callers. */
+/**
+ * Run the callback as one atomic conditional update of shared storage, including
+ * its reads, status predicates, attempt counter and writes. Commit only on return;
+ * roll back on throw. No await or external side effect is allowed in the callback.
+ * Adapters MUST use a backing-store transaction or conditional write that holds
+ * across Worker instances. An in-process lock does not satisfy this contract.
+ */
 export interface ChallengeStore {
-  transaction<T>(operation: (state: ChallengeState) => T): T;
+  conditionalUpdate<T>(operation: (state: ChallengeState) => T): T;
 }
 export interface DeviceLoginOptions {
   readonly store: ChallengeStore;
@@ -61,18 +68,200 @@ export interface DeviceLogin {
   poll(code: string): Promise<LoginResult>;
 }
 
-/** Compile-only contract stub for the initial failing CI proof. */
-export function createDeviceLogin(_options: DeviceLoginOptions): DeviceLogin {
+export class DeviceLoginFailure extends Error {
+  readonly code: LoginError;
+  constructor(code: LoginError) {
+    super("Device login could not complete");
+    this.name = "DeviceLoginFailure";
+    this.code = code;
+  }
+}
+
+const ALPHABET = "BCDFGHJKLMNPQRSTVWXYZ";
+const LIFETIME = 600;
+const INTERVAL = 5;
+const ATTEMPTS = 5;
+const WINDOW_MS = 60_000;
+
+const refuse = (error: LoginError, interval?: number): LoginRefusal =>
+  interval === undefined
+    ? { ok: false, error }
+    : { ok: false, error, interval };
+async function hash(code: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(code),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+/** Both operands are fixed-width SHA-256 hex digests. No prefix or early exit. */
+function equalHash(left: string, right: string): boolean {
+  let difference = 0;
+  for (let i = 0; i < 64; i++)
+    difference |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  return difference === 0;
+}
+/** Copy only authenticated claims; provider credentials cannot follow extra fields. */
+function identityClaims(identity: VerifiedIdentity): VerifiedIdentity {
+  const { issuer, subject, audience, expiresAt, authenticatedAt } = identity;
+  return Object.freeze({
+    issuer,
+    subject,
+    audience,
+    expiresAt,
+    authenticatedAt,
+  }) as VerifiedIdentity;
+}
+
+export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
+  const { store, now, random, issue } = options;
+  function bytes(length: number): Uint8Array {
+    const value = random(length);
+    if (value.length !== length) throw new DeviceLoginFailure("unavailable");
+    return value;
+  }
+  function userCode(): string {
+    let code = "";
+    // Rejection sampling avoids modulo bias; bad entropy cannot loop forever.
+    for (let batch = 0; batch < 16 && code.length < 8; batch++) {
+      for (const byte of bytes(8)) {
+        if (byte < 256 - (256 % ALPHABET.length) && code.length < 8)
+          code += ALPHABET[byte % ALPHABET.length];
+      }
+    }
+    if (code.length !== 8) throw new DeviceLoginFailure("unavailable");
+    return code.slice(0, 4) + "-" + code.slice(4);
+  }
+  async function decide(
+    code: string,
+    identity: VerifiedIdentity,
+    approve: boolean,
+  ): Promise<LoginDecision> {
+    const userHash = await hash(code);
+    return store.conditionalUpdate((state) => {
+      const time = now();
+      if (
+        !Number.isFinite(time) ||
+        !Number.isFinite(identity.expiresAt) ||
+        time >= identity.expiresAt ||
+        !identity.issuer ||
+        !identity.subject
+      )
+        return refuse("access_denied");
+      if (time >= state.resetAt) {
+        state.attempts = 0;
+        state.resetAt = time + WINDOW_MS;
+      }
+      if (state.attempts >= ATTEMPTS) return refuse("rate_limited");
+      state.attempts++;
+      const record = state.challenges.find((row) =>
+        equalHash(row.userHash, userHash),
+      );
+      if (record === undefined || record.status !== "pending")
+        return refuse("invalid_user_code");
+      if (time >= record.expiresAt) return refuse("expired_token");
+      record.status = approve ? "approved" : "denied";
+      if (approve) record.identity = identityClaims(identity);
+      return { ok: true };
+    });
+  }
+  const login: DeviceLogin = {
+    async start(device) {
+      for (let attempt = 0; attempt < 16; attempt++) {
+        const device_code = btoa(String.fromCharCode(...bytes(32)))
+          .replaceAll("+", "-")
+          .replaceAll("/", "_")
+          .replaceAll("=", "");
+        const user_code = userCode();
+        const [deviceHash, userHash] = await Promise.all([
+          hash(device_code),
+          hash(user_code),
+        ]);
+        const inserted = store.conditionalUpdate((state) => {
+          const time = now();
+          if (!Number.isFinite(time))
+            throw new DeviceLoginFailure("unavailable");
+          if (
+            state.challenges.some(
+              (row) =>
+                equalHash(row.deviceHash, deviceHash) ||
+                equalHash(row.userHash, userHash),
+            )
+          )
+            return false;
+          state.challenges.push({
+            deviceHash,
+            userHash,
+            deviceInfo: { label: device.label },
+            expiresAt: time + LIFETIME * 1_000,
+            interval: INTERVAL,
+            nextPoll: time,
+            status: "pending",
+          });
+          return true;
+        });
+        if (inserted)
+          return {
+            device_code,
+            user_code,
+            expires_in: LIFETIME,
+            interval: INTERVAL,
+          };
+      }
+      throw new DeviceLoginFailure("unavailable");
+    },
+    approve: (code, identity) => decide(code, identity, true),
+    deny: (code, identity) => decide(code, identity, false),
+    async poll(code) {
+      const deviceHash = await hash(code);
+      const result = store.conditionalUpdate((state) => {
+        const record = state.challenges.find((row) =>
+          equalHash(row.deviceHash, deviceHash),
+        );
+        if (record === undefined || record.status === "consumed")
+          return refuse("invalid_grant");
+        const time = now();
+        if (!Number.isFinite(time) || time >= record.expiresAt)
+          return refuse("expired_token");
+        if (record.status === "denied") return refuse("access_denied");
+        if (time < record.nextPoll) {
+          record.interval += 5;
+          record.nextPoll = time + record.interval * 1_000;
+          return refuse("slow_down", record.interval);
+        }
+        record.nextPoll = time + record.interval * 1_000;
+        if (record.status === "pending") return refuse("authorization_pending");
+        if (record.identity === undefined) return refuse("access_denied");
+        // This conditional transition commits before issuance starts or awaits.
+        record.status = "consumed";
+        return {
+          ok: true as const,
+          identity: identityClaims(record.identity),
+          device: { label: record.deviceInfo.label },
+        };
+      });
+      if (!result.ok) return result;
+      try {
+        return {
+          ok: true,
+          credential: await issue(result.identity, result.device),
+        };
+      } catch {
+        return refuse("issuance_failed");
+      }
+    },
+  };
   return {
-    start: () =>
-      Promise.resolve({
-        device_code: "",
-        user_code: "",
-        expires_in: 600,
-        interval: 5,
+    start: (device) =>
+      login.start(device).catch(() => {
+        throw new DeviceLoginFailure("unavailable");
       }),
-    approve: () => Promise.resolve({ ok: false, error: "invalid_user_code" }),
-    deny: () => Promise.resolve({ ok: false, error: "invalid_user_code" }),
-    poll: () => Promise.resolve({ ok: false, error: "invalid_grant" }),
+    approve: (code, identity) =>
+      login.approve(code, identity).catch(() => refuse("unavailable")),
+    deny: (code, identity) =>
+      login.deny(code, identity).catch(() => refuse("unavailable")),
+    poll: (code) => login.poll(code).catch(() => refuse("unavailable")),
   };
 }

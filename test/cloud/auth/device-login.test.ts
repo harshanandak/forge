@@ -21,7 +21,14 @@ async function fixture() {
     sequence = 0;
   const state: ChallengeState = { challenges: [], attempts: 0, resetAt: 0 };
   const store: ChallengeStore = {
-    transaction: (operation) => operation(state),
+    conditionalUpdate: (operation) => {
+      // Synchronous execution models one atomic shared-storage conditional write.
+      // A failed callback cannot leak partially applied changes to another caller.
+      const snapshot = structuredClone(state);
+      const result = operation(snapshot);
+      Object.assign(state, snapshot);
+      return result;
+    },
   };
   const calls: unknown[] = [];
   const claims = {
@@ -174,11 +181,12 @@ test("another device code cannot redeem an approved challenge", async () => {
 test("five wrong human codes trigger a bounded shared rate limit across service instances", async () => {
   const f = await fixture(),
     c = await f.login.start(device);
-  for (let i = 0; i < 5; i++)
-    refused(
-      await f.login.approve("WRNG-CODE", f.identity),
-      "invalid_user_code",
-    );
+  const attempts = await Promise.all(
+    Array.from({ length: 5 }, () =>
+      createDeviceLogin(f.options).approve("WRNG-CODE", f.identity),
+    ),
+  );
+  for (const attempt of attempts) refused(attempt, "invalid_user_code");
   const other = createDeviceLogin(f.options);
   refused(await other.approve(c.user_code, f.identity), "rate_limited");
   refused(await other.deny("WRNG-CODE", f.identity), "rate_limited");
@@ -219,4 +227,29 @@ test("an issuance failure is typed, hides upstream errors and cannot issue again
   refused(await login.poll(c.device_code), "invalid_grant");
   expect(f.calls).toEqual(["attempt"]);
   expect(JSON.stringify(f.state)).not.toContain(sentinel);
+}, 1_000);
+
+test("storage and entropy failures are typed and hide injected error details", async () => {
+  const f = await fixture();
+  const failure = () => {
+    throw new Error(sentinel);
+  };
+  const login = createDeviceLogin({
+    ...f.options,
+    store: { conditionalUpdate: failure },
+  });
+  refused(await login.poll("unknown"), "unavailable");
+  refused(await login.approve("unknown", f.identity), "unavailable");
+  refused(await login.deny("unknown", f.identity), "unavailable");
+  for (const options of [f.options, { ...f.options, random: failure }]) {
+    const broken = createDeviceLogin({
+      ...options,
+      store: { conditionalUpdate: failure },
+    });
+    await expect(broken.start(device)).rejects.toMatchObject({
+      name: "DeviceLoginFailure",
+      code: "unavailable",
+      message: "Device login could not complete",
+    });
+  }
 }, 1_000);
