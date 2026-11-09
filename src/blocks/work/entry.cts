@@ -3886,10 +3886,11 @@ const operations: Operations<WorkOperations> = {
         lane = saved.lanes.find((row) => laneIdentity(row) === id);
       const journal = closeJournal(files, id, lane),
         progress = journal.value;
-      const branch = lane?.branch ?? progress?.branch,
+      const recorded = lane?.branch ?? progress?.branch,
         worktree = lane?.worktree ?? progress?.worktree;
-      if (typeof branch !== "string" || typeof worktree !== "string")
+      if (typeof recorded !== "string" || typeof worktree !== "string")
         fail("NOT_FOUND", `No recorded lane for ${current.id}`);
+      let branch: string = recorded;
       const dropped = input.dropped ?? "",
         receipt = input.receipt ?? "",
         keepOpen = !!dropped || !!input.keepOpen;
@@ -3912,7 +3913,6 @@ const operations: Operations<WorkOperations> = {
           progress.receipt !== receipt ||
           progress.keepOpen !== keepOpen ||
           (progress.dropped ?? "") !== dropped ||
-          progress.branch !== branch ||
           progress.worktree !== worktree ||
           typeof progress.head !== "string")
       )
@@ -3967,6 +3967,26 @@ const operations: Operations<WorkOperations> = {
       const commit = (value: unknown): value is string =>
         typeof value === "string" &&
         /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
+      // A lane that moved to a new branch delivers its PR from that branch. The
+      // checkout (or the pinned close journal on resume) must be on that branch.
+      if (
+        !noPr &&
+        typeof pull.headRefName === "string" &&
+        pull.headRefName !== recorded
+      ) {
+        const switched =
+          progress?.branch === pull.headRefName
+            ? pull.headRefName
+            : await run(
+                ["-C", worktree, "symbolic-ref", "--short", "HEAD"],
+                checkout,
+                false,
+                true,
+              );
+        if (switched === pull.headRefName) branch = switched;
+      }
+      if (progress && progress.branch !== branch)
+        refuse("INPUT_CONFLICT", "Resume the pending close arguments");
       if (noPr && !commit(pull.headRefOid))
         refuse(
           "INPUT_CONFLICT",
